@@ -1014,6 +1014,45 @@ describe('WireService seal', () => {
       resetUnexpectedErrorHandler();
     }
   });
+
+  it('seals a trusted epoch without unhandled rejection when records append during beginTranscriptEpoch', async () => {
+    await wire.seal();
+    const scope = testWireScope(SCOPE, KEY);
+    const originalWrite = storage.write.bind(storage);
+    let injectedDuringBegin = false;
+    storage.write = async (scopeKey, key, data, options) => {
+      if (!injectedDuringBegin && key === WIRE_TRANSCRIPT_RECEIPT_KEY) {
+        injectedDuringBegin = true;
+        wire.appendRecord({ type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'during-open' }] });
+        wire.appendRecord(
+          { type: 'turn.ended', turnId: 0 },
+          async (record) => {
+            await Promise.resolve();
+            return record;
+          },
+        );
+      }
+      return originalWrite(scopeKey, key, data, options);
+    };
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await wire.beginTranscriptEpoch!();
+      await wire.sealTranscriptEpoch!();
+      expect(unexpected).toEqual([]);
+      const persisted = await storage.read(scope, AGENT_WIRE_RECORD_KEY);
+      const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(receipt).toMatchObject({
+        state: 'sealed',
+        trusted: true,
+        wire: { size: persisted!.byteLength, tailSha256: expect.any(String) },
+      });
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
 });
 
 describe('WireService appendRecord', () => {

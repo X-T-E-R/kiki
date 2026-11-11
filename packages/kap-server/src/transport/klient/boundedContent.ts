@@ -14,6 +14,8 @@ const fieldRevisions = new WeakMap<object, Map<string, string>>();
 export const ENTITY_BYTES = 64 * 1024;
 export const TIMELINE_ENTITY_BYTES = 128 * 1024;
 const ARRAY_WINDOW = 4;
+const ROSTER_WINDOW = 64;
+const ROSTER_SEGMENT_LIMIT = 256;
 const OBJECT_WINDOW = 64;
 const ID_KEYS = /^(?:id|kind|state|status|role|op|.*Id|.*_id|mediaType|marker|interactionKind|type)$/u;
 const OPAQUE_FIELDS = new Set(['input', 'output', 'display', 'request', 'response', 'payload', 'content', 'customData', 'detail']);
@@ -151,17 +153,19 @@ function projectAt(value: unknown, path: Path, source: ContentSource, entity: ob
   const media = agentId === undefined ? undefined : { source, entity, agentId };
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
+  let rosterWindow = ROSTER_WINDOW;
   let structureWindow = 8;
   let completeSendReceipts = true;
   for (;;) {
     const cuts: Cut[] = [];
     const receiptProjection = { complete: completeSendReceipts, retained: false };
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection, receiptProjection);
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection, receiptProjection, rosterWindow);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
     if (receiptProjection.retained) { completeSendReceipts = false; continue; }
     if (textBytes > CONTENT_PREVIEW_BYTES) { textBytes = Math.floor(textBytes / 2); continue; }
     if (arrayWindow > 0) { arrayWindow = 0; continue; }
+    if (rosterWindow > 8) { rosterWindow = Math.floor(rosterWindow / 2); continue; }
     if (textBytes > 32) { textBytes = Math.floor(textBytes / 2); continue; }
     if (structureWindow > 1) { structureWindow = Math.floor(structureWindow / 2); continue; }
     return { value: projected, refs };
@@ -256,7 +260,7 @@ function isSendMessageReceipt(output: string): boolean {
   }
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head', receiptProjection = { complete: false, retained: false }): unknown {
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head', receiptProjection = { complete: false, retained: false }, rosterWindow = ROSTER_WINDOW): unknown {
   budget.nodes -= 1;
   if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const projected = projectInlineToolMedia(value, path, media.source, media.entity, media.agentId);
@@ -275,10 +279,12 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) {
     const structure = isStructurePath(path);
+    const roster = isRosterPath(path);
     const count = structure ? Math.min(value.length, structureWindow)
+      : roster ? Math.min(value.length, rosterWindow)
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
     const start = structure && structureDirection === 'tail' ? value.length - count : 0;
-    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection));
+    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure || roster ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow));
     if (count < value.length) {
       if (structure && structureDirection === 'tail') cuts.push({ path, kind: 'array', offset: start, total: value.length, direction: 'backward' });
       else cuts.push({ path, kind: 'array', offset: count, total: value.length });
@@ -313,7 +319,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         return [key, Array.isArray(child) ? [] : {}];
       }
     }
-    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection, receiptProjection)];
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow)];
   }));
 }
 
@@ -322,6 +328,8 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
   const selected = selectContent(entity, ref.path);
   if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   const structure = ref.kind === 'array' && isStructurePath(ref.path);
+  const roster = ref.kind === 'array' && isRosterPath(ref.path);
+  const effectivePageBytes = roster && pageBytes <= CONTENT_PAGE_BYTES ? TIMELINE_ENTITY_BYTES * 2 : pageBytes;
   if (direction === 'backward' && !structure) throw new ContentChangedError();
   if (fieldRevision(entity, ref.path, structure ? ref.total : undefined) !== ref.revision) throw new ContentChangedError();
   let refs: ContentRef[] = [];
@@ -332,21 +340,22 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     if (typeof selected !== 'string' || selected.length !== ref.total || ref.offset >= selected.length || (ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!))) throw new ContentChangedError();
     let end = Math.min(selected.length, ref.offset + 4097);
     if (end < selected.length && /[\uD800-\uDBFF]/u.test(selected[end - 1]!)) end -= 1;
-    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, pageBytes / 2) : jsonTextPrefix(selected, ref.offset, pageBytes / 2);
+    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, effectivePageBytes / 2) : jsonTextPrefix(selected, ref.offset, effectivePageBytes / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
     if (!Array.isArray(selected) || (structure ? selected.length < ref.total : selected.length !== ref.total)) throw new ContentChangedError();
+    const itemLimit = roster ? ROSTER_SEGMENT_LIMIT : structure && effectivePageBytes > CONTENT_PAGE_BYTES ? 256 : 20;
     if (direction === 'backward') {
       if (ref.offset <= 0 || ref.offset > ref.total) throw new ContentChangedError();
       let values: unknown[] = [];
       let reverseRefs: ContentRef[] = [];
       offset = ref.offset;
-      while (offset > 0 && values.length < (structure && pageBytes > CONTENT_PAGE_BYTES ? 256 : 20)) {
+      while (offset > 0 && values.length < itemLimit) {
         const index = offset - 1;
         const child = projectAt(selected[index], [...ref.path, index], ref.source, entity, ENTITY_BYTES, agentId, 'tail');
         const nextValues = [child.value, ...values];
         const nextRefs = [...child.refs, ...reverseRefs];
-        if (values.length > 0 && jsonBytes({ values: nextValues, refs: nextRefs }) > pageBytes / 2) break;
+        if (values.length > 0 && jsonBytes({ values: nextValues, refs: nextRefs }) > effectivePageBytes / 2) break;
         values = nextValues;
         reverseRefs = nextRefs;
         offset = index;
@@ -358,9 +367,9 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
       const values: unknown[] = [];
       offset = ref.offset;
       if (offset >= ref.total) throw new ContentChangedError();
-      while (offset < ref.total && values.length < (structure && pageBytes > CONTENT_PAGE_BYTES ? 256 : 20)) {
+      while (offset < ref.total && values.length < itemLimit) {
         const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
-        if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
+        if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > effectivePageBytes / 2) break;
         values.push(child.value);
         refs.push(...child.refs);
         offset += 1;
@@ -376,7 +385,7 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     while (offset < entries.length && offset - ref.offset < OBJECT_WINDOW) {
       const [key, child] = entries[offset]!;
       const projected = projectAt(child, [...ref.path, key], ref.source, entity, ENTITY_BYTES, agentId);
-      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > pageBytes / 2) break;
+      if (offset > ref.offset && jsonBytes({ values: { ...values, [key]: projected.value }, refs: [...refs, ...projected.refs] }) > effectivePageBytes / 2) break;
       values[key] = projected.value;
       refs.push(...projected.refs);
       offset += 1;

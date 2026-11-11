@@ -77,13 +77,22 @@ export class SessionIndexProjector {
   private fingerprintCache = new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>();
   private fingerprintGeneration: number | undefined;
   private fingerprintInvalidationEpoch = 0;
+  private fullInvalidationEpoch = 0;
+  private readonly keyInvalidationEpochs = new Map<string, number>();
 
   constructor(private readonly deps: SessionIndexProjectorDeps) {}
 
   invalidateFingerprint(workspaceId?: string, sessionId?: string): void {
     this.fingerprintInvalidationEpoch += 1;
-    if (workspaceId === undefined || sessionId === undefined) this.fingerprintCache.clear();
-    else this.fingerprintCache.delete(`${workspaceId}/${sessionId}`);
+    if (workspaceId === undefined || sessionId === undefined) {
+      this.fingerprintCache.clear();
+      this.fullInvalidationEpoch = this.fingerprintInvalidationEpoch;
+      this.keyInvalidationEpochs.clear();
+    } else {
+      const key = `${workspaceId}/${sessionId}`;
+      this.fingerprintCache.delete(key);
+      this.keyInvalidationEpochs.set(key, this.fingerprintInvalidationEpoch);
+    }
   }
 
   sharedScan(): Promise<AuthoritativeScan> {
@@ -425,10 +434,15 @@ export class SessionIndexProjector {
         });
       }
       if (invalidationEpoch !== this.fingerprintInvalidationEpoch) {
-        for (const key of nextFingerprintCache.keys()) {
-          if (!this.fingerprintCache.has(key)) nextFingerprintCache.delete(key);
+        if (this.fullInvalidationEpoch > invalidationEpoch) {
+          nextFingerprintCache.clear();
+        } else {
+          for (const [key, epoch] of this.keyInvalidationEpochs) {
+            if (epoch > invalidationEpoch) nextFingerprintCache.delete(key);
+          }
         }
       }
+      if (this.fingerprintInvalidationEpoch === invalidationEpoch) this.keyInvalidationEpochs.clear();
       this.fingerprintCache = nextFingerprintCache;
       const result = { sessions, upserted, removed };
       if (upserted > 0 || removed > 0) {

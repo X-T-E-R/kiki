@@ -247,6 +247,10 @@ export class HistoryLocatorStore {
     return this.canonical().readTurnHeader(session, agent, turnId, signal);
   }
 
+  readCanonicalTurnHeaders(session: string, agent: string, turnIds: readonly string[], signal?: AbortSignal): ReturnType<HistoryCanonicalReader['readTurnHeaders']> {
+    return this.canonical().readTurnHeaders(session, agent, turnIds, signal);
+  }
+
   async indexedTurnByte(session: string, agent: string, turnId: string): Promise<number | undefined> {
     const ready = (this.store as { ready?: () => Promise<IndexedNavigationDb> }).ready;
     if (ready === undefined) return undefined;

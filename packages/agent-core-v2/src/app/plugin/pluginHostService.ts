@@ -26,8 +26,9 @@ import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/koson
 import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { abortable } from '#/_base/utils/abort';
+import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
@@ -218,14 +219,23 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IFlagService private readonly flags?: IFlagService,
     @ISessionManager private readonly sessions?: ISessionManager,
     @IPluginUsageService usage?: IPluginUsageService,
+    @ref(ILogService) private readonly logger?: LiveRef<ILogService>,
   ) {
     super();
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
       event.waitUntil((async () => {
-        if (!await usage.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
-        const info = await this.plugins.getPluginInfo({ id: event.pluginId });
-        if (info.manifest?.kiki?.activation !== 'app') return;
-        await this.runRequest(event.pluginId, async () => undefined);
+        try {
+          if (!await usage.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
+          const info = await this.plugins.getPluginInfo({ id: event.pluginId });
+          if (info.manifest?.kiki?.activation !== 'app') return;
+          await this.runRequest(event.pluginId, async () => undefined);
+        } catch (error) {
+          this.logger?.current?.warn('plugin resident usage activation failed', {
+            pluginId: event.pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
       })());
     }));
     this._register(this.plugins.onWillChange((event) => {
@@ -236,7 +246,11 @@ export class PluginHostService extends Service implements IPluginHostService {
       void event.finished.then(() => {
         reloadedSubscription.dispose();
         if (reloaded || this.closing) return;
-        void this.reconcileResidents(event.affected).catch(() => {});
+        void this.reconcileResidents(event.affected).catch((error: unknown) => {
+          this.logger?.current?.warn('plugin resident restore failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       });
       event.waitUntil((async () => {
         await Promise.allSettled(this.residentLifecycle);
@@ -253,7 +267,22 @@ export class PluginHostService extends Service implements IPluginHostService {
       })());
     }));
     this._register(this.plugins.onDidReload((event) => {
-      event.waitUntil((async () => { await this.reconcileResidents(); await this.reconcileImAdapters(); })());
+      event.waitUntil((async () => {
+        try {
+          await this.reconcileResidents(event.affected);
+        } catch (error) {
+          this.logger?.current?.warn('plugin resident activation failed after reload', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          await this.reconcileImAdapters();
+        } catch (error) {
+          this.logger?.current?.warn('plugin IM adapter reconciliation failed after reload', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })());
     }));
     if (this.configService !== undefined) this._register(this.configService.onDidSectionChange((event) => {
       if (event.domain !== 'pluginSettings' || this.closing) return;
@@ -261,10 +290,18 @@ export class PluginHostService extends Service implements IPluginHostService {
       const previous = event.previousValue as Record<string, unknown> | undefined;
       const ids = [...new Set([...Object.keys(current ?? {}), ...Object.keys(previous ?? {})])]
         .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
-      void this.reconcileResidents(ids, true).then(() => this.reconcileImAdapters()).catch(() => {});
+      void this.reconcileResidents(ids, true).then(() => this.reconcileImAdapters()).catch((error: unknown) => {
+        this.logger?.current?.warn('plugin resident settings reconciliation failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }));
     this.ready = Promise.resolve().then(() => this.reconcileResidents());
-    void this.ready.catch(() => {});
+    void this.ready.catch((error: unknown) => {
+      this.logger?.current?.warn('plugin initial resident activation failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     this._register(toDisposable(() => this.stopAll()));
   }
 

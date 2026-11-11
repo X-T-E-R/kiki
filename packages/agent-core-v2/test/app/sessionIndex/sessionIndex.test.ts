@@ -4449,4 +4449,67 @@ describe('FileSessionIndex (read model)', () => {
     await expect(activeCaller).resolves.toMatchObject({ id: 'slow-session', title: 'slow' });
     expect(store.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
   });
+
+  it('serves count and listRecent from the ready read model + mirror without blocking on background reconciliation or .tmp watch noise', async () => {
+    overrideScopedService(LifecycleScope.App, IQueryStore, SqliteQueryStore, ScopeActivation.OnDemand, 'storage');
+    await seedSession('s1', { title: 'one', createdAt: 1, updatedAt: 10 });
+    await seedSession('s2', { title: 'two', createdAt: 2, updatedAt: 20 });
+    const planning = deferred<void>();
+    const releasePlan = deferred<void>();
+    let holdList = false;
+    let inventoryScans = 0;
+    class SlowPlanStorage extends FileStorageService {
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        if (scope === 'sessions' || scope.startsWith('sessions/')) {
+          inventoryScans += 1;
+          if (holdList) {
+            planning.resolve();
+            await releasePlan.promise;
+          }
+        }
+        return super.list(scope, prefix);
+      }
+    }
+    const store = build(new SlowPlanStorage(homeDir));
+    await store.prepare();
+    const baselineScans = inventoryScans;
+
+    sourceChanges.fire({
+      path: join(sessionsDir, workspaceId, 's1', 'session-meta', 'state.json.12345.tmp'),
+      action: 'modified',
+      kind: 'file',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_150));
+    expect(inventoryScans).toBe(baselineScans);
+
+    await seedSession('s3', { title: 'three', createdAt: 3, updatedAt: 25 });
+    holdList = true;
+    try {
+      sourceChanges.fire({
+        path: join(sessionsDir, workspaceId),
+        action: 'modified',
+        kind: 'directory',
+      });
+      await planning.promise;
+
+      mirror.record(summary('s-mirror', { updatedAt: 30, title: 'mirror-live' }));
+      const queryStart = performance.now();
+      const [total, page] = await Promise.all([
+        store.count({ includeArchived: false }),
+        store.listRecent({ includeArchived: false, limit: 10 }),
+      ]);
+      const elapsedMs = performance.now() - queryStart;
+      expect(elapsedMs).toBeLessThan(200);
+      expect(total).toBe(3);
+      expect(page.items.map((item) => item.id)).toEqual(['s-mirror', 's2', 's1']);
+
+      await seedSession('s-mirror', { title: 'mirror-live', createdAt: 4, updatedAt: 30 });
+    } finally {
+      holdList = false;
+      releasePlan.resolve();
+    }
+    await vi.waitFor(async () => {
+      expect(await store.count({ includeArchived: false })).toBe(4);
+    });
+  });
 });

@@ -797,6 +797,27 @@ async function readColdTranscriptPage(
   const findOrphan = () => snapshot.items.find((item): item is TranscriptTurn =>
     (isOrphanTurn(item) && itemKey(item) === anchor) ||
     (item.kind === 'turn' && item.turnId === query.orphanTurn && query.refreshedTurn !== item.turnId && !hasTurnOpening(item)));
+  if (typeof transcriptService.resolveOrphanOpenings === 'function') {
+    const candidateTurnIds = new Set<string>();
+    for (const item of located.page.items) {
+      if (isOrphanTurn(item)) candidateTurnIds.add(item.turnId);
+    }
+    const anchorOrphan = findOrphan();
+    if (anchorOrphan !== undefined) candidateTurnIds.add(anchorOrphan.turnId);
+    if (candidateTurnIds.size > 0) {
+      const resolvedSnapshot = await transcriptService.resolveOrphanOpenings(
+        sessionId,
+        input.agentId,
+        snapshot,
+        [...candidateTurnIds],
+        input.signal,
+      );
+      if (resolvedSnapshot !== snapshot) {
+        snapshot = resolvedSnapshot;
+        located = locate();
+      }
+    }
+  }
   let orphan = findOrphan();
   const orphanTurnId = orphan?.turnId;
   const boundaryOrphan = materializedBoundary !== undefined && orphanTurnId !== undefined && snapshot.items.every(item => item.kind !== 'turn' || compareTurnIds(item.turnId, orphanTurnId) >= 0);
@@ -963,6 +984,22 @@ async function readColdTranscriptPage(
   }
   if (located.missing && source !== 'derived' && decodePageCursor(input.beforeItem, input.agentId) !== undefined) throw new TranscriptSourceChangedError(source, 'stale_cursor');
   if (located.missing && source !== 'derived' && snapshot.hasMoreOlder !== true) throw new TranscriptDetailCursorError();
+  if (typeof transcriptService.resolveOrphanOpenings === 'function') {
+    const pageOrphans = located.page.items.flatMap((item) => isOrphanTurn(item) ? [item.turnId] : []);
+    if (pageOrphans.length > 0) {
+      const resolvedSnapshot = await transcriptService.resolveOrphanOpenings(
+        sessionId,
+        input.agentId,
+        snapshot,
+        pageOrphans,
+        input.signal,
+      );
+      if (resolvedSnapshot !== snapshot) {
+        snapshot = resolvedSnapshot;
+        located = { ...located, page: { ...located.page, items: withRecoveredOpenings(located.page.items, resolvedSnapshot.items) } };
+      }
+    }
+  }
   return { snapshot, page: located.page, query };
 }
 

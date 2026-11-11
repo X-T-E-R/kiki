@@ -1713,6 +1713,181 @@ describe('legacy snapshot message tail projection', () => {
     expect(messages.items[0]?.id).toBe(`msg_${sessionId}_000005`);
     expect(messages.items.at(-1)?.content).toEqual([{ type: 'text', text: 'm104' }]);
   });
+
+  it('surfaces active and newest subagents in the first 64-item inline window and converges 1433 subagents in <= 6 lock-free pages while releasing legacy snapshot leases before deferred history finishes', async () => {
+    const totalSubagents = 1_433;
+    const agentsMeta: Record<string, Record<string, unknown>> = {};
+    for (let index = 1; index <= totalSubagents; index += 1) {
+      const completed = index !== 7 && index !== 19;
+      agentsMeta[`agent-${index}`] = {
+        type: 'sub',
+        parentAgentId: 'main',
+        displayName: 'worker',
+        userLabel: `Task ${index}`,
+        model: 'provider/sub-model',
+        status: completed ? 'completed' : 'running',
+        createdAt: 1_000_000 + index,
+        completedAt: completed ? 1_000_500 + index : undefined,
+        resultSummary: completed ? `receipt-${index}-${'x'.repeat(80)}` : undefined,
+      };
+    }
+    const trackedSubagents = [
+      {
+        id: 'agent-7',
+        agent_id: 'agent-7',
+        session_id: sessionId,
+        kind: 'subagent' as const,
+        description: 'Task 7',
+        status: 'running' as const,
+        live: true,
+        subagent_phase: 'working' as const,
+        started_at: new Date(1_000_007).toISOString(),
+      },
+      {
+        id: 'agent-19',
+        agent_id: 'agent-19',
+        session_id: sessionId,
+        kind: 'subagent' as const,
+        description: 'Task 19',
+        status: 'running' as const,
+        live: true,
+        subagent_phase: 'suspended' as const,
+        started_at: new Date(1_000_019).toISOString(),
+      },
+    ];
+    const loadParts = vi.fn(async (parts: unknown) => parts);
+    const main = {
+      id: 'main',
+      accessor: fakeAccessor([
+        [IAgentActivityView, { state: () => ({ busy: true }) }],
+        [IAgentProfileService, { getModel: () => 'provider/main-model', data: () => undefined }],
+        [IAgentPermissionModeService, { mode: 'yolo' }],
+        [IAgentPlanService, { status: async () => null }],
+        [IAgentBlobService, { loadParts }],
+      ]),
+    };
+    const session = {
+      accessor: fakeAccessor([
+        [ISessionContext, { workspaceId }],
+        [
+          ISessionMetadata,
+          {
+            ready: Promise.resolve(),
+            snapshot: () => ({
+              id: sessionId,
+              title: 'Large Roster',
+              createdAt,
+              updatedAt: createdAt + 5_000,
+              archived: false,
+              agents: agentsMeta,
+            }),
+            usage: () => undefined,
+          },
+        ],
+        [IAgentLifecycleService, { get: () => main, list: () => [main], create: async () => main }],
+        [ISessionInteractionService, { listPending: () => [] }],
+        [ISessionActivityView, { state: () => ({ busy: true, mainTurnActive: false, pendingInteraction: 'none' }) }],
+        [ISessionDeliveryService, { mode: () => 'reply' }],
+      ]),
+    };
+    let leaseDisposed = false;
+    const acquireCalls: string[] = [];
+    const core = {
+      accessor: fakeAccessor([
+        [
+          ISessionManager,
+          {
+            acquire: async (id: string) => {
+              acquireCalls.push(id);
+              return {
+                handle: session,
+                dispose: () => {
+                  leaseDisposed = true;
+                },
+              };
+            },
+            get: () => session,
+            list: () => [],
+          },
+        ],
+        [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
+        [ILogService, { warn() {} }],
+        [IModelPricingService, {}],
+      ]),
+    };
+
+    const browseBroadcaster = {
+      getSnapshotState: async (_sid: string, options: { capture?: () => Promise<unknown> }) => ({
+        seq: 11,
+        epoch: 'ep_roster',
+        contextMessageCount: 2,
+        captured: await options.capture?.(),
+        pendingApprovals: [],
+        pendingQuestions: [],
+        contextMessages: [],
+        contextMessageTimes: [],
+        currentPromptId: undefined,
+        inFlightTurn: null,
+        status: undefined,
+        subagents: trackedSubagents,
+      }),
+      getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
+    };
+
+    let browse = await assembleBrowseSnapshot(core as never, browseBroadcaster as never, sessionId);
+    expect(browse.subagents).toHaveLength(64);
+    expect(browse.subagents?.[0]?.id).toBe('agent-19');
+    expect(browse.subagents?.[1]?.id).toBe('agent-7');
+    expect(browse.subagents?.[2]?.id).toBe('agent-1433');
+    expect(browse.subagents?.[3]?.id).toBe('agent-1432');
+    expect(acquireCalls).toHaveLength(1);
+
+    let subagentPages = 0;
+    while (browse.contentRefs?.some((ref) => ref.path[0] === 'subagents')) {
+      const ref = browse.contentRefs.find((candidate) => candidate.path[0] === 'subagents')!;
+      const segment = await readBrowseSnapshotContent(core as never, browseBroadcaster as never, sessionId, 'main', ref);
+      expect(segment).toBeDefined();
+      browse = applyContentSegment(browse, segment!);
+      subagentPages += 1;
+    }
+    expect(subagentPages).toBeLessThanOrEqual(6);
+    expect(browse.subagents).toHaveLength(totalSubagents);
+    expect(acquireCalls).toHaveLength(1);
+
+    leaseDisposed = false;
+    let releaseHistory!: (value: { messages: ContextMessage[]; times: (number | undefined)[] }) => void;
+    const historyPromise = new Promise<{ messages: ContextMessage[]; times: (number | undefined)[] }>((resolve) => {
+      releaseHistory = resolve;
+    });
+    const contextMessages: ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'deferred-check' }], toolCalls: [] },
+    ];
+    const deferredBroadcaster = {
+      getSnapshotState: async (_sid: string, options: { capture?: () => Promise<unknown> }) => ({
+        seq: 12,
+        epoch: 'ep_deferred',
+        contextMessageCount: 1,
+        captured: await options.capture?.(),
+        pendingApprovals: [],
+        pendingQuestions: [],
+        contextMessages,
+        contextMessageTimes: [],
+        historyPromise,
+        currentPromptId: undefined,
+        inFlightTurn: null,
+        status: undefined,
+        subagents: [],
+      }),
+      getMaterializedTranscriptToolCallCounts: () => new Map<string, number>(),
+    };
+
+    const legacyPending = assembleSnapshot(core as never, deferredBroadcaster as never, sessionId);
+    await vi.waitFor(() => expect(leaseDisposed).toBe(true));
+    releaseHistory({ messages: contextMessages, times: [createdAt + 42] });
+    const legacyResolved = await legacyPending;
+    expect(legacyResolved.messages.items).toHaveLength(1);
+    expect(legacyResolved.messages.items[0]?.content).toEqual([{ type: 'text', text: 'deferred-check' }]);
+  });
 });
 
 describe('server-v2 session operation lease', () => {

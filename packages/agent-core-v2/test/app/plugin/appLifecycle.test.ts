@@ -2,6 +2,8 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Event } from '#/_base/event';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
+import { PluginHost } from '#/app/plugin/host';
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -247,4 +249,65 @@ it('keeps release bound to the original host after an unexpected child exit', as
   const [first, second, released] = await events();
   expect(released).toMatchObject({ action: 'release', pid: second?.pid, input: accountInput });
   expect(released?.pid).not.toBe(first?.pid);
+});
+
+it('backs off repeated RPC handshake timeouts and isolates background resident reload failures from onUnexpectedError', async () => {
+  vi.useFakeTimers();
+  const unexpected: unknown[] = [];
+  setUnexpectedErrorHandler((error) => unexpected.push(error));
+  let silentHost: PluginHost | undefined;
+  try {
+    const silentEntry = join(root, 'silent-entry.mjs');
+    await writeFile(silentEntry, 'await new Promise(() => {});\n');
+    silentHost = new PluginHost('fixture-silent', silentEntry, []);
+
+    const firstAttempt = silentHost.activate({}, join(root, 'user'), join(root, 'data'));
+    const firstHandled = firstAttempt.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const firstError = await firstHandled;
+    expect(firstError).toBeInstanceOf(Error);
+    expect((firstError as Error).message).toContain('RPC handshake timed out');
+
+    const immediateRetry = await silentHost.activate({}, join(root, 'user'), join(root, 'data')).catch((error: unknown) => error);
+    expect(immediateRetry).toBe(firstError);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const secondAttempt = silentHost.activate({}, join(root, 'user'), join(root, 'data'));
+    const secondHandled = secondAttempt.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(15_000);
+    const secondError = await secondHandled;
+    expect(secondError).toBeInstanceOf(Error);
+    expect(secondError).not.toBe(firstError);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    const stillCooling = await silentHost.activate({}, join(root, 'user'), join(root, 'data')).catch((error: unknown) => error);
+    expect(stillCooling).toBe(secondError);
+
+    vi.useRealTimers();
+    silentHost.stop();
+    silentHost = undefined;
+
+    const brokenSource = join(root, 'broken-resident');
+    await mkdir(brokenSource);
+    await writeFile(join(brokenSource, 'kimi.plugin.json'), JSON.stringify({
+      name: 'fixture-broken-resident',
+      version: '1.0.0',
+      'x-kiki': {
+        engines: { kiki: '^0.4.0' },
+        entry: './entry.mjs',
+        activation: 'app',
+      },
+    }));
+    await writeFile(join(brokenSource, 'entry.mjs'), 'export function register() {} export function activate() { throw new Error("resident boom"); }\n');
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    await hosts.ready;
+    const plan = await plugins.previewPlugin({ source: brokenSource });
+    await plugins.installPlugin({ source: brokenSource, fingerprint: plan.fingerprint, consent: true });
+    expect(unexpected).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    silentHost?.stop();
+    resetUnexpectedErrorHandler();
+  }
 });

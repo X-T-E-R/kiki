@@ -629,6 +629,81 @@ describe('server /api/sessions/query', () => {
     }
   });
 
+  it('bounds git status concurrency, coalesces concurrent identical cwd lookups, and retains negative TTL across 60s', async () => {
+    await server!.close();
+    const manySummaries: SessionSummary[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `many_${index}`,
+      workspaceId: WS_A,
+      cwd: `/repo/many-${index}`,
+      title: `Session ${index}`,
+      createdAt: 1_000 + index,
+      updatedAt: 5_000 - index,
+      archived: false,
+    }));
+    let activeGit = 0;
+    let maxGit = 0;
+    const statusCalls: string[] = [];
+    const boundedGitStub: IGitService = {
+      _serviceBrand: undefined,
+      status: async (cwd: string): Promise<FsGitStatusResponse> => {
+        statusCalls.push(cwd);
+        activeGit += 1;
+        maxGit = Math.max(maxGit, activeGit);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (cwd.endsWith('-0')) {
+            return {
+              branch: 'main',
+              ahead: 0,
+              behind: 0,
+              entries: {},
+              additions: 0,
+              deletions: 0,
+              pullRequest: null,
+            };
+          }
+          throw new Error2(ErrorCodes.FS_GIT_UNAVAILABLE, `not a repo: ${cwd}`);
+        } finally {
+          activeGit -= 1;
+        }
+      },
+      diff: async () => {
+        throw new Error2(ErrorCodes.FS_GIT_UNAVAILABLE, 'unused');
+      },
+      findWorkTree: async () => null,
+    };
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      seeds: [
+        [ISessionIndex, stubSessionIndex(manySummaries)],
+        [IGitService, boundedGitStub],
+      ],
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const [first, second] = await Promise.all([
+      getData('?include=git&page_size=20'),
+      getData('?include=git&page_size=20'),
+    ]);
+    expect(first.items).toHaveLength(12);
+    expect(second.items).toHaveLength(12);
+    expect(maxGit).toBeLessThanOrEqual(4);
+    expect(statusCalls).toHaveLength(12);
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 90_000);
+    try {
+      await getData('?include=git&page_size=20');
+      expect(statusCalls).toHaveLength(13);
+      expect(statusCalls.at(-1)).toBe('/repo/many-0');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('answers 401 with the shared envelope on both session list paths', async () => {
     for (const path of ['/api/sessions', '/api/sessions/query']) {
       const res = await fetch(`${base}${path}`);

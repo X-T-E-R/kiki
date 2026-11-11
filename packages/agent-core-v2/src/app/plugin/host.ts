@@ -27,6 +27,8 @@ import {
 export const PLUGIN_RPC_VERSION = 1;
 const IDLE_MS = 90_000;
 const HANDSHAKE_MS = 15_000;
+const HANDSHAKE_BACKOFF_BASE_MS = 15_000;
+const HANDSHAKE_BACKOFF_MAX_MS = 120_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
 
 function validToolResult(result: unknown, references: ReadonlySet<string>): result is ExecutableToolResult {
@@ -62,6 +64,10 @@ export interface PluginHostModelServices {
 
 export class PluginHost {
   private child: ChildProcessWithoutNullStreams | undefined;
+  private lineReader?: ReturnType<typeof createInterface>;
+  private handshakeFailures = 0;
+  private handshakeCooldownUntil = 0;
+  private lastHandshakeError?: Error;
   private readonly pending = new Map<number, Call>();
   private readonly registered = new Set<string>();
   private readonly registeredSources = new Set<string>();
@@ -428,6 +434,9 @@ export class PluginHost {
 
   stop(): void {
     this.stopped = true;
+    this.handshakeFailures = 0;
+    this.handshakeCooldownUntil = 0;
+    this.lastHandshakeError = undefined;
     this.terminate(new Error(`Plugin ${this.id} unloaded`));
   }
 
@@ -475,6 +484,9 @@ export class PluginHost {
 
   private async start(): Promise<void> {
     if (this.ready !== undefined) return this.ready;
+    if (this.handshakeCooldownUntil > Date.now() && this.lastHandshakeError !== undefined) {
+      throw this.lastHandshakeError;
+    }
     this.ready = new Promise<void>((resolve, reject) => {
       const native = !path.basename(process.execPath).toLowerCase().startsWith('node');
       const runner = native && process.versions['electron'] === undefined
@@ -501,12 +513,18 @@ export class PluginHost {
       let handshake = false;
       const startupTimeout = setTimeout(() => {
         const error = new Error(`Plugin ${this.id} RPC handshake timed out`);
+        const backoff = Math.min(HANDSHAKE_BACKOFF_MAX_MS, HANDSHAKE_BACKOFF_BASE_MS * Math.pow(2, this.handshakeFailures));
+        this.handshakeFailures += 1;
+        this.handshakeCooldownUntil = Date.now() + backoff;
+        this.lastHandshakeError = error;
         reject(error);
         this.terminate(error);
       }, HANDSHAKE_MS);
       startupTimeout.unref();
       child.stderr.resume();
-      createInterface({ input: child.stdout }).on('line', (line) => {
+      const lineReader = createInterface({ input: child.stdout });
+      this.lineReader = lineReader;
+      lineReader.on('line', (line) => {
         if (this.child !== child) return;
         try {
           if (line.length > MAX_RPC_LINE_CHARS) throw new Error(`Plugin ${this.id} RPC response is too large`);
@@ -581,6 +599,9 @@ export class PluginHost {
           } else if (message.method === 'ready') {
             if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
+            this.handshakeFailures = 0;
+            this.handshakeCooldownUntil = 0;
+            this.lastHandshakeError = undefined;
             resolve();
             this.scheduleIdle();
           } else if (message.method === 'register-error') {
@@ -762,6 +783,9 @@ export class PluginHost {
 
   private terminate(reason: Error): void {
     clearTimeout(this.idle);
+    const lineReader = this.lineReader;
+    this.lineReader = undefined;
+    lineReader?.close();
     const child = this.child;
     this.child = undefined;
     this.activitySubscription?.dispose();
@@ -781,7 +805,12 @@ export class PluginHost {
     this.imDiagnostics.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
-    if (child !== undefined && !child.killed) child.kill();
+    if (child !== undefined) {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (!child.killed) child.kill();
+    }
     this.ready = undefined;
   }
 }

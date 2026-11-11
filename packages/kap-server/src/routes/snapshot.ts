@@ -17,6 +17,7 @@ import {
   type SessionMeta,
   IWorkspaceService,
   type AgentMeta,
+  type ContextMessage,
   type IAgentScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -39,7 +40,8 @@ import {
 } from '../protocol/rest-snapshot';
 import {
   alignFrozenContextHistory,
-  loadCapturedMessageHistoryTail,
+  type CapturedContextMessageHistory,
+  hydrateMessageTail,
   projectHydratedMessageHistoryTail,
   rehydrateCold,
 } from '../services/messages/messageHistory';
@@ -181,7 +183,7 @@ const coldBrowseRosters = new WeakMap<SessionMeta, ColdBrowseRoster>();
 function coldBrowseRoster(sessionId: string, meta: SessionMeta): ColdBrowseRoster {
   const cached = coldBrowseRosters.get(meta);
   if (cached?.sessionId === sessionId) return cached;
-  const subagents = sessionAgentRoster(sessionId, meta);
+  const subagents = orderSnapshotSubagents(sessionAgentRoster(sessionId, meta));
   const entry = { sessionId, subagents, counts: sessionAgentCounts(meta.agents, subagents) };
   coldBrowseRosters.set(meta, entry);
   return entry;
@@ -221,11 +223,20 @@ async function assembleSnapshotSource(
   const fields = { sessionId, requestId: timing.requestId };
   const lease = await timeSessionViewPhase('snapshot_acquire', fields,
     () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
+  let prepared: PreparedLiveSnapshot;
   try {
-    return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease, timing);
+    prepared = await prepareSnapshotFromLease(core, broadcaster, sessionId, mode, lease, timing);
   } finally {
     await timeSessionViewPhase('snapshot_release', fields, async () => lease.dispose(), timing);
   }
+  if (prepared.deferredHistory === undefined) return prepared.response;
+  const { createdAt, hydratedTail, startIndex, historyPromise } = prepared.deferredHistory;
+  const history = await historyPromise;
+  const messageTail = projectHydratedMessageHistoryTail(sessionId, createdAt, hydratedTail, history.times, startIndex);
+  return {
+    ...prepared.response,
+    messages: { items: messageTail.items, has_more: messageTail.has_more },
+  };
 }
 
 async function assembleColdSnapshot(
@@ -275,14 +286,14 @@ async function assembleColdSnapshot(
     cursor.seq,
   );
   const subagentCandidates = sessionAgentRoster(sessionId, meta);
-  const subagents = enrichSnapshotSubagents(
+  const subagents = orderSnapshotSubagents(enrichSnapshotSubagents(
     subagentCandidates,
     meta.agents,
     broadcaster.getMaterializedTranscriptToolCallCounts(
       sessionId,
       subagentCandidates.map((subagent) => subagent.id),
     ),
-  );
+  ));
   return {
     as_of_seq: cursor.seq,
     epoch: cursor.epoch,
@@ -304,14 +315,26 @@ async function assembleColdSnapshot(
   };
 }
 
-async function assembleSnapshotFromLease(
+interface DeferredSnapshotHistory {
+  readonly createdAt: number;
+  readonly hydratedTail: readonly ContextMessage[];
+  readonly startIndex: number;
+  readonly historyPromise: Promise<CapturedContextMessageHistory>;
+}
+
+interface PreparedLiveSnapshot {
+  readonly response: SessionSnapshotResponse;
+  readonly deferredHistory?: DeferredSnapshotHistory;
+}
+
+async function prepareSnapshotFromLease(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
   mode: 'transcript' | undefined,
   lease: SessionOperationLease,
   timing: SessionViewTimingContext,
-): Promise<SessionSnapshotResponse> {
+): Promise<PreparedLiveSnapshot> {
   const compact = mode === 'transcript';
   const handle = lease.handle;
   if (handle === undefined) {
@@ -324,6 +347,7 @@ async function assembleSnapshotFromLease(
   timing.signal?.throwIfAborted();
   const snapState = await broadcaster.getSnapshotState(sessionId, {
     captureMessages: !compact,
+    deferHistory: !compact,
     timing,
     capture: async () => {
       const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
@@ -358,23 +382,39 @@ async function assembleSnapshotFromLease(
   const subagentCandidates = sessionAgentRoster(sessionId, meta, snapState.subagents, runtime);
   const subagentIds = subagentCandidates.map((subagent) => subagent.id);
   const toolCallCounts = broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds);
-  const subagents = enrichSnapshotSubagents(
+  const subagents = orderSnapshotSubagents(enrichSnapshotSubagents(
     subagentCandidates,
     meta.agents,
     toolCallCounts,
-  );
+  ));
   const status = snapState.status;
 
-  const messageTail = compact || main === undefined
-    ? undefined
-    : await loadCapturedMessageHistoryTail(
-        main,
+  let deferredHistory: DeferredSnapshotHistory | undefined;
+  let immediateMessages: SessionSnapshotResponse['messages'] = { items: [], has_more: false };
+  if (!compact && main !== undefined) {
+    const { hydratedTail, startIndex } = await hydrateMessageTail(
+      main,
+      snapState.contextMessages,
+      SNAPSHOT_MESSAGE_PAGE_SIZE,
+    );
+    if (snapState.historyPromise !== undefined) {
+      deferredHistory = {
+        createdAt: meta.createdAt,
+        hydratedTail,
+        startIndex,
+        historyPromise: snapState.historyPromise,
+      };
+    } else {
+      const messageTail = projectHydratedMessageHistoryTail(
         sessionId,
         meta.createdAt,
-        snapState.contextMessages,
+        hydratedTail,
         snapState.contextMessageTimes,
-        SNAPSHOT_MESSAGE_PAGE_SIZE,
+        startIndex,
       );
+      immediateMessages = { items: messageTail.items, has_more: messageTail.has_more };
+    }
+  }
 
   const inFlightTurn = attachCurrentPromptIdToInFlight(
     snapState.inFlightTurn,
@@ -382,22 +422,74 @@ async function assembleSnapshotFromLease(
   );
 
   return {
-    as_of_seq: snapState.seq,
-    epoch: snapState.epoch,
-    session: { ...session, last_seq: snapState.seq, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
-    messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
-    in_flight_turn: inFlightTurn,
-    subagents,
-    agent_counts: sessionAgentCounts(meta.agents, subagents),
-    context_tokens: status?.contextTokens,
-    max_context_tokens: status?.maxContextTokens,
-    context_breakdown:
-      status?.contextBreakdown === undefined
-        ? undefined
-        : toRestContextBreakdown(status.contextBreakdown),
-    pending_approvals: snapState.pendingApprovals,
-    pending_questions: snapState.pendingQuestions,
+    response: {
+      as_of_seq: snapState.seq,
+      epoch: snapState.epoch,
+      session: { ...session, last_seq: snapState.seq, message_count: compact ? snapState.contextMessageCount : snapState.contextMessages.length },
+      messages: immediateMessages,
+      in_flight_turn: inFlightTurn,
+      subagents,
+      agent_counts: sessionAgentCounts(meta.agents, subagents),
+      context_tokens: status?.contextTokens,
+      max_context_tokens: status?.maxContextTokens,
+      context_breakdown:
+        status?.contextBreakdown === undefined
+          ? undefined
+          : toRestContextBreakdown(status.contextBreakdown),
+      pending_approvals: snapState.pendingApprovals,
+      pending_questions: snapState.pendingQuestions,
+    },
+    deferredHistory,
   };
+}
+
+function isSnapshotSubagentActive(subagent: SnapshotSubagent): boolean {
+  return subagent.activity_status === 'running' ||
+    subagent.activity_status === 'suspended' ||
+    (subagent.live === true && subagent.status === 'running');
+}
+
+function snapshotSubagentRecency(subagent: SnapshotSubagent): number | undefined {
+  let latest: number | undefined;
+  for (const raw of [subagent.started_at, subagent.completed_at, subagent.created_at]) {
+    if (raw === undefined) continue;
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed) && (latest === undefined || parsed > latest)) latest = parsed;
+  }
+  return latest;
+}
+
+function snapshotSubagentOrdinal(subagent: SnapshotSubagent): number | undefined {
+  const id = subagent.agent_id ?? subagent.id;
+  const match = /^agent-(\d+)$/u.exec(id);
+  if (match === null) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): SnapshotSubagent[] {
+  if (subagents.length <= 1) return [...subagents];
+  return subagents
+    .map((subagent, index) => ({
+      subagent,
+      index,
+      active: isSnapshotSubagentActive(subagent),
+      recency: snapshotSubagentRecency(subagent),
+      ordinal: snapshotSubagentOrdinal(subagent),
+    }))
+    .toSorted((left, right) => {
+      if (left.active !== right.active) return left.active ? -1 : 1;
+      if (left.recency !== right.recency) {
+        if (left.recency === undefined) return 1;
+        if (right.recency === undefined) return -1;
+        return right.recency - left.recency;
+      }
+      if (left.ordinal !== undefined && right.ordinal !== undefined && left.ordinal !== right.ordinal) {
+        return right.ordinal - left.ordinal;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.subagent);
 }
 
 function readBoundModel(main: IAgentScopeHandle): string | undefined {
@@ -490,7 +582,10 @@ export async function readBrowseSnapshotContent(
       if (meta === undefined) return undefined;
       timing.signal?.throwIfAborted();
       if (field === 'subagents') {
-        const candidates = sessionAgentRoster(sessionId, meta);
+        const rawCandidates = sessionAgentRoster(sessionId, meta);
+        const candidates = orderSnapshotSubagents(ref.source.id === 'legacy'
+          ? enrichSnapshotSubagents(rawCandidates, meta.agents, broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, rawCandidates.map((agent) => agent.id)))
+          : rawCandidates);
         const index = ref.path[1];
         const receiptField = ref.path[2];
         if (typeof index === 'number' && (receiptField === 'output_preview' || receiptField === 'stop_reason')) {
@@ -509,9 +604,7 @@ export async function readBrowseSnapshotContent(
               stop_reason: outcome.error ?? candidate.stop_reason };
           }
         }
-        return readContentSegment({ subagents: ref.source.id === 'legacy'
-          ? enrichSnapshotSubagents(candidates, meta.agents, broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id)))
-          : candidates }, ref);
+        return readContentSegment({ subagents: candidates }, ref);
       }
       const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId, timing.signal, true), timing);
       timing.signal?.throwIfAborted();
@@ -525,6 +618,27 @@ export async function readBrowseSnapshotContent(
       timing.signal?.throwIfAborted();
       return readContentSegment({ session: { ...session, message_count: projection.transcript.logicalEntries.length,
         agent_config: { ...session.agent_config, permission_mode: projection.permissionMode, plan_mode: projection.planActive } } }, ref);
+    }
+    const liveHandle = core.accessor.get(ISessionManager).get(sessionId);
+    if (field === 'subagents' && liveHandle !== undefined && 'accessor' in liveHandle && liveHandle.accessor !== undefined) {
+      const metadata = liveHandle.accessor.get(ISessionMetadata);
+      await timeSessionViewPhase('snapshot_metadata_ready', fields, () => metadata.ready, timing);
+      timing.signal?.throwIfAborted();
+      const state = await broadcaster.getSnapshotState(sessionId, {
+        captureMessages: false,
+        timing,
+        capture: async () => ({
+          meta: metadata.snapshot(),
+          runtime: new Map(liveHandle.accessor.get(IAgentLifecycleService).list().map((agent) =>
+            [agent.id, { ...agent.accessor.get(IAgentActivityView).state(), model: readBoundModel(agent) }] as const)),
+        }),
+      });
+      timing.signal?.throwIfAborted();
+      if (state.captured === undefined) return undefined;
+      const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);
+      const subagents = orderSnapshotSubagents(enrichSnapshotSubagents(candidates, state.captured.meta.agents,
+        broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id))));
+      return readContentSegment({ subagents }, ref);
     }
     const lease = await timeSessionViewPhase('snapshot_content_acquire', fields,
       () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
@@ -566,8 +680,8 @@ export async function readBrowseSnapshotContent(
       } else if (field === 'subagents') {
         if (state.captured === undefined) return undefined;
         const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);
-        source = { subagents: enrichSnapshotSubagents(candidates, state.captured.meta.agents,
-          broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id))) };
+        source = { subagents: orderSnapshotSubagents(enrichSnapshotSubagents(candidates, state.captured.meta.agents,
+          broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id)))) };
       } else {
         source = {
           in_flight_turn: attachCurrentPromptIdToInFlight(state.inFlightTurn, state.currentPromptId),
@@ -609,6 +723,7 @@ async function readSnapshotMessageSource(
   }
   const lease = await timeSessionViewPhase('snapshot_content_acquire', fields,
     () => acquireSessionOperation(core, sessionId, 'operation', timing.signal), timing);
+  let deferredHistory: DeferredSnapshotHistory | undefined;
   try {
     const handle = lease.handle;
     if (handle === undefined) return undefined;
@@ -617,12 +732,42 @@ async function readSnapshotMessageSource(
     timing.signal?.throwIfAborted();
     const main = handle.accessor.get(IAgentLifecycleService).get('main');
     if (main === undefined) return { items: [], has_more: false };
-    const captured = await broadcaster.getSnapshotState(sessionId, { timing, captureMessages: true,
-      capture: async () => metadata.snapshot().createdAt });
+    const captured = await broadcaster.getSnapshotState(sessionId, {
+      timing,
+      captureMessages: true,
+      deferHistory: true,
+      capture: async () => metadata.snapshot().createdAt,
+    });
     timing.signal?.throwIfAborted();
-    return await loadCapturedMessageHistoryTail(main, sessionId, captured.captured ?? summary.createdAt,
-      captured.contextMessages, captured.contextMessageTimes, SNAPSHOT_MESSAGE_PAGE_SIZE);
+    const { hydratedTail, startIndex } = await hydrateMessageTail(
+      main,
+      captured.contextMessages,
+      SNAPSHOT_MESSAGE_PAGE_SIZE,
+    );
+    if (captured.historyPromise === undefined) {
+      return projectHydratedMessageHistoryTail(
+        sessionId,
+        captured.captured ?? summary.createdAt,
+        hydratedTail,
+        captured.contextMessageTimes,
+        startIndex,
+      );
+    }
+    deferredHistory = {
+      createdAt: captured.captured ?? summary.createdAt,
+      hydratedTail,
+      startIndex,
+      historyPromise: captured.historyPromise,
+    };
   } finally {
     await timeSessionViewPhase('snapshot_content_release', fields, async () => lease.dispose(), timing);
   }
+  const history = await deferredHistory.historyPromise;
+  return projectHydratedMessageHistoryTail(
+    sessionId,
+    deferredHistory.createdAt,
+    deferredHistory.hydratedTail,
+    history.times,
+    deferredHistory.startIndex,
+  );
 }

@@ -6846,3 +6846,90 @@ it('[TL-005] snapshotToOps anchors restored taskrefs before ownerTurnId + 1 and 
     at: '2026-11-10T05:01:53.000Z',
   });
 });
+
+it('coalesces 32 orphan turn opening reads into a single file open with exact span digest verification and prioritizes tailFirst reads in HistoryReadLane', async () => {
+  const lane = new HistoryReadLane();
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  const active1 = lane.run(undefined, async () => { await firstGate; order.push('active-1'); });
+  const active2 = lane.run(undefined, async () => { await secondGate; order.push('active-2'); });
+  const ordinary = Array.from({ length: 6 }, (_, index) =>
+    lane.run(undefined, async () => { order.push(`ordinary-${index}`); }));
+  const priority = Array.from({ length: 6 }, (_, index) =>
+    lane.run(undefined, async () => { order.push(`priority-${index}`); }, true));
+  releaseFirst();
+  releaseSecond();
+  await Promise.all([active1, active2, ...ordinary, ...priority]);
+  expect(order.slice(0, 2)).toEqual(['active-1', 'active-2']);
+  expect(order.slice(2, 6)).toEqual(['priority-0', 'priority-1', 'priority-2', 'priority-3']);
+  expect(order[6]).toBe('ordinary-0');
+  expect(order.slice(7, 9)).toEqual(['priority-4', 'priority-5']);
+  lane.dispose();
+
+  const home = await mkdtemp(join(tmpdir(), 'transcript-batch-orphan-headers-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const turnCount = 32;
+  const records: Record<string, unknown>[] = [];
+  for (let id = 0; id < turnCount; id += 1) {
+    records.push({
+      type: 'turn.prompt',
+      turnId: id,
+      promptId: `req-${id}`,
+      input: [{ type: 'text', text: `batch-opening-${String(id).padStart(2, '0')}` }],
+      origin: { kind: 'user' },
+      time: 1_000 + id,
+    });
+    records.push({ type: 'fixture.padding', padding: 'p'.repeat(4_096) });
+  }
+  for (let index = 0; index < 145; index += 1) {
+    records.push({ type: 'fixture.padding', padding: 'z'.repeat(64 << 10) });
+  }
+  for (let id = 0; id < turnCount; id += 1) {
+    records.push(
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: id, uuid: `tail-step-${id}`, step: 1 }, time: 5_000 + id },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 6_000 + id },
+    );
+  }
+  await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+  const navigation = new HistoryLocatorStore(database, service);
+  service.setHistoryLocatorReader(() => navigation);
+  try {
+    while (!(await navigation.scan('s1', 'main'))?.complete) {}
+    const batchSpy = vi.spyOn(navigation, 'readCanonicalTurnHeaders');
+    const singleSpy = vi.spyOn(navigation, 'readCanonicalTurnHeader');
+    try {
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 40 });
+      const turns = (page?.items ?? []).filter((item) => item.kind === 'turn');
+      expect(turns).toHaveLength(turnCount);
+      for (let id = 0; id < turnCount; id += 1) {
+        const match = turns.find((turn) => turn.turnId === `t${id}`);
+        expect(match).toMatchObject({
+          prompt: `batch-opening-${String(id).padStart(2, '0')}`,
+          promptId: `req-${id}`,
+          origin: { kind: 'user' },
+        });
+      }
+      expect(batchSpy).toHaveBeenCalledTimes(1);
+      expect(singleSpy).not.toHaveBeenCalled();
+    } finally {
+      batchSpy.mockRestore();
+      singleSpy.mockRestore();
+    }
+
+    const originalText = await fsPromises.readFile(wirePath, 'utf8');
+    await writeFile(wirePath, originalText.replace('batch-opening-17', 'tampered-open-17'));
+    const turnIds = Array.from({ length: turnCount }, (_, id) => `t${id}`);
+    await expect(navigation.readCanonicalTurnHeaders('s1', 'main', turnIds)).rejects.toThrow('history_source_changed');
+  } finally {
+    service.dispose();
+    await database.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);

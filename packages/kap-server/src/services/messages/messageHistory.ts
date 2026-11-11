@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { stat } from 'node:fs/promises';
 import {
   AGENT_WIRE_RECORD_KEY,
@@ -7,6 +8,7 @@ import {
   IAppendLogStore,
   IBlobStore,
   IBootstrapService,
+  ICpuWorkerService,
   IFileSystemStorageService,
   IQueryStore,
   ISessionIndex,
@@ -25,6 +27,7 @@ import {
 } from '@kiki/agent-core-v2';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import { MISSING_MEDIA_PLACEHOLDER } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
+import { readWireContextProjection } from '@kiki/agent-core-v2/persistence/wireContextRead';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { parseMediaBlobRef } from '@kiki/transcript';
 
@@ -406,8 +409,18 @@ async function refreshColdMessageHistory(
     existing.scope === scope && existing.offset === (offset ?? 0)) return existing;
   signal?.throwIfAborted();
   const reducer = createContextTranscriptReducer();
+  let sliceStart = performance.now();
+  let sliceRecords = 0;
   for await (const record of core.accessor.get(IAppendLogStore).read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
+    signal?.throwIfAborted();
     reducer.add(record);
+    sliceRecords += 1;
+    if (sliceRecords >= 256 && performance.now() - sliceStart >= 8) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      signal?.throwIfAborted();
+      sliceStart = performance.now();
+      sliceRecords = 0;
+    }
   }
   const transcript = reducer.result();
   const messages = [...transcript.entries];
@@ -875,13 +888,23 @@ export interface CapturedContextMessageHistory {
   readonly times: readonly (number | undefined)[];
 }
 
+interface SnapshotHistoryWireMeta {
+  readonly key: string;
+  readonly identity?: string;
+  readonly size: number;
+}
+
 interface SnapshotHistoryEntry {
   readonly fingerprint: string;
-  readonly history: CapturedContextMessageHistory;
+  readonly identity?: string;
+  readonly offset: number;
+  readonly refs: readonly WeakRef<ContextMessage>[];
+  readonly times: readonly (number | undefined)[];
   readonly bytes: number;
 }
 
 const SNAPSHOT_HISTORY_CACHE_BYTES = 4 << 20;
+const SNAPSHOT_WORKER_WIRE_THRESHOLD_BYTES = 1 << 20;
 const snapshotHistoryCaches = new WeakMap<Scope, { bytes: number; entries: Map<string, SnapshotHistoryEntry> }>();
 const snapshotHistoryFlights = new WeakMap<Scope, Map<string, MessageHistoryFlight<ContextTranscript> & { fingerprint: string }>>();
 
@@ -896,37 +919,59 @@ export async function captureContextMessageHistory(
   signal?.throwIfAborted();
   const scope = agent.accessor.get(IAgentScopeContext).scope();
   const storage = core.accessor.get(IFileSystemStorageService);
-  const fingerprint = async (): Promise<string> => {
+  const fingerprint = async (): Promise<SnapshotHistoryWireMeta> => {
     const path = storage.pathFor(scope, AGENT_WIRE_RECORD_KEY);
     if (path !== undefined) {
       try {
         const info = await stat(path, { bigint: true });
         signal?.throwIfAborted();
-        return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+        return {
+          key: `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`,
+          identity: `${info.dev}:${info.ino}`,
+          size: Number(info.size),
+        };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         signal?.throwIfAborted();
-        return 'missing';
+        return { key: 'missing', size: 0 };
       }
     }
     const [size, mtime] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
     signal?.throwIfAborted();
-    return `${size}:${mtime}`;
+    return { key: `${size}:${mtime}`, size: size ?? 0 };
   };
   const before = await fingerprint();
   const cache = snapshotHistoryCaches.get(core);
   const cached = cache?.entries.get(scope);
-  if (cached?.fingerprint === before && cached.history.messages.length === contextMessages.length &&
-    contextMessages.every((message, index) => cached.history.messages[index] === message)) return cached.history;
+  if (cached?.fingerprint === before.key && cached.refs.length === contextMessages.length &&
+    contextMessages.every((message, index) => cached.refs[index]?.deref() === message)) {
+    return { messages: contextMessages, times: cached.times };
+  }
+  if (
+    cached !== undefined &&
+    before.identity !== undefined &&
+    cached.identity === before.identity &&
+    before.size > cached.offset &&
+    contextMessages.length >= cached.refs.length
+  ) {
+    const incremental = await tryCaptureIncrementalHistory(core, storage, scope, cached, before.size, contextMessages, signal);
+    if (incremental !== undefined) {
+      const after = await fingerprint();
+      if (after.key === before.key) {
+        rememberSnapshotHistory(core, scope, before, contextMessages, incremental.times);
+      }
+      return incremental;
+    }
+  }
   let flights = snapshotHistoryFlights.get(core);
   if (flights === undefined) { flights = new Map(); snapshotHistoryFlights.set(core, flights); }
   let flight = flights.get(scope);
-  if (flight === undefined || flight.fingerprint !== before) {
+  if (flight === undefined || flight.fingerprint !== before.key) {
     const controller = new AbortController();
     const created: MessageHistoryFlight<ContextTranscript> & { fingerprint: string } = {
-      controller, fingerprint: before, waiters: 0, settled: false, promise: undefined as unknown as Promise<ContextTranscript>,
+      controller, fingerprint: before.key, waiters: 0, settled: false, promise: undefined as unknown as Promise<ContextTranscript>,
     };
-    created.promise = readTranscript(core, agent, controller.signal).finally(() => {
+    created.promise = readSnapshotTranscript(core, agent, before.size, controller.signal).finally(() => {
       created.settled = true;
       if (flights.get(scope) === created) flights.delete(scope);
     });
@@ -945,23 +990,165 @@ export async function captureContextMessageHistory(
     }
   }
   const history = alignFrozenContextHistory(transcript, contextMessages);
-  if (before === await fingerprint()) {
-    let retained = snapshotHistoryCaches.get(core);
-    if (retained === undefined) { retained = { bytes: 0, entries: new Map() }; snapshotHistoryCaches.set(core, retained); }
-    const previous = retained.entries.get(scope);
-    if (previous !== undefined) { retained.entries.delete(scope); retained.bytes -= previous.bytes; }
-    const bytes = estimateContextMessagesBytes(contextMessages) + history.times.length * 8;
-    if (bytes <= SNAPSHOT_HISTORY_CACHE_BYTES) {
-      while (retained.entries.size > 0 && (retained.bytes + bytes > SNAPSHOT_HISTORY_CACHE_BYTES || retained.entries.size >= 32)) {
-        const oldest = retained.entries.keys().next().value!;
-        retained.bytes -= retained.entries.get(oldest)!.bytes;
-        retained.entries.delete(oldest);
-      }
-      retained.entries.set(scope, { fingerprint: before, history, bytes });
-      retained.bytes += bytes;
-    }
+  if (before.key === (await fingerprint()).key) {
+    rememberSnapshotHistory(core, scope, before, contextMessages, history.times);
   }
   return history;
+}
+
+function rememberSnapshotHistory(
+  core: Scope,
+  scope: string,
+  meta: SnapshotHistoryWireMeta,
+  contextMessages: readonly ContextMessage[],
+  times: readonly (number | undefined)[],
+): void {
+  let retained = snapshotHistoryCaches.get(core);
+  if (retained === undefined) {
+    retained = { bytes: 0, entries: new Map() };
+    snapshotHistoryCaches.set(core, retained);
+  }
+  const previous = retained.entries.get(scope);
+  if (previous !== undefined) {
+    retained.entries.delete(scope);
+    retained.bytes -= previous.bytes;
+  }
+  const bytes = 256 + times.length * 32;
+  if (bytes > SNAPSHOT_HISTORY_CACHE_BYTES) return;
+  while (retained.entries.size > 0 && (retained.bytes + bytes > SNAPSHOT_HISTORY_CACHE_BYTES || retained.entries.size >= 32)) {
+    const oldest = retained.entries.keys().next().value!;
+    retained.bytes -= retained.entries.get(oldest)!.bytes;
+    retained.entries.delete(oldest);
+  }
+  retained.entries.set(scope, {
+    fingerprint: meta.key,
+    identity: meta.identity,
+    offset: meta.size,
+    refs: contextMessages.map((message) => new WeakRef(message)),
+    times,
+    bytes,
+  });
+  retained.bytes += bytes;
+}
+
+async function tryCaptureIncrementalHistory(
+  core: Scope,
+  storage: IFileSystemStorageService,
+  scope: string,
+  cached: SnapshotHistoryEntry,
+  size: number,
+  contextMessages: readonly ContextMessage[],
+  signal?: AbortSignal,
+): Promise<CapturedContextMessageHistory | undefined> {
+  if (storage.readStream !== Object.getPrototypeOf(storage).readStream) return undefined;
+  const logs = core.accessor.get(IAppendLogStore);
+  if (logs.read !== Object.getPrototypeOf(logs).read) return undefined;
+  const stableLength = Math.max(0, cached.refs.length - 1);
+  for (let index = 0; index < stableLength; index += 1) {
+    const previous = cached.refs[index]?.deref();
+    if (previous === undefined || previous !== contextMessages[index]) return undefined;
+  }
+  if (cached.refs.length > 0) {
+    const previousTail = cached.refs.at(-1)?.deref();
+    const currentAtTail = contextMessages[cached.refs.length - 1];
+    if (
+      previousTail === undefined ||
+      currentAtTail === undefined ||
+      (previousTail !== currentAtTail && !sameMutableTailMessage(previousTail, currentAtTail))
+    ) {
+      return undefined;
+    }
+  }
+  let pending = '';
+  const decoder = new TextDecoder();
+  const reducer = createContextTranscriptReducer();
+  let sliceStart = performance.now();
+  let sliceRecords = 0;
+  for await (const chunk of storage.readStream(
+    scope,
+    AGENT_WIRE_RECORD_KEY,
+    { start: cached.offset, end: size - 1 },
+    { signal },
+  )) {
+    signal?.throwIfAborted();
+    pending += decoder.decode(chunk, { stream: true });
+    let newline = pending.indexOf('\n');
+    while (newline !== -1) {
+      const line = pending.slice(0, newline).replace(/\r$/, '');
+      pending = pending.slice(newline + 1);
+      if (line.length > 0) {
+        let record: WireRecord;
+        try {
+          record = JSON.parse(line) as WireRecord;
+        } catch {
+          return undefined;
+        }
+        if (
+          record.type === 'context.undo' ||
+          record.type === 'context.clear' ||
+          record.type === 'context.apply_compaction' ||
+          record.type === 'agent.model_switch'
+        ) {
+          return undefined;
+        }
+        reducer.add(record);
+        sliceRecords += 1;
+        if (sliceRecords >= 256 && performance.now() - sliceStart >= 8) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          signal?.throwIfAborted();
+          sliceStart = performance.now();
+          sliceRecords = 0;
+        }
+      }
+      newline = pending.indexOf('\n');
+    }
+  }
+  pending += decoder.decode();
+  if (pending.trim().length > 0) return undefined;
+  const tailTranscript = reducer.result();
+  const additions = contextMessages.slice(cached.refs.length);
+  if (additions.length === 0) {
+    return { messages: contextMessages, times: cached.times };
+  }
+  const alignedTail = alignFrozenContextHistory(tailTranscript, additions);
+  const hasUnresolvedIdentity = additions.some(
+    (message, index) => contextMessageIdentity(message) !== undefined && alignedTail.times[index] === undefined,
+  );
+  if (hasUnresolvedIdentity) return undefined;
+  return {
+    messages: contextMessages,
+    times: [...cached.times, ...alignedTail.times],
+  };
+}
+
+async function readSnapshotTranscript(
+  core: Scope,
+  agent: IAgentScopeHandle,
+  wireBytes: number,
+  signal?: AbortSignal,
+): Promise<ContextTranscript> {
+  const logs = core.accessor.get(IAppendLogStore);
+  if (wireBytes >= SNAPSHOT_WORKER_WIRE_THRESHOLD_BYTES && logs.read === Object.getPrototypeOf(logs).read) {
+    let workers: ICpuWorkerService | undefined;
+    try {
+      workers = core.accessor.get(ICpuWorkerService);
+    } catch {
+      workers = undefined;
+    }
+    if (workers !== undefined) {
+      const scope = agent.accessor.get(IAgentScopeContext).scope();
+      const projection = await readWireContextProjection(
+        workers.request.bind(workers),
+        logs,
+        core.accessor.get(IFileSystemStorageService),
+        scope,
+        AGENT_WIRE_RECORD_KEY,
+        signal,
+      );
+      return projection.transcript;
+    }
+  }
+  return readTranscript(core, agent, signal);
 }
 
 export async function loadMessageHistory(
@@ -1095,6 +1282,16 @@ export async function rehydrateCold(
   return out;
 }
 
+export async function hydrateMessageTail(
+  agent: IAgentScopeHandle,
+  contextMessages: readonly ContextMessage[],
+  tailCount: number,
+): Promise<{ readonly hydratedTail: readonly ContextMessage[]; readonly startIndex: number }> {
+  const startIndex = Math.max(0, contextMessages.length - Math.max(0, tailCount));
+  const hydratedTail = await rehydrate(agent, contextMessages.slice(startIndex));
+  return { hydratedTail, startIndex };
+}
+
 async function rehydrate(
   agent: IAgentScopeHandle,
   messages: readonly ContextMessage[],
@@ -1120,11 +1317,20 @@ async function readTranscript(core: Scope, agent: IAgentScopeHandle, signal?: Ab
   signal?.throwIfAborted();
   const scope = agent.accessor.get(IAgentScopeContext).scope();
   const reducer = createContextTranscriptReducer();
+  let sliceStart = performance.now();
+  let sliceRecords = 0;
   for await (const record of core.accessor
     .get(IAppendLogStore)
     .read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
     signal?.throwIfAborted();
     reducer.add(record);
+    sliceRecords += 1;
+    if (sliceRecords >= 256 && performance.now() - sliceStart >= 8) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      signal?.throwIfAborted();
+      sliceStart = performance.now();
+      sliceRecords = 0;
+    }
   }
   return reducer.result();
 }

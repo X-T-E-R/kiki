@@ -5,7 +5,7 @@ import { openLogicalWire, readLogicalInto, type LogicalWire } from './logicalWir
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, transcriptResidentValueEquals,
   type AgentTranscriptSnapshot, type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
 import { HistoryResidentProof } from './historyResidentProof';
-import type { HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
+import type { HistoryCanonicalSpan, HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
 import type { HistoryNavScan } from './historyLocatorStore';
@@ -158,18 +158,68 @@ export class HistoryCanonicalReader {
   async readTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): Promise<
     { status: 'found'; turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] } |
     { status: 'preparing' | 'not_found' }> {
+    const results = await this.readTurnHeaders(session, agent, [turnId], signal);
+    return results.get(turnId) ?? { status: 'preparing' };
+  }
+
+  async readTurnHeaders(session: string, agent: string, turnIds: readonly string[], signal?: AbortSignal): Promise<
+    Map<string, { status: 'found'; turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] } |
+      { status: 'preparing' | 'not_found' }>> {
+    signal?.throwIfAborted();
+    const uniqueTurnIds = [...new Set(turnIds)];
+    const results = new Map<string, { status: 'found'; turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] } |
+      { status: 'preparing' | 'not_found' }>();
+    if (uniqueTurnIds.length === 0) return results;
     const generation = this.generation;
     const context = await this.sourceContext(session, agent, signal);
     const db = await this.database.ready();
     const manifest = db.readManifest(context.scope);
-    if (manifest === undefined || !db.hasCanonicalSources(context.scope)) return { status: 'preparing' };
-    const seed = db.canonicalSeed(context.scope, turnId);
-    if (seed === undefined) return { status: manifest.complete ? 'not_found' : 'preparing' };
-    const spans = db.canonicalSources(context.scope, turnId, -1, 32);
-    const draft = new AgentTranscriptDraft(agent);
-    const reducer = new TranscriptFactReducer(draft);
-    const adapter = new TranscriptWireAdapter(agent);
-    adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
+    if (manifest === undefined || !db.hasCanonicalSources(context.scope)) {
+      for (const turnId of uniqueTurnIds) results.set(turnId, { status: 'preparing' });
+      return results;
+    }
+    interface TurnHeaderState {
+      readonly turnId: string;
+      readonly draft: AgentTranscriptDraft;
+      readonly reducer: TranscriptFactReducer;
+      readonly adapter: TranscriptWireAdapter;
+      readonly spanCount: number;
+      bytesRead: number;
+      overBudget: boolean;
+      resolved?: { turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] };
+    }
+    const states = new Map<string, TurnHeaderState>();
+    const pendingSpans = new Map<string, readonly HistoryCanonicalSpan[]>();
+    const currentSpans: Array<{ readonly state: TurnHeaderState; readonly span: HistoryCanonicalSpan; readonly spanIndex: number }> = [];
+    for (const turnId of uniqueTurnIds) {
+      const seed = db.canonicalSeed(context.scope, turnId);
+      if (seed === undefined) {
+        results.set(turnId, { status: manifest.complete ? 'not_found' : 'preparing' });
+        continue;
+      }
+      const spans = db.canonicalSources(context.scope, turnId, -1, 32);
+      if (spans.length === 0) {
+        results.set(turnId, { status: manifest.complete ? 'not_found' : 'preparing' });
+        continue;
+      }
+      const draft = new AgentTranscriptDraft(agent);
+      const reducer = new TranscriptFactReducer(draft);
+      const adapter = new TranscriptWireAdapter(agent);
+      adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
+      const state: TurnHeaderState = {
+        turnId,
+        draft,
+        reducer,
+        adapter,
+        spanCount: spans.length,
+        bytesRead: 0,
+        overBudget: false,
+      };
+      states.set(turnId, state);
+      pendingSpans.set(turnId, spans);
+      currentSpans.push({ state, span: spans[0]!, spanIndex: 0 });
+    }
+    if (currentSpans.length === 0) return results;
     let logical: LogicalWire | undefined;
     let handle: FileHandle | undefined;
     const releaseRead = async (): Promise<void> => {
@@ -180,41 +230,110 @@ export class HistoryCanonicalReader {
       currentLogical?.close();
       if (currentHandle !== undefined) await currentHandle.close();
     };
-    let bytesRead = 0;
+    let batchBytes = 0;
+    let batchRecords = 0;
     try {
       logical = await openLogicalWire(context.wirePath, signal);
       handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
-      for (const span of spans) {
-        signal?.throwIfAborted();
-        const size = span.end - span.start;
-        if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
-        if (bytesRead + size > (1 << 20)) return { status: 'preparing' };
-        const bytes = Buffer.allocUnsafe(size);
-        let offset = 0;
-        while (offset < size) {
+      while (currentSpans.length > 0) {
+        currentSpans.sort((left, right) => left.span.start - right.span.start || left.span.ordinal - right.span.ordinal);
+        const nextWave: Array<{ readonly state: TurnHeaderState; readonly span: HistoryCanonicalSpan; readonly spanIndex: number }> = [];
+        let chunk: Buffer | undefined;
+        let chunkStart = 0;
+        for (let index = 0; index < currentSpans.length; index += 1) {
+          const entry = currentSpans[index]!;
+          const { state, span, spanIndex } = entry;
+          if (state.resolved !== undefined || state.overBudget) continue;
           signal?.throwIfAborted();
-          const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
-          if (readCount === 0) throw new Error('history_source_changed');
-          offset += readCount;
-          bytesRead += readCount;
-          this.replayBytes += readCount;
+          const size = span.end - span.start;
+          if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
+          if (state.bytesRead + size > (1 << 20)) {
+            state.overBudget = true;
+            continue;
+          }
+          if (batchBytes + size > (8 << 20) || batchRecords >= 50_000) {
+            state.overBudget = true;
+            continue;
+          }
+          if (chunk === undefined || span.start < chunkStart || span.end > chunkStart + chunk.length) {
+            let end = span.end;
+            let coalesced = 1;
+            for (let next = index + 1; next < currentSpans.length && coalesced < 128; next += 1) {
+              const candidate = currentSpans[next]!;
+              if (candidate.state.resolved !== undefined || candidate.state.overBudget) continue;
+              const candidateSize = candidate.span.end - candidate.span.start;
+              if (!Number.isSafeInteger(candidateSize) || candidateSize <= 0) break;
+              if (candidate.span.start < end) {
+                if (candidate.span.end > end) {
+                  if (candidate.span.end - span.start > (1 << 20) || batchBytes + (candidate.span.end - span.start) > (8 << 20)) break;
+                  end = candidate.span.end;
+                }
+                coalesced += 1;
+                continue;
+              }
+              const gap = candidate.span.start - end;
+              if (gap > (64 << 10) || candidate.span.end - span.start > (1 << 20) || batchBytes + (candidate.span.end - span.start) > (8 << 20)) break;
+              end = candidate.span.end;
+              coalesced += 1;
+            }
+            chunk = Buffer.allocUnsafe(end - span.start);
+            chunkStart = span.start;
+            let offset = 0;
+            while (offset < chunk.length) {
+              signal?.throwIfAborted();
+              const readCount = await readAddressedBytes(logical, handle, chunk, offset, chunk.length - offset, chunkStart + offset);
+              if (readCount === 0) throw new Error('history_source_changed');
+              offset += readCount;
+              batchBytes += readCount;
+              this.replayBytes += readCount;
+            }
+          }
+          const bytes = chunk.subarray(span.start - chunkStart, span.end - chunkStart);
+          state.bytesRead += size;
+          if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
+          state.adapter.restore({ ...state.adapter.checkpoint(), recordOrdinal: span.ordinal });
+          state.reducer.apply(state.adapter.add(JSON.parse(bytes.toString('utf8'))));
+          batchRecords += 1;
+          this.replayRecords += 1;
+          const turn = state.draft.getTurn(state.turnId);
+          if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
+            state.resolved = { turn: { ...turn, steps: [] }, attachments: state.draft.snapshot().attachments };
+          } else {
+            const spans = pendingSpans.get(state.turnId)!;
+            const nextIndex = spanIndex + 1;
+            if (nextIndex < spans.length) {
+              nextWave.push({ state, span: spans[nextIndex]!, spanIndex: nextIndex });
+            }
+          }
         }
-        if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
-        adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
-        reducer.apply(adapter.add(JSON.parse(bytes.toString('utf8'))));
-        this.replayRecords += 1;
-        const turn = draft.getTurn(turnId);
-        if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
-          await releaseRead();
-          signal?.throwIfAborted();
-          const proof = await historyNavigationProof(context.wirePath, manifest.offset, signal);
-          signal?.throwIfAborted();
-          if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
-            db.readManifest(context.scope)?.generation !== manifest.generation || db.readManifest(context.scope)?.offset !== manifest.offset) throw new Error('history_source_changed');
-          return { status: 'found', turn: { ...turn, steps: [] }, attachments: draft.snapshot().attachments };
+        currentSpans.length = 0;
+        currentSpans.push(...nextWave);
+      }
+      await releaseRead();
+      let anyResolved = false;
+      for (const state of states.values()) {
+        if (state.resolved !== undefined) {
+          anyResolved = true;
+          break;
         }
       }
-      return { status: manifest.complete && spans.length < 32 ? 'not_found' : 'preparing' };
+      if (anyResolved) {
+        signal?.throwIfAborted();
+        const proof = await historyNavigationProof(context.wirePath, manifest.offset, signal);
+        signal?.throwIfAborted();
+        if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
+          db.readManifest(context.scope)?.generation !== manifest.generation || db.readManifest(context.scope)?.offset !== manifest.offset) throw new Error('history_source_changed');
+      }
+      for (const [turnId, state] of states) {
+        if (state.resolved !== undefined) {
+          results.set(turnId, { status: 'found', ...state.resolved });
+        } else if (state.overBudget) {
+          results.set(turnId, { status: 'preparing' });
+        } else {
+          results.set(turnId, { status: manifest.complete && state.spanCount < 32 ? 'not_found' : 'preparing' });
+        }
+      }
+      return results;
     } finally {
       await releaseRead();
     }
@@ -288,8 +407,28 @@ export class HistoryCanonicalReader {
     const generation = this.generation;
     const input = await this.transcript.scheduleHistoryRead(signal, owned => this.prepare(session, agent, owned));
     if (input === undefined) return undefined;
-    return { prove: (resident, owned) => this.transcript.scheduleHistoryRead(owned,
-      active => this.proveResidentTurn(input, agent, resident, generation, active)) };
+    return {
+      prove: async (resident, owned) => {
+        owned.throwIfAborted();
+        const { db, scope, manifest } = input;
+        const turnRevision = db.canonicalTurnRevision(scope, resident.turnId);
+        const revision = `${generation}\0${manifest.generation}\0${manifest.incarnation}\0${turnRevision}`;
+        const current = db.readManifest(scope);
+        if (
+          generation === this.generation &&
+          current?.generation === manifest.generation &&
+          current.incarnation === manifest.incarnation &&
+          current.offset >= manifest.offset
+        ) {
+          const cached = this.residentFailures.get(resident);
+          if (cached?.revision === revision) {
+            this.proofSkipped += 1;
+            return { status: cached.status };
+          }
+        }
+        return this.transcript.scheduleHistoryRead(owned, active => this.proveResidentTurn(input, agent, resident, generation, active));
+      },
+    };
   }
 
   private async proveResidentTurn(input: Prepared, agent: string, resident: TranscriptTurn, generation: number,

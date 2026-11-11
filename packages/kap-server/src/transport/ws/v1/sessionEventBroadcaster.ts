@@ -23,6 +23,7 @@ import {
   ISessionInteractionService,
   ISessionIndex,
   ISessionManager,
+  IWireService,
   MAIN_AGENT_ID,
   foldLoopEvent,
   getLiveSessionById,
@@ -59,7 +60,11 @@ import {
 
 import { toWireApproval } from '../../../routes/approvals';
 import { toWireQuestion } from '../../../routes/questions';
-import { cachedMessageCount, captureContextMessageHistory } from '../../../services/messages/messageHistory';
+import {
+  cachedMessageCount,
+  captureContextMessageHistory,
+  type CapturedContextMessageHistory,
+} from '../../../services/messages/messageHistory';
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
@@ -104,6 +109,7 @@ export interface SessionSnapshotState {
   pendingQuestions: ReturnType<typeof toWireQuestion>[];
   currentPromptId?: string;
   status?: NonNullable<ReturnType<typeof readLegacyStatus>>;
+  historyPromise?: Promise<CapturedContextMessageHistory>;
 }
 
 /** Internal transport lane: only subscription traffic enters the timed buffer. */
@@ -1027,7 +1033,7 @@ export class SessionEventBroadcaster {
 
   async getSnapshotState<T = undefined>(
     sessionId: string,
-    options: { captureMessages?: boolean; capture?: () => Promise<T>; timing?: SessionViewTimingContext } = {},
+    options: { captureMessages?: boolean; deferHistory?: boolean; capture?: () => Promise<T>; timing?: SessionViewTimingContext } = {},
   ): Promise<SessionSnapshotState & { captured?: T }> {
     const timing = { ...options.timing, logger: options.timing?.logger ?? this.opts.logger };
     const fields = { sessionId, requestId: timing.requestId };
@@ -1078,6 +1084,21 @@ export class SessionEventBroadcaster {
         this.logDispatchDropped(sessionId, 'snapshot.capture', error);
       });
     const { mainAgent, contextMessages, captured, ...base } = await barrier;
+    if (options.deferHistory === true && captureMessages && mainAgent !== undefined) {
+      await mainAgent.accessor.get(IWireService).flush();
+      timing.signal?.throwIfAborted();
+      const historyPromise = timeSessionViewPhase('snapshot_history', fields,
+        () => captureContextMessageHistory(this.opts.core, mainAgent, contextMessages, timing.signal), timing);
+      void historyPromise.catch(() => {});
+      const captureValue = await captured;
+      return {
+        ...base,
+        captured: captureValue,
+        contextMessages,
+        contextMessageTimes: [],
+        historyPromise,
+      };
+    }
     const [capture, history] = await Promise.allSettled([
       captured,
       !captureMessages || mainAgent === undefined

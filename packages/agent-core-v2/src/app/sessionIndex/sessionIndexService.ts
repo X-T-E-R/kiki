@@ -50,6 +50,7 @@ import { SessionIndexProjector } from './sessionIndexProjector';
 import {
   listSessionIds,
   listWorkspaceIds,
+  mapBounded,
   probeSessionSummaryResult,
   readSessionSummaryResult,
   summaryMatchesChildOf,
@@ -217,12 +218,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         if (parts.length >= 2 && (change.kind === 'directory' || parts.at(-1) === 'state.json')) {
           this.projector.invalidateFingerprint(parts[0], parts[1]);
           this.watchedSessions.set(`${parts[0]}/${parts[1]}`, { workspaceId: parts[0]!, id: parts[1]! });
+          if (parts.length === 2 && (change.action === 'created' || change.action === 'deleted')) this.watchInventory = true;
         } else if (change.kind === 'directory') {
           this.projector.invalidateFingerprint();
+          this.watchInventory = true;
         } else {
           return;
         }
-        if (change.kind === 'directory') this.watchInventory = true;
         if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
           this.watchInventory = true;
           this.watchedSessions.clear();
@@ -274,15 +276,25 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     } else {
       const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
       for (const [key] of entries) this.watchedSessions.delete(key);
+      const changedIds = new Set(entries.map(([, value]) => value.id));
+      let conflicted = false;
+      const subscription = this.mirror.onDidChange(({ id }) => {
+        if (changedIds.has(id)) conflicted = true;
+      });
       try {
+        this.checkReconcileActive(0);
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
+          throw new SessionIndexReconcilePendingError('uninitialized', 0);
+        }
+        const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: entries.map(([, value]) => value) });
+        this.checkReconcileActive(0);
         await this.mirror.runExclusive(async () => {
           this.checkReconcileActive(0);
-          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-          if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
-            throw new SessionIndexReconcilePendingError('uninitialized', 0);
+          const current = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          if (current?.seq !== manifest.seq || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined || conflicted) {
+            throw new SessionIndexReconcilePendingError('concurrent_changes', 1);
           }
-          const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: entries.map(([, value]) => value) });
-          this.checkReconcileActive(0);
           const result = await commit();
           if (result.inventoryRequired === true) this.watchInventory = true;
         });
@@ -293,6 +305,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.watchedSessions.clear();
         }
         throw error;
+      } finally {
+        subscription.dispose();
       }
     }
     this.watchRetryDelayMs = WATCH_BATCH_MS;
@@ -501,32 +515,45 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       const request = this.reconcileRequest;
       const reuseFingerprints = this.reuseReconcileFingerprints;
       this.reuseReconcileFingerprints = true;
-      const baseline = await this.mirror.runExclusive(async () => ({
-        epoch: this.mirror.epoch(),
-        generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
-        revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
-      }));
-      this.checkReconcileActive(attempt);
-      if (baseline.generation === undefined) throw new SessionIndexReconcilePendingError('uninitialized', attempt);
-      const commit = await this.projector.planReconcile(baseline.generation, { reuseFingerprints });
-      this.checkReconcileActive(attempt + 1);
-      const committed = await this.mirror.runExclusive(async () => {
+      const mutated = new Map<string, string | undefined>();
+      const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
+      let committed = false;
+      try {
+        const baseline = await this.mirror.runExclusive(async () => ({
+          epoch: this.mirror.epoch(),
+          generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+          revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+        }));
+        this.checkReconcileActive(attempt);
+        if (baseline.generation === undefined) throw new SessionIndexReconcilePendingError('uninitialized', attempt);
+        const commit = await this.projector.planReconcile(baseline.generation, { reuseFingerprints });
         this.checkReconcileActive(attempt + 1);
-        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-        const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
-        if (request !== this.reconcileRequest || this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
-        await commit();
-        this.generation = baseline.generation;
-        return true;
-      });
+        committed = await this.mirror.runExclusive(async () => {
+          this.checkReconcileActive(attempt + 1);
+          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+          if (request !== this.reconcileRequest || this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
+          await commit();
+          this.generation = baseline.generation;
+          return true;
+        });
+      } finally {
+        subscription.dispose();
+      }
       if (committed && request === this.reconcileRequest) {
         this.nextReconcileRetryAt = 0;
         this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
         this.reconcileRetryTimer.cancel();
         return;
       }
-      this.projector.invalidateFingerprint();
-      this.reuseReconcileFingerprints = false;
+      if (reuseFingerprints) {
+        if (mutated.size > 0 && [...mutated.values()].every((workspaceId) => workspaceId !== undefined)) {
+          for (const [id, workspaceId] of mutated) this.projector.invalidateFingerprint(workspaceId, id);
+        } else {
+          this.projector.invalidateFingerprint();
+        }
+      }
+      this.reuseReconcileFingerprints &&= reuseFingerprints;
     }
     const delay = this.reconcileRetryDelayMs;
     this.nextReconcileRetryAt = Date.now() + delay;
@@ -644,7 +671,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.withReadyReadModel(
       (generation) => this.countFromReadModel(generation, query),
       () => this.countLegacy(query),
-      true,
     );
   }
 
@@ -1176,8 +1202,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       const ids = workspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
       for (const workspaceId of ids) {
         const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
-        for (const sessionId of sessionIds) {
-          const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log);
+        const results = await mapBounded(sessionIds, POINT_PROBE_CONCURRENCY, async (sessionId) => ({
+          sessionId,
+          result: await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log),
+        }));
+        for (const { sessionId, result } of results) {
           if (result.kind === 'found') collected.set(sessionId, result.summary);
         }
       }

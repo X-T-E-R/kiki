@@ -32,6 +32,9 @@ export class GitService implements IGitService {
   ) {}
 
   async status(cwd: string, pathFilter?: ReadonlySet<string>): Promise<FsGitStatusResponse> {
+    if ((await this.findWorkTree(cwd)) === null) {
+      throw this.gitUnavailable(cwd, 'not a git worktree');
+    }
     const inside = await this.runCommand('git', ['rev-parse', '--is-inside-work-tree'], cwd);
     if (inside.exitCode !== 0 || inside.stdout.trim() !== 'true') {
       throw this.gitUnavailable(cwd, inside.stderr.trim() || `git rev-parse exit ${inside.exitCode}`);
