@@ -424,6 +424,9 @@ async function configureWorkerRuntimes(bundleDir: string): Promise<void> {
   const cpuWorker = join(bundleDir, 'cpu-worker.mjs');
   if (existsSync(cpuWorker)) nodeSdk.configureCpuWorkerRuntime({ entry: cpuWorker });
 
+  const pluginIsolationWorker = join(bundleDir, 'plugin-isolation-worker.mjs');
+  if (existsSync(pluginIsolationWorker)) nodeSdk.configurePluginIsolationWorkerRuntime(pluginIsolationWorker);
+
   const textBuildWorker = join(bundleDir, 'text-build-worker.mjs');
   if (existsSync(textBuildWorker)) minidbRuntime.configureTextBuildWorkerRuntime(textBuildWorker);
 

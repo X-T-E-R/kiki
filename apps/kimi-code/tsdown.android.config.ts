@@ -90,4 +90,5 @@ export default [
   bundleConfig('mailbox-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts'),
   bundleConfig('memory-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMemory/entry.ts'),
   bundleConfig('cpu-worker', '../../packages/agent-core-v2/src/app/cpuWorker/entry.ts'),
+  bundleConfig('plugin-isolation-worker', '../../packages/agent-core-v2/src/app/cordisRuntime/isolationWorkerEntry.ts'),
 ];

@@ -24,6 +24,7 @@ import {
   MAILBOX_WORKER_ASSET,
   MEMORY_WORKER_ASSET,
   CPU_WORKER_ASSET,
+  PLUGIN_ISOLATION_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
   USAGE_READ_MODEL_WORKER_ASSET,
@@ -557,6 +558,10 @@ export function getMemoryWorkerFile(options: NativeAssetOptions = {}): string | 
 
 export function getCpuWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(CPU_WORKER_ASSET.key, options);
+}
+
+export function getPluginIsolationWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(PLUGIN_ISOLATION_WORKER_ASSET.key, options);
 }
 
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {

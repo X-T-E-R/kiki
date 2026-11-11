@@ -26,7 +26,7 @@ import { pluginAppLifecycleFlag } from './flag';
 import { REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
-import { ProtocolSchema } from '#/kosong/protocol/protocol';
+import { IProtocolAdapterRegistry, ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { abortable } from '#/_base/utils/abort';
@@ -228,6 +228,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     @ref(ILogService) private readonly logger?: LiveRef<ILogService>,
     @ref(IPluginIsolationPoolService) private readonly isolates?: LiveRef<IPluginIsolationPoolService>,
     @ref(ICordisRuntimeService) private readonly cordis?: LiveRef<ICordisRuntimeService>,
+    @ref(IProtocolAdapterRegistry) private readonly protocolAdapters?: LiveRef<IProtocolAdapterRegistry>,
   ) {
     super();
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
@@ -591,13 +592,14 @@ export class PluginHostService extends Service implements IPluginHostService {
     const connection = this.connections.get(id);
     if (connection === undefined) throw new Error('Selected Kiki connection does not exist');
     const headers = { ...connection.customHeaders };
-    const protocolValue = connection.type === undefined ? undefined : getProviderDefinition(connection.type)?.baseProtocol ?? connection.type;
+    const resolvedDef = connection.type === undefined ? undefined : (this.protocolAdapters?.current?.providerDefinition?.(connection.type) ?? getProviderDefinition(connection.type));
+    const protocolValue = connection.type === undefined ? undefined : resolvedDef?.baseProtocol ?? connection.type;
     const protocol = ProtocolSchema.safeParse(protocolValue);
     if (context.owner?.identity !== undefined && this.identityCatalog !== undefined && protocol.success) {
       await this.identityCatalog.ready;
       const policy = this.identityCatalog.resolveLayers(defaultOAuthRequestIdentity(connection), this.configService?.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION), connection.requestIdentity);
       const projected = projectRequestIdentity({ policy, protocol: protocol.data, model: context.model ?? '', rawSessionId: context.owner.sessionId, rawAgentId: context.owner.agentId, parentAgentId: context.owner.parentAgentId,
-        isKimiProvider: connection.type !== undefined && getProviderDefinition(connection.type)?.requestIdentityDeviceHeaders === true, snapshot: { ...context.owner.identity, setTurnState() {} }, runtimeVersion: this.bootstrap.clientIdentity.version, platform: this.bootstrap.platform, arch: this.bootstrap.arch,
+        isKimiProvider: resolvedDef?.requestIdentityDeviceHeaders === true, snapshot: { ...context.owner.identity, setTurnState() {} }, runtimeVersion: this.bootstrap.clientIdentity.version, platform: this.bootstrap.platform, arch: this.bootstrap.arch,
         hostRequestHeaders: this.bootstrap.args.requestHeaders, profile: this.identityCatalog.render(policy, context.model ?? '') });
       Object.assign(headers, projected.headers);
     }
@@ -611,7 +613,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       Object.assign(headers, auth?.headers, { Authorization: `Bearer ${token}` });
       authentication = 'oauth';
     } else if (connection.apiKey) {
-      const protocol = connection.type === undefined ? undefined : getProviderDefinition(connection.type)?.baseProtocol ?? connection.type;
+      const protocol = protocolValue;
       headers[protocol === 'google_genai' ? 'x-goog-api-key' : protocol === 'anthropic' ? 'x-api-key' : 'Authorization'] = protocol === 'google_genai' || protocol === 'anthropic' ? connection.apiKey : `Bearer ${connection.apiKey}`;
       authentication = 'api-key';
     }

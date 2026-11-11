@@ -37,6 +37,7 @@ import { installUsageReadModelWorker } from './native/usage-read-model-worker';
 import { installMailboxWorker } from './native/mailbox-worker';
 import { installMemoryWorker } from './native/memory-worker';
 import { installCpuWorker } from './native/cpu-worker';
+import { installPluginIsolationWorker } from './native/plugin-isolation-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -143,6 +144,14 @@ function bootstrap(): void {
       : cpuWorkerInstall.status === 'failed'
         ? `cpu-worker:failed code=${cpuWorkerInstall.errorCode} sha256=${cpuWorkerInstall.assetSha256 ?? 'unknown'}`
         : `cpu-worker:${cpuWorkerInstall.status}`,
+  );
+  const pluginIsolationWorkerInstall = installPluginIsolationWorker();
+  startupTrace(
+    pluginIsolationWorkerInstall.status === 'installed'
+      ? `plugin-isolation-worker:installed basename=${pluginIsolationWorkerInstall.basename} sha256=${pluginIsolationWorkerInstall.assetSha256}`
+      : pluginIsolationWorkerInstall.status === 'failed'
+        ? `plugin-isolation-worker:failed code=${pluginIsolationWorkerInstall.errorCode} sha256=${pluginIsolationWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `plugin-isolation-worker:${pluginIsolationWorkerInstall.status}`,
   );
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();

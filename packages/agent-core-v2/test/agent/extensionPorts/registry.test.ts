@@ -41,6 +41,9 @@ function deferred<T>(): Deferred<T> {
 const protocolAdapterStub: IProtocolAdapterRegistry = {
   _serviceBrand: undefined,
   supportedProtocols: () => [],
+  registerDynamicProtocolBase: () => ({ dispose() {} }),
+  registerDynamicProvider: () => ({ dispose() {} }),
+  generationOfProvider: () => 0,
   resolveAdapterIdentity: () => { throw new Error('Unexpected protocol adapter access'); },
   resolveProviderBaseId: () => { throw new Error('Unexpected protocol adapter access'); },
   resolveCapability: () => { throw new Error('Unexpected protocol adapter access'); },

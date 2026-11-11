@@ -13,9 +13,10 @@ import {
 
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
-import { deserialize } from 'node:v8';
+import { deserialize, serialize } from 'node:v8';
 import { MessageChannel, Worker } from 'node:worker_threads';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -30,6 +31,7 @@ import {
   getNativePackageRoot,
   getUsageReadModelWorkerFile,
   getCpuWorkerFile,
+  getPluginIsolationWorkerFile,
   getPluginHostRunnerFile,
   getWindowsProcessHelperFile,
   resetNativeAssetVerification,
@@ -43,6 +45,7 @@ import { installUsageReadModelWorker } from '#/native/usage-read-model-worker';
 import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
 import { configureCpuWorkerRuntime, configureMemoryWorkerRuntime, configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
 import { installCpuWorker } from '#/native/cpu-worker';
+import { installPluginIsolationWorker } from '#/native/plugin-isolation-worker';
 import { installMemoryWorker } from '#/native/memory-worker';
 import { smokeMemoryWorker } from '#/native/smoke';
 import { build } from 'tsdown';
@@ -468,6 +471,57 @@ describe('native assets', () => {
       expect(installCpuWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'failed' });
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
+
+  it.each([
+    ['SDK', '../../../../packages/node-sdk/tsdown.query-store-worker.config.ts'],
+    ['npm', '../../tsdown.dist-worker.config.ts'],
+    ['SEA', '../../tsdown.worker.config.ts'],
+  ] as const)('builds and invokes the fresh %s plugin isolation worker bundle', async (_lane, config) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-plugin-isolation-worker-bundle-'));
+    try {
+      await build({ config: resolve(import.meta.dirname, config), filter: 'plugin-isolation-worker', outDir: join(dir, 'bundle') });
+      const runtime = join(dir, 'bundle', 'plugin-isolation-worker.mjs');
+      expect(checkBundle(runtime, { worker: true })).toEqual([]);
+      const content = readFileSync(runtime);
+      const key = 'native/test-target/runtime/plugin-isolation-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'plugin-isolation-worker', assetKey: key, relativePath: 'runtime/plugin/plugin-isolation-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected plugin isolation worker asset'); return content; } };
+      const options = { cacheBase: join(dir, 'cache'), manifest, source, version: 'test' };
+      expect(installPluginIsolationWorker(options)).toMatchObject({ status: 'installed', basename: 'plugin-isolation-worker.mjs' });
+      const extracted = getPluginIsolationWorkerFile(options)!;
+      expect(extracted).toBe(join(dir, 'cache', 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'plugin', 'plugin-isolation-worker.mjs'));
+      const fixtureEntry = join(dir, 'plugin-entry.mjs');
+      writeFileSync(fixtureEntry, 'export const slots = { "E4:llm-error-recovery": (payload, ctx) => ({ echoed: payload, pluginId: ctx.pluginId, setting: ctx.settings.tag }) };\n');
+      const worker = new Worker(extracted, {
+        execArgv: [],
+        workerData: { entryUrl: pathToFileURL(fixtureEntry).href, settings: { tag: 'bundled' }, maxPayloadBytes: 65_536, oldSpaceMb: 512 },
+      });
+      try {
+        const reply = once(worker, 'message');
+        worker.postMessage({
+          id: 7,
+          bytes: serialize({
+            pluginId: 'fixture.plugin',
+            generation: 1,
+            attemptId: 'att-1',
+            conversationRevision: 3,
+            slot: 'E4:llm-error-recovery',
+            payload: { code: 'missing_terminal' },
+          }),
+        });
+        const [{ id, bytes }] = await reply as [{ id: number; bytes: Uint8Array }];
+        expect(id).toBe(7);
+        expect(deserialize(Buffer.from(bytes))).toMatchObject({
+          pluginId: 'fixture.plugin',
+          generation: 1,
+          attemptId: 'att-1',
+          conversationRevision: 3,
+          ok: true,
+          value: { echoed: { code: 'missing_terminal' }, pluginId: 'fixture.plugin', setting: 'bundled' },
+        });
+      } finally { await worker.terminate(); }
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  }, 60_000);
 
   it('extracts the plugin host runner from the checked native asset manifest', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kimi-plugin-runner-'));

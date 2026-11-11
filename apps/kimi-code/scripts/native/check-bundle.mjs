@@ -85,6 +85,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     { path: resolve(nativeIntermediatesDir(), 'mailbox-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'memory-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'cpu-worker.mjs'), worker: true },
+    { path: resolve(nativeIntermediatesDir(), 'plugin-isolation-worker.mjs'), worker: true },
   ];
   let failed = false;
   for (const bundle of bundles) {

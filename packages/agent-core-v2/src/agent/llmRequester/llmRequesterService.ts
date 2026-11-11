@@ -8,6 +8,8 @@ import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IAgentPluginStateService } from '#/agent/pluginState/pluginState';
+import { PluginStateError } from '#/agent/pluginState/pluginStateErrors';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import type { PreBaselineRequestPatch, LLMStreamTapObserver } from '#/kosong/contract/extensionHooks';
 import { frozenExtensionSnapshot } from '#/agent/extensionPorts/frozenSnapshot';
@@ -89,7 +91,7 @@ import {
   RESPONSES_WEB_SOCKET_SECTION,
   THINKING_SECTION,
 } from '#/app/kosongConfig/configSection';
-import type { Protocol } from '#/kosong/protocol/protocol';
+import { IProtocolAdapterRegistry, type Protocol } from '#/kosong/protocol/protocol';
 import { googleGenAIRejectsTrailingModelTurn } from '#/kosong/provider/bases/google-genai/googleModelTurn';
 import { ResponsesWebSocketTransport } from '#/kosong/provider/bases/openai/responses-websocket';
 import {
@@ -336,6 +338,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     @IEventBus private readonly eventBus: IEventBus,
     @ref(IPluginService) private readonly plugins?: LiveRef<IPluginService>,
     @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
+    @ref(IAgentPluginStateService) private readonly pluginStates?: LiveRef<IAgentPluginStateService>,
+    @ref(IProtocolAdapterRegistry) private readonly protocolAdapters?: LiveRef<IProtocolAdapterRegistry>,
   ) {
     super();
     this._register(toDisposable(() => {
@@ -480,6 +484,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     signal: AbortSignal | undefined,
   ): Promise<AgentLLMRequestFinish> {
     signal?.throwIfAborted();
+    const unresolvedPlugins = this.pluginStates?.current?.unresolvedRequiredPlugins() ?? [];
+    if (unresolvedPlugins.length > 0) {
+      throw new PluginStateError(
+        'plugin_state.required_unresolved',
+        `Cannot issue model request while required plugin state reducers are unresolved: ${unresolvedPlugins.join(', ')}`,
+      );
+    }
     if (overrides.source?.type !== 'turn') this.closeResponsesTransport();
     const startedAt = Date.now();
     trace.set(undefined);
@@ -1146,7 +1157,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const requester = this.modelCatalog.getRequester(resolved.modelAlias,
       turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
-      !isKimiProviderFamily(requester.model.providerType);
+      !isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
     const usedContextTokens = overrides.messages === undefined ? this.tokenCounting.get().measured : undefined;
     const globalCompletionCap = this.config.get<ModelOverrides>('modelOverrides')?.maxCompletionTokens;
     const outputCap = Math.min(
@@ -1183,7 +1194,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
     const messages = overrides.messages ?? this.context.get();
-    const isKimiProvider = isKimiProviderFamily(requester.model.providerType);
+    const isKimiProvider = isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
     const hostIdentity = this.identity.current();
     const identity: RequestIdentityAttemptContext = {
       policy: requestIdentity,
@@ -1596,10 +1607,10 @@ function identityParamsOf(
   );
 }
 
-function isKimiProviderFamily(providerType: string | undefined): boolean {
+function isKimiProviderFamily(providerType: string | undefined, registry?: IProtocolAdapterRegistry): boolean {
   return (
     providerType !== undefined &&
-    getProviderDefinition(providerType)?.requestIdentityDeviceHeaders === true
+    (registry?.providerDefinition?.(providerType) ?? getProviderDefinition(providerType))?.requestIdentityDeviceHeaders === true
   );
 }
 

@@ -47,6 +47,12 @@ export const CPU_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const PLUGIN_ISOLATION_WORKER_ASSET = Object.freeze({
+  key: 'plugin-isolation-worker',
+  relativePath: 'runtime/plugin/plugin-isolation-worker.mjs',
+  mode: 0o644,
+});
+
 export const MAILBOX_WORKER_ASSET = Object.freeze({
   key: 'mailbox-worker',
   relativePath: 'runtime/mailbox/mailbox-worker.mjs',

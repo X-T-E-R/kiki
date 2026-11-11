@@ -209,6 +209,7 @@ export async function buildAndroidBundle() {
     'mailbox-worker.mjs',
     'memory-worker.mjs',
     'cpu-worker.mjs',
+    'plugin-isolation-worker.mjs',
   ];
 
   const bundlesToCheck = [

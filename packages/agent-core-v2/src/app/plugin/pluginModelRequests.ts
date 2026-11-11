@@ -1,4 +1,4 @@
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
@@ -7,6 +7,7 @@ import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { IModelService } from '#/kosong/model/model';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { IProviderService } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -40,6 +41,7 @@ export class PluginModelRequests implements IPluginModelRequests {
     @IRequestIdentityCatalog private readonly identities: IRequestIdentityCatalog,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @ref(IProtocolAdapterRegistry) private readonly protocolAdapters?: LiveRef<IProtocolAdapterRegistry>,
   ) {}
 
   async *request(requester: ModelRequester, input: ModelRequestInput, signal: AbortSignal, params: ModelRequestParams, purpose: string, context: PluginModelRequestContext): AsyncGenerator<ModelRequestEvent> {
@@ -51,7 +53,7 @@ export class PluginModelRequests implements IPluginModelRequests {
     const policy = this.identities.resolveLayers(defaultOAuthRequestIdentity(provider), this.config.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION), provider?.requestIdentity, record?.requestIdentity);
     const logicalRequestId = crypto.randomUUID();
     const snapshot = await context.snapshot({ turnKey: `${purpose}:${logicalRequestId}`, logicalIdKind: policy.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4', turnIndex: policy.request.turnIndex === 'agent_session' });
-    const kimi = model.providerType !== undefined && getProviderDefinition(model.providerType)?.requestIdentityDeviceHeaders === true;
+    const kimi = model.providerType !== undefined && (this.protocolAdapters?.current?.providerDefinition?.(model.providerType) ?? getProviderDefinition(model.providerType))?.requestIdentityDeviceHeaders === true;
     const host = this.identity.current();
     const projection = projectRequestIdentity({ policy, protocol: model.protocol, model: model.name,
       rawSessionId: context.sessionId, rawAgentId: context.agentId, parentAgentId: context.parentAgentId,
