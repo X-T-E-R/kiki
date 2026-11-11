@@ -18,6 +18,7 @@
     "../kaos/src/**/*.ts",
     "../klient/src/**/*.ts",
     "../oauth/src/**/*.ts",
+    "../plugin-sdk/src/**/*.ts",
     "../protocol/src/**/*.ts",
     "../transcript/src/**/*.ts"
   ],

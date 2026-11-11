@@ -245,7 +245,17 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new Error('Operation aborted');
 }
 
-function isFallbackSessionError(error: unknown): boolean {
+function isRetiredSessionError(error: unknown): boolean {
+  if (error instanceof RequestError) {
+    const adapterCode = objectValue(error.data)?.['adapterCode'];
+    if (adapterCode === 'AGY_SESSION_RETIRED') return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /AGY_SESSION_RETIRED|native session is retired/i.test(message);
+}
+
+function isFallbackSessionError(error: unknown, allowRetired = false): boolean {
+  if (allowRetired && isRetiredSessionError(error)) return true;
   if (error instanceof RequestError) {
     return error.code === -32601 || error.code === -32002;
   }
@@ -1037,6 +1047,8 @@ export class AcpProcessClient {
       }
     }
 
+    const allowRetired = options.allowRetiredSessionFallback === true;
+    let retiredSessionFallback = false;
     if (
       priorSessionId !== undefined &&
       this.#capabilities.sessionCapabilities?.resume !== null &&
@@ -1061,7 +1073,8 @@ export class AcpProcessClient {
           sessionMeta: response._meta ?? undefined,
         };
       } catch (error) {
-        if (!isFallbackSessionError(error)) throw error;
+        if (!isFallbackSessionError(error, allowRetired)) throw error;
+        if (allowRetired && isRetiredSessionError(error)) retiredSessionFallback = true;
       }
     }
 
@@ -1085,11 +1098,12 @@ export class AcpProcessClient {
           sessionMeta: response._meta ?? undefined,
         };
       } catch (error) {
-        if (!isFallbackSessionError(error)) throw error;
+        if (!isFallbackSessionError(error, allowRetired)) throw error;
+        if (allowRetired && isRetiredSessionError(error)) retiredSessionFallback = true;
       }
     }
 
-    if (options.requireResume === true) {
+    if (options.requireResume === true && !retiredSessionFallback) {
       throw new AcpClientError(AcpClientErrorCode.SessionOpenFailed, 'The requested external session cannot be resumed or loaded', {
         details: {
           resumeSupported: this.#capabilities.sessionCapabilities?.resume !== undefined && this.#capabilities.sessionCapabilities.resume !== null,

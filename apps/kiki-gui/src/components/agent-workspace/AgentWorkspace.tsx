@@ -53,6 +53,7 @@ import type { ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection, type ModelSwitchMode } from '../../lib/client';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from '../model-switch/ModelSwitchNotice';
+import { resolveSwitchEffort } from '../model-switch/switchEffort';
 import { useModelSwitches } from '../model-switch/useModelSwitches';
 import { pushToast } from '../../lib/toasts';
 import type { PlanReviewResponse } from '../Interactions';
@@ -1129,28 +1130,68 @@ function ChildAgentWorkspace({
   } | undefined>(undefined);
   const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
   const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
+  const currentChildCanonicalModel = displayModel === undefined
+    ? undefined
+    : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
+  const childEffortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast((entry) =>
+    entry.receipt.state === 'completed' &&
+    (resolveCatalogModel(modelsQuery.data?.items ?? [], entry.receipt.toModel)?.id ?? entry.receipt.toModel) === currentChildCanonicalModel);
+  const childCarriedThinking = typeof childEffortSourceSwitch?.input.thinking === 'string' && childEffortSourceSwitch.input.thinking !== ''
+    ? childEffortSourceSwitch.input.thinking
+    : undefined;
+  const resolveChildTargetSwitchEffort = useCallback((toModel: string, carried: string | undefined) => {
+    const items = modelsQuery.data?.items;
+    if (items === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
+    const targetCatalog = resolveCatalogModel(items, toModel);
+    if (targetCatalog === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
+    const targetEfforts = targetCatalog.support_efforts ?? [];
+    const defaultEffort = targetCatalog.default_effort !== undefined && targetEfforts.includes(targetCatalog.default_effort)
+      ? targetCatalog.default_effort
+      : undefined;
+    const resolved = resolveSwitchEffort({ targetEfforts, carried, targetDefault: defaultEffort });
+    return { efforts: targetEfforts, defaultEffort, effort: resolved.effort, adjustedFrom: resolved.adjustedFrom };
+  }, [modelsQuery.data]);
+  const childDialogSwitchEffort = useMemo(() => {
+    if (modelSwitchDialog === undefined) return undefined;
+    if (modelSwitchDialog.editingOperationId !== undefined) {
+      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === modelSwitchDialog.editingOperationId);
+      const editedThinking = typeof entry?.input.thinking === 'string' && entry.input.thinking !== '' ? entry.input.thinking : undefined;
+      return resolveChildTargetSwitchEffort(modelSwitchDialog.toModel, editedThinking);
+    }
+    return resolveChildTargetSwitchEffort(modelSwitchDialog.toModel, childCarriedThinking);
+  }, [childCarriedThinking, modelSwitchDialog, modelSwitches.switches, resolveChildTargetSwitchEffort]);
   const submitModelSwitch = useCallback(async (choice: {
     readonly fromModel: string;
     readonly toModel: string;
     readonly mode: ModelSwitchMode;
     readonly remember: boolean;
+    readonly effort?: string;
     readonly editingOperationId?: string;
     readonly editingRevision?: number;
   }) => {
     setModelSwitchSubmitting(true);
     try {
       if (choice.editingOperationId !== undefined) {
+        const existing = modelSwitches.switches.find((entry) => entry.input.operationId === choice.editingOperationId)?.input.thinking;
+        const nextThinking = choice.effort !== undefined ? choice.effort : existing !== undefined && existing !== null ? null : existing;
         await client.updateAgentModelSwitch(sessionId, agentId, {
           operationId: choice.editingOperationId,
           model: choice.toModel,
           mode: choice.mode,
+          thinking: nextThinking,
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
       } else {
+        const nextThinking = choice.effort !== undefined
+          ? choice.effort
+          : choice.toModel === choice.fromModel && childCarriedThinking !== undefined
+            ? null
+            : undefined;
         const receipt = await client.switchAgentModel(sessionId, agentId, {
           operationId: crypto.randomUUID(),
           model: choice.toModel,
           mode: choice.mode,
+          thinking: nextThinking,
           selectedFromModel: choice.fromModel,
           intent: choice.mode === 'direct' ? 'setting' : undefined,
         });
@@ -1185,7 +1226,7 @@ function ChildAgentWorkspace({
         text: t('modelSwitch.prefsSaveFailed', { detail: error instanceof Error ? error.message : String(error) }),
       });
     }
-  }, [agentId, client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, t]);
+  }, [agentId, childCarriedThinking, client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, t]);
   const runModelSwitchAction = useCallback((
     operationId: string,
     run: () => Promise<unknown>,
@@ -1279,7 +1320,8 @@ function ChildAgentWorkspace({
       setModelSwitchDialog({ fromModel, toModel: target, initialMode: resolved.mode, matchedRuleId: resolved.matchedRuleId });
       return;
     }
-    await submitModelSwitch({ fromModel, toModel: target, mode: resolved.mode, remember: false });
+    const { effort } = resolveChildTargetSwitchEffort(target, childCarriedThinking);
+    await submitModelSwitch({ fromModel, toModel: target, mode: resolved.mode, remember: false, effort });
   };
   // The explicit "new context" entry: same model, so the panel offers only the
   // two context-renewing modes. No rule is consulted — asking for it is the
@@ -1575,6 +1617,10 @@ function ChildAgentWorkspace({
       busy={headerBusy}
       submitting={modelSwitchSubmitting}
       matchedRuleId={modelSwitchDialog?.matchedRuleId}
+      efforts={childDialogSwitchEffort?.efforts}
+      initialEffort={childDialogSwitchEffort?.effort}
+      defaultEffort={childDialogSwitchEffort?.defaultEffort}
+      effortAdjustedFrom={childDialogSwitchEffort?.adjustedFrom}
       onConfirm={(choice) => {
         const dialog = modelSwitchDialog;
         if (dialog === undefined) return;
@@ -1583,6 +1629,7 @@ function ChildAgentWorkspace({
           toModel: dialog.toModel,
           mode: choice.mode,
           remember: choice.remember,
+          effort: choice.effort,
           editingOperationId: dialog.editingOperationId,
           editingRevision: dialog.editingRevision,
         });

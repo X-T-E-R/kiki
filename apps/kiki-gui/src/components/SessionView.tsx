@@ -42,6 +42,7 @@ import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from './model-switch/ModelSwitchNotice';
+import { resolveSwitchEffort } from './model-switch/switchEffort';
 import { useModelSwitches } from './model-switch/useModelSwitches';
 import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
@@ -2704,29 +2705,58 @@ export function SessionView({
   const switchEffortChoice = manualEffort ?? (effortSourceSwitch !== undefined ? effortSourceSwitch.input.thinking
     : executionBinding?.sources['thinking'] === 'session' ? boundExecution.overrides?.thinking : undefined);
   const modelSwitchThinking = typeof switchEffortChoice === 'string' && switchEffortChoice !== '' ? switchEffortChoice : undefined;
+  const resolveTargetSwitchEffort = useCallback((toModel: string, carried: string | undefined) => {
+    const items = modelsQuery.data?.items;
+    if (items === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
+    const targetCatalog = resolveCatalogModel(items, toModel);
+    if (targetCatalog === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
+    const targetEfforts = targetCatalog.support_efforts ?? [];
+    const profileDefault = selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
+      ? profileThinkingDefault(selectedProfile, toModel, items) : undefined;
+    const defaultEffort = resolveSelectedEffort(targetEfforts, profileDefault, targetCatalog.default_effort);
+    const resolved = resolveSwitchEffort({ targetEfforts, carried, targetDefault: defaultEffort });
+    return { efforts: targetEfforts, defaultEffort, effort: resolved.effort, adjustedFrom: resolved.adjustedFrom };
+  }, [modelsQuery.data, selectedProfile, shownExecution.executor]);
+  const dialogSwitchEffort = useMemo(() => {
+    if (modelSwitchDialog === undefined) return undefined;
+    if (modelSwitchDialog.editingOperationId !== undefined) {
+      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === modelSwitchDialog.editingOperationId);
+      const editedThinking = typeof entry?.input.thinking === 'string' && entry.input.thinking !== '' ? entry.input.thinking : undefined;
+      return resolveTargetSwitchEffort(modelSwitchDialog.toModel, editedThinking);
+    }
+    return resolveTargetSwitchEffort(modelSwitchDialog.toModel, modelSwitchThinking);
+  }, [modelSwitchDialog, modelSwitchThinking, modelSwitches.switches, resolveTargetSwitchEffort]);
   const submitModelSwitch = useCallback(async (choice: {
     readonly fromModel: string;
     readonly toModel: string;
     readonly mode: ModelSwitchMode;
     readonly remember: boolean;
+    readonly effort?: string;
     readonly editingOperationId?: string;
     readonly editingRevision?: number;
   }) => {
     setModelSwitchSubmitting(true);
     try {
       if (choice.editingOperationId !== undefined) {
+        const existing = modelSwitches.switches.find(entry => entry.input.operationId === choice.editingOperationId)?.input.thinking;
+        const nextThinking = choice.effort !== undefined ? choice.effort : existing !== undefined && existing !== null ? null : existing;
         await client.updateAgentModelSwitch(sessionId, MAIN_AGENT_ID, {
           operationId: choice.editingOperationId,
           model: choice.toModel,
           mode: choice.mode,
-          thinking: modelSwitches.switches.find(entry => entry.input.operationId === choice.editingOperationId)?.input.thinking,
+          thinking: nextThinking,
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
         modelSwitches.refresh();
       } else {
+        const nextThinking = choice.effort !== undefined
+          ? choice.effort
+          : choice.toModel === choice.fromModel && modelSwitchThinking !== undefined
+            ? null
+            : undefined;
         const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
           operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
-          thinking: modelSwitchThinking, selectedFromModel: choice.fromModel,
+          thinking: nextThinking, selectedFromModel: choice.fromModel,
           intent: choice.mode === 'direct' ? 'setting' : undefined,
         });
         if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
@@ -2776,8 +2806,9 @@ export function SessionView({
       setModelSwitchDialog({ fromModel, toModel, initialMode: resolved.mode, matchedRuleId: resolved.matchedRuleId });
       return;
     }
-    void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false });
-  }, [currentBoundModel, modelSwitchPrefs, submitModelSwitch]);
+    const { effort } = resolveTargetSwitchEffort(toModel, modelSwitchThinking);
+    void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false, effort });
+  }, [currentBoundModel, modelSwitchPrefs, modelSwitchThinking, resolveTargetSwitchEffort, submitModelSwitch]);
   // A model/effort pick made while a profile switch is pending is explicit:
   // it overrides the incoming profile's pins on the switch prompt. The same
   // pick with nothing pending is what says "send this one", so it counts as
@@ -5353,6 +5384,10 @@ boundExecution,
         busy={state.busy}
         submitting={modelSwitchSubmitting}
         matchedRuleId={modelSwitchDialog?.matchedRuleId}
+        efforts={dialogSwitchEffort?.efforts}
+        initialEffort={dialogSwitchEffort?.effort}
+        defaultEffort={dialogSwitchEffort?.defaultEffort}
+        effortAdjustedFrom={dialogSwitchEffort?.adjustedFrom}
         onConfirm={(choice) => {
           const dialog = modelSwitchDialog;
           if (dialog === undefined) return;
@@ -5361,6 +5396,7 @@ boundExecution,
             toModel: dialog.toModel,
             mode: choice.mode,
             remember: choice.remember,
+            effort: choice.effort,
             editingOperationId: dialog.editingOperationId,
             editingRevision: dialog.editingRevision,
           });

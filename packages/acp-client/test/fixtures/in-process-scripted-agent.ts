@@ -11,7 +11,7 @@ import {
   type StopReason,
 } from '@agentclientprotocol/sdk';
 
-export type ScriptedOpenBehavior = 'ok' | 'method_not_found' | 'unknown_session';
+export type ScriptedOpenBehavior = 'ok' | 'method_not_found' | 'unknown_session' | 'retired_session';
 
 export interface InProcessAgentScript {
   readonly capabilities?: AgentCapabilities;
@@ -75,6 +75,12 @@ const configOptions: SessionConfigOption[] = [
 function openFailure(method: string, behavior: ScriptedOpenBehavior | undefined): void {
   if (behavior === 'method_not_found') throw RequestError.methodNotFound(method);
   if (behavior === 'unknown_session') throw RequestError.resourceNotFound('session://unknown');
+  if (behavior === 'retired_session') {
+    throw new RequestError(-32004, 'AGY native session is retired or unreconciled (cancel)', {
+      adapterCode: 'AGY_SESSION_RETIRED',
+      sessionId: 'session-retired',
+    });
+  }
 }
 
 export function createInProcessScriptedAgent(

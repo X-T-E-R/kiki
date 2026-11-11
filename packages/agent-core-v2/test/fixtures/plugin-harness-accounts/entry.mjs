@@ -16,6 +16,7 @@ export function register(api) {
       ];
     },
     async prepare(input, context) {
+      console.log('noisy plugin stdout log');
       await audit(context, { action: 'prepare', input });
       if (input.accountId === 'signed-out') throw new Error('Selected account is signed out');
       if (input.accountId === 'slow') {
@@ -27,7 +28,10 @@ export function register(api) {
       const leaseId = `private-lease-${++nextId}`;
       leases.set(leaseId, input);
       const protocol = input.engineId === 'codex' ? 'openai-responses' : 'gemini-v1beta';
-      if (input.accountId === 'exit') setTimeout(() => process.exit(9), 100);
+      if (input.accountId === 'exit') {
+        process.stderr.write('fatal crash Authorization: Bearer secret-bearer-token-12345\n');
+        setTimeout(() => process.exit(9), 100);
+      }
       return {
         leaseId,
         oauthToken: 'private-oauth-material',

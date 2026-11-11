@@ -150,7 +150,10 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       return result;
     }
     async steerQueued(promptId: string) { return steerQueued(promptId); }
-    async sendPromptNow(input: unknown) { return sendPromptNow(input); }
+    async sendPromptNow(input: unknown) {
+      await sendPromptNow(input);
+      return this.sender.sendPromptNow(input as Parameters<typeof this.sender.sendPromptNow>[0]);
+    }
     async abort() { return abort(); }
   }
   return { ...actual, SessionController: StubSessionController };
@@ -415,7 +418,7 @@ describe('switching profile while a turn is running', () => {
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
   });
 
-  it('keeps confirmed profile controls on their own message turn even with Send now', async () => {
+  it('carries confirmed profile controls onto a Send now submission without steering or aborting', async () => {
     const { container } = await mount();
     await click(profileTrigger(container));
     await settle();
@@ -428,9 +431,13 @@ describe('switching profile while a turn is running', () => {
     });
     await settle();
     await settle();
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
-    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
-    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(sendPromptNow).toHaveBeenCalledTimes(1);
+    expect(sendPromptNow.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
+    expect(submitPrompt).toHaveBeenCalledWith('session-a', expect.objectContaining({
+      delivery_mode: 'steer',
+      execution: { executor: 'native', profile: 'reviewer' },
+    }));
+    expect(sendPrompt).not.toHaveBeenCalled();
     expect(steerQueued).not.toHaveBeenCalled();
     expect(abort).not.toHaveBeenCalled();
   });
@@ -452,8 +459,17 @@ describe('switching profile while a turn is running', () => {
     expect(getToasts().some((toast) => toast.tone === 'error')).toBe(false);
   });
 
-  it('explains a Send now that has to open its own turn instead of queueing silently', async () => {
+  it('explains a Send now that stays queued for its own turn instead of queueing silently', async () => {
     promptResult.current = { status: 'queued', prompt_id: 'prompt-queued' };
+    submitPrompt.mockImplementationOnce(async (_sessionId, request) => ({
+      status: 'queued' as const,
+      delivery_state: 'queued' as const,
+      delivery_reason: 'steer_rejected' as const,
+      prompt_id: request.prompt_id,
+      user_message_id: 'user-next',
+      content: request.content,
+      created_at: '2026-10-20T00:00:00.000Z',
+    }));
     const { container } = await mount();
     await click(profileTrigger(container));
     await settle();
@@ -466,11 +482,11 @@ describe('switching profile while a turn is running', () => {
     });
     await settle();
     await settle();
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
-    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(sendPromptNow).toHaveBeenCalledTimes(1);
+    expect(sendPrompt).not.toHaveBeenCalled();
     expect(steerQueued).not.toHaveBeenCalled();
     const texts = getToasts().map((toast) => toast.text);
-    expect(texts.some((text) => text.includes('needs its own turn'))).toBe(true);
+    expect(texts.some((text) => text.includes('starts on its own turn'))).toBe(true);
     // The binding change — not a turn that happened to end — is the reason.
     expect(texts.some((text) => text.includes('The turn ended first'))).toBe(false);
   });
@@ -559,9 +575,9 @@ describe('switching profile while a turn is running', () => {
     });
     await settle();
     await settle();
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
-    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
-    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(sendPromptNow).toHaveBeenCalledTimes(1);
+    expect(sendPromptNow.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
+    expect(sendPrompt).not.toHaveBeenCalled();
     expect(steerQueued).not.toHaveBeenCalled();
   });
 
@@ -734,7 +750,7 @@ describe('standalone model switches and dependent messages', () => {
     }
   }, 60_000);
 
-  it('keeps a confirmed compact model switch on its next turn even with Send now', async () => {
+  it('carries afterModelSwitch onto a Send now submission for a confirmed compact model switch', async () => {
     promptResult.current = { status: 'queued', prompt_id: 'prompt-queued' };
     const { container } = await mount();
     await pickModel(container);
@@ -748,16 +764,19 @@ describe('standalone model switches and dependent messages', () => {
       }));
     });
     await settle();
-    expect(sendPrompt).toHaveBeenCalledTimes(1);
-    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
+    expect(sendPromptNow).toHaveBeenCalledTimes(1);
+    expect(sendPromptNow.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
+    expect(submissionOf(sendPromptNow.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPromptNow.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(submitPrompt).toHaveBeenCalledTimes(1);
-    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({
+      delivery_mode: 'steer',
+      after_model_switch: fixture.switches[0]!.input.operationId,
+    });
     expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].model_switch_mode).toBeUndefined();
-    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(sendPrompt).not.toHaveBeenCalled();
     expect(steerQueued).not.toHaveBeenCalled();
   });
 
@@ -879,11 +898,15 @@ describe('live manual effort provenance across model switches', () => {
       await type('Use the selected model and effort.', container);
       await act(async () => { composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })); });
       await settle();
-    } else await sendNextMessage(container);
-    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: selected.input.operationId });
+      expect(sendPromptNow.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: selected.input.operationId });
+      expect(sendPrompt).not.toHaveBeenCalled();
+    } else {
+      await sendNextMessage(container);
+      expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: selected.input.operationId });
+      expect(sendPromptNow).not.toHaveBeenCalled();
+    }
     expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: selected.input.operationId });
     expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
-    expect(sendPromptNow).not.toHaveBeenCalled();
   });
 
   it('carries a completed legacy manual switch before the binding echo arrives', async () => {
@@ -920,6 +943,30 @@ describe('live manual effort provenance across model switches', () => {
     await pickModel(container);
     await click(dialogButton(container, 'Switch at next step'));
     expect(switchAgentModel.mock.calls.at(-1)?.[2].thinking).toBeUndefined();
+  });
+
+  it('adjusts an unsupported manual effort in the switch dialog and submits a chosen target effort', async () => {
+    fixture.session = { ...fixture.session!, agent_config: { ...fixture.session!.agent_config, execution: {
+      version: 1, selection: { executor: 'native', profile: 'agent', overrides: { model: fixture.model, thinking: 'xhigh' } },
+      effective: { model: fixture.model, thinking: 'xhigh', kiki_context: [], allow_kiki_subagents: false }, sources: { thinking: 'session' }, generation: 1,
+    } } } as Session;
+    listModels.mockResolvedValue({
+      items: [
+        { ...catalogModel('fixture/live-model', 'Live'), support_efforts: ['low', 'medium', 'high', 'xhigh'], default_effort: 'high' },
+        { ...catalogModel('fixture/other-model', 'Other'), support_efforts: ['low', 'medium'], default_effort: 'medium' },
+      ],
+    });
+    const { container } = await mount();
+    await pickModel(container);
+    const note = await waitForElement(container, '[data-model-switch-effort-adjusted]');
+    expect(note.textContent).toContain('Very high');
+    expect(container.querySelector('[data-model-switch-effort="medium"]')?.getAttribute('aria-checked')).toBe('true');
+    await click(container.querySelector('[data-model-switch-effort="low"]'));
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel).toHaveBeenLastCalledWith('session-a', 'main', expect.objectContaining({
+      model: 'fixture/other-model',
+      thinking: 'low',
+    }));
   });
 });
 

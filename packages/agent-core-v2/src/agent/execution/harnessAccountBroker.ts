@@ -5,6 +5,7 @@ import type { HarnessAccountConnection } from '@kiki/protocol';
 import type { PluginHarnessAccountLease } from '#/app/plugin/pluginHostService';
 
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
+const MAX_BUFFERED_REQUEST_BYTES = 16 * 1024 * 1024;
 
 function originForm(value: string | undefined): string | undefined {
   if (value === undefined || !value.startsWith('/') || value.startsWith('//') || /[\u0000-\u0020\u007F\\#]/.test(value)) return undefined;
@@ -150,16 +151,74 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
       res.end('Invalid scoped account capability');
       return;
     }
+    const buffered = await this.bufferIfBounded(req);
+    if (buffered === 'aborted' || this.closed || res.destroyed) return;
     let lease = await this.leaseForRequest();
     while (!this.closed && this.current === lease && this.dead) lease = await this.leaseForRequest();
-    if (!this.closed && !res.destroyed) this.forward(req, res, lease, path);
+    if (this.closed || res.destroyed) return;
+    this.forward(req, res, lease, path, buffered === 'stream' ? undefined : buffered, true);
   }
 
-  private forward(req: IncomingMessage, res: ServerResponse, lease: PluginHarnessAccountLease, path: string): void {
+  private bufferIfBounded(req: IncomingMessage): Promise<Buffer | 'stream' | 'aborted'> {
+    const rawLength = req.headers['content-length'];
+    if (typeof rawLength === 'string') {
+      const parsed = Number(rawLength);
+      if (Number.isFinite(parsed) && parsed > MAX_BUFFERED_REQUEST_BYTES) return Promise.resolve('stream');
+    }
+    if (req.readableEnded) return Promise.resolve(Buffer.alloc(0));
+    return new Promise((resolve) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let settled = false;
+      const cleanup = () => {
+        req.off('data', onData);
+        req.off('end', onEnd);
+        req.off('aborted', onAbort);
+        req.off('error', onAbort);
+        req.off('close', onClose);
+      };
+      const finish = (outcome: Buffer | 'stream' | 'aborted') => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(outcome);
+      };
+      const onData = (chunk: Buffer | string) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buf.length;
+        chunks.push(buf);
+        if (total > MAX_BUFFERED_REQUEST_BYTES) {
+          req.pause();
+          for (let index = chunks.length - 1; index >= 0; index -= 1) req.unshift(chunks[index]!);
+          finish('stream');
+        }
+      };
+      const onEnd = () => { finish(chunks.length === 0 ? Buffer.alloc(0) : Buffer.concat(chunks, total)); };
+      const onAbort = () => { finish('aborted'); };
+      const onClose = () => { if (!req.complete) finish('aborted'); };
+      req.on('data', onData);
+      req.once('end', onEnd);
+      req.once('aborted', onAbort);
+      req.once('error', onAbort);
+      req.once('close', onClose);
+    });
+  }
+
+  private forward(
+    req: IncomingMessage,
+    res: ServerResponse,
+    lease: PluginHarnessAccountLease,
+    path: string,
+    body: Buffer | undefined,
+    allowRefusedRetry: boolean,
+  ): void {
     const endpoint = new URL(lease.connection.baseUrl);
     const headers = { ...req.headers };
     for (const name of HOP_BY_HOP) delete headers[name];
     headers.host = endpoint.host;
+    if (body !== undefined && (body.length > 0 || req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) {
+      headers['content-length'] = String(body.length);
+    }
     let upstreamPath = path;
     if (lease.connection.protocol === 'gemini-v1beta') {
       headers['x-goog-api-key'] = lease.connection.apiKey;
@@ -171,6 +230,7 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
     } else headers.authorization = `Bearer ${lease.connection.apiKey}`;
     let clientGone = false;
     let failed = false;
+    let responded = false;
     const upstream = request({
       protocol: endpoint.protocol,
       hostname: endpoint.hostname === '[::1]' ? '::1' : endpoint.hostname,
@@ -185,20 +245,37 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
     const active = this.inflight.get(lease) ?? new Set<Promise<void>>();
     active.add(completion);
     this.inflight.set(lease, active);
+    const detachClient = () => {
+      req.off('aborted', abandon);
+      res.off('close', onResClose);
+    };
     const abandon = () => {
       clientGone = true;
       upstream.destroy();
     };
-    const fail = () => {
+    const onResClose = () => { if (!res.writableEnded) abandon(); };
+    const fail = (error?: unknown) => {
       if (failed) return;
       failed = true;
+      detachClient();
       if (!clientGone && !this.closed) this.markDead(lease);
       upstream.destroy();
+      const refusedBeforeConnect = !responded && allowRefusedRetry && body !== undefined && !clientGone && !this.closed && !res.destroyed &&
+        typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ECONNREFUSED';
+      if (refusedBeforeConnect) {
+        void (async () => {
+          let next = await this.leaseForRequest();
+          while (!this.closed && this.current === next && this.dead) next = await this.leaseForRequest();
+          if (!this.closed && !res.destroyed && res.socket?.destroyed !== true) this.forward(req, res, next, path, body, false);
+        })().catch(() => { if (!res.destroyed) req.socket.destroy(); });
+        return;
+      }
       if (!clientGone) req.socket.destroy();
     };
     upstream.once('error', fail);
     upstream.on('response', (reply) => {
-      reply.once('aborted', fail);
+      responded = true;
+      reply.once('aborted', () => fail());
       reply.once('error', fail);
       const replyHeaders = { ...reply.headers };
       for (const name of HOP_BY_HOP) delete replyHeaders[name];
@@ -206,13 +283,15 @@ class LoopbackHarnessAccountBroker implements HarnessAccountBroker {
       reply.pipe(res);
     });
     upstream.once('close', () => {
+      detachClient();
       this.upstreams.delete(upstream);
       active.delete(completion);
       if (active.size === 0) this.inflight.delete(lease);
     });
     req.once('aborted', abandon);
-    res.once('close', () => { if (!res.writableEnded) abandon(); });
-    req.pipe(upstream);
+    res.once('close', onResClose);
+    if (body !== undefined) upstream.end(body);
+    else req.pipe(upstream);
   }
 
   private markDead(lease: PluginHarnessAccountLease): void {

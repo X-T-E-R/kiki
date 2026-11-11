@@ -3,9 +3,11 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Event } from '#/_base/event';
 import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
+import { ILogService } from '#/_base/log/log';
 import { PluginHost } from '#/app/plugin/host';
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
+import { stubLog } from '../../_base/log/stubs';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -28,6 +30,7 @@ import { stubProviderService } from '../provider/stubs';
 
 let root: string;
 let host: ScopedTestHost;
+let logWarn: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   _clearScopedRegistryForTests();
   registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
@@ -38,7 +41,10 @@ beforeEach(async () => {
   root = await mkdtemp(resolve('../../.tmp/app-lifecycle-combo/run-'));
   const docs = new Map<string, unknown>();
   const config: Record<string, unknown> = {};
+  const log = stubLog();
+  logWarn = vi.spyOn(log, 'warn');
   host = createScopedTestHost([
+    stubPair(ILogService, log),
     stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
     stubPair(IBootstrapService, { ...stubBootstrap(join(root, 'home')), osHomeDir: join(root, 'user') }),
     stubPair(IProviderService, stubProviderService()),
@@ -237,11 +243,18 @@ it('drains the original harness prepare before replacing the plugin and admits l
   }
 });
 
-it('keeps release bound to the original host after an unexpected child exit', async () => {
+it('keeps release bound to the original host after an unexpected child exit and logs sanitized stderr diagnostics', async () => {
   const { hosts, events } = await installAccountFixture();
   const signal = new AbortController().signal;
   const old = await hosts.prepareHarnessAccount(accountSourceId, { ...accountInput, accountId: 'exit' }, signal);
   await vi.waitFor(() => expect(hosts.running(accountPluginId)).toBe(false));
+  expect(logWarn).toHaveBeenCalledWith('Plugin host exited unexpectedly', expect.objectContaining({
+    pluginId: accountPluginId,
+    code: 9,
+    activeHarnessLeases: 1,
+    stderrTail: expect.stringContaining('Bearer [redacted]'),
+  }));
+  expect(JSON.stringify(logWarn.mock.calls)).not.toContain('secret-bearer-token-12345');
   const current = await hosts.prepareHarnessAccount(accountSourceId, accountInput, signal);
   await old.release();
   expect((await events()).map(({ action }) => action)).toEqual(['prepare', 'prepare']);
@@ -309,5 +322,27 @@ it('backs off repeated RPC handshake timeouts and isolates background resident r
     vi.useRealTimers();
     silentHost?.stop();
     resetUnexpectedErrorHandler();
+  }
+});
+
+it('preserves an unchanged plugin host with active harness leases across global reloadPlugins and list calls', async () => {
+  const { plugins, hosts, events } = await installAccountFixture();
+  const signal = new AbortController().signal;
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const lease = await hosts.prepareHarnessAccount(accountSourceId, accountInput, signal);
+    await hosts.listHarnessAccounts(accountSourceId, 'agy-cli', signal);
+    await plugins.reloadPlugins();
+    vi.advanceTimersByTime(120_000);
+    expect(hosts.running(accountPluginId)).toBe(true);
+    await hosts.listHarnessAccounts(accountSourceId, 'agy-cli', signal);
+    const recorded = await events();
+    expect(recorded.map(({ action }) => action)).toEqual(['prepare', 'list', 'list']);
+    expect(new Set(recorded.map(({ pid }) => pid)).size).toBe(1);
+    await lease.release();
+    vi.advanceTimersByTime(90_001);
+    expect(hosts.running(accountPluginId)).toBe(false);
+  } finally {
+    vi.useRealTimers();
   }
 });

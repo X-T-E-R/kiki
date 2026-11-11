@@ -30,6 +30,26 @@ const HANDSHAKE_MS = 15_000;
 const HANDSHAKE_BACKOFF_BASE_MS = 15_000;
 const HANDSHAKE_BACKOFF_MAX_MS = 120_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
+const MAX_STDERR_TAIL_CHARS = 4_096;
+
+export interface PluginHostUnexpectedExit {
+  readonly pluginId: string;
+  readonly reason: string;
+  readonly code?: number | null;
+  readonly signal?: NodeJS.Signals | null;
+  readonly activeHarnessLeases: number;
+  readonly activeImListeners: number;
+  readonly pendingCalls: number;
+  readonly stderrTail?: string;
+}
+
+function sanitizePluginStderr(text: string): string {
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|password|secret)\s*[:=]\s*["']?)(?!Bearer\b)[^\s"',;}{]{6,}/gi, '$1[redacted]')
+    .replace(/(https?:\/\/|socks5h?:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, '$1[redacted]:[redacted]@')
+    .trim();
+}
 
 function validToolResult(result: unknown, references: ReadonlySet<string>): result is ExecutableToolResult {
   if (typeof result !== 'object' || result === null || !('output' in result)) return false;
@@ -99,6 +119,7 @@ export class PluginHost {
     private readonly modelServices?: PluginHostModelServices,
     private readonly harnessQuotaSources: readonly HarnessQuotaSourceDefinition[] = [],
     private readonly quotaCache?: () => Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }>,
+    private readonly onUnexpectedExit?: (event: PluginHostUnexpectedExit) => void,
   ) {}
 
   private readonly modelStreams = new Map<number, { readonly owner: number; readonly controller: AbortController; readonly iterator: AsyncIterator<import('@kiki/protocol').PluginModelEvent>; busy: boolean }>();
@@ -129,7 +150,7 @@ export class PluginHost {
     const { id, result, child } = await this.requestHarnessAccount(sourceId, 'prepare', input, signal, settings);
     if (this.child !== child) throw new Error('The plugin host exited during preparation');
     this.harnessAccountLeases.add(id);
-    clearTimeout(this.idle);
+    this.clearIdle();
     let releasing: Promise<void> | undefined;
     const release = () => releasing ??= (async () => {
       try {
@@ -157,12 +178,12 @@ export class PluginHost {
     const child = this.child;
     if (child === undefined || this.stopped) throw new Error('The plugin host was withdrawn');
     if (!this.registeredHarnessAccountSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register harness account source ${sourceId}`);
-    clearTimeout(this.idle);
+    this.clearIdle();
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const cancel = () => {
         this.send({ method: 'cancel', params: { id } });
-        reject(signal.reason);
+        finish(signal.reason instanceof Error ? signal.reason : abortError(`Harness account ${action} cancelled`));
       };
       const timer = setTimeout(() => {
         this.send({ method: 'cancel', params: { id } });
@@ -173,7 +194,7 @@ export class PluginHost {
         clearTimeout(timer);
         signal.removeEventListener('abort', cancel);
         this.pending.delete(id);
-        this.scheduleIdle();
+        if (error !== undefined || action !== 'prepare') this.scheduleIdle();
         if (error) reject(error); else resolve({ id, child, result });
       };
       signal.addEventListener('abort', cancel, { once: true });
@@ -188,7 +209,7 @@ export class PluginHost {
     await this.start();
     signal.throwIfAborted();
     if (!this.registeredHarnessQuotaSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register harness quota source ${sourceId}`);
-    clearTimeout(this.idle);
+    this.clearIdle();
     const id = ++this.nextId;
     const result = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -275,12 +296,18 @@ export class PluginHost {
 
   private lifecycleRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = ++this.nextId;
+    this.clearIdle();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.scheduleIdle();
         reject(new Error(`Plugin ${this.id} lifecycle timed out`));
       }, 15_000);
-      this.pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      timer.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); this.scheduleIdle(); resolve(value); },
+        reject: (error) => { clearTimeout(timer); this.scheduleIdle(); reject(error); },
+      });
       this.send({ id, method, params });
     });
   }
@@ -291,7 +318,7 @@ export class PluginHost {
     await this.start();
     if (!this.registeredProviders.has(providerId)) throw new Error(`Plugin ${this.id} did not register media provider ${providerId}`);
     signal.throwIfAborted();
-    clearTimeout(this.idle);
+    this.clearIdle();
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const finish = (error?: Error, value?: unknown) => {
@@ -316,7 +343,7 @@ export class PluginHost {
     await this.start();
     if (!this.registeredSources.has(sourceId)) throw new Error(`Plugin ${this.id} did not register source ${sourceId}`);
     signal.throwIfAborted();
-    clearTimeout(this.idle);
+    this.clearIdle();
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -342,13 +369,14 @@ export class PluginHost {
   }
 
   get running(): boolean { return this.child !== undefined; }
+  get hasActiveLeases(): boolean { return this.harnessAccountLeases.size > 0 || this.imListeners.size > 0; }
 
   async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly models?: import('@kiki/protocol').PluginModelsApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     signal.throwIfAborted();
     await this.start();
     if (!this.registered.has(name)) throw new Error(`Plugin ${this.id} did not register ${name}`);
-    clearTimeout(this.idle);
+    this.clearIdle();
     const requestId = ++this.nextId;
     return new Promise<ExecutableToolResult>((resolve, reject) => {
       if (signal.aborted) { reject(new Error('Plugin tool cancelled')); return; }
@@ -386,7 +414,7 @@ export class PluginHost {
   async installPrerequisite(destination: string): Promise<string> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     await this.start();
-    clearTimeout(this.idle);
+    this.clearIdle();
     const requestId = ++this.nextId;
     return new Promise<string>((resolve, reject) => {
       this.pending.set(requestId, {
@@ -404,7 +432,7 @@ export class PluginHost {
   async requestPanel(action: string, args: unknown, settings: Record<string, unknown>): Promise<unknown> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     await this.start();
-    clearTimeout(this.idle);
+    this.clearIdle();
     const requestId = ++this.nextId;
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(requestId, {
@@ -510,6 +538,25 @@ export class PluginHost {
         child.once('exit', () => resolveExit());
         child.once('error', () => resolveExit());
       });
+      let stderrTail = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        stderrTail = (stderrTail + chunk).slice(-MAX_STDERR_TAIL_CHARS);
+      });
+      const reportUnexpected = (reason: Error, code?: number | null, signal?: NodeJS.Signals | null) => {
+        if (this.stopped || this.child !== child) return;
+        const cleaned = sanitizePluginStderr(stderrTail);
+        this.onUnexpectedExit?.({
+          pluginId: this.id,
+          reason: reason.message,
+          code,
+          signal,
+          activeHarnessLeases: this.harnessAccountLeases.size,
+          activeImListeners: this.imListeners.size,
+          pendingCalls: this.pending.size,
+          stderrTail: cleaned.length > 0 ? cleaned : undefined,
+        });
+      };
       let handshake = false;
       const startupTimeout = setTimeout(() => {
         const error = new Error(`Plugin ${this.id} RPC handshake timed out`);
@@ -517,11 +564,11 @@ export class PluginHost {
         this.handshakeFailures += 1;
         this.handshakeCooldownUntil = Date.now() + backoff;
         this.lastHandshakeError = error;
+        reportUnexpected(error);
         reject(error);
         this.terminate(error);
       }, HANDSHAKE_MS);
       startupTimeout.unref();
-      child.stderr.resume();
       const lineReader = createInterface({ input: child.stdout });
       this.lineReader = lineReader;
       lineReader.on('line', (line) => {
@@ -671,19 +718,22 @@ export class PluginHost {
             else call?.resolve(message.result);
           }
         } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
           clearTimeout(startupTimeout);
-          reject(error);
-          this.terminate(error instanceof Error ? error : new Error(String(error)));
+          reportUnexpected(failure);
+          reject(failure);
+          this.terminate(failure);
         }
       });
-      const failChild = (error: Error) => {
+      const failChild = (error: Error, code?: number | null, signal?: NodeJS.Signals | null) => {
         clearTimeout(startupTimeout);
+        reportUnexpected(error, code, signal);
         reject(error);
         if (this.child === child) this.terminate(error);
       };
-      child.once('error', failChild);
+      child.once('error', (error) => failChild(error));
       child.stdin.on('error', () => failChild(new Error(`Plugin ${this.id} host input closed`)));
-      child.once('exit', (code) => failChild(new Error(`Plugin ${this.id} host exited (${code ?? 'signal'})`)));
+      child.once('exit', (code, signal) => failChild(new Error(`Plugin ${this.id} host exited (${code ?? signal ?? 'signal'})`), code, signal));
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'handshake', params: { version: PLUGIN_RPC_VERSION } })}\n`);
     });
     try { await this.ready; }
@@ -774,15 +824,26 @@ export class PluginHost {
     this.child?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
   }
 
-  private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+  private clearIdle(): void {
     clearTimeout(this.idle);
-    this.idle = setTimeout(() => this.terminate(new Error(`Plugin ${this.id} idle`)), IDLE_MS);
+    this.idle = undefined;
+  }
+
+  private scheduleIdle(): void {
+    if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) {
+      this.clearIdle();
+      return;
+    }
+    this.clearIdle();
+    this.idle = setTimeout(() => {
+      if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+      this.terminate(new Error(`Plugin ${this.id} idle`));
+    }, IDLE_MS);
     this.idle.unref();
   }
 
   private terminate(reason: Error): void {
-    clearTimeout(this.idle);
+    this.clearIdle();
     const lineReader = this.lineReader;
     this.lineReader = undefined;
     lineReader?.close();

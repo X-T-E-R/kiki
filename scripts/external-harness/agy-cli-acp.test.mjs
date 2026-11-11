@@ -17,7 +17,7 @@ function bridge(model) {
     child.stdin.end();
     await closed;
   };
-  return new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], model, stopProcess });
+  return new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], model, stopProcess, networkRecoveryBackoffMs: [0] });
 }
 async function session(b) { return (await b.newSession({ cwd, mcpServers: [] })).sessionId; }
 function turn(b, id, text, messages) {
@@ -1728,7 +1728,7 @@ void test('legacy AGY load reconciles Gemini base/provider-effort models, multi-
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-void test('terminal quota or auth vendor failure stops the owned CLI process and releases its lease so another account can load the exact conversation', { timeout: 15000 }, async () => {
+void test('terminal quota or auth vendor failure stops the owned CLI process and releases its lease so another account can load the exact conversation', { timeout: 30000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-account-load-'));
   const auditDir = join(root, 'audit');
@@ -1882,28 +1882,31 @@ void test('a continuation that produces real progress reopens the recovery budge
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-void test('repeated network errors stop after three consecutive attempts without fresh completed progress', { timeout: 30000 }, async () => {
+void test('repeated network errors stop after five consecutive attempts without fresh completed progress', { timeout: 30000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const root = await mkdtemp(join(tmpdir(), 'agy-network-no-progress-'));
   const auditDir = join(root, 'audit');
   const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const defaultBridge = new AgyBridge({ cliPath: process.execPath });
+  assert.equal(defaultBridge.maxConsecutiveNetworkRecoveries, 5);
+  assert.deepEqual(defaultBridge.networkRecoveryBackoffMs, [1000, 3000, 7000, 15000, 25000]);
   const b = bridge('claude-opus-5-5-high'); b.auditDir = auditDir;
   try {
     const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
     const failure = await turn(b, id, 'network-recover-no-progress', []).then(() => undefined, error => error);
     assert.match(failure.message, /^AGY terminal status ERROR: There was a network issue connecting to the server, please try again\./);
-    assert.match(failure.message, /automatic continuation stopped after 3 consecutive attempts without progress/);
+    assert.match(failure.message, /automatic continuation stopped after 5 consecutive attempts without progress/);
     assert.match(failure.message, new RegExp(`every completed tool result \\(1\\) and native conversation ${conversationId} are retained`));
     assert.match(failure.message, /load that exact native conversation to continue it/);
-    assert.deepEqual(failure.details, { nativeError: 'There was a network issue connecting to the server, please try again.', recoveries: 3, consecutiveRecoveries: 3, preservedTools: 1,
+    assert.deepEqual(failure.details, { nativeError: 'There was a network issue connecting to the server, please try again.', recoveries: 5, consecutiveRecoveries: 5, preservedTools: 1,
       conversationId });
     const native = b.session(id);
     assert.equal(native.broken, true);
     assert.notEqual(native.child.exitCode, null);
     const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 1);
-    assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => record.attempt), [1, 2, 3]);
-    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 3);
+    assert.deepEqual(records.filter(record => record.type === 'network_recovery_requested').map(record => record.attempt), [1, 2, 3, 4, 5]);
+    assert.equal(records.filter(record => record.type === 'network_recovery_sent').length, 5);
     assert.equal(records.filter(record => record.type === 'network_recovery_exhausted').length, 1);
     assert.equal(await readFile(join(root, 'native-executions.txt'), 'utf8'), 'recover-tool\n');
     await assert.rejects(turn(b, id, 'again', []), /load that exact native conversation/);
@@ -2858,3 +2861,145 @@ void test('forwards late AGY tool parameters on in-progress and terminal step up
     await b.close();
   }
 });
+
+void test('settles invoke_subagent tool calls when AGY emits stepType subagent DONE', async () => {
+  const b = bridge();
+  const id = await session(b);
+  const s = b.session(id);
+  const updates = [];
+  s.init = { conversation_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' };
+  s.active = {
+    promptConsumed: true,
+    progressFloor: 0,
+    progressSinceRecovery: false,
+    text: '',
+    steering: [],
+    networkRecoveries: 0,
+    networkRecoveriesTotal: 0,
+    segmentStart: 0,
+    recoveryAbort: new AbortController(),
+    client: { notify: async (_method, payload) => updates.push(payload.update) },
+    resolve: () => {},
+    reject: () => {},
+  };
+  try {
+    await b.event(s, {
+      event: 'step_update',
+      conversation_id: s.init.conversation_id,
+      step_update: {
+        step_type: 'tool',
+        step_index: 10,
+        state: 'ACTIVE',
+        tool_name: 'invoke_subagent',
+        tool_info: { parameters: { AgentName: 'explore' } },
+      },
+    });
+    assert.equal(b.unresolvedTools(s).length, 1);
+    await b.event(s, {
+      event: 'step_update',
+      conversation_id: s.init.conversation_id,
+      step_update: {
+        step_type: 'subagent',
+        step_index: 10,
+        state: 'DONE',
+        tool_info: { output: 'Created subagent' },
+      },
+    });
+    assert.deepEqual(b.unresolvedTools(s), []);
+    assert.equal(s.active.progressSinceRecovery, true);
+    assert.equal(updates.at(-1)?.sessionUpdate, 'tool_call_update');
+    assert.equal(updates.at(-1)?.status, 'completed');
+    assert.equal(updates.at(-1)?.name, 'invoke_subagent');
+  } finally {
+    s.active = undefined;
+    await b.close();
+  }
+});
+
+void test('error_message watchdog stops a wedged CLI after terminal SQLite error flush and continues the same conversation', { timeout: 30000 }, async () => {
+  const { mkdir, mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = await mkdtemp(join(tmpdir(), 'agy-error-watchdog-'));
+  const auditDir = join(root, 'audit');
+  const nativeHome = join(root, 'native-home');
+  const conversationId = '9267a473-2945-4262-b3a2-448dd8446587';
+  await mkdir(join(nativeHome, 'conversations'), { recursive: true });
+  const dbPath = join(nativeHome, 'conversations', `${conversationId}.db`);
+  const varint = value => {
+    const bytes = [];
+    while (value >= 128) { bytes.push((value & 127) | 128); value >>>= 7; }
+    return Buffer.from([...bytes, value]);
+  };
+  const field = (number, value) => {
+    const bytes = Buffer.from(value);
+    return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+  };
+  const db = new DatabaseSync(dbPath);
+  db.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)');
+  db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(0, 14, 3, Buffer.alloc(0));
+  db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(10, 132, 3, Buffer.alloc(0));
+  db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(
+    126,
+    17,
+    3,
+    field(24, field(3, field(2, 'API error (attempt 1): wsarecv: forcibly closed'))),
+  );
+  db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)').run(
+    127,
+    17,
+    3,
+    field(24, field(3, Buffer.concat([
+      field(1, 'There was a network issue connecting to the server, please try again.'),
+      field(2, 'agent executor error: dial tcp 127.0.0.1:49734: connectex: actively refused'),
+    ]))),
+  );
+  db.close();
+
+  const wedgeScript = `
+    const rl = require('node:readline').createInterface({ input: process.stdin });
+    const conv = ${JSON.stringify(conversationId)};
+    const secondLaunch = process.argv.includes('--conversation');
+    process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conv, init: { cwd: process.cwd(), model: 'claude-opus-5-5-high' } }) + '\\n');
+    rl.on('line', () => {
+      if (!secondLaunch) {
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'user_input', step_index: 0, state: 'DONE' } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'tool', step_index: 10, state: 'ACTIVE', tool_name: 'invoke_subagent' } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'subagent', step_index: 10, state: 'DONE' } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'error_message', step_index: 126, state: 'DONE' } }) + '\\n');
+        process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'error_message', step_index: 127, state: 'DONE' } }) + '\\n');
+        setInterval(() => {}, 10000);
+        return;
+      }
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'user_input', step_index: 128, state: 'DONE' } }) + '\\n');
+      process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conv, step_update: { step_type: 'agent_response', step_index: 129, state: 'DONE', text_delta: 'recovered-from-wedged-error-step' } }) + '\\n');
+      process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conv, status: 'SUCCESS', response: 'recovered-from-wedged-error-step' } }) + '\\n');
+    });
+  `;
+  const b = new AgyBridge({
+    cliPath: process.execPath,
+    cliPrefix: ['-e', wedgeScript, '--'],
+    model: 'claude-opus-5-5-high',
+    auditDir,
+    nativeHome,
+    errorResultWatchdogMs: 80,
+    continuationExitGraceMs: 80,
+    networkRecoveryBackoffMs: [0],
+  });
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    const messages = [];
+    assert.deepEqual(await turn(b, id, 'trigger-wedged-error', messages), { stopReason: 'end_turn' });
+    assert.equal(
+      messages.filter(m => m.update.sessionUpdate === 'agent_message_chunk').map(m => m.update.content.text).join(''),
+      'recovered-from-wedged-error-step',
+    );
+    const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(records.some(r => r.type === 'error_result_watchdog_triggered' && r.dbStatus === 'terminal_error'), true);
+    assert.equal(records.filter(r => r.type === 'network_recovery_sent').length, 1);
+    assert.equal(records.some(r => r.type === 'close' && r.forcedAfterWatchdog === true), true);
+  } finally {
+    await b.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+

@@ -2146,4 +2146,76 @@ describe('recoverable ACP broken resume', () => {
       await senderCtx.dispose();
     }
   });
+
+  it('recovers a cancelled AGY session retired by cancel via session/new handoff while keeping non-cancelled retired sessions refused', async () => {
+    let generation = 0;
+    let hang = true;
+    const remote = recordingClient(() => {
+      generation += 1;
+      return {
+        sessionId: `remote-cancelled-${generation}`,
+        capabilities: { loadSession: true },
+        load: 'retired_session',
+        hangPrompt: hang,
+      };
+    }, () => false, 'agy-cli', 'agy-cli');
+    const harness = createExecutionHarness({
+      agentId: CHILD,
+      executorId: 'agy-cli',
+      client: remote.client,
+      modelBinding: 'argv',
+      thinkingEffort: 'medium',
+      permission: argvPermission,
+    });
+    admitBrokenResume(harness.ix);
+    try {
+      const controller = new AbortController();
+      const firstRun = await harness.execution.run({ kind: 'prompt', prompt: 'long work before TaskStop' }, { signal: controller.signal });
+      expect(harness.execution.status().state).toBe('running');
+      controller.abort(new Error('TaskStop cancel'));
+      await expect(firstRun.completion).rejects.toThrow();
+      await harness.execution.settled();
+      expect(harness.execution.status()).toEqual({ state: 'idle' });
+      expect(remote.client.status().state).not.toBe('broken');
+      await remote.exit();
+
+      hang = false;
+      const resumed = await harness.execution.run({ kind: 'prompt', prompt: 'continue after explicit cancel' }, { signal });
+      await resumed.completion;
+      await harness.execution.settled();
+      expect(remote.opens.slice(-2)[0]).toMatchObject({
+        requireResume: true,
+        allowRetiredSessionFallback: true,
+        sessionRef: { ref: { sessionId: 'remote-cancelled-1' } },
+      });
+      expect(remote.opens.at(-1)).toMatchObject({
+        requireResume: true,
+        allowRetiredSessionFallback: undefined,
+        sessionRef: { ref: { sessionId: 'remote-cancelled-2' } },
+      });
+      expect(remote.histories.at(-1)?.methods).toContain('session/load');
+      expect(remote.histories.at(-1)?.methods).toContain('session/new');
+      const resumedPrompt = JSON.stringify(remote.histories.at(-1)?.promptParams);
+      expect(resumedPrompt).toContain('BEGIN KIKI PRIOR TRANSCRIPT HANDOFF');
+      expect(resumedPrompt).toContain('continue after explicit cancel');
+      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref['sessionId']).toBe('remote-cancelled-2');
+
+      remote.failNextTurn(new Error('non-cancel crash'));
+      const failedRun = await harness.execution.run({ kind: 'prompt', prompt: 'turn that crashes' }, { signal });
+      await expect(failedRun.completion).rejects.toThrow('non-cancel crash');
+      await harness.execution.settled();
+      await expect(harness.execution.run({ kind: 'prompt', prompt: 'must not fallback after non-cancel failure' }, { signal }))
+        .rejects.toThrow(/retired|cannot be resumed/i);
+      expect(remote.opens.at(-1)).toMatchObject({
+        requireResume: true,
+        allowRetiredSessionFallback: undefined,
+        sessionRef: { ref: { sessionId: 'remote-cancelled-2' } },
+      });
+      expect(remote.histories.at(-1)?.methods).not.toContain('session/new');
+    } finally {
+      await harness.execution.shutdown();
+      await remote.client.shutdown();
+      await harness.ix.dispose();
+    }
+  });
 });

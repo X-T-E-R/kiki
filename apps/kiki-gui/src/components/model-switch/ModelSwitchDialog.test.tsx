@@ -13,6 +13,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import { I18nProvider } from '../../i18n';
 import { ModelSwitchDialog } from './ModelSwitchDialog';
+import { resolveSwitchEffort } from './switchEffort';
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
@@ -136,5 +137,39 @@ describe('ModelSwitchDialog', () => {
       container.querySelector<HTMLButtonElement>('[data-model-switch-open-settings]')!.click();
     });
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  it('preselects the nearest supported effort, shows adjustment notice, and submits the chosen target effort', async () => {
+    expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: undefined, targetDefault: 'medium' }))
+      .toEqual({ effort: undefined });
+    expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'high', targetDefault: 'medium' }))
+      .toEqual({ effort: 'high' });
+    expect(resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'xhigh', targetDefault: 'medium' }))
+      .toEqual({ effort: 'high', adjustedFrom: 'xhigh' });
+    expect(resolveSwitchEffort({ targetEfforts: ['medium', 'high'], carried: 'low', targetDefault: 'medium' }))
+      .toEqual({ effort: 'medium', adjustedFrom: 'low' });
+    expect(resolveSwitchEffort({ targetEfforts: [], carried: 'high' }))
+      .toEqual({ effort: undefined });
+
+    const resolved = resolveSwitchEffort({ targetEfforts: ['low', 'medium', 'high'], carried: 'xhigh', targetDefault: 'medium' });
+    const { container, onConfirm } = await renderDialog({
+      efforts: ['low', 'medium', 'high'],
+      initialEffort: resolved.effort,
+      defaultEffort: 'medium',
+      effortAdjustedFrom: resolved.adjustedFrom,
+    });
+    expect(container.querySelector('[data-model-switch-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-model-switch-effort=""]')?.textContent).toContain('Default');
+    expect(container.querySelector('[data-model-switch-effort-adjusted]')?.textContent).toContain('example/new');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-model-switch-effort="low"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click();
+    });
+    expect(onConfirm).toHaveBeenCalledWith({ mode: 'direct', remember: false, effort: 'low' });
+
+    const none = await renderDialog({ efforts: [] });
+    expect(none.container.querySelector('[data-model-switch-effort-none]')?.textContent).toContain('thinking effort');
   });
 });

@@ -12,6 +12,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
 import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { turnKey } from '#/agent/loop/turnOps';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
@@ -140,6 +141,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly externalEpoch = new Map<string, number>();
   private readonly externalWaiters = new Map<string, Array<() => void>>();
   private readonly withheld = new Set<string>();
+  private readonly reportedContinuationBlocks = new Map<string, string>();
 
   constructor(
     @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
@@ -161,6 +163,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       if (isPromiseLike(result)) result.catch(onUnexpectedError);
       const retry = this.acknowledgementRetries.deleteAndDispose(agentId);
       if (isPromiseLike(retry)) retry.catch(onUnexpectedError);
+      this.clearReportedContinuationBlocks(agentId);
     }));
     this.discardUnregisteredTargetMessages().catch(onUnexpectedError);
   }
@@ -229,8 +232,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const acceptance = await this.store.accept(storedInput);
     if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     if (handle === undefined) return acceptance;
+    const sentWhileCancelling = handle.accessor.get(IAgentExecutionService).status().state === 'cancelling';
     if (waitForRunningDelivery !== true) {
-      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId);
+      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling);
       return acceptance;
     }
     const resumed = await this.deliverOrWake(
@@ -241,6 +245,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       child,
       false,
       sourceTurnId,
+      sentWhileCancelling,
     );
     const refreshed = await this.store.accept(storedInput);
     if (
@@ -248,7 +253,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       idleWake !== undefined &&
       !this.withheld.has(acceptance.message.messageId)
     ) {
-      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId).catch((error: unknown) => {
+      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling).catch((error: unknown) => {
         this.reportContinuationFailure(input.sourceAgentId, acceptance.message.messageId, input.targetAgentId, error).catch(onUnexpectedError);
       });
     }
@@ -261,6 +266,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     sourceAgentId: string,
     child: DispatchChild | undefined,
     sourceTurnId?: number,
+    sentWhileCancelling = false,
   ): Promise<void> {
     const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
     if (lease === undefined) return;
@@ -278,6 +284,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         child?.agent === pinnedHandle ? child : undefined,
         true,
         sourceTurnId,
+        sentWhileCancelling,
       );
       void (async () => {
         try {
@@ -297,6 +304,17 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     }
   }
 
+  private reportContinuationFailureKey(sourceAgentId: string, targetAgentId: string): string {
+    return `${sourceAgentId}\u0000${targetAgentId}`;
+  }
+
+  private clearReportedContinuationBlocks(targetAgentId: string): void {
+    const suffix = `\u0000${targetAgentId}`;
+    for (const key of this.reportedContinuationBlocks.keys()) {
+      if (key.endsWith(suffix)) this.reportedContinuationBlocks.delete(key);
+    }
+  }
+
   private async reportContinuationFailure(
     sourceAgentId: string,
     messageId: string,
@@ -309,12 +327,17 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const sender = this.lifecycle.get(sourceAgentId);
     if (sender === undefined) return;
     const execution = this.lifecycle.get(targetAgentId)?.accessor.get(IAgentExecutionService);
+    const unrecoverable = originalSessionCannotResume(execution);
+    const blockKey = this.reportContinuationFailureKey(sourceAgentId, targetAgentId);
+    const blockFingerprint = `${code}\u0000${reason}\u0000${unrecoverable}`;
+    if (this.reportedContinuationBlocks.get(blockKey) === blockFingerprint) return;
+    this.reportedContinuationBlocks.set(blockKey, blockFingerprint);
     const text = continuationFailureNotice({
       messageId,
       targetAgentId,
       code,
       reason,
-      unrecoverable: originalSessionCannotResume(execution),
+      unrecoverable,
     });
     try {
       if (isExternalClientMain(await this.metadata.read(), sourceAgentId)) {
@@ -377,6 +400,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     subscriptions.add(execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
       async (context, next) => {
+        this.clearReportedContinuationBlocks(handle.id);
         if (!this.kikiMailEnabled(handle)) { await next(); return; }
         if (this.isExternalExecutor(handle)) {
           const request = context.request;
@@ -445,6 +469,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     child: DispatchChild | undefined,
     followBusyCompletion: boolean,
     sourceTurnId?: number,
+    sentWhileCancelling = false,
   ): Promise<boolean> {
     if (!this.kikiMailEnabled(handle)) return false;
     let observedStart = false;
@@ -457,9 +482,18 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       }
       const steered = await this.serializeDelivery(handle.id, async () => {
         if (!await this.recoverAppliedClaims(handle)) return 'stopped' as const;
+        const execution = handle.accessor.get(IAgentExecutionService);
+        if (execution.status().state === 'running') {
+          const outcome = await this.deliverRunning(handle);
+          if (outcome === 'stopped' && execution.status().state === 'idle' &&
+            handle.accessor.get(IAgentStateService).get(turnKey)?.lastEnded?.reason === 'cancelled') {
+            return 'cancelled' as const;
+          }
+          return outcome;
+        }
         return this.deliverRunning(handle);
       });
-      if (steered === 'unknown') return observedStart;
+      if (steered === 'unknown' || (!sentWhileCancelling && steered === 'cancelled')) return observedStart;
       if (this.messageLanded(handle, message.messageId) || idleWake === undefined) return observedStart;
       if (this.isStarting(handle)) {
         if (!this.isExternalExecutor(handle) || this.externalPrepared.get(handle.id) === message.messageId) return observedStart;
@@ -479,6 +513,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         const stillBusy = finished && this.executionBusy(handle);
         await settling;
         if (stillBusy) return observedStart;
+        if (!sentWhileCancelling && handle.accessor.get(IAgentStateService).get(turnKey)?.lastEnded?.reason === 'cancelled') {
+          return observedStart;
+        }
         continue;
       }
       const outcome = await this.serializeWake(handle.id, async () => {

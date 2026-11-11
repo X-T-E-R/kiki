@@ -29,9 +29,10 @@ const NATIVE_ERROR = 7;
 const LEGACY_NETWORK_FAILURE = 'There was a network issue connecting to the server, please try again.';
 const NETWORK_RECOVERY_INSTRUCTION = 'The connection to the model provider was interrupted after your last completed step. '
   + 'Continue the same task from where it stopped. Do not repeat tool calls that already finished.';
-const MAX_CONSECUTIVE_NETWORK_RECOVERIES = 3;
-const NETWORK_RECOVERY_BACKOFF_MS = [0, 1000, 3000];
+const MAX_CONSECUTIVE_NETWORK_RECOVERIES = 5;
+const NETWORK_RECOVERY_BACKOFF_MS = [1000, 3000, 7000, 15000, 25000];
 const NETWORK_RECOVERY_EXIT_GRACE_MS = 5000;
+const ERROR_RESULT_WATCHDOG_MS = 15000;
 
 function nativeBytesAt(value, path, optionalLast = false, repeatedLast = false) {
   let bytes = Buffer.from(value);
@@ -268,6 +269,38 @@ export async function readLegacyNativeRecovery({ nativeHome, cwd, additionalDire
     }
     return { conversationId, model, effort: proof.effort };
   } finally { db.close(); }
+}
+
+async function inspectNativeErrorWatchdogState({ nativeHome, conversationId }) {
+  if (typeof nativeHome !== 'string' || !nativeHome || !NATIVE_ID.test(conversationId ?? '')) {
+    return { status: 'missing_db' };
+  }
+  const dbPath = resolve(nativeHome, 'conversations', `${conversationId}.db`);
+  let db;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const latest = db.prepare('SELECT idx, step_type, status, CASE WHEN length(step_payload) <= 65536 THEN step_payload END AS step_payload FROM steps ORDER BY idx DESC LIMIT 1').get();
+    if (!latest) return { status: 'no_terminal_error' };
+    const incomplete = db.prepare('SELECT idx, step_type, status FROM steps WHERE (step_type = ? AND status NOT IN (?, ?)) OR (step_type != ? AND status != ?) LIMIT 1')
+      .get(LEGACY_NATIVE_STEP.tool, NATIVE_DONE, NATIVE_ERROR, LEGACY_NATIVE_STEP.tool, NATIVE_DONE);
+    if (incomplete) return { status: 'incomplete_steps' };
+    if (latest.step_type !== LEGACY_NATIVE_STEP.error) return { status: 'no_terminal_error' };
+    const bytes = latest.step_payload ?? [];
+    const err1 = nativeBytesAt(bytes, [24, 3, 1], true);
+    const err2 = nativeBytesAt(bytes, [24, 3, 2], true);
+    if (typeof err1 === 'string' && err1.trim()) {
+      return { status: 'terminal_error', stepIndex: latest.idx, summary: err1, detail: err2, error: err2 || err1 };
+    }
+    return { status: 'retrying', stepIndex: latest.idx, detail: err2 };
+  } catch (error) {
+    if (error?.code === 'ERR_SQLITE_ERROR' || /unable to open database file/i.test(String(error?.message ?? ''))) {
+      return { status: 'missing_db' };
+    }
+    return { status: 'db_error' };
+  } finally {
+    try { db?.close(); } catch {}
+  }
 }
 
 function unconsumedNetworkContinuationProof(records, { sessionId, conversationId, model, effort, cwd, additionalDirectories = [] }) {
@@ -512,10 +545,12 @@ async function terminate(child) {
 }
 
 export class AgyBridge {
-  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit, continuationExitGraceMs = NETWORK_RECOVERY_EXIT_GRACE_MS, networkRecoveryBackoffMs = NETWORK_RECOVERY_BACKOFF_MS } = {}) {
+  constructor({ cliPath, cliPrefix = [], auditDir, nativeHome = resolve(homedir(), '.gemini', 'antigravity-cli'), model = DEFAULT, spawnProcess = spawn, stopProcess = terminate, account, onAccountExit, continuationExitGraceMs = NETWORK_RECOVERY_EXIT_GRACE_MS, networkRecoveryBackoffMs = NETWORK_RECOVERY_BACKOFF_MS, maxConsecutiveNetworkRecoveries = MAX_CONSECUTIVE_NETWORK_RECOVERIES, errorResultWatchdogMs = ERROR_RESULT_WATCHDOG_MS } = {}) {
     this.stopProcess = stopProcess;
     this.continuationExitGraceMs = continuationExitGraceMs;
     this.networkRecoveryBackoffMs = networkRecoveryBackoffMs;
+    this.maxConsecutiveNetworkRecoveries = maxConsecutiveNetworkRecoveries;
+    this.errorResultWatchdogMs = errorResultWatchdogMs;
     if (!isAbsolute(cliPath ?? '')) throw new Error('Pass the exact absolute AGY executable path');
     if (typeof model !== 'string' || !model || /\s/.test(model)) throw new Error('AGY model must be a nonempty engine ID');
     if (account && model !== DEFAULT && !account.modelIds.includes(model)) throw new Error('The selected account does not provide the bound AGY model');
@@ -977,6 +1012,10 @@ export class AgyBridge {
       stdoutFailed = true;
       return Promise.all([ingress, delivery]);
     };
+    session.queueInternalAction = action => {
+      delivery = delivery.then(action).catch(fail);
+      return delivery;
+    };
     const fail = error => {
       session.broken = true;
       if (!session.cancelling) void this.stopProcess(child).catch(() => {});
@@ -1002,6 +1041,7 @@ export class AgyBridge {
         const frame = { sequence: ++sequence, receivedAt: new Date().toISOString(), event: event?.event,
           stepIndex: event?.step_update?.step_index, stepType: event?.step_update?.step_type,
           state: event?.step_update?.state, status: event?.result?.status };
+        this.clearErrorResultWatchdog(session.active);
         ingress = ingress.then(() => this.audit(session, 'native_frame_received', frame)).catch(fail);
         delivery = delivery.then(async () => {
           await this.event(session, event);
@@ -1092,12 +1132,84 @@ export class AgyBridge {
   async loseTurn(session, error) {
     const active = session.active;
     if (!active || session.cancelling) return;
+    this.clearErrorResultWatchdog(active);
     session.active = undefined;
     const unresolved = this.unresolvedTools(session);
     if (unresolved.length) await this.audit(session, 'tool_terminal_missing', { reason: 'stream_lost', tools: unresolved }).catch(auditError => {
       error.details = { ...error.details, retirementAuditError: auditError.message };
     });
     await this.rejectUnconfirmedTurn(session, active, error, unresolved);
+  }
+
+  clearErrorResultWatchdog(active) {
+    if (!active?.errorWatchdog) return;
+    clearTimeout(active.errorWatchdog);
+    active.errorWatchdog = undefined;
+  }
+
+  armErrorResultWatchdog(session, active) {
+    this.clearErrorResultWatchdog(active);
+    if (typeof this.errorResultWatchdogMs !== 'number' || this.errorResultWatchdogMs <= 0 || !Number.isFinite(this.errorResultWatchdogMs)) return;
+    if (session.active !== active || session.cancelling || session.restarting) return;
+    const child = session.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const token = Symbol('errorWatchdog');
+    active.errorWatchdogToken = token;
+    const timer = setTimeout(() => {
+      if (active.errorWatchdog === timer) active.errorWatchdog = undefined;
+      if (session.active !== active || active.errorWatchdogToken !== token || session.cancelling || session.restarting || session.child !== child) return;
+      void session.queueInternalAction?.(() => this.onErrorResultWatchdog(session, active, child, token));
+    }, this.errorResultWatchdogMs);
+    timer.unref?.();
+    active.errorWatchdog = timer;
+  }
+
+  async onErrorResultWatchdog(session, active, child, token) {
+    if (session.active !== active || active.errorWatchdogToken !== token || session.cancelling || session.restarting || session.child !== child) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (active.lastStepType !== 'error_message' || active.lastStepState !== 'DONE') return;
+    const conversationId = session.init?.conversation_id ?? session.conversationId;
+    const dbState = await inspectNativeErrorWatchdogState({ nativeHome: this.nativeHome, conversationId });
+    if (session.active !== active || active.errorWatchdogToken !== token || session.cancelling || session.restarting || session.child !== child) return;
+    if (dbState.status === 'retrying' && (active.consecutiveErrorSteps ?? 0) < 2) {
+      this.armErrorResultWatchdog(session, active);
+      return;
+    }
+    if (dbState.status === 'no_terminal_error') return;
+    const unresolved = this.unresolvedTools(session);
+    const errorText = dbState.status === 'terminal_error'
+      ? (dbState.error ?? LEGACY_NETWORK_FAILURE)
+      : active.lastErrorStepText || LEGACY_NETWORK_FAILURE;
+    await this.audit(session, 'error_result_watchdog_triggered', {
+      conversationId,
+      stepIndex: active.lastStepIndex,
+      consecutiveErrorSteps: active.consecutiveErrorSteps ?? 1,
+      dbStatus: dbState.status,
+      unresolvedCount: unresolved.length,
+    });
+    if (session.active !== active || session.cancelling) return;
+    if (dbState.status === 'incomplete_steps' || dbState.status === 'db_error' || !active.promptConsumed || unresolved.length > 0) {
+      session.broken = true;
+      await session.permissionChannel?.close();
+      await this.stopProcess(child).catch(() => {});
+      await session.exited;
+      if (session.active !== active || session.cancelling) return;
+      const error = new Error(`AGY stalled after error_message step ${active.lastStepIndex ?? 'unknown'} without emitting a terminal result (${dbState.status})`);
+      error.code = 'AGY_ERROR_RESULT_TIMEOUT';
+      error.details = { conversationId, stepIndex: active.lastStepIndex, dbStatus: dbState.status };
+      await this.loseTurn(session, error);
+      return;
+    }
+    await this.event(session, {
+      event: 'result',
+      result: {
+        conversation_id: conversationId,
+        status: 'ERROR',
+        error: errorText,
+      },
+      _watchdogSynthesized: true,
+      _watchdogConfirmedFlush: dbState.status === 'terminal_error' || (dbState.status === 'missing_db' && NATIVE_ID.test(conversationId ?? '')),
+    });
   }
 
   async event(session, event) {
@@ -1129,6 +1241,8 @@ export class AgyBridge {
         active.lastStepType = 'user_input';
         active.lastStepState = step.state;
         active.lastStepIndex = step.step_index;
+        active.consecutiveErrorSteps = 0;
+        active.lastErrorStepText = undefined;
         active.finalResponseDone = false;
         active.finalResponseStepIndex = undefined;
         active.finalResponseText = '';
@@ -1138,6 +1252,17 @@ export class AgyBridge {
         active.lastStepType = step.step_type;
         active.lastStepState = step.state;
         active.lastStepIndex = step.step_index;
+        if (step.step_type === 'error_message') {
+          active.consecutiveErrorSteps = (active.consecutiveErrorSteps ?? 0) + 1;
+          const stepError = typeof step.error === 'string' && step.error ? step.error
+            : typeof step.error?.message === 'string' && step.error.message ? step.error.message
+            : typeof step.text_delta === 'string' && step.text_delta ? step.text_delta
+            : undefined;
+          if (stepError !== undefined) active.lastErrorStepText = stepError;
+        } else {
+          active.consecutiveErrorSteps = 0;
+          active.lastErrorStepText = undefined;
+        }
         if (step.step_type !== 'agent_response') {
           active.finalResponseDone = false;
           active.finalResponseStepIndex = undefined;
@@ -1160,7 +1285,7 @@ export class AgyBridge {
         active.finalResponseDone = step.state === 'DONE' && active.finalResponseText.length > 0;
         if (freshStep && active.finalResponseDone && active.finalResponseText.trim()) active.progressSinceRecovery = true;
       }
-      if (step.step_type === 'tool') {
+      if (step.step_type === 'tool' || (step.step_type === 'subagent' && session.toolIds.has(`agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`))) {
         const id = `agy-${event.conversation_id ?? session.init?.conversation_id}-${step.step_index}`;
         const previousName = session.toolDetails.get(id)?.name;
         const detail = { name: step.tool_name ?? step.tool_info?.name ?? previousName, state: step.state };
@@ -1197,12 +1322,17 @@ export class AgyBridge {
                 ? [{ type: 'content', content: { type: 'text', text: output } }] : undefined } });
         }
       }
+      if (step.step_type === 'error_message' && step.state === 'DONE') {
+        this.armErrorResultWatchdog(session, active);
+      }
       return;
     }
+    this.clearErrorResultWatchdog(active);
     if (event.event !== 'result' || !event.result) throw new Error(`Unsupported AGY event: ${event.event}`);
     const result = event.result;
     await this.audit(session, 'agy_result', { conversationId: result.conversation_id, status: result.status,
       numTurns: result.num_turns, usage: result.usage, deniedActions: result.denied_actions,
+      synthesizedByWatchdog: event._watchdogSynthesized === true ? true : undefined,
       responseSha256: createHash('sha256').update(result.response ?? '').digest('hex') });
     if (session.active !== active || session.cancelling) return;
     if (result.status === 'SUCCESS' && session.mcpServers.length !== session.mcpReady.size) {
@@ -1223,7 +1353,7 @@ export class AgyBridge {
     const nonRecoverableError = /\b(?:401|403|429|RESOURCE_EXHAUSTED|UNAUTHENTICATED|PERMISSION_DENIED)\b|quota[\s_-]*(?:reached|exceeded|exhausted)|rate[\s_-]*limit|insufficient[\s_-]*quota|unauthorized|authentication\s+failed/i;
     const lateTransportDisconnect = result.status === 'ERROR'
       && typeof result.error === 'string'
-      && /\b(?:wsarecv|wsasend|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|EOF)\b|socket\s+hang\s+up|read\s+tcp|write\s+tcp|connection\s+attempt\s+failed|connection\s+was\s+forcibly\s+closed|broken\s+pipe/i.test(result.error)
+      && /\b(?:wsarecv|wsasend|connectex|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|EOF|UNAVAILABLE|DEADLINE_EXCEEDED|502|503|504)\b|socket\s+hang\s+up|dial\s+tcp|read\s+tcp|write\s+tcp|actively\s+refused|connection\s+refused|connection\s+attempt\s+failed|connection\s+was\s+forcibly\s+closed|broken\s+pipe|tls\s+handshake\s+timeout|context\s+deadline\s+exceeded|http2:\s+(?:client\s+connection\s+(?:lost|force\s+closed)|server\s+sent\s+GOAWAY)|stream\s+error:\s+stream\s+ID|bad\s+gateway|service\s+unavailable|gateway\s+timeout/i.test(result.error)
       && !nonRecoverableError.test(result.error);
     const replayedSummaryError = result.status === 'ERROR'
       && typeof result.error === 'string'
@@ -1257,7 +1387,7 @@ export class AgyBridge {
       active.progressSinceRecovery = false;
     }
     const continuationAllowed = recoverableNetworkError
-      && active.networkRecoveries < MAX_CONSECUTIVE_NETWORK_RECOVERIES;
+      && active.networkRecoveries < this.maxConsecutiveNetworkRecoveries;
     if (continuationAllowed) {
       const attempt = active.networkRecoveries + 1;
       const preservedTools = session.toolIds.size;
@@ -1270,7 +1400,9 @@ export class AgyBridge {
       active.networkRecoveries = attempt;
       active.networkRecoveriesTotal += 1;
       try {
-        const sent = await this.continueNetworkFailure(session, active, attempt, result);
+        const sent = await this.continueNetworkFailure(session, active, attempt, result, {
+          allowForcedExit: event._watchdogConfirmedFlush === true,
+        });
         if (sent?.outcome === 'sent') {
           await this.audit(session, 'network_recovery_sent', {
             conversationId: sent.conversationId, attempt, relaunched: sent.relaunched,
@@ -1428,8 +1560,8 @@ export class AgyBridge {
     const promise = new Promise((resolveTurn, rejectTurn) => {
       const active = { client, text: '', steering: [], networkRecoveries: 0, networkRecoveriesTotal: 0, segmentStart: 0,
         progressSinceRecovery: false, progressFloor: -1, recoveryAbort: new AbortController(),
-        resolve: value => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
-        reject: error => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
+        resolve: value => { this.clearErrorResultWatchdog(active); this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
+        reject: error => { this.clearErrorResultWatchdog(active); this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
       session.active = active;
     });
     promise.catch(() => {});
@@ -1456,7 +1588,7 @@ export class AgyBridge {
         frameSha256: createHash('sha256').update(frame).digest('hex'), delivery: 'unchanged_user_text' });
       return await promise;
     } catch (error) {
-      if (session.active) { this.releaseSteering(session, session.active); session.active = undefined; }
+      if (session.active) { this.clearErrorResultWatchdog(session.active); this.releaseSteering(session, session.active); session.active = undefined; }
       await this.closeSteeringHook(session).catch(() => {});
       throw error;
     }
@@ -1480,7 +1612,7 @@ export class AgyBridge {
    * continuation frame. If the process must be force-stopped on timeout or exits via a signal,
    * native persistence is unconfirmed and the continuation is not sent.
    */
-  async continueNetworkFailure(session, active, attempt, result) {
+  async continueNetworkFailure(session, active, attempt, result, { allowForcedExit = false } = {}) {
     if (session.active !== active || session.cancelling || session.denied) return undefined;
     const conversationId = typeof result?.conversation_id === 'string' && result.conversation_id ? result.conversation_id : undefined;
     if (!conversationId || !NATIVE_ID.test(conversationId)) return undefined;
@@ -1521,7 +1653,7 @@ export class AgyBridge {
         session.mcpPlugin = undefined;
         session.mcpBound.clear();
         session.mcpReady.clear();
-        if (forceStopped || signal !== null || !Number.isSafeInteger(exitCode) || exitCode < 0) {
+        if (!allowForcedExit && (forceStopped || signal !== null || !Number.isSafeInteger(exitCode) || exitCode < 0)) {
           exitUnconfirmed = {
             outcome: 'exit_unconfirmed',
             conversationId,
@@ -1531,8 +1663,14 @@ export class AgyBridge {
           };
           return;
         }
-        await this.audit(session, 'close', { pid: owned.pid, processEnded: true, exitCode, signal: null });
-        const backoff = this.networkRecoveryBackoffMs[attempt - 1];
+        await this.audit(session, 'close', {
+          pid: owned.pid,
+          processEnded: true,
+          exitCode,
+          signal,
+          forcedAfterWatchdog: allowForcedExit && forceStopped ? true : undefined,
+        });
+        const backoff = this.networkRecoveryBackoffMs[Math.min(attempt - 1, this.networkRecoveryBackoffMs.length - 1)] ?? 0;
         const { signal: recoverySignal } = active.recoveryAbort;
         if (backoff > 0) {
           try { await delay(backoff, undefined, { signal: recoverySignal }); }
@@ -1563,6 +1701,8 @@ export class AgyBridge {
     if (!child || child.exitCode !== null || child.signalCode !== null) return 'not-written';
     active.continuationWriter = child;
     active.promptConsumed = false;
+    active.consecutiveErrorSteps = 0;
+    active.lastErrorStepText = undefined;
     active.segmentStart = active.text.length;
     active.finalResponseDone = false;
     active.finalResponseStepIndex = undefined;
@@ -1578,6 +1718,7 @@ export class AgyBridge {
 
   async cancelOwnedSession(session) {
     const active = session.active;
+    this.clearErrorResultWatchdog(active);
     active?.recoveryAbort.abort();
     session.broken = true;
     let requestAuditError;
@@ -1621,7 +1762,7 @@ export class AgyBridge {
   close() {
     this.closePromise ??= Promise.all([...this.sessions.values()].map(async session => {
       if (session.cancelling) await session.cancelling.catch(() => {});
-      const active = session.active; session.active = undefined; session.broken = true;
+      const active = session.active; this.clearErrorResultWatchdog(active); session.active = undefined; session.broken = true;
       try {
         const unresolved = this.unresolvedTools(session);
         if (active && unresolved.length) {

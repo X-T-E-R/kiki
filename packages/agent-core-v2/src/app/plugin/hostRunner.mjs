@@ -205,8 +205,10 @@ async function prepareToolResult(id, result, signal) {
   return { output, isError: result.isError, truncated };
 }
 const pending = new Map();
-const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
-console.log = (...args) => console.error(...args);
+const rpcWrite = process.stdout.write.bind(process.stdout);
+const send = (message) => rpcWrite(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+process.stdout.write = (chunk, encoding, callback) => process.stderr.write(chunk, encoding, callback);
+for (const method of ['log', 'info', 'debug', 'warn']) console[method] = (...args) => console.error(...args);
 
 let started = false;
 let installPrerequisite;

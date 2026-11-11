@@ -44,6 +44,7 @@ import {
   type IAgentExecutionService as AgentExecution,
 } from '#/agent/execution/execution';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
+import { turnKey } from '#/agent/loop/turnOps';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import {
   IAgentLLMRequesterService,
@@ -2776,6 +2777,79 @@ describe('agent collaboration safe-boundary delivery', () => {
     } finally { await service.dispose(); }
   });
 
+  it('keeps pre-cancel queued messages parked when the active run ends cancelled and deduplicates repeated broken notices', async () => {
+    const store = mailboxStore(tempDir());
+    const enqueued: ContextMessage[] = [];
+    const sender = agentHandle('main', { enqueued });
+    const target = agentHandle('agent-target', { executorId: 'agy-cli', recoverableBroken: true });
+    target.setRunning(true);
+    let releaseSettled!: () => void;
+    const cancelGate = new Promise<void>((resolve) => { releaseSettled = resolve; });
+    vi.spyOn(target.execution, 'settled').mockImplementation(async () => {
+      await cancelGate;
+      target.setLastEndedReason('cancelled');
+      target.setRunning(false);
+    });
+    const dispatch = dispatchHarness();
+    const lifecycle = lifecycleHarness([sender.handle, target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    const service = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ main: {}, 'agent-target': {} }),
+      dispatch,
+      residency.manager,
+    );
+    try {
+      const first = await service.send({
+        ...sendInput('queued before TaskStop', 'pre-cancel-1'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      const second = await service.send({
+        ...sendInput('second queued before TaskStop', 'pre-cancel-2'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      expect(first.delivery).toBe('queued');
+      expect(second.delivery).toBe('queued');
+      releaseSettled();
+      await waitUntil(() => residency.pins() === 0);
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      expect(enqueued).toEqual([]);
+      expect((await store.accept(messageInput('queued before TaskStop', 'pre-cancel-1'))).delivery).toBe('queued');
+      expect((await store.accept(messageInput('second queued before TaskStop', 'pre-cancel-2'))).delivery).toBe('queued');
+      expect(target.messages).toEqual([]);
+
+      target.setExecutionState('broken');
+      await service.send({
+        ...sendInput('third while broken', 'broken-spam-1'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      await service.send({
+        ...sendInput('fourth while broken', 'broken-spam-2'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      await waitUntil(() => residency.pins() === 0);
+      expect(enqueued).toHaveLength(1);
+
+      await target.execution.hooks.onWillRun.run({ signal });
+      await service.send({
+        ...sendInput('fifth after run reset', 'broken-spam-3'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      await waitUntil(() => residency.pins() === 0);
+      expect(enqueued).toHaveLength(2);
+    } finally {
+      releaseSettled();
+      await service.dispose();
+    }
+  });
+
   it('leaves a saved message for an already admitted next turn', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -4201,6 +4275,7 @@ function agentHandle(
 ) {
   const messages: ContextMessage[] = [];
   const materialized: Record<string, true> = {};
+  let lastEndedReason: string | undefined;
   const operations: string[] = [];
   const pendingSteers: Array<{
     readonly message: ContextMessage;
@@ -4386,7 +4461,15 @@ function agentHandle(
     accessor: {
       get<T>(id: unknown): T {
         if (id === IAgentContextMemoryService) return memory as T;
-        if (id === IAgentStateService) return { get: (key: unknown) => key === agentMessageMaterializationsKey ? materialized : {} } as T;
+        if (id === IAgentStateService) {
+          return {
+            get: (key: unknown) => key === agentMessageMaterializationsKey
+              ? materialized
+              : key === turnKey
+                ? { lastEnded: lastEndedReason === undefined ? undefined : { turnId: 1, reason: lastEndedReason } }
+                : {},
+          } as T;
+        }
         if (id === IAgentExecutionService) return execution as T;
         if (id === IAgentLoopService) return loop as T;
         if (id === IAgentPromptService) return prompt as T;
@@ -4421,6 +4504,9 @@ function agentHandle(
     },
     setExecutionState(next: 'starting' | 'cancelling' | 'broken') {
       state = next;
+    },
+    setLastEndedReason(reason: string | undefined) {
+      lastEndedReason = reason;
     },
     failHeldStart(error: unknown) {
       rejectHeldStart(error);

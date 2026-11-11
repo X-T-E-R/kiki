@@ -135,6 +135,7 @@ export const IPluginHostService = createDecorator<IPluginHostService>('pluginHos
 export class PluginHostService extends Service implements IPluginHostService {
   declare readonly _serviceBrand: undefined;
   private readonly hosts = new Map<string, PluginHost>();
+  private readonly hostSignatures = new Map<string, string>();
   private readonly active = new Map<string, Set<Promise<unknown>>>();
   private readonly gates = new Map<string, Promise<void>>();
   private globalGate: Promise<void> | undefined;
@@ -256,18 +257,35 @@ export class PluginHostService extends Service implements IPluginHostService {
         await Promise.allSettled(this.residentLifecycle);
         const affected = this.affectedPlugins(event.affected);
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
-        await this.imAdaptersSink?.withdraw(affected);
         const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
+        await Promise.all(ids.map((id) => Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>())));
+        const preserved = affected === undefined
+          ? new Set([...this.hosts].filter(([, host]) => host.running && host.hasActiveLeases).map(([id]) => id))
+          : new Set<string>();
+        if (affected !== undefined || preserved.size === 0) {
+          await this.imAdaptersSink?.withdraw(affected);
+        } else {
+          const withdrawIds = ids.filter((id) => !preserved.has(id));
+          if (withdrawIds.length > 0) await this.imAdaptersSink?.withdraw(withdrawIds);
+        }
         await Promise.all(ids.map(async (id) => {
-          await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
+          if (preserved.has(id)) return;
           const host = this.hosts.get(id);
           this.hosts.delete(id);
+          this.hostSignatures.delete(id);
           await host?.stopAndWait();
         }));
       })());
     }));
     this._register(this.plugins.onDidReload((event) => {
       event.waitUntil((async () => {
+        try {
+          await this.reconcilePreservedHosts();
+        } catch (error) {
+          this.logger?.current?.warn('plugin preserved host reconciliation failed after reload', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         try {
           await this.reconcileResidents(event.affected);
         } catch (error) {
@@ -316,7 +334,28 @@ export class PluginHostService extends Service implements IPluginHostService {
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
+    this.hostSignatures.clear();
     await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
+  }
+
+  private async reconcilePreservedHosts(): Promise<void> {
+    if (this.closing || this.hosts.size === 0) return;
+    const installed = new Map((await this.plugins.listPlugins()).map((item) => [item.id, item]));
+    await Promise.all([...this.hosts.entries()].map(async ([id, host]) => {
+      if (id === builtinHistory.id) return;
+      const summary = installed.get(id);
+      const info = summary !== undefined && summary.enabled && summary.state === 'ok'
+        ? await this.plugins.getPluginInfo({ id }).catch(() => undefined)
+        : undefined;
+      if (info !== undefined && info.enabled && info.state === 'ok' &&
+          this.hostSignatures.get(id) === hostSignature(info)) return;
+      await this.imAdaptersSink?.withdraw([id]);
+      if (this.hosts.get(id) === host) {
+        this.hosts.delete(id);
+        this.hostSignatures.delete(id);
+      }
+      await host.stopAndWait();
+    }));
   }
 
   private reconcileResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
@@ -639,7 +678,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     });
   }
 
-  private getHost(info: Pick<PluginInfo, 'id' | 'manifest'>): PluginHost {
+  private getHost(info: Pick<PluginInfo, 'id' | 'manifest'> & Partial<Pick<PluginInfo, 'root' | 'version'>>): PluginHost {
     let host = this.hosts.get(info.id);
     if (host === undefined) {
       const updateSettings = async (values: Record<string, string | number | boolean | null>) => {
@@ -661,8 +700,11 @@ export class PluginHostService extends Service implements IPluginHostService {
             return credentialStatus(await updateSettings({ [setting]: value }), setting);
           },
         },
-      }, info.manifest?.kiki?.harnessQuotaSources, () => this.cachedHarnessQuota());
+      }, info.manifest?.kiki?.harnessQuotaSources, () => this.cachedHarnessQuota(), (exit) => {
+        if (!this.closing) this.logger?.current?.warn('Plugin host exited unexpectedly', exit);
+      });
       this.hosts.set(info.id, host);
+      this.hostSignatures.set(info.id, hostSignature(info));
     }
     return host;
   }
@@ -723,6 +765,10 @@ export class PluginHostService extends Service implements IPluginHostService {
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined {
     return this.navigationRequest !== undefined && Date.now() - this.navigationRequest.at < 10000 ? this.navigationRequest : undefined;
   }
+}
+
+function hostSignature(info: Pick<PluginInfo, 'id' | 'manifest'> & Partial<Pick<PluginInfo, 'root' | 'version'>>): string {
+  return JSON.stringify([info.id, info.root ?? '', info.version ?? '', info.manifest]);
 }
 
 function credentialStatus(view: import('./pluginSettingsService').SettingsView, setting: string): import('@kiki/protocol').PluginCredentialStatus {

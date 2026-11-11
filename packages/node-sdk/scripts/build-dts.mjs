@@ -20,6 +20,7 @@ const workspacePackages = new Map([
   ['@kiki/kaos', 'kaos'],
   ['@kiki/oauth', 'oauth'],
   ['@kiki/klient', 'klient'],
+  ['@kiki/plugin-sdk', 'plugin-sdk'],
   ['@kiki/protocol', 'protocol'],
   ['@kiki/transcript', 'transcript'],
 ]);
@@ -110,7 +111,7 @@ async function rewriteWorkspaceSpecifiers() {
           `import { GoogleGenAI as GenAIClient } from '${providerClientSpecifier}';`,
         );
       const updated = providerClientText.replaceAll(
-        /(["'])(#\/[^"']+|@kiki\/(?:agent-core-v2|agent-profiles|acp-client|codex-client|kaos|oauth|klient|protocol|transcript)(?:\/[^"']+)?)\1/g,
+        /(["'])(#\/[^"']+|@kiki\/(?:agent-core-v2|agent-profiles|acp-client|codex-client|kaos|oauth|klient|plugin-sdk|protocol|transcript)(?:\/[^"']+)?)\1/g,
         (_match, quote, specifier) => {
           const resolved = resolveSpecifier({
             currentFile: file,

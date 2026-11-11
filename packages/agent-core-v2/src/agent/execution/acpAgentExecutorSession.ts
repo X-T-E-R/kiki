@@ -147,6 +147,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
   #promptAttempted = false;
+  #lastTurnCancelled = false;
   #harnessMcp: HarnessMcpLease | undefined;
   #permissionRestore: { readonly sessionId: string; readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
 
@@ -260,6 +261,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }));
       await this.#dispatcher.flush();
     } }).catch(async (error: unknown) => {
+      this.#lastTurnCancelled = false;
       if (error instanceof AcpClientError && error.cause instanceof HarnessAccountStartupError) throw error.cause;
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
@@ -274,6 +276,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw error;
     });
     const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
+    this.#lastTurnCancelled = false;
     if (
       (sessionOptions.additionalDirectories?.length ?? 0) > 0 &&
       (opened.capabilities.sessionCapabilities?.additionalDirectories === null
@@ -326,7 +329,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       this.context.descriptor.id, this.context.descriptor.version, negotiated, this.context.descriptor.registryRevision,
     );
-    const handoff = this.context.binding.execution === undefined && opened.mode === 'new' && prior.sessionRef !== undefined
+    const handoff = (this.context.binding.execution === undefined || sessionOptions.allowRetiredSessionFallback === true) &&
+        opened.mode === 'new' && prior.sessionRef !== undefined
       ? buildHandoff(this.#memory.get())
       : undefined;
     if (handoff !== undefined) {
@@ -425,7 +429,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         prompt: remotePrompt,
         attachments: acpAttachments(externalAttachments(request)),
         signal: controller.signal,
-        session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true },
+        session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true, allowRetiredSessionFallback: undefined },
         onDeliveryAttempt: () => { attempt.possibleDelivery = true; },
         prepareSession: async actual => {
           if (actual.sessionId !== configured.sessionId) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP session identity changed before prompt');
@@ -512,7 +516,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       };
     }
     const state = this.#client.status().state;
-    if (state === 'broken') return { state: 'broken' };
+    if (state === 'broken' && !this.#lastTurnCancelled) return { state: 'broken' };
     if (
       state === 'spawning' ||
       state === 'initializing' ||
@@ -709,6 +713,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }
       if (turnResult.type === 'cancelled') {
         turn.state = 'cancelled';
+        this.#lastTurnCancelled = true;
         await recorder.cancel(turnResult.reason);
         result.resolve(turnResult);
         throw toError(turnResult.reason, 'External ACP turn was cancelled');
@@ -725,6 +730,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       if (controller.signal.aborted) {
         const reason = controller.signal.reason ?? error;
         turn.state = 'cancelled';
+        this.#lastTurnCancelled = true;
         await recorder.cancel(reason);
         result.resolve({ type: 'cancelled', steps: 1, reason });
       } else if (!isTerminalTurnState(turn.state)) {
@@ -770,6 +776,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const legacy = servers.length === 0 ? this.#legacyAgyRecovery(state, roots) : undefined;
     const sessionMeta = { ...this.#harnessMcp?.sessionMeta, 'kiki.permission': externalPermissionMeta(this.context), 'kiki.agyLegacyRecovery': legacy };
     const settings = this.context.descriptor.claudeSettingsFile;
+    const cancelledPriorTurn = (this.#lastTurnCancelled || this.#states.get(turnKey).lastEnded?.reason === 'cancelled') &&
+      state.sessionRef?.ref['localSource'] === undefined;
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
@@ -782,9 +790,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         this.context.binding,
         this.context.descriptor,
         state,
-        this.#client.status().state === 'broken',
+        this.#client.status().state === 'broken' && !cancelledPriorTurn,
         this.#reusablePriorState(state) || legacy !== undefined,
       ),
+      allowRetiredSessionFallback: cancelledPriorTurn || undefined,
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0

@@ -106,6 +106,8 @@ export interface AcpOpenSessionOptions {
   readonly sessionRef?: ExecutorSessionRefEnvelope;
   /** Fail instead of creating a new session if the supplied reference cannot be resumed or loaded. */
   readonly requireResume?: boolean;
+  /** Allow creating a new session when the supplied reference was explicitly retired after cancellation. */
+  readonly allowRetiredSessionFallback?: boolean;
   readonly onFork?: (ref: ExecutorSessionRefEnvelope) => Promise<void>;
   readonly configOptions?: readonly AcpSessionConfigSelection[];
   readonly modeId?: string;

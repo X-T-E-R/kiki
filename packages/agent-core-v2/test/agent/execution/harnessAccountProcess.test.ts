@@ -298,6 +298,40 @@ describe('loopback account lease continuation', () => {
     expect(secondRelease).toHaveBeenCalledOnce();
   });
 
+  it('transparently replaces a refused loopback sidecar within the same bounded request', async () => {
+    const secondBodies: Array<{ text: string; key: string | undefined }> = [];
+    const first = createServer((_req, res) => { res.end('first-result'); });
+    const second = createServer((req, res) => {
+      void (async () => {
+        secondBodies.push({ text: (await buffer(req)).toString(), key: req.headers['x-goog-api-key'] as string | undefined });
+        res.end('recovered-same-request');
+      })().catch(() => { req.socket.destroy(); });
+    });
+    const firstRelease = vi.fn(async () => {});
+    const secondRelease = vi.fn(async () => {});
+    let broker: Awaited<ReturnType<typeof openHarnessAccountBroker>>;
+    const [firstPort, secondPort] = await Promise.all([listen(first), listen(second)]);
+    const firstConnection: HarnessAccountConnection = { protocol: 'gemini-v1beta', baseUrl: `http://127.0.0.1:${firstPort}`, apiKey: 'first-key', modelIds: ['fixture-model'] };
+    const secondConnection: HarnessAccountConnection = { ...firstConnection, baseUrl: `http://127.0.0.1:${secondPort}`, apiKey: 'second-key' };
+    const prepare = vi.fn(async () => ({ connection: secondConnection, release: secondRelease }));
+    try {
+      broker = await openHarnessAccountBroker({ connection: firstConnection, release: firstRelease }, prepare, () => {}, vi.fn());
+      await close(first);
+      const reply = await fetch(`${broker!.connection.baseUrl}/v1beta/models/fixture:streamGenerateContent?alt=sse`, {
+        method: 'POST', headers: { 'x-goog-api-key': 'first-key', 'content-type': 'application/json' }, body: '{"contents":[]}', signal: AbortSignal.timeout(5000),
+      });
+      expect(reply.status).toBe(200);
+      expect(await reply.text()).toBe('recovered-same-request');
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(secondBodies).toEqual([{ text: '{"contents":[]}', key: 'second-key' }]);
+      await vi.waitFor(() => { expect(firstRelease).toHaveBeenCalledOnce(); });
+    } finally {
+      await broker?.close();
+      await Promise.all([close(first), close(second)]);
+    }
+    expect(secondRelease).toHaveBeenCalledOnce();
+  });
+
   it('leaves remote account connections on their existing direct path', async () => {
     const connection: HarnessAccountConnection = { protocol: 'openai-responses', baseUrl: 'https://account.example.test/v1', apiKey: 'selected-key', modelIds: ['fixture-model'] };
     const release = vi.fn(async () => {});
