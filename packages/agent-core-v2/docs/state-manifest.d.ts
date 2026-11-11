@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 121 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 123 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -129,6 +129,8 @@
 //     permissionRules                                 src/agent/permissionRules/permissionRulesOps.ts
 //     plan                                            src/features/plan/planOps.ts
 //     plan.wasActive                                  src/features/plan/injection/planModeInjection.ts
+//     plugin.states.conversation                      src/agent/pluginState/pluginStateKeys.ts
+//     plugin.states.world                             src/agent/pluginState/pluginStateKeys.ts
 //     pluginSessionStartSnapshot                      src/agent/plugin/agentPluginOps.ts
 //     profile                                         src/agent/profile/profileOps.ts
 //     profile.activeToolNamesOverlay                  src/agent/profile/profileService.ts
@@ -590,6 +592,13 @@ export interface SessionStateSnapshot {
       readonly baseRef: string;
     };
     readonly forkedFrom?: string;
+    readonly promotedFrom?: /* SessionPromotedFrom — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
+      readonly sessionId: string;
+      readonly agentId: string;
+      readonly agentName?: string;
+      readonly profile?: string;
+      readonly promotedAt?: number;
+    };
     readonly agents?: Readonly<Record<string, /* AgentMeta — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
       readonly createdAt?: number;
       readonly execution?: {
@@ -2811,11 +2820,115 @@ export interface AgentStateSnapshot {
       readonly compactionSoftContextSize: number | undefined;
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
+      readonly preBaselinePatch?: /* PreBaselineRequestPatch — packages/agent-core-v2/src/kosong/contract/extensionHooks.ts */ {
+        readonly extraHeaders?: Readonly<Record<string, string>>;
+        readonly sampling?: Readonly</* SamplingOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
+          readonly temperature?: number;
+          readonly topP?: number;
+        }>;
+        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly thinkingEffort?: 'off' | 'on' | (string & {});
+        readonly maxCompletionTokens?: number;
+        readonly extraRequestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
+        readonly deterministicVendorFields?: Readonly<Record<string, /* TransportJsonValue — packages/agent-core-v2/src/kosong/contract/extensionHooks.ts */ boolean | string | number | readonly (/* TransportJsonValue — recursive (packages/agent-core-v2/src/kosong/contract/extensionHooks.ts) */ unknown)[] | {
+          [key: string]: /* TransportJsonValue — recursive (packages/agent-core-v2/src/kosong/contract/extensionHooks.ts) */ unknown;
+        } | null>>;
+        readonly forceFullResponsesInput?: boolean;
+      };
+      readonly streamTaps?: readonly (/* LLMStreamTapObserver — packages/agent-core-v2/src/kosong/contract/extensionHooks.ts */ (part: Readonly</* StreamedMessagePart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'text';
+        text: string;
+        presentation?: unknown;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
+        resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly uri: string;
+          readonly name?: string;
+          readonly mimeType?: string;
+          readonly size?: number;
+          readonly title?: string;
+          readonly description?: string;
+        };
+      } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'think';
+        think: string;
+        encrypted?: string;
+        redacted?: string;
+        reasoningKey?: string;
+        reasoningDetails?: readonly Record<string, unknown>[];
+        hidden?: boolean;
+      } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'image_url';
+        imageUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+        };
+      } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'audio_url';
+        audioUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+        };
+      } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'video_url';
+        videoUrl: {
+          url: string;
+          id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+        };
+      } | /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'function';
+        id: string;
+        name: string;
+        arguments: string | null;
+        extras?: Record<string, unknown>;
+        _streamIndex?: string | number;
+      } | /* ToolCallPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'tool_call_part';
+        argumentsPart: string | null;
+        index?: string | number;
+      }>, control: /* StreamTapAbortControl — packages/agent-core-v2/src/kosong/contract/extensionHooks.ts */ {
+        abortForRecovery: (reason: {
+          readonly pluginId: string;
+          readonly code: string;
+          readonly detail: string;
+        }) => void;
+      }) => undefined)[];
       readonly cacheKey?: string;
       readonly googleContinuationToken?: string;
-      readonly serviceTier?: 'default' | 'auto' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
         kind: 'api_default';
-      } | 'flex' | 'priority';
+      };
       readonly headers?: Readonly<Record<string, string>>;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
       readonly sampling?: /* SamplingOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
@@ -2864,6 +2977,8 @@ export interface AgentStateSnapshot {
           apiKey: string;
           headers: Readonly<Record<string, string>>;
           signal?: AbortSignal;
+          forceFullInput?: boolean;
+          baselinePolicyKey?: string;
           canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
             readonly input: readonly unknown[];
             readonly incremental: boolean;
@@ -2890,6 +3005,8 @@ export interface AgentStateSnapshot {
             apiKey: string;
             headers: Readonly<Record<string, string>>;
             signal?: AbortSignal;
+            forceFullInput?: boolean;
+            baselinePolicyKey?: string;
             canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
               readonly input: readonly unknown[];
               readonly incremental: boolean;
@@ -3742,9 +3859,9 @@ export interface AgentStateSnapshot {
         };
         maxCompletionTokens?: number;
         thinkingEffort?: string;
-        serviceTier?: 'default' | 'auto' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+        serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
           kind: 'api_default';
-        } | 'flex' | 'priority';
+        };
       };
       requestIdentity?: /* RequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
         preset?: 'none' | 'codex_compatible' | 'claude_code_compatible' | 'grok_build_compatible' | 'opencode_compatible' | 'kimi_code';
@@ -3866,7 +3983,7 @@ export interface AgentStateSnapshot {
       readonly turnId: number;
       readonly reason: 'cancelled' | 'completed' | 'failed' | 'blocked';
       readonly error?: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-        readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+        readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'RESERVED_HEADER_FORBIDDEN' | 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' | 'TOOL_ORDER_MUTATION_FORBIDDEN' | 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' | 'THINKING_DISABLE_WITH_SIGNED_HISTORY' | 'STREAM_TAP_RECOVERY_ABORT' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle' | 'plugin_state.invalid_fact' | 'plugin_state.replay_required' | 'plugin_state.required_unresolved';
         readonly message: string;
         readonly name?: string;
         readonly details?: Readonly<Record<string, unknown>>;
@@ -4046,6 +4163,43 @@ export interface AgentStateSnapshot {
   };
   // src/agent/plugin/agentPluginService.ts
   'agentPlugin.sessionStartRefreshPending': boolean;
+  // src/agent/pluginState/pluginStateKeys.ts
+  // replayable · durable · undoable — folds: PluginFactRecorded
+  'plugin.states.conversation': /* Ledger — packages/agent-core-v2/src/agent/pluginState/pluginStateKeys.ts */ {
+    [key: string]: {
+    required: boolean;
+    unresolved: boolean;
+    slice?: {
+      readonly pluginId: string;
+      readonly schemaVersion: number;
+      readonly reducerVersion: number;
+      readonly updatedAtRevision: number;
+      readonly data: /* PluginStateJsonObject — packages/agent-core-v2/src/agent/pluginState/pluginState.ts */ {
+        [key: string]: /* PluginStateJsonValue — packages/agent-core-v2/src/agent/pluginState/pluginState.ts */ boolean | string | number | readonly (/* PluginStateJsonValue — recursive (packages/agent-core-v2/src/agent/pluginState/pluginState.ts) */ unknown)[] | {
+        [key: string]: /* PluginStateJsonValue — recursive (packages/agent-core-v2/src/agent/pluginState/pluginState.ts) */ unknown;
+      } | null;
+      };
+    };
+  };
+  };
+  // replayable · durable — folds: PluginFactRecorded
+  'plugin.states.world': /* Ledger — packages/agent-core-v2/src/agent/pluginState/pluginStateKeys.ts */ {
+    [key: string]: {
+    required: boolean;
+    unresolved: boolean;
+    slice?: {
+      readonly pluginId: string;
+      readonly schemaVersion: number;
+      readonly reducerVersion: number;
+      readonly updatedAtRevision: number;
+      readonly data: /* PluginStateJsonObject — packages/agent-core-v2/src/agent/pluginState/pluginState.ts */ {
+        [key: string]: /* PluginStateJsonValue — packages/agent-core-v2/src/agent/pluginState/pluginState.ts */ boolean | string | number | readonly (/* PluginStateJsonValue — recursive (packages/agent-core-v2/src/agent/pluginState/pluginState.ts) */ unknown)[] | {
+        [key: string]: /* PluginStateJsonValue — recursive (packages/agent-core-v2/src/agent/pluginState/pluginState.ts) */ unknown;
+      } | null;
+      };
+    };
+  };
+  };
   // src/agent/profile/dynamicPrompt.ts
   // replayable · durable — folds: ProfileDynamicSnapshot
   'profile.dynamicSnapshot': {
@@ -8703,7 +8857,7 @@ export interface AgentStateSnapshot {
         readonly type: 'failed';
         readonly steps: number;
         readonly error: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'RESERVED_HEADER_FORBIDDEN' | 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' | 'TOOL_ORDER_MUTATION_FORBIDDEN' | 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' | 'THINKING_DISABLE_WITH_SIGNED_HISTORY' | 'STREAM_TAP_RECOVERY_ABORT' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle' | 'plugin_state.invalid_fact' | 'plugin_state.replay_required' | 'plugin_state.required_unresolved';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
@@ -8714,7 +8868,7 @@ export interface AgentStateSnapshot {
         readonly type: 'cancelled';
         readonly steps: number;
         readonly reason: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'work.admission_fenced' | 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'mailbox.migration_required' | 'RESERVED_HEADER_FORBIDDEN' | 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' | 'TOOL_ORDER_MUTATION_FORBIDDEN' | 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' | 'THINKING_DISABLE_WITH_SIGNED_HISTORY' | 'STREAM_TAP_RECOVERY_ABORT' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle' | 'plugin_state.invalid_fact' | 'plugin_state.replay_required' | 'plugin_state.required_unresolved';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
