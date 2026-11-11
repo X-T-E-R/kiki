@@ -11,6 +11,7 @@ export interface FlagDefinitionInput {
   readonly description: string;
   readonly env: string;
   readonly default: boolean;
+  readonly mobileDefault?: boolean;
   readonly surface: FlagSurface;
 }
 

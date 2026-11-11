@@ -12,6 +12,7 @@ import { createAppScope, type Scope, type ScopeSeed } from '#/_base/di/scope';
 import { DisposableStore, combinedDisposable, toDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { mobilePlatformOf, type MobilePlatform } from '#/_base/node/resourceDefaults';
 import {
   IFileSystemStorageService,
   StorageError,
@@ -73,6 +74,7 @@ export interface IBootstrapOptions {
   readonly homeDiagnostic?: string;
   readonly osHomeDir: string;
   readonly platform: NodeJS.Platform;
+  readonly mobilePlatform?: MobilePlatform;
   readonly arch: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
@@ -99,6 +101,7 @@ export interface IBootstrapService {
   readonly _serviceBrand: undefined;
 
   readonly platform: NodeJS.Platform;
+  readonly mobilePlatform?: MobilePlatform;
   readonly arch: string;
   readonly cwd: string;
   readonly osHomeDir: string;
@@ -163,6 +166,7 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
   }
   const credentialsHomeDir = baseHomeDir !== undefined && space?.inherit.credentials === 'shared' ? baseHomeDir : homeDir;
   const configPath = input.configPath ?? join(homeDir, 'config.toml');
+  const platform = input.platform ?? process.platform;
   return {
     homeDir,
     configPath,
@@ -175,7 +179,8 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
     userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
     modelAccountHomeDir: input.modelAccountHomeDir ?? credentialsHomeDir,
     osHomeDir,
-    platform: input.platform ?? process.platform,
+    platform,
+    mobilePlatform: mobilePlatformOf(platform, env),
     arch: input.arch ?? process.arch,
     cwd: input.cwd ?? process.cwd(),
     env,

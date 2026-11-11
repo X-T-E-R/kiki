@@ -78,6 +78,21 @@ describe('safe automation drafts', () => {
     expect(config.tools.disabled).toEqual(['Write']);
   });
 
+  it('lets profile mode restore an inactive platform-default-off tool into tools.restored', async () => {
+    client.listTools.mockResolvedValueOnce({
+      tools: [
+        { name: 'Read', description: 'Read', active: true },
+        { name: 'Bash', description: 'Bash', active: false },
+      ],
+    });
+    await mount();
+    expect(policyValue('Bash')).toBe('inherited');
+    await pick(policy('Bash'), 'Selected');
+    expect(policyValue('Bash')).toBe('enabled');
+    await click('Save tool policy');
+    expect(config.tools).toEqual({ enabled: [], disabled: [], restored: ['Bash'] });
+  });
+
   it('saves each Experimental row on change, keeps other overrides and flags an environment override', async () => {
     await mount('rows');
     const rows = container.querySelector('#st-card-exp-extensions')!;

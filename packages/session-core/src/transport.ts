@@ -212,7 +212,7 @@ export interface RuntimeConfigProjection {
   readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
-  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[]; readonly restored?: string[] };
   readonly agents?: {
     readonly enabled?: boolean;
     readonly notify_parent?: boolean;
@@ -278,7 +278,7 @@ export interface RuntimeConfigPatch {
   readonly skip_builtin_profile_installation?: string[];
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
-  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[]; readonly restored?: string[] };
   readonly agents?: {
     readonly enabled?: boolean;
     readonly notify_parent?: boolean;

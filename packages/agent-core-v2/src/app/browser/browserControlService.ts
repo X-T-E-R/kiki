@@ -1,7 +1,9 @@
 import { hostname } from 'node:os';
 
+import { IInstantiationService } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { LifecycleScope } from '#/app/scopes';
 import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 
@@ -151,8 +153,19 @@ export class BrowserControlService implements IBrowserControlService {
     @IFlagService private readonly flags: IFlagService,
     @IHostProcessService processes: IHostProcessService,
     @IHostFileSystem files: IHostFileSystem,
+    @IInstantiationService private readonly instantiation?: IInstantiationService,
   ) {
     this.ego = new EgoBrowserRuntime(processes, files);
+  }
+
+  private featureEnabled(): boolean {
+    if (this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) return true;
+    if (this.flags.explain?.(NATIVE_BROWSER_FLAG_ID)?.source !== 'default') return false;
+    try {
+      return this.instantiation?.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy))?.anyMayUse('browser') === true;
+    } catch {
+      return false;
+    }
   }
 
   async list() {
@@ -178,7 +191,7 @@ export class BrowserControlService implements IBrowserControlService {
     if (listed.disabledSources?.includes('ego-lite') === true) {
       throw new BrowserError('browser.disabled', 'This browser source is disabled', { details: { reason: 'connection_disabled' } });
     }
-    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) {
+    if (!this.featureEnabled()) {
       throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
     }
     const saved = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
@@ -402,7 +415,7 @@ export class BrowserControlService implements IBrowserControlService {
 
   private async assertAdmission(live: LiveBrowser): Promise<void> {
     const current = await this.store.resolve(live.connection.id);
-    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
+    if (!this.featureEnabled()) throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
     if (!current.enabled) throw new BrowserError('browser.disabled', 'This browser connection is disabled', { details: { reason: 'connection_disabled' } });
     const listed = await this.store.list();
     if (listed.disabledSources?.includes(browserSourceOfConnection(current)) === true) {

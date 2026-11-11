@@ -7,6 +7,7 @@ export const TOOLS_SECTION = 'tools';
 export const ToolsConfigSchema = z.object({
   enabled: z.array(z.string()).optional(),
   disabled: z.array(z.string()).optional(),
+  restored: z.array(z.string()).optional(),
 });
 
 export type ToolsConfig = z.infer<typeof ToolsConfigSchema>;

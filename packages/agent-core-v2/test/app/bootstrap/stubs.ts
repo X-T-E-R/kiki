@@ -5,6 +5,7 @@ import {
   type HostArgsInput,
   type PersistenceScopeName,
 } from '#/app/bootstrap/bootstrap';
+import { mobilePlatformOf } from '#/_base/node/resourceDefaults';
 import type { SpaceHome } from '#/app/bootstrap/spaceHome';
 
 export const stubClientIdentity = {
@@ -38,6 +39,7 @@ export function stubBootstrap(
   return {
     _serviceBrand: undefined,
     platform: 'linux',
+    mobilePlatform: mobilePlatformOf('linux', env),
     arch: 'x64',
     cwd: '/tmp',
     osHomeDir: '/home/test',

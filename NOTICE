@@ -79,6 +79,16 @@ Vendored and adapted source
   Copyright (c) 2025 Jason Young; full license and adaptation notice:
   packages/kap-server/src/usage/quota/CC-SWITCH-LICENSE and NOTICE.
 
+* Mika — Apache-2.0
+  https://github.com/wangzan101/Mika
+  Recorded mobile donor revision: 1473f143285950f1266378f4c1ad613efb182ee9.
+  Mobile host control frames, secret-broker credential handoff, mobile
+  capability defaults, and companion device-bridge patterns in
+  apps/kimi-code/src/mobile-entry.ts and packages/agent-core-v2.
+  Copyright 2026 wangzan101. Companion mobile host distributions separately
+  carry notices for native host components (such as Termux Bionic Node.js LTS,
+  PRoot subprocess sandboxes, and scrcpy-derived device helpers) where shipped.
+
 * LiteLLM — MIT
   https://github.com/BerriAI/litellm
   Model price/context-window snapshot in packages/kap-server/vendor/litellm.

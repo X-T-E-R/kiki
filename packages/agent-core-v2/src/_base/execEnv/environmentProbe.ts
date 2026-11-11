@@ -52,7 +52,10 @@ const MINGW_PREFIX_SET: ReadonlySet<string> = new Set([
   'clangarm64',
 ]);
 
-function resolveOsKind(platform: string): OsKind {
+function resolveOsKind(platform: string, env: Readonly<Record<string, string | undefined>>): OsKind {
+  const configured = env['KIKI_PLATFORM']?.trim().toLowerCase();
+  if (configured === 'android') return 'Android';
+  if (configured === 'ios') return 'iOS';
   switch (platform) {
     case 'darwin':
       return 'macOS';
@@ -60,6 +63,8 @@ function resolveOsKind(platform: string): OsKind {
       return 'Linux';
     case 'android':
       return 'Android';
+    case 'ios':
+      return 'iOS';
     case 'win32':
       return 'Windows';
     default:
@@ -75,7 +80,7 @@ function inferPosixShellName(shellPath: string): 'bash' | 'sh' {
 export async function probeHostEnvironment(
   deps: HostEnvironmentProbeDeps,
 ): Promise<HostEnvironmentInfo> {
-  const osKind = resolveOsKind(deps.platform);
+  const osKind = resolveOsKind(deps.platform, deps.env);
   const osArch = deps.arch;
   const osVersion = deps.release;
   const pathClass: PathClass = deps.platform === 'win32' ? 'win32' : 'posix';

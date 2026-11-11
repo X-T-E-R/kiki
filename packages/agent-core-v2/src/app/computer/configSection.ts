@@ -13,9 +13,10 @@ export const ComputerConfigSchema = z.object({
 export type ComputerConfig = z.infer<typeof ComputerConfigSchema>;
 export const DEFAULT_COMPUTER_USAGE_PREFERENCE: ComputerUsagePreference = 'avoid';
 
-/** Absent `enabled` stays on. Only an explicit `false` withholds the computer tool group. */
-export function computerToolsEnabled(config: ComputerConfig | undefined): boolean {
-  return config?.enabled !== false;
+/** Absent `enabled` stays on on desktop hosts and off on mobile hosts unless explicitly configured. */
+export function computerToolsEnabled(config: ComputerConfig | undefined, mobile = false): boolean {
+  if (config?.enabled !== undefined) return config.enabled;
+  return !mobile;
 }
 
 registerConfigSection(COMPUTER_CONFIG_SECTION, ComputerConfigSchema, {

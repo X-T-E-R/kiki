@@ -16,6 +16,7 @@ Kiki 建立在很多人的工作之上。这一页列出 Kiki 复用了代码的
 - **[grok-build](https://github.com/xai-org/grok-build)**（Apache-2.0）。编辑 diff 采用 grok-build 的做法：三行上下文、合并相邻片段、「N unchanged lines」分隔行，以及 `+N/-M` 的改动统计。
 - **[LiveAgent](https://github.com/Stack-Cairn/LiveAgent)**（MIT）。桌面应用唤醒后重连的策略、对托管服务进程的有界关闭，改编自 LiveAgent。输入框的右键菜单和时间线边缘按消息分布的刻度导航条，参照了 LiveAgent 的同类组件。
 - **[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)**（MIT）。对话外壳的很多部分来自这里：首屏与停靠两种输入框形态、统一的内容宽度、思考行的摘要规则和扫光动画、失败优先的工具摘要、每轮的运行计时和结尾读数，以及用户消息里的 `@智能体` 标签。SQLite 搜索索引的 schema 校验改编自它的 session-query 包。
+- **[Mika](https://github.com/wangzan101/Mika)**（Apache-2.0）。Kiki 移动端运行时入口、宿主控制帧协议、系统凭据代理桥接与手机端工具默认策略，吸收了 Mika 在端侧 Node.js 宿主桥接、无障碍检查与受控终端沙箱上的设计。
 - **[LiteLLM](https://github.com/BerriAI/litellm)**（MIT）。Kiki 在 `packages/kap-server/vendor/litellm` 中附带 LiteLLM 的模型价格与上下文窗口表快照，并用 NOTICE 记录上游版本。
 - **[nb-search](https://github.com/NB-Corp/nb-search)**（MIT）。联网搜索和网页抓取基于 nb-search，以打过补丁的发布包形式内置在 `vendor/` 下，附带许可证和补丁来源记录。
 - **[tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)**（MIT）。Kiki 用纯 TypeScript 写的 bash 解析器（用来判断一条 shell 命令能否放行）复现了 tree-sitter-bash 的语法规则和节点类型，并以真实语法做对照测试。

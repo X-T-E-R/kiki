@@ -1,6 +1,7 @@
 import { basename, join, relative } from 'pathe';
 
 import type { KimiHostIdentity } from '@kiki/oauth';
+import { mobilePlatformOf, type MobilePlatform } from '#/_base/node/resourceDefaults';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import type { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -18,6 +19,7 @@ export class BootstrapService implements IBootstrapService {
   declare readonly _serviceBrand: undefined;
 
   readonly platform: NodeJS.Platform;
+  readonly mobilePlatform?: MobilePlatform;
   readonly arch: string;
   readonly cwd: string;
   readonly osHomeDir: string;
@@ -48,6 +50,7 @@ export class BootstrapService implements IBootstrapService {
 
   constructor(@IBootstrapOptions options: IBootstrapOptions) {
     this.platform = options.platform;
+    this.mobilePlatform = options.mobilePlatform ?? mobilePlatformOf(options.platform, options.env);
     this.arch = options.arch;
     this.cwd = options.cwd;
     this.osHomeDir = options.osHomeDir;

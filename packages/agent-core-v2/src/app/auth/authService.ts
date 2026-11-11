@@ -1209,7 +1209,8 @@ class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
     const originalKeyring = createOriginalOAuthKeyring({ homeDir: bootstrap.credentialsHomeDir });
     const originalKimi = new KimiOriginalOAuthService({ storageDeps: { loadKeyring: () => keyring } });
     const credentialsDir = `${bootstrap.modelAccountHomeDir}/credentials`;
-    const useBrokerStorage = bootstrap.getEnv('KIKI_SECRET_BACKEND') === 'android-broker' &&
+    const backendMode = bootstrap.getEnv('KIKI_SECRET_BACKEND')?.trim();
+    const useBrokerStorage = (backendMode === 'android-broker' || backendMode === 'mobile-broker') &&
       Boolean(bootstrap.getEnv('KIKI_SECRET_BROKER_URL')) &&
       Boolean(bootstrap.getEnv('KIKI_SECRET_BROKER_TOKEN'));
     const brokerStorage = useBrokerStorage

@@ -6,6 +6,7 @@ import { IAgentProfileService, ProfileError, ProfileErrors, type ProfileData } f
 import { TOOLS_SECTION, type ToolsConfig } from './configSection';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
@@ -18,18 +19,24 @@ import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolic
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 import type { ToolSource } from '#/tool/toolContract';
+import type { MobilePlatform } from '#/_base/node/resourceDefaults';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
 import type { SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isToolActiveComposed, type ToolActivationPolicy } from './evaluate';
+import { isPlatformDefaultDisabledTool, platformDefaultDisabledTools } from './platformDefaults';
 import { IAgentToolPolicyService } from './toolPolicy';
 import { isLegacyShippedMessageBinding } from './sendMessageAdmission';
 
 export class AgentToolPolicyService extends Disposable implements IAgentToolPolicyService {
   declare readonly _serviceBrand: undefined;
   private noted = false;
-  private snapshot: { profile?: ProfileData; optional?: { value: IOptionalCapabilityPolicy | undefined } } | undefined;
+  private snapshot: {
+    profile?: ProfileData;
+    optional?: { value: IOptionalCapabilityPolicy | undefined };
+    mobilePlatform?: { value: MobilePlatform | undefined };
+  } | undefined;
 
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -51,9 +58,12 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
           name === SELECT_TOOLS_TOOL_NAME || name === CALL_TOOL_NAME
             ? this.isToolActiveForDisclosure(name, source)
             : this.isToolActive(name, source);
-        return active
-          ? undefined
-          : `Tool "${name}" is disabled by the active tool policy`;
+        if (active) return undefined;
+        const mobilePlatform = this.mobilePlatform();
+        if (mobilePlatform === 'ios' && isPlatformDefaultDisabledTool(mobilePlatform, name)) {
+          return `Tool "${name}" is disabled by default on iOS because the app sandbox blocks local subprocess execution. Enable it via [tools] restored = ["${name}"], an explicit custom agent profile, or run shell commands on a paired remote Space host.`;
+        }
+        return `Tool "${name}" is disabled by the active tool policy`;
       }),
     );
   }
@@ -121,6 +131,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       source,
       this.subagentPolicy(profile.tools),
       data,
+      profile.tools === undefined ? undefined : profile.tools.filter((entry) => entry !== '*'),
     );
   }
 
@@ -131,12 +142,28 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     };
   }
 
+  private explicitProfileGrants(data: ProfileData): readonly string[] | undefined {
+    const grants = new Set<string>();
+    for (const item of data.toolOverride?.tools ?? []) {
+      if (item !== '*') grants.add(item);
+    }
+    const bound = data.boundProfile;
+    const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
+    if (source === 'declared') {
+      for (const item of data.toolPolicyBase?.tools ?? bound?.tools ?? []) {
+        if (item !== '*') grants.add(item);
+      }
+    }
+    return grants.size > 0 ? [...grants] : undefined;
+  }
+
   private evaluate(
     profile: ToolActivationPolicy,
     name: string,
     source: ToolSource,
     subagent: SubagentToolPolicy | undefined,
     data: ProfileData,
+    prospectiveExplicitTools?: readonly string[],
   ): boolean {
     const capabilities = this.capabilities.current;
     const session = this.session.current;
@@ -175,6 +202,8 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     const active = isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
+        platformDefaultDisabledTools: platformDefaultDisabledTools(this.mobilePlatform()),
+        profileExplicitlyGrantedTools: prospectiveExplicitTools ?? this.explicitProfileGrants(data),
         profile: effectiveProfile,
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
@@ -188,6 +217,19 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       this.note(policy, session.sessionId, session.workspaceId, data, active);
     }
     return active;
+  }
+
+  private mobilePlatform(): MobilePlatform | undefined {
+    if (this.snapshot === undefined) return this.lookupMobilePlatform();
+    return (this.snapshot.mobilePlatform ??= { value: this.lookupMobilePlatform() }).value;
+  }
+
+  private lookupMobilePlatform(): MobilePlatform | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService))?.mobilePlatform;
+    } catch {
+      return undefined;
+    }
   }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {

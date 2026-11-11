@@ -859,6 +859,38 @@ describe('ComputerControlSection', () => {
       expect(query('#st-card-computer-mcp')).not.toBeNull();
     });
 
+    it('sends explicit true when enabling computer control from a platform default-off state', async () => {
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: {
+          enabled: false,
+          enabledSource: 'default',
+          usagePreference: 'avoid',
+          usagePreferenceSource: 'default',
+          appliesOn: 'next-model-request',
+          toolsApplyOn: 'next-step',
+        },
+        optional_capabilities: {
+          computer: { allowed: false, origin: 'default', default_on: false, host_locked: false },
+        },
+      } as unknown as KikiConfigResponse);
+      getCapability.mockResolvedValue(CAPABILITY);
+      mcpList.mockResolvedValue([]);
+
+      await render();
+      await settleUntil('[data-computer-control-enabled]');
+
+      const toggleBtn = query<HTMLButtonElement>('[data-computer-enabled-switch]');
+      expect(toggleBtn?.getAttribute('aria-checked')).toBe('false');
+
+      await act(async () => {
+        toggleBtn?.click();
+      });
+      await settle();
+
+      expect(setComputerControlEnabled).toHaveBeenCalledWith(true);
+    });
+
     it('displays explicit tool policy denied message in verdict when tools disable computer', async () => {
       getConfig.mockResolvedValue({
         providers: {},

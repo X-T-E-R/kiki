@@ -45,6 +45,7 @@ import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
 import { capabilityToolsSource } from '#/app/optionalCapability/admit';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
@@ -573,8 +574,16 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
   }
 
+  private mobileHost(): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService))?.mobilePlatform !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   private computerAdmitted(): boolean {
-    const fallback = computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION));
+    const fallback = computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION), this.mobileHost());
     const policy = this.optionalPolicy();
     if (policy === undefined) return fallback;
     let agent: IAgentScopeContext | undefined;

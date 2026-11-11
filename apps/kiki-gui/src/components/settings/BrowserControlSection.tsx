@@ -179,8 +179,10 @@ function BrowserSection() {
   const { text, detail } = loading ? { text: t('st.browser.loading'), detail: undefined } : verdictText(t, verdict, defaultName);
 
   const handleToggle = (next: boolean) => {
+    const defaultOff = configQuery.data?.browser_control?.enabled === false
+      && configQuery.data.browser_control.enabledSource === 'default';
     void save.run(async () => {
-      await client.setBrowserControlEnabled(next ? null : false);
+      await client.setBrowserControlEnabled(next ? (defaultOff ? true : null) : false);
       await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
       await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });

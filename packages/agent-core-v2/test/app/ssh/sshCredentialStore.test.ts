@@ -236,6 +236,18 @@ describe('SSH credentials', () => {
       await asyncKeyring.save('grok-build', 'acct-1', 'secret-refresh-token');
       expect(await asyncKeyring.load('grok-build', 'acct-1')).toBe('secret-refresh-token');
 
+      vi.stubEnv('KIKI_SECRET_BACKEND', 'mobile-broker');
+      const mobileBrokerSsh = new SshCredentialStore(home);
+      expect(await mobileBrokerSsh.save('ios-ssh', 'password', 'ios-broker-pass')).toBe('keyring');
+      expect(await mobileBrokerSsh.read('ios-ssh', 'password')).toBe('ios-broker-pass');
+      await mobileBrokerSsh.forget('ios-ssh', 'password');
+      expect(await mobileBrokerSsh.read('ios-ssh', 'password')).toBeUndefined();
+      const mobileSyncKeyring = createKimiOAuthKeyring({ homeDir: home });
+      const mobileSyncEntry = mobileSyncKeyring.createEntry('kimi-code', 'mobile-acct');
+      mobileSyncEntry.setPassword('{"access_token":"tok-mobile"}');
+      expect(mobileSyncEntry.getPassword()).toBe('{"access_token":"tok-mobile"}');
+      expect(mobileSyncEntry.deleteCredential()).toBe(true);
+
       vi.stubEnv('KIKI_SECRET_BROKER_URL', '');
       vi.stubEnv('KIKI_SECRET_BROKER_TOKEN', '');
       const fallbackHome = await temporaryHome();

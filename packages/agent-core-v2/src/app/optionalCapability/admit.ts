@@ -32,6 +32,7 @@ export interface CapabilityAdmissionInput {
   readonly taskTools: readonly string[] | undefined;
   readonly unresolved: boolean;
   readonly computerServers?: readonly string[];
+  readonly platformDefaultOff?: boolean;
 }
 
 export type CapabilityDenyReason =
@@ -128,7 +129,7 @@ export function namesOptionalCapability(
 export function admitOptionalCapability(id: OptionalCapabilityId, input: CapabilityAdmissionInput): CapabilityAdmission {
   if (input.unresolved) return { admitted: false, reason: 'origin_unreadable' };
   if (input.hostLocked && !input.allowed) return { admitted: false, reason: 'host_locked' };
-  if (!input.allowed) return { admitted: false, reason: 'allowed_off' };
+  if (!input.allowed && !input.platformDefaultOff) return { admitted: false, reason: 'allowed_off' };
   if (input.workspaceHardOff) return { admitted: false, reason: 'workspace_off' };
   if (input.sessionChoice === 'off') {
     if (input.agentKind === 'child' && namesOptionalCapability(id, input.taskTools, input.computerServers)) return { admitted: true, reason: 'admitted' };
@@ -138,6 +139,7 @@ export function admitOptionalCapability(id: OptionalCapabilityId, input: Capabil
   if (input.defaultOn) return { admitted: true, reason: 'admitted' };
   const declared = input.toolsSource === 'declared' && namesOptionalCapability(id, input.declaredTools, input.computerServers);
   if (declared || namesOptionalCapability(id, input.taskTools, input.computerServers)) return { admitted: true, reason: 'admitted' };
+  if (!input.allowed) return { admitted: false, reason: 'allowed_off' };
   return { admitted: false, reason: 'default_off' };
 }
 

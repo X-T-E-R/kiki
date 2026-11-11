@@ -11,6 +11,8 @@ import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
 import { IConfigService, type ConfigOrigin } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION } from '#/app/computer/configSection';
 import { IFlagService } from '#/app/flag/flag';
@@ -36,10 +38,17 @@ afterEach(() => disposables.clear());
 function setup(profile: ProfileData['boundProfile'], activeTools: readonly string[], options?: {
   origins?: Record<string, OriginMap>;
   values?: Record<string, unknown>;
+  mobilePlatform?: 'android' | 'ios';
+  browserFlag?: { enabled: boolean; defaultEnabled?: boolean; source?: 'default' | 'config' | 'env' };
 }) {
   const ix = disposables.add(new TestInstantiationService());
   const origins = options?.origins ?? {};
   const values = options?.values ?? {};
+  const mobile = options?.mobilePlatform;
+  ix.stub(IBootstrapService, {
+    mobilePlatform: mobile,
+    getEnv: () => undefined,
+  });
   ix.stub(IConfigService, {
     origins: (domain: string) => {
       const map = origins[domain];
@@ -48,7 +57,10 @@ function setup(profile: ProfileData['boundProfile'], activeTools: readonly strin
     },
     get: ((domain: string) => values[domain]) as IConfigService['get'],
   });
-  ix.stub(IFlagService, { explain: () => ({ id: NATIVE_BROWSER_FLAG_ID, title: '', description: '', surface: 'core', env: '', defaultEnabled: true, enabled: true, source: 'default' as const }) });
+  const defaultBrowserEnabled = options?.browserFlag?.defaultEnabled ?? (mobile === undefined);
+  const browserEnabled = options?.browserFlag?.enabled ?? defaultBrowserEnabled;
+  const browserSource = options?.browserFlag?.source ?? 'default';
+  ix.stub(IFlagService, { explain: () => ({ id: NATIVE_BROWSER_FLAG_ID, title: '', description: '', surface: 'core', env: '', defaultEnabled: defaultBrowserEnabled, enabled: browserEnabled, source: browserSource }) });
   ix.stub(IAtomicDocumentStore, { get: async () => undefined, set: async () => undefined });
   ix.stub(IShippedAgentProfileManager, { isCleanActivePath: (path: string) => path === cleanPath });
   ix.stub(IAgentScopeContext, { agentId: 'main', parentAgentId: undefined });
@@ -151,5 +163,80 @@ describe('factory capability matrix', () => {
     const { policy } = setup(named, ['BrowserConnections']);
     expect(policy.isToolActive('BrowserConnections')).toBe(true);
     expect(policy.isToolActive('MemoryRead')).toBe(false);
+  });
+
+  it('applies mobile defaults on Android and iOS while keeping phone MCP, web, memory, IM, and thread capabilities ready and 100% overridable', async () => {
+    const mobileTools = [
+      ...tools,
+      'Bash',
+      'Grep',
+      'Glob',
+      'mcp__android-phone__screen',
+      'mcp__ios-phone__shortcuts',
+    ];
+    const cleanMobileProfile = {
+      ...cleanDefault(),
+      tools: mobileTools,
+      fileDefinition: { tools: mobileTools },
+    } as unknown as ProfileData['boundProfile'];
+
+    const androidDefault = setup(cleanMobileProfile, mobileTools, { mobilePlatform: 'android' });
+    expect(androidDefault.policy.isToolActive('BrowserConnections')).toBe(false);
+    expect(androidDefault.policy.isToolActive('mcp__desktop__screenshot', 'mcp')).toBe(false);
+    expect(androidDefault.policy.isToolActive('mcp__android-phone__screen', 'mcp')).toBe(true);
+    expect(androidDefault.policy.isToolActive('MemoryRead')).toBe(true);
+    expect(androidDefault.policy.isToolActive('WebSearch')).toBe(true);
+    expect(androidDefault.policy.isToolActive('ThreadSend')).toBe(true);
+    expect(androidDefault.policy.isToolActive('Bash')).toBe(true);
+    expect(androidDefault.policy.isToolActive('Grep')).toBe(true);
+    expect(androidDefault.policy.isToolActive('Glob')).toBe(true);
+
+    await androidDefault.capabilities.setChoice('session-factory', 'browser', 'on');
+    expect(androidDefault.policy.isToolActive('BrowserConnections')).toBe(true);
+
+    const iosDefault = setup(cleanMobileProfile, mobileTools, { mobilePlatform: 'ios' });
+    expect(iosDefault.policy.isToolActive('Bash')).toBe(false);
+    expect(iosDefault.policy.isToolActive('Grep')).toBe(true);
+    expect(iosDefault.policy.isToolActive('Glob')).toBe(true);
+    expect(iosDefault.policy.isToolActive('mcp__ios-phone__shortcuts', 'mcp')).toBe(true);
+    expect(iosDefault.policy.isToolActive('BrowserConnections')).toBe(false);
+    expect(iosDefault.policy.isToolActive('mcp__desktop__screenshot', 'mcp')).toBe(false);
+
+    const iosRestored = setup(cleanMobileProfile, mobileTools, {
+      mobilePlatform: 'ios',
+      origins: {
+        [COMPUTER_CONFIG_SECTION]: { enabled: 'home' },
+        [OPTIONAL_CAPABILITIES_SECTION]: { 'defaults.computer': 'home', 'defaults.browser': 'home' },
+      },
+      values: {
+        [TOOLS_SECTION]: { restored: ['Bash'] },
+        [COMPUTER_CONFIG_SECTION]: { enabled: true },
+        [OPTIONAL_CAPABILITIES_SECTION]: { defaults: { computer: true, browser: true } },
+      },
+      browserFlag: { enabled: true, defaultEnabled: false, source: 'config' },
+    });
+    expect(iosRestored.policy.isToolActive('Bash')).toBe(true);
+    expect(iosRestored.policy.isToolActive('BrowserConnections')).toBe(true);
+    expect(iosRestored.policy.isToolActive('mcp__desktop__screenshot', 'mcp')).toBe(true);
+
+    const customIosProfile = {
+      name: 'custom-ios-shell',
+      toolsSource: 'declared' as const,
+      tools: ['Bash', 'BrowserConnections'],
+      sourcePath: 'C:/kiki/agents/custom-ios-shell.md',
+      definitionId: 'C:/kiki/agents/custom-ios-shell.md',
+      fileDefinition: { tools: ['Bash', 'BrowserConnections'] },
+    } as unknown as ProfileData['boundProfile'];
+    const iosCustom = setup(customIosProfile, ['Bash', 'BrowserConnections'], { mobilePlatform: 'ios' });
+    expect(iosCustom.policy.isToolActive('Bash')).toBe(true);
+    expect(iosCustom.policy.isToolActive('BrowserConnections')).toBe(true);
+
+    const iosExplicitlyDisabled = setup(customIosProfile, ['Bash'], {
+      mobilePlatform: 'ios',
+      values: {
+        [TOOLS_SECTION]: { restored: ['Bash'], disabled: ['Bash'] },
+      },
+    });
+    expect(iosExplicitlyDisabled.policy.isToolActive('Bash')).toBe(false);
   });
 });

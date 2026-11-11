@@ -2,7 +2,7 @@
 
 Kiki desktop is built from open-source components. The exact JavaScript and Rust dependency versions shipped by a release are recorded in the repository's `pnpm-lock.yaml` and `apps/kiki-gui/src-tauri/Cargo.lock` at the matching `kiki-v<version>` tag. License identifiers below link to the applicable project license or standard license text.
 
-This static notice covers the bundled sidecar, major direct desktop runtime dependencies, and source adapted from recorded donors. Release owners must review it when either lockfile, the desktop sidecar, or adapted source changes.
+This static notice covers the bundled sidecar and embedded mobile runtime bundle, major direct client runtime dependencies, and source adapted from recorded donors. Separate mobile host shells (for example Android APKs packaging Termux Bionic Node.js LTS, PRoot subprocess sandboxes, or scrcpy-derived device inspection helpers) carry their own native binary and license notices alongside the embedded Kiki bundle. Release owners must review this notice when either lockfile, a bundled runtime, or adapted source changes.
 
 ## Bundled runtime and major direct dependencies
 
@@ -35,5 +35,6 @@ This static notice covers the bundled sidecar, major direct desktop runtime depe
 | [dsh-web-ui `6265187`](https://github.com/zhu1090093659/dsh-web-ui/commit/62651870dd18ad3d9bf54a9cb934b75d0fbaf639) | Grouped collapsible capability cards | Apache-2.0 |
 | [Letta Code `c0956ed`](https://github.com/letta-ai/letta-code/commit/c0956ed3263da7f781a958ce35ff3042ef97adfa) | Partial JSON string-field scanner for streaming SendMessage drafts (`src/lib/partialJson.ts`) | Apache-2.0 |
 | [OpenCode `e00890c`](https://github.com/anomalyco/opencode/commit/e00890c67261a435cee6409366a68999a93393fd) | Account sign-in behaviour behind the device-code flows the Connections page runs: the xAI/Grok device-grant adapter attributed in full at `packages/oauth/THIRD_PARTY_NOTICES.md`, which ships with the desktop build | MIT |
+| [Mika `1473f143`](https://github.com/wangzan101/Mika/commit/1473f143285950f1266378f4c1ad613efb182ee9) | Mobile runtime host control protocol (`apps/kimi-code/src/mobile-entry.ts`), platform-aware capability defaults, secret-broker handoff, and companion device-bridge patterns for accessibility inspection, virtual display gestures, and sandboxed shell execution (Copyright 2026 wangzan101) | Apache-2.0 |
 
 The Kiki repository itself is distributed under the MIT License in the repository root. Copyright and license notices supplied by third-party projects remain the property of their respective authors.

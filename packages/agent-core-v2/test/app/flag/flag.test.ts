@@ -243,5 +243,21 @@ describe('FlagService', () => {
     }
     const forcedOff = makeFlags({ KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false' }).flags;
     expect(forcedOff.explain('native_browser')).toMatchObject({ enabled: false, source: 'env', defaultEnabled: true });
+
+    for (const mobilePlatform of ['android', 'ios'] as const) {
+      const mobileHost = makeFlags({ KIKI_PLATFORM: mobilePlatform });
+      expect(mobileHost.flags.explain('native_browser')).toMatchObject({
+        enabled: false,
+        source: 'default',
+        defaultEnabled: false,
+      });
+      await mobileHost.config.set(EXPERIMENTAL_SECTION, { native_browser: true });
+      expect(mobileHost.flags.explain('native_browser')).toMatchObject({
+        enabled: true,
+        source: 'config',
+        defaultEnabled: false,
+        configValue: true,
+      });
+    }
   });
 });

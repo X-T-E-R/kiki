@@ -227,6 +227,64 @@ describe('server-v2 /api tools + mcp', () => {
       const { body } = await getJson<null>('/api/tools?session_id=');
       expect(body.code).toBe(40001);
     });
+
+    it('surfaces platform-default-off Bash on iOS as inactive and activates it when tools.restored includes Bash', async () => {
+      await server?.close();
+      server = undefined;
+      const iosHome = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ios-tools-'));
+      try {
+        const modelCatalog: IModelCatalog = {
+          _serviceBrand: undefined,
+          get: () => { throw new Error('not exercised'); },
+          getRequester: () => { throw new Error('not exercised'); },
+          getConnectionRequester: () => { throw new Error('not exercised'); },
+          getConnectionEndpoint: () => { throw new Error('not exercised'); },
+          inspect: () => { throw new Error('not exercised'); },
+          ping: () => { throw new Error('not exercised'); },
+          findByName: () => [],
+          listModels: async () => [],
+          listProviders: async () => [],
+          getProvider: async () => { throw new Error('not exercised'); },
+          setDefaultModel: async () => { throw new Error('not exercised'); },
+        };
+        server = await startServer({
+          hostIdentity: TEST_HOST_IDENTITY,
+          host: '127.0.0.1',
+          port: 0,
+          homeDir: iosHome,
+          env: { ...process.env, KIKI_PLATFORM: 'ios' },
+          logLevel: 'silent',
+          seeds: [[IModelCatalog, modelCatalog]],
+        });
+        base = `http://127.0.0.1:${server.port}`;
+
+        const id = await createSession();
+        await ensureMainAgent(id);
+
+        const initial = await getJson<{ tools: ToolWire[] }>(`/api/tools?session_id=${id}`);
+        expect(initial.body.code).toBe(0);
+        const initialTools = listToolsResponseSchema.parse(initial.body.data).tools;
+        expect(initialTools.find((t) => t.name === 'Bash')).toMatchObject({ source: 'builtin', active: false });
+        expect(initialTools.find((t) => t.name === 'Grep')).toMatchObject({ active: true });
+        expect(initialTools.find((t) => t.name === 'Glob')).toMatchObject({ active: true });
+
+        const patchRes = await fetch(`${base}/api/config`, {
+          method: 'POST',
+          headers: authHeaders(server, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ tools: { restored: ['Bash'] }, replace_domains: ['tools'] }),
+        });
+        expect(((await patchRes.json()) as Envelope<unknown>).code).toBe(0);
+
+        const restored = await getJson<{ tools: ToolWire[] }>(`/api/tools?session_id=${id}`);
+        expect(restored.body.code).toBe(0);
+        const restoredTools = listToolsResponseSchema.parse(restored.body.data).tools;
+        expect(restoredTools.find((t) => t.name === 'Bash')).toMatchObject({ source: 'builtin', active: true });
+      } finally {
+        await server?.close();
+        server = undefined;
+        await rm(iosHome, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('GET /api/mcp/runtime/servers', () => {

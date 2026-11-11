@@ -1766,4 +1766,35 @@ include = ["memory_snapshot"]
     expect((await getConfig()).merge_all_available_skills).toBe(last);
     expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toContain(`merge_all_available_skills = ${last}`);
   });
+
+  it('projects mobile browser_control and computer_control defaults as false and allows GUI toggles and tools.restored overrides', async () => {
+    vi.stubEnv('KIKI_PLATFORM', 'ios');
+    await boot();
+    const initial = await getConfig();
+    expect(initial.browser_control).toMatchObject({ enabled: false, enabledSource: 'default' });
+    expect(initial.computer_control).toMatchObject({ enabled: false, enabledSource: 'default' });
+
+    const enabledViaNull = await patchConfig({
+      browser_control: { enabled: null },
+      computer_control: { enabled: null },
+    });
+    expect(enabledViaNull.browser_control).toMatchObject({ enabled: true, enabledSource: 'home' });
+    expect(enabledViaNull.computer_control).toMatchObject({ enabled: true, enabledSource: 'home' });
+
+    const disabledAgain = await patchConfig({
+      browser_control: { enabled: false },
+      computer_control: { enabled: false },
+    });
+    expect(disabledAgain.browser_control).toMatchObject({ enabled: false, enabledSource: 'home' });
+    expect(disabledAgain.computer_control).toMatchObject({ enabled: false, enabledSource: 'home' });
+
+    const reEnabled = await patchConfig({
+      browser_control: { enabled: null },
+      computer_control: { enabled: null },
+      tools: { restored: ['Bash'] },
+    });
+    expect(reEnabled.browser_control).toMatchObject({ enabled: true, enabledSource: 'home' });
+    expect(reEnabled.computer_control).toMatchObject({ enabled: true, enabledSource: 'home' });
+    expect(reEnabled.tools).toEqual({ restored: ['Bash'] });
+  });
 });

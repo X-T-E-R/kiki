@@ -8,7 +8,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
-import { RESOURCE_DEFAULTS, resourceDefaults } from '#/_base/node/resourceDefaults';
+import { RESOURCE_DEFAULTS, mobilePlatformOf, resourceDefaults } from '#/_base/node/resourceDefaults';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { CpuWorkersConfigSchema } from '#/app/cpuWorker/configSection';
@@ -38,9 +38,18 @@ it.each([
   expect(value.cpuWorkers * heap * 1024 ** 2).toBeLessThanOrEqual(gib * GiB / 4);
 });
 
-it('caps worker heap, CPU workers, and search indexer budgets on Android and mobile profiles', () => {
+it('caps worker heap, CPU workers, and search indexer budgets on Android, iOS, and mobile profiles', () => {
+  expect(mobilePlatformOf('linux', {})).toBeUndefined();
+  expect(mobilePlatformOf('android', {})).toBe('android');
+  expect(mobilePlatformOf('ios', {})).toBe('ios');
+  expect(mobilePlatformOf('linux', { KIKI_PLATFORM: 'ios' })).toBe('ios');
+  expect(mobilePlatformOf('darwin', { KIKI_PLATFORM: 'android' })).toBe('android');
+  expect(mobilePlatformOf('linux', { KIKI_RUNTIME_PROFILE: 'mobile' })).toBe('android');
+
   for (const hardware of [
     { parallelism: 8, memoryBytes: 12 * GiB, platform: 'android', env: {} },
+    { parallelism: 8, memoryBytes: 8 * GiB, platform: 'ios', env: {} },
+    { parallelism: 8, memoryBytes: 8 * GiB, platform: 'linux', env: { KIKI_PLATFORM: 'ios' } },
     { parallelism: 8, memoryBytes: 8 * GiB, platform: 'linux', env: { KIKI_PLATFORM: 'android' } },
     { parallelism: 6, memoryBytes: 6 * GiB, platform: 'linux', env: { KIKI_RUNTIME_PROFILE: 'mobile' } },
   ]) {
@@ -53,6 +62,18 @@ it('caps worker heap, CPU workers, and search indexer budgets on Android and mob
   const dualCoreMobile = resourceDefaults({ parallelism: 2, memoryBytes: 4 * GiB, platform: 'android', env: {} });
   expect(dualCoreMobile.cpuWorkers).toBe(1);
   expect(dualCoreMobile.workerHeapMb).toBe(96);
+
+  const budgetedIos = resourceDefaults({
+    parallelism: 6,
+    memoryBytes: 6 * GiB,
+    platform: 'ios',
+    env: { KIKI_MOBILE_MEMORY_BUDGET_MB: '256' },
+  });
+  expect(budgetedIos.workerHeapMb).toBe(64);
+  expect(budgetedIos.cpuWorkers).toBe(1);
+  expect(budgetedIos.searchIndexerSoftMb).toBeLessThanOrEqual(160);
+  expect(budgetedIos.searchIndexerHardMb).toBeLessThanOrEqual(256);
+  expect(budgetedIos.residentHeapBytes).toBeLessThanOrEqual(256 * 1024 ** 2);
 });
 
 it('keeps explicit resource choices above old schema caps and preserves uncapped provider rules', () => {

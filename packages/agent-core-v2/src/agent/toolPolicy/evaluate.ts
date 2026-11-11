@@ -44,15 +44,32 @@ export function isToolActive(
 export interface GlobalToolsPolicy {
   readonly enabled?: readonly string[];
   readonly disabled?: readonly string[];
+  readonly restored?: readonly string[];
 }
 
 export interface ToolPolicyLayers {
   readonly workspaceDisabledTools?: readonly string[];
+  readonly platformDefaultDisabledTools?: readonly string[];
+  readonly profileExplicitlyGrantedTools?: readonly string[];
   readonly profile: ToolActivationPolicy;
   readonly global?: GlobalToolsPolicy;
   readonly sessionDisabledTools?: readonly string[];
   readonly subagent?: SubagentToolPolicy;
   readonly subagentDefault?: 'opt-in';
+}
+
+function isPlatformDefaultOverridden(layers: ToolPolicyLayers, name: string): boolean {
+  if (layers.global?.enabled?.includes(name) === true) return true;
+  if (layers.global?.restored?.includes(name) === true) return true;
+  if (layers.profileExplicitlyGrantedTools?.includes(name) === true) return true;
+  return false;
+}
+
+function effectivePlatformDisabledTools(layers: ToolPolicyLayers): readonly string[] | undefined {
+  const defaults = layers.platformDefaultDisabledTools;
+  if (defaults === undefined || defaults.length === 0) return undefined;
+  const remaining = defaults.filter((name) => !isPlatformDefaultOverridden(layers, name));
+  return remaining.length > 0 ? remaining : undefined;
 }
 
 function subagentLayer(layers: ToolPolicyLayers): SubagentToolPolicy {
@@ -86,6 +103,7 @@ export function isToolActiveComposed(
   return (
     (layers.subagent === undefined || isSubagentToolAllowed(subagentLayer(layers), name, source, layers.subagentDefault)) &&
     isToolActive({ disallowedTools: layers.workspaceDisabledTools }, name, source) &&
+    isToolActive({ disallowedTools: effectivePlatformDisabledTools(layers) }, name, source) &&
     isToolActive(layers.profile, name, source) &&
     isToolActive(
       {

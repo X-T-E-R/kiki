@@ -1148,6 +1148,7 @@ strategy = "measured+estimated"
 [tools]
 # enabled: string[]
 # disabled: string[]
+# restored: string[]
 
 # ##########################################################################
 # workspaceInstance (config.toml: workspace_instance)

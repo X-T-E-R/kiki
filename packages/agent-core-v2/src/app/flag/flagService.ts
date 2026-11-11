@@ -51,6 +51,13 @@ export class FlagService extends Disposable implements IFlagService {
     return this.explain(id)?.enabled ?? false;
   }
 
+  private effectiveDefault(def: FlagDefinitionInput): boolean {
+    if (this.bootstrap.mobilePlatform !== undefined && def.mobileDefault !== undefined) {
+      return def.mobileDefault;
+    }
+    return def.default;
+  }
+
   explain(id: FlagId): ExperimentalFeatureState | undefined {
     const def = this.registry.get(id);
     if (def === undefined) return undefined;
@@ -61,7 +68,7 @@ export class FlagService extends Disposable implements IFlagService {
     if (parseBooleanEnv(this.bootstrap.getEnv(MASTER_ENV)) === true) {
       return this.state(def, true, 'master-env', configValue);
     }
-    return this.state(def, def.default, 'default', undefined);
+    return this.state(def, this.effectiveDefault(def), 'default', undefined);
   }
 
   snapshot(): ExperimentalFlagMap {
@@ -96,7 +103,7 @@ export class FlagService extends Disposable implements IFlagService {
       description: def.description,
       surface: def.surface,
       env: def.env,
-      defaultEnabled: def.default,
+      defaultEnabled: this.effectiveDefault(def),
       enabled,
       source,
       configValue,

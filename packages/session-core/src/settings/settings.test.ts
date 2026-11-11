@@ -560,6 +560,9 @@ describe('settings persistence and validation', () => {
     const policy = toolPolicyDraftFromConfig({ tools: { enabled: 'Read', disabled: { Bash: true } } });
     expect(policy.toolsEnabled).toEqual(['Read']);
     expect(policy.toolsDisabled).toEqual([]);
+
+    const restoredDraft = toolPolicyDraftFromConfig({ tools: { restored: ['Bash'] } });
+    expect(restoredDraft).toEqual({ toolsEnabled: [], toolsDisabled: [], toolsRestored: ['Bash'] });
   });
 
   it('rejects invalid engine integers before config writes', () => {

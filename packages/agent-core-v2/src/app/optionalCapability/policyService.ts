@@ -2,6 +2,7 @@ import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { type ConfigOrigin, IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
 import { COMPUTER_CONFIG_SECTION, type ComputerConfig } from '#/app/computer/configSection';
@@ -68,6 +69,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     @IConfigService private readonly settings: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
+    @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {
     super();
     this.publishComputerSelection();
@@ -77,6 +79,15 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
         this.changes.fire({});
       }));
     }
+  }
+
+  private isMobileHost(): boolean {
+    return this.bootstrap?.mobilePlatform !== undefined;
+  }
+
+  private isPlatformDefaultOff(id: OptionalCapabilityId, state: OptionalCapabilityGlobalState): boolean {
+    if (state.unresolved || state.hostLocked || state.allowed) return false;
+    return state.origin === 'default' && (id === 'browser' || (id === 'computer' && this.isMobileHost()));
   }
 
   private publishComputerSelection(): void {
@@ -97,8 +108,12 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       return { ...legacy, allowed: false, defaultOn: false, unresolved: true, origin: 'unreadable' };
     }
     const defaultsValue = this.boolAt(OPTIONAL_CAPABILITIES_SECTION, `defaults.${id}`);
-    const defaultOn = defaultsOrigin !== 'default' && typeof defaultsValue === 'boolean' ? defaultsValue : legacy.defaultOn;
-    return { ...legacy, defaultOn };
+    const explicitDefaultOn = defaultsOrigin !== 'default' && typeof defaultsValue === 'boolean' ? defaultsValue : undefined;
+    const defaultOn = explicitDefaultOn !== undefined ? explicitDefaultOn : legacy.defaultOn;
+    const allowed = !legacy.allowed && this.isPlatformDefaultOff(id, legacy) && explicitDefaultOn === true
+      ? true
+      : legacy.allowed;
+    return { ...legacy, allowed, defaultOn };
   }
 
   wireProjection(): Record<OptionalCapabilityId, OptionalCapabilityWireState> {
@@ -184,6 +199,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       declaredTools: agent?.declaredTools,
       taskTools: agent?.taskTools,
       computerServers: this.computerServers,
+      platformDefaultOff: this.isPlatformDefaultOff(id, state),
     });
   }
 
@@ -196,7 +212,9 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
 
   anyMayUse(id: OptionalCapabilityId): boolean {
     const state = this.globalState(id);
-    if (state.unresolved || !state.allowed) return false;
+    if (state.unresolved) return false;
+    const platformDefaultOff = this.isPlatformDefaultOff(id, state);
+    if (!state.allowed && !platformDefaultOff) return false;
     if (state.defaultOn) return true;
     for (const document of this.cache.values()) {
       if (document.overrides[id] === 'on') return true;
@@ -230,7 +248,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (choice === 'on') {
       if (state.unresolved) throw this.rejected('origin_unreadable');
       if (state.hostLocked && !state.allowed) throw this.rejected('host_locked');
-      if (!state.allowed) throw this.rejected('allowed_off');
+      if (!state.allowed && !this.isPlatformDefaultOff(id, state)) throw this.rejected('allowed_off');
     }
     const key = this.key(sessionId);
     const current = this.cache.get(key) ?? this.normalize(undefined);
@@ -276,14 +294,19 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
         reason = effective ? 'admitted' : 'tool_policy';
       }
     }
-    const source: CapabilitySource = !state.allowed || state.unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session';
+    const platformDefaultOff = this.isPlatformDefaultOff(id, state);
+    const source: CapabilitySource = state.unresolved || (!state.allowed && !(platformDefaultOff && effective))
+      ? 'off'
+      : choice === 'inherit'
+        ? 'default'
+        : 'session';
     return {
       id,
       choice,
       effective,
       source,
       reason,
-      allowed: state.allowed,
+      allowed: state.allowed || (platformDefaultOff && effective),
       hostLocked: state.hostLocked,
       defaultOn: state.defaultOn,
       unresolved: state.unresolved,
@@ -296,7 +319,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (id === 'web') return this.webState();
     if (id === 'thread') return this.threadState();
     if (id === 'send_message') return this.sendMessageState();
-    if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer);
+    if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer, !this.isMobileHost());
     return this.booleanState(MEMORY_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory);
   }
 
@@ -340,10 +363,10 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     return { allowed: enabled, hostLocked: origin === 'env', defaultOn: enabled, origin, unresolved: false };
   }
 
-  private booleanState(domain: string, key: string, legacyWhenDefault: boolean): OptionalCapabilityGlobalState {
+  private booleanState(domain: string, key: string, legacyWhenDefault: boolean, allowedWhenDefault = true): OptionalCapabilityGlobalState {
     const origin = this.originOf(domain, key);
     if (origin === 'unreadable') return this.unresolved();
-    if (origin === 'default') return { allowed: true, hostLocked: false, defaultOn: legacyWhenDefault, origin, unresolved: false };
+    if (origin === 'default') return { allowed: allowedWhenDefault, hostLocked: false, defaultOn: legacyWhenDefault, origin, unresolved: false };
     const value = this.boolAt(domain, key);
     const allowed = value !== false;
     return { allowed, hostLocked: origin === 'env', defaultOn: allowed, origin, unresolved: false };

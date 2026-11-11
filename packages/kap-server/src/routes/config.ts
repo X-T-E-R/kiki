@@ -188,12 +188,14 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             await store.setDisabledSources?.(after);
           }
           if ('enabled' in patch) {
+            const mobile = core.accessor.get(IBootstrapService).mobilePlatform !== undefined;
+            const nextEnabled = patch['enabled'] === null && mobile ? true : patch['enabled'];
             const explained = core.accessor.get(IFlagService).explain('native_browser');
-            if (explained?.source === 'env' && patch['enabled'] !== explained.enabled) {
+            if (explained?.source === 'env' && (nextEnabled ?? explained.defaultEnabled) !== explained.enabled) {
               throw new Error('KIKI_EXPERIMENTAL_NATIVE_BROWSER fixes browser control on this host');
             }
-            if (patch['enabled'] === null) await config.removeOverride(EXPERIMENTAL_SECTION, ['native_browser']);
-            else if (typeof patch['enabled'] === 'boolean') await config.set(EXPERIMENTAL_SECTION, { native_browser: patch['enabled'] }, ConfigTarget.User);
+            if (nextEnabled === null) await config.removeOverride(EXPERIMENTAL_SECTION, ['native_browser']);
+            else if (typeof nextEnabled === 'boolean') await config.set(EXPERIMENTAL_SECTION, { native_browser: nextEnabled }, ConfigTarget.User);
           }
           delete camelPatch['browserControl'];
         }
@@ -237,8 +239,12 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
               delete patch['usagePreference'];
             }
             if (patch['enabled'] === null) {
-              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['enabled']);
-              delete patch['enabled'];
+              if (core.accessor.get(IBootstrapService).mobilePlatform !== undefined) {
+                patch['enabled'] = true;
+              } else {
+                await config.removeOverride(COMPUTER_CONFIG_SECTION, ['enabled']);
+                delete patch['enabled'];
+              }
             }
             if (patch['connection'] === null) {
               await config.removeOverride(COMPUTER_CONFIG_SECTION, ['connection']);
@@ -457,7 +463,7 @@ async function applySubagentPatchWithClears(config: IConfigService, patch: Recor
   }
 }
 
-function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin } {
+function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; mobile: boolean } {
   const config = core.accessor.get(IConfigService);
   const browser = config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
   return {
@@ -466,6 +472,7 @@ function controlProjection(core: Scope): { browser: BrowserControlSettings; comp
       allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
     }, browser?.allowedBrowsers, browser?.disabledSources),
     computerEnabledSource: config.origins(COMPUTER_CONFIG_SECTION)['enabled'] ?? 'default',
+    mobile: core.accessor.get(IBootstrapService).mobilePlatform !== undefined,
   };
 }
 
@@ -492,7 +499,7 @@ async function applyOptionalCapabilityPatch(config: IConfigService, patch: Recor
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }, capabilities?: Record<string, unknown>, catalog?: IModelCatalog): ConfigResponse {
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; mobile?: boolean }, capabilities?: Record<string, unknown>, catalog?: IModelCatalog): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -570,7 +577,7 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   delete wire['optional_capabilities'];
   if (capabilities !== undefined) wire['optional_capabilities'] = capabilities;
   const computerWire = {
-    enabled: computerToolsEnabled(computer),
+    enabled: computerToolsEnabled(computer, projection?.mobile ?? false),
     enabledSource: projection?.computerEnabledSource ?? 'default',
     usagePreference: computer?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE,
     usagePreferenceSource: computerPreferenceSource,

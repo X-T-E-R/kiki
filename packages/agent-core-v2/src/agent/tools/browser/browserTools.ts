@@ -153,10 +153,19 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     }
   }
 
+  private browserFeatureAdmitted(): boolean {
+    if (this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) return true;
+    const explained = this.flags.explain?.(NATIVE_BROWSER_FLAG_ID);
+    if (explained?.source !== 'default') return false;
+    const capability = this.optionalCapabilityPolicy();
+    if (capability === undefined) return false;
+    return capability.admit('browser', { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId, agentId: this.agent.agentId }).admitted;
+  }
+
   private refreshLoaded(): void {
     const config = this.config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
     const wanted = new Map<string, MCPToolDefinition>();
-    if (this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) {
+    if (this.browserFeatureAdmitted()) {
       for (const [browser, entry] of this.loadedCatalog) {
         if (!browserOperationAllowed(config?.allowedBrowsers, browser)) continue;
         const conn = config?.connections?.[browser];
@@ -177,7 +186,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   }
 
   private loadedTool(browser: string, name: string): { backend: ReturnType<typeof catalogBackend>; tool: MCPToolDefinition } {
-    if (this._store.isDisposed || !this.flags.enabled(NATIVE_BROWSER_FLAG_ID) || !this.policy.isToolActiveForDisclosure(this.modelName(name), 'builtin')) {
+    if (this._store.isDisposed || !this.browserFeatureAdmitted() || !this.policy.isToolActiveForDisclosure(this.modelName(name), 'builtin')) {
       throw new BrowserError('browser.disabled', 'This browser tool is disabled by the current control settings or tool policy');
     }
     const entry = this.loadedCatalog.get(browser);
@@ -619,11 +628,13 @@ function browserEgoCapabilityWhen(accessor: ServicesAccessor): boolean {
 }
 
 function browserCapabilityWhen(accessor: ServicesAccessor): boolean {
-  if (!accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID)) return false;
+  const flags = accessor.get(IFlagService);
+  const flagEnabled = flags.enabled(NATIVE_BROWSER_FLAG_ID);
   const policy = present(accessor, IOptionalCapabilityPolicy);
-  if (policy === undefined) return true;
+  if (policy === undefined) return flagEnabled;
   const session = present(accessor, ISessionContext);
-  if (session === undefined) return true;
+  if (session === undefined) return flagEnabled;
+  if (!flagEnabled && flags.explain?.(NATIVE_BROWSER_FLAG_ID)?.source !== 'default') return false;
   const agent = present(accessor, IAgentScopeContext);
   return policy.admit('browser', { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: agent?.agentId }).admitted;
 }

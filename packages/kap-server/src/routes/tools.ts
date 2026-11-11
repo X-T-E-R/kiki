@@ -1,10 +1,13 @@
 import {
   ErrorCodes,
   IAgentMcpService,
+  IBootstrapService,
   ISessionIndex,
   IAgentToolRegistryService,
   IAgentToolPolicyService,
+  getAgentToolContributions,
   getLiveSessionById,
+  platformDefaultDisabledTools,
   Error2,
   type Scope,
   type ToolInfo,
@@ -66,9 +69,37 @@ export function registerToolsRoutes(app: ToolsRouteHost, core: Scope): void {
       }
       const registry = agent.accessor.get(IAgentToolRegistryService);
       const policy = agent.accessor.get(IAgentToolPolicyService);
-      const tools = registry
-        .list()
-        .map((info) => toProtocolTool(info, policy.isToolActive(info.name, info.source)));
+      const registered = registry.list();
+      const tools = registered.map((info) =>
+        toProtocolTool(info, policy.isToolActive(info.name, info.source)),
+      );
+      const seen = new Set(registered.map((info) => info.name));
+      const platformDisabled = platformDefaultDisabledTools(
+        core.accessor.get(IBootstrapService).mobilePlatform,
+      );
+      if (platformDisabled.length > 0) {
+        const contributions = getAgentToolContributions();
+        for (const name of platformDisabled) {
+          if (seen.has(name)) continue;
+          const record = contributions.find((item) => item.options.name === name);
+          if (record === undefined) continue;
+          const tool = agent.accessor.get(record.id);
+          const source = record.options.source ?? 'builtin';
+          tools.push(
+            toProtocolTool(
+              {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+                source,
+                disclosure: record.options.disclosure,
+              },
+              policy.isToolActive(tool.name, source),
+            ),
+          );
+          seen.add(name);
+        }
+      }
       reply.send(okEnvelope({ tools }, req.id));
     },
   );

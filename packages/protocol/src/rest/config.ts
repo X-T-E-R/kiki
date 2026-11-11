@@ -430,6 +430,11 @@ export const configResponseSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  tools: z.object({
+    enabled: z.array(z.string()).optional(),
+    disabled: z.array(z.string()).optional(),
+    restored: z.array(z.string()).optional(),
+  }).optional(),
   retry: retryConfigResponseSchema.optional(),
   plugins: z.object({ marketplaceUrl: z.string().optional() }).passthrough().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
@@ -490,6 +495,11 @@ export const patchConfigRequestSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
+  tools: z.object({
+    enabled: z.array(z.string()).optional(),
+    disabled: z.array(z.string()).optional(),
+    restored: z.array(z.string()).optional(),
+  }).optional(),
   /** Per-engine launch overrides keyed by executor id; a null value removes a field. */
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
   agent_executor_instances: executorInstancesPatchSchema.optional(),

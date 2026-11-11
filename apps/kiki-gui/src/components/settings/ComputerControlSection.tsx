@@ -158,8 +158,10 @@ export function ComputerControlSection() {
   const defaultSave = useInstantSave();
 
   const handleToggleEnabled = (next: boolean) => {
+    const defaultOff = configQuery.data?.computer_control?.enabled === false
+      && configQuery.data.computer_control.enabledSource === 'default';
     void enabledSave.run(async () => {
-      await client.setComputerControlEnabled(next ? null : false);
+      await client.setComputerControlEnabled(next ? (defaultOff ? true : null) : false);
       await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
     });
   };

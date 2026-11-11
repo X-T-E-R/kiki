@@ -421,6 +421,10 @@ function createFileSyncEntry(homeDir: string, service: string, account: string):
   };
 }
 
+export function isMobileSecretBrokerMode(mode: string | undefined): boolean {
+  return mode === 'android-broker' || mode === 'mobile-broker';
+}
+
 export async function createAsyncSecretEntry(
   service: string,
   account: string,
@@ -432,7 +436,7 @@ export async function createAsyncSecretEntry(
   if (broker !== undefined) {
     return createBrokerAsyncEntry(broker, service, account);
   }
-  if (backendMode !== 'android-broker' && backendMode !== 'file') {
+  if (!isMobileSecretBrokerMode(backendMode) && backendMode !== 'file') {
     const native = loadNativeKeyring();
     if (native !== undefined) {
       return new native.AsyncEntry(service, account, linuxKeyringOptions());
@@ -455,8 +459,8 @@ export async function createKeyringOrBrokerAsyncEntry(
   if (broker !== undefined) {
     return createBrokerAsyncEntry(broker, service, account);
   }
-  if (backendMode === 'android-broker') {
-    throw new Error('Android secret broker is not configured');
+  if (isMobileSecretBrokerMode(backendMode)) {
+    throw new Error(backendMode === 'mobile-broker' ? 'Mobile secret broker is not configured' : 'Android secret broker is not configured');
   }
   const native = loadNativeKeyring();
   if (native !== undefined) {
@@ -476,7 +480,7 @@ export function createSyncSecretEntry(
   if (broker !== undefined) {
     return createBrokerSyncEntry(broker, service, account);
   }
-  if (backendMode !== 'android-broker' && backendMode !== 'file') {
+  if (!isMobileSecretBrokerMode(backendMode) && backendMode !== 'file') {
     const native = loadNativeKeyring();
     if (native !== undefined) {
       return new native.Entry(service, account, linuxKeyringOptions());
@@ -495,7 +499,7 @@ export function listSyncSecretAccounts(
   if (broker !== undefined) {
     return listBrokerAccountsSync(broker, service);
   }
-  if (backendMode !== 'android-broker' && backendMode !== 'file') {
+  if (!isMobileSecretBrokerMode(backendMode) && backendMode !== 'file') {
     const native = loadNativeKeyring();
     if (native !== undefined) {
       return native.findCredentials(service).map(({ account }) => account);

@@ -1250,17 +1250,20 @@ export function agentIdentityPatch(
   };
 }
 
-/** The automation leaf's tool-policy draft: just the two lists it edits. */
+/** The automation leaf's tool-policy draft: enabled allowlist, disabled denylist, and restored platform-default-off tools. */
 export interface ToolPolicyDraft {
   toolsEnabled: string[];
   toolsDisabled: string[];
+  toolsRestored?: string[];
 }
 
 export function toolPolicyDraftFromConfig(value: unknown): ToolPolicyDraft {
   const config = configObjectOrEmpty(value) as unknown as KikiConfigResponse;
+  const restored = normalizeConfigStringList(config.tools?.restored);
   return {
     toolsEnabled: normalizeConfigStringList(config.tools?.enabled),
     toolsDisabled: normalizeConfigStringList(config.tools?.disabled),
+    toolsRestored: restored.length > 0 ? restored : undefined,
   };
 }
 
@@ -1270,10 +1273,12 @@ export function toolPolicyDraftFromConfig(value: unknown): ToolPolicyDraft {
  * tasks/advanced/agents cards own.
  */
 export function toolPolicyPatch(draft: ToolPolicyDraft): KikiConfigPatch {
+  const restored = normalizeStringList(draft.toolsRestored ?? []);
   return {
     tools: {
       enabled: normalizeStringList(draft.toolsEnabled),
       disabled: normalizeStringList(draft.toolsDisabled),
+      restored: restored.length > 0 ? restored : undefined,
     },
     replace_domains: ['tools'],
   };
@@ -1281,7 +1286,7 @@ export function toolPolicyPatch(draft: ToolPolicyDraft): KikiConfigPatch {
 
 export function toolPolicyValue(draft: ToolPolicyDraft, toolName: string): 'enabled' | 'disabled' | 'inherited' {
   if (draft.toolsDisabled.includes(toolName)) return 'disabled';
-  if (draft.toolsEnabled.includes(toolName)) return 'enabled';
+  if (draft.toolsEnabled.includes(toolName) || draft.toolsRestored?.includes(toolName) === true) return 'enabled';
   return 'inherited';
 }
 
@@ -1289,12 +1294,22 @@ export function setToolPolicy(
   draft: ToolPolicyDraft,
   toolName: string,
   policy: 'enabled' | 'disabled' | 'inherited',
+  mode: 'profile' | 'allowlist' = draft.toolsEnabled.length > 0 ? 'allowlist' : 'profile',
 ): ToolPolicyDraft {
   const enabled = draft.toolsEnabled.filter((name) => name !== toolName);
   const disabled = draft.toolsDisabled.filter((name) => name !== toolName);
-  if (policy === 'enabled') enabled.push(toolName);
+  const restored = (draft.toolsRestored ?? []).filter((name) => name !== toolName);
+  if (policy === 'enabled') {
+    if (mode === 'allowlist') enabled.push(toolName);
+    else restored.push(toolName);
+  }
   if (policy === 'disabled') disabled.push(toolName);
-  return { ...draft, toolsEnabled: enabled, toolsDisabled: disabled };
+  return {
+    ...draft,
+    toolsEnabled: enabled,
+    toolsDisabled: disabled,
+    toolsRestored: restored.length > 0 ? restored : undefined,
+  };
 }
 
 export function validateDesktopConfigDraft(input: {

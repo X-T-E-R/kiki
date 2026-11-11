@@ -51,9 +51,10 @@ export function ToolPolicyCard() {
       ...(toolsQuery.data?.tools.map((tool) => tool.name) ?? []),
       ...(draft?.toolsEnabled ?? []),
       ...(draft?.toolsDisabled ?? []),
+      ...(draft?.toolsRestored ?? []),
     ]);
     return [...names].toSorted((a, b) => a.localeCompare(b));
-  }, [draft?.toolsDisabled, draft?.toolsEnabled, toolsQuery.data?.tools]);
+  }, [draft?.toolsDisabled, draft?.toolsEnabled, draft?.toolsRestored, toolsQuery.data?.tools]);
 
   const emptyAllowlist = mode === 'allowlist' && draft?.toolsEnabled.length === 0;
   const edit = (next: ToolPolicyDraft) => { setDraft(next); setDirty(true); setFeedback(null); };
@@ -126,10 +127,12 @@ export function ToolPolicyCard() {
                       dataAttr="data-tool-policy"
                       ariaLabel={t('st.tools.policyAria', { name })}
                       value={toolPolicyValue(draft, name)}
-                      onChange={(next) => edit(setToolPolicy(draft, name, next))}
+                      onChange={(next) => edit(setToolPolicy(draft, name, next, mode))}
                       choices={[
                         { value: 'inherited', label: t(mode === 'profile' ? 'st.tools.inherited' : 'st.tools.excluded') },
-                        ...(mode === 'allowlist' ? [{ value: 'enabled' as const, label: t('st.tools.enabled') }] : []),
+                        ...(mode === 'allowlist' || descriptor?.active === false || draft.toolsRestored?.includes(name) === true
+                          ? [{ value: 'enabled' as const, label: t('st.tools.enabled') }]
+                          : []),
                         { value: 'disabled', label: t('st.tools.disabled') },
                       ]}
                     />

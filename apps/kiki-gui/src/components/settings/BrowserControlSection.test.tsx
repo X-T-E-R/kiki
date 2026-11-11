@@ -63,7 +63,7 @@ const getCapability = vi.fn(async (id?: string) => ({
   install: { running: false },
 }));
 const revealSecret = vi.fn(async () => ({ value: 'http://127.0.0.1:9222' }));
-const getConfig = vi.fn(async () => ({
+const getConfig = vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
   browser_control: { enabled: true, allowedBrowsers: [] as string[], allowedBrowsersConfigured: false },
   tools: {},
 }));
@@ -2443,6 +2443,33 @@ describe('BrowserControlSection', () => {
 
       // Connections card is not deleted
       expect(query('#st-card-browser-setup')).not.toBeNull();
+    });
+
+    it('sends explicit true when enabling browser control from a platform default-off state', async () => {
+      getConfig.mockResolvedValue({
+        browser_control: {
+          enabled: false,
+          enabledSource: 'default',
+          allowedBrowsers: [],
+          allowedBrowsersConfigured: false,
+        },
+        optional_capabilities: {
+          browser: { allowed: false, origin: 'default', default_on: false, host_locked: false },
+        },
+      });
+
+      await render();
+      await settleUntil('[data-browser-control-enabled]');
+
+      const switchBtn = query<HTMLButtonElement>('[data-browser-enabled-switch]');
+      expect(switchBtn?.getAttribute('aria-checked')).toBe('false');
+
+      await act(async () => {
+        switchBtn?.click();
+      });
+      await settle();
+
+      expect(setBrowserControlEnabled).toHaveBeenCalledWith(true);
     });
 
     it('displays explicit tool policy denied notice when all browser tools are disabled in policy', async () => {
