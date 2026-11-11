@@ -42,6 +42,37 @@ export type DelegatorRef =
   | { readonly kind: 'agent'; readonly agentId: string }
   | { readonly kind: 'external'; readonly delegationId: string };
 
+/** Origin of a thread created by promoting a subagent: the source session and agent it was copied from. */
+export interface SessionPromotedFrom {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly agentName?: string;
+  readonly profile?: string;
+  readonly promotedAt?: number;
+}
+
+/** `custom` key mirroring `SessionMeta.promotedFrom`, so cold index summaries carry the provenance too. */
+export const PROMOTED_FROM_KEY = 'promoted_from';
+
+/** Reads promotion provenance from the typed field, falling back to the `custom` mirror of index summaries. */
+export function promotedFromOf(meta: {
+  readonly promotedFrom?: SessionPromotedFrom;
+  readonly custom?: Record<string, unknown>;
+}): SessionPromotedFrom | undefined {
+  if (meta.promotedFrom !== undefined) return meta.promotedFrom;
+  const value = meta.custom?.[PROMOTED_FROM_KEY];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate['sessionId'] !== 'string' || typeof candidate['agentId'] !== 'string') return undefined;
+  return {
+    sessionId: candidate['sessionId'],
+    agentId: candidate['agentId'],
+    agentName: typeof candidate['agentName'] === 'string' ? candidate['agentName'] : undefined,
+    profile: typeof candidate['profile'] === 'string' ? candidate['profile'] : undefined,
+    promotedAt: typeof candidate['promotedAt'] === 'number' ? candidate['promotedAt'] : undefined,
+  };
+}
+
 export const SESSION_META_VERSION = 2;
 
 export type SessionTitleKind = 'replaceable' | 'generated' | 'custom';
@@ -69,6 +100,7 @@ export interface SessionMeta {
   readonly delivery?: 'reply' | 'message';
   readonly worktree?: SessionWorktree;
   readonly forkedFrom?: string;
+  readonly promotedFrom?: SessionPromotedFrom;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly custom?: Record<string, unknown>;
   readonly sshHosts?: Readonly<Record<string, string>>;

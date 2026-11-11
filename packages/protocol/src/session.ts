@@ -141,11 +141,23 @@ export const worktreeIsolationSchema = z.object({
 export const sessionDeliverySchema = z.enum(['reply', 'message']);
 export type SessionDelivery = z.infer<typeof sessionDeliverySchema>;
 
+/** Where a promoted thread came from: the subagent whose conversation seeded it. */
+export const sessionPromotedFromSchema = z.object({
+  session_id: z.string().min(1),
+  agent_id: z.string().min(1),
+  agent_name: z.string().optional(),
+  profile: z.string().optional(),
+  promoted_at: isoDateTimeSchema.optional(),
+});
+export type SessionPromotedFrom = z.infer<typeof sessionPromotedFromSchema>;
+
 export const sessionSchema = z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
   allow_kiki_subagents: z.boolean().optional(),
   delivery: sessionDeliverySchema.optional(),
+  /** Set on threads created by promoting a subagent; absent otherwise and on older servers. */
+  promoted_from: sessionPromotedFromSchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
   title: z.string(),
@@ -254,6 +266,14 @@ export const sessionForkSchema = z.object({
 });
 
 export type SessionFork = z.infer<typeof sessionForkSchema>;
+
+/** Body of `POST /sessions/{id}/agents/{agent_id}:promote`. */
+export const sessionAgentPromoteSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  profile: z.string().trim().min(1).optional(),
+});
+
+export type SessionAgentPromote = z.infer<typeof sessionAgentPromoteSchema>;
 
 export const sessionChildCreateSchema = z.object({
   title: z.string().min(1).optional(),

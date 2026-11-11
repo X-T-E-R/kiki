@@ -42,6 +42,8 @@ Open any dispatched subagent to read its own transcript: what it was asked, what
 
 You can also message a running subagent from its own composer, and pick it back up later with `AgentRun` to continue the same task instead of starting over. See [Agents and Sub-Agents](/en/customization/agents-and-subagents#named-child-agents) and the [right rail](/en/guides/interface#right-rail).
 
+To continue a subagent as a separate top-level thread, choose **Open as thread** from its ⋯ menu or the right rail. Kiki copies its conversation, todo list, and notes into a new main-agent session in the subagent's working directory, while the original subagent and any running work stay in the current session. If the subagent is still running, the copy ends at its last completed step and does not start new work automatically. The new thread's **From …** mark returns to the source subagent.
+
 ![A subagent's own session: its separate transcript, its own composer, and a composer row that shows which agent a message is replying to.](/shots/workbench/wl-20261005-workbench-subagent.en.png)
 
 ![The right rail of a subagent, showing the same state, todos, working notes, and session overview the main agent gets.](/shots/workbench/wl-20261005-subagent-rail-detail.en.png)

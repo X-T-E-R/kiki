@@ -201,6 +201,33 @@ describe('session title', () => {
   it('draws no worktree mark for an ordinary session', () => {
     const { container } = title();
     expect(container.querySelector('[data-worktree-mark]')).toBeNull();
+    expect(container.querySelector('[data-promoted-from]')).toBeNull();
+  });
+
+  it('marks a promoted thread with its source subagent and links back to it', () => {
+    let path = '';
+    function Where() {
+      const location = useLocation();
+      path = location.pathname;
+      return null;
+    }
+    const container = mount(
+      <MemoryRouter initialEntries={['/s/thread-2']}>
+        <SessionTitle
+          title="Researcher"
+          cwd="C:/fixture/workshop"
+          promotedFrom={{ session_id: 'session-1', agent_id: 'agent-3', agent_name: 'Researcher' }}
+          editing={false}
+          onEditingChange={vi.fn()}
+          onRename={vi.fn(async () => {})}
+        />
+        <Where />
+      </MemoryRouter>,
+    );
+    const mark = container.querySelector('[data-promoted-from]');
+    expect(mark?.textContent).toBe('From Researcher');
+    click(mark);
+    expect(path).toBe('/s/session-1/agent/agent-3');
   });
 
   it('marks a worktree session with its branch and names the source in the tooltip', () => {

@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -15,6 +16,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { normalizeSubagentBindingValue } from '#/session/subagent/configSection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -27,6 +29,7 @@ import THREAD_CREATE_DESCRIPTION from './thread-create.md?raw';
 export const ThreadCreateToolInputSchema = z.object({
   title: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
+  from_subagent: z.string().trim().min(1).optional(),
   profile: z.string().min(1).optional(),
   persona: z.string().trim().min(1).optional(),
   model_alias: z.string().trim().min(1).optional(),
@@ -55,6 +58,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
     @ISessionContext private readonly session: ISessionContext,
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
     @IAgentPermissionModeService private readonly callerPermission: IAgentPermissionModeService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
   ) {}
 
   resolveExecution(input: ThreadCreateToolInput): ToolExecution {
@@ -64,9 +68,15 @@ export class ThreadCreateTool implements IThreadCreateTool {
     if (input.prompt !== undefined && input.prompt.trim() === '') {
       return { output: 'prompt must contain non-whitespace text.', isError: true };
     }
+    if (input.from_subagent !== undefined && input.cwd !== undefined) {
+      return { output: 'from_subagent keeps the subagent\'s own working directory; omit cwd.', isError: true };
+    }
+    if (input.from_subagent !== undefined && input.persona !== undefined) {
+      return { output: 'from_subagent cannot be combined with persona.', isError: true };
+    }
     return {
       approvalRule: this.name,
-      description: 'Creating a new thread',
+      description: input.from_subagent === undefined ? 'Creating a new thread' : `Opening subagent ${input.from_subagent} as a thread`,
       execute: async () => {
         const callerMode = this.callerPermission.mode;
         const requestedMode = input.permission_mode ?? callerMode;
@@ -75,18 +85,20 @@ export class ThreadCreateTool implements IThreadCreateTool {
         }
         const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
-        const handle = await this.sessions.create({
-          workDir: input.cwd ?? this.session.cwd,
-          mainAgentBinding: input.profile === undefined && input.persona === undefined && model === undefined && thinking === undefined
-            ? undefined
-            : {
-                profile: input.profile ?? (input.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
-                persona: input.persona,
-                model,
-                thinking,
-                strictThinking: thinking !== undefined,
-              },
-        });
+        const handle = input.from_subagent !== undefined
+          ? await this.promoteSubagent(input.from_subagent, input.title, input.profile, model, thinking)
+          : await this.sessions.create({
+              workDir: input.cwd ?? this.session.cwd,
+              mainAgentBinding: input.profile === undefined && input.persona === undefined && model === undefined && thinking === undefined
+                ? undefined
+                : {
+                    profile: input.profile ?? (input.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
+                    persona: input.persona,
+                    model,
+                    thinking,
+                    strictThinking: thinking !== undefined,
+                  },
+            });
         let promptAccepted = false;
         try {
           const catalog = handle.accessor.get(ISessionAgentProfileCatalog);
@@ -163,6 +175,34 @@ export class ThreadCreateTool implements IThreadCreateTool {
         }
       },
     };
+  }
+
+  private async promoteSubagent(
+    agentId: string,
+    title: string | undefined,
+    profile: string | undefined,
+    model: string | undefined,
+    thinking: string | undefined,
+  ): Promise<ISessionScopeHandle> {
+    const meta = (await this.metadata.read()).agents?.[agentId];
+    if (meta === undefined || subagentParentAgentId(meta) !== this.caller.agentId) {
+      throw new Error2(
+        ErrorCodes.AGENT_NOT_FOUND,
+        `"${agentId}" is not a subagent started by this agent. Use AgentList to find the agent id.`,
+        { details: { agentId } },
+      );
+    }
+    if (this.sessions.promoteAgent === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Opening a subagent as a thread is unavailable on this host.');
+    }
+    return this.sessions.promoteAgent({
+      sourceSessionId: this.session.sessionId,
+      agentId,
+      title,
+      profile,
+      model,
+      thinking,
+    });
   }
 }
 

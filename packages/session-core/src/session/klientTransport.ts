@@ -1,4 +1,4 @@
-import { editMessageRequestSchema, regenerateMessageRequestSchema, forkSessionRequestSchema } from '@kiki/protocol';
+import { editMessageRequestSchema, regenerateMessageRequestSchema, forkSessionRequestSchema, promoteAgentRequestSchema } from '@kiki/protocol';
 import { RPCError, type SessionCommandsFacade } from '@kiki/klient/session-view';
 import { ApiError, type SessionTransport } from '../transport';
 
@@ -47,6 +47,7 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     editMessage: (id, target, body) => active(id, () => commands(id).edit(target, editMessageRequestSchema.parse(body))),
     regenerateMessage: (id, target, body) => active(id, () => commands(id).regenerate(target, regenerateMessageRequestSchema.parse(body))),
     forkSession: (id, body) => run(() => commands(id).fork(forkSessionRequestSchema.parse(body))),
+    promoteAgent: (id, agentId, body = {}) => run(() => commands(id).promoteAgent(agentId, promoteAgentRequestSchema.parse(body))),
     abortPrompt: (id, target, agentId, queuedOnly) => run(() => commands(id).abort(target, agentId, queuedOnly)),
     abortTurn: (id, target) => run(() => commands(id).abortTurn(target)),
     movePrompt: (id, target, body) => run(() => commands(id).move(target, body)),

@@ -55,6 +55,8 @@ const harness = vi.hoisted(() => ({
   listSessionSkills: vi.fn(),
   activateSkill: vi.fn(),
   pushToast: vi.fn(),
+  promoteAgent: vi.fn(),
+  promoteAvailable: false,
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
   host: { kind: 'browser' } as {
     kind: string;
@@ -82,6 +84,8 @@ vi.mock('../../state/connection', () => {
       subscribeAgentModelSwitches: harness.subscribeAgentModelSwitches,
       getConfig: harness.getConfig,
       patchConfig: harness.patchConfig,
+      get promoteAgent() { return harness.promoteAvailable ? harness.promoteAgent : undefined; },
+      get sessions() { return harness.promoteAvailable ? { promoteAgent: harness.promoteAgent } : {}; },
       klient: { rest: { executors: { getModels: harness.getExecutorModels } } },
   };
   const connection = () => ({ scopeId: harness.scopeId, client,
@@ -177,6 +181,7 @@ beforeEach(() => {
     metrics: {},
   });
   harness.shellEnabled = true;
+  harness.promoteAvailable = false;
   harness.isNativeAgent.mockResolvedValue(true);
   harness.scopeId = 'direct:one';
   harness.host = { kind: 'browser' };
@@ -2316,7 +2321,21 @@ it('closes the child switch dialog immediately on a preparing compact receipt an
   expect(dock.querySelector('[data-model-switch-pending]')).toBeNull();
 });
 
-it('keeps no child menu when the child has no conversation to renew', async () => {
+it('opens a child as its own thread from the header menu', async () => {
+  harness.promoteAvailable = true;
+  harness.promoteAgent.mockResolvedValue({ id: 'promoted-thread' });
+  await renderWorkspace({ controller: controllerStub({ forest: testForest(), agentStates: {} }) });
+  await settle();
+  const trigger = header.querySelector<HTMLButtonElement>('[data-agent-actions] button');
+  expect(trigger).not.toBeNull();
+  await act(async () => { trigger?.click(); });
+  const item = document.body.querySelector<HTMLButtonElement>('[data-agent-promote]');
+  expect(item?.textContent).toBe(translate('en', 'agent.promote'));
+  await act(async () => { item?.click(); });
+  expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'child');
+});
+
+it('keeps no child menu when the child has no conversation to renew and promotion is unavailable', async () => {
   await renderWorkspace({ controller: controllerStub({ forest: testForest(), agentStates: {} }) });
   await settle();
   expect(header.querySelector('[data-agent-actions]')).toBeNull();

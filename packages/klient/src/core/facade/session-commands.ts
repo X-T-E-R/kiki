@@ -1,6 +1,6 @@
 import type {
   ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, EditMessageRequest, ForkSessionRequest,
-  PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult,
+  PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult, PromoteAgentRequest,
   PromptSteerResult, PromptTimingRequest, PromptTimingResult, PromptHoldRequest, PromptHoldResult, TurnAbortResponse,
   PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
   QuestionResolveResult, RegenerateMessageRequest, Session,
@@ -16,6 +16,8 @@ export interface SessionCommandsFacade {
   edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   fork(body?: ForkSessionRequest): Promise<Session>;
+  /** Copies a subagent's conversation into a new top-level thread; the source session is untouched. */
+  promoteAgent(agentId: string, body?: PromoteAgentRequest): Promise<Session>;
   abort(promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
   abortTurn(turnId: number): Promise<TurnAbortResponse>;
   move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
@@ -54,6 +56,7 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     edit: (target, body) => invoke('edit', { target, body }),
     regenerate: (target, body) => invoke('regenerate', { target, body }),
     fork: (body = {}) => invoke('fork', { body }),
+    promoteAgent: (target, body = {}) => invoke('promoteAgent', { target, body }),
     abort: (target, agentId, queuedOnly) => invoke('abort', queuedOnly ? { target, query: { agent_id: agentId === 'main' ? undefined : agentId, queued_only: 'true' } } : agentScoped(target, agentId)),
     abortTurn: (turnId) => invoke('abortTurn', { target: String(turnId) }),
     move: (target, body) => invoke('move', { target, body }),

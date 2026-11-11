@@ -60,6 +60,7 @@ import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
 import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
+import { PromotedFromMark } from './PromotedFromMark';
 import {
   contentSegmentKey,
   isSessionRemainderRef,
@@ -503,6 +504,7 @@ function Header({
                   title={session.title}
                   cwd={session.metadata.cwd}
                   worktree={session.worktree}
+                  promotedFrom={session.promoted_from}
                   editing={renaming}
                   onEditingChange={setRenaming}
                   onRename={onRenameSession}
@@ -515,6 +517,7 @@ function Header({
               title={session.title}
               cwd={session.metadata.cwd}
               worktree={session.worktree}
+              promotedFrom={session.promoted_from}
               editing={renaming}
               onEditingChange={setRenaming}
               onRename={onRenameSession}
@@ -653,6 +656,7 @@ export function SessionTitle({
   title,
   cwd,
   worktree,
+  promotedFrom,
   editing,
   onEditingChange,
   onRename,
@@ -662,6 +666,8 @@ export function SessionTitle({
   cwd: string | undefined;
   /** Present only for a session running in a Kiki-managed worktree. */
   worktree?: Session['worktree'];
+  /** Present only for a thread opened from a subagent. */
+  promotedFrom?: Session['promoted_from'];
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   onRename: (title: string) => Promise<void>;
@@ -757,6 +763,7 @@ export function SessionTitle({
         )
       ) : null}
       {!editing ? <WorktreeMark worktree={worktree} className="max-w-[8rem] shrink-[50] self-center sm:max-w-[12rem]" /> : null}
+      {!editing ? <PromotedFromMark origin={promotedFrom} className="max-w-[10rem] shrink-[60] self-center sm:max-w-[14rem]" /> : null}
     </div>
   );
 }

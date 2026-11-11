@@ -60,6 +60,7 @@ import type { PlanReviewResponse } from '../Interactions';
 import { useConnection } from '../../state/connection';
 import { locateSpawnTarget } from '../../lib/timelineLocate';
 import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
+import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
 import { NavBackButton } from '../NavBackButton';
 import { useMediaQuery } from '../../lib/layoutHooks';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
@@ -429,6 +430,7 @@ function AgentWorkspaceHeader({
   freshContextAvailable,
   onFreshContext,
   onLocateSpawn,
+  promote,
   showHistoryBack,
 }: {
   target: AgentWorkspaceTarget;
@@ -452,6 +454,8 @@ function AgentWorkspaceHeader({
   onFreshContext: () => void;
   /** 派发处 in the menu where no rail carries it; undefined keeps the menu as-is. */
   onLocateSpawn?: () => void;
+  /** Opens this child as its own top-level thread; undefined where the transport cannot. */
+  promote?: PromoteAgentAction;
   showHistoryBack: boolean;
 }) {
   const { t } = useI18n();
@@ -506,10 +510,11 @@ function AgentWorkspaceHeader({
 
         {showPreviewToggle ? <PreviewToggleButton /> : null}
         {/* Same intent as the session's ⋯ menu: renew this child's context
-            without having to make a switch fail first, and — where no rail
-            exists to carry 派发处 — locate the card that spawned this child.
-            A child with neither keeps no menu at all. */}
-        {freshContextAvailable || onLocateSpawn !== undefined ? (
+            without having to make a switch fail first, open the child as a
+            thread of its own, and — where no rail exists to carry 派发处 —
+            locate the card that spawned this child. A child with none of
+            these keeps no menu at all. */}
+        {freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined ? (
           <div className="relative shrink-0" data-agent-actions>
             <button
               type="button"
@@ -547,6 +552,18 @@ function AgentWorkspaceHeader({
                 >
                   {t('modelSwitch.menuFreshContext')}
                 </button>
+                {promote !== undefined ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-agent-promote
+                    disabled={promote.pending}
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent"
+                    onClick={() => { setMenuOpen(false); promote.promote(); }}
+                  >
+                    {t(promote.pending ? 'agent.promotePending' : 'agent.promote')}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -650,6 +667,7 @@ function ChildAgentWorkspace({
   // the reader was looking at before the jump.
   const navigateTimeline = useTimelineNavigation();
   const { sessionId, agentId } = target;
+  const promoteAction = usePromoteAgent(sessionId, agentId);
   // Target identity owns both the composition and Composer's transient state.
   // A remount reads the old target back rather than discarding its unsent work.
   const draftKey = JSON.stringify([scopeId, sessionId, agentId]);
@@ -1521,6 +1539,7 @@ function ChildAgentWorkspace({
         freshContextAvailable={agentBlocks.length > 0 && displayModel !== undefined}
         onFreshContext={openFreshContextPanel}
         onLocateSpawn={locateSpawnInMenu ? handleJumpToSpawn : undefined}
+        promote={promoteAction}
       />}
       timeline={{
         state: timelineBlocks === agentBlocks ? agentState : { ...agentState, blocks: timelineBlocks },

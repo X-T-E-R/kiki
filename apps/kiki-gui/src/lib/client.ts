@@ -98,6 +98,7 @@ import type {
   PromptSubmitResult,
   PromptTimingRequest,
   PromptTimingResult,
+  PromoteAgentRequest,
   QuestionDismissResult,
   QuestionRequest,
   QuestionResolveRequest,
@@ -3392,6 +3393,16 @@ export class KikiClient {
    */
   forkSession(sessionId: string, body: KikiForkSessionRequest = {}): Promise<Session> {
     return this.sessions.forkSession(sessionId, body);
+  }
+
+  /**
+   * `POST /sessions/{id}/agents/{agent_id}:promote` — copy a subagent's
+   * conversation into a new top-level thread. The source session keeps the
+   * subagent and its card untouched.
+   */
+  promoteAgent(sessionId: string, agentId: string, body: PromoteAgentRequest = {}): Promise<Session> {
+    if (this.sessions.promoteAgent === undefined) throw new Error('promoteAgent is unavailable on this transport');
+    return this.sessions.promoteAgent(sessionId, agentId, body);
   }
 
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult> {

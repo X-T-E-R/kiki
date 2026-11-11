@@ -348,6 +348,7 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
 | `POST /api/sessions/{session_id}/profile` | Update title, metadata, agent config |
 | `POST /api/sessions/{session_id}:{action}` | Session actions: `fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}/agents/{agent_id}:promote` | Copy a subagent into a new top-level session |
 | `POST /api/sessions/{session_id}:delete-archived` | Permanently delete an archived conversation and its attached archived family |
 | `POST /api/sessions:delete-archived` | Permanently delete all archived conversations in the connected home |
 | `GET /api/sessions/{session_id}/children` | List child sessions |
@@ -357,6 +358,8 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions/{session_id}/warnings` | Session-level warnings |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
+
+`POST /api/sessions/{session_id}/agents/{agent_id}:promote` accepts optional `title` and `profile` fields; the profile must be enabled for a main agent. It copies the subagent's conversation, todo list, and notes into a new top-level session in the subagent's working directory and returns that session with `promoted_from` provenance. The source session, subagent, and any running work remain unchanged. A running subagent is copied only through its last completed step; the new session records that boundary as cancelled and does not resume work automatically.
 
 When the session is not live in this process, the snapshot is read from the saved main-agent wire and session metadata. The request does not resume the session or its workspace. `messages` is the newest 100 entries of the current logical context after compaction, undo, and edit, oldest first. `has_more` is true when older logical entries exist, and `message_count` is that logical length. `as_of_seq` and `epoch` are the session journal watermark. Permission mode and plan mode come from the saved runtime records; model and effort come from the saved agent binding. Context-token totals and breakdowns are omitted when this process has not measured them. `in_flight_turn`, `pending_approvals`, and `pending_questions` describe only activity in this process, so a session that is active in another process is not reported as active here.
 

@@ -6,6 +6,7 @@ import type {
   CreateChildSessionOptions,
   CreateSessionOptions,
   ForkSessionOptions,
+  PromoteAgentOptions,
   ResumeSessionOptions,
   SessionArchivedEvent,
   SessionClosedEvent,
@@ -79,6 +80,8 @@ export interface ISessionManager {
   delete(sessionId: string): Promise<void>;
   fork(options: ForkSessionOptions): Promise<ISessionScopeHandle>;
   createChild(options: CreateChildSessionOptions): Promise<ISessionScopeHandle>;
+  /** Opens a subagent as its own top-level thread, in the workspace of the subagent's working directory. */
+  promoteAgent?(options: PromoteAgentOptions): Promise<ISessionScopeHandle>;
 }
 
 export const ISessionManager: ServiceIdentifier<ISessionManager> = createDecorator<ISessionManager>('sessionManager');

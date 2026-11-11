@@ -220,13 +220,14 @@ export const InspectorNow = memo(function InspectorNow({
 });
 
 /** Quiet inline action row under Now (Open, Show in timeline). */
-export function NowAction({ icon, label, onClick, ...data }: {
-  icon: 'external' | 'arrowUp' | 'arrowRight';
+export function NowAction({ icon, label, onClick, disabled, ...data }: {
+  icon: 'external' | 'arrowUp' | 'arrowRight' | 'arrowUpRight';
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 } & { [key: `data-${string}`]: string | undefined }) {
   return (
-    <button type="button" onClick={onClick} className={INSPECTOR_LINK} {...data}>
+    <button type="button" onClick={onClick} disabled={disabled} className={`${INSPECTOR_LINK} disabled:opacity-60`} {...data}>
       <Icon name={icon} size={12} className="text-ink-faint" />
       {label}
     </button>

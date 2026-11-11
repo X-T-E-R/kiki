@@ -67,10 +67,20 @@ const worktreeIsolationSchema = z.object({
   base: z.union([z.enum(['head', 'fresh']), z.object({ ref: z.string().min(1) })]).optional(),
 });
 
+export const sessionPromotedFromSchema = z.object({
+  session_id: z.string().min(1),
+  agent_id: z.string().min(1),
+  agent_name: z.string().optional(),
+  profile: z.string().optional(),
+  promoted_at: isoDateTimeSchema.optional(),
+});
+export type SessionPromotedFrom = z.infer<typeof sessionPromotedFromSchema>;
+
 export const sessionSchema = z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
   allow_kiki_subagents: z.boolean().optional(),
+  promoted_from: sessionPromotedFromSchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
   title: z.string(),

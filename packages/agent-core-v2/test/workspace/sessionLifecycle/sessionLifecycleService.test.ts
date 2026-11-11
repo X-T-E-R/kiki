@@ -33,6 +33,7 @@ import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity'
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { drainSessionMetadataWrites, SessionMetadata, trackSessionMetadataWork } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
@@ -1189,6 +1190,10 @@ describe('SessionLifecycleService fork cron ownership', () => {
           }),
         }],
         [IAgentLifecycleService, { list: () => [child], get: () => undefined }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
       ]),
     };
     const internals = fx.service as unknown as {
@@ -1260,6 +1265,10 @@ describe('SessionLifecycleService fork cron ownership', () => {
       accessor: accessor([
         [ISessionMetadata, { drain: async () => {}, read: async () => ({ title: 'Source', agents: { main: {} } }) }],
         [IAgentLifecycleService, { list: () => [], get: () => undefined }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
       ]),
     };
     const internals = fx.service as unknown as {
@@ -1300,6 +1309,197 @@ describe('SessionLifecycleService fork cron ownership', () => {
       materialize.mockRestore();
       announce.mockRestore();
       await fx.service.dispose();
+    }
+  });
+});
+
+describe('SessionLifecycleService subagent promotion', () => {
+  const hash = 'c'.repeat(64);
+  const parentHash = 'd'.repeat(64);
+  const agentMeta: AgentMeta = {
+    type: 'sub',
+    homedir: '/home/workspace-1/session-1/agents/agent-3',
+    delegator: { kind: 'agent', agentId: 'main' },
+    userLabel: 'Researcher',
+    model: 'model-a',
+    labels: {
+      parentAgentId: 'main',
+      profileName: 'coder',
+      agentWorkspaceRoots: JSON.stringify({ workDir: '/repo/feature', additionalDirs: ['/repo/shared'] }),
+    },
+  };
+
+  function promotionFixture(meta: Record<string, AgentMeta>, sessionScope = 'workspace-1/session-1') {
+    const fx = fixture();
+    const sourceRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'profile.bind', profile: 'coder', time: 2 },
+      { type: 'executor.session.updated', sessionRef: { ref: { sessionId: 'remote-1' } }, time: 3 },
+      {
+        type: 'context.append_message', time: 4,
+        message: { id: 'u1', role: 'user', content: [
+          { type: 'image_url', imageUrl: { url: `blobref:agent-3:${hash}` } },
+          { type: 'image_url', imageUrl: { url: `blobref:main:${parentHash}` } },
+        ], toolCalls: [] },
+      },
+      { type: 'tools.update_store', key: 'todo', value: [{ title: 'ship', status: 'in_progress' }], time: 5 },
+      { type: 'tools.update_store', key: 'todo_notes', value: { notes: { findings: 'kept' } }, time: 6 },
+      { type: 'subagent.spawned', subagentId: 'agent-9', time: 7 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 8 },
+    ];
+    const snapshot = structuredClone(sourceRecords);
+    const readScopes: string[] = [];
+    const read = vi.fn(async function* (
+      scope: string,
+      _key: string,
+      _options?: { onTruncate?: (info: { lineNumber: number; reason: 'corrupted' | 'truncated'; cause?: unknown }) => void },
+    ) {
+      readScopes.push(scope);
+      yield* sourceRecords;
+    });
+    const rewrite = vi.fn();
+    const createAgent = vi.fn(async () => {});
+    const update = vi.fn(async () => {});
+    const writes: Array<{ scope: string; key: string }> = [];
+    const target = {
+      id: 'promoted',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'promoted' }],
+        [ISessionMetadata, { drain: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: createAgent }],
+        [ISessionAgentProfileCatalog, {
+          ready: Promise.resolve(),
+          get: (name: string) => name === 'coder' ? { name: 'coder', main: true } : undefined,
+          getDefault: () => ({ name: 'default', main: true }),
+        }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, { drain: async () => {}, read: async () => ({ title: 'Source', agents: meta }) }],
+        [IAgentLifecycleService, { list: () => [], get: () => undefined }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: `/home/${sessionScope}`,
+          sessionScope, cwd: '/workspace', ephemeral: sessionScope !== 'workspace-1/session-1',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string; additionalDirs?: readonly string[] }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    const missing = () => Object.assign(new Error('missing'), { code: 'ENOENT' });
+    Object.assign(fx.service, {
+      appendLogStore: { append: vi.fn(), flush: async () => {}, read, rewrite },
+      hostFs: {
+        stat: async (path: string) => {
+          if (path.replaceAll('\\', '/') === '/repo/feature') return { isDirectory: true };
+          throw missing();
+        },
+        readdir: async () => { throw missing(); },
+        remove: async () => {},
+      },
+      storage: {
+        acquireLock: async () => ({ release: async () => {} }),
+        read: async () => new Uint8Array([1]),
+        write: async (scope: string, key: string) => { writes.push({ scope, key }); },
+        list: async () => [],
+      },
+      models: { ready: Promise.resolve(), resolveId: (id: string) => id },
+    });
+    return { fx, sourceRecords, snapshot, read, readScopes, rewrite, createAgent, update, writes, materialize, announce };
+  }
+
+  it('copies a subagent into a new main-agent thread without touching the source', async () => {
+    const p = promotionFixture({ main: { type: 'main' }, 'agent-3': agentMeta });
+    try {
+      const source = await p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'agent-3' });
+      expect(source.workDir).toBe('/repo/feature');
+      expect(source.sourceMediaDirs).toEqual([
+        '/home/workspace-1/session-1/media', '/home/sessions/workspace-1/session-1/media',
+      ]);
+      const handle = await p.fx.service.materializePromotion(source, { sourceSessionId: 'session-1', agentId: 'agent-3', newSessionId: 'promoted' });
+      expect(handle.id).toBe('promoted');
+      expect(p.sourceRecords).toEqual(p.snapshot);
+      expect(p.materialize).toHaveBeenCalledWith({ sessionId: 'promoted', workDir: '/repo/feature', additionalDirs: ['/repo/shared'] });
+      const [scope, , copied] = p.rewrite.mock.calls[0]! as [string, string, Array<Record<string, unknown>>];
+      expect(scope).toBe('workspace-1/promoted/agents/main');
+      const text = JSON.stringify(copied);
+      expect(text).toContain(`blobref:main:${hash}`);
+      expect(text).toContain(`blobref:main:${parentHash}`);
+      expect(text).not.toContain('blobref:agent-3');
+      expect(text).not.toContain('remote-1');
+      expect(copied.map((record) => record['type'])).not.toContain('subagent.spawned');
+      expect(copied.map((record) => record['type'])).not.toContain('profile.bind');
+      expect(copied.filter((record) => record['type'] === 'tools.update_store').map((record) => record['key'])).toEqual(['todo', 'todo_notes']);
+      expect(copied.at(-1)?.['type']).toBe('forked');
+      expect(p.writes).toContainEqual({ scope: 'workspace-1/promoted/agents/main/blobs', key: parentHash });
+      expect(p.createAgent).toHaveBeenCalledOnce();
+      const created = (p.createAgent.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(created).toEqual({
+        agentId: 'main',
+        copiedIdentity: true,
+        binding: { profile: 'coder', model: 'model-a', thinking: undefined, strictThinking: false },
+      });
+      expect(p.update).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Researcher',
+        forkedFrom: 'session-1',
+        lastTurnReason: 'completed',
+        promotedFrom: expect.objectContaining({ sessionId: 'session-1', agentId: 'agent-3', agentName: 'Researcher', profile: 'coder' }),
+      }));
+      expect(p.announce).toHaveBeenCalledOnce();
+    } finally {
+      p.materialize.mockRestore();
+      p.announce.mockRestore();
+      await p.fx.service.dispose();
+    }
+  });
+
+  it('uses the live ephemeral scope and keeps a readable prefix without repairing the source', async () => {
+    const p = promotionFixture({ main: { type: 'main' }, 'agent-3': agentMeta }, 'ephemeral/session-1');
+    p.read.mockImplementation(async function* (scope, _key, options) {
+      p.readScopes.push(scope);
+      options?.onTruncate?.({ lineNumber: 2, reason: 'truncated' });
+      yield p.sourceRecords[0]!;
+    });
+    try {
+      const source = await p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'agent-3' });
+      expect(source.sourceSessionScope).toBe('ephemeral/session-1');
+      expect(source.sourceSessionDir).toBe('/home/ephemeral/session-1');
+      expect(source.records).toEqual([p.sourceRecords[0]]);
+      expect(p.readScopes).toEqual(['ephemeral/session-1/agents/agent-3']);
+      expect(p.rewrite).not.toHaveBeenCalled();
+      expect(p.sourceRecords).toEqual(p.snapshot);
+    } finally {
+      p.materialize.mockRestore();
+      p.announce.mockRestore();
+      await p.fx.service.dispose();
+    }
+  });
+
+  it('refuses the main agent and externally delegated agents', async () => {
+    const p = promotionFixture({
+      main: { type: 'main' },
+      external: { type: 'sub', delegator: { kind: 'external', delegationId: 'd-1' } },
+    });
+    try {
+      await expect(p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'main' }))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'external' }))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'ghost' }))
+        .rejects.toMatchObject({ code: ErrorCodes.AGENT_NOT_FOUND });
+      expect(p.rewrite).not.toHaveBeenCalled();
+    } finally {
+      p.materialize.mockRestore();
+      p.announce.mockRestore();
+      await p.fx.service.dispose();
     }
   });
 });

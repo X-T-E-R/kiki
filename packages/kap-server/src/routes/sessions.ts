@@ -65,6 +65,7 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
+import { PROMOTED_FROM_KEY, promotedFromOf, type SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema, sessionCreationStatusSchema } from '@kiki/protocol';
@@ -1660,6 +1661,7 @@ export interface SessionWireFields {
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly delivery?: 'reply' | 'message';
   readonly agents?: Readonly<Record<string, AgentMeta>>;
+  readonly promotedFrom?: SessionPromotedFrom;
   readonly executorId?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;
   readonly allowKikiSubagents?: boolean;
@@ -1679,6 +1681,7 @@ export function toWireSession(
   return {
     executor_id: executorId,
     allow_kiki_subagents: facts.allowKikiSubagents ?? fields.allowKikiSubagents ?? mainMeta?.allowKikiSubagents,
+    promoted_from: toWirePromotedFrom(promotedFromOf(fields)),
     negotiated: negotiated === undefined ? undefined : {
       agent_version: negotiated.agentVersion, image: negotiated.image, audio: negotiated.audio,
       fork: negotiated.fork, native_steering: negotiated.nativeSteering,
@@ -2041,8 +2044,19 @@ function buildWireMetadata(
   cwd: string,
 ): { cwd: string; [key: string]: unknown } {
   if (custom === undefined) return { cwd };
-  const { goal: _drop, ...rest } = custom as { goal?: unknown; [key: string]: unknown };
+  const { goal: _drop, [PROMOTED_FROM_KEY]: _promoted, ...rest } = custom as { goal?: unknown; [key: string]: unknown };
   return { ...rest, cwd };
+}
+
+function toWirePromotedFrom(value: SessionPromotedFrom | undefined): Session['promoted_from'] {
+  if (value === undefined) return undefined;
+  return {
+    session_id: value.sessionId,
+    agent_id: value.agentId,
+    agent_name: value.agentName,
+    profile: value.profile,
+    promoted_at: value.promotedAt === undefined ? undefined : new Date(value.promotedAt).toISOString(),
+  };
 }
 
 function buildValidationEnvelope(
@@ -2177,3 +2191,18 @@ function sendMappedError(
 ): void {
   reply.send(mapSessionError(req, err));
 }
+
+/** Projects a freshly created or promoted live session onto the wire, including its current event cursor. */
+export async function liveWireSession(
+  core: Scope,
+  handle: ISessionScopeHandle,
+  broadcaster: SessionEventBroadcaster | undefined,
+): Promise<Session> {
+  const meta = await handle.accessor.get(ISessionMetadata).read();
+  const ctx = handle.accessor.get(ISessionContext);
+  const session = toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, meta.id));
+  const cursor = await broadcaster?.getCursor(meta.id);
+  return cursor === undefined ? session : { ...session, last_seq: cursor.seq };
+}
+
+export { sendMappedError as sendSessionError };

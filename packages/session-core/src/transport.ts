@@ -25,6 +25,7 @@ import type {
   PromptTimingResult,
   PromptHoldRequest,
   PromptHoldResult,
+  PromoteAgentRequest,
   QuestionDismissResult,
   QuestionResolveRequest,
   QuestionResolveResult,
@@ -571,6 +572,8 @@ export interface SessionTransport {
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
+  /** `POST /sessions/{id}/agents/{agent_id}:promote` — open a subagent as its own thread; optional for older transports. */
+  promoteAgent?(sessionId: string, agentId: string, body?: PromoteAgentRequest): Promise<Session>;
   abortPrompt(sessionId: string, promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
   abortTurn(sessionId: string, turnId: number): Promise<TurnAbortResponse>;
   movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;

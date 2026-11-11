@@ -13,7 +13,7 @@ import type { LeaseRegistry } from '../services/leaseRegistry';
 import { registerAgentProfilesRoute } from './agentProfiles';
 import { registerAutoCompactRoutes } from './autoCompact';
 import { registerContextStrategyRoutes } from './contextStrategy';
-import { registerAgentHooksRoutes } from './agents';
+import { registerAgentHooksRoutes, registerAgentPromoteRoutes } from './agents';
 import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
@@ -59,7 +59,7 @@ import { registerBrowserRoutes } from './browser';
 import { registerSessionMediaRoutes } from './sessionMedia';
 import { registerDocumentPreviewRoutes } from './documentPreview';
 import { registerSessionExportRoute } from './sessionExport';
-import { registerSessionsRoutes } from './sessions';
+import { liveWireSession, registerSessionsRoutes, sendSessionError } from './sessions';
 import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
 import { registerDesktopLifecycleRoutes } from './desktopLifecycle';
@@ -226,6 +226,12 @@ export async function registerApiV1Routes(
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);
       registerAgentHooksRoutes(apiV1 as unknown as Parameters<typeof registerAgentHooksRoutes>[0], core);
+      registerAgentPromoteRoutes(
+        apiV1 as unknown as Parameters<typeof registerAgentPromoteRoutes>[0],
+        core,
+        (handle) => liveWireSession(core, handle, opts.broadcaster),
+        sendSessionError,
+      );
       registerRuntimeRoutes(apiV1 as unknown as Parameters<typeof registerRuntimeRoutes>[0], core);
       registerSessionExportRoute(
         apiV1 as unknown as Parameters<typeof registerSessionExportRoute>[0],

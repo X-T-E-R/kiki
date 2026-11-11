@@ -21,6 +21,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   type CreateChildSessionOptions,
   type ForkSessionOptions,
+  type PromoteAgentOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
   type SessionClosedEvent,
@@ -520,6 +521,26 @@ export class SessionManager implements ISessionManager {
         );
       },
     );
+  }
+
+  async promoteAgent(options: PromoteAgentOptions): Promise<ISessionScopeHandle> {
+    const source = await this.controllerForSession(options.sourceSessionId);
+    if (source === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${options.sourceSessionId} does not exist`);
+    }
+    const snapshot = await this.runWorkspaceOperation(
+      source.workspaceId,
+      () => source.controller.readPromotionSource(options),
+      source.release,
+    );
+    const lease = await this.workspaces.acquire({ root: snapshot.workDir });
+    const workspaceId = lease.instance.id;
+    const promote = () => this.runWorkspaceOperation(
+      workspaceId,
+      () => this.controllerForWorkspace(workspaceId).materializePromotion(snapshot, options),
+      () => lease.dispose(),
+    );
+    return options.newSessionId === undefined ? promote() : this.serializeLifecycle(options.newSessionId, promote);
   }
 
   async dispose(): Promise<void> {

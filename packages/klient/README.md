@@ -308,9 +308,13 @@ on a terminal error and expose an explicit retry action.
 
 ### Session commands
 
-`session(id).commands` exposes named read, submit, edit, regenerate, fork, abort,
-replace, steer, approve, answer, dismiss, and cancelTask methods. GUI and daemon
+`session(id).commands` exposes named read, submit, edit, regenerate, fork, promoteAgent,
+abort, replace, steer, approve, answer, dismiss, and cancelTask methods. GUI and daemon
 TUI session controllers use the same session-core adapter for these methods.
+`commands.promoteAgent(agentId, { title?, profile? })` calls
+`POST /api/sessions/{id}/agents/{agent_id}:promote` and returns a new top-level
+session whose `promoted_from` identifies the source. The source session and its
+subagent remain unchanged.
 This capability currently projects the existing `/api/v1/sessions` HTTP routes;
 it does not create another session store or retire all legacy endpoints. Memory
 and IPC reject these HTTP-only commands rather than silently emulating them.

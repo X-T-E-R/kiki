@@ -55,7 +55,7 @@ import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDeliveryService, resolveCreateDeliveryMode } from '#/session/delivery/delivery';
 import { IAgentUsageService } from '#/agent/usage/usage';
-import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
+import { isSubagentMeta, labelsFromAgentMeta, subagentProfileName, subagentWorkspaceRoots } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
@@ -65,7 +65,17 @@ import {
   sessionPluginMcpServersSeed,
 } from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
-import { externalClientMetaOf, ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { DEFAULT_AGENT_PROFILE_NAME, type AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { isFileId } from '#/app/file/fileService';
+import { SESSION_MEDIA_DIR } from '#/agent/media/mediaRef';
+import {
+  externalClientMetaOf,
+  ISessionMetadata,
+  PROMOTED_FROM_KEY,
+  type SessionMeta,
+  type SessionPromotedFrom,
+} from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
@@ -117,9 +127,16 @@ import {
   sliceSubagentRecordsAtTime,
 } from './internal/forkTurnSlice';
 import {
+  filterPromotedRecords,
+  retargetPromotedRecords,
+  sliceSettledAgentRecords,
+  type PromotionSource,
+} from './internal/promoteAgent';
+import {
   type CreateChildSessionOptions,
   type CreateSessionOptions,
   type ForkSessionOptions,
+  type PromoteAgentOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
   type SessionCleanupReceipt,
@@ -1400,6 +1417,248 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return (await this.index.get(sourceId))?.title;
   }
 
+  /** Source half of a subagent promotion: validates the subagent and reads its settled journal without touching the source. */
+  async readPromotionSource(opts: PromoteAgentOptions): Promise<PromotionSource> {
+    const sourceId = opts.sourceSessionId;
+    if (opts.agentId === MAIN_AGENT_ID) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The main agent is already a thread; fork the session instead.');
+    }
+    const sourceHandle = this.sessions.get(sourceId);
+    const indexSummary = await this.index.get(sourceId);
+    if (
+      (sourceHandle === undefined && indexSummary === undefined) ||
+      (indexSummary !== undefined && indexSummary.workspaceId !== this.workspaceId)
+    ) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sourceId} does not exist`);
+    }
+    if (sourceHandle !== undefined) await sourceHandle.accessor.get(ISessionMetadata).drain();
+    const sourceMeta = sourceHandle !== undefined
+      ? await sourceHandle.accessor.get(ISessionMetadata).read()
+      : await this.readMetaFromDisk(sourceId);
+    const agentMeta = sourceMeta?.agents?.[opts.agentId];
+    if (agentMeta === undefined) {
+      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent "${opts.agentId}" does not exist in session ${sourceId}`, {
+        details: { sessionId: sourceId, agentId: opts.agentId },
+      });
+    }
+    if (!isSubagentMeta(agentMeta)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Agent "${opts.agentId}" is not a subagent and cannot become a thread.`);
+    }
+    if (agentMeta.delegator?.kind === 'external') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Agent "${opts.agentId}" is owned by an external delegation and cannot become a thread.`);
+    }
+    const sourceContext = sourceHandle?.accessor.get(ISessionContext);
+    const settled = sliceSettledAgentRecords(await this.readSourceWireRecords(sourceHandle, sourceId, opts.agentId, false));
+    const sessionCwd = sourceContext?.cwd ?? indexSummary?.cwd ?? sourceMeta?.cwd ?? this.workspaceContext.cwd;
+    const sourceSessionDir = sourceContext?.sessionDir ?? sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId);
+    const ephemeralSessionDir = join(
+      this.bootstrap.homeDir,
+      this.bootstrap.scope('ephemeral'),
+      sourceContext?.workspaceId ?? this.workspaceId,
+      sourceId,
+    );
+    const sourceMediaDirs = [...new Set([
+      join(sourceSessionDir, SESSION_MEDIA_DIR),
+      join(ephemeralSessionDir, SESSION_MEDIA_DIR),
+    ])];
+    const roots = subagentWorkspaceRoots(agentMeta, opts.agentId);
+    const ownRoots = roots !== undefined && await this.directoryExists(roots.workDir) ? roots : undefined;
+    return {
+      sourceSessionId: sourceId,
+      agentId: opts.agentId,
+      agentMeta,
+      records: settled.records,
+      lastTurnReason: settled.lastTurnReason,
+      sourceSessionScope: sourceContext?.scope() ?? sessionScopeOf(this.handlerScope, sourceId),
+      sourceSessionDir,
+      sourceMediaDirs,
+      sourceTitle: sourceMeta?.title,
+      sessionCwd,
+      workDir: ownRoots?.workDir ?? sessionCwd,
+      additionalDirs: ownRoots?.additionalDirs,
+    };
+  }
+
+  /**
+   * Target half of a subagent promotion: writes the retargeted journal as the new session's `main`,
+   * copies the agent's blobs, spilled tool results and referenced session media, then binds a main
+   * agent with no delegator so it runs with the full main-agent tool set and reports to no one.
+   */
+  async materializePromotion(source: PromotionSource, opts: PromoteAgentOptions): Promise<ISessionScopeHandle> {
+    const targetId = opts.newSessionId ?? createSessionId();
+    await this.assertNewSession(targetId);
+    await this.acquireSessionLock(targetId);
+    try {
+      await this.assertNewSession(targetId);
+    } catch (error) {
+      await this.releaseSessionLock(targetId);
+      throw error;
+    }
+    const targetScope = sessionScopeOf(this.handlerScope, targetId);
+    const targetSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, targetId);
+    let target: ISessionScopeHandle | undefined;
+    try {
+      const sourceAgentDir = join(source.sourceSessionDir, 'agents', source.agentId);
+      const targetAgentDir = join(targetSessionDir, 'agents', MAIN_AGENT_ID);
+      for (const name of ['blobs', 'tool-results']) {
+        let children: readonly HostDirEntry[];
+        try {
+          children = await this.hostFs.readdir(join(sourceAgentDir, name));
+        } catch (error) {
+          if (isMissingFileError(error)) continue;
+          throw error;
+        }
+        await this.hostFs.mkdir(join(targetAgentDir, name), { recursive: true });
+        await this.copySessionDirEntries(join(sourceAgentDir, name), join(targetAgentDir, name), children, `agents/${MAIN_AGENT_ID}/${name}`);
+      }
+      await this.copyPromotedTaskOutputs(sourceAgentDir, targetAgentDir);
+      const retargeted = retargetPromotedRecords(
+        filterPromotedRecords(source.records),
+        source.agentId,
+        source.agentMeta.homedir ?? sourceAgentDir,
+        targetAgentDir,
+        source.sourceMediaDirs,
+        join(targetSessionDir, SESSION_MEDIA_DIR),
+      );
+      for (const blob of retargeted.foreignBlobs) {
+        const data = await this.storage.read(`${source.sourceSessionScope}/agents/${blob.agentId}/blobs`, blob.hash);
+        if (data === undefined) {
+          throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `Shared blob "${blob.hash}" from agent "${blob.agentId}" is missing; the source thread was not changed.`, {
+            details: { sessionId: source.sourceSessionId, agentId: blob.agentId, hash: blob.hash },
+          });
+        }
+        await this.storage.write(`${targetScope}/agents/${MAIN_AGENT_ID}/blobs`, blob.hash, data, { atomic: true });
+      }
+      await this.copyPromotedMedia(source.sourceSessionScope, targetScope, retargeted.fileIds);
+      await this.copyAgentWire({
+        sourceHandle: undefined,
+        sourceSessionId: source.sourceSessionId,
+        agentId: MAIN_AGENT_ID,
+        targetSessionId: targetId,
+        records: [...retargeted.records],
+      });
+
+      target = await this.materializeSession({
+        sessionId: targetId,
+        workDir: source.workDir,
+        additionalDirs: source.additionalDirs,
+      });
+      const catalog = target.accessor.get(ISessionAgentProfileCatalog);
+      await catalog.ready;
+      const sourceProfileName = subagentProfileName(source.agentMeta);
+      const profile = this.resolvePromotedProfile(catalog, opts.profile, sourceProfileName);
+      const sameExecutor = (source.agentMeta.executor ?? 'native') === (profile.executor ?? 'native');
+      const carriedModel = sameExecutor ? source.agentMeta.model : undefined;
+      const model = opts.model ?? (carriedModel !== undefined && this.models.resolveId(carriedModel) !== undefined ? carriedModel : undefined);
+      const thinking = opts.thinking ?? (sameExecutor ? source.agentMeta.thinkingEffort : undefined);
+      await target.accessor.get(IAgentLifecycleService).create({
+        agentId: MAIN_AGENT_ID,
+        copiedIdentity: true,
+        binding: { profile: profile.name, model, thinking, strictThinking: opts.thinking !== undefined },
+      });
+
+      const agentName = source.agentMeta.userLabel ?? source.agentMeta.displayName ?? sourceProfileName ?? source.agentId;
+      const promotedFrom: SessionPromotedFrom = {
+        sessionId: source.sourceSessionId,
+        agentId: source.agentId,
+        agentName,
+        profile: sourceProfileName,
+        promotedAt: Date.now(),
+      };
+      const inherited = withoutGoal(opts.metadata);
+      await target.accessor.get(ISessionMetadata).update({
+        title: opts.title ?? agentName,
+        titleKind: opts.title !== undefined ? 'custom' : 'generated',
+        forkedFrom: source.sourceSessionId,
+        promotedFrom,
+        archived: false,
+        lastTurnReason: source.lastTurnReason,
+        usage: aggregateSessionUsage(target),
+        custom: { ...inherited, [PROMOTED_FROM_KEY]: promotedFrom },
+      });
+      await this.appendSessionIndexEntry(targetId, source.workDir);
+      await this.announceCreated({ sessionId: targetId, handle: target, source: 'fork' });
+      return target;
+    } catch (error) {
+      return this.rollbackSession(targetId, target, targetSessionDir, error);
+    }
+  }
+
+  private resolvePromotedProfile(
+    catalog: ISessionAgentProfileCatalog,
+    requested: string | undefined,
+    sourceProfileName: string | undefined,
+  ): AgentProfile {
+    if (requested !== undefined) {
+      const profile = catalog.get(requested);
+      if (profile === undefined) {
+        throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Agent profile "${requested}" is unavailable or disabled. Choose an enabled main-agent profile.`);
+      }
+      if (profile.main !== true) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, `Agent profile "${profile.name}" is not a main-agent profile. Choose an enabled main-agent profile.`);
+      }
+      return profile;
+    }
+    const sourceProfile = sourceProfileName === undefined ? undefined : catalog.get(sourceProfileName);
+    if (sourceProfile?.main === true) return sourceProfile;
+    const fallback = catalog.get(DEFAULT_AGENT_PROFILE_NAME);
+    if (fallback?.main === true) return fallback;
+    const defaultProfile = catalog.getDefault();
+    if (defaultProfile.main === true) return defaultProfile;
+    const main = catalog.list().find((candidate) => candidate.main === true);
+    if (main !== undefined) return main;
+    throw new Error2(ErrorCodes.PROFILE_UNKNOWN, 'No enabled main-agent profile is available for the promoted thread.');
+  }
+
+  private async copyPromotedMedia(sourceScope: string, targetScope: string, fileIds: ReadonlySet<string>): Promise<void> {
+    if (fileIds.size === 0) return;
+    const sourceMedia = `${sourceScope}/${SESSION_MEDIA_DIR}`;
+    const targetMedia = `${targetScope}/${SESSION_MEDIA_DIR}`;
+    for (const fileId of fileIds) {
+      if (!isFileId(fileId)) continue;
+      const keys = (await this.storage.list(sourceMedia, fileId)).filter((key) =>
+        (key === fileId || key.startsWith(`${fileId}.`)) && !key.includes('.tmp.'));
+      for (const key of [...keys, `meta/${fileId}.json`]) {
+        const data = await this.storage.read(sourceMedia, key);
+        if (data !== undefined) await this.storage.write(targetMedia, key, data, { atomic: true });
+      }
+    }
+  }
+
+  private async copyPromotedTaskOutputs(sourceAgentDir: string, targetAgentDir: string): Promise<void> {
+    const sourceTasks = join(sourceAgentDir, 'tasks');
+    let tasks: readonly HostDirEntry[];
+    try {
+      tasks = await this.hostFs.readdir(sourceTasks);
+    } catch (error) {
+      if (isMissingFileError(error)) return;
+      throw error;
+    }
+    for (const task of tasks) {
+      if (!task.isDirectory) continue;
+      let output: Uint8Array;
+      try {
+        output = await this.hostFs.readBytes(join(sourceTasks, task.name, 'output.log'));
+      } catch (error) {
+        if (isMissingFileError(error)) continue;
+        throw error;
+      }
+      const targetTask = join(targetAgentDir, 'tasks', task.name);
+      await this.hostFs.mkdir(targetTask, { recursive: true });
+      await this.hostFs.writeBytes(join(targetTask, 'output.log'), output);
+    }
+  }
+
+  private async directoryExists(path: string): Promise<boolean> {
+    try {
+      await this.hostFs.stat(path);
+      return true;
+    } catch (error) {
+      if (isMissingFileError(error)) return false;
+      throw error;
+    }
+  }
+
   private async copyAgentWire(args: {
     readonly sourceHandle: ISessionScopeHandle | undefined;
     readonly sourceSessionId: string;
@@ -1428,6 +1687,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     sourceHandle: ISessionScopeHandle | undefined,
     sourceSessionId: string,
     agentId: string,
+    repair = true,
   ): Promise<WireRecord[]> {
     if (sourceHandle !== undefined) {
       const agentHandle = sourceHandle.accessor.get(IAgentLifecycleService).get(agentId);
@@ -1435,7 +1695,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await agentHandle.accessor.get(IEventDispatcher).flush();
       }
     }
-    const scope = agentScopeOf(sessionScopeOf(this.handlerScope, sourceSessionId), agentId);
+    const sessionScope = sourceHandle?.accessor.get(ISessionContext).scope() ?? sessionScopeOf(this.handlerScope, sourceSessionId);
+    const scope = agentScopeOf(sessionScope, agentId);
     let truncation: AppendLogTruncation | undefined;
     const records = await collect(
       this.appendLogStore.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
@@ -1444,7 +1705,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         },
       }),
     );
-    if (truncation !== undefined) {
+    if (repair && truncation !== undefined) {
       await repairWireJournal(
         {
           appendLog: this.appendLogStore,

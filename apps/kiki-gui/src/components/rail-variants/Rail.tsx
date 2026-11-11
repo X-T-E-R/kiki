@@ -47,6 +47,7 @@ import {
 import { useI18n } from '../../i18n';
 import { useLayoutPreferences, usePaneResize } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
+import { usePromoteAgent } from '../../lib/usePromoteAgent';
 import { usageSessionDeepLink } from '../../lib/usageV2';
 import { AgentPanelContainer } from '../AgentPanelContainer';
 import { InspectorComms } from '../comms/InspectorComms';
@@ -293,6 +294,7 @@ export function Rail({
     [session?.metadata],
   );
   const focusedNode = forest.byId[focusedAgentId];
+  const promote = usePromoteAgent(state.sessionId, subagent?.agentId);
   // The routed agent page (no onInspectMain) is already this agent's timeline.
   const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
   const backgroundTasks = useMemo(
@@ -745,13 +747,22 @@ export function Rail({
           error: subBlock?.error ?? focusedNode?.error,
           pendingCount: subagent.pendingInteractionCount,
         }}
-        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn) ? undefined : (
+        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (
           <div data-subagent-context className="-mt-1 ml-3 flex flex-wrap items-center gap-x-4 gap-y-1">
             {show.openAgent ? (
               <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { onOpenSubagent(subagent.agentId); }} />
             ) : null}
             {show.locateSpawn && subagent.onJumpToSpawn !== undefined ? (
               <NowAction data-rail-locate="" icon="arrowUp" label={t('inspector.locate')} onClick={subagent.onJumpToSpawn} />
+            ) : null}
+            {promote !== undefined ? (
+              <NowAction
+                data-rail-promote=""
+                icon="arrowUpRight"
+                label={t(promote.pending ? 'agent.promotePending' : 'agent.promote')}
+                disabled={promote.pending}
+                onClick={promote.promote}
+              />
             ) : null}
           </div>
         )}

@@ -53,6 +53,11 @@ const sessionWorktreeSchema = z.object({
   worktreeId: z.string(), branch: z.string(), sourceRoot: z.string(), baseRef: z.string(),
 });
 
+const sessionPromotedFromSchema = z.object({
+  sessionId: z.string(), agentId: z.string(), agentName: z.string().optional(),
+  profile: z.string().optional(), promotedAt: z.number().optional(),
+});
+
 export const sessionMetaSchema = z.object({
   id: z.string(),
   version: z.number().optional(),
@@ -69,6 +74,7 @@ export const sessionMetaSchema = z.object({
   cwd: z.string().optional(),
   worktree: sessionWorktreeSchema.optional(),
   forkedFrom: z.string().optional(),
+  promotedFrom: sessionPromotedFromSchema.optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
@@ -89,6 +95,7 @@ export const sessionMetaPatchSchema = z.object({
   cwd: z.string().optional(),
   worktree: sessionWorktreeSchema.optional(),
   forkedFrom: z.string().optional(),
+  promotedFrom: sessionPromotedFromSchema.optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
@@ -112,6 +119,7 @@ export const sessionMetaKeySchema = z.enum([
   'cwd',
   'worktree',
   'forkedFrom',
+  'promotedFrom',
   'agents',
   'custom',
   'sshHosts',

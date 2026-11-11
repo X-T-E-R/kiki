@@ -46,11 +46,13 @@ vi.mock('./AgentPanelContainer', () => ({
 }));
 
 const registryHolder: { current: any } = { current: null };
+const connectionHolder: { current: any } = { current: null };
 vi.mock('../state/connection', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../state/connection')>();
   return {
     ...actual,
     useOptionalControllerRegistry: () => registryHolder.current,
+    useOptionalConnection: () => connectionHolder.current,
   };
 });
 
@@ -97,6 +99,7 @@ beforeAll(() => {
 });
 afterEach(async () => {
   registryHolder.current = null;
+  connectionHolder.current = null;
   for (const { container, root } of mounts.splice(0)) {
     await act(async () => { root.unmount(); });
     container.remove();
@@ -433,6 +436,18 @@ describe('RightRail fixed and switchable parts', () => {
     expect(child.querySelector('[data-terminate-all-subagents]')).toBeNull();
     expect(main.querySelector('[data-rail-locate]')).toBeNull();
     expect(child.querySelector('[data-rail-locate]')).not.toBeNull();
+  });
+
+  it('offers promotion only for a subagent and calls the real session action boundary', async () => {
+    const promoteAgent = vi.fn(async () => ({ id: 'promoted-thread' }));
+    connectionHolder.current = { client: { promoteAgent, sessions: { promoteAgent } } };
+    const main = await renderRail();
+    const child = await renderRail({ subagent: context });
+    expect(main.querySelector('[data-rail-promote]')).toBeNull();
+    const action = child.querySelector<HTMLButtonElement>('[data-rail-promote]');
+    expect(action?.textContent).toBe('Open as thread');
+    await act(async () => { action?.click(); });
+    expect(promoteAgent).toHaveBeenCalledExactlyOnceWith('sess-1', 'agent-1');
   });
 });
 

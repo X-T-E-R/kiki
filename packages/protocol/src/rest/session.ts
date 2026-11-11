@@ -5,6 +5,7 @@
  *   GET     /v1/sessions/{id}/profile     -                     data: Session
  *   POST    /v1/sessions/{id}/profile     body: SessionUpdate   data: Session
  *   POST    /v1/sessions/{id}:fork        body: SessionFork     data: Session
+ *   POST    /v1/sessions/{id}/agents/{agent_id}:promote  body: SessionAgentPromote  data: Session
  *   POST    /v1/sessions/{id}:btw         -                     data: StartBtwSession
  *   GET     /v1/sessions/{id}/children    query: ListSessions   data: Page<Session>
  *   POST    /v1/sessions/{id}/children    body: SessionChild    data: Session
@@ -22,6 +23,7 @@ import { messageSchema } from '../message';
 import { cursorQuerySchema, pageResponseSchema } from '../pagination';
 import { worktreeRemovalOutcomeSchema } from './worktree';
 import {
+  sessionAgentPromoteSchema,
   sessionChildCreateSchema,
   sessionCreateSchema,
   sessionForkSchema,
@@ -149,6 +151,12 @@ export type ForkSessionRequest = z.infer<typeof forkSessionRequestSchema>;
 
 export const forkSessionResponseSchema = sessionSchema;
 export type ForkSessionResponse = z.infer<typeof forkSessionResponseSchema>;
+
+export const promoteAgentRequestSchema = sessionAgentPromoteSchema;
+export type PromoteAgentRequest = z.infer<typeof promoteAgentRequestSchema>;
+
+export const promoteAgentResponseSchema = sessionSchema;
+export type PromoteAgentResponse = z.infer<typeof promoteAgentResponseSchema>;
 
 export const startBtwSessionResponseSchema = z.object({
   agent_id: z.string().min(1),

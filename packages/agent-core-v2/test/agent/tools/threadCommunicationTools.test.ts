@@ -44,7 +44,7 @@ import {
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 
 function roomFixture(overrides: Partial<RoomDocument> = {}): RoomDocument {
   return { version: 1, id: 'room-a', name: 'Room', host: 'thread-a', paused: false, mode: 'mention',
@@ -585,6 +585,45 @@ describe('thread communication tools', () => {
     expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: missing, mainAgentBinding: undefined });
   });
 
+  it('promotes a direct child into its own workDir and preserves promotion provenance', async () => {
+    const promotedFrom = { session_id: 'ambient-a', agent_id: 'child-1', agent_name: 'Researcher' };
+    const { tool, create, promoteAgent, metadata } = createThreadFixture({ custom: { promoted_from: promotedFrom } });
+    const result = await executeThreadCreate(tool, { from_subagent: 'child-1', title: 'Independent research' });
+    expect(promoteAgent).toHaveBeenCalledExactlyOnceWith({
+      sourceSessionId: 'ambient-a', agentId: 'child-1', title: 'Independent research',
+      profile: undefined, model: undefined, thinking: undefined,
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(JSON.parse(result.output as string)).toMatchObject({ id: 'session-new', cwd: '/repo/feature', prompt_started: false });
+    expect((await metadata.read()).custom).toMatchObject({
+      promoted_from: promotedFrom,
+      [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
+      [CREATED_BY_AGENT_ID_KEY]: 'main',
+    });
+  });
+
+  it('rejects a subagent owned by another caller and never promotes main itself', async () => {
+    const foreign = createThreadFixture({ sourceAgents: { 'child-1': { type: 'sub', parentAgentId: 'other' } } });
+    await expect(executeThreadCreate(foreign.tool, { from_subagent: 'child-1' })).rejects.toThrow('not a subagent started by this agent');
+    expect(foreign.promoteAgent).not.toHaveBeenCalled();
+    const main = createThreadFixture();
+    await expect(executeThreadCreate(main.tool, { from_subagent: 'main' })).rejects.toThrow('not a subagent started by this agent');
+    expect(main.promoteAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects cwd and persona combinations and hosts without the promotion lifecycle', async () => {
+    const fixture = createThreadFixture();
+    expect(await executeThreadCreate(fixture.tool, { from_subagent: 'child-1', cwd: '/repo/other' })).toMatchObject({
+      isError: true, output: expect.stringContaining('omit cwd'),
+    });
+    expect(await executeThreadCreate(fixture.tool, { from_subagent: 'child-1', persona: 'lin-lan' })).toMatchObject({
+      isError: true, output: expect.stringContaining('cannot be combined with persona'),
+    });
+    expect(fixture.promoteAgent).not.toHaveBeenCalled();
+    const unavailable = createThreadFixture({ promoteAvailable: false });
+    await expect(executeThreadCreate(unavailable.tool, { from_subagent: 'child-1' })).rejects.toThrow('unavailable on this host');
+  });
+
   it('accepts only supported ThreadCreate inputs and rejects invalid runtime controls', () => {
     const { tool } = createThreadFixture();
     expect(ThreadCreateToolInputSchema.safeParse({}).success).toBe(true);
@@ -595,12 +634,13 @@ describe('thread communication tools', () => {
       permission_mode: 'review', plan_mode: true, prompt: 'Start',
     }).success).toBe(true);
     expect(ThreadCreateToolInputSchema.safeParse({ model_alias: '   ' }).success).toBe(false);
+    expect(ThreadCreateToolInputSchema.safeParse({ from_subagent: '   ' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ effort: '   ' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ permission_mode: 'unsafe' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ plan_mode: 'true' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ unsupported: true }).success).toBe(false);
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
-      'title', 'cwd', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
+      'title', 'cwd', 'from_subagent', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
     ]);
     expect(tool.description).toContain('only when the user explicitly asks');
     expect(tool.description).toContain('the new thread is user-owned, does not report its work back');
@@ -637,6 +677,8 @@ function createThreadFixture(options: {
   callerMode?: PermissionMode;
   callerAgentId?: string;
   boundProfile?: string;
+  sourceAgents?: Record<string, AgentMeta>;
+  promoteAvailable?: boolean;
 } = {}) {
   const ix = disposables.add(new TestInstantiationService());
   let profileName = options.boundProfile;
@@ -694,32 +736,43 @@ function createThreadFixture(options: {
       worker: { name: 'worker', main: false },
     })[name as 'agent' | 'main-alt' | 'worker'],
   };
-  const create = vi.fn<ISessionManager['create']>(async (options) => {
-    if (options.mainAgentBinding !== undefined) {
-      await lifecycle.create({ agentId: 'main', binding: options.mainAgentBinding });
-    }
-    return {
-      id: 'session-new',
-      kind: 'session' as const,
-      dispose() {},
-      accessor: {
-        get(id) {
-          if (id === ISessionMetadata) return metadata as never;
-          if (id === ISessionContext) return { cwd: options.workDir } as never;
-          if (id === ISessionAgentProfileCatalog) return catalog as never;
-          if (id === IAgentLifecycleService) return lifecycle as never;
-          throw new Error(`Unexpected service: ${String(id)}`);
-        },
+  const target = (cwd: string) => ({
+    id: 'session-new',
+    kind: 'session' as const,
+    dispose() {},
+    accessor: {
+      get(id: unknown) {
+        if (id === ISessionMetadata) return metadata as never;
+        if (id === ISessionContext) return { cwd } as never;
+        if (id === ISessionAgentProfileCatalog) return catalog as never;
+        if (id === IAgentLifecycleService) return lifecycle as never;
+        throw new Error(`Unexpected service: ${String(id)}`);
       },
-    } as ISessionScopeHandle;
+    },
+  } as ISessionScopeHandle);
+  const create = vi.fn<ISessionManager['create']>(async (input) => {
+    if (input.mainAgentBinding !== undefined) {
+      await lifecycle.create({ agentId: 'main', binding: input.mainAgentBinding });
+    }
+    return target(input.workDir);
+  });
+  const promoteAgent = vi.fn<NonNullable<ISessionManager['promoteAgent']>>(async (input) => {
+    profileName ??= input.profile ?? 'agent';
+    return target('/repo/feature');
   });
   const remove = vi.fn<ISessionManager['delete']>(async () => {});
-  ix.stub(ISessionManager, { create, delete: remove });
+  ix.stub(ISessionManager, { create, delete: remove, promoteAgent: options.promoteAvailable === false ? undefined : promoteAgent });
   ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
   ix.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
   ix.stub(IAgentPermissionModeService, { mode: options.callerMode ?? 'review' });
+  ix.stub(ISessionMetadata, { read: async () => ({
+    id: 'ambient-a', createdAt: 1, updatedAt: 1, archived: false,
+    agents: options.sourceAgents ?? {
+      'child-1': { type: 'sub', parentAgentId: options.callerAgentId ?? 'main' },
+    },
+  }) });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
-  return { tool: ix.get(IThreadCreateTool), create, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
+  return { tool: ix.get(IThreadCreateTool), create, promoteAgent, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
 }
 
 async function executeThreadCreate(tool: IThreadCreateTool, input: Parameters<IThreadCreateTool['resolveExecution']>[0]) {

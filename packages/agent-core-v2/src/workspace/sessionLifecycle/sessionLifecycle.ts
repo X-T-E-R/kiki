@@ -62,6 +62,23 @@ export interface CreateChildSessionOptions {
   readonly metadata?: Record<string, unknown>;
 }
 
+/**
+ * Copies a subagent's conversation into a new top-level session whose `main` agent continues it.
+ * The source session, its subagent and the subagent's run are left untouched; a running subagent is
+ * read up to its last closed step boundary.
+ */
+export interface PromoteAgentOptions {
+  readonly sourceSessionId: string;
+  readonly agentId: string;
+  readonly newSessionId?: string;
+  readonly title?: string;
+  /** Main-agent profile for the new thread; defaults to the subagent's profile when it may run as main. */
+  readonly profile?: string;
+  readonly model?: string;
+  readonly thinking?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
 export interface SessionCreatedEvent {
   readonly sessionId: string;
   readonly handle: ISessionScopeHandle;

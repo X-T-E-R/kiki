@@ -348,6 +348,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
 | `POST /api/sessions/{session_id}/profile` | 更新标题、元数据、agent 配置 |
 | `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}/agents/{agent_id}:promote` | 把子智能体复制成新的顶层会话 |
 | `POST /api/sessions/{session_id}:delete-archived` | 永久删除已归档对话及仍附属的归档对话 |
 | `POST /api/sessions:delete-archived` | 永久删除当前连接 home 中全部归档对话 |
 | `GET /api/sessions/{session_id}/children` | 列出子会话 |
@@ -357,6 +358,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/warnings` | 会话级告警 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
+
+`POST /api/sessions/{session_id}/agents/{agent_id}:promote` 接受可选的 `title` 与 `profile` 字段，profile 必须已启用且可用于主 Agent。该接口把子智能体的对话、待办和笔记复制到其工作目录里的新顶层会话，返回的会话带有 `promoted_from` 来源信息。原会话、子智能体及仍在执行的工作保持不变。复制仍在运行的子智能体时，只保留到最近一个已完成步骤为止的记录，新会话把该边界记为 `cancelled`，不会自动续跑。
 
 会话在本进程中不是 live 时，快照从已保存的 main agent wire 和会话元数据读取，不会恢复该会话或其 workspace。`messages` 是压缩、撤销和编辑之后的当前逻辑 context 里最新的 100 条，按从旧到新排列。更早的逻辑条目仍存在时 `has_more` 为 true，`message_count` 等于该逻辑长度。`as_of_seq` 和 `epoch` 是会话 journal 水位。权限模式和 plan mode 来自已保存的 runtime 记录；模型和思考强度来自已保存的 agent 绑定。本进程没有测量过的 context token 总量和 breakdown 会省略。`in_flight_turn`、`pending_approvals` 和 `pending_questions` 只描述本进程里的活动，另一个进程里仍在运行的会话不会在这里被标成本地 active。
 

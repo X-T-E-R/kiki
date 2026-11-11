@@ -12,6 +12,8 @@ import { API_CODES, ApiError } from '../transport';
 
 export interface SessionActionClient {
   forkSession(sessionId: string, body: Record<string, never>): Promise<Session>;
+  /** Optional: transports without the promote route leave it out and the action stays hidden. */
+  promoteAgent?(sessionId: string, agentId: string): Promise<Session>;
   undoSession(sessionId: string, body: { readonly count: number }): Promise<unknown>;
   compactSession(sessionId: string, body: Record<string, never>): Promise<unknown>;
   exportSession(sessionId: string): Promise<{ blob: Blob; filename: string }>;
@@ -43,6 +45,18 @@ export async function forkSession(ctx: SessionActionContext, session: Session): 
   const fork = await ctx.client.forkSession(session.id, {});
   ctx.refreshSessions();
   ctx.navigate(`/s/${fork.id}`);
+}
+
+/**
+ * Open a subagent as its own thread → navigate to it. The source session keeps
+ * the subagent and its card; the new thread continues the conversation as main.
+ */
+export async function promoteAgentToThread(ctx: SessionActionContext, sessionId: string, agentId: string): Promise<Session> {
+  if (ctx.client.promoteAgent === undefined) throw new Error('promoteAgent is unavailable on this transport');
+  const thread = await ctx.client.promoteAgent(sessionId, agentId);
+  ctx.refreshSessions();
+  ctx.navigate(`/s/${thread.id}`);
+  return thread;
 }
 
 /** Undo the last turn (user message + agent reply). Server: 40911 when empty. */
