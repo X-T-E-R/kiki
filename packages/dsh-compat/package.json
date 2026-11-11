@@ -1,0 +1,32 @@
+{
+  "name": "@kiki/dsh-compat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "In-process DSH capability plugin compatibility shim and Node 24 module hook resolver for Kiki.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@kiki/cordis-runtime": "workspace:^",
+    "@kiki/protocol": "workspace:^",
+    "zod": "catalog:"
+  }
+}

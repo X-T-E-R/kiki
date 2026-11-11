@@ -1,0 +1,30 @@
+{
+  "name": "@kiki/cordis-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hardened Cordis plugin runtime plane, singleton scope routing, and once-guarded waterfall dispatch for Kiki.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.0.0"
+  }
+}

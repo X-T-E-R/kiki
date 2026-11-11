@@ -458,6 +458,9 @@ importers:
       '@kiki/codex-client':
         specifier: workspace:^
         version: link:../codex-client
+      '@kiki/cordis-runtime':
+        specifier: workspace:^
+        version: link:../cordis-runtime
       '@kiki/kaos':
         specifier: workspace:^
         version: link:../kaos
@@ -630,6 +633,24 @@ importers:
       '@kiki/protocol':
         specifier: workspace:^
         version: link:../protocol
+
+  packages/cordis-runtime:
+    dependencies:
+      '@standard-schema/spec':
+        specifier: ^1.0.0
+        version: 1.1.0
+
+  packages/dsh-compat:
+    dependencies:
+      '@kiki/cordis-runtime':
+        specifier: workspace:^
+        version: link:../cordis-runtime
+      '@kiki/protocol':
+        specifier: workspace:^
+        version: link:../protocol
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
 
   packages/kaos:
     dependencies:

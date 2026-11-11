@@ -67,6 +67,7 @@
     "@kiki/acp-client": "workspace:^",
     "@kiki/agent-profiles": "workspace:^",
     "@kiki/codex-client": "workspace:^",
+    "@kiki/cordis-runtime": "workspace:^",
     "@kiki/kaos": "workspace:^",
     "@kiki/lexical": "workspace:^",
     "@kiki/minidb": "workspace:^",
