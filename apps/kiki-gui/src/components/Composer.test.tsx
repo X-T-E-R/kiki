@@ -5028,10 +5028,24 @@ describe('Composer send-timing menu', () => {
     expect(menu(container)).toBeNull();
   });
 
-  it('stays closed where a busy plain send already steers (busySendsNow)', async () => {
-    const { container } = await renderComposer({ busy: true, busySendsNow: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+  it('leads with send-now and offers all three deferred timings where a busy plain send already steers (busySendsNow)', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({
+      busy: true, busySendsNow: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow,
+    });
     await hoverOpen(container);
-    expect(menu(container)).toBeNull();
+    expect(menu(container)).not.toBeNull();
+    expect(container.querySelector('[data-send-timing="default"]')).toBeNull();
+    expect(rowLabels(container)).toEqual([
+      'Send nowSend into the running turn — read before the next step',
+      'Send after this turnStarts when the current turn ends',
+      'Send after subagentsStarts once the running subagents finish',
+      'Send after tasksStarts once every running task finishes',
+    ]);
+    await click(menuRow(container, 'agent_idle'));
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('hello', [], { appendTiming: 'agent_idle' });
+    expect(onSendNow).not.toHaveBeenCalled();
   });
 
   it('opens on hover while busy and lists the plain send, send-now and both deferred timings', async () => {

@@ -78,7 +78,8 @@ export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium tex
 export const MENU_ROW_CLASS =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
-/** The deferred queue timings the send-timing menu offers as one-shot picks. */
+/** All deferred queue timings, plus the two non-idle picks when `agent_idle` is already the plain row. */
+export const DEFERRED_SEND_TIMING_PICKS = ['agent_idle', 'subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
 export const SEND_TIMING_PICKS = ['subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
 
 /** One-shot choice from either send-timing menu (the ＋ view, the send button's hover menu). */
@@ -845,36 +846,43 @@ function FileContinueRow({
 /**
  * The send-timing rows, shared by the send button's hover menu and the ＋
  * menu's timing view (the phone path, where there is no hover): send with the
- * session's default timing, send into the running turn, or defer until
- * subagents / tasks finish.
+ * session's default timing, send into the running turn, or defer until a
+ * chosen queue timing. When `busySendsNow` is active, plain send already
+ * steers into the running turn, so the menu leads with Send now and offers all
+ * three deferred queue timings (`agent_idle`, `subagents_done`, `tasks_done`).
  */
 export function SendTimingRows({
   defaultTiming,
   canSendNow,
+  busySendsNow = false,
   onPick,
 }: {
   readonly defaultTiming: DeferredAppendTiming;
   readonly canSendNow: boolean;
+  readonly busySendsNow?: boolean;
   readonly onPick: (choice: SendTimingChoice) => void;
 }) {
   const { t } = useI18n();
+  const deferredPicks = busySendsNow ? DEFERRED_SEND_TIMING_PICKS : SEND_TIMING_PICKS;
   return (
     <>
-      <button
-        type="button"
-        role="menuitem"
-        data-menu-row
-        data-send-timing="default"
-        onClick={() => { onPick('default'); }}
-        className={`${MENU_ROW_CLASS} items-start`}
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
-          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
-            {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[defaultTiming]) })}
+      {!busySendsNow ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-menu-row
+          data-send-timing="default"
+          onClick={() => { onPick('default'); }}
+          className={`${MENU_ROW_CLASS} items-start`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
+            <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
+              {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[defaultTiming]) })}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+      ) : null}
       {canSendNow ? (
         <button
           type="button"
@@ -890,7 +898,7 @@ export function SendTimingRows({
           </span>
         </button>
       ) : null}
-      {SEND_TIMING_PICKS.map((timing) => (
+      {deferredPicks.map((timing) => (
         <button
           key={timing}
           type="button"
@@ -942,6 +950,7 @@ export function AddMenu({
   readonly timing?: {
     readonly defaultTiming: DeferredAppendTiming;
     readonly canSendNow: boolean;
+    readonly busySendsNow?: boolean;
     readonly onPick: (choice: SendTimingChoice) => void;
   };
   /** SSH hosts row + view (components/ssh/ComposerSsh); absent hides it. */
@@ -1363,7 +1372,7 @@ export function AddMenu({
             : null}
           {timing !== undefined
             ? drillRow('timing', <MenuIcon d="M6 2.8A3.2 3.2 0 1 0 6 9.2 3.2 3.2 0 0 0 6 2.8M6 4.3V6l1.2 1.2" />, t('composer.addMenu.timing'),
-                <span className="text-[12px] text-ink-faint">{t(TIMING_SHORT_KEY[timing.defaultTiming])}</span>,
+                <span className="text-[12px] text-ink-faint">{t(timing.busySendsNow ? 'composer.sendTiming.now' : TIMING_SHORT_KEY[timing.defaultTiming])}</span>,
                 { 'data-add-menu-timing': '' })
             : null}
           {onRebuild !== undefined ? (
@@ -1556,6 +1565,7 @@ export function AddMenu({
               <SendTimingRows
                 defaultTiming={timing.defaultTiming}
                 canSendNow={timing.canSendNow}
+                busySendsNow={timing.busySendsNow}
                 onPick={(choice) => { close(); timing.onPick(choice); }}
               />
             </>
