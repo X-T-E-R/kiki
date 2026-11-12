@@ -162,6 +162,29 @@ describe('plugin file target admission', () => {
     } finally { await service.dispose(); }
   });
 
+  it('binds the approval rule and path matching to every declared file target', async () => {
+    const workspace = await dir();
+    const { service, tools, hosts } = setup(workspace);
+    const definition = toolContributionSchema.parse({ schemaVersion: 1, name: 'copy', description: 'Copy a file', accesses: [
+      { kind: 'file', operation: 'read', path: '$.source' },
+      { kind: 'file', operation: 'write', path: '$.destination' },
+    ] });
+    vi.mocked(hosts.list).mockResolvedValue([{ pluginId: 'fixture', definition }]);
+    try {
+      await service.ready();
+      const tool = tools.get('plugin__fixture__copy')!;
+      const prepare = async (destination: string) => await tool.resolveExecution({ source: 'source.txt', destination }) as RunnableToolExecution;
+      const copy = await prepare('output.txt');
+      expect(copy.approvalRule).toContain('source.txt');
+      expect(copy.approvalRule).toContain('output.txt');
+      expect((await prepare('other.txt')).approvalRule).not.toBe(copy.approvalRule);
+      expect(copy.matchesRule?.('source.txt', 'all')).toBe(false);
+      expect(copy.matchesRule?.('output.txt', 'any')).toBe(true);
+      expect(copy.matchesRule?.('*.txt', 'all')).toBe(true);
+      expect(hosts.execute).not.toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+
   it('resolves $.file into a real target and only passes the approved outside target to its own host', async () => {
     const workspace = await dir();
     const outside = await dir();

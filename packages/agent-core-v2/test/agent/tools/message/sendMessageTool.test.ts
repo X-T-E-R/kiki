@@ -42,6 +42,7 @@ import type { HookDef } from '#/features/externalHooks/internal/types';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
 import { IAgentPermissionPolicyService } from '#/agent/permissionPolicy/permissionPolicy';
 import { appServices, createTestAgent, externalHookServices, homeDirServices, permissionModeServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
 import { makeHookRunner, nodeCommand } from '../../../features/externalHooks/runner-stub';
@@ -343,7 +344,11 @@ describe('SendMessage completion guidance', () => {
     await writeFile(join(cwd, 'notes.txt'), 'notes');
     await writeFile(join(cwd, '.env'), 'TOKEN=example');
     await writeFile(join(outsideDir, 'report.txt'), 'report');
-    await symlink(outsideDir, join(cwd, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    await mkdir(join(cwd, '.git'));
+    await writeFile(join(cwd, '.git', 'config'), '[core]\n');
+    const directoryLink = process.platform === 'win32' ? 'junction' : 'dir';
+    await symlink(outsideDir, join(cwd, 'linked'), directoryLink);
+    await symlink(join(cwd, '.git'), join(cwd, 'repo-info'), directoryLink);
     const realCwd = await realpath(cwd);
     const realOutside = await realpath(outsideDir);
     ctx = createTestAgent({ cwd }, permissionModeServices('manual'));
@@ -368,8 +373,8 @@ describe('SendMessage completion guidance', () => {
     expect(plain.policy).toBe('fallback-ask');
 
     const workspaceFile = await decide({ attachments: [{ path: 'notes.txt' }] });
-    expect(workspaceFile.execution.accesses).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', operation: 'read', path: join(realCwd, 'notes.txt') })]));
-    expect(workspaceFile.execution.description).toContain(join(realCwd, 'notes.txt'));
+    expect(workspaceFile.execution.accesses).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', operation: 'read', path: join(realCwd, 'notes.txt').replaceAll('\\', '/') })]));
+    expect(workspaceFile.execution.description).toContain(join(realCwd, 'notes.txt').replaceAll('\\', '/'));
     expect(workspaceFile).toMatchObject({ policy: 'fallback-ask', kind: 'ask' });
 
     expect(await decide({ attachments: [{ path: join(outsideDir, 'report.txt') }] })).toMatchObject({ policy: 'fallback-ask', kind: 'ask' });
@@ -377,8 +382,18 @@ describe('SendMessage completion guidance', () => {
     expect(await decide({ attachments: [{ path: 'linked/report.txt' }] })).toMatchObject({ policy: 'external-link-access-ask', kind: 'ask' });
 
     const batch = await decide({ messages: [{ text: 'first', attachments: [{ path: 'notes.txt' }] }, { text: 'second', attachments: [{ file_id: 'f_admit' }, { path: '.env' }] }] });
-    expect(batch.execution.accesses?.filter((access) => access.kind === 'file').map((access) => access.kind === 'file' ? access.path : '')).toEqual([join(realCwd, 'notes.txt'), join(realCwd, '.env')]);
+    expect(batch.execution.accesses?.filter((access) => access.kind === 'file').map((access) => access.kind === 'file' ? access.path : '')).toEqual(['notes.txt', '.env'].map((name) => join(realCwd, name).replaceAll('\\', '/')));
     expect(batch).toMatchObject({ policy: 'sensitive-file-access-ask', kind: 'ask' });
+
+    ctx.get(IAgentPermissionRulesService).recordApprovalResult({
+      turnId: 0, toolCallId: 'ordinary-send', toolName: 'SendMessage', action: 'Sending a message',
+      sessionApprovalRule: 'SendMessage', result: { decision: 'approved', scope: 'session' },
+    });
+    const repositoryFile = await decide({ attachments: [{ path: 'notes.txt' }, { path: 'repo-info/config' }] });
+    expect(repositoryFile.execution.accesses).toContainEqual(expect.objectContaining({
+      kind: 'file', operation: 'read', path: join(realCwd, '.git', 'config').replaceAll('\\', '/'), implicitExternal: false,
+    }));
+    expect(repositoryFile).toMatchObject({ policy: 'git-control-path-access-ask', kind: 'ask' });
 
     ctx.get(IAgentPermissionModeService).setMode('yolo');
     expect(await decide({ attachments: [{ path: '.env' }, { path: 'linked/report.txt' }, { path: join(realOutside, 'report.txt') }] })).toMatchObject({ policy: 'yolo-mode-approve', kind: 'approve' });
@@ -1579,7 +1594,7 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
         }),
       ],
     });
-    const attachment = sentInputs[0]?.attachments?.[0]!;
+    const attachment = sentInputs[0]!.attachments![0]!;
     expect(attachment.path).toBe('synthesized.ogg');
     const blobHash = attachment.blobId.split(':').at(-1)!;
     const storedBytes = await ctx.get(IBlobStore).get(ctx.get(IAgentScopeContext).scope('blobs'), blobHash);

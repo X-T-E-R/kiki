@@ -34,7 +34,7 @@ it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('f
   } as unknown as IHostFileSystem });
   const runtime: Runtime = fake;
   const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY, allowedSubagents: ['coder', 'research'], activeToolNames: ['Read'], toolOverride: tools === undefined ? undefined : { tools } };
-  const loaded = await loadDispatchProfileFile('team.md', runtime, { workDir: '/workspace' }, catalog, caller);
+  const loaded = await loadDispatchProfileFile('/workspace/team.md', runtime, { workDir: '/workspace' }, catalog, caller);
   const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('coder')!)));
   expect(Object.keys(bound.fileSources.sourceDefinitions)).toHaveLength(1);
   expect(bound.fileSources.callerCeiling).toMatchObject({ activeToolNames: ['Read'], externalToolAllowPolicies: tools === undefined ? [] : [tools] });
@@ -69,7 +69,7 @@ describe('profile file runtime isolation', () => {
       } as unknown as IHostFileSystem });
       const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
         boundProfile: freezeBoundProfile(original), activeToolNames: original.tools, disallowedTools: ['Bash'] };
-      const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, caller);
+      const loaded = await loadDispatchProfileFile('/workspace/role.md', fake, { workDir: '/workspace' }, catalog, caller);
       const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('external')!)));
       const policies = tools === undefined ? [] : [tools];
       expect(bound.fileSources.callerCeiling.externalToolAllowPolicies).toEqual(policies);
@@ -93,7 +93,7 @@ describe('profile file runtime isolation', () => {
         realpath: async (path: string) => path,
         readText: async () => '---\nname: coder\ndescription: File role\npreferred_models: [preferred-model]\ntools: [Read, Write]\nallowed_subagents: [coder, explore]\n---\nFile role',
       } as unknown as IHostFileSystem });
-      const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
+      const loaded = await loadDispatchProfileFile('/workspace/role.md', fake, { workDir: '/workspace' }, catalog, {
         thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
         activeToolNames: ['Read'], disallowedTools: ['Bash'],
         preferredSubagents: ['explore'],
@@ -133,7 +133,7 @@ describe('profile file runtime isolation', () => {
       realpath: async (path: string) => path,
       readText: async () => '---\nname: reviewer\ndescription: File role\nallowed_subagents: [researcher, explore]\npreferred_subagents: [researcher]\n---\nFile role',
     } as unknown as IHostFileSystem });
-    const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, {
+    const loaded = await loadDispatchProfileFile('/workspace/role.md', fake, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
       allowedSubagents: [], preferredSubagents: ['explore'], denySubagents: ['reviewer'],
     });
@@ -151,7 +151,7 @@ describe('profile file runtime isolation', () => {
       realpath: async (path: string) => path,
       readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nmodel_alias: model-a\n---\nMAIN ROLE',
     } as unknown as IHostFileSystem });
-    const loaded = await loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
+    const loaded = await loadDispatchProfileFile('/workspace/main.md', fake, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
       activeToolNames: ['Read'],
     });
@@ -169,7 +169,7 @@ describe('profile file runtime isolation', () => {
       realpath: async (path: string) => path,
       readText: async () => '---\nname: solo\ndescription: Main role\nmain: true\nexecutor: codex-app-server\n---\nMAIN ROLE',
     } as unknown as IHostFileSystem });
-    const loaded = await loadDispatchProfileFile('main.md', fake, { workDir: '/workspace' }, catalog, {
+    const loaded = await loadDispatchProfileFile('/workspace/main.md', fake, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
     });
     expect(loaded.profileName).toBe('solo');
@@ -185,7 +185,7 @@ describe('profile file runtime isolation', () => {
       realpath: async () => '/outside/private.md', readText,
     } as unknown as IHostFileSystem });
     const runtime: Runtime = fake;
-    await expect(loadDispatchProfileFile('linked.md', runtime, { workDir: '/workspace' }, catalog, {
+    await expect(loadDispatchProfileFile('/workspace/linked.md', runtime, { workDir: '/workspace' }, catalog, {
       thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
     })).rejects.toMatchObject({ code: 'fs.path_escapes' });
     expect(readText).not.toHaveBeenCalled();

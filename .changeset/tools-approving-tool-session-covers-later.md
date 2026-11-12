@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Approving a tool for the session no longer covers its later calls that touch a secret file or follow a link out of the workspace.
+Session approvals for sensitive files, protected Git control paths, and links out of the workspace now apply only to the exact approved targets.

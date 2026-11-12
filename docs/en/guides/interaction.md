@@ -41,7 +41,7 @@ When a tool call has side effects — running a command, writing outside the wor
 
 Use the arrow keys and `Enter`, or press `1` / `2` / `3` to pick by number. `Esc`, `Ctrl-C`, and `Ctrl-D` all mean reject.
 
-The panel usually offers **Approve for this session**, which approves that kind of call for the rest of the session. For rules that outlive a session, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
+The panel usually offers **Approve for this session**, which remembers approval for matching calls in the session. For sensitive files, protected `.git` control paths, and links out of the workspace, it applies only to the exact approved targets and operations; see [file approval rules](../reference/tools.md). For rules that outlive a session, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
 
 ## Mode switching
 

@@ -336,15 +336,19 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         }
       }
     } finally { lease.dispose(); }
-    const path = fileTargets[0]?.path;
+    const paths = fileTargets.map((target) => target.path);
+    const subject = paths.length > 1 ? JSON.stringify(paths) : paths[0];
     const pathOptions = { cwd: workspace.workspaceDir, pathClass: env.pathClass, homeDir: env.homeDir };
     return {
       accesses,
       schedulingAccesses: definition.concurrencySafe === true
         ? accesses.map((access) => access.kind === 'all' ? { ...access, operation: 'read' as const } : access)
         : undefined,
-      approvalRule: path === undefined ? definition.approvalRule ?? name : literalRulePattern(name, path),
-      matchesRule: path === undefined ? undefined : (ruleArgs) => matchesPathRuleSubject(ruleArgs, path, pathOptions),
+      approvalRule: subject === undefined ? definition.approvalRule ?? name : literalRulePattern(name, subject),
+      matchesRule: subject === undefined ? undefined : (ruleArgs, mode = 'all') => {
+        const matches = (path: string) => matchesPathRuleSubject(ruleArgs, path, pathOptions);
+        return mode === 'all' ? paths.every(matches) : paths.some(matches);
+      },
       execute: async (context) => {
         if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) {
           return { isError: true, output: `Plugin ${pluginId} is disabled in this session.` };

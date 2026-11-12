@@ -7,23 +7,30 @@ import type {
   PermissionPolicy,
   PermissionPolicyResult,
 } from '#/agent/permissionPolicy/types';
-import { fileAccesses } from './path-utils';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IGitService } from '#/app/git/git';
+import type { ToolFileAccess } from '#/tool/toolContract';
+import { fileAccesses, gitControlFileAccesses } from './path-utils';
 
-function targetBoundKey(context: ResolvedToolExecutionHookContext): string | undefined {
-  const targets = fileAccesses(context)
-    .filter((access) => access.implicitExternal === true || isSensitiveFile(access.path))
-    .map((access) => `${access.operation}:${access.path}`);
-  if (targets.length === 0) return undefined;
-  return JSON.stringify([context.execution.approvalRule, ...new Set(targets.toSorted())]);
+function targetBoundKey(context: ResolvedToolExecutionHookContext, gitTargets: readonly ToolFileAccess[]): string | undefined {
+  const targets = [
+    ...fileAccesses(context)
+      .filter((access) => access.implicitExternal === true || isSensitiveFile(access.path)),
+    ...gitTargets,
+  ].map((access) => `${access.operation}:${access.path}`);
+  const rule = context.toolCall.name === 'Bash' ? context.execution.sessionApprovalRule : context.execution.approvalRule;
+  if (targets.length === 0 || rule === undefined) return undefined;
+  return JSON.stringify([rule, ...new Set(targets.toSorted())]);
 }
 
 /**
  * The key an "approve for this session" answer records for this call. A call that
- * touches a sensitive file or follows a link out of the workspace records a key bound
- * to those exact targets, so the approval never extends to other such targets.
+ * touches a sensitive file, a Git control path, or a link out of the workspace records
+ * a key bound to those exact targets. Pass every classified Git control access.
  */
-export function sessionApprovalKey(context: ResolvedToolExecutionHookContext): string | undefined {
-  return targetBoundKey(context) ??
+export function sessionApprovalKey(context: ResolvedToolExecutionHookContext, gitTargets: readonly ToolFileAccess[]): string | undefined {
+  return targetBoundKey(context, gitTargets) ??
     (context.toolCall.name === 'Bash' ? context.execution.sessionApprovalRule : context.execution.approvalRule);
 }
 
@@ -32,10 +39,14 @@ export class SessionApprovalHistoryPermissionPolicyService implements Permission
 
   constructor(
     @IAgentPermissionRulesService private readonly rulesService: IAgentPermissionRulesService,
+    @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
+    @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
+    @IGitService private readonly git: IGitService,
   ) {}
 
-  evaluate(context: ResolvedToolExecutionHookContext): PermissionPolicyResult | undefined {
-    const bound = targetBoundKey(context);
+  async evaluate(context: ResolvedToolExecutionHookContext): Promise<PermissionPolicyResult | undefined> {
+    const gitTargets = context.permissionAuthority === 'owner' ? [] : await gitControlFileAccesses(context, this.runtime, this.workspace, this.git);
+    const bound = targetBoundKey(context, gitTargets);
     if (bound !== undefined) {
       return this.rulesService.sessionApprovalRulePatterns.includes(bound) ? { kind: 'approve' } : undefined;
     }

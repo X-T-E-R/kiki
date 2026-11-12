@@ -1877,9 +1877,25 @@ describe('AgentRun and dispatch parity golden', () => {
     Object.defineProperty(runtime, 'fs', { value: {
       realpath: async () => '/outside/custom.md', readText,
     } });
-    const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain('outside runtime workspace');
+    await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true }))
+      .rejects.toMatchObject({ code: 'fs.path_escapes' });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('declares the resolved profile target before reading and rejects a changed target', async () => {
+    const lane = createLane(disposables, 'internal');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const admittedPath = '/workspace/.git/hooks/profile.md';
+    const readText = vi.fn();
+    const realpath = vi.fn(async () => admittedPath);
+    Object.defineProperty(runtime, 'fs', { value: { realpath, readText } });
+    const execution = await lane.ix.get(ISubagentTool).resolveExecution({ profile_file: 'profile.md', prompt: 'review', description: 'File role' });
+    expect(execution).toMatchObject({ accesses: [expect.objectContaining({ kind: 'file', operation: 'read', path: admittedPath })] });
+    expect(readText).not.toHaveBeenCalled();
+    if (execution.isError === true) throw new Error('Expected a prepared profile execution');
+    realpath.mockResolvedValue('/workspace/other.md');
+    await expect(execution.execute({ toolCallId: 'profile-file', turnId: 1, signal: new AbortController().signal }))
+      .resolves.toMatchObject({ isError: true, output: expect.stringContaining('Profile file target changed after path admission') });
     expect(readText).not.toHaveBeenCalled();
   });
 

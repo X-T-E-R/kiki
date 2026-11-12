@@ -2,8 +2,7 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
-import { resolvePathAccessPath } from '#/tool/path-access';
-import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
+import { loadDispatchProfileFile, inheritProfileFileSources, resolveDispatchProfilePath } from '#/session/dispatch/profileFile';
 import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from '#/session/dispatch/resume';
 import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
@@ -337,13 +336,13 @@ export class SubagentTool implements ISubagentTool {
     );
     let filePath: string | undefined;
     if (args.profile_file !== undefined) {
-      const view = new RuntimeWorkspaceView(runtime, rootsForResolution);
-      filePath = resolvePathAccessPath(args.profile_file, {
-        env: runtime.environment,
-        workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
-        operation: 'read',
-      });
-      view.resolve(filePath, view.workDir, true);
+      const lease = this.runtime.acquire(['fs']);
+      try {
+        if (lease.runtime.identity.generation !== runtime.identity.generation) {
+          return { isError: true, output: 'Runtime changed before profile file admission. Retry the tool call.' };
+        }
+        filePath = await resolveDispatchProfilePath(args.profile_file, lease.runtime, rootsForResolution);
+      } finally { lease.dispose(); }
     }
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,

@@ -15,6 +15,8 @@ import { IModelCatalog } from '#/kosong/model/catalog';
 import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { sessionApprovalKey } from '#/agent/permissionPolicy/policies/session-approval-history';
+import { fileAccesses, gitControlFileAccesses } from '#/agent/permissionPolicy/policies/path-utils';
+import { IGitService } from '#/app/git/git';
 import { reviewPermission, type ReviewerVerdict } from './permissionReviewer';
 import type {
   ApprovalResponse,
@@ -235,10 +237,13 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
         response = { decision: 'cancelled' };
       }
     }
-    const sessionApprovalRule =
-      response.decision === 'approved' && response.scope === 'session'
-        ? sessionApprovalKey(context)
-        : undefined;
+    let sessionApprovalRule: string | undefined;
+    if (response.decision === 'approved' && response.scope === 'session') {
+      const gitTargets = context.permissionAuthority === 'owner' || fileAccesses(context).length === 0 ? []
+        : await this.instantiation.invokeFunction((accessor) => gitControlFileAccesses(context,
+          accessor.get(IAgentRuntimeService), accessor.get(ISessionWorkspaceContext), accessor.get(IGitService)));
+      sessionApprovalRule = sessionApprovalKey(context, gitTargets);
+    }
     if (approvalService !== undefined) {
       void this.dispatcher.dispatch(
         new PermissionApprovalResolved({

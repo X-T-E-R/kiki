@@ -41,7 +41,7 @@ CLI 和 TUI 是一个终端界面，由输入框、对话视图和状态栏组�
 
 用方向键选、`Enter` 确认，或按 `1`/`2`/`3` 直接选数字项。`Esc`、`Ctrl-C`、`Ctrl-D` 都表示拒绝。
 
-面板通常提供「Approve for this session」，选中后本次会话内的同类调用自动放行。要跨会话生效的规则，在[配置文件](../configuration/config-files.md#permission)里写 allow / deny。
+选择 **Approve for this session（本会话批准）**，本次会话内符合条件的调用就无需再次审批。涉及敏感文件、受保护的 `.git` 控制路径或指向工作区外的链接时，批准只适用于同样的目标和操作，详见[文件审批规则](../reference/tools.md)。要跨会话生效的规则，在[配置文件](../configuration/config-files.md#permission)里写 allow / deny。
 
 ## 模式切换
 

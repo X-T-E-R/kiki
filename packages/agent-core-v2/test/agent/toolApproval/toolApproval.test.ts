@@ -18,6 +18,9 @@ import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { IGitService } from '#/app/git/git';
 import type {
   PermissionMode,
   PermissionPolicyResult,
@@ -700,16 +703,21 @@ describe('AgentToolApprovalService', () => {
       expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'local', '/workspace', 'printf first; printf second']));
     });
 
-    it('binds a session approval to the sensitive and external targets of the approved call', async () => {
+    it('binds a session approval to the sensitive, Git control, and external targets of the approved call', async () => {
+      const runtime = new FakeRuntime({ workspaceId: 'test', runtimeId: 'local', generation: 'test' }, { pathClass: 'posix' });
+      ix.stub(IAgentRuntimeService, { inspect: () => runtime });
+      ix.stub(ISessionWorkspaceContext, { workDir: '/workspace', additionalDirs: [] });
+      ix.stub(IGitService, { findWorkTree: async () => null });
       useBroker(async () => ({ decision: 'approved', scope: 'session' }));
       const context = makeContext('SendMessage', { text: 'hi' });
       await make().requestToolApproval({ ...context, execution: { ...context.execution, accesses: [
         ...ToolAccesses.readFile('/workspace/notes.md'),
         ...ToolAccesses.readFile('/workspace/.env'),
+        ...ToolAccesses.readFile('/workspace/.git/config'),
         ...ToolAccesses.readFile('/outside/link.txt', true),
         ...ToolAccesses.all(),
       ] } }, ask(), 'sensitive-file-access-ask');
-      expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['SendMessage', 'read:/outside/link.txt', 'read:/workspace/.env']));
+      expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['SendMessage', 'read:/outside/link.txt', 'read:/workspace/.env', 'read:/workspace/.git/config']));
     });
 
     it('keeps approved-once responses out of the session cache', async () => {
