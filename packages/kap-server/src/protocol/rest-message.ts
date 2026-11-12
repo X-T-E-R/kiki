@@ -16,6 +16,7 @@ import { expectedSessionCursorSchema } from './session';
 export const listMessagesQuerySchema = cursorQuerySchema.and(
   z.object({
     role: messageRoleSchema.optional(),
+    order: z.enum(['asc', 'desc']).optional(),
   }),
 );
 export type ListMessagesQuery = z.infer<typeof listMessagesQuerySchema>;

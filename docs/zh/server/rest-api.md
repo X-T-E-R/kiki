@@ -496,6 +496,10 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `GET /api/sessions/{session_id}/transcript/detail` | 读取一条 canonical 实体（`agent_id`、`kind`、`id`） |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | 从一条 `contentRefs` 继续读取被截断的字段 |
 
+消息分页默认从新到旧排列。使用 `GET /api/sessions/{session_id}/messages?after_id=X&order=asc` 从 X 之后按时间正序读取。把每页最后一条消息的 `id` 作为下一次 `after_id`，直到 `has_more` 为 false。要读完所有消息，不要传 `role`，因为角色过滤在选定分页后才执行。按完整轮次续读时，使用 `/transcript?agent_id=main&transcript_coverage_version=2&after_turn=t0`，把最后一轮的 `turnId` 作为下次游标。`/transcript/ops` 用于实时操作日志补漏，不是已保存消息的分页接口。
+
+投影历史不变时，消息 ID 在会话卸载、重新加载和服务端重启后保持不变。显式 ID（包括提交的用户消息 ID）会保留。没有显式 ID 的旧消息使用 `msg_<session_id>_<补零位置序号>`。撤销会移除历史后缀；后来占据相同位置的消息可能复用已移除的序号型 ID。压缩保留完整消息历史及其 ID，并追加一条拥有独立 ID 的摘要。历史改写后应重新加载历史，不要把序号型 ID 当成已删除内容的永久身份。
+
 编辑和重新生成都要求会话空闲，并携带当前会话视图的 `expected_cursor: { seq, epoch }`。编辑会替换完整 `content` 数组，包括附件；重新生成沿用所选终态 Assistant 回复对应的原用户输入。预检拒绝不会改变对话历史；成功受理的改写保留 `user_message_id`，并取得新的 `prompt_id`。
 
 需要恢复丢失的响应时，可提供 `operation_id`，并在重试同一次操作时保持该 ID 和完整请求体不变。与已受理请求匹配的重试返回原回执，不再启动一次运行，即使原上传文件已经过期也能恢复。修改请求体或开始新操作时应使用新 ID。同一 ID 携带不同输入会返回 `40938`；游标过期会返回 `40937`，应先刷新会话视图，再开始新操作。响应状态不确定时，手动重试原操作，不要自动提交另一操作。
@@ -527,6 +531,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | 读取已保存请求的完整内容，不恢复 Agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | 重试等待确认或失败的已保存请求 |
+
+REST 提交的提示词与界面输入一样，在转录中显示为普通用户消息。轮次运行期间，普通提交返回 `status: "queued"`，并在当前轮次结束后自动启动。精简的 `?receipt=true` 响应也可能在空闲 Agent 尚未启动轮次时返回 `queued`。用 `turn.started.payload.promptId` 关联实际执行；`turn.ended.payload.reason` 取 `completed`、`cancelled`、`failed` 或 `blocked`。
 
 提示词列表加上 `?observe=true` 时，只读观察当前主 Agent 正在处理和排队的提示词。未激活的已保存会话或尚未创建的主 Agent 返回 `{ active: null, queued: [] }`，不恢复或创建 Agent。此视图不列出已保存的请求；读取这些请求请使用 `admission=durable`。
 

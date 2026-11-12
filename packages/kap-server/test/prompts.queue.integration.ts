@@ -168,6 +168,35 @@ describe('server-v2 /api prompts', () => {
     } finally { interactions.releaseConsumer('fenced-interactions'); await klient.close(); }
   });
 
+  it('queues a REST prompt while busy and starts it automatically with correlated turn events', async () => {
+    const id = await createSession(fixture.home as string);
+    const firstStep = promiseGate<void>();
+    await createHeldMainAgent(id, firstStep.promise);
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const events: Array<{ type: string; promptId?: string; reason?: string }> = [];
+    const listener = main.accessor.get(IEventBus).subscribe((event) => {
+      if (event.type === 'turn.started' || event.type === 'turn.ended') events.push(event as typeof events[number]);
+    });
+    try {
+      const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts?receipt=true`, {
+        prompt_id: 'busy-first', content: [{ type: 'text', text: 'first' }],
+      });
+      expect(first.body.data.status).toBe('queued');
+      await vi.waitFor(() => expect(events.filter((event) => event.type === 'turn.started')).toMatchObject([{ promptId: 'busy-first' }]));
+      const second = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts?receipt=true`, {
+        prompt_id: 'busy-second', content: [{ type: 'text', text: 'second' }],
+      });
+      expect(second.body.data.status).toBe('queued');
+      expect(events.filter((event) => event.type === 'turn.started')).toMatchObject([{ promptId: 'busy-first' }]);
+      firstStep.resolve();
+      await vi.waitFor(() => expect(events.filter((event) => event.type === 'turn.ended')).toMatchObject([{ reason: 'completed' }, { reason: 'completed' }]));
+      expect(events.filter((event) => event.type === 'turn.started')).toMatchObject([{ promptId: 'busy-first' }, { promptId: 'busy-second' }]);
+    } finally {
+      firstStep.resolve();
+      listener.dispose();
+    }
+  });
+
   it('submits a prompt and lists it as active', async () => {
     const id = await createSession(fixture.home as string);
     await createMainAgent(id);

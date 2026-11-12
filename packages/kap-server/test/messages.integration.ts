@@ -308,6 +308,96 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     }
   }
 
+  it('projects a REST prompt as an ordinary user turn in the transcript', async () => {
+    const { id, submitted } = await createTerminalPrompt('A REST user message.');
+    const transcript = await getJson<{ items: unknown[] }>(`/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`);
+    expect(transcript.body.code).toBe(0);
+    expect(transcript.body.data.items).toContainEqual(expect.objectContaining({
+      kind: 'turn', origin: expect.objectContaining({ kind: 'user' }),
+      prompt: 'A REST user message.', message: expect.objectContaining({ messageId: submitted.data.user_message_id, role: 'user' }),
+    }));
+    const messages = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(messages.body.data.items).toContainEqual(expect.objectContaining({
+      id: submitted.data.user_message_id, role: 'user', metadata: { origin: { kind: 'user' } },
+    }));
+  });
+
+  it('reads transcript turns strictly forward while messages after_id keeps newest-first paging', async () => {
+    const { id, main } = await createTerminalPrompt('turn zero');
+    for (let index = 1; index <= 4; index += 1) {
+      expect((await postJson(`/api/sessions/${id}/prompts`, {
+        prompt_id: `forward-${index}`, content: [{ type: 'text', text: `turn ${index}` }],
+      })).code).toBe(0);
+      await waitForTerminal(main);
+    }
+    const read = async (after: string) => {
+      const result = await getJson<{ items: Array<{ kind: string; turnId?: string; prompt?: string }>; has_more: boolean }>(
+        `/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2&after_turn=${after}&page_size=2`,
+      );
+      expect(result.body.code).toBe(0);
+      return { turns: result.body.data.items.filter((item) => item.kind === 'turn'), hasMore: result.body.data.has_more };
+    };
+    const first = await read('t0');
+    expect(first.turns.map((turn) => turn.turnId)).toEqual(['t1', 't2']);
+    expect(first.turns.map((turn) => turn.prompt)).toEqual(['turn 1', 'turn 2']);
+    expect(first.hasMore).toBe(true);
+    const second = await read(first.turns.at(-1)!.turnId!);
+    expect(second.turns.map((turn) => turn.turnId)).toEqual(['t3', 't4']);
+    expect(second.hasMore).toBe(false);
+    expect((await read('t4')).turns).toEqual([]);
+    const newest = await getJson<PageWire>(`/api/sessions/${id}/messages?after_id=forward-1&page_size=2`);
+    expect(newest.body.data.items.map((message) => message.content)).toEqual([
+      [{ type: 'text', text: 'fixture answer' }], [{ type: 'text', text: 'turn 4' }],
+    ]);
+    expect(newest.body.data.has_more).toBe(true);
+    const messagePath = `/api/sessions/${id}/messages?order=asc&page_size=2&after_id=`;
+    const firstMessages = await getJson<PageWire>(`${messagePath}forward-1`);
+    expect(firstMessages.body.data).toMatchObject({ items: [{ role: 'assistant' }, { id: 'forward-2' }], has_more: true });
+    const nextMessages = await getJson<PageWire>(`${messagePath}forward-2`);
+    expect(nextMessages.body.data).toMatchObject({ items: [{ role: 'assistant' }, { id: 'forward-3' }], has_more: true });
+    const lastMessages = await getJson<PageWire>(`${messagePath}forward-4`);
+    expect(lastMessages.body.data).toMatchObject({ items: [{ role: 'assistant' }], has_more: false });
+    await closeSessionById(server!.core.accessor, id);
+    expect((await read('t0')).turns.map((turn) => turn.turnId)).toEqual(['t1', 't2']);
+  });
+
+  it('keeps message ids through reload and restart and reuses removed positional ids after undo', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'explicit-user', role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } },
+      { role: 'assistant', content: [{ type: 'text', text: 'first answer' }], toolCalls: [] },
+      { role: 'user', content: [{ type: 'text', text: 'removed' }], toolCalls: [], origin: { kind: 'user' } },
+      { role: 'assistant', content: [{ type: 'text', text: 'removed answer' }], toolCalls: [] },
+    ]);
+    const read = async () => (await getJson<PageWire>(`/api/sessions/${id}/messages`)).body.data.items;
+    const before = await read();
+    await closeSessionById(server!.core.accessor, id);
+    expect(await read()).toEqual(before);
+    await resumeSessionById(server!.core.accessor, id);
+    expect(await read()).toEqual(before);
+    await server!.close();
+    server = undefined;
+    await boot();
+    expect(await read()).toEqual(before);
+    const session = await resumeSessionById(server!.core.accessor, id);
+    const main = await ensureMainAgent(session!);
+    const memory = main.accessor.get(IAgentContextMemoryService);
+    memory.undo(1);
+    await main.accessor.get(IWireService).flush();
+    expect((await read()).map((message) => message.id)).toEqual(before.slice(2).map((message) => message.id));
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'replacement' }], toolCalls: [], origin: { kind: 'user' } });
+    await main.accessor.get(IWireService).flush();
+    expect((await read())[0]).toMatchObject({ id: before[1]!.id, content: [{ type: 'text', text: 'replacement' }] });
+    const existing = await read();
+    memory.applyCompaction({ summary: 'summary', contextSummary: 'summary', compactedCount: 3, tokensBefore: 100 });
+    await main.accessor.get(IWireService).flush();
+    const compacted = await read();
+    expect(compacted.slice(1)).toEqual(existing);
+    expect(compacted[0]).toMatchObject({ id: `msg_${id}_000003`, metadata: { origin: { kind: 'compaction_summary' } } });
+    await closeSessionById(server!.core.accessor, id);
+    expect(await read()).toEqual(compacted);
+  });
+
   it.each(['noGoal', 'paused'] as const)('delivers an AgentRun resume receipt to idle main over HTTP and ordered views with %s', async (goalState) => {
     const { id, main } = await createTerminalPrompt('Preserve the existing conversation.');
     const session = getLiveSessionById(server!.core.accessor, id)!;

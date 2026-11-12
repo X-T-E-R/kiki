@@ -489,25 +489,57 @@ describe('server-v2 /api/ws resync', () => {
     c1.send({ type: 'client_hello', id: 'h1', payload: withToken({ client_id: 'cli', subscriptions: [sid] }) });
     await c1.next((f) => f.type === 'ack' && f.id === 'h1');
     emitAgentEvent(sid, { type: 'turn.started', turnId: 1, origin: { kind: 'user' } } as unknown as Event2<any>);
-    emitAgentEvent(sid, { type: 'turn.ended', turnId: 1 } as unknown as Event2<any>);
-    await c1.next((f) => f.type === 'turn.ended');
+    const started = await c1.next((f) => f.type === 'turn.started');
+    expect(started.seq).toBeTypeOf('number');
+    expect(started.epoch).toMatch(/^ep_/);
+    emitAgentEvent(sid, { type: 'turn.ended', turnId: 1, reason: 'completed' } as unknown as Event2<any>);
+    const ended = await c1.next((f) => f.type === 'turn.ended');
     c1.ws.close();
     await c1.closed;
 
     const c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');
     c2.send({
-      type: 'client_hello',
+      type: 'subscribe',
       id: 'h2',
-      payload: withToken({ client_id: 'cli', subscriptions: [sid], cursors: { [sid]: { seq: 1 } } }),
+      payload: withToken({ session_ids: [sid], cursors: { [sid]: { seq: started.seq!, epoch: started.epoch! } } }),
     });
     const replayed = await c2.next((f) => f.type === 'turn.ended');
-    expect(replayed.seq).toBeGreaterThanOrEqual(2);
+    expect(replayed).toEqual(ended);
     const ack2 = await c2.next((f) => f.type === 'ack' && f.id === 'h2');
-    expect(ack2.payload).toMatchObject({ accepted_subscriptions: [sid] });
+    expect(ack2.payload).toMatchObject({ accepted: [sid], resync_required: [] });
 
     c2.ws.close();
     await c2.closed;
+  });
+
+  it('requires a fresh snapshot when a subscribe cursor falls outside the replay buffer', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const conn = await openConn(wsUrl, server!.localOwnerToken);
+    try {
+      const hello = await conn.next((frame) => frame.type === 'server_hello');
+      const capacity = hello.payload!['max_event_buffer_size'] as number;
+      const snapshot = async () => {
+        const response = await fetch(`${base}/api/sessions/${sid}/snapshot`, { headers: authHeaders(server!) });
+        const body = (await response.json()) as { code: number; data: { as_of_seq: number; epoch: string } };
+        expect(body.code).toBe(0);
+        return { seq: body.data.as_of_seq, epoch: body.data.epoch };
+      };
+      const old = await snapshot();
+      for (let turnId = 0; turnId <= capacity; turnId += 1) {
+        emitAgentEvent(sid, new TurnEnded({ turnId, reason: 'completed' }));
+      }
+      conn.send({ type: 'subscribe', id: 'old', payload: withToken({ session_ids: [sid], cursors: { [sid]: old } }) });
+      expect((await conn.next((frame) => frame.type === 'resync_required')).payload).toMatchObject({ session_id: sid, reason: 'buffer_overflow' });
+      const fresh = await snapshot();
+      expect(fresh.epoch).toBe(old.epoch);
+      expect(fresh.seq - old.seq).toBeGreaterThan(capacity);
+      conn.send({ type: 'subscribe', id: 'fresh', payload: withToken({ session_ids: [sid], cursors: { [sid]: fresh } }) });
+      expect((await conn.next((frame) => frame.type === 'ack' && frame.id === 'fresh')).payload).toMatchObject({ accepted: [sid], resync_required: [] });
+    } finally {
+      await closeOwned(conn);
+    }
   });
 
   it('sends resync_required on epoch mismatch', async () => {

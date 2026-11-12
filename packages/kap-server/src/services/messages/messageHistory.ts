@@ -129,6 +129,7 @@ export interface MessageListQuery {
   readonly after_id?: string | undefined;
   readonly page_size?: number | undefined;
   readonly role?: MessageRole | undefined;
+  readonly order?: 'asc' | 'desc';
 }
 
 export interface PageResponse<T> {
@@ -173,7 +174,8 @@ export async function listMessages(
       : history.messages.length - 1;
     const low = query.after_id !== undefined && pivotIndex !== undefined ? pivotIndex + 1 : 0;
     const selected: Array<{ readonly index: number; readonly message: ContextMessage }> = [];
-    for (let index = high; index >= low && selected.length <= pageSize; index -= 1) {
+    const ascending = query.order === 'asc';
+    for (let index = ascending ? low : high; index >= low && index <= high && selected.length <= pageSize; index += ascending ? 1 : -1) {
       const message = history.messages[index];
       if (message !== undefined) selected.push({ index, message });
     }

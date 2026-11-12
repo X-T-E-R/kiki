@@ -509,6 +509,10 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | `GET /api/sessions/{session_id}/transcript/detail` | One canonical entity (`agent_id`, `kind`, `id`) |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | Continue one bounded field from a `contentRefs` entry |
 
+Message pages are newest first by default. Use `GET /api/sessions/{session_id}/messages?after_id=X&order=asc` to read the earliest messages strictly after X, oldest first. Continue with the last message's `id` as `after_id` until `has_more` is false. Omit `role` when walking every message: role filtering is applied after page selection. For whole turns, use `/transcript?agent_id=main&transcript_coverage_version=2&after_turn=t0` and continue with the last turn's `turnId`. `/transcript/ops` is live op-journal catch-up, not saved-message pagination.
+
+Message IDs survive session unload/reload and server restart while the projected history is unchanged. Explicit IDs, including submitted user-message IDs, are retained. Legacy messages without an explicit ID use `msg_<session_id>_<zero-padded-position>`. Undo removes its suffix; a later message at the same position can reuse a removed positional ID. Compaction preserves the full message history and its IDs and appends a summary with its own ID. After a history rewrite, reload the history rather than treating a positional ID as a permanent identity for deleted content.
+
 Editing and regenerating require an idle session and `expected_cursor: { seq, epoch }` from the current session view. An edit replaces the complete `content` array, including attachments; regeneration reuses the original user input behind the selected final assistant response. Preflight rejection leaves conversation history unchanged. An accepted rewrite retains `user_message_id` and receives a new `prompt_id`.
 
 For response-loss recovery, send an optional `operation_id` and keep that ID and the entire request body unchanged when retrying the same action. A matching accepted retry returns the original receipt without another run, even after an uploaded source file has expired. Use a new ID for a different body or a new action. Reusing an ID with different input returns `40938`; a stale cursor returns `40937`, so refresh the session view before starting a new action. If the response is uncertain, retry manually rather than automatically submitting another action.
@@ -540,6 +544,8 @@ The transcript response's `agents` descriptors use camelCase: `{ agentId, type?,
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | Read a saved request, including its complete content, without restoring the agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | Retry a held or failed saved request |
+
+A REST prompt is an ordinary user message in the transcript, just like input sent from the UI. While a turn is running, ordinary submissions return `status: "queued"` and start automatically after it ends. A compact `?receipt=true` response can also report `queued` before an idle agent has started the turn. Correlate execution using `turn.started.payload.promptId`; `turn.ended.payload.reason` is `completed`, `cancelled`, `failed`, or `blocked`.
 
 Add `?observe=true` to the prompt list for a read-only view of the current main agent's active and queued prompts. An inactive saved session or an unstarted main returns `{ active: null, queued: [] }` without restoring or creating an agent. This view does not enumerate saved prompt requests; use `admission=durable` for those.
 

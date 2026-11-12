@@ -84,6 +84,7 @@ const messagesListQueryCoercion = z
     after_id: z.string().min(1).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
     role: messageRoleSchema.optional(),
+    order: z.enum(['asc', 'desc']).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.before_id !== undefined && value.after_id !== undefined) {
