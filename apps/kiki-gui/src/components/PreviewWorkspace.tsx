@@ -43,6 +43,7 @@ import {
   computeFileWriteCounts,
   downloadHostFile,
   fileWriteEpochFor,
+  isLocalKikiComputer,
   MAX_PREVIEW_WIDTH,
   relativeToCwd,
   useFileOpeners,
@@ -637,6 +638,7 @@ function HostFileResourceTabView({
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
+  const localKikiComputer = isLocalKikiComputer(connection);
   const openers = useFileOpeners();
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
   const hasKnownExtension = basenameOf(filePath).includes('.');
@@ -652,6 +654,8 @@ function HostFileResourceTabView({
       {resourceType === 'image' ? (
         <ImageTabView
           path={filePath}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           visible={visible}
           fileWriteEpoch={fileWriteEpoch}
           externalReloadNonce={externalReloadNonce}
@@ -662,6 +666,8 @@ function HostFileResourceTabView({
       ) : resourceType === 'video' ? (
         <VideoTabView
           path={filePath}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           externalReloadNonce={externalReloadNonce}
           onCloseTab={onCloseTab}
           onReadStateChange={onReadStateChange}
@@ -670,6 +676,8 @@ function HostFileResourceTabView({
         <AudioTabView
           path={filePath}
           scopeId={connection?.scopeId}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           externalReloadNonce={externalReloadNonce}
           onCloseTab={onCloseTab}
           onReadStateChange={onReadStateChange}
@@ -695,15 +703,26 @@ function HostFileResourceTabView({
           onOpenLocally={openers?.open === undefined ? undefined : () => { openers.open!(filePath); }}
           onDownload={() => {
             const target = connection?.client;
-            if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath), t);
+            if (target !== undefined) {
+              void downloadHostFile(host, target, filePath, basenameOf(filePath), t, {
+                sessionId,
+                workspaceRoot,
+                localKikiComputer,
+              });
+            }
           }}
         />
       ) : resourceType === 'unsupported' && hasKnownExtension ? (
-        <BinaryTabView path={filePath} />
+        <BinaryTabView
+          path={filePath}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
+        />
       ) : (
         <TextTabView
           path={filePath}
           workspaceRoot={workspaceRoot}
+          sessionId={sessionId}
           visible={visible}
           markdown={resourceType === 'markdown'}
           navigation={navigation}

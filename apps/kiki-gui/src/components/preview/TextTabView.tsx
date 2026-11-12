@@ -27,8 +27,12 @@ import {
   classifyHtmlPreviewError,
   DelayedReadingNotice,
   isLocalKikiComputer,
+  isRemoteUnavailableError,
   PreviewReadFailureView,
+  readPreviewFileText,
+  readWorkspaceTextViaSession,
   SandboxedHtmlPreview,
+  SESSION_FS_READ_MAX_BYTES,
   type HtmlPreviewState,
 } from './shared';
 
@@ -72,6 +76,7 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
 export function TextTabView({
   path,
   workspaceRoot,
+  sessionId,
   visible,
   markdown,
   navigation,
@@ -84,6 +89,7 @@ export function TextTabView({
 }: {
   readonly path: string;
   readonly workspaceRoot?: string;
+  readonly sessionId?: string;
   readonly visible: boolean;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
@@ -192,9 +198,12 @@ export function TextTabView({
     const next = new HostFileEditorController({
       path,
       readFile: (target, options) =>
-        options === undefined
-          ? client.previewHostFile(target)
-          : client.previewHostFile(target, undefined, options),
+        readPreviewFileText(
+          client,
+          target,
+          { sessionId, workspaceRoot, localKikiComputer },
+          options === undefined ? undefined : { ifNoneMatch: options.ifNoneMatch },
+        ),
       writeFile: host.writeFileText,
       local: localKikiComputer,
     });
@@ -204,7 +213,7 @@ export function TextTabView({
       next.dispose();
       setController(null);
     };
-  }, [client, host, localKikiComputer, path]);
+  }, [client, host, localKikiComputer, path, sessionId, workspaceRoot]);
 
   const reloadTab = useCallback(() => {
     void controller?.reload();
@@ -339,7 +348,32 @@ export function TextTabView({
     setLoadingFull(true);
     setFullError(false);
     try {
-      const text = await client.readHostFile(path, { signal: abort.signal });
+      let text: string;
+      const canUseSessionFs =
+        sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
+      if (!localKikiComputer && canUseSessionFs) {
+        const res = await readWorkspaceTextViaSession(client, sessionId, path, workspaceRoot, {
+          length: SESSION_FS_READ_MAX_BYTES,
+          signal: abort.signal,
+        });
+        if (res.truncated) throw new Error('fs.too_large');
+        text = res.text;
+      } else {
+        try {
+          text = await client.readHostFile(path, { signal: abort.signal });
+        } catch (error) {
+          if (canUseSessionFs && isRemoteUnavailableError(error)) {
+            const res = await readWorkspaceTextViaSession(client, sessionId, path, workspaceRoot, {
+              length: SESSION_FS_READ_MAX_BYTES,
+              signal: abort.signal,
+            });
+            if (res.truncated) throw new Error('fs.too_large');
+            text = res.text;
+          } else {
+            throw error;
+          }
+        }
+      }
       if (!abort.signal.aborted && loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
     } catch {
       if (!abort.signal.aborted && loadId === fullLoadId.current) setFullError(true);
@@ -349,7 +383,7 @@ export function TextTabView({
         setLoadingFull(false);
       }
     }
-  }, [client, controller, path, snap.generation, visible]);
+  }, [client, controller, localKikiComputer, path, sessionId, snap.generation, visible, workspaceRoot]);
   useEffect(() => {
     if (visible && markdown && snap.status === 'ready' && snap.oversized && fullText === undefined && !fullError) {
       void loadFullMarkdown();
@@ -505,6 +539,8 @@ export function TextTabView({
         <HeaderFileActions
           path={path}
           name={name}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           canDownload={!textReadFailed && snap.status === 'ready'}
           readFailed={textReadFailed}
           failureReason={snap.failureReason}

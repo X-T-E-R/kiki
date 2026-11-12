@@ -11,7 +11,13 @@ import { classifyHostFileReadError } from '#/state/hostFileEditor';
 import type { PreviewReadFailureReason, PreviewReadState } from '#/state/previewResource';
 import { BinaryTabView } from './BinaryTabView';
 import { HeaderFileActions } from './ResourceHeader';
-import { DelayedReadingNotice, PreviewReadFailureView } from './shared';
+import {
+  DelayedReadingNotice,
+  isLocalKikiComputer,
+  PreviewReadFailureView,
+  readPreviewFileBytes,
+  type SessionWorkspaceReadScope,
+} from './shared';
 
 interface PlayableMedia {
   readonly url: string;
@@ -20,8 +26,13 @@ interface PlayableMedia {
   readonly release: () => void;
 }
 
-function loadPlayableBlob(client: KikiClient, path: string, signal: AbortSignal): Promise<PlayableMedia> {
-  return client.readHostFileBytes(path, { signal }).then(({ bytes, mime }) => {
+function loadPlayableBlob(
+  client: KikiClient,
+  path: string,
+  scope: SessionWorkspaceReadScope,
+  signal: AbortSignal,
+): Promise<PlayableMedia> {
+  return readPreviewFileBytes(client, path, scope, { signal }).then(({ bytes, mime }) => {
     if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
     return { url, size: bytes.byteLength, via: 'blob', release: () => { URL.revokeObjectURL(url); } };
@@ -29,8 +40,14 @@ function loadPlayableBlob(client: KikiClient, path: string, signal: AbortSignal)
 }
 
 /** Capability URL when this connection can mint one; otherwise the file bytes. */
-function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal, forceBlob: boolean): Promise<PlayableMedia> {
-  if (!forceBlob && typeof client.openHostMediaPreview === 'function') {
+function loadPlayableMedia(
+  client: KikiClient,
+  path: string,
+  scope: SessionWorkspaceReadScope,
+  signal: AbortSignal,
+  forceBlob: boolean,
+): Promise<PlayableMedia> {
+  if (!forceBlob && scope.localKikiComputer !== false && typeof client.openHostMediaPreview === 'function') {
     return client.openHostMediaPreview({ path }, { signal }).then((opened) => {
       if (signal.aborted) {
         void client.closeHostMediaPreview(opened.preview_id);
@@ -44,10 +61,10 @@ function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal
       };
     }, (error: unknown) => {
       if (signal.aborted) throw error;
-      return loadPlayableBlob(client, path, signal);
+      return loadPlayableBlob(client, path, scope, signal);
     });
   }
-  return loadPlayableBlob(client, path, signal);
+  return loadPlayableBlob(client, path, scope, signal);
 }
 
 /**
@@ -59,17 +76,23 @@ function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal
 export function AudioTabView({
   path,
   scopeId,
+  sessionId,
+  workspaceRoot,
   externalReloadNonce,
   onCloseTab,
   onReadStateChange,
 }: {
   readonly path: string;
   readonly scopeId?: string;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   readonly externalReloadNonce?: number;
   readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
-  const client = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
   const mediaKey = `${scopeId ?? ''}\0${path}`;
   const [attempt, setAttempt] = useState(0);
@@ -129,7 +152,13 @@ export function AudioTabView({
     let release: (() => void) | undefined;
     let cancelled = false;
     setState({ status: 'loading' });
-    loadPlayableMedia(client, path, abort.signal, blobFallbackKey === mediaKey).then((ready) => {
+    loadPlayableMedia(
+      client,
+      path,
+      { sessionId, workspaceRoot, localKikiComputer },
+      abort.signal,
+      blobFallbackKey === mediaKey,
+    ).then((ready) => {
       if (cancelled) {
         ready.release();
         return;
@@ -146,12 +175,21 @@ export function AudioTabView({
       abort.abort();
       release?.();
     };
-  }, [attempt, blobFallbackKey, client, mediaKey, path, scopeId]);
+  }, [attempt, blobFallbackKey, client, localKikiComputer, mediaKey, path, scopeId, sessionId, workspaceRoot]);
 
   const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
     ? state
     : undefined;
-  if (unplayable) return <BinaryTabView path={path} reason="corrupted" />;
+  if (unplayable) {
+    return (
+      <BinaryTabView
+        path={path}
+        sessionId={sessionId}
+        workspaceRoot={workspaceRoot}
+        reason="corrupted"
+      />
+    );
+  }
 
   const readFailed = readyState === undefined && state.status === 'error';
   const failureReason = state.status === 'error' ? state.reason : undefined;
@@ -170,6 +208,8 @@ export function AudioTabView({
         <HeaderFileActions
           path={path}
           name={name}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           canDownload={!readFailed}
           readFailed={readFailed}
           failureReason={failureReason}
@@ -216,16 +256,22 @@ export function AudioTabView({
  */
 export function VideoTabView({
   path,
+  sessionId,
+  workspaceRoot,
   externalReloadNonce,
   onCloseTab,
   onReadStateChange,
 }: {
   readonly path: string;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   readonly externalReloadNonce?: number;
   readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
-  const client = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
   const [attempt, setAttempt] = useState(0);
   const [unplayable, setUnplayable] = useState(false);
@@ -280,7 +326,13 @@ export function VideoTabView({
     let release: (() => void) | undefined;
     let cancelled = false;
     setState({ status: 'loading' });
-    loadPlayableMedia(client, path, abort.signal, blobFallback).then((ready) => {
+    loadPlayableMedia(
+      client,
+      path,
+      { sessionId, workspaceRoot, localKikiComputer },
+      abort.signal,
+      blobFallback,
+    ).then((ready) => {
       if (cancelled) {
         ready.release();
         return;
@@ -297,9 +349,18 @@ export function VideoTabView({
       abort.abort();
       release?.();
     };
-  }, [attempt, blobFallback, client, path]);
+  }, [attempt, blobFallback, client, localKikiComputer, path, sessionId, workspaceRoot]);
 
-  if (unplayable) return <BinaryTabView path={path} reason="corrupted" />;
+  if (unplayable) {
+    return (
+      <BinaryTabView
+        path={path}
+        sessionId={sessionId}
+        workspaceRoot={workspaceRoot}
+        reason="corrupted"
+      />
+    );
+  }
 
   const readFailed = state.status === 'error';
   const failureReason = state.status === 'error' ? state.reason : undefined;
@@ -318,6 +379,8 @@ export function VideoTabView({
         <HeaderFileActions
           path={path}
           name={name}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           canDownload={!readFailed}
           readFailed={readFailed}
           failureReason={failureReason}

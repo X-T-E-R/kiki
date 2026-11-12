@@ -3138,4 +3138,134 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     delete FILES['/work/slides/deck.html'];
     delete sessionMediaMock.bytesById['blobref:main:md33'];
   });
+
+  it('previews workspace text, Markdown and images via session fsRead on paired/remote connections, blocks outside-workspace paths with Copy path, and keeps local desktop on fs:content (#37)', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    const previewHostFileSpy = vi.fn(async (path: string) => ({
+      text: FILES[path] ?? '',
+      truncated: false,
+      lossless: true,
+      etag: 'W/"local-1"',
+    }));
+    const readHostFileBytesSpy = vi.fn(async () => ({
+      bytes: new Uint8Array([137, 80, 78, 71]),
+      mime: 'image/png',
+      etag: 'W/"local-img-1"',
+    }));
+    const fsReadSpy = vi.fn(async (sessionId: string, body: { path: string; encoding?: string; length?: number }) => {
+      expect(sessionId).toBe('sess-37');
+      if (body.path === 'src/server.ts') {
+        return {
+          path: 'src/server.ts',
+          content: "import { boot } from './boot';\nboot(3700);\n",
+          encoding: 'utf-8' as const,
+          size: 43,
+          truncated: false,
+          etag: 'W/"remote-ts-1"',
+          mime: 'text/typescript',
+          is_binary: false,
+        };
+      }
+      if (body.path === 'docs/design.md') {
+        return {
+          path: 'docs/design.md',
+          content: '# Paired Design\n\nWorkspace note.\n',
+          encoding: 'utf-8' as const,
+          size: 33,
+          truncated: false,
+          etag: 'W/"remote-md-1"',
+          mime: 'text/markdown',
+          is_binary: false,
+        };
+      }
+      if (body.path === 'shots/screen.png') {
+        return {
+          path: 'shots/screen.png',
+          content: btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10)),
+          encoding: 'base64' as const,
+          size: 8,
+          truncated: false,
+          etag: 'W/"remote-img-1"',
+          mime: 'image/png',
+          is_binary: true,
+        };
+      }
+      throw Object.assign(new Error('fs.path_escapes_session'), { code: 41304, msg: 'fs.path_escapes_session' });
+    });
+
+    const pairedClient = {
+      ...(connectionMock.defaultClient as Record<string, unknown>),
+      previewHostFile: vi.fn(async () => {
+        throw Object.assign(new Error('local_owner_required'), { code: 40101, msg: 'local_owner_required' });
+      }),
+      readHostFileBytes: vi.fn(async () => {
+        throw Object.assign(new Error('local_owner_required'), { code: 40101, msg: 'local_owner_required' });
+      }),
+      fsRead: fsReadSpy,
+    };
+
+    connectionMock.activeClient = pairedClient;
+    connectionMock.connectionSource = 'remote';
+    connectionMock.scopeId = 'conn-paired';
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-37">
+        <OpenButton path="/work/src/server.ts" />
+        <OpenButton path="/work/docs/design.md" />
+        <OpenButton path="/work/shots/screen.png" />
+        <OpenButton path="/outside/secret.txt" />
+      </MediaPreviewProvider>,
+    );
+
+    await openFile(probe.container, '/work/src/server.ts');
+    await settle();
+    const tsPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/src/server.ts"]')!;
+    expect(tsPanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value).toContain('boot(3700)');
+    expect(pairedClient.previewHostFile).not.toHaveBeenCalled();
+    expect(fsReadSpy).toHaveBeenCalledWith('sess-37', expect.objectContaining({ path: 'src/server.ts' }), expect.anything());
+
+    await openFile(probe.container, '/work/docs/design.md');
+    await settle();
+    const mdPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/docs/design.md"]')!;
+    expect(mdPanel.querySelector('h1')?.textContent).toBe('Paired Design');
+
+    await openFile(probe.container, '/work/shots/screen.png');
+    await settle();
+    const imgPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/shots/screen.png"]')!;
+    expect(imgPanel.querySelector('img')).not.toBeNull();
+    expect(pairedClient.readHostFileBytes).not.toHaveBeenCalled();
+
+    await openFile(probe.container, '/outside/secret.txt');
+    await settle();
+    const outsidePanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/outside/secret.txt"]')!;
+    const remoteState = outsidePanel.querySelector<HTMLElement>('[data-preview-read-state="remote-unreadable"]')!;
+    expect(remoteState).not.toBeNull();
+    expect(remoteState.textContent).toContain('这个文件在运行 Kiki 的电脑上，这台设备读不到它。');
+    expect(remoteState.querySelector('[data-copy-path]')?.textContent).toBe('复制路径');
+
+    // Local desktop connection keeps reading directly through fs:content (no fsRead call)
+    fsReadSpy.mockClear();
+    connectionMock.activeClient = {
+      ...(connectionMock.defaultClient as Record<string, unknown>),
+      previewHostFile: previewHostFileSpy,
+      readHostFileBytes: readHostFileBytesSpy,
+      fsRead: fsReadSpy,
+    };
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.scopeId = 'local';
+
+    const localProbe = makeRoot();
+    await renderSettled(
+      localProbe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-37">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(localProbe.container, '/work/src/server.ts');
+    await settle();
+    expect(previewHostFileSpy).toHaveBeenCalledWith('/work/src/server.ts');
+    expect(fsReadSpy).not.toHaveBeenCalled();
+  });
 });

@@ -11,20 +11,26 @@ import { Icon } from '../icons';
 import {
   CAPTION_ACTION_CLASS,
   downloadHostFile,
+  isLocalKikiComputer,
   PreviewReadFailureView,
   useFileOpeners,
 } from './shared';
 
 export function BinaryTabView({
   path,
+  sessionId,
+  workspaceRoot,
   reason = 'unsupported',
 }: {
   readonly path: string;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   readonly reason?: Extract<PreviewReadFailureReason, 'unsupported' | 'corrupted'>;
 }) {
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
+  const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
   const openers = useFileOpeners();
   return (
@@ -51,7 +57,13 @@ export function BinaryTabView({
         path={path}
         onDownload={() => {
           const client = connection?.client;
-          if (client !== undefined) void downloadHostFile(host, client, path, name, t);
+          if (client !== undefined) {
+            void downloadHostFile(host, client, path, name, t, {
+              sessionId,
+              workspaceRoot,
+              localKikiComputer,
+            });
+          }
         }}
       />
     </>

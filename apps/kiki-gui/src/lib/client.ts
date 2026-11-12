@@ -3015,6 +3015,15 @@ export class KikiClient {
     return this.run(this.rest.sessions.fsSearch(sessionId, body, { signal }));
   }
 
+  /** Session-scoped workspace file read (admitted for paired devices and remote spaces). */
+  fsRead(
+    sessionId: string,
+    body: Partial<import('@kiki/protocol').FsReadRequest> & { readonly path: string },
+    options?: import('@kiki/klient').HttpRestRequestOptions,
+  ): Promise<import('@kiki/protocol').FsReadResponse> {
+    return this.run(this.rest.sessions.fsRead(sessionId, body, { ...this.readingOptions(), ...options }));
+  }
+
   /** Session-less fuzzy file search for the /new draft. */
   workspaceFsSearch(
     workspace: string,

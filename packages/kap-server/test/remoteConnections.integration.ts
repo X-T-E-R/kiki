@@ -533,4 +533,64 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     ]));
     expect(peer.readyState).toBe(WebSocket.OPEN);
   }, 30_000);
+
+  it('admits paired peer tokens to session fs:read within the workspace while keeping fs:content local-owner-only', async () => {
+    const target = await boot();
+    const fixture = await mkdtemp(join(tmpdir(), 'kiki-paired-fs-read-'));
+    homes.push(fixture);
+    const workspace = join(fixture, 'workspace');
+    const outside = join(fixture, 'outside');
+    await mkdir(workspace);
+    await mkdir(outside);
+    const insidePath = join(workspace, 'notes.md');
+    const outsidePath = join(outside, 'secret.txt');
+    await writeFile(insidePath, '# Paired workspace note\n');
+    await writeFile(outsidePath, 'outside-secret');
+
+    const session = await target.core.accessor.get(ISessionManager).create({ workDir: workspace });
+    const pairCode = await target.admission.createPairCode();
+    const claimed = await target.admission.claimPair(
+      pairCode.code,
+      { homeId: '77777777-7777-4777-8777-777777777777', hostId: 'paired-phone', protocol: 1 },
+      'Paired Phone',
+    );
+
+    const pairedRead = await call(
+      target,
+      `/api/sessions/${encodeURIComponent(session.id)}/fs:read`,
+      { path: 'notes.md', encoding: 'utf-8', length: 512_000 },
+      claimed.peerToken,
+    );
+    expect(pairedRead.status).toBe(200);
+    const pairedReadBody = (await pairedRead.json()) as {
+      code: number;
+      data: { path: string; content: string; encoding: string; truncated: boolean; etag: string };
+    };
+    expect(pairedReadBody.code).toBe(0);
+    expect(pairedReadBody.data).toMatchObject({
+      path: 'notes.md',
+      content: '# Paired workspace note\n',
+      encoding: 'utf-8',
+      truncated: false,
+    });
+    expect(pairedReadBody.data.etag.length).toBeGreaterThan(0);
+
+    const escapedRead = await call(
+      target,
+      `/api/sessions/${encodeURIComponent(session.id)}/fs:read`,
+      { path: '../outside/secret.txt', encoding: 'utf-8' },
+      claimed.peerToken,
+    );
+    expect(escapedRead.status).toBe(200);
+    const escapedReadBody = (await escapedRead.json()) as { code: number };
+    expect(escapedReadBody.code).toBe(41304);
+
+    const forbiddenHostContent = await fetch(
+      `${endpoint(target)}/api/fs:content?path=${encodeURIComponent(insidePath)}`,
+      { headers: { authorization: `Bearer ${claimed.peerToken}` } },
+    );
+    expect(forbiddenHostContent.status).toBe(403);
+    const forbiddenBody = (await forbiddenHostContent.json()) as { code: number; msg: string };
+    expect(forbiddenBody.msg).toBe('local_owner_required');
+  }, 30_000);
 });

@@ -12,6 +12,8 @@ import type {
   CronScriptExecution,
   CronTrigger,
   CronTriggerCheck,
+  FsReadRequest,
+  FsReadResponse,
   FsSearchResponse,
   GetTaskQuery,
   GoalSnapshot,
@@ -502,6 +504,11 @@ export interface HttpRestFacade {
       body: Partial<import('@kiki/protocol').FsSearchRequest> & { readonly query: string },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
+    fsRead(
+      sessionId: string,
+      body: Partial<FsReadRequest> & { readonly path: string },
+      options?: HttpRestRequestOptions,
+    ): Promise<FsReadResponse>;
     media(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     mediaPreview(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadMedia(sessionId: string, fileId: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;

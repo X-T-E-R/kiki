@@ -82,6 +82,7 @@ export type PreviewReadFailureReason =
   | 'permission-denied'
   | 'folder'
   | 'remote-unreadable'
+  | 'too-large'
   | 'unsupported'
   | 'corrupted'
   | 'error';

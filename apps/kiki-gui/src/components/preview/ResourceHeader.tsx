@@ -27,6 +27,7 @@ import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import {
   downloadHostFile,
   HEADER_ACTION_CLASS,
+  isLocalKikiComputer,
   mentionTokenFor,
   relativeToCwd,
   useFileOpeners,
@@ -113,7 +114,13 @@ export function TabContextMenu({
             key: 'download',
             label: t('media.download'),
             run: () => {
-              if (client !== undefined) return downloadHostFile(host, client, filePath, basenameOf(filePath), t);
+              if (client !== undefined) {
+                return downloadHostFile(host, client, filePath, basenameOf(filePath), t, {
+                  sessionId,
+                  workspaceRoot: cwd,
+                  localKikiComputer: environment.isKikiComputer,
+                });
+              }
             },
           });
         } else {
@@ -217,6 +224,8 @@ export function TabContextMenu({
 export function HeaderFileActions({
   path,
   name,
+  sessionId,
+  workspaceRoot,
   canDownload = true,
   readFailed = false,
   failureReason,
@@ -224,6 +233,8 @@ export function HeaderFileActions({
 }: {
   readonly path: string;
   readonly name: string;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   readonly canDownload?: boolean;
   readonly readFailed?: boolean;
   readonly failureReason?: PreviewReadState['failureReason'];
@@ -231,7 +242,9 @@ export function HeaderFileActions({
 }) {
   const host = useHost();
   const { t } = useI18n();
-  const client = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const localKikiComputer = isLocalKikiComputer(connection);
   const openers = useFileOpeners();
   const showOpeners = !readFailed || failureReason === 'folder' || failureReason === 'unsupported';
   return (
@@ -255,7 +268,13 @@ export function HeaderFileActions({
           aria-label={t('media.download')}
           data-download-file
           onClick={() => {
-            if (client !== undefined) void downloadHostFile(host, client, path, name, t);
+            if (client !== undefined) {
+              void downloadHostFile(host, client, path, name, t, {
+                sessionId,
+                workspaceRoot,
+                localKikiComputer,
+              });
+            }
           }}
           className={HEADER_ACTION_CLASS}
         >

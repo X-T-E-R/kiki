@@ -1191,6 +1191,66 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('forwards session fsRead through the remote-space broker while still blocking fs:content', async () => {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    const readResult = {
+      path: 'src/index.ts',
+      content: 'export const x = 1;\n',
+      encoding: 'utf-8' as const,
+      size: 20,
+      truncated: false,
+      etag: 'W/"14-1"',
+      mime: 'text/typescript',
+      language_id: 'typescript',
+      line_count: 1,
+      is_binary: false,
+    };
+    const transport = createConnectionTransport({
+      endpoint: 'http://local-broker.test',
+      token: 'local-owner-token',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      fetch: (async (input, init) => {
+        calls.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body === undefined ? undefined : jsonRequestBody(init.body),
+        });
+        return envelope(readResult);
+      }) as typeof fetch,
+    });
+    const channel = new HttpChannel({
+      endpoint: 'http://remote.test',
+      fetch: transport.fetch,
+    });
+    try {
+      await expect(
+        channel.rest.sessions.fsRead('session-one', {
+          path: 'src/index.ts',
+          length: 512_000,
+          encoding: 'utf-8',
+        }),
+      ).resolves.toEqual(readResult);
+      expect(calls).toEqual([
+        {
+          url: 'http://local-broker.test/api/remote-connections/11111111-1111-4111-8111-111111111111/call',
+          method: 'POST',
+          body: {
+            operation: 'fsRead',
+            params: { sessionId: 'session-one' },
+            query: {},
+            body: { path: 'src/index.ts', length: 512_000, encoding: 'utf-8' },
+            headers: { ifNoneMatch: undefined, range: undefined },
+          },
+        },
+      ]);
+      await expect(
+        channel.rest.filesystem.previewHostFile('/tmp/secret.txt', 512_000),
+      ).rejects.toThrow('Operation is not available to a remote space');
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('propagates envelope errors with request metadata', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       code: 40410,

@@ -18,11 +18,15 @@ import {
   ChangedOnDiskStrip,
   DelayedReadingNotice,
   downloadHostFile,
+  isLocalKikiComputer,
   PreviewReadFailureView,
+  readPreviewFileBytes,
 } from './shared';
 
 export function ImageTabView({
   path,
+  sessionId,
+  workspaceRoot,
   visible = true,
   fileWriteEpoch = 0,
   externalReloadNonce,
@@ -31,6 +35,8 @@ export function ImageTabView({
   onReadStateChange,
 }: {
   readonly path: string;
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   readonly visible?: boolean;
   readonly fileWriteEpoch?: number;
   readonly externalReloadNonce?: number;
@@ -40,7 +46,9 @@ export function ImageTabView({
 }) {
   const host = useHost();
   const { t } = useI18n();
-  const client = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
   const [attempt, setAttempt] = useState(0);
   const [changedOnDisk, setChangedOnDisk] = useState(false);
@@ -84,7 +92,7 @@ export function ImageTabView({
     let objectUrl: string | undefined;
     setChangedOnDisk(false);
     setState({ status: 'loading' });
-    client.readHostFileBytes(path).then(
+    readPreviewFileBytes(client, path, { sessionId, workspaceRoot, localKikiComputer }).then(
       ({ bytes, mime, etag }) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
@@ -98,12 +106,17 @@ export function ImageTabView({
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [attempt, client, path]);
+  }, [attempt, client, localKikiComputer, path, sessionId, workspaceRoot]);
 
   const checkDiskChange = useCallback(async () => {
     if (client === undefined || state.status !== 'ready' || state.etag === undefined) return;
     try {
-      const probe = await client.readHostFileBytes(path, { ifNoneMatch: state.etag });
+      const probe = await readPreviewFileBytes(
+        client,
+        path,
+        { sessionId, workspaceRoot, localKikiComputer },
+        { ifNoneMatch: state.etag },
+      );
       if (probe.notModified === true || probe.etag === state.etag) return;
       if (probe.etag !== undefined && probe.etag !== state.etag) {
         setChangedOnDisk(true);
@@ -111,7 +124,7 @@ export function ImageTabView({
     } catch {
       // Ignore transient conditional-probe errors; explicit Reload shows any failure.
     }
-  }, [client, path, state]);
+  }, [client, localKikiComputer, path, sessionId, state, workspaceRoot]);
 
   const prevVisibleRef = useRef(visible);
   useEffect(() => {
@@ -166,7 +179,13 @@ export function ImageTabView({
               onCloseTab={onCloseTab}
               onDownload={
                 failureReason === 'corrupted' && client !== undefined
-                  ? () => { void downloadHostFile(host, client, path, name, t); }
+                  ? () => {
+                      void downloadHostFile(host, client, path, name, t, {
+                        sessionId,
+                        workspaceRoot,
+                        localKikiComputer,
+                      });
+                    }
                   : undefined
               }
             />

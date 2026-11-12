@@ -17,6 +17,7 @@ import { usePhoneMode } from '#/lib/layoutHooks';
 import { pushToast, runToastAction } from '#/lib/toasts';
 import { useNavVisitId } from '#/lib/useNavSnapshot';
 import { useOptionalConnection } from '#/state/connection';
+import type { HostFileReadResult } from '#/state/hostFileEditor';
 import {
   classifyResource,
   isKikiComputer,
@@ -50,6 +51,173 @@ export function relativeToCwd(path: string, cwd: string | undefined): string {
     return normPath.slice(prefix.length);
   }
   return path;
+}
+
+export const SESSION_FS_READ_TEXT_BYTES = 512_000;
+export const SESSION_FS_READ_MAX_BYTES = 10_485_760;
+
+export interface SessionWorkspaceReadScope {
+  readonly sessionId?: string;
+  readonly workspaceRoot?: string;
+  readonly localKikiComputer?: boolean;
+}
+
+/**
+ * Strictly convert a path to a workspace-relative POSIX path without `..`
+ * segments, suitable for `POST /sessions/{id}/fs:read`. Returns `undefined`
+ * when `cwd` is absent or the target lives outside the session's working
+ * directory.
+ */
+export function toWorkspaceRelativePath(path: string, cwd: string | undefined): string | undefined {
+  if (cwd === undefined || cwd.trim() === '') return undefined;
+  const normCwd = normalizeHostFilePath(cwd);
+  const normPath = normalizeHostFilePath(path, cwd);
+  const caseInsensitive = /^[A-Za-z]:\//u.test(normCwd) || normCwd.startsWith('//');
+  const trimmedCwd = normCwd.replace(/\/+$/u, '');
+  const cmpCwd = caseInsensitive ? trimmedCwd.toLowerCase() : trimmedCwd;
+  const cmpPath = caseInsensitive ? normPath.toLowerCase() : normPath;
+  if (cmpPath === cmpCwd) return '.';
+  const prefix = cmpCwd === '' ? '/' : `${cmpCwd}/`;
+  if (!cmpPath.startsWith(prefix)) return undefined;
+  const rel = normPath.slice(prefix.length);
+  if (rel === '' || rel.startsWith('/')) return undefined;
+  const segments = rel.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return undefined;
+  }
+  return rel;
+}
+
+export function isRemoteUnavailableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as { readonly msg?: unknown; readonly message?: unknown };
+  const message =
+    typeof record.msg === 'string'
+      ? record.msg
+      : typeof record.message === 'string'
+        ? record.message
+        : '';
+  return (
+    message === 'local_owner_required' ||
+    message.includes('local_owner_required') ||
+    message.includes('Operation is not available to a remote space')
+  );
+}
+
+function makeRemoteUnreadableError(): Error & { readonly msg: string } {
+  return Object.assign(new Error('local_owner_required'), { msg: 'local_owner_required' });
+}
+
+function makeFsTooLargeError(): Error & { readonly code: number; readonly msg: string } {
+  return Object.assign(new Error('file too large'), { code: 41302, msg: 'fs.too_large' });
+}
+
+function decodeBase64ToBytes(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+export async function readWorkspaceTextViaSession(
+  client: KikiClient,
+  sessionId: string,
+  path: string,
+  workspaceRoot: string | undefined,
+  options?: { readonly ifNoneMatch?: string; readonly length?: number; readonly signal?: AbortSignal },
+): Promise<HostFileReadResult> {
+  const relPath = toWorkspaceRelativePath(path, workspaceRoot);
+  if (relPath === undefined) throw makeRemoteUnreadableError();
+  const res = await client.fsRead(
+    sessionId,
+    {
+      path: relPath,
+      encoding: 'auto',
+      length: options?.length ?? SESSION_FS_READ_TEXT_BYTES,
+    },
+    { signal: options?.signal },
+  );
+  if (options?.ifNoneMatch !== undefined && res.etag === options.ifNoneMatch) {
+    return {
+      text: '',
+      truncated: res.truncated,
+      lossless: !res.is_binary,
+      etag: res.etag,
+      notModified: true,
+    };
+  }
+  if (res.encoding === 'utf-8') {
+    return {
+      text: res.content,
+      truncated: res.truncated,
+      lossless: !res.is_binary && !res.content.includes('\uFFFD'),
+      etag: res.etag,
+    };
+  }
+  const bytes = decodeBase64ToBytes(res.content);
+  try {
+    const decoded = fatalUtf8Decoder.decode(bytes);
+    return {
+      text: decoded,
+      truncated: res.truncated,
+      lossless: !res.is_binary,
+      etag: res.etag,
+    };
+  } catch {
+    return {
+      text: new TextDecoder('utf-8').decode(bytes),
+      truncated: res.truncated,
+      lossless: false,
+      etag: res.etag,
+    };
+  }
+}
+
+export async function readWorkspaceBytesViaSession(
+  client: KikiClient,
+  sessionId: string,
+  path: string,
+  workspaceRoot: string | undefined,
+  options?: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal },
+): Promise<{
+  readonly bytes: Uint8Array;
+  readonly mime: string;
+  readonly etag: string;
+  readonly notModified?: boolean;
+}> {
+  const relPath = toWorkspaceRelativePath(path, workspaceRoot);
+  if (relPath === undefined) throw makeRemoteUnreadableError();
+  const res = await client.fsRead(
+    sessionId,
+    {
+      path: relPath,
+      encoding: 'base64',
+      length: SESSION_FS_READ_MAX_BYTES,
+    },
+    { signal: options?.signal },
+  );
+  if (res.truncated) throw makeFsTooLargeError();
+  if (options?.ifNoneMatch !== undefined && res.etag === options.ifNoneMatch) {
+    return {
+      bytes: new Uint8Array(),
+      mime: res.mime,
+      etag: res.etag,
+      notModified: true,
+    };
+  }
+  const bytes =
+    res.encoding === 'base64'
+      ? decodeBase64ToBytes(res.content)
+      : new TextEncoder().encode(res.content);
+  return {
+    bytes,
+    mime: res.mime,
+    etag: res.etag,
+  };
 }
 
 /**
@@ -172,13 +340,116 @@ export function webUrlDisplayLabel(url: string, title?: string): string {
   }
 }
 
+export async function readPreviewFileText(
+  client: KikiClient,
+  path: string,
+  scope: SessionWorkspaceReadScope,
+  options?: { readonly ifNoneMatch?: string; readonly maxBytes?: number; readonly signal?: AbortSignal },
+): Promise<HostFileReadResult> {
+  const canUseSessionFs =
+    scope.sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
+  if (scope.localKikiComputer === false && canUseSessionFs) {
+    return readWorkspaceTextViaSession(client, scope.sessionId!, path, scope.workspaceRoot, {
+      ifNoneMatch: options?.ifNoneMatch,
+      length: options?.maxBytes ?? SESSION_FS_READ_TEXT_BYTES,
+      signal: options?.signal,
+    });
+  }
+  try {
+    return await (options === undefined
+      ? client.previewHostFile(path)
+      : client.previewHostFile(path, options.maxBytes, {
+          ifNoneMatch: options.ifNoneMatch,
+          signal: options.signal,
+        }));
+  } catch (error) {
+    if (canUseSessionFs && isRemoteUnavailableError(error)) {
+      return readWorkspaceTextViaSession(client, scope.sessionId!, path, scope.workspaceRoot, {
+        ifNoneMatch: options?.ifNoneMatch,
+        length: options?.maxBytes ?? SESSION_FS_READ_TEXT_BYTES,
+        signal: options?.signal,
+      });
+    }
+    throw error;
+  }
+}
+
+export async function readPreviewFileBytes(
+  client: KikiClient,
+  path: string,
+  scope: SessionWorkspaceReadScope,
+  options?: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal },
+): Promise<{
+  readonly bytes: Uint8Array;
+  readonly mime: string;
+  readonly etag?: string;
+  readonly notModified?: boolean;
+}> {
+  const canUseSessionFs =
+    scope.sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
+  if (scope.localKikiComputer === false && canUseSessionFs) {
+    return readWorkspaceBytesViaSession(client, scope.sessionId!, path, scope.workspaceRoot, options);
+  }
+  try {
+    return await client.readHostFileBytes(path, options);
+  } catch (error) {
+    if (canUseSessionFs && isRemoteUnavailableError(error)) {
+      return readWorkspaceBytesViaSession(client, scope.sessionId!, path, scope.workspaceRoot, options);
+    }
+    throw error;
+  }
+}
+
+async function saveBytesAsFile(host: HostAdapter, bytes: Uint8Array, mime: string, name: string): Promise<void> {
+  const blob = new Blob([bytes as BlobPart], { type: mime });
+  if (host.saveBlob !== undefined) {
+    try {
+      await host.saveBlob(blob, name);
+      return;
+    } catch {
+      // Fall through to the browser download.
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadHostFile(
   host: HostAdapter,
   client: KikiClient,
   path: string,
   name: string,
   translateError?: Parameters<typeof imageDownloadFailureText>[1],
+  scope?: SessionWorkspaceReadScope,
 ): Promise<void> {
+  const canUseSessionFs =
+    scope?.sessionId !== undefined && typeof (client as { fsRead?: unknown }).fsRead === 'function';
+  if (scope?.localKikiComputer === false && canUseSessionFs) {
+    try {
+      const { bytes, mime } = await readWorkspaceBytesViaSession(
+        client,
+        scope.sessionId!,
+        path,
+        scope.workspaceRoot,
+      );
+      await saveBytesAsFile(host, bytes, mime, name);
+    } catch (error) {
+      if (translateError !== undefined) {
+        pushToast({
+          tone: 'error',
+          text: imageDownloadFailureText(error, translateError),
+          detail: errorToText(error),
+        });
+      }
+    }
+    return;
+  }
   if (typeof (client as { downloadHostFile?: unknown }).downloadHostFile === 'function') {
     try {
       await saveMediaToDisk(
@@ -190,6 +461,27 @@ export async function downloadHostFile(
       );
       return;
     } catch (error) {
+      if (canUseSessionFs && isRemoteUnavailableError(error)) {
+        try {
+          const { bytes, mime } = await readWorkspaceBytesViaSession(
+            client,
+            scope!.sessionId!,
+            path,
+            scope?.workspaceRoot,
+          );
+          await saveBytesAsFile(host, bytes, mime, name);
+          return;
+        } catch (fallbackError) {
+          if (translateError !== undefined) {
+            pushToast({
+              tone: 'error',
+              text: imageDownloadFailureText(fallbackError, translateError),
+              detail: errorToText(fallbackError),
+            });
+          }
+          return;
+        }
+      }
       if (translateError !== undefined) {
         pushToast({
           tone: 'error',
@@ -201,24 +493,8 @@ export async function downloadHostFile(
     }
   }
   try {
-    const { bytes, mime } = await client.readHostFileBytes(path);
-    const blob = new Blob([bytes as BlobPart], { type: mime });
-    if (host.saveBlob !== undefined) {
-      try {
-        await host.saveBlob(blob, name);
-        return;
-      } catch {
-        // Fall through to the browser download.
-      }
-    }
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = name;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
+    const { bytes, mime } = await readPreviewFileBytes(client, path, scope ?? {});
+    await saveBytesAsFile(host, bytes, mime, name);
   } catch (error) {
     if (translateError !== undefined) {
       pushToast({
@@ -347,11 +623,13 @@ export function PreviewReadFailureView({
           ? t('preview.readIsFolder')
           : reason === 'remote-unreadable'
             ? t('preview.readRemoteUnreadable')
-            : reason === 'unsupported'
-              ? t('preview.readUnsupported')
-              : reason === 'corrupted'
-                ? t('preview.readCannotDecode')
-                : t('preview.failed');
+            : reason === 'too-large'
+              ? t('preview.readFileTooLarge')
+              : reason === 'unsupported'
+                ? t('preview.readUnsupported')
+                : reason === 'corrupted'
+                  ? t('preview.readCannotDecode')
+                  : t('preview.failed');
 
   return (
     <div
@@ -398,7 +676,7 @@ export function PreviewReadFailureView({
             {t('preview.showOnThisComputer')}
           </button>
         ) : null}
-        {reason === 'remote-unreadable' && path !== undefined ? (
+        {(reason === 'remote-unreadable' || reason === 'too-large') && path !== undefined ? (
           <button
             type="button"
             data-copy-path

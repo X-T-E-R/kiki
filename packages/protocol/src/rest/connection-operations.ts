@@ -41,7 +41,7 @@ export const CONNECTION_OPERATIONS = {
   providerQuotaRead: ['GET', '/usage/provider-quotas'],
   workspaces: ['GET', '/workspaces'], workspace: ['GET', '/workspaces/{workspaceId}'], workspaceSkills: ['GET', '/workspaces/{workspaceId}/skills'],
   worktrees: ['GET', '/worktrees'], worktree: ['GET', '/worktrees/{worktreeId}'], worktreeInspect: ['POST', '/worktrees/{worktreeId}:inspect'],
-  fsSearch: ['POST', '/sessions/{sessionId}/fs:search'], draftFsSearch: ['POST', '/workspace/fs:search'],
+  fsSearch: ['POST', '/sessions/{sessionId}/fs:search'], fsRead: ['POST', '/sessions/{sessionId}/fs:read'], draftFsSearch: ['POST', '/workspace/fs:search'],
   htmlPreviewOpen: ['POST', '/fs:html-preview'], htmlPreviewClose: ['DELETE', '/fs:html-preview/{previewId}'],
   htmlPreviewResource: ['GET', '/html-preview/{previewId}/resource'],
   commands: ['GET', '/sessions/{sessionId}/commands'],

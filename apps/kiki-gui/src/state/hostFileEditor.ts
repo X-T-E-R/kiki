@@ -90,7 +90,7 @@ const utf8Encoder = new TextEncoder();
 
 const EDITABLE_TEXT_TYPES = new Set(['text', 'markdown', 'html', 'table']);
 
-/** Map a server / klient error from `fs:content` to a preview read-failure reason. */
+/** Map a server / klient error from `fs:content` or `fs:read` to a preview read-failure reason. */
 export function classifyHostFileReadError(error: unknown): PreviewReadFailureReason {
   if (typeof error === 'object' && error !== null) {
     const record = error as { readonly code?: unknown; readonly msg?: unknown; readonly message?: unknown };
@@ -104,6 +104,8 @@ export function classifyHostFileReadError(error: unknown): PreviewReadFailureRea
     if (code === 40409) return 'missing';
     if (code === 40411) return 'permission-denied';
     if (code === 40906) return 'folder';
+    if (code === 41302) return 'too-large';
+    if (code === 41304) return 'remote-unreadable';
     if (
       message === 'local_owner_required' ||
       message.includes('local_owner_required') ||

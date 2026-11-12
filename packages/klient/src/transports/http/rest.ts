@@ -26,6 +26,7 @@ import type {
   ConfigResponse,
   CronRunResult,
   CronScriptExecution,
+  FsReadResponse,
   FsSearchResponse,
   GetCatalogProviderResponse,
   ListMcpServersResponse,
@@ -334,6 +335,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       fsSearch: (sessionId: string, body, options) => transport.json<FsSearchResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/fs:search`,
+        { method: 'POST', body, signal: options?.signal, timeoutMs: options?.timeoutMs },
+      ),
+      fsRead: (sessionId: string, body, options) => transport.json<FsReadResponse>(
+        `/sessions/${encodeURIComponent(sessionId)}/fs:read`,
         { method: 'POST', body, signal: options?.signal, timeoutMs: options?.timeoutMs },
       ),
       media: async (sessionId: string, fileId: string, options) => readBinary(

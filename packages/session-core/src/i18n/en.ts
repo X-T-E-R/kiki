@@ -13392,4 +13392,5 @@ export const en = {
   'preview.readChangedOnDisk': 'The file on disk has changed.',
   'preview.reloadFile': 'Reload',
   'preview.webFailed': 'This page could not be opened here; open it in the browser',
+  'preview.readFileTooLarge': 'This file is too large to read over this connection.',
 } as const;
