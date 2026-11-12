@@ -8448,3 +8448,358 @@ describe('compaction summary, error details, and bounded content sources', () =>
     });
   });
 });
+
+describe('linear transcript projection and running-turn settled step reuse (#11)', () => {
+  it('scales block visits linearly with N + M across completed prompts, interactions, subagent events and markers', () => {
+    const isoAt = (seconds: number) => new Date(Date.parse(FIXED_AT) + seconds * 1_000).toISOString();
+
+    const buildWindow = (turnCount: number, itemCount: number) => {
+      const items: AgentTranscriptSnapshot['items'][number][] = [];
+      const prompts: AgentTranscriptSnapshot['prompts'][number][] = [];
+      const interactions: AgentTranscriptSnapshot['interactions'][number][] = [];
+      const tasks: AgentTranscriptSnapshot['tasks'][number][] = [];
+
+      for (let t = 0; t < turnCount; t += 1) {
+        const turnStart = t * 10;
+        const turnId = `t${t}`;
+        items.push({
+          kind: 'turn',
+          turnId,
+          ordinal: t,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: `base-p-${t}`, userMessageId: `base-um-${t}` } },
+          prompt: `Turn ${t} prompt`,
+          startedAt: isoAt(turnStart),
+          endedAt: isoAt(turnStart + 8),
+          steps: [
+            {
+              kind: 'step',
+              stepId: `${turnId}.s0`,
+              turnId,
+              ordinal: 0,
+              state: 'completed',
+              startedAt: isoAt(turnStart + 1),
+              endedAt: isoAt(turnStart + 3),
+              frames: [
+                {
+                  kind: 'thinking',
+                  frameId: `${turnId}-th`,
+                  text: `Thinking for ${turnId}`,
+                },
+                {
+                  kind: 'tool',
+                  frameId: `${turnId}-tool`,
+                  toolCallId: `tc-${turnId}`,
+                  name: 'Read',
+                  state: 'done',
+                  input: { path: `file-${t}.ts` },
+                  output: `contents-${t}`,
+                  startedAt: isoAt(turnStart + 2),
+                  endedAt: isoAt(turnStart + 3),
+                },
+              ],
+            },
+            {
+              kind: 'step',
+              stepId: `${turnId}.s1`,
+              turnId,
+              ordinal: 1,
+              state: 'completed',
+              startedAt: isoAt(turnStart + 4),
+              endedAt: isoAt(turnStart + 7),
+              frames: [
+                {
+                  kind: 'text',
+                  frameId: `${turnId}-asst`,
+                  role: 'assistant',
+                  text: `Answer for ${turnId}`,
+                },
+              ],
+            },
+          ],
+        });
+      }
+
+      for (let m = 0; m < itemCount; m += 1) {
+        const targetTurn = m % turnCount;
+        const turnId = `t${targetTurn}`;
+        const turnStart = targetTurn * 10;
+
+        prompts.push({
+          promptId: `settled-prompt-${m}`,
+          userMessageId: m < turnCount ? `base-um-${m}` : `extra-um-${m}`,
+          status: 'completed',
+          content: [{ type: 'text', text: m < turnCount ? `Turn ${m} prompt` : `Extra prompt ${m}` }],
+          createdAt: isoAt(turnStart),
+        });
+
+        if (m % 2 === 0) {
+          interactions.push({
+            interactionId: `approval-${m}`,
+            interactionKind: 'approval',
+            state: 'approved',
+            toolCallId: `tc-${turnId}`,
+            origin: { agentId: 'main', turnId: targetTurn },
+            request: {
+              approval_id: `approval-${m}`,
+              turn_id: targetTurn,
+              tool_call_id: `tc-${turnId}`,
+              sender: 'Bash',
+              action: 'execute',
+              description: `Check ${m}`,
+              created_at: isoAt(turnStart + 2.5),
+            },
+            response: { decision: 'approve', resolved_at: isoAt(turnStart + 2.8) },
+          });
+        } else {
+          interactions.push({
+            interactionId: `question-${m}`,
+            interactionKind: 'question',
+            state: 'answered',
+            anchor: { kind: 'step', turnId: String(targetTurn), stepId: `${turnId}.s0` },
+            origin: { agentId: 'main', turnId: targetTurn },
+            request: {
+              question_id: `question-${m}`,
+              turn_id: targetTurn,
+              created_at: isoAt(turnStart + 3.2),
+              questions: [{ id: 'q1', question: `Question ${m}?`, options: [{ id: 'o1', label: 'Yes' }] }],
+            },
+            response: { answers: { q1: { kind: 'single', option_id: 'o1' } }, resolved_at: isoAt(turnStart + 3.5) },
+          });
+        }
+
+        const subagentId = `child-${m}`;
+        const taskId = `subtask-${m}`;
+        tasks.push({
+          taskId,
+          kind: 'subagent',
+          agentId: subagentId,
+          name: `worker-${m}`,
+          state: 'completed',
+          detached: true,
+          ownerTurnId: targetTurn,
+          parentToolCallId: `tc-${turnId}`,
+          startedAt: isoAt(turnStart + 2.2),
+          endedAt: isoAt(turnStart + 6),
+          outputTail: `done-${m}`,
+        });
+        items.push({
+          kind: 'taskref',
+          refId: `ref-${taskId}`,
+          taskId,
+          at: isoAt(turnStart + 2.2),
+        });
+
+        items.push({
+          kind: 'marker',
+          markerId: `marker-${m}`,
+          marker: 'plan.revision',
+          at: isoAt(turnStart + 5 + (m % 3) * 0.1),
+          payload: { turnId },
+        });
+      }
+
+      return emptySnapshot({ items, prompts, interactions, tasks });
+    };
+
+    const measureVisits = (turnCount: number, itemCount: number) => {
+      const snapshot = buildWindow(turnCount, itemCount);
+      const warm = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+      let prevVisits = 0;
+      const instrumentedPreviousBlocks = warm.blocks.map((block) =>
+        new Proxy(block, {
+          get(target, prop, receiver) {
+            if (prop === 'id' || prop === 'kind' || prop === 'turnId' || prop === 'promptId' || prop === 'userMessageId') {
+              prevVisits += 1;
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        }),
+      );
+      let itemReads = 0;
+      const instrumentedSnapshot: AgentTranscriptSnapshot = {
+        ...snapshot,
+        prompts: snapshot.prompts.map((prompt) =>
+          new Proxy(prompt, {
+            get(target, prop, receiver) {
+              if (prop === 'promptId' || prop === 'status') itemReads += 1;
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        ),
+        interactions: snapshot.interactions.map((interaction) =>
+          new Proxy(interaction, {
+            get(target, prop, receiver) {
+              if (prop === 'interactionId' || prop === 'state') itemReads += 1;
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        ),
+      };
+
+      const result = projectAgentTranscriptView(
+        { ...warm, blocks: instrumentedPreviousBlocks },
+        'main',
+        instrumentedSnapshot,
+      );
+      expect(result.blocks).toEqual(warm.blocks);
+      return { prevVisits, itemReads, blockCount: result.blocks.length };
+    };
+
+    // Fixed N = 80 turns (~320 base blocks); scale M from 20 to 120 (6x).
+    // Under O(N * M), visits over the N blocks would jump ~5-6x; under O(N + M),
+    // visits grow linearly with N + M (~2.2x total blocks).
+    const smallM = measureVisits(80, 20);
+    const largeM = measureVisits(80, 120);
+    const sizeRatio = (80 * 4 + 120 * 4) / (80 * 4 + 20 * 4);
+    expect(largeM.prevVisits / smallM.prevVisits).toBeLessThan(sizeRatio * 1.5);
+    expect(largeM.itemReads / smallM.itemReads).toBeLessThan(6 * 1.5);
+
+    // Also scale N from 40 to 160 (4x) at fixed M = 60 and assert sub-quadratic growth.
+    const smallN = measureVisits(40, 60);
+    const largeN = measureVisits(160, 60);
+    const nSizeRatio = (160 * 4 + 60 * 4) / (40 * 4 + 60 * 4);
+    expect(largeN.prevVisits / smallN.prevVisits).toBeLessThan(nSizeRatio * 1.5);
+  });
+
+  it('reuses settled steps of a running turn while re-projecting only the active step', () => {
+    const settledStepReads = [0, 0, 0, 0];
+    let liveStepReads = 0;
+
+    const settledSteps: TranscriptTurn['steps'] = settledStepReads.map((_, idx) => {
+      const frames: TranscriptTurn['steps'][number]['frames'] = [
+        {
+          kind: 'thinking',
+          frameId: `s${idx}-thinking`,
+          text: `Reasoning in step ${idx}`,
+        },
+        {
+          kind: 'tool',
+          frameId: `s${idx}-tool`,
+          toolCallId: `tc-s${idx}`,
+          name: 'Read',
+          state: 'done',
+          input: { path: `src/mod-${idx}.ts` },
+          output: `export const v${idx} = ${idx};`,
+          startedAt: `2026-01-01T00:00:0${idx + 1}.000Z`,
+          endedAt: `2026-01-01T00:00:0${idx + 1}.500Z`,
+        },
+        {
+          kind: 'text',
+          frameId: `s${idx}-text`,
+          role: 'assistant',
+          text: `Completed step ${idx}.`,
+        },
+      ];
+      return {
+        kind: 'step' as const,
+        stepId: `t1.s${idx}`,
+        turnId: 't1',
+        ordinal: idx,
+        state: 'completed' as const,
+        startedAt: `2026-01-01T00:00:0${idx + 1}.000Z`,
+        endedAt: `2026-01-01T00:00:0${idx + 1}.800Z`,
+        get frames() {
+          settledStepReads[idx]! += 1;
+          return frames;
+        },
+      };
+    });
+
+    const makeLiveStep = (frames: TranscriptTurn['steps'][number]['frames']): TranscriptTurn['steps'][number] => ({
+      kind: 'step',
+      stepId: 't1.s4',
+      turnId: 't1',
+      ordinal: 4,
+      state: 'running',
+      startedAt: '2026-01-01T00:00:10.000Z',
+      get frames() {
+        liveStepReads += 1;
+        return frames;
+      },
+    });
+
+    const makeRunningTurn = (liveFrames: TranscriptTurn['steps'][number]['frames']): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: 't1',
+      ordinal: 1,
+      state: 'running',
+      origin: { kind: 'user', payload: { promptId: 'p1', userMessageId: 'um1' } },
+      prompt: 'Execute multi-step refactor',
+      startedAt: FIXED_AT,
+      steps: [...settledSteps, makeLiveStep(liveFrames)],
+    });
+
+    const initialFrames: TranscriptTurn['steps'][number]['frames'] = [
+      { kind: 'text', frameId: 's4-live-text', role: 'assistant', text: 'Streaming part 1...' },
+    ];
+    const firstBlocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      meta: { agent: { phase: { kind: 'streaming', turnId: 1, stepId: 't1.s4', stream: 'assistant' } } },
+      items: [makeRunningTurn(initialFrames)],
+    });
+
+    const coldSettledReads = [...settledStepReads];
+    const coldLiveReads = liveStepReads;
+    for (const count of coldSettledReads) expect(count).toBeGreaterThan(0);
+    expect(coldLiveReads).toBeGreaterThan(0);
+
+    // Append a new frame to the running step while keeping the 4 settled step objects identical.
+    const updatedFrames: TranscriptTurn['steps'][number]['frames'] = [
+      { kind: 'text', frameId: 's4-live-text', role: 'assistant', text: 'Streaming part 1 and 2.' },
+      {
+        kind: 'tool',
+        frameId: 's4-live-tool',
+        toolCallId: 'tc-s4',
+        name: 'Edit',
+        state: 'running',
+        input: { path: 'src/index.ts' },
+        startedAt: '2026-01-01T00:00:12.000Z',
+      },
+    ];
+    const incrementalBlocks = agentTranscriptToBlocks(
+      {
+        agent_id: 'main',
+        meta: { agent: { phase: { kind: 'running', turnId: 1, stepId: 't1.s4' } } },
+        items: [makeRunningTurn(updatedFrames)],
+      },
+      firstBlocks,
+    );
+
+    // Settled steps were NOT re-projected; only the running step was read again.
+    expect(settledStepReads).toEqual(coldSettledReads);
+    expect(liveStepReads).toBeGreaterThan(coldLiveReads);
+
+    // Output matches a completely fresh projection with freshly cloned step objects.
+    const freshTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't1',
+      ordinal: 1,
+      state: 'running',
+      origin: { kind: 'user', payload: { promptId: 'p1', userMessageId: 'um1' } },
+      prompt: 'Execute multi-step refactor',
+      startedAt: FIXED_AT,
+      steps: [
+        ...settledSteps.map((step) => ({ ...step, frames: [...step.frames] })),
+        {
+          kind: 'step',
+          stepId: 't1.s4',
+          turnId: 't1',
+          ordinal: 4,
+          state: 'running',
+          startedAt: '2026-01-01T00:00:10.000Z',
+          frames: [...updatedFrames],
+        },
+      ],
+    };
+    const freshBlocks = agentTranscriptToBlocks(
+      {
+        agent_id: 'main',
+        meta: { agent: { phase: { kind: 'running', turnId: 1, stepId: 't1.s4' } } },
+        items: [freshTurn],
+      },
+      firstBlocks,
+    );
+    expect(incrementalBlocks).toEqual(freshBlocks);
+  });
+});

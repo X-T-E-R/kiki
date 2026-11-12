@@ -1203,6 +1203,199 @@ function compareTimelineIds(left: string, right: string): number {
   return left === right ? 0 : left < right ? -1 : 1;
 }
 
+function compareTimedBlocks(left: Block, right: Block): number {
+  const leftAt = blockTimelineMs(left);
+  const rightAt = blockTimelineMs(right);
+  if (leftAt !== undefined && rightAt !== undefined && leftAt !== rightAt) return leftAt - rightAt;
+  if (leftAt !== undefined) return -1;
+  if (rightAt !== undefined) return 1;
+  return compareTimelineIds(left.id, right.id);
+}
+
+interface PreviousPositionIndex {
+  readonly indexById: ReadonlyMap<string, number>;
+  readonly prevExisting: readonly number[];
+  readonly nextExisting: readonly number[];
+}
+
+function buildPreviousPositionIndex(previous: readonly Block[], existingSlots: ReadonlyMap<string, number>): PreviousPositionIndex | undefined {
+  if (previous.length === 0) return undefined;
+  const indexById = new Map<string, number>();
+  const prevExisting = new Array<number>(previous.length);
+  const nextExisting = new Array<number>(previous.length);
+  let lastSeen = -1;
+  for (let index = 0; index < previous.length; index += 1) {
+    prevExisting[index] = lastSeen;
+    const id = previous[index]?.id;
+    if (id !== undefined) {
+      if (!indexById.has(id)) indexById.set(id, index);
+      const slot = existingSlots.get(id);
+      if (slot !== undefined) lastSeen = slot;
+    }
+  }
+  let nextSeen = -1;
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    nextExisting[index] = nextSeen;
+    const id = previous[index]?.id;
+    if (id !== undefined) {
+      const slot = existingSlots.get(id);
+      if (slot !== undefined) nextSeen = slot;
+    }
+  }
+  return { indexById, prevExisting, nextExisting };
+}
+
+function resolvePreviousSlot(index: PreviousPositionIndex | undefined, blockId: string): { slot: number; side: 'after' | 'before' } | undefined {
+  if (index === undefined) return undefined;
+  const previousIndex = index.indexById.get(blockId);
+  if (previousIndex === undefined) return undefined;
+  const prevSlot = index.prevExisting[previousIndex]!;
+  if (prevSlot >= 0) return { slot: prevSlot + 1, side: 'after' };
+  const nextSlot = index.nextExisting[previousIndex]!;
+  if (nextSlot >= 0) return { slot: nextSlot, side: 'before' };
+  return undefined;
+}
+
+class BucketedInsertionList {
+  readonly beforeSlots: Block[][];
+  readonly afterSlots: Block[][];
+  readonly trailing: Block[] = [];
+
+  constructor(readonly base: readonly Block[]) {
+    this.beforeSlots = Array.from({ length: base.length + 1 }, () => []);
+    this.afterSlots = Array.from({ length: base.length + 1 }, () => []);
+  }
+
+  insertBefore(slot: number, block: Block): void {
+    if (slot >= this.base.length) {
+      this.trailing.push(block);
+      return;
+    }
+    this.beforeSlots[Math.max(0, slot)]!.push(block);
+  }
+
+  insertAfter(slot: number, block: Block): void {
+    const target = Math.max(0, Math.min(this.base.length, slot));
+    if (target >= this.base.length) {
+      this.trailing.push(block);
+      return;
+    }
+    this.afterSlots[target]!.push(block);
+  }
+
+  insertPreviousPosition(
+    previousIndex: PreviousPositionIndex | undefined,
+    block: Block,
+    prependWithinSlot = true,
+  ): boolean {
+    const target = resolvePreviousSlot(previousIndex, block.id);
+    if (target === undefined) return false;
+    const bucket = target.side === 'after' ? this.afterSlots[target.slot]! : this.beforeSlots[target.slot]!;
+    if (prependWithinSlot) bucket.unshift(block);
+    else bucket.push(block);
+    return true;
+  }
+
+  materialize(timelineItems: readonly Block[] = [], compareTimeline: (left: Block, right: Block) => number = compareTimedBlocks): Block[] {
+    if (timelineItems.length > 0) {
+      const sorted = [...timelineItems].toSorted(compareTimeline);
+      const timedIndices: number[] = [];
+      const timedValues: number[] = [];
+      for (let index = 0; index < this.base.length; index += 1) {
+        const at = blockTimelineMs(this.base[index]!);
+        if (at !== undefined) {
+          timedIndices.push(index);
+          timedValues.push(at);
+        }
+      }
+      let cursor = 0;
+      for (const item of sorted) {
+        const at = blockTimelineMs(item);
+        if (at === undefined) {
+          this.trailing.push(item);
+          continue;
+        }
+        while (
+          cursor < timedValues.length &&
+          (timedValues[cursor]! < at ||
+            (timedValues[cursor]! === at && compareTimelineIds(this.base[timedIndices[cursor]!]!.id, item.id) <= 0))
+        ) {
+          cursor += 1;
+        }
+        if (cursor < timedValues.length) {
+          this.beforeSlots[timedIndices[cursor]!]!.push(item);
+        } else {
+          this.trailing.push(item);
+        }
+      }
+    }
+    const out: Block[] = [];
+    for (let index = 0; index < this.base.length; index += 1) {
+      const after = this.afterSlots[index]!;
+      const before = this.beforeSlots[index]!;
+      if (after.length > 0) out.push(...after);
+      if (before.length > 0) out.push(...before);
+      out.push(this.base[index]!);
+    }
+    const lastAfter = this.afterSlots[this.base.length]!;
+    const lastBefore = this.beforeSlots[this.base.length]!;
+    if (lastAfter.length > 0) out.push(...lastAfter);
+    if (lastBefore.length > 0) out.push(...lastBefore);
+    if (this.trailing.length > 0) out.push(...this.trailing);
+    return out;
+  }
+}
+
+interface TurnRangeIndex {
+  readonly first: number;
+  last: number;
+  lastWork: number;
+  firstOpeningFallback: number;
+  readonly timedIndices: number[];
+  readonly timedValues: number[];
+}
+
+function buildTurnRangeMap(blocks: readonly Block[]): Map<string, TurnRangeIndex> {
+  const turns = new Map<string, TurnRangeIndex>();
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]!;
+    const turnId = normalizeTurnId(blockTurnId(block));
+    if (turnId === undefined) continue;
+    let entry = turns.get(turnId);
+    if (entry === undefined) {
+      entry = { first: index, last: index, lastWork: -1, firstOpeningFallback: -1, timedIndices: [], timedValues: [] };
+      turns.set(turnId, entry);
+    }
+    entry.last = index;
+    if (block.kind !== 'assistant' && block.kind !== 'user') entry.lastWork = index;
+    const at = blockTimelineMs(block);
+    if (at !== undefined) {
+      entry.timedIndices.push(index);
+      entry.timedValues.push(at);
+    } else if (
+      entry.firstOpeningFallback < 0 &&
+      entry.timedIndices.length === 0 &&
+      (block.kind === 'user' || block.kind === 'system' || block.kind === 'system-reminder' || block.kind === 'skill')
+    ) {
+      entry.firstOpeningFallback = index;
+    }
+  }
+  return turns;
+}
+
+function findWithinTurnSlot(blocks: readonly Block[], range: TurnRangeIndex, block: Block): number | undefined {
+  const at = blockTimelineMs(block);
+  if (at === undefined) return undefined;
+  let anchor = -1;
+  for (let idx = 0; idx < range.timedValues.length; idx += 1) {
+    const candidateAt = range.timedValues[idx]!;
+    const candidateIndex = range.timedIndices[idx]!;
+    if (candidateAt > at || (candidateAt === at && compareTimelineIds(blocks[candidateIndex]!.id, block.id) > 0)) break;
+    anchor = candidateIndex;
+  }
+  return anchor < 0 ? range.first : anchor + 1;
+}
+
 function insertAtPreviousPosition(
   blocks: Block[],
   block: Block,
@@ -1259,28 +1452,6 @@ function blockStepId(block: Block): string | undefined {
     default:
       return undefined;
   }
-}
-
-/** Places an interaction at its request time inside a loaded turn, independently of its latest work. */
-function insertWithinTurnByTime(blocks: Block[], block: Block, turnId: string): boolean {
-  const at = blockTimelineMs(block);
-  if (at === undefined) return false;
-  const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), turnId);
-  const first = blocks.findIndex(inTurn);
-  if (first < 0) return false;
-  const last = blocks.findLastIndex(inTurn);
-  // The last row of the turn that is provably no later than the record: a row
-  // whose moment is unknown (the newest text, which has no end to date it by)
-  // cannot be scanned past, so it stays behind the record.
-  let anchor = -1;
-  for (let index = first; index <= last; index += 1) {
-    const candidateAt = blockTimelineMs(blocks[index]!);
-    if (candidateAt === undefined) continue;
-    if (candidateAt > at || (candidateAt === at && compareTimelineIds(blocks[index]!.id, block.id) > 0)) break;
-    anchor = index;
-  }
-  blocks.splice(anchor < 0 ? first : anchor + 1, 0, block);
-  return true;
 }
 
 type RawSubagentEvent = {
@@ -1368,6 +1539,37 @@ function terminalEventForStatus(
   return undefined;
 }
 
+type ProjectionStep = Extract<AgentTranscriptProjectionSource['items'][number], { kind: 'turn' }>['steps'][number];
+type ProjectionToolFrame = Extract<ProjectionStep['frames'][number], { kind: 'tool' }>;
+
+const stepSubagentToolFramesCache = new WeakMap<object, readonly ProjectionToolFrame[]>();
+
+function relevantSubagentToolFrames(step: ProjectionStep): readonly ProjectionToolFrame[] {
+  const isRunning = 'state' in step && step.state === 'running';
+  if (!isRunning) {
+    const cached = stepSubagentToolFramesCache.get(step);
+    if (cached !== undefined) return cached;
+  }
+  const matched: ProjectionToolFrame[] = [];
+  let hasRunningFrame = false;
+  for (const frame of step.frames) {
+    if ('state' in frame && frame.state === 'running') hasRunningFrame = true;
+    if (frame.kind !== 'tool' || frame.toolCallId.startsWith('external:')) continue;
+    if (
+      frame.name === 'AgentRun' ||
+      frame.name === 'Agent' ||
+      frame.name === 'AgentSend' ||
+      (frame.agentRefs !== undefined && frame.agentRefs.length > 0)
+    ) {
+      matched.push(frame);
+    }
+  }
+  if (!isRunning && !hasRunningFrame) {
+    stepSubagentToolFramesCache.set(step, matched);
+  }
+  return matched;
+}
+
 function subagentBlocksFromSnapshot(
   response: AgentTranscriptProjectionSource,
   parentAgentId: string,
@@ -1411,16 +1613,42 @@ function subagentBlocksFromSnapshot(
   // leak off-page history into this page.
   const admittedTaskIds = new Set<string>();
   const taskTurns = new Map<string, string | undefined>();
-  const eventTurn = (at: string | undefined, fallback?: string): string | undefined => {
-    const time = timestampMs(at);
-    if (time === undefined) return fallback;
-    let nearest: { turnId: string; at: number } | undefined;
-    for (const item of response.items) {
+  const turnStartTimes: number[] = [];
+  const turnStartIds: string[] = [];
+  {
+    const entries: { at: number; turnId: string; order: number }[] = [];
+    for (let index = 0; index < response.items.length; index += 1) {
+      const item = response.items[index]!;
       if (item.kind !== 'turn') continue;
       const started = timestampMs(item.startedAt);
-      if (started !== undefined && started <= time && (nearest === undefined || started > nearest.at)) nearest = { turnId: item.turnId, at: started };
+      if (started !== undefined) entries.push({ at: started, turnId: item.turnId, order: index });
     }
-    return nearest?.turnId ?? fallback;
+    entries.sort((left, right) => left.at - right.at || left.order - right.order);
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      if (turnStartTimes.length > 0 && turnStartTimes[turnStartTimes.length - 1] === entry.at) {
+        continue;
+      }
+      turnStartTimes.push(entry.at);
+      turnStartIds.push(entry.turnId);
+    }
+  }
+  const eventTurn = (at: string | undefined, fallback?: string): string | undefined => {
+    const time = timestampMs(at);
+    if (time === undefined || turnStartTimes.length === 0) return fallback;
+    let low = 0;
+    let high = turnStartTimes.length - 1;
+    let best = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (turnStartTimes[mid]! <= time) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best < 0 ? fallback : turnStartIds[best];
   };
   const nameToAgentId = new Map(
     tasks.flatMap((task) =>
@@ -1528,8 +1756,7 @@ function subagentBlocksFromSnapshot(
     if (item.kind !== 'turn') continue;
     previousTurnId = item.turnId;
     for (const step of item.steps) {
-      for (const frame of step.frames) {
-        if (frame.kind !== 'tool' || frame.toolCallId.startsWith('external:')) continue;
+      for (const frame of relevantSubagentToolFrames(step)) {
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
         const resumedTargets = new Set<string>();
         const resumeTargets = frame.name === 'AgentRun' || frame.name === 'Agent'
@@ -1743,78 +1970,75 @@ function compareSubagentTimeline(left: SubagentBlock, right: SubagentBlock): num
   return compareTimelineIds(left.id, right.id);
 }
 
-function nearestParentTurn(
-  blocks: readonly Block[],
-  subagent: SubagentBlock,
-  beforeIndex?: number,
-): string | undefined {
-  if (subagent.parentTurnId !== undefined) return subagent.parentTurnId;
-  if (beforeIndex !== undefined) {
-    for (let index = beforeIndex - 1; index >= 0; index -= 1) {
-      const turnId = blocks[index] === undefined ? undefined : blockTurnId(blocks[index]!);
-      if (turnId !== undefined) return turnId;
-    }
-  }
-  const startedAt = blockTimelineMs(subagent);
-  if (startedAt === undefined) return undefined;
-  let nearest: { turnId: string; at: number } | undefined;
-  for (const candidate of blocks) {
+interface TurnTimestampTable {
+  readonly times: readonly number[];
+  readonly turnIds: readonly string[];
+}
+
+function buildTurnTimestampTable(blocks: readonly Block[]): TurnTimestampTable {
+  const entries: { at: number; turnId: string; order: number }[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const candidate = blocks[index]!;
     const turnId = blockTurnId(candidate);
     if (turnId === undefined) continue;
     const at = blockTimelineMs(candidate);
-    if (at === undefined || at > startedAt) continue;
-    if (nearest === undefined || at >= nearest.at) nearest = { turnId, at };
+    if (at === undefined) continue;
+    entries.push({ at, turnId, order: index });
   }
-  return nearest?.turnId;
+  entries.sort((left, right) => left.at - right.at || left.order - right.order);
+  return {
+    times: entries.map((entry) => entry.at),
+    turnIds: entries.map((entry) => entry.turnId),
+  };
 }
 
-function insertSubagentByTimeline(blocks: Block[], block: SubagentBlock): void {
-  if (block.parentTurnId !== undefined) {
-    const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), block.parentTurnId);
-    const first = blocks.findIndex(inTurn);
-    if (first >= 0) {
-      const last = blocks.findLastIndex(inTurn);
-      const startedAt = blockTimelineMs(block);
-      let anchor = last;
-      if (startedAt !== undefined) {
-        anchor = -1;
-        for (let index = first; index <= last; index += 1) {
-          const candidate = blocks[index]!;
-          if (
-            candidate.kind === 'subagent' &&
-            sameTurnId(candidate.parentTurnId, block.parentTurnId)
-          ) {
-            if (compareSubagentTimeline(candidate, block) > 0) break;
-            anchor = index;
-            continue;
-          }
-          const candidateAt = blockTimelineMs(candidate);
-          if (candidateAt === undefined) {
-            if (anchor < 0 && (candidate.kind === 'user' || candidate.kind === 'system' || candidate.kind === 'system-reminder' || candidate.kind === 'skill')) {
-              anchor = index;
-            }
-            continue;
-          }
-          if (candidateAt > startedAt) break;
-          anchor = index;
-        }
-      }
-      if (anchor < 0) {
-        blocks.splice(first, 0, block);
-        return;
-      }
-      while (
-        blocks[anchor + 1]?.kind === 'subagent' &&
-        sameTurnId((blocks[anchor + 1] as SubagentBlock).parentTurnId, block.parentTurnId) &&
-        compareSubagentTimeline(blocks[anchor + 1] as SubagentBlock, block) <= 0
-      ) {
-        anchor += 1;
-      }
-      blocks.splice(anchor + 1, 0, block);
-      return;
+function lookupNearestTurnByTime(table: TurnTimestampTable, startedAt: number | undefined): string | undefined {
+  if (startedAt === undefined || table.times.length === 0) return undefined;
+  let low = 0;
+  let high = table.times.length - 1;
+  let best = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (table.times[mid]! <= startedAt) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
     }
   }
-  insertByTimeline(blocks, block);
+  return best < 0 ? undefined : table.turnIds[best];
+}
+
+function resolveSubagentSlotInTurn(
+  blocks: readonly Block[],
+  range: TurnRangeIndex,
+  block: SubagentBlock,
+): { slot: number; side: 'before' | 'after' } {
+  const startedAt = blockTimelineMs(block);
+  if (startedAt === undefined) {
+    return { slot: range.last + 1, side: 'after' };
+  }
+  let anchor = range.firstOpeningFallback;
+  for (let idx = 0; idx < range.timedValues.length; idx += 1) {
+    const candidateIndex = range.timedIndices[idx]!;
+    const candidate = blocks[candidateIndex]!;
+    if (candidate.kind === 'subagent' && sameTurnId(candidate.parentTurnId, block.parentTurnId)) {
+      if (compareSubagentTimeline(candidate, block) > 0) break;
+      anchor = candidateIndex;
+      continue;
+    }
+    if (range.timedValues[idx]! > startedAt) break;
+    anchor = candidateIndex;
+  }
+  if (anchor < 0) return { slot: range.first, side: 'before' };
+  while (
+    blocks[anchor + 1]?.kind === 'subagent' &&
+    sameTurnId((blocks[anchor + 1] as SubagentBlock).parentTurnId, block.parentTurnId) &&
+    compareSubagentTimeline(blocks[anchor + 1] as SubagentBlock, block) <= 0
+  ) {
+    anchor += 1;
+  }
+  return { slot: anchor + 1, side: 'after' };
 }
 
 function insertSubagentBlocks(
@@ -1838,37 +2062,70 @@ function insertSubagentBlocks(
     }
   }
 
+  let sourceTurnTable: TurnTimestampTable | undefined;
   const inserted = new Set<string>();
-  const blocks: Block[] = [];
+  const anchoredBlocks: Block[] = [];
+  let precedingTurnId: string | undefined;
   for (let index = 0; index < source.length; index += 1) {
     const candidate = source[index]!;
     if (candidate.kind === 'subagent') continue;
-    blocks.push(candidate);
+    anchoredBlocks.push(candidate);
+    const candidateTurnId = blockTurnId(candidate);
     const toolCallId =
       candidate.kind === 'tool'
         ? candidate.toolCallId
         : candidate.kind === 'shell'
           ? candidate.commandId
           : undefined;
-    if (toolCallId === undefined) continue;
-    const anchored = byParentTool.get(toolCallId);
-    if (anchored === undefined) continue;
-    for (const subagent of anchored) {
-      if (inserted.has(subagent.id)) continue;
-      const parentTurnId = nearestParentTurn(source, subagent, index);
-      blocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
-      inserted.add(subagent.id);
+    if (toolCallId !== undefined) {
+      const anchored = byParentTool.get(toolCallId);
+      if (anchored !== undefined) {
+        for (const subagent of anchored) {
+          if (inserted.has(subagent.id)) continue;
+          const parentTurnId =
+            subagent.parentTurnId ??
+            precedingTurnId ??
+            lookupNearestTurnByTime(sourceTurnTable ??= buildTurnTimestampTable(source), blockTimelineMs(subagent));
+          anchoredBlocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
+          inserted.add(subagent.id);
+        }
+      }
     }
+    if (candidateTurnId !== undefined) precedingTurnId = candidateTurnId;
   }
+
+  if (inserted.size === sorted.length) return anchoredBlocks;
+
+  const turnTable = buildTurnTimestampTable(anchoredBlocks);
+  const turnRanges = buildTurnRangeMap(anchoredBlocks);
+  const lastSlotById = new Map<string, number>();
+  for (let index = 0; index < anchoredBlocks.length; index += 1) {
+    lastSlotById.set(anchoredBlocks[index]!.id, index);
+  }
+  const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+  const list = new BucketedInsertionList(anchoredBlocks);
+  const timelineFallbacks: SubagentBlock[] = [];
 
   for (const subagent of sorted) {
     if (inserted.has(subagent.id)) continue;
-    const parentTurnId = nearestParentTurn(blocks, subagent);
+    const parentTurnId = subagent.parentTurnId ?? lookupNearestTurnByTime(turnTable, blockTimelineMs(subagent));
     const placed = parentTurnId === undefined ? subagent : { ...subagent, parentTurnId };
-    if (parentTurnId === undefined && insertAtPreviousPosition(blocks, placed, previous)) continue;
-    insertSubagentByTimeline(blocks, placed);
+    if (parentTurnId === undefined && list.insertPreviousPosition(previousIndex, placed, true)) continue;
+    if (placed.parentTurnId !== undefined) {
+      const range = turnRanges.get(normalizeTurnId(placed.parentTurnId)!);
+      if (range !== undefined) {
+        const target = resolveSubagentSlotInTurn(anchoredBlocks, range, placed);
+        if (target.side === 'before') list.insertBefore(target.slot, placed);
+        else list.insertAfter(target.slot, placed);
+        continue;
+      }
+    }
+    timelineFallbacks.push(placed);
   }
-  return blocks;
+  return list.materialize(timelineFallbacks, (left, right) => {
+    if (left.kind === 'subagent' && right.kind === 'subagent') return compareSubagentTimeline(left, right);
+    return compareTimedBlocks(left, right);
+  });
 }
 
 /**
@@ -1887,55 +2144,114 @@ function insertSubagentEventBlocks(
   events: readonly SubagentEventBlock[],
   previous: readonly Block[],
 ): Block[] {
-  const blocks: Block[] = source.filter((block) => block.kind !== 'subagent-event');
+  const base = source.filter((block) => block.kind !== 'subagent-event');
+  if (events.length === 0) return base;
+
+  const toolIndexById = new Map<string, number>();
+  const subagentsByAgent = new Map<string, { index: number; block: SubagentBlock }[]>();
+  const lastSlotById = new Map<string, number>();
+  for (let index = 0; index < base.length; index += 1) {
+    const candidate = base[index]!;
+    lastSlotById.set(candidate.id, index);
+    if (candidate.kind === 'tool' && !toolIndexById.has(candidate.toolCallId)) {
+      toolIndexById.set(candidate.toolCallId, index);
+    } else if (candidate.kind === 'shell' && !toolIndexById.has(candidate.commandId)) {
+      toolIndexById.set(candidate.commandId, index);
+    } else if (candidate.kind === 'subagent') {
+      const list = subagentsByAgent.get(candidate.subagentId);
+      if (list === undefined) subagentsByAgent.set(candidate.subagentId, [{ index, block: candidate }]);
+      else list.push({ index, block: candidate });
+    }
+  }
+
+  const turnRanges = buildTurnRangeMap(base);
+  const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+  const list = new BucketedInsertionList(base);
+  const timelineFallbacks: SubagentEventBlock[] = [];
+  const withinTurnBySlot = new Map<number, SubagentEventBlock[]>();
+  const dispatchStacks = new Map<number, SubagentEventBlock[]>();
+
   for (const event of events) {
     const anchorId = event.anchorToolCallId;
     if (anchorId !== undefined) {
-      const toolIndex = blocks.findIndex(
-        (candidate) =>
-          (candidate.kind === 'tool' && candidate.toolCallId === anchorId) ||
-          (candidate.kind === 'shell' && candidate.commandId === anchorId),
-      );
-      if (toolIndex >= 0) {
-        // One tool can derive several entries (e.g. a multi-target resume):
-        // stack them after the anchor in their derivation order.
-        let at = toolIndex + 1;
-        while (
-          blocks[at]?.kind === 'subagent-event' &&
-          (blocks[at] as SubagentEventBlock).anchorToolCallId === anchorId
-        ) {
-          at += 1;
-        }
-        blocks.splice(at, 0, event);
+      const toolIndex = toolIndexById.get(anchorId);
+      if (toolIndex !== undefined) {
+        list.insertAfter(toolIndex + 1, event);
         continue;
       }
     }
     const terminal = event.event === 'completed' || event.event === 'failed' || event.event === 'cancelled';
     if (event.event === 'spawned') {
-      const dispatch = blocks.findIndex(
-        (block) =>
-          block.kind === 'subagent' &&
-          block.subagentId === event.subagentId &&
-          (event.id === `subagent-event-${event.subagentId}-spawned-${block.taskId ?? ''}` ||
-            sameTurnId(block.parentTurnId, event.turnId)),
+      const candidates = subagentsByAgent.get(event.subagentId);
+      const dispatch = candidates?.find(
+        ({ block }) =>
+          event.id === `subagent-event-${event.subagentId}-spawned-${block.taskId ?? ''}` ||
+          sameTurnId(block.parentTurnId, event.turnId),
       );
-      if (dispatch >= 0) {
-        blocks.splice(dispatch + 1, 0, event);
+      if (dispatch !== undefined) {
+        let stack = dispatchStacks.get(dispatch.index + 1);
+        if (stack === undefined) {
+          stack = [];
+          dispatchStacks.set(dispatch.index + 1, stack);
+        }
+        stack.unshift(event);
         continue;
       }
-      if (event.turnId !== undefined && insertWithinTurnByTime(blocks, event, event.turnId)) continue;
-    }
-    if (terminal && event.turnId !== undefined && insertWithinTurnByTime(blocks, event, event.turnId)) continue;
-    if (blockTimelineMs(event) === undefined) {
-      if (insertAtPreviousPosition(blocks, event, previous)) continue;
-      if (terminal) {
-        const dispatch = blocks.findIndex((block) => block.kind === 'subagent' && block.subagentId === event.subagentId);
-        if (dispatch >= 0) { blocks.splice(dispatch + 1, 0, event); continue; }
+      if (event.turnId !== undefined) {
+        const range = turnRanges.get(normalizeTurnId(event.turnId)!);
+        const slot = range === undefined ? undefined : findWithinTurnSlot(base, range, event);
+        if (slot !== undefined) {
+          let group = withinTurnBySlot.get(slot);
+          if (group === undefined) {
+            group = [];
+            withinTurnBySlot.set(slot, group);
+          }
+          group.push(event);
+          continue;
+        }
       }
     }
-    insertByTimeline(blocks, event);
+    if (terminal && event.turnId !== undefined) {
+      const range = turnRanges.get(normalizeTurnId(event.turnId)!);
+      const slot = range === undefined ? undefined : findWithinTurnSlot(base, range, event);
+      if (slot !== undefined) {
+        let group = withinTurnBySlot.get(slot);
+        if (group === undefined) {
+          group = [];
+          withinTurnBySlot.set(slot, group);
+        }
+        group.push(event);
+        continue;
+      }
+    }
+    if (blockTimelineMs(event) === undefined) {
+      if (list.insertPreviousPosition(previousIndex, event, true)) continue;
+      if (terminal) {
+        const dispatch = subagentsByAgent.get(event.subagentId)?.[0];
+        if (dispatch !== undefined) {
+          let stack = dispatchStacks.get(dispatch.index + 1);
+          if (stack === undefined) {
+            stack = [];
+            dispatchStacks.set(dispatch.index + 1, stack);
+          }
+          stack.unshift(event);
+          continue;
+        }
+      }
+    }
+    timelineFallbacks.push(event);
   }
-  return blocks;
+
+  for (const [slot, stack] of dispatchStacks) {
+    for (const event of stack) list.insertAfter(slot, event);
+  }
+  for (const [slot, group] of withinTurnBySlot) {
+    for (const event of group.toSorted(compareTimedBlocks)) {
+      list.insertBefore(slot, event);
+    }
+  }
+
+  return list.materialize(timelineFallbacks, compareTimedBlocks);
 }
 
 type ProjectedInteraction = {
@@ -2001,12 +2317,6 @@ function compareProjectedInteraction(left: ProjectedInteraction, right: Projecte
   return compareTimelineIds(left.block.id, right.block.id);
 }
 
-function insertAfterAnchor(blocks: Block[], anchor: number, block: ApprovalBlock | QuestionBlock): void {
-  let index = anchor + 1;
-  while (blocks[index]?.kind === 'approval' || blocks[index]?.kind === 'question') index += 1;
-  blocks.splice(index, 0, block);
-}
-
 function isSettledInteraction(block: ApprovalBlock | QuestionBlock): boolean {
   return block.kind === 'approval' ? block.resolution !== undefined : block.outcome !== undefined;
 }
@@ -2017,7 +2327,8 @@ function insertInteractionBlocks(
   agentId: string,
   previous: readonly Block[],
 ): Block[] {
-  const blocks = source.filter((block) => block.kind !== 'approval' && block.kind !== 'question');
+  const base = source.filter((block) => block.kind !== 'approval' && block.kind !== 'question');
+  if (interactions.length === 0) return base;
   // Resolution upserts (`interaction.upsert` with a terminal state) replace
   // the interaction record in the store wholesale and arrive WITHOUT the
   // request payload — rebuilds would fall back to placeholder tool/action
@@ -2038,64 +2349,95 @@ function insertInteractionBlocks(
         : [];
     })
     .sort(compareProjectedInteraction);
+  if (projected.length === 0) return base;
+
+  const existingIds = new Set<string>();
+  const lastSlotById = new Map<string, number>();
+  const lastToolById = new Map<string, number>();
+  const lastStepAnyTurn = new Map<string, number>();
+  const lastStepInTurn = new Map<string, number>();
+  for (let index = 0; index < base.length; index += 1) {
+    const candidate = base[index]!;
+    existingIds.add(candidate.id);
+    lastSlotById.set(candidate.id, index);
+    if (candidate.kind === 'tool') lastToolById.set(candidate.toolCallId, index);
+    else if (candidate.kind === 'shell') lastToolById.set(candidate.commandId, index);
+    const stepId = blockStepId(candidate);
+    if (stepId !== undefined) {
+      lastStepAnyTurn.set(stepId, index);
+      const turnId = normalizeTurnId(blockTurnId(candidate));
+      if (turnId !== undefined) lastStepInTurn.set(`${turnId}\0${stepId}`, index);
+    }
+  }
+
+  const turnRanges = buildTurnRangeMap(base);
+  const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+  const list = new BucketedInsertionList(base);
+  const withinTurnBySlot = new Map<number, (ApprovalBlock | QuestionBlock)[]>();
+  const timelineFallbacks: (ApprovalBlock | QuestionBlock)[] = [];
 
   for (const interaction of projected) {
-    if (blocks.some((candidate) => candidate.id === interaction.block.id)) continue;
+    if (existingIds.has(interaction.block.id)) continue;
+    existingIds.add(interaction.block.id);
     if (interaction.frameId !== undefined) {
-      const anchor = blocks.findLastIndex(
-        (candidate) => candidate.id === `agent-frame-${interaction.frameId}`,
-      );
-      if (anchor >= 0) {
-        insertAfterAnchor(blocks, anchor, interaction.block);
+      const anchor = lastSlotById.get(`agent-frame-${interaction.frameId}`);
+      if (anchor !== undefined) {
+        list.insertAfter(anchor + 1, interaction.block);
         continue;
       }
     }
     if (interaction.toolCallId !== undefined) {
-      const anchor = blocks.findLastIndex(
-        (candidate) =>
-          (candidate.kind === 'tool' && candidate.toolCallId === interaction.toolCallId) ||
-          (candidate.kind === 'shell' && candidate.commandId === interaction.toolCallId),
-      );
-      if (anchor >= 0) {
-        insertAfterAnchor(blocks, anchor, interaction.block);
+      const anchor = lastToolById.get(interaction.toolCallId);
+      if (anchor !== undefined) {
+        list.insertAfter(anchor + 1, interaction.block);
         continue;
       }
     }
     if (interaction.stepId !== undefined) {
-      const anchor = blocks.findLastIndex(
-        (candidate) =>
-          blockStepId(candidate) === interaction.stepId &&
-          (interaction.turnId === undefined || sameTurnId(blockTurnId(candidate), interaction.turnId)),
-      );
-      if (anchor >= 0) {
-        insertAfterAnchor(blocks, anchor, interaction.block);
+      const anchor = interaction.turnId === undefined
+        ? lastStepAnyTurn.get(interaction.stepId)
+        : lastStepInTurn.get(`${normalizeTurnId(interaction.turnId)!}\0${interaction.stepId}`);
+      if (anchor !== undefined) {
+        list.insertAfter(anchor + 1, interaction.block);
         continue;
       }
     }
     if (interaction.turnId !== undefined) {
-      const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), interaction.turnId);
-      if ((interaction.block.kind === 'question' || isSettledInteraction(interaction.block)) &&
-        insertWithinTurnByTime(blocks, interaction.block, interaction.turnId)) {
-        continue;
-      }
-      const workAnchor = blocks.findLastIndex(
-        (candidate) => inTurn(candidate) && candidate.kind !== 'assistant' && candidate.kind !== 'user',
-      );
-      const anchor = workAnchor >= 0 ? workAnchor : blocks.findLastIndex(inTurn);
-      if (anchor >= 0) {
-        insertAfterAnchor(blocks, anchor, interaction.block);
+      const range = turnRanges.get(normalizeTurnId(interaction.turnId)!);
+      if (range !== undefined) {
+        if (interaction.block.kind === 'question' || isSettledInteraction(interaction.block)) {
+          const slot = findWithinTurnSlot(base, range, interaction.block);
+          if (slot !== undefined) {
+            let group = withinTurnBySlot.get(slot);
+            if (group === undefined) {
+              group = [];
+              withinTurnBySlot.set(slot, group);
+            }
+            group.push(interaction.block);
+            continue;
+          }
+        }
+        const anchor = range.lastWork >= 0 ? range.lastWork : range.last;
+        list.insertAfter(anchor + 1, interaction.block);
         continue;
       }
     }
     if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
     if (interaction.block.kind === 'question' && blockTimelineMs(interaction.block) !== undefined) {
-      insertByTimeline(blocks, interaction.block);
+      timelineFallbacks.push(interaction.block);
       continue;
     }
-    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
-    insertByTimeline(blocks, interaction.block);
+    if (list.insertPreviousPosition(previousIndex, interaction.block, true)) continue;
+    timelineFallbacks.push(interaction.block);
   }
-  return blocks;
+
+  for (const [slot, group] of withinTurnBySlot) {
+    for (const block of group.toSorted(compareTimedBlocks)) {
+      list.insertBefore(slot, block);
+    }
+  }
+
+  return list.materialize(timelineFallbacks, compareTimedBlocks);
 }
 
 function isPromptIdentity(block: Block, promptId: string, userMessageId?: string): boolean {
@@ -2296,29 +2638,164 @@ function keepPreviousUser(
   return merged;
 }
 
-function settleCompletedPrompts(blocks: readonly Block[], prompts: readonly TranscriptPrompt[]): Block[] {
-  let next = [...blocks];
+function buildLatestPromptSettlementMap(prompts: readonly TranscriptPrompt[]): ReadonlyMap<string, number> {
+  const latestByUserMessage = new Map<string, number>();
   for (const prompt of prompts) {
-    if (prompt.status === 'completed') next = settleCompletedPrompt(next, prompt);
+    if (prompt.userMessageId === undefined) continue;
+    if (prompt.status === 'aborted' && prompt.abortedBeforeStart === true) continue;
+    const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
+    const prev = latestByUserMessage.get(prompt.userMessageId);
+    if (prev === undefined || settledAt > prev) latestByUserMessage.set(prompt.userMessageId, settledAt);
   }
-  return next;
+  return latestByUserMessage;
 }
 
-function settleCompletedPrompt(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
-  let next = stampPromptIdentity(blocks, prompt, undefined);
-  const matches = next.filter(
-    (block): block is UserBlock =>
-      block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-  );
-  if (matches.length > 1) {
-    const keep = matches.find((block) => block.turnId !== undefined) ?? matches[0]!;
-    next = next.filter((block) => block.kind !== 'user' || !isPromptIdentity(block, prompt.promptId, prompt.userMessageId) || block.id === keep.id);
+function isSupersededByLaterPrompt(prompt: TranscriptPrompt, latestByUserMessage: ReadonlyMap<string, number>): boolean {
+  if (prompt.userMessageId === undefined) return false;
+  const settledAt = timestampMs(prompt.finishedAt ?? prompt.createdAt) ?? 0;
+  return (latestByUserMessage.get(prompt.userMessageId) ?? settledAt) > settledAt;
+}
+
+interface UserPromptIndex {
+  readonly slots: Block[];
+  readonly removed: Set<number>;
+  readonly byPromptId: Map<string, number[]>;
+  readonly byUserMessageId: Map<string, number[]>;
+  readonly unattributedTurnUserIndices: number[];
+}
+
+function addSlotToMap(map: Map<string, number[]>, key: string | undefined, slot: number): void {
+  if (key === undefined) return;
+  const list = map.get(key);
+  if (list === undefined) map.set(key, [slot]);
+  else if (!list.includes(slot)) list.push(slot);
+}
+
+function buildUserPromptIndex(blocks: readonly Block[]): UserPromptIndex {
+  const slots = [...blocks];
+  const removed = new Set<number>();
+  const byPromptId = new Map<string, number[]>();
+  const byUserMessageId = new Map<string, number[]>();
+  const unattributedTurnUserIndices: number[] = [];
+  for (let index = 0; index < slots.length; index += 1) {
+    const block = slots[index]!;
+    if (block.kind !== 'user') continue;
+    addSlotToMap(byPromptId, block.promptId, index);
+    addSlotToMap(byUserMessageId, block.userMessageId, index);
+    if (block.turnId !== undefined && block.promptId === undefined && block.userMessageId === undefined) {
+      unattributedTurnUserIndices.push(index);
+    }
   }
-  return next.map((block) =>
-    block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
-      ? { ...block, promptStatus: undefined, queuedContent: undefined }
-      : block,
-  );
+  return { slots, removed, byPromptId, byUserMessageId, unattributedTurnUserIndices };
+}
+
+function matchingUserSlots(index: UserPromptIndex, promptId: string, userMessageId?: string): number[] {
+  const out: number[] = [];
+  const push = (slot: number) => {
+    if (index.removed.has(slot) || out.includes(slot)) return;
+    const candidate = index.slots[slot];
+    if (candidate?.kind === 'user' && isPromptIdentity(candidate, promptId, userMessageId)) out.push(slot);
+  };
+  for (const slot of index.byPromptId.get(promptId) ?? []) push(slot);
+  for (const slot of index.byUserMessageId.get(promptId) ?? []) push(slot);
+  if (userMessageId !== undefined) {
+    for (const slot of index.byUserMessageId.get(userMessageId) ?? []) push(slot);
+  }
+  out.sort((left, right) => left - right);
+  return out;
+}
+
+function stampPromptIdentityInIndex(
+  index: UserPromptIndex,
+  prompt: TranscriptPrompt,
+  promptStatus: PromptStatus | undefined,
+): void {
+  const matches = matchingUserSlots(index, prompt.promptId, prompt.userMessageId);
+  if (matches.length > 0) {
+    const matchIndex = matches[0]!;
+    const existing = index.slots[matchIndex];
+    if (existing?.kind !== 'user') return;
+    const userMessageId = existing.userMessageId ?? prompt.userMessageId;
+    if (existing.userMessageId === userMessageId && existing.promptStatus === promptStatus && existing.queuedContent === undefined) return;
+    const identity = userMessageId ?? existing.id.replace(/^user-/, '');
+    const nextPromptId = existing.promptId ?? prompt.promptId;
+    index.slots[matchIndex] = {
+      ...existing,
+      id: `user-${identity}`,
+      promptId: nextPromptId,
+      userMessageId,
+      promptStatus,
+      queuedContent: undefined,
+    };
+    addSlotToMap(index.byPromptId, nextPromptId, matchIndex);
+    addSlotToMap(index.byUserMessageId, userMessageId, matchIndex);
+    return;
+  }
+  while (index.unattributedTurnUserIndices.length > 0) {
+    const slot = index.unattributedTurnUserIndices.at(-1)!;
+    const candidate = index.slots[slot];
+    if (
+      index.removed.has(slot) ||
+      candidate?.kind !== 'user' ||
+      candidate.turnId === undefined ||
+      candidate.promptId !== undefined ||
+      candidate.userMessageId !== undefined
+    ) {
+      index.unattributedTurnUserIndices.pop();
+      continue;
+    }
+    index.unattributedTurnUserIndices.pop();
+    const identity = prompt.userMessageId ?? candidate.userMessageId ?? candidate.id.replace(/^user-/, '');
+    const userMessageId = prompt.userMessageId ?? candidate.userMessageId;
+    index.slots[slot] = {
+      ...candidate,
+      id: `user-${identity}`,
+      promptId: prompt.promptId,
+      userMessageId,
+      promptStatus,
+    };
+    addSlotToMap(index.byPromptId, prompt.promptId, slot);
+    addSlotToMap(index.byUserMessageId, userMessageId, slot);
+    return;
+  }
+}
+
+function settleCompletedPromptInIndex(index: UserPromptIndex, prompt: TranscriptPrompt): void {
+  stampPromptIdentityInIndex(index, prompt, undefined);
+  const matches = matchingUserSlots(index, prompt.promptId, prompt.userMessageId);
+  if (matches.length === 0) return;
+  let keepSlot = matches[0]!;
+  if (matches.length > 1) {
+    const turnSlot = matches.find((slot) => (index.slots[slot] as UserBlock).turnId !== undefined) ?? matches[0]!;
+    const keepId = index.slots[turnSlot]!.id;
+    keepSlot = turnSlot;
+    for (const slot of matches) {
+      if (index.slots[slot]!.id !== keepId) index.removed.add(slot);
+    }
+  }
+  for (const slot of matches) {
+    if (index.removed.has(slot)) continue;
+    const current = index.slots[slot] as UserBlock;
+    if (current.promptStatus !== undefined || current.queuedContent !== undefined) {
+      index.slots[slot] = { ...current, promptStatus: undefined, queuedContent: undefined };
+    }
+  }
+  void keepSlot;
+}
+
+function materializeUserPromptIndex(index: UserPromptIndex): Block[] {
+  if (index.removed.size === 0) return index.slots;
+  return index.slots.filter((_, slot) => !index.removed.has(slot));
+}
+
+function settleCompletedPrompts(blocks: readonly Block[], prompts: readonly TranscriptPrompt[]): Block[] {
+  const completed = prompts.filter((prompt) => prompt.status === 'completed');
+  if (completed.length === 0) return [...blocks];
+  const index = buildUserPromptIndex(blocks);
+  for (const prompt of completed) {
+    settleCompletedPromptInIndex(index, prompt);
+  }
+  return materializeUserPromptIndex(index);
 }
 
 function isRegeneratingJournalUser(
@@ -2507,56 +2984,6 @@ function mergeSettledPromptUserBlock(
   };
 }
 
-function placePromptOutcome(
-  blocks: Block[],
-  prompt: TerminalPrompt,
-  previous: readonly Block[],
-  context: PromptOutcomeContext,
-): Block[] | undefined {
-  const index = blocks.findIndex((block) => block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
-  if (index >= 0) {
-    const user = blocks[index] as UserBlock;
-    const next = [...blocks];
-    next[index] = mergeSettledPromptUserBlock(user, prompt, context);
-    return next;
-  }
-  const previousUser = previous.find(
-    (block): block is UserBlock => block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-  );
-  // A local / queued echo never owned a turn: it stays where the reader saw it.
-  if (previousUser !== undefined && previousUser.turnId === undefined) {
-    const next = [...blocks];
-    const settled = mergeSettledPromptUserBlock(previousUser, prompt, context);
-    if (!insertAtPreviousPosition(next, settled, previous)) insertByTimeline(next, settled);
-    return next;
-  }
-  const createdMs = timestampMs(prompt.createdAt);
-  const insideWindow =
-    context.windowStartMs === undefined || (createdMs !== undefined && createdMs >= context.windowStartMs);
-  if (!insideWindow || context.turns.has(prompt.promptId)) return undefined;
-  const parts = promptContentParts(prompt.content);
-  const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
-  if (parts.length === 0 && !contentPending) return undefined;
-  const projection = projectMessageContent(parts, prompt.contentRefs);
-  const identity = prompt.userMessageId ?? prompt.promptId;
-  const created = classifiedTextToBlocks({
-    id: identity,
-    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: originFromRecord(prompt) ?? { kind: 'user' } }),
-    createdAt: prompt.createdAt,
-    media: projection.media,
-    promptId: prompt.promptId,
-    userMessageId: prompt.userMessageId,
-    contentSource: { kind: 'prompt', id: prompt.promptId },
-    contentPending,
-    promptTextParts: extractPromptTextParts(prompt.content, prompt.contentRefs),
-  });
-  const next = [...blocks];
-  for (const block of created) {
-    insertByTimeline(next, block.kind === 'user' ? { ...block, promptOutcome: promptOutcomeOf(prompt, context) } : block);
-  }
-  return next;
-}
-
 /** One quiet row at the top of the window for every settled prompt it cannot show. */
 function earlierPromptOutcomesBlock(prompts: readonly TerminalPrompt[]): NoticeBlock {
   const outcomes: EarlierPromptOutcome[] = prompts
@@ -2587,32 +3014,102 @@ function mergeTranscriptPromptBlocks(
   previous: readonly Block[] = [],
   items: AgentTranscriptProjectionSource['items'] = [],
 ): Block[] {
-  let next = blocks;
+  if (prompts.length === 0) return blocks;
   const context = promptOutcomeContext(blocks, items);
+  const latestByUserMessage = buildLatestPromptSettlementMap(prompts);
+  const previousUserByPrompt = new Map<string, UserBlock>();
+  const previousUserByMessage = new Map<string, UserBlock>();
+  for (const candidate of previous) {
+    if (candidate.kind !== 'user') continue;
+    if (candidate.promptId !== undefined && !previousUserByPrompt.has(candidate.promptId)) {
+      previousUserByPrompt.set(candidate.promptId, candidate);
+    }
+    if (candidate.userMessageId !== undefined && !previousUserByMessage.has(candidate.userMessageId)) {
+      previousUserByMessage.set(candidate.userMessageId, candidate);
+    }
+  }
+  const findPreviousUser = (prompt: TranscriptPrompt): UserBlock | undefined =>
+    previousUserByPrompt.get(prompt.promptId) ??
+    previousUserByMessage.get(prompt.promptId) ??
+    (prompt.userMessageId === undefined ? undefined : previousUserByMessage.get(prompt.userMessageId));
+
+  let index = buildUserPromptIndex(blocks);
+  const flushIndex = (): Block[] => {
+    const out = materializeUserPromptIndex(index);
+    index = buildUserPromptIndex(out);
+    return out;
+  };
+  const previousFallbackInsertions: Block[] = [];
+  const timelineInsertions: Block[] = [];
   const earlier: TerminalPrompt[] = [];
+
   for (const prompt of prompts) {
     if (prompt.originKind === 'cron_job') continue;
     if (prompt.status === 'completed') {
-      next = settleCompletedPrompt(next, prompt);
+      settleCompletedPromptInIndex(index, prompt);
       continue;
     }
     if (prompt.status === 'aborted' || prompt.status === 'failed' || prompt.status === 'blocked') {
+      const matches = matchingUserSlots(index, prompt.promptId, prompt.userMessageId);
       if (prompt.status === 'aborted' && prompt.abortedBeforeStart === true) {
-        next = next.filter(block => !isUnstartedPromptBlock(block, prompt));
+        for (const slot of matches) {
+          if (isUnstartedPromptBlock(index.slots[slot]!, prompt)) index.removed.add(slot);
+        }
         continue;
       }
-      next = next.map((block) =>
-        block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
-          ? { ...block, promptStatus: undefined, queuedContent: undefined }
-          : block,
-      );
+      for (const slot of matches) {
+        const current = index.slots[slot] as UserBlock;
+        if (current.promptStatus !== undefined || current.queuedContent !== undefined) {
+          index.slots[slot] = { ...current, promptStatus: undefined, queuedContent: undefined };
+        }
+      }
       // One outcome per message: a later prompt for the same message (a
       // retry, a regenerate, a second failure) speaks for it instead.
-      if (supersededByLaterPrompt(prompt, prompts)) continue;
+      if (isSupersededByLaterPrompt(prompt, latestByUserMessage)) continue;
       const terminal: TerminalPrompt = { ...prompt, status: prompt.status };
-      const placed = placePromptOutcome(next, terminal, previous, context);
-      if (placed === undefined) earlier.push(terminal);
-      else next = placed;
+      if (matches.length > 0) {
+        const slot = matches[0]!;
+        const user = index.slots[slot] as UserBlock;
+        const settled = mergeSettledPromptUserBlock(user, terminal, context);
+        index.slots[slot] = settled;
+        addSlotToMap(index.byPromptId, settled.promptId, slot);
+        addSlotToMap(index.byUserMessageId, settled.userMessageId, slot);
+        continue;
+      }
+      const previousUser = findPreviousUser(terminal);
+      if (previousUser !== undefined && previousUser.turnId === undefined) {
+        previousFallbackInsertions.push(mergeSettledPromptUserBlock(previousUser, terminal, context));
+        continue;
+      }
+      const createdMs = timestampMs(terminal.createdAt);
+      const insideWindow =
+        context.windowStartMs === undefined || (createdMs !== undefined && createdMs >= context.windowStartMs);
+      if (!insideWindow || context.turns.has(terminal.promptId)) {
+        earlier.push(terminal);
+        continue;
+      }
+      const parts = promptContentParts(terminal.content);
+      const contentPending = terminal.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
+      if (parts.length === 0 && !contentPending) {
+        earlier.push(terminal);
+        continue;
+      }
+      const projection = projectMessageContent(parts, terminal.contentRefs);
+      const identity = terminal.userMessageId ?? terminal.promptId;
+      const created = classifiedTextToBlocks({
+        id: identity,
+        classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: originFromRecord(terminal) ?? { kind: 'user' } }),
+        createdAt: terminal.createdAt,
+        media: projection.media,
+        promptId: terminal.promptId,
+        userMessageId: terminal.userMessageId,
+        contentSource: { kind: 'prompt', id: terminal.promptId },
+        contentPending,
+        promptTextParts: extractPromptTextParts(terminal.content, terminal.contentRefs),
+      });
+      for (const block of created) {
+        timelineInsertions.push(block.kind === 'user' ? { ...block, promptOutcome: promptOutcomeOf(terminal, context) } : block);
+      }
       continue;
     }
     if (prompt.status !== 'queued' && prompt.status !== 'running') {
@@ -2622,18 +3119,17 @@ function mergeTranscriptPromptBlocks(
     const projection = projectMessageContent(parts, prompt.contentRefs);
     const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
     if (prompt.status === 'running') {
-      const previousUser = previous.find(
-        (block): block is UserBlock =>
-          block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-      );
+      const previousUser = findPreviousUser(prompt);
       if (isRegeneratingJournalUser(previousUser, prompt)) {
-        next = keepPreviousUser(next, previousUser, previous);
-        next = stampPromptIdentity(next, prompt, undefined);
+        const nextAfterKeep = keepPreviousUser(materializeUserPromptIndex(index), previousUser, previous);
+        const stamped = stampPromptIdentity(nextAfterKeep, prompt, undefined);
+        index = buildUserPromptIndex(stamped);
         continue;
       }
-      next = stampRunningPromptIdentity(next, prompt);
-      if (next.some((block) => block.kind === 'user' && block.turnId !== undefined &&
-        isPromptIdentity(block, prompt.promptId, prompt.userMessageId))) continue;
+      stampPromptIdentityInIndex(index, prompt, 'running');
+      if (matchingUserSlots(index, prompt.promptId, prompt.userMessageId).some((slot) => (index.slots[slot] as UserBlock).turnId !== undefined)) {
+        continue;
+      }
       if (parts.length === 0 && !contentPending) continue;
     }
     if (prompt.steeredAt !== undefined) continue;
@@ -2647,7 +3143,7 @@ function mergeTranscriptPromptBlocks(
       append_timing: prompt.appendTiming,
       revision: prompt.revision,
     };
-    next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined, {
+    let next = [...upsertPromptItemBlocks(flushIndex(), item, projection.media.length > 0 ? projection.media : undefined, {
       contentSource: { kind: 'prompt', id: prompt.promptId },
       contentPending,
       promptTextParts: extractPromptTextParts(prompt.content, prompt.contentRefs),
@@ -2663,6 +3159,20 @@ function mergeTranscriptPromptBlocks(
         next.splice(turnStart, 0, { ...user, turnId: owner.turnId });
       }
     }
+    index = buildUserPromptIndex(next);
+  }
+
+  let next = materializeUserPromptIndex(index);
+  if (previousFallbackInsertions.length > 0 || timelineInsertions.length > 0) {
+    const lastSlotById = new Map<string, number>();
+    for (let i = 0; i < next.length; i += 1) lastSlotById.set(next[i]!.id, i);
+    const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+    const list = new BucketedInsertionList(next);
+    const fallbacks = [...timelineInsertions];
+    for (const block of previousFallbackInsertions) {
+      if (!list.insertPreviousPosition(previousIndex, block, true)) fallbacks.push(block);
+    }
+    next = list.materialize(fallbacks, compareTimedBlocks);
   }
   if (earlier.length > 0) next = [earlierPromptOutcomesBlock(earlier), ...next];
   return next;
@@ -2686,23 +3196,35 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     if (block.promptId !== undefined || block.userMessageId !== undefined) extras.push(block);
   }
   if (extras.length === 0) return next;
-  const merged = [...next];
+  const lastSlotById = new Map<string, number>();
+  for (let index = 0; index < next.length; index += 1) lastSlotById.set(next[index]!.id, index);
+  const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+  const list = new BucketedInsertionList(next);
+  const fallbacks: Block[] = [];
   for (const block of extras) {
-    if (insertAtPreviousPosition(merged, block, previous)) continue;
-    insertByTimeline(merged, block);
+    if (list.insertPreviousPosition(previousIndex, block, true)) continue;
+    fallbacks.push(block);
   }
-  return merged;
+  return list.materialize(fallbacks, compareTimedBlocks);
 }
 
 function dropAbortedBeforeStartPromptBlocks(
   blocks: readonly Block[],
   prompts: readonly TranscriptPrompt[],
 ): Block[] {
-  const removed = prompts.filter(
-    (prompt) => prompt.status === 'aborted' && prompt.abortedBeforeStart === true,
-  );
-  if (removed.length === 0) return [...blocks];
-  return blocks.filter(block => !removed.some(prompt => isUnstartedPromptBlock(block, prompt)));
+  const removedPromptIds = new Set<string>();
+  const removedMessageIds = new Set<string>();
+  for (const prompt of prompts) {
+    if (prompt.status !== 'aborted' || prompt.abortedBeforeStart !== true) continue;
+    removedPromptIds.add(prompt.promptId);
+    if (prompt.userMessageId !== undefined) removedMessageIds.add(prompt.userMessageId);
+  }
+  if (removedPromptIds.size === 0) return [...blocks];
+  return blocks.filter((block) => {
+    if (block.kind !== 'user' || block.turnId !== undefined) return true;
+    if (block.promptId !== undefined) return !removedPromptIds.has(block.promptId);
+    return block.userMessageId === undefined || (!removedPromptIds.has(block.userMessageId) && !removedMessageIds.has(block.userMessageId));
+  });
 }
 
 export function stabilizeProjectedBlocks(
@@ -2895,9 +3417,25 @@ export function latestTurnOutcome(source: AgentTranscriptProjectionSource | Agen
 
 const terminalTurnProjectionCache = new WeakMap<object, Map<string, readonly Block[]>>();
 
+interface CachedStepProjection {
+  readonly blocks: readonly Block[];
+  readonly frameTimes: readonly (readonly [string, number])[];
+  readonly shellFrameTaskIds: readonly string[];
+}
+
+const settledStepProjectionCache = new WeakMap<object, Map<string, CachedStepProjection>>();
+
 function isTerminalTurn(item: object): boolean {
   const state = (item as { readonly state?: unknown }).state;
   return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function stepHasAttachments(step: { readonly frames: readonly object[] }): boolean {
+  for (const frame of step.frames) {
+    const attachmentIds = (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds;
+    if (attachmentIds !== undefined && attachmentIds.length > 0) return true;
+  }
+  return false;
 }
 
 function turnHasAttachments(item: {
@@ -2906,10 +3444,15 @@ function turnHasAttachments(item: {
 }): boolean {
   if (item.attachmentIds !== undefined && item.attachmentIds.length > 0) return true;
   for (const step of item.steps) {
-    for (const frame of step.frames) {
-      const attachmentIds = (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds;
-      if (attachmentIds !== undefined && attachmentIds.length > 0) return true;
-    }
+    if (stepHasAttachments(step)) return true;
+  }
+  return false;
+}
+
+function stepHasTaskBackedFrame(step: { readonly frames: readonly object[] }): boolean {
+  for (const frame of step.frames) {
+    const candidate = frame as { readonly kind?: unknown; readonly taskId?: unknown };
+    if (candidate.kind === 'tool' && typeof candidate.taskId === 'string' && candidate.taskId !== '') return true;
   }
   return false;
 }
@@ -2917,12 +3460,35 @@ function turnHasAttachments(item: {
 function turnHasTaskBackedFrame(item: {
   readonly steps: readonly { readonly frames: readonly object[] }[];
 }): boolean {
-  return item.steps.some((step) =>
-    step.frames.some((frame) => {
-      const candidate = frame as { readonly kind?: unknown; readonly taskId?: unknown };
-      return candidate.kind === 'tool' && typeof candidate.taskId === 'string' && candidate.taskId !== '';
-    }),
-  );
+  return item.steps.some(stepHasTaskBackedFrame);
+}
+
+function isSettledCacheableStep(step: {
+  readonly state?: unknown;
+  readonly frames: readonly object[];
+}): boolean {
+  if (step.state === 'running') return false;
+  if (stepHasAttachments(step) || stepHasTaskBackedFrame(step)) return false;
+  for (const frame of step.frames) {
+    const candidate = frame as {
+      readonly kind?: unknown;
+      readonly state?: unknown;
+      readonly toolCallId?: unknown;
+      readonly name?: unknown;
+      readonly view?: unknown;
+    };
+    if (candidate.state === 'running') return false;
+    if (
+      candidate.kind === 'tool' &&
+      typeof candidate.toolCallId === 'string' &&
+      !candidate.toolCallId.startsWith('external:') &&
+      (candidate.name === 'Bash' || candidate.view === 'shell') &&
+      shellCommandFromFrame(frame as Parameters<typeof shellCommandFromFrame>[0]) === undefined
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function cacheTerminalTurnBlocks(
@@ -2938,6 +3504,27 @@ function cacheTerminalTurnBlocks(
   terminalTurnProjectionCache.set(item, new Map([[agentId, blocks]]));
 }
 
+function cacheSettledStepProjection(
+  step: object,
+  key: string,
+  entry: CachedStepProjection,
+): void {
+  const existing = settledStepProjectionCache.get(step);
+  if (existing !== undefined) {
+    existing.set(key, entry);
+    return;
+  }
+  settledStepProjectionCache.set(step, new Map([[key, entry]]));
+}
+
+const cachedTurnSupplementalMeta = new WeakMap<
+  object,
+  {
+    readonly frameTimes: readonly (readonly [string, number])[];
+    readonly shellFrameTaskIds: readonly string[];
+  }
+>();
+
 export function agentTranscriptToBlocks(
   response: AgentTranscriptProjectionSource | AgentTranscriptResponse,
   previous: readonly Block[] = [],
@@ -2952,14 +3539,17 @@ export function agentTranscriptToBlocks(
   const tasks = response.tasks ?? [];
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
   const shellFrameTaskIds = new Set<string>();
-  for (const item of response.items) {
-    if (item.kind !== 'turn') continue;
-    for (const step of item.steps) {
-      for (const frame of step.frames) {
-        if (frame.kind !== 'tool') continue;
-        const taskId = (frame as typeof frame & { readonly taskId?: string }).taskId;
-        if (taskId !== undefined && taskById.get(taskId)?.kind === 'shell') shellFrameTaskIds.add(taskId);
-      }
+  const frameTimes = new Map<string, number>();
+  const previousShellCommands = new Map<string, string>();
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const candidate = previous[index]!;
+    if (
+      candidate.kind === 'shell' &&
+      candidate.commandId !== undefined &&
+      candidate.command !== undefined &&
+      !previousShellCommands.has(candidate.commandId)
+    ) {
+      previousShellCommands.set(candidate.commandId, candidate.command);
     }
   }
   const attachments = response.attachments ?? [];
@@ -2968,6 +3558,13 @@ export function agentTranscriptToBlocks(
       ? undefined
       : new Map(attachments.map((attachment) => [attachment.attachmentId, attachment]));
   const compactionFates = compactionMarkerFates(response.items);
+  type TurnItem = Extract<AgentTranscriptProjectionSource['items'][number], { kind: 'turn' }>;
+  const ordinalOf = (turn: TurnItem) => 'ordinal' in turn ? turn.ordinal : Number(turn.turnId.replace(/^t/, ''));
+  let firstTurn: TurnItem | undefined;
+  const pendingShellTaskRefs: {
+    readonly item: Extract<AgentTranscriptProjectionSource['items'][number], { kind: 'taskref' }>;
+    readonly task: NonNullable<typeof response.tasks>[number];
+  }[] = [];
   for (const item of response.items) {
     if (item.kind === 'marker') {
       const compactionFate = compactionFates.get(item.markerId);
@@ -3025,25 +3622,7 @@ export function agentTranscriptToBlocks(
       const task = taskById.get(item.taskId);
       if (task === undefined || task.kind === 'subagent') continue;
       if (task.kind === 'shell') {
-        if (shellFrameTaskIds.has(task.taskId)) continue;
-        deferredTaskBlocks.push({
-          kind: 'shell',
-          id: `shell-${task.taskId}`,
-          commandId: task.taskId,
-          command: task.command,
-          commandTaskId: task.taskId,
-          turnId: normalizeTurnId(task.ownerTurnId),
-          output: task.outputTail,
-          outputTaskId: task.taskId,
-          outputDetail: task.detailRef === undefined ? undefined : { agentId: response.agent_id, taskId: task.taskId },
-          done: task.state !== 'running',
-          isError:
-            task.state === 'failed' ||
-            task.state === 'timed_out' ||
-            task.state === 'killed' ||
-            task.state === 'lost',
-          startedAt: timestampMs(item.at ?? task.startedAt),
-        });
+        pendingShellTaskRefs.push({ item, task });
         continue;
       }
       const taskFailed =
@@ -3062,15 +3641,21 @@ export function agentTranscriptToBlocks(
       continue;
     }
     if (item.kind !== 'turn') continue;
+    if (firstTurn === undefined || ordinalOf(item) < ordinalOf(firstTurn)) firstTurn = item;
     const terminal = isTerminalTurn(item);
     const cacheableTerminal = terminal && !turnHasAttachments(item) && !turnHasTaskBackedFrame(item);
     if (cacheableTerminal) {
       const cached = terminalTurnProjectionCache.get(item)?.get(response.agent_id);
-      if (cached !== undefined) {
+      const cachedMeta = cachedTurnSupplementalMeta.get(item);
+      if (cached !== undefined && cachedMeta !== undefined) {
         blocks.push(...cached);
+        for (const [frameId, at] of cachedMeta.frameTimes) frameTimes.set(frameId, at);
+        for (const taskId of cachedMeta.shellFrameTaskIds) shellFrameTaskIds.add(taskId);
         continue;
       }
     }
+    const turnFrameTimes: [string, number][] = [];
+    const turnShellTaskIds: string[] = [];
     const blockStart = blocks.length;
     const origin = originFromTurnItem(item);
     const identity = identityFromTurnOrigin(origin);
@@ -3080,10 +3665,12 @@ export function agentTranscriptToBlocks(
       (item as { attachmentIds?: readonly string[] }).attachmentIds, attachmentsById, response.agent_id,
     ), turnPresentation);
     const promptPending = (item as ContentWindow).contentRefs?.some((ref) => ['prompt', 'presentation', 'origin', 'attachmentIds'].includes(String(ref.path[0]))) === true;
-    const frameOwnsMessage = turnUserMessageId !== undefined && item.steps.some((step) => step.frames.some((frame) =>
-      frame.kind === 'text' && frame.role === 'user' && frameMessageId(frame) === turnUserMessageId));
     let projectedTurnPrompt = false;
-    if (item.prompt?.trim() || (!frameOwnsMessage && ((turnMedia?.length ?? 0) > 0 || promptPending))) {
+    const hasNonEmptyTurnPrompt = Boolean(item.prompt?.trim());
+    const needsFrameOwnershipCheck = !hasNonEmptyTurnPrompt && turnUserMessageId !== undefined && ((turnMedia?.length ?? 0) > 0 || promptPending);
+    const frameOwnsMessage = needsFrameOwnershipCheck && item.steps.some((step) => step.frames.some((frame) =>
+      frame.kind === 'text' && frame.role === 'user' && frameMessageId(frame) === turnUserMessageId));
+    if (hasNonEmptyTurnPrompt || (!frameOwnsMessage && ((turnMedia?.length ?? 0) > 0 || promptPending))) {
       const promptBlocks = classifiedTextToBlocks({
         id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
         classified: classifyTranscriptText({
@@ -3104,10 +3691,34 @@ export function agentTranscriptToBlocks(
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
       blocks.push(...promptBlocks);
     }
-    const lastAssistantFrameId = item.steps
-      .flatMap((step) => step.frames)
-      .findLast((frame) => assistantTextIsDisplay(frame))?.frameId;
+    const isCancelledTurn = 'state' in item && item.state === 'cancelled';
+    const lastAssistantFrameId = isCancelledTurn
+      ? item.steps
+          .flatMap((step) => step.frames)
+          .findLast((frame) => assistantTextIsDisplay(frame))?.frameId
+      : undefined;
+    const stepCacheContextKey = !terminal
+      ? `${response.agent_id}\0${item.turnId}\0${projectedTurnPrompt ? (turnUserMessageId ?? '') : ''}\0${turnMessageId(item) ?? ''}\0${item.startedAt ?? ''}\0${item.endedAt ?? ''}\0${item.durationMs ?? ''}`
+      : undefined;
     for (const step of item.steps) {
+      if (stepCacheContextKey !== undefined && (!('state' in step) || step.state !== 'running')) {
+        const cachedStep = settledStepProjectionCache.get(step)?.get(stepCacheContextKey);
+        if (cachedStep !== undefined) {
+          blocks.push(...cachedStep.blocks);
+          for (const entry of cachedStep.frameTimes) {
+            frameTimes.set(entry[0], entry[1]);
+            turnFrameTimes.push([entry[0], entry[1]]);
+          }
+          for (const taskId of cachedStep.shellFrameTaskIds) {
+            shellFrameTaskIds.add(taskId);
+            turnShellTaskIds.push(taskId);
+          }
+          continue;
+        }
+      }
+      const stepBlockStart = blocks.length;
+      const stepFrameTimes: [string, number][] = [];
+      const stepShellTaskIds: string[] = [];
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
       for (let index = step.frames.length - 1; index >= 0; index -= 1) {
@@ -3121,6 +3732,20 @@ export function agentTranscriptToBlocks(
         if (lastTextFrameId !== undefined && lastThinkingFrameId !== undefined) break;
       }
       for (const frame of step.frames) {
+        const frameTime = timestampMs('startedAt' in frame ? frame.startedAt : step.startedAt) ?? timestampMs(step.startedAt);
+        if (frameTime !== undefined) {
+          frameTimes.set(frame.frameId, frameTime);
+          turnFrameTimes.push([frame.frameId, frameTime]);
+          stepFrameTimes.push([frame.frameId, frameTime]);
+        }
+        if (frame.kind === 'tool') {
+          const taskId = (frame as typeof frame & { readonly taskId?: string }).taskId;
+          if (taskId !== undefined && taskById.get(taskId)?.kind === 'shell') {
+            shellFrameTaskIds.add(taskId);
+            turnShellTaskIds.push(taskId);
+            stepShellTaskIds.push(taskId);
+          }
+        }
         switch (frame.kind) {
           case 'text':
             if (frame.role === 'user') {
@@ -3177,8 +3802,7 @@ export function agentTranscriptToBlocks(
                 stepId: step.stepId,
                 text: frame.text,
                 streaming: isLiveStreamingFrame(item, step, frame, lastTextFrameId, phase),
-                stopped:
-                  'state' in item && item.state === 'cancelled' && frame.frameId === lastAssistantFrameId,
+                stopped: isCancelledTurn && frame.frameId === lastAssistantFrameId,
                 createdAt: step.endedAt ?? item.endedAt,
                 turnId: item.turnId,
                 messageId,
@@ -3221,10 +3845,7 @@ export function agentTranscriptToBlocks(
                 frame.inputText !== undefined ||
                 typeof frame.input === 'object')
             ) {
-              const previousCommand = previous.findLast(
-                (block): block is ShellBlock =>
-                  block.kind === 'shell' && block.commandId === frame.toolCallId,
-              )?.command;
+              const previousCommand = previousShellCommands.get(frame.toolCallId);
               const command = shellCommandFromFrame(frame) ?? previousCommand;
               const frameOutput =
                 typeof frame.output === 'string'
@@ -3310,6 +3931,13 @@ export function agentTranscriptToBlocks(
             break;
         }
       }
+      if (stepCacheContextKey !== undefined && isSettledCacheableStep(step)) {
+        cacheSettledStepProjection(step, stepCacheContextKey, {
+          blocks: blocks.slice(stepBlockStart),
+          frameTimes: stepFrameTimes,
+          shellFrameTaskIds: stepShellTaskIds,
+        });
+      }
     }
     const outcome = subagentPromptAsUser ? turnOutcomeFromItem(item) : undefined;
     if (outcome !== undefined) {
@@ -3342,117 +3970,216 @@ export function agentTranscriptToBlocks(
     }
     if (cacheableTerminal) {
       cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
+      cachedTurnSupplementalMeta.set(item, {
+        frameTimes: turnFrameTimes,
+        shellFrameTaskIds: turnShellTaskIds,
+      });
     }
   }
-  const deliveredBlocks = blocks.flatMap((block): Block[] => {
-    if (deliveryBlocks.has(block)) return [block];
-    if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
-    const first = prompts.find((prompt) => prompt.promptId === block.userMessageId && prompt.steeredAt !== undefined);
-    if (first === undefined) return [block];
-    const batch = prompts.filter((prompt) => prompt.steeredAt === first.steeredAt && prompt.status === 'completed');
-    if (batch.length < 2 || batch[0]?.promptId !== first.promptId ||
-      batch.slice(1).some((prompt) => blocks.some((candidate) => !deliveryBlocks.has(candidate) && candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
-    const parts = batch.map((prompt) => promptContentParts(prompt.content));
-    const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
-    if (combined !== block.text) return [block];
-    return batch.map((prompt, index) => {
-      const projection = projectMessageContent(parts[index]!);
-      return { ...block, id: `user-${prompt.userMessageId ?? prompt.promptId}`,
-        text: projection.text, presentation: projection.presentation, media: projection.media.length > 0 ? projection.media : undefined,
-        userMessageId: prompt.userMessageId ?? prompt.promptId, promptId: prompt.promptId,
-        contentSource: { kind: 'prompt', id: prompt.promptId },
-      };
+  for (const { item, task } of pendingShellTaskRefs) {
+    if (shellFrameTaskIds.has(task.taskId)) continue;
+    deferredTaskBlocks.push({
+      kind: 'shell',
+      id: `shell-${task.taskId}`,
+      commandId: task.taskId,
+      command: task.command,
+      commandTaskId: task.taskId,
+      turnId: normalizeTurnId(task.ownerTurnId),
+      output: task.outputTail,
+      outputTaskId: task.taskId,
+      outputDetail: task.detailRef === undefined ? undefined : { agentId: response.agent_id, taskId: task.taskId },
+      done: task.state !== 'running',
+      isError:
+        task.state === 'failed' ||
+        task.state === 'timed_out' ||
+        task.state === 'killed' ||
+        task.state === 'lost',
+      startedAt: timestampMs(item.at ?? task.startedAt),
     });
-  });
-  // Page-global delivery echoes yield to canonical rows, including absorbed prompts.
-  const turnBlockIds = new Set(deliveredBlocks.filter((block) => !deliveryBlocks.has(block)).map((block) => block.id));
-  const canonicalDeliveries = [...deliveredBlocks.filter((block) => !deliveryBlocks.has(block) || !turnBlockIds.has(block.id))];
-  const frameTimes = new Map<string, number>();
-  const sourceItems = [...response.items];
-  const turns = sourceItems.filter((item): item is Extract<typeof item, { kind: 'turn' }> => item.kind === 'turn');
-  for (const turn of turns) {
-    for (const step of turn.steps) {
-      for (const frame of step.frames) {
-        const at = timestampMs('startedAt' in frame ? frame.startedAt : step.startedAt) ?? timestampMs(step.startedAt);
-        if (at !== undefined) frameTimes.set(frame.frameId, at);
+  }
+  const steeredPromptsById = new Map<string, TranscriptPrompt>();
+  const completedSteerBatches = new Map<string, TranscriptPrompt[]>();
+  for (const prompt of prompts) {
+    if (prompt.steeredAt === undefined) continue;
+    if (!steeredPromptsById.has(prompt.promptId)) steeredPromptsById.set(prompt.promptId, prompt);
+    if (prompt.status === 'completed') {
+      const batch = completedSteerBatches.get(prompt.steeredAt);
+      if (batch === undefined) completedSteerBatches.set(prompt.steeredAt, [prompt]);
+      else batch.push(prompt);
+    }
+  }
+  let turnUserMessageIds: Set<string> | undefined;
+  if (completedSteerBatches.size > 0) {
+    turnUserMessageIds = new Set<string>();
+    for (const candidate of blocks) {
+      if (!deliveryBlocks.has(candidate) && candidate.kind === 'user' && candidate.turnId !== undefined && candidate.userMessageId !== undefined) {
+        turnUserMessageIds.add(candidate.userMessageId);
       }
     }
   }
-  const ordinalOf = (turn: (typeof turns)[number]) => 'ordinal' in turn ? turn.ordinal : Number(turn.turnId.replace(/^t/, ''));
-  const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
-    first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
-  const firstAt = timestampMs(firstTurn?.startedAt);
-  const sourceTimes = new Map<Block, number | undefined>();
-  const sourceTime = (block: Block): number | undefined => {
-    if (!sourceTimes.has(block)) sourceTimes.set(block, 'frameId' in block && block.frameId !== undefined
-      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
-    return sourceTimes.get(block);
-  };
-  const sourceTimestamps = new Set(canonicalDeliveries.map(sourceTime).filter((time) => time !== undefined));
-  const nextSourceTurns = new Map<string, string | undefined>();
-  let nextTurnId: string | undefined;
-  for (let index = sourceItems.length - 1; index >= 0; index -= 1) {
-    const item = sourceItems[index]!;
-    if (item.kind === 'turn') nextTurnId = item.turnId;
-    else if (item.kind === 'marker') {
-      nextSourceTurns.set(`agent-marker-${item.markerId}`, nextTurnId);
-      const messageId = typeof item.payload === 'object' && item.payload !== null
-        ? recordString(item.payload as Record<string, unknown>, 'messageId') : undefined;
-      if (messageId !== undefined) nextSourceTurns.set(`user-${messageId}`, nextTurnId);
-    }
+  const deliveredBlocks = completedSteerBatches.size === 0
+    ? blocks
+    : blocks.flatMap((block): Block[] => {
+        if (deliveryBlocks.has(block)) return [block];
+        if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
+        const first = steeredPromptsById.get(block.userMessageId);
+        if (first?.steeredAt === undefined) return [block];
+        const batch = completedSteerBatches.get(first.steeredAt);
+        if (batch === undefined || batch.length < 2 || batch[0]?.promptId !== first.promptId ||
+          batch.slice(1).some((prompt) => turnUserMessageIds!.has(prompt.promptId))) return [block];
+        const parts = batch.map((prompt) => promptContentParts(prompt.content));
+        const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
+        if (combined !== block.text) return [block];
+        return batch.map((prompt, index) => {
+          const projection = projectMessageContent(parts[index]!);
+          return { ...block, id: `user-${prompt.userMessageId ?? prompt.promptId}`,
+            text: projection.text, presentation: projection.presentation, media: projection.media.length > 0 ? projection.media : undefined,
+            userMessageId: prompt.userMessageId ?? prompt.promptId, promptId: prompt.promptId,
+            contentSource: { kind: 'prompt', id: prompt.promptId },
+          };
+        });
+      });
+  // Page-global delivery echoes yield to canonical rows, including absorbed prompts.
+  const turnBlockIds = new Set<string>();
+  for (const block of deliveredBlocks) {
+    if (!deliveryBlocks.has(block)) turnBlockIds.add(block.id);
   }
-  const firstBlockByTurn = new Map<string, Block>();
-  const promptIdentities = new Set<string>();
-  for (const prompt of prompts) {
-    for (const id of [prompt.promptId, prompt.userMessageId]) {
-      if (id !== undefined) promptIdentities.add(id);
+  const baseDeliveries = deliveredBlocks.filter((block) => !deliveryBlocks.has(block) || !turnBlockIds.has(block.id));
+  let canonicalDeliveries: Block[];
+  if (markerBlocks.length === 0) {
+    canonicalDeliveries = baseDeliveries;
+  } else {
+    const firstAt = timestampMs(firstTurn?.startedAt);
+    const firstTurnOrdinal = firstTurn === undefined ? 0 : ordinalOf(firstTurn);
+    const sourceTimes = new Map<Block, number | undefined>();
+    const sourceTime = (block: Block): number | undefined => {
+      if (!sourceTimes.has(block)) sourceTimes.set(block, 'frameId' in block && block.frameId !== undefined
+        ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
+      return sourceTimes.get(block);
+    };
+    const baseSourceTimes = new Array<number | undefined>(baseDeliveries.length);
+    const sourceTimestamps = new Set<number>();
+    const turnStartIndex = new Map<string, number>();
+    const turnEndIndex = new Map<string, number>();
+    const promptIdentities = new Set<string>();
+    for (const prompt of prompts) {
+      if (prompt.promptId !== undefined) promptIdentities.add(prompt.promptId);
+      if (prompt.userMessageId !== undefined) promptIdentities.add(prompt.userMessageId);
     }
-  }
-  for (const block of canonicalDeliveries) {
-    const turnId = normalizeTurnId(blockTurnId(block));
-    if (turnId !== undefined && !firstBlockByTurn.has(turnId)) firstBlockByTurn.set(turnId, block);
-    if (block.kind === 'user') for (const id of [block.promptId, block.userMessageId]) {
-      if (id !== undefined) promptIdentities.add(id);
-    }
-  }
-  const firstPosition = (turnId: string | undefined): number => {
-    const first = turnId === undefined ? undefined : firstBlockByTurn.get(normalizeTurnId(turnId)!);
-    return first === undefined ? -1 : canonicalDeliveries.indexOf(first);
-  };
-  const projectedIds = new Set(canonicalDeliveries.map((block) => block.id));
-  for (const marker of markerBlocks.toSorted((left, right) => sourceTime(left)! - sourceTime(right)!)) {
-    if (deliveryBlocks.has(marker) && projectedIds.has(marker.id)) continue;
-    const at = sourceTime(marker)!;
-    const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
-    const ownsLoadedPrompt = promptOwner !== undefined && promptIdentities.has(promptOwner);
-    if (!ownsLoadedPrompt && firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
-    const owner = normalizeTurnId(blockTurnId(marker));
-    const ownerStart = firstPosition(owner);
-    const next = canonicalDeliveries.findIndex((block, index) => {
-      if (ownerStart >= 0 && index < ownerStart) return false;
+    const projectedIds = new Set<string>();
+    for (let index = 0; index < baseDeliveries.length; index += 1) {
+      const block = baseDeliveries[index]!;
+      projectedIds.add(block.id);
       const time = sourceTime(block);
-      return time !== undefined && time > at;
-    });
-    const structural = firstPosition(nextSourceTurns.get(marker.id));
-    const insertion = (sourceTimestamps.has(at) || sourceTimestamps.size === 0) && structural >= 0 ? structural : next;
-    const position = insertion < 0 ? canonicalDeliveries.length : insertion;
-    canonicalDeliveries.splice(position, 0, marker);
-    if (owner !== undefined && (ownerStart < 0 || position <= ownerStart)) firstBlockByTurn.set(owner, marker);
-    if (marker.kind === 'user') for (const id of [marker.promptId, marker.userMessageId]) {
-      if (id !== undefined) promptIdentities.add(id);
+      baseSourceTimes[index] = time;
+      if (time !== undefined) sourceTimestamps.add(time);
+      const turnId = normalizeTurnId(blockTurnId(block));
+      if (turnId !== undefined) {
+        if (!turnStartIndex.has(turnId)) turnStartIndex.set(turnId, index);
+        turnEndIndex.set(turnId, index);
+      }
+      if (block.kind === 'user') {
+        if (block.promptId !== undefined) promptIdentities.add(block.promptId);
+        if (block.userMessageId !== undefined) promptIdentities.add(block.userMessageId);
+      }
     }
-    sourceTimestamps.add(at);
-    projectedIds.add(marker.id);
+    const nextSourceTurns = new Map<string, string | undefined>();
+    let nextTurnId: string | undefined;
+    for (let index = response.items.length - 1; index >= 0; index -= 1) {
+      const item = response.items[index]!;
+      if (item.kind === 'turn') nextTurnId = item.turnId;
+      else if (item.kind === 'marker') {
+        nextSourceTurns.set(`agent-marker-${item.markerId}`, nextTurnId);
+        const messageId = typeof item.payload === 'object' && item.payload !== null
+          ? recordString(item.payload as Record<string, unknown>, 'messageId') : undefined;
+        if (messageId !== undefined) nextSourceTurns.set(`user-${messageId}`, nextTurnId);
+      }
+    }
+    const firstTurnPosition = (turnId: string | undefined): number => {
+      if (turnId === undefined) return -1;
+      const normalized = normalizeTurnId(turnId);
+      if (normalized === undefined) return -1;
+      return turnStartIndex.get(normalized) ?? -1;
+    };
+    const markerInsertions = new BucketedInsertionList(baseDeliveries);
+    let globalNextCursor = 0;
+    const ownerNextCursor = new Map<string, number>();
+    for (const marker of markerBlocks.toSorted((left, right) => sourceTime(left)! - sourceTime(right)!)) {
+      if (deliveryBlocks.has(marker) && projectedIds.has(marker.id)) continue;
+      const at = sourceTime(marker)!;
+      const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
+      const ownsLoadedPrompt = promptOwner !== undefined && promptIdentities.has(promptOwner);
+      if (!ownsLoadedPrompt && firstTurn !== undefined && firstTurnOrdinal > 0 && firstAt !== undefined && at < firstAt) continue;
+      while (globalNextCursor < baseDeliveries.length) {
+        const time = baseSourceTimes[globalNextCursor];
+        if (time !== undefined && time > at) break;
+        globalNextCursor += 1;
+      }
+      const owner = normalizeTurnId(blockTurnId(marker));
+      const ownerStart = firstTurnPosition(owner);
+      let nextSlot: number;
+      if (ownerStart < 0 || globalNextCursor >= ownerStart) {
+        nextSlot = globalNextCursor < baseDeliveries.length ? globalNextCursor : -1;
+      } else {
+        let cursor = Math.max(ownerStart, ownerNextCursor.get(owner!) ?? ownerStart);
+        const ownerEnd = turnEndIndex.get(owner!) ?? baseDeliveries.length - 1;
+        while (cursor <= ownerEnd) {
+          const time = baseSourceTimes[cursor];
+          if (time !== undefined && time > at) break;
+          cursor += 1;
+        }
+        if (cursor <= ownerEnd) {
+          ownerNextCursor.set(owner!, cursor);
+          nextSlot = cursor;
+        } else {
+          ownerNextCursor.set(owner!, cursor);
+          while (cursor < baseDeliveries.length) {
+            const time = baseSourceTimes[cursor];
+            if (time !== undefined && time > at) break;
+            cursor += 1;
+          }
+          ownerNextCursor.set(owner!, cursor);
+          nextSlot = cursor < baseDeliveries.length ? cursor : -1;
+        }
+      }
+      const structural = firstTurnPosition(nextSourceTurns.get(marker.id));
+      const insertion = (sourceTimestamps.has(at) || sourceTimestamps.size === 0) && structural >= 0 ? structural : nextSlot;
+      const slot = insertion < 0 ? baseDeliveries.length : insertion;
+      markerInsertions.insertBefore(slot, marker);
+      if (owner !== undefined && (ownerStart < 0 || slot < ownerStart)) {
+        turnStartIndex.set(owner, slot);
+      }
+      if (marker.kind === 'user') {
+        if (marker.promptId !== undefined) promptIdentities.add(marker.promptId);
+        if (marker.userMessageId !== undefined) promptIdentities.add(marker.userMessageId);
+      }
+      sourceTimestamps.add(at);
+      projectedIds.add(marker.id);
+    }
+    canonicalDeliveries = markerInsertions.materialize();
   }
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items)];
-  for (const block of deferredTaskBlocks) {
-    if (
-      blockTimelineMs(block) === undefined &&
-      insertAtPreviousPosition(withTaskBlocks, block, previous)
-    ) {
-      continue;
+  const mergedPromptBlocks = mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items);
+  let withTaskBlocks: Block[];
+  if (deferredTaskBlocks.length === 0) {
+    withTaskBlocks = mergedPromptBlocks;
+  } else {
+    const lastSlotById = new Map<string, number>();
+    for (let index = 0; index < mergedPromptBlocks.length; index += 1) {
+      lastSlotById.set(mergedPromptBlocks[index]!.id, index);
     }
-    insertByTimeline(withTaskBlocks, block);
+    const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
+    const taskInsertionList = new BucketedInsertionList(mergedPromptBlocks);
+    const timedTasks: Block[] = [];
+    for (const block of deferredTaskBlocks) {
+      if (
+        blockTimelineMs(block) === undefined &&
+        taskInsertionList.insertPreviousPosition(previousIndex, block, true)
+      ) {
+        continue;
+      }
+      timedTasks.push(block);
+    }
+    withTaskBlocks = taskInsertionList.materialize(timedTasks, compareTimedBlocks);
   }
   const projectedSubagents = subagentBlocksFromSnapshot(response, response.agent_id);
   const targetsByTool = new Map<string, Set<string>>();
