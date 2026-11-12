@@ -13,13 +13,18 @@ import {
   HostFileEditorController,
   type HostFileEditorSnapshot,
 } from '#/state/hostFileEditor';
-import type { PreviewReadState } from '#/state/previewResource';
+import {
+  resourceReadOnlyReason,
+  type PreviewReadState,
+} from '#/state/previewResource';
 import { CodeEditor } from '../CodeEditor';
 import { Icon } from '../icons';
 import { Markdown } from '../Markdown';
 import { HeaderFileActions } from './ResourceHeader';
 import {
+  buildFileTabResource,
   classifyHtmlPreviewError,
+  isLocalKikiComputer,
   SandboxedHtmlPreview,
   type HtmlPreviewState,
 } from './shared';
@@ -40,12 +45,16 @@ interface HtmlRootDraftState {
 const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
   status: 'loading',
   error: undefined,
+  failureReason: undefined,
   savedText: '',
   draft: '',
+  editing: false,
   dirty: false,
   saving: false,
   conflict: false,
   oversized: false,
+  lossless: true,
+  etag: undefined,
   generation: 0,
   lastSavedAt: undefined,
 };
@@ -76,9 +85,10 @@ export function TextTabView({
   readonly onReadingReady: () => void;
 }) {
   const host = useHost();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const localKikiComputer = isLocalKikiComputer(connection);
   const remoteBrokerHtmlScope = connection?.connectionSource === 'remote';
   const html = isHtmlPreviewPath(path);
   const hasRenderedMode = markdown || html;
@@ -171,8 +181,9 @@ export function TextTabView({
     }
     const next = new HostFileEditorController({
       path,
-      readFile: (target) => client.previewHostFile(target),
+      readFile: (target, options) => client.previewHostFile(target, undefined, options),
       writeFile: host.writeFileText,
+      local: localKikiComputer,
     });
     setController(next);
     void next.load();
@@ -180,7 +191,7 @@ export function TextTabView({
       next.dispose();
       setController(null);
     };
-  }, [client, host, path]);
+  }, [client, host, localKikiComputer, path]);
 
   const subscribe = useMemo(
     () => controller?.subscribe ?? (() => () => {}),
@@ -196,19 +207,24 @@ export function TextTabView({
   const textReadFailed = html
     ? snap.status === 'error' && htmlPreviewState.status === 'error'
     : snap.status === 'error';
-  useEffect(() => {
+  const currentReadState = useMemo<PreviewReadState>(() => {
     const status = textReadFailed
       ? 'failed'
       : snap.status === 'ready' || (html && htmlPreviewState.status === 'ready')
         ? 'ready'
         : 'loading';
-    onReadStateChange?.({
+    return {
       status,
+      losslessUtf8: snap.lossless,
       truncated: snap.oversized,
-      readableFromDevice: status !== 'failed',
-      originalReadable: status !== 'failed',
-    });
-  }, [textReadFailed, snap.status, snap.oversized, html, htmlPreviewState.status, onReadStateChange]);
+      readableFromDevice: status !== 'failed' && snap.failureReason !== 'remote-unreadable',
+      originalReadable: status !== 'failed' && snap.failureReason !== 'remote-unreadable',
+      failureReason: status === 'failed' ? snap.failureReason : undefined,
+    };
+  }, [textReadFailed, snap.status, snap.lossless, snap.oversized, snap.failureReason, html, htmlPreviewState.status]);
+  useEffect(() => {
+    onReadStateChange?.(currentReadState);
+  }, [currentReadState, onReadStateChange]);
   useEffect(() => {
     setLoadingFull(false);
     setFullError(false);
@@ -227,6 +243,20 @@ export function TextTabView({
 
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
+  const editing = snap.editing;
+  const readOnlyReason = useMemo(() => {
+    if (snap.status !== 'ready') return undefined;
+    const resource = buildFileTabResource(path, workspaceRoot, snap.lossless);
+    const reason = resourceReadOnlyReason(
+      resource,
+      {
+        isKikiComputer: localKikiComputer,
+        capabilities: { write: host.writeFileText !== undefined },
+      },
+      currentReadState,
+    );
+    return reason === undefined ? undefined : locale === 'zh' ? reason.zh : reason.en;
+  }, [currentReadState, host.writeFileText, localKikiComputer, locale, path, snap.lossless, snap.status, workspaceRoot]);
   const showEditor = !hasRenderedMode || mode === 'source';
   const [sourceMounted, setSourceMounted] = useState(!hasRenderedMode);
   useEffect(() => { if (showEditor) setSourceMounted(true); }, [showEditor]);
@@ -398,16 +428,38 @@ export function TextTabView({
                   : ''}
           </span>
         ) : null}
-        {editable ? (
-          <button
-            type="button"
-            data-save-button
-            disabled={!snap.dirty || snap.saving}
-            onClick={() => { void controller?.saveNow(); }}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+        {editable && snap.status === 'ready' ? (
+          editing ? (
+            <button
+              type="button"
+              data-save-button
+              disabled={!snap.dirty || snap.saving}
+              onClick={() => { void controller?.saveNow(); }}
+              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+            >
+              {t('preview.save')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-edit-button
+              onClick={() => {
+                if (controller?.beginEdit() === true && hasRenderedMode) {
+                  setMode('source');
+                }
+              }}
+              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            >
+              {t('preview.edit')}
+            </button>
+          )
+        ) : readOnlyReason !== undefined ? (
+          <span
+            data-readonly-reason
+            className="shrink-0 text-[11px] text-ink-faint"
           >
-            {t('preview.save')}
-          </button>
+            {readOnlyReason}
+          </span>
         ) : null}
         <HeaderFileActions path={path} name={name} canDownload={!textReadFailed} />
       </div>
@@ -455,7 +507,7 @@ export function TextTabView({
           </button>
         </div>
       ) : null}
-      {!editable && snap.status === 'ready' ? (
+      {!editable && snap.status === 'ready' && ((snap.oversized && fullText === undefined && !html) || readOnlyReason === undefined) ? (
         <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[11px] ${
           snap.oversized && fullText === undefined && !html
             ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
@@ -501,7 +553,7 @@ export function TextTabView({
                       value={fullText ?? snap.draft}
                       generation={snap.generation}
                       navigation={showEditor ? navigation : undefined}
-                      readOnly={!editable}
+                      readOnly={!editing}
                       onChange={(text) => { controller?.setDraft(text); }}
                       onSaveShortcut={() => { void controller?.saveNow(); }}
                       ariaLabel={t('preview.openFile', { name })}

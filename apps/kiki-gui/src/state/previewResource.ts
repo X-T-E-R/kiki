@@ -572,16 +572,27 @@ export function resourceReadOnlyReason(
     resource.source.kind !== 'host-file' ||
     !environment.isKikiComputer ||
     environment.capabilities.write !== true ||
-    readState.status !== 'ready' ||
-    !TEXT_LIKE_TYPES.has(resource.type)
+    readState.status !== 'ready'
   ) {
     return undefined;
   }
-  if (readState.losslessUtf8 === false) {
-    return { zh: '只读：不是 UTF-8 文本', en: 'Read-only: not UTF-8 text' };
+  if (TEXT_LIKE_TYPES.has(resource.type)) {
+    if (readState.losslessUtf8 === false) {
+      return { zh: '只读：不是 UTF-8 文本', en: 'Read-only: not UTF-8 text' };
+    }
+    if (readState.truncated === true) {
+      return { zh: '只读：文件过大', en: 'Read-only: file too large' };
+    }
+    return undefined;
   }
-  if (readState.truncated === true) {
-    return { zh: '只读：文件过大', en: 'Read-only: file too large' };
+  if (resource.type === 'unsupported') {
+    if (readState.losslessUtf8 === false) {
+      return { zh: '只读：不是 UTF-8 文本', en: 'Read-only: not UTF-8 text' };
+    }
+    if (readState.truncated === true) {
+      return { zh: '只读：文件过大', en: 'Read-only: file too large' };
+    }
+    return { zh: '只读：未知文件类型', en: 'Read-only: unknown file type' };
   }
   return undefined;
 }

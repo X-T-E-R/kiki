@@ -85,13 +85,23 @@ export function usePreviewEnvironment(sessionId: string | undefined): PreviewEnv
   );
 }
 
-export function buildFileTabResource(path: string, cwd: string | undefined): PreviewResource {
+export function buildFileTabResource(
+  path: string,
+  cwd: string | undefined,
+  losslessUtf8?: boolean,
+): PreviewResource {
   const resolved = resolveHostPath(path, cwd);
   const name = basenameOf(resolved);
+  const head =
+    losslessUtf8 === undefined
+      ? undefined
+      : losslessUtf8
+        ? new Uint8Array([0x61])
+        : new Uint8Array([0xff]);
   return {
     source: { kind: 'host-file', path: resolved },
     origin: { path: resolved, trusted: true },
-    type: classifyResource({ name }),
+    type: classifyResource({ name, head }),
     name,
   };
 }

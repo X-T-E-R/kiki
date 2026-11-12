@@ -13283,4 +13283,8 @@ export const zh = {
   'preview.moreActions': '更多操作',
   'preview.agentFallback': 'Agent：{name}',
   'preview.agentTabTitle': 'Agent：{name} ({id})',
+  'preview.edit': '编辑',
+  'preview.readOnlyNotUtf8': '只读：不是 UTF-8 文本',
+  'preview.readOnlyTooLarge': '只读：文件过大',
+  'preview.readOnlyUnknownType': '只读：未知文件类型',
 };

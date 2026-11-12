@@ -2182,7 +2182,11 @@ export class KikiClient {
     return this.run(this.rest.skills.installHost(host, skill, revision));
   }
 
-  async previewHostFile(path: string, maxBytes = 512_001, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<{ text: string; truncated: boolean }> {
+  async previewHostFile(
+    path: string,
+    maxBytes = 512_001,
+    options?: import('@kiki/klient').HttpRestPreviewHostFileOptions,
+  ): Promise<import('@kiki/klient').HttpRestPreviewHostFileResult> {
     return this.run(this.rest.filesystem.previewHostFile(path, maxBytes, { ...this.readingOptions(), ...options }));
   }
 

@@ -67,7 +67,7 @@ export function TabContextMenu({
   if (tab.kind === 'file' || tab.kind === 'attachment') {
     const resource =
       tab.kind === 'file'
-        ? buildFileTabResource(tab.path, cwd)
+        ? buildFileTabResource(tab.path, cwd, readState?.losslessUtf8)
         : buildAttachmentTabResource(
             tab.item,
             tab.sessionId ?? sessionId,

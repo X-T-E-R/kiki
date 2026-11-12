@@ -487,6 +487,9 @@ describe('PreviewWorkspace', () => {
     expect(tabs()).toEqual([expected]);
     const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
     expect(editor.value).toBe(FILES[expected]);
+    expect(editor.readOnly).toBe(true);
+    await act(async () => { workspace().querySelector('[data-edit-button]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(editor.readOnly).toBe(false);
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'edited correct file');
       editor.dispatchEvent(new Event('input', { bubbles: true }));
@@ -736,6 +739,13 @@ describe('PreviewWorkspace', () => {
     );
     await openFile(probe.container, '/work/src/server.ts');
     const editor = workspace().querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
+    expect(editor.readOnly).toBe(true);
+    expect(workspace().querySelector('[data-save-button]')).toBeNull();
+    await act(async () => {
+      workspace()
+        .querySelector('[data-edit-button]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     expect(editor.readOnly).toBe(false);
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
@@ -811,6 +821,11 @@ describe('PreviewWorkspace', () => {
       );
       await openFile(probe.container, '/work/src/server.ts');
       const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+      await act(async () => {
+        workspace()
+          .querySelector('[data-edit-button]')!
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
       await act(async () => {
         const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
         setter.call(editor, 'autosaved while hidden');
@@ -909,6 +924,11 @@ describe('PreviewWorkspace', () => {
     );
     await openFile(probe.container, '/work/src/server.ts');
     const editor = workspace().querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
+    await act(async () => {
+      workspace()
+        .querySelector('[data-edit-button]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
       setter.call(editor, 'my edit');
@@ -2689,5 +2709,78 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     expect(probe.container.querySelector('[data-preview-attachment-error]')).not.toBeNull();
     expect(probe.container.querySelector('[data-download-file]')).toBeNull();
     expect(probe.container.querySelector('[data-mention-file]')).toBeNull();
+  });
+
+  it('gates desktop editing behind Edit and shows read-only reasons for non-UTF-8, truncated, or unknown extension-less files while hiding Edit on SSH (#31)', async () => {
+    const baseClient = connectionMock.defaultClient as {
+      previewHostFile: (path: string) => Promise<{ text: string; truncated: boolean; lossless?: boolean }>;
+      [key: string]: unknown;
+    };
+    connectionMock.activeClient = {
+      ...baseClient,
+      previewHostFile: (path: string) => {
+        if (path === '/work/legacy-gbk.txt') {
+          return Promise.resolve({ text: '\ufffd\ufffd', truncated: false, lossless: false });
+        }
+        if (path === '/work/elf-bin') {
+          return Promise.resolve({ text: '\x7fELF\ufffd', truncated: false, lossless: false });
+        }
+        if (path === '/work/Makefile') {
+          return Promise.resolve({ text: 'all:\n\techo ok\n', truncated: false, lossless: true });
+        }
+        return baseClient.previewHostFile(path);
+      },
+    };
+    hostMock.desktop = true;
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-edit">
+        <OpenButton path="/work/legacy-gbk.txt" />
+        <OpenButton path="/work/elf-bin" />
+        <OpenButton path="/work/Makefile" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/legacy-gbk.txt');
+    await settle();
+    const gbkPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/legacy-gbk.txt"]')!;
+    expect(gbkPanel.querySelector('[data-edit-button]')).toBeNull();
+    expect(gbkPanel.querySelector('[data-save-button]')).toBeNull();
+    expect(gbkPanel.querySelector('[data-readonly-reason]')?.textContent).toBe('Read-only: not UTF-8 text');
+    expect(gbkPanel.textContent).not.toContain('Open in the desktop app to edit.');
+
+    await openFile(probe.container, '/work/elf-bin');
+    await settle();
+    const elfPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/elf-bin"]')!;
+    expect(elfPanel.querySelector('[data-edit-button]')).toBeNull();
+    expect(elfPanel.querySelector('[data-readonly-reason]')?.textContent).toBe('Read-only: not UTF-8 text');
+
+    await openFile(probe.container, '/work/Makefile');
+    await settle();
+    const makePanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/Makefile"]')!;
+    expect(makePanel.querySelector('[data-edit-button]')?.textContent).toBe('Edit');
+    expect(makePanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.readOnly).toBe(true);
+    await act(async () => {
+      makePanel.querySelector<HTMLButtonElement>('[data-edit-button]')!.click();
+    });
+    expect(makePanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.readOnly).toBe(false);
+    expect(makePanel.querySelector('[data-save-button]')).not.toBeNull();
+
+    // SSH space never shows Edit or desktop read-only reason
+    connectionMock.scopeId = 'ssh:dev-box';
+    localStorage.setItem('kiki.locale', 'zh');
+    const sshProbe = makeRoot();
+    await renderSettled(
+      sshProbe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-ssh">
+        <OpenButton path="/work/src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(sshProbe.container, '/work/src/server.ts');
+    await settle();
+    expect(sshProbe.container.querySelector('[data-edit-button]')).toBeNull();
+    expect(sshProbe.container.querySelector('[data-save-button]')).toBeNull();
+    expect(sshProbe.container.querySelector('[data-readonly-reason]')).toBeNull();
   });
 });

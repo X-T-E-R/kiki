@@ -154,7 +154,7 @@ describe('KikiClient skill and text preview reading options', () => {
     const rest = client.klient.rest;
     if (rest === undefined) throw new Error('HTTP client must expose its REST facade');
     const builtin = vi.spyOn(rest.skills, 'readBuiltinContent').mockResolvedValue({ name: 'example', content: '# skill' });
-    const preview = vi.spyOn(rest.filesystem, 'previewHostFile').mockResolvedValue({ text: 'preview', truncated: true });
+    const preview = vi.spyOn(rest.filesystem, 'previewHostFile').mockResolvedValue({ text: 'preview', truncated: true, lossless: true });
     const original = vi.spyOn(rest.filesystem, 'readHostFile').mockResolvedValue('complete');
     const controller = new AbortController();
     try {

@@ -1124,7 +1124,7 @@ describe('HTTP REST domains', () => {
     const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
     try {
       await expect(channel.rest.filesystem.previewHostFile('/tmp/large.txt', 8)).resolves.toEqual({
-        text: 'abcdefgh', truncated: true,
+        text: 'abcdefgh', truncated: true, lossless: true, etag: undefined,
       });
       const media = await channel.rest.sessions.media('s1', 'f1', { ifNoneMatch: '"cached"' });
       expect(media.notModified).toBe(true);
@@ -1373,7 +1373,7 @@ describe('native HTTP response lifecycle', () => {
       later(() => response.end(document.slice(1)), 180);
     };
     const result = await read({ timeoutMs: 0 });
-    expect(result).toEqual(kind === 'skill' ? { name: 'example', content: '# instructions' } : kind === 'preview' ? { text: 'preview!', truncated: true } : 'preview!');
+    expect(result).toEqual(kind === 'skill' ? { name: 'example', content: '# instructions' } : kind === 'preview' ? { text: 'preview!', truncated: true, lossless: true, etag: undefined } : 'preview!');
     await expect(read({ timeoutMs: 10 })).rejects.toMatchObject({ reason: HTTP_TRANSPORT_TIMEOUT_REASON });
     let notifyHeaders!: () => void;
     const headers = new Promise<void>((resolve) => { notifyHeaders = resolve; });
@@ -1698,4 +1698,106 @@ it('carries IM setup and real channel preferences through authenticated REST', a
       { path: '/api/im/sessions/targets/session%2Fexample/notify/channel%2Fexample', method: 'DELETE', body: undefined },
     ]);
   } finally { await channel.close(); }
+});
+
+describe('filesystem.previewHostFile (#31)', () => {
+  it('reports lossless UTF-8, GBK, and ELF headers accurately, carries etag/304, and preserves error codes', async () => {
+    const utf8Bytes = new TextEncoder().encode('你好，Kiki!\n');
+    const gbkBytes = new Uint8Array([0xc4, 0xe3, 0xba, 0xc3]);
+    const elfBytes = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      const path = url.searchParams.get('path');
+      const headers = new Headers(init?.headers);
+      if (path === '/work/hello.ts') {
+        if (headers.get('if-none-match') === '"etag-utf8"') {
+          return new Response(null, { status: 304, headers: { etag: '"etag-utf8"' } });
+        }
+        return new Response(utf8Bytes, {
+          status: 206,
+          headers: {
+            'content-type': 'text/plain; charset=utf-8',
+            'content-range': `bytes 0-${utf8Bytes.byteLength - 1}/${utf8Bytes.byteLength}`,
+            etag: '"etag-utf8"',
+          },
+        });
+      }
+      if (path === '/work/gbk.txt') {
+        return new Response(gbkBytes, {
+          status: 206,
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-range': `bytes 0-${gbkBytes.byteLength - 1}/1024`,
+            etag: '"etag-gbk"',
+          },
+        });
+      }
+      if (path === '/work/bin') {
+        return new Response(elfBytes, {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream', etag: '"etag-elf"' },
+        });
+      }
+      if (path === '/work/missing.ts') {
+        return new Response(JSON.stringify({ code: 40409, msg: 'path not found', data: null }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (path === '/work/secret.ts') {
+        return new Response(JSON.stringify({ code: 40411, msg: 'permission denied', data: null }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (path === '/work/dir') {
+        return new Response(JSON.stringify({ code: 40906, msg: 'path is a directory', data: null }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ code: 40101, msg: 'local_owner_required', data: null }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock });
+    try {
+      const utf8 = await channel.rest.filesystem.previewHostFile('/work/hello.ts', 512);
+      expect(utf8).toEqual({
+        text: '你好，Kiki!\n',
+        truncated: false,
+        lossless: true,
+        etag: '"etag-utf8"',
+      });
+
+      const notModified = await channel.rest.filesystem.previewHostFile('/work/hello.ts', 512, { ifNoneMatch: '"etag-utf8"' });
+      expect(notModified).toEqual({
+        text: '',
+        truncated: false,
+        lossless: true,
+        etag: '"etag-utf8"',
+        notModified: true,
+      });
+
+      const gbk = await channel.rest.filesystem.previewHostFile('/work/gbk.txt', 512);
+      expect(gbk.lossless).toBe(false);
+      expect(gbk.truncated).toBe(true);
+      expect(gbk.etag).toBe('"etag-gbk"');
+      expect(gbk.text).toContain('\ufffd');
+
+      const elf = await channel.rest.filesystem.previewHostFile('/work/bin', 512);
+      expect(elf.lossless).toBe(false);
+      expect(elf.truncated).toBe(false);
+      expect(elf.etag).toBe('"etag-elf"');
+
+      await expect(channel.rest.filesystem.previewHostFile('/work/missing.ts', 512)).rejects.toMatchObject({ code: 40409 });
+      await expect(channel.rest.filesystem.previewHostFile('/work/secret.ts', 512)).rejects.toMatchObject({ code: 40411 });
+      await expect(channel.rest.filesystem.previewHostFile('/work/dir', 512)).rejects.toMatchObject({ code: 40906 });
+      await expect(channel.rest.filesystem.previewHostFile('/work/remote', 512)).rejects.toMatchObject({ code: 40101, message: 'local_owner_required' });
+    } finally {
+      await channel.close();
+    }
+  });
 });

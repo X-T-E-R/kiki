@@ -21,6 +21,8 @@ export type {
   HttpRestListSessionsQuery,
   HttpRestPluginMarketplaceEntry,
   HttpRestPluginMarketplaceResponse,
+  HttpRestPreviewHostFileOptions,
+  HttpRestPreviewHostFileResult,
   HttpRestRequestOptions,
   HttpRestSearchMessageHit,
   HttpRestSearchMessagesBody,

@@ -13377,4 +13377,8 @@ export const en = {
   'preview.moreActions': 'More actions',
   'preview.agentFallback': 'Agent: {name}',
   'preview.agentTabTitle': 'Agent: {name} ({id})',
+  'preview.edit': 'Edit',
+  'preview.readOnlyNotUtf8': 'Read-only: not UTF-8 text',
+  'preview.readOnlyTooLarge': 'Read-only: file too large',
+  'preview.readOnlyUnknownType': 'Read-only: unknown file type',
 } as const;

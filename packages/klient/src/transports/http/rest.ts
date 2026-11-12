@@ -5,6 +5,7 @@ import type {
   HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
+  HttpRestPreviewHostFileOptions,
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
@@ -714,14 +715,16 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'GET', query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs },
         (response) => response.text(),
       ),
-      previewHostFile: (path: string, maxBytes: number, options?: HttpRestRequestOptions) => transport.raw(
+      previewHostFile: (path: string, maxBytes: number, options?: HttpRestPreviewHostFileOptions) => transport.raw(
         '/fs:content',
-        { method: 'GET', query: { path }, headers: { range: `bytes=0-${maxBytes - 1}` }, signal: options?.signal, timeoutMs: options?.timeoutMs },
-        async (response) => ({
-          text: await response.text(),
-          truncated: response.status === 206 &&
-            Number(response.headers.get('content-range')?.split('/')[1]) > maxBytes,
-        }),
+        {
+          method: 'GET',
+          query: { path },
+          headers: previewHostFileHeaders(maxBytes, options?.ifNoneMatch),
+          signal: options?.signal,
+          timeoutMs: options?.timeoutMs,
+        },
+        decodePreviewHostFile(maxBytes),
       ),
       readHostFileBytes: (path: string, options) => readBinary(transport, '/fs:content', {
         query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options),
@@ -860,6 +863,62 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     auth: {
       summary: () => transport.json<AuthSummary>('/auth'),
     },
+  };
+}
+
+const utf8FatalDecoder = new TextDecoder('utf-8', { fatal: true });
+const utf8LossyDecoder = new TextDecoder('utf-8');
+
+function previewHostFileHeaders(maxBytes: number, ifNoneMatch?: string): Record<string, string> {
+  const headers: Record<string, string> = { range: `bytes=0-${maxBytes - 1}` };
+  if (ifNoneMatch !== undefined) headers['if-none-match'] = ifNoneMatch;
+  return headers;
+}
+
+function hasBinaryControlBytes(bytes: Uint8Array): boolean {
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x7f &&
+    bytes[1] === 0x45 &&
+    bytes[2] === 0x4c &&
+    bytes[3] === 0x46
+  ) {
+    return true;
+  }
+  for (let i = 0; i < bytes.length; i += 1) {
+    const byte = bytes[i]!;
+    if (byte === 0x00 || byte === 0x7f) return true;
+    if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function decodePreviewHostFile(maxBytes: number) {
+  return async (response: Response): Promise<import('../../core/facade/http-rest.js').HttpRestPreviewHostFileResult> => {
+    const etag = response.headers.get('etag') ?? undefined;
+    if (response.status === 304) {
+      return { text: '', truncated: false, lossless: true, etag, notModified: true };
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const truncated =
+      response.status === 206 &&
+      Number(response.headers.get('content-range')?.split('/')[1]) > maxBytes;
+    if (!hasBinaryControlBytes(bytes)) {
+      try {
+        const text = utf8FatalDecoder.decode(bytes);
+        return { text, truncated, lossless: true, etag };
+      } catch {
+        // Fall through to lossy decode below.
+      }
+    }
+    return {
+      text: utf8LossyDecoder.decode(bytes),
+      truncated,
+      lossless: false,
+      etag,
+    };
   };
 }
 

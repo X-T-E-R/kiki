@@ -254,6 +254,18 @@ export interface HttpRestBinaryFile {
   readonly notModified?: boolean;
 }
 
+export interface HttpRestPreviewHostFileOptions extends HttpRestRequestOptions {
+  readonly ifNoneMatch?: string;
+}
+
+export interface HttpRestPreviewHostFileResult {
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly lossless: boolean;
+  readonly etag?: string;
+  readonly notModified?: boolean;
+}
+
 export interface HttpRestMediaOptions extends HttpRestRequestOptions {
   readonly ifNoneMatch?: string;
   readonly range?: string;
@@ -714,7 +726,7 @@ export interface HttpRestFacade {
     openHtmlPreview(input: import('@kiki/protocol').HtmlPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').HtmlPreviewResponse>;
     closeHtmlPreview(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
     readHostFile(path: string, options?: HttpRestRequestOptions): Promise<string>;
-    previewHostFile(path: string, maxBytes: number, options?: HttpRestRequestOptions): Promise<{ readonly text: string; readonly truncated: boolean }>;
+    previewHostFile(path: string, maxBytes: number, options?: HttpRestPreviewHostFileOptions): Promise<HttpRestPreviewHostFileResult>;
     readHostFileBytes(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     readHostMediaPreview(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadHostFile(path: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
