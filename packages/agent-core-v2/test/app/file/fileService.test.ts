@@ -68,6 +68,43 @@ describe('FileServiceImpl', () => {
     expect((await readAll(stream())).toString()).toBe('hello world');
   });
 
+  it('persists session ownership metadata across service instances', async () => {
+    const meta = await store().save(readable('owned'), 'owned.txt', {
+      sessionId: 'session-owner',
+    });
+
+    const ix2 = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileSystemStorageService, backend);
+        reg.define(IBlobStore, BlobStoreService);
+        reg.define(IFileService, FileServiceImpl);
+      },
+    });
+    const reloaded = ix2.get(IFileService);
+
+    await expect(reloaded.get(meta.id)).resolves.toMatchObject({
+      meta: { session_id: 'session-owner' },
+    });
+  });
+
+  it('resolves deferred save options after consuming the source stream', async () => {
+    let sourceCompleted = false;
+    let optionsResolved = false;
+    const source = Readable.from((async function* () {
+      yield Buffer.from('deferred payload');
+      sourceCompleted = true;
+    })());
+    const meta = await store().save(source, 'original.txt', () => {
+      optionsResolved = sourceCompleted;
+      return { name: 'resolved.txt', sessionId: 'session-owner' };
+    });
+
+    expect(optionsResolved).toBe(true);
+    expect(meta.name).toBe('resolved.txt');
+    expect(meta.size).toBe(Buffer.byteLength('deferred payload'));
+    expect(meta.session_id).toBe('session-owner');
+  });
+
   it('honors the name override and records expires_at', async () => {
     const meta = await store().save(readable('data'), 'original.bin', {
       name: 'renamed.bin',
@@ -356,6 +393,7 @@ describe('FileServiceImpl', () => {
   it('skips invalid persisted index entries when loading the index', async () => {
     await backend.write('files', 'f_valid', Buffer.from('ok'));
     await backend.write('files', 'f_invalid', Buffer.from('bad'));
+    await backend.write('files', 'f_bad_session', Buffer.from('bad session'));
     await backend.write(
       'file',
       'index.json',
@@ -377,6 +415,14 @@ describe('FileServiceImpl', () => {
               size: 3,
               created_at: new Date(0).toISOString(),
             },
+            {
+              id: 'f_bad_session',
+              name: 'bad-session.txt',
+              media_type: 'text/plain',
+              size: 11,
+              created_at: new Date(0).toISOString(),
+              session_id: 1,
+            },
             { id: 'f_invalid' },
           ],
         }),
@@ -387,6 +433,9 @@ describe('FileServiceImpl', () => {
     expect(meta.name).toBe('valid.txt');
     expect((await readAll(stream())).toString()).toBe('ok');
     await expect(store().get('f_invalid')).rejects.toMatchObject({
+      code: FileErrors.codes.FILE_NOT_FOUND,
+    });
+    await expect(store().get('f_bad_session')).rejects.toMatchObject({
       code: FileErrors.codes.FILE_NOT_FOUND,
     });
     await expect(store().get('f_../outside')).rejects.toMatchObject({

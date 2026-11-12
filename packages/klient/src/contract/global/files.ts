@@ -22,12 +22,14 @@ export const fileMetaSchema = z.object({
   size: z.number().int().nonnegative(),
   created_at: z.string(),
   expires_at: z.string().optional(),
+  session_id: z.string().optional(),
 });
 
 export const fileSaveOptionsSchema = z.object({
   name: z.string().optional(),
   mimeType: z.string().optional(),
   expiresInSec: z.number().optional(),
+  sessionId: z.string().optional(),
 });
 
 /** Wire result of `get` — the engine's `GetResult.stream` buffered to base64. */

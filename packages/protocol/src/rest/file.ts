@@ -1,7 +1,8 @@
 /**
  *   POST   /v1/files
  *     Request: multipart/form-data with `file` (binary), `name`
- *              (optional override), `expires_in_sec` (optional).
+ *              (optional override), `expires_in_sec` (optional), and
+ *              `session_id` (optional session owner).
  *     Response data: `FileMeta` (full envelope). No upload size cap.
  *
  *   GET    /v1/files/{file_id}

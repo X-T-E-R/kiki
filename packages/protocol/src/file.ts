@@ -9,5 +9,6 @@ export const fileMetaSchema = z.object({
   size: z.number().int().nonnegative(),
   created_at: isoDateTimeSchema,
   expires_at: isoDateTimeSchema.optional(),
+  session_id: z.string().optional(),
 });
 export type FileMeta = z.infer<typeof fileMetaSchema>;

@@ -8,7 +8,7 @@ import { buildDaemonFileUrl } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { buildImageCompressionCaption, compressBase64ForModel, compressImageForModel, validateImageDataUrl, type ImageCompressionTelemetry } from '@kiki/agent-core-v2/agent/media/image-compress';
 import { decodeBase64Prefix, isModelAcceptedImageMime, normalizeImageMime, resolveEffectiveImageMime } from '@kiki/agent-core-v2/agent/media/image-format-policy';
 import { persistOriginalImage } from '@kiki/agent-core-v2/agent/media/image-originals';
-import { fileNotFoundError, type GetResult, type IFileService } from '@kiki/agent-core-v2/app/file/fileService';
+import { fileNotFoundError, type FileMeta, type GetResult, type IFileService, type SaveOptions } from '@kiki/agent-core-v2/app/file/fileService';
 import type { ISessionMediaStore, SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/telemetry';
@@ -27,9 +27,19 @@ type WireContent = PromptSubmission['content'];
  * visible here. Saves and deletes stay on the staged store.
  */
 export function sessionPromptFiles(staged: IFileService, media: ISessionMediaStore): IFileService {
+  function save(source: Readable, name: string, options?: SaveOptions): Promise<FileMeta>;
+  function save(source: Readable, name: string, options: () => SaveOptions): Promise<FileMeta>;
+  function save(
+    source: Readable,
+    name: string,
+    options?: SaveOptions | (() => SaveOptions),
+  ): Promise<FileMeta> {
+    if (typeof options === 'function') return staged.save(source, name, options);
+    return staged.save(source, name, options);
+  }
   return {
     _serviceBrand: undefined,
-    save: (source, name, options) => staged.save(source, name, options),
+    save,
     delete: (fileId) => staged.delete(fileId),
     get: async (fileId) => {
       const file = await media.open(fileId);

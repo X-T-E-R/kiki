@@ -17,6 +17,7 @@ describe('uploadFileResponseSchema (POST /api/files)', () => {
       media_type: 'text/plain',
       size: 12,
       created_at: '2026-06-04T10:00:00.000Z',
+      session_id: 'session-owner',
     };
     expect(uploadFileResponseSchema.parse(payload)).toEqual(payload);
   });

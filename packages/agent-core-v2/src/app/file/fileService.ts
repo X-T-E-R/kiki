@@ -14,6 +14,7 @@ export const fileMetaSchema = z.object({
   size: z.number().int().nonnegative(),
   created_at: isoDateTimeSchema,
   expires_at: isoDateTimeSchema.optional(),
+  session_id: z.string().optional(),
 });
 export type FileMeta = z.infer<typeof fileMetaSchema>;
 
@@ -21,6 +22,7 @@ export interface SaveOptions {
   readonly name?: string;
   readonly mimeType?: string;
   readonly expiresInSec?: number;
+  readonly sessionId?: string;
 }
 
 export interface GetResult {
@@ -37,6 +39,7 @@ export interface IFileService {
   readonly _serviceBrand: undefined;
 
   save(source: Readable, filename: string, options?: SaveOptions): Promise<FileMeta>;
+  save(source: Readable, filename: string, options: () => SaveOptions): Promise<FileMeta>;
   get(fileId: string): Promise<GetResult>;
   delete(fileId: string): Promise<void>;
 }

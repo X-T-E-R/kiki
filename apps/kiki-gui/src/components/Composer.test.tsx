@@ -2497,7 +2497,7 @@ describe('Composer file clipboard policy', () => {
 
   it('keeps supported images and videos on the attachment path, not ordinary uploads', async () => {
     const onChangeAttachments = vi.fn();
-    const { container } = await renderComposer({ onChangeAttachments });
+    const { container } = await renderComposer({ sessionId: 'session-owner', onChangeAttachments });
     await dispatchClipboardPaste(composerInputOf(container), [
       new File(['png'], 'shot.png', { type: 'image/png' }),
       new File(['mp4'], 'clip.mp4', { type: 'video/mp4' }),
@@ -2505,8 +2505,18 @@ describe('Composer file clipboard policy', () => {
     ]);
     expect(uploadFile).toHaveBeenCalledTimes(1);
     expect(uploadFile.mock.calls[0]?.[0].name).toBe('clip.mp4');
+    expect(uploadFile.mock.calls[0]?.[1]).toBe('session-owner');
     expect(onChangeAttachments).toHaveBeenCalled();
     expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('full path');
+  });
+
+  it('uploads /new file attachments without session ownership', async () => {
+    const { container } = await renderComposer({ sessionId: undefined });
+    await dispatchClipboardPaste(composerInputOf(container), [
+      new File(['video'], 'draft.mp4', { type: 'video/mp4' }),
+    ]);
+
+    expect(uploadFile).toHaveBeenCalledExactlyOnceWith(expect.any(File), undefined);
   });
 
   it('clears a failed attachment on a successful subsequent paste without locking text sends', async () => {

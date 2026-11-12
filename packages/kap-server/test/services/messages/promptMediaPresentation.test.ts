@@ -21,10 +21,11 @@ function mockFileService(): IFileService {
   let nextId = 0;
   return {
     _serviceBrand: undefined,
-    async save(source: Readable, filename: string, options: SaveOptions = {}): Promise<FileMeta> {
+    async save(source: Readable, filename: string, input: SaveOptions | (() => SaveOptions) = {}): Promise<FileMeta> {
       const chunks: Buffer[] = [];
       for await (const chunk of source) chunks.push(Buffer.from(chunk as Uint8Array));
       const bytes = Buffer.concat(chunks);
+      const options = typeof input === 'function' ? input() : input;
       const meta: FileMeta = {
         id: `f_prompt_${nextId++}`,
         name: options.name ?? filename,

@@ -864,7 +864,7 @@ describe('GUI shared client against an isolated KAP host', () => {
   it.each(['EOF', 'remaining bytes'] as const)('waits for media %s then naturally releases its newly idle connection during close', async (waitFor) => {
     const id = await session();
     const bytes = new Uint8Array([65, 66, 67]);
-    const uploaded = await client.uploadFile(new File([bytes], 'delayed.bin'));
+    const uploaded = await client.uploadFile(new File([bytes], 'delayed.bin'), id);
     const files = host.core.accessor.get(IFileService);
     const stored = await files.get(uploaded.id);
     let releaseEof!: () => void;
@@ -916,7 +916,7 @@ describe('GUI shared client against an isolated KAP host', () => {
   it('naturally closes immediately after three completed media downloads', async () => {
     const id = await session();
     const bytes = new Uint8Array(600 * 1024).fill(65);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([bytes], `attachment-${index}.bin`))));
+    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([bytes], `attachment-${index}.bin`), id)));
     for (const file of uploaded) {
       const downloaded = await client.readSessionMediaBytes(id, file.id);
       expect(downloaded.bytes).toEqual(bytes);

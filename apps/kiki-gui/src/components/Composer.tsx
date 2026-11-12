@@ -1939,7 +1939,7 @@ export function Composer({
       if (stub === undefined) continue;
       file
         .read()
-        .then((contents) => client.uploadFile(contents))
+        .then((contents) => client.uploadFile(contents, sessionId))
         .then((meta) => {
           if (!ownsReservedAttachmentResult()) return;
           updateAttachments((current) =>

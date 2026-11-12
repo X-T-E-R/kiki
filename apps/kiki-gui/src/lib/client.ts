@@ -2992,12 +2992,13 @@ export class KikiClient {
   }
 
   /** Upload prompt bytes through the shared global file facade. */
-  async uploadFile(file: File): Promise<FileMeta> {
+  async uploadFile(file: File, sessionId?: string): Promise<FileMeta> {
     const data = new Uint8Array(await file.arrayBuffer());
     return this.run(this.klient.global.files.save({
       data,
       filename: file.name === '' ? 'attachment' : file.name,
       mimeType: file.type === '' ? undefined : file.type,
+      sessionId,
     }, { timeoutMs: 0 }));
   }
 

@@ -46,7 +46,8 @@ function isFileMeta(value: unknown): value is FileMeta {
     Number.isSafeInteger(meta['size']) &&
     meta['size'] >= 0 &&
     typeof meta['created_at'] === 'string' &&
-    (meta['expires_at'] === undefined || typeof meta['expires_at'] === 'string')
+    (meta['expires_at'] === undefined || typeof meta['expires_at'] === 'string') &&
+    (meta['session_id'] === undefined || typeof meta['session_id'] === 'string')
   );
 }
 
@@ -70,7 +71,13 @@ export class FileServiceImpl extends Disposable implements IFileService {
     super();
   }
 
-  async save(source: Readable, filename: string, options: SaveOptions = {}): Promise<FileMeta> {
+  async save(source: Readable, filename: string, options?: SaveOptions): Promise<FileMeta>;
+  async save(source: Readable, filename: string, options: () => SaveOptions): Promise<FileMeta>;
+  async save(
+    source: Readable,
+    filename: string,
+    options: SaveOptions | (() => SaveOptions) = {},
+  ): Promise<FileMeta> {
     await this.ensureIndex();
     this.requestGc();
 
@@ -83,8 +90,10 @@ export class FileServiceImpl extends Disposable implements IFileService {
         yield buf;
       }
     };
+    let saveOptions: SaveOptions;
     try {
       await this.blobs.putStream(BLOB_SCOPE, id, counting());
+      saveOptions = typeof options === 'function' ? options() : options;
     } catch (error) {
       await this.blobs.delete(BLOB_SCOPE, id).catch(() => undefined);
       throw error;
@@ -93,14 +102,15 @@ export class FileServiceImpl extends Disposable implements IFileService {
     const now = Date.now();
     const meta: FileMeta = {
       id,
-      name: options.name ?? filename,
-      media_type: options.mimeType ?? 'application/octet-stream',
+      name: saveOptions.name ?? filename,
+      media_type: saveOptions.mimeType ?? 'application/octet-stream',
       size,
       created_at: new Date(now).toISOString(),
       expires_at:
-        options.expiresInSec === undefined
+        saveOptions.expiresInSec === undefined
           ? undefined
-          : new Date(now + options.expiresInSec * 1000).toISOString(),
+          : new Date(now + saveOptions.expiresInSec * 1000).toISOString(),
+      session_id: saveOptions.sessionId,
     };
 
     this.setMeta(meta);

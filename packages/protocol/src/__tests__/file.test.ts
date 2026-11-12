@@ -16,6 +16,12 @@ describe('fileMetaSchema (W12.2 / Chain 15)', () => {
     expect(fileMetaSchema.parse(base).expires_at).toBeUndefined();
   });
 
+  it('round-trips an optional session owner', () => {
+    const owned: FileMeta = { ...base, session_id: 'session-owner' };
+    expect(fileMetaSchema.parse(owned)).toEqual(owned);
+    expect(fileMetaSchema.safeParse({ ...base, session_id: 1 }).success).toBe(false);
+  });
+
   it('round-trips a record with expires_at', () => {
     const withExpiry: FileMeta = {
       ...base,

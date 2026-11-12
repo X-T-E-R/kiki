@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+
 import multipart from '@fastify/multipart';
 
 import {
@@ -43,15 +45,25 @@ interface FastifyRequestLike {
   id: string;
   params: unknown;
   headers: Record<string, string | string[] | undefined>;
-  file?: (opts?: unknown) => Promise<MultipartFileLike | undefined>;
+  parts?: () => AsyncIterableIterator<MultipartPartLike>;
+}
+
+interface MultipartFieldLike {
+  readonly type: 'field';
+  readonly fieldname: string;
+  readonly value: unknown;
 }
 
 interface MultipartFileLike {
-  file: NodeJS.ReadableStream;
-  filename: string;
-  mimetype: string;
-  fields: Record<string, unknown>;
+  readonly type: 'file';
+  readonly file: Readable;
+  readonly fieldname: string;
+  readonly filename: string;
+  readonly mimetype: string;
+  readonly fields: Record<string, unknown>;
 }
+
+type MultipartPartLike = MultipartFieldLike | MultipartFileLike;
 
 interface FilesReply {
   type(mime: string): FilesReply;
@@ -80,31 +92,44 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
     async (req, reply) => {
       try {
         const fastifyReq = req as unknown as FastifyRequestLike;
-        if (!fastifyReq.file) {
+        const parts = fastifyReq.parts?.();
+        if (parts === undefined) {
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'multipart not initialized', req.id));
           return;
         }
-        const part = await fastifyReq.file();
-        if (!part) {
+        let part: MultipartFileLike | undefined;
+        while (part === undefined) {
+          const next = await parts.next();
+          if (next.done) break;
+          if (next.value.type === 'file') part = next.value;
+        }
+        if (part === undefined) {
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'missing `file` field', req.id));
           return;
         }
 
-        const nameOverride = readFieldString(part.fields['name']);
-        const expiresInSec = readFieldNumber(part.fields['expires_in_sec']);
-
+        const filePart = part;
+        const source = Readable.from((async function* () {
+          for await (const chunk of filePart.file) yield chunk;
+          while (true) {
+            const next = await parts.next();
+            if (next.done) break;
+            if (next.value.type === 'file') {
+              for await (const chunk of next.value.file) {
+                void chunk;
+              }
+            }
+          }
+        })());
         const store = core.accessor.get(IFileService);
 
         try {
-          const meta = await store.save(
-            part.file as unknown as import('node:stream').Readable,
-            part.filename,
-            {
-              name: nameOverride ?? part.filename,
-              mimeType: part.mimetype,
-              expiresInSec,
-            },
-          );
+          const meta = await store.save(source, filePart.filename, () => ({
+            name: readFieldString(filePart.fields['name']) ?? filePart.filename,
+            mimeType: filePart.mimetype,
+            expiresInSec: readFieldNumber(filePart.fields['expires_in_sec']),
+            sessionId: readFieldString(filePart.fields['session_id']),
+          }));
           reply.send(okEnvelope(meta, req.id));
         } catch (error) {
           sendMappedError(reply as unknown as FilesReply, req, error);

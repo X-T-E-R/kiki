@@ -1169,7 +1169,7 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
 | `GET /media-preview/{preview_id}` | 读取临时播放链接授权的本机或会话媒体 | 支持；无法满足的 Range 为 416 | 不支持（`private, no-store`） |
 
-已建立索引的会话无需恢复会话即可读取规范媒体文件和暂存上传；规范文件的字节与文件名优先于暂存副本。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
+已建立索引的会话无需恢复会话即可读取规范媒体文件。暂存上传只有在上传元数据指定该会话时，才能通过该会话的媒体路由读取；规范文件的字节与文件名仍优先于暂存副本。发送前需要会话内预览时，在 `POST /api/files` 中设置 `session_id`，或在 `global.files.save` 中设置 `sessionId`。尚未关联会话的草稿上传仍可通过 `GET /api/files/{file_id}` 读取，附加到提示后才成为会话媒体。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
 
 错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封）。`/media-preview/{preview_id}` 的链接不存在、已撤销或已过期时，返回 HTTP 404 和 JSON 错误信封。工作区下载、本机原始文件预览和导出的失败仍走标准[响应信封](#响应信封)，客户端须检查其中的 `code`。
 

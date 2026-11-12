@@ -245,13 +245,18 @@ export async function openSessionMedia(core: Scope, sessionId: string, fileId: s
       core.accessor.get(IFileSystemStorageService),
       core.accessor.get(IAtomicDocumentStore),
     );
-    return { sessionExists: true, file: await store.open(fileId) ?? await openStagedUpload(core, fileId) };
+    return {
+      sessionExists: true,
+      file: await store.open(fileId) ?? await openStagedUpload(core, fileId, sessionId),
+    };
   }
   if (core.accessor.get(ISessionManager).get(sessionId) === undefined) return { sessionExists: false };
   const operation = await acquireSessionOperation(core, sessionId, 'operation');
   if (operation.handle === undefined) return { sessionExists: false, operation };
   try {
-    const file = await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ?? await openStagedUpload(core, fileId);
+    const file =
+      await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ??
+      await openStagedUpload(core, fileId, sessionId);
     return { sessionExists: true, file, operation };
   } catch (error) {
     await operation.dispose();
@@ -380,9 +385,11 @@ export async function resolveTrustedSessionAttachmentHostSource(
 async function openStagedUpload(
   core: Scope,
   fileId: string,
+  sessionId: string,
 ): Promise<SessionMediaFile | undefined> {
   try {
     const uploaded = await core.accessor.get(IFileService).get(fileId);
+    if (uploaded.meta.session_id !== sessionId) return undefined;
     return {
       name: uploaded.meta.name,
       mediaType: uploaded.meta.media_type,

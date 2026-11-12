@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   agentScopeOf,
@@ -135,9 +136,11 @@ async function uploadFile(
   data: Buffer,
   name: string,
   mediaType: string,
-): Promise<{ id: string; name: string; media_type: string; size: number }> {
+  sessionId?: string,
+): Promise<{ id: string; name: string; media_type: string; size: number; session_id?: string }> {
   const multipart = buildMultipart({
     file: { fieldName: 'file', filename: name, contentType: mediaType, data },
+    fields: sessionId === undefined ? undefined : [{ name: 'session_id', value: sessionId }],
   });
   const res = await appOf(r).inject({
     method: 'POST',
@@ -150,9 +153,52 @@ async function uploadFile(
     name: string;
     media_type: string;
     size: number;
+    session_id?: string;
   }>;
   if (envelope.code !== 0 || envelope.data === null) {
     throw new Error(`failed to upload file: ${res.body}`);
+  }
+  return envelope.data;
+}
+
+async function uploadFileWithOwnerFieldAfterFile(
+  r: RunningServer,
+  data: Buffer,
+  name: string,
+  mediaType: string,
+  sessionId: string,
+): Promise<{ id: string; name: string; media_type: string; size: number; session_id?: string }> {
+  const boundary = '----KimiFileFirstOwnerBoundary';
+  const body = Readable.from((async function* () {
+    yield Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n` +
+      `Content-Type: ${mediaType}\r\n\r\n`,
+    );
+    yield data;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    yield Buffer.from(
+      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="session_id"\r\n\r\n` +
+      `${sessionId}\r\n--${boundary}--\r\n`,
+    );
+  })());
+  const response = await fetch(`http://127.0.0.1:${r.port}/api/files`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${r.localOwnerToken}`,
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
+    duplex: 'half',
+  } as never);
+  const envelope = await response.json() as Envelope<{
+    id: string;
+    name: string;
+    media_type: string;
+    size: number;
+    session_id?: string;
+  }>;
+  if (envelope.code !== 0 || envelope.data === null) {
+    throw new Error(`failed to upload file: ${JSON.stringify(envelope)}`);
   }
   return envelope.data;
 }
@@ -447,7 +493,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const r = await boot();
     const data = Buffer.from('canonical image bytes');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'pasted image.png', 'image/png');
+    const meta = await uploadFile(r, data, 'pasted image.png', 'image/png', sessionId);
     await materializeUploadedFile(r, sessionId, meta);
 
     await appOf(r).inject({ method: 'DELETE', url: `/api/files/${meta.id}` });
@@ -476,7 +522,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const r = await boot();
     const data = Buffer.from('staged upload bytes');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'staged.png', 'image/png');
+    const meta = await uploadFile(r, data, 'staged.png', 'image/png', sessionId);
     const acquire = vi.spyOn(r.core.accessor.get(ISessionManager), 'acquire');
     try {
       const res = await appOf(r).inject({
@@ -493,14 +539,94 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     }
   });
 
+  it('preserves ownership when session_id follows the streamed file part', async () => {
+    const r = await boot();
+    const ownerSessionId = await createSession(r);
+    const otherSessionId = await createSession(r);
+    const data = Buffer.from('file-first streamed owner metadata');
+    const meta = await uploadFileWithOwnerFieldAfterFile(
+      r,
+      data,
+      'late-owner.txt',
+      'text/plain',
+      ownerSessionId,
+    );
+
+    expect(meta.session_id).toBe(ownerSessionId);
+    const persisted = await r.core.accessor.get(IFileService).get(meta.id);
+    expect(persisted.meta.session_id).toBe(ownerSessionId);
+    const owned = await appOf(r).inject({
+      method: 'GET',
+      url: `/api/sessions/${ownerSessionId}/media/${meta.id}`,
+    });
+    expect(owned.statusCode).toBe(200);
+    expect(owned.rawPayload).toEqual(data);
+
+    for (const url of [
+      `/api/sessions/${otherSessionId}/media/${meta.id}`,
+      `/api/sessions/${otherSessionId}/media/${meta.id}/preview`,
+    ]) {
+      const res = await appOf(r).inject({ method: 'GET', url });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as Envelope).code).toBe(40407);
+    }
+  });
+
+  it('restricts owner-bound staged media to its session and preserves canonical owner reads', async () => {
+    const r = await boot();
+    const ownerSessionId = await createSession(r);
+    const otherSessionId = await createSession(r);
+    const data = Buffer.from('owner-bound staged upload');
+    const meta = await uploadFile(r, data, 'owner.txt', 'text/plain', ownerSessionId);
+
+    expect(meta.session_id).toBe(ownerSessionId);
+    for (const url of [
+      `/api/sessions/${otherSessionId}/media/${meta.id}`,
+      `/api/sessions/${otherSessionId}/media/${meta.id}/preview`,
+    ]) {
+      const res = await appOf(r).inject({ method: 'GET', url });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as Envelope).code).toBe(40407);
+    }
+
+    await materializeUploadedFile(r, ownerSessionId, meta);
+    const owned = await appOf(r).inject({
+      method: 'GET',
+      url: `/api/sessions/${ownerSessionId}/media/${meta.id}`,
+    });
+    expect(owned.statusCode).toBe(200);
+    expect(owned.rawPayload).toEqual(data);
+  });
+
+  it('keeps session-less draft uploads globally readable but unavailable as session media', async () => {
+    const r = await boot();
+    const sessionId = await createSession(r);
+    const data = Buffer.from('draft upload bytes');
+    const meta = await uploadFile(r, data, 'draft.txt', 'text/plain');
+
+    const globalFile = await appOf(r).inject({ method: 'GET', url: `/api/files/${meta.id}` });
+    expect(globalFile.statusCode).toBe(200);
+    expect(globalFile.rawPayload).toEqual(data);
+    expect(meta.session_id).toBeUndefined();
+
+    for (const url of [
+      `/api/sessions/${sessionId}/media/${meta.id}`,
+      `/api/sessions/${sessionId}/media/${meta.id}/preview`,
+    ]) {
+      const res = await appOf(r).inject({ method: 'GET', url });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as Envelope).code).toBe(40407);
+    }
+  });
+
   it('reads cold canonical and queued media without waiting for session restoration', async () => {
     const r = await boot();
     const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
     const { picture } = await import(fixture);
     const data: Buffer = picture(320, 180, [80, 120, 160]);
     const sessionId = await createSession(r);
-    const canonical = await uploadFile(r, data, 'local image.png', 'image/png');
-    const staged = await uploadFile(r, data, 'queued image.png', 'image/png');
+    const canonical = await uploadFile(r, data, 'local image.png', 'image/png', sessionId);
+    const staged = await uploadFile(r, data, 'queued image.png', 'image/png', sessionId);
     await materializeUploadedFile(r, sessionId, canonical);
     await appOf(r).inject({ method: 'DELETE', url: `/api/files/${canonical.id}` });
     await closeSessionById(r.core.accessor, sessionId);
@@ -559,7 +685,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const r = await boot();
     const data = Buffer.from('0123456789abcdefghijklmnopqrstuvwxyz');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'clip.mp4', 'video/mp4');
+    const meta = await uploadFile(r, data, 'clip.mp4', 'video/mp4', sessionId);
     await materializeUploadedFile(r, sessionId, meta);
 
     const res = await appOf(r).inject({
@@ -579,7 +705,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     let r = await boot();
     const data = Buffer.from('restart-safe media');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'restart.png', 'image/png');
+    const meta = await uploadFile(r, data, 'restart.png', 'image/png', sessionId);
     await materializeUploadedFile(r, sessionId, meta);
     await appOf(r).inject({ method: 'DELETE', url: `/api/files/${meta.id}` });
 
@@ -600,7 +726,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const r = await boot();
     const data = Buffer.from('forked media');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'fork.png', 'image/png');
+    const meta = await uploadFile(r, data, 'fork.png', 'image/png', sessionId);
     await materializeUploadedFile(r, sessionId, meta);
     const fork = await r.core.accessor.get(ISessionManager).fork({
       sourceSessionId: sessionId,
@@ -621,7 +747,7 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const r = await boot();
     const data = Buffer.from('delete-owned media');
     const sessionId = await createSession(r);
-    const meta = await uploadFile(r, data, 'delete.png', 'image/png');
+    const meta = await uploadFile(r, data, 'delete.png', 'image/png', sessionId);
     await materializeUploadedFile(r, sessionId, meta);
     await r.core.accessor.get(ISessionManager).delete(sessionId);
 

@@ -474,6 +474,7 @@ export interface GlobalFilesFacade {
       name?: string;
       mimeType?: string;
       expiresInSec?: number;
+      sessionId?: string;
     },
     options?: Pick<CallOptions, 'timeoutMs' | 'signal'>,
   ): Promise<FileMeta>;
@@ -854,11 +855,11 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     },
 
     files: {
-      save: ({ data, filename, name, mimeType, expiresInSec }, options) =>
+      save: ({ data, filename, name, mimeType, expiresInSec, sessionId }, options) =>
         call('fileService', 'save', [
           encodeBase64(data),
           filename,
-          { name, mimeType, expiresInSec },
+          { name, mimeType, expiresInSec, sessionId },
         ], options) as Promise<FileMeta>,
       get: async (fileId) => {
         const wire = (await call('fileService', 'get', [fileId])) as {

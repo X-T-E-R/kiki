@@ -1456,6 +1456,7 @@ describe('files routing', () => {
     media_type: 'image/png',
     size: 4,
     created_at: '2026-01-01T00:00:00.000Z',
+    session_id: 'session-owner',
   };
 
   it('routes the files save/get/delete lifecycle through fileService', async () => {
@@ -1467,13 +1468,14 @@ describe('files routing', () => {
       data: new Uint8Array([1, 2, 3, 4]),
       filename: 'a.png',
       mimeType: 'image/png',
+      sessionId: 'session-owner',
     });
     expect(meta).toEqual(META);
     expect(channel.calls[0]).toMatchObject({
       scope: {},
       service: 'fileService',
       method: 'save',
-      args: ['AQIDBA==', 'a.png', { mimeType: 'image/png' }],
+      args: ['AQIDBA==', 'a.png', { mimeType: 'image/png', sessionId: 'session-owner' }],
     });
 
     channel.result = { meta: META, data: 'AQIDBA==' };
