@@ -11,6 +11,7 @@ import {
   type Focusable,
 } from '@kiki/pi-tui';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
+import { layoutHintLines } from '#/tui/components/dialogs/hint-lines';
 import { currentTheme } from '#/tui/theme';
 import { homeAlias } from '#/tui/utils/home-alias';
 import { printableChar } from '#/tui/utils/printable-key';
@@ -346,9 +347,9 @@ export class SessionPickerComponent extends Container implements Focusable {
         (item): item is string => item !== undefined,
       );
       lines.push(currentTheme.boldFg('primary', truncateToWidth(title, width, ELLIPSIS)));
-      lines.push(
-        currentTheme.fg('textMuted', truncateToWidth(hintParts.join(' · '), width, ELLIPSIS)),
-      );
+      for (const hintLine of layoutHintLines(hintParts, width)) {
+        lines.push(currentTheme.fg('textMuted', hintLine));
+      }
       lines.push('');
       lines.push(
         currentTheme.fg('textMuted', truncateToWidth('No sessions found.', width, ELLIPSIS)),
@@ -371,7 +372,9 @@ export class SessionPickerComponent extends Container implements Focusable {
     ].filter((item): item is string => item !== undefined);
 
     lines.push(currentTheme.boldFg('primary', title) + titleSuffix);
-    lines.push(currentTheme.fg('textMuted', hintParts.join(' · ')));
+    for (const hintLine of layoutHintLines(hintParts, width)) {
+      lines.push(currentTheme.fg('textMuted', hintLine));
+    }
     lines.push('');
 
     if (view.query.length > 0) {

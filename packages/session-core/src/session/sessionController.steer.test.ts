@@ -997,10 +997,10 @@ describe('queued submit acknowledgement before transcript recovery', () => {
       content: [{ type: 'text' as const, text: 'waiting' }], createdAt: '2026-01-01T00:00:03.000Z' };
     await deliver(controller, resetEvent('main', emptySnapshot({ prompts: [queued] }), 1));
     client.abortPrompt.mockResolvedValueOnce({ aborted: false, at_seq: 1 });
-    await controller.abortPrompt('stale');
+    await expect(controller.abortPrompt('stale')).resolves.toBe(false);
     expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'stale', undefined, true);
-    expect(controller.getState().queuedPromptIds).toEqual([]);
-    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.promptId === 'stale' && block.promptStatus === 'queued')).toBe(false);
+    expect(controller.getState().queuedPromptIds).toEqual(['stale']);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.promptId === 'stale' && block.promptStatus === 'queued')).toBe(true);
     await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: { ...queued, status: 'running', queuePosition: undefined } }], 2));
     expect(controller.getState().queuedPromptIds).toEqual([]);
     controller.close();

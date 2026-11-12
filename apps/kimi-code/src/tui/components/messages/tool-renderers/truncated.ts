@@ -107,9 +107,10 @@ export class TruncatedOutputComponent implements Component {
     }
 
     const shown = contentLines.slice(0, this.maxLines);
+    const noun = remaining === 1 ? 'line' : 'lines';
     const hint = this.expandHint
-      ? `... (${String(remaining)} more lines, Ctrl+O to expand)`
-      : `... (${String(remaining)} more lines)`;
+      ? `... (${String(remaining)} more ${noun}, Ctrl+O to expand)`
+      : `... (${String(remaining)} more ${noun})`;
     return [...shown, this.renderHint(width, hint)];
   }
 }

@@ -5,6 +5,7 @@ import type { SlashAutocompleteCommand } from '#/tui/components/editor/file-ment
 export type DaemonCommandName =
   | 'exit'
   | 'stop'
+  | 'unqueue'
   | 'expand'
   | 'todos'
   | 'sessions'
@@ -96,6 +97,7 @@ const SUPPORTED_COMMANDS = [
   // Keyboard-free equivalents of Esc, Ctrl+O and Ctrl+T, for phone keyboards
   // and terminals without Esc or Ctrl keys.
   command('stop', ['interrupt'], 'Interrupt the running turn (same as Esc)', 'none'),
+  command('unqueue', [], 'Withdraw the last queued message and put it back in the input box', 'none'),
   command('expand', ['output'], 'Expand or collapse tool output (same as Ctrl+O)', 'none'),
   command('todos', [], 'Expand or collapse a truncated todo list (same as Ctrl+T)', 'none'),
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
@@ -133,7 +135,7 @@ const SUPPORTED_COMMANDS = [
   command('editor', [], 'Set the external editor for this TUI session', 'optional-rest', '[command]'),
   command('init', [], 'Analyze the codebase and generate AGENTS.md', 'none'),
   command('theme', [], 'Set the theme for this TUI session', 'optional-one', '[dark|light|auto]'),
-  command('help', ['h', '?'], 'Show daemon TUI command support', 'none'),
+  command('help', ['h', '?'], 'Show commands and keyboard shortcuts', 'none'),
   command('version', [], 'Show version information', 'none'),
   command('web', [], 'Manage browser access without leaving the TUI', 'optional-rest', '[temporary|persistent|status|off|link|revoke [id]] [--host <host>] [--port <port>] [--public-url <url>] [--insecure-no-tls] [--no-open]'),
 ] as const satisfies readonly DaemonCommandDefinition[];

@@ -139,6 +139,28 @@ describe('QuestionDialogComponent', () => {
     expect(out).toContain('Other');
   });
 
+  it.each([1, 2])('pluralizes hidden question body lines correctly (%i)', (remaining) => {
+    const bodyLineCount = 12 + remaining;
+    const body = Array.from(
+      { length: bodyLineCount },
+      (_, index) => `body ${String(index + 1)}`,
+    ).join('\n');
+    const pending = makePending([
+      {
+        question: 'Q?',
+        body,
+        multi_select: false,
+        options: [{ label: 'A' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+    const out = strip(dialog.render(80).join('\n'));
+
+    expect(out).toContain(`   ... ${String(remaining)} more line${remaining === 1 ? '' : 's'}`);
+    expect(out).toContain('body 12');
+    expect(out).not.toContain(`body ${String(bodyLineCount)}`);
+  });
+
   it('multi-select uses space and number keys to toggle choices', () => {
     const pending = makePending([
       {

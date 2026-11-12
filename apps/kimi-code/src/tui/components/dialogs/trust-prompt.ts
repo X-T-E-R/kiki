@@ -74,7 +74,7 @@ export class TrustPromptComponent implements Component, Focusable {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, Key.escape)) {
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c')) || matchesKey(data, Key.ctrl('d'))) {
       this.opts.onSelect('distrust');
       return;
     }

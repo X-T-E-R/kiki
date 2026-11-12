@@ -367,6 +367,81 @@ describe('SessionPickerComponent', () => {
     expect(output).toContain('Ctrl+A all');
   });
 
+  it('wraps full session hints at narrow widths and keeps the 100-column hint unchanged', () => {
+    const component = new SessionPickerComponent({
+      sessions: [
+        { id: 'ses_alpha', title: 'Alpha session', work_dir: '/tmp/project', updated_at: 1 },
+      ],
+      loading: false,
+      currentSessionId: '',
+      scope: 'all',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+      onToggleScope: vi.fn(),
+      onDeleteRequest: vi.fn(async () => {}),
+    });
+
+    for (const width of [20, 40, 50, 100]) {
+      const lines = component.render(width).map(stripAnsi);
+      const titleIdx = lines.findIndex((line) => line.includes('All sessions'));
+      const blankIdx = lines.indexOf('', titleIdx + 1);
+      const hintLines = lines.slice(titleIdx + 1, blankIdx);
+
+      for (const segment of [
+        '↑↓ navigate',
+        'Ctrl+A current cwd',
+        'Ctrl+X delete',
+        'Enter select',
+        'Esc cancel',
+      ]) {
+        expect(hintLines.some((line) => line.includes(segment)), `width=${String(width)}`).toBe(true);
+      }
+      expect(hintLines.at(-1)).toContain('Esc cancel');
+      for (const line of lines) {
+        expect(visibleWidth(line), `width=${String(width)} line=${line}`).toBeLessThanOrEqual(width);
+      }
+      if (width === 100) {
+        expect(hintLines).toEqual([
+          '↑↓ navigate · Ctrl+A current cwd · Ctrl+X delete · Enter select · Esc cancel',
+        ]);
+      }
+    }
+
+    component.handleInput('a');
+    const queryLines = component.render(40).map(stripAnsi);
+    const titleIdx = queryLines.findIndex((line) => line.includes('All sessions'));
+    const blankIdx = queryLines.indexOf('', titleIdx + 1);
+    const hintLines = queryLines.slice(titleIdx + 1, blankIdx);
+    expect(hintLines.at(-1)).toContain('Esc clear');
+    expect(hintLines.some((line) => line.includes('Esc clear'))).toBe(true);
+    expect(queryLines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+  });
+
+  it('wraps the empty-list scope hint without truncating Esc cancel', () => {
+    const component = new SessionPickerComponent({
+      sessions: [],
+      loading: false,
+      currentSessionId: 'ses_current',
+      scope: 'all',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+      onToggleScope: vi.fn(),
+    });
+
+    for (const width of [20, 40, 50, 100]) {
+      const lines = component.render(width).map(stripAnsi);
+      const titleIdx = lines.findIndex((line) => line.includes('All sessions'));
+      const blankIdx = lines.indexOf('', titleIdx + 1);
+      const hintLines = lines.slice(titleIdx + 1, blankIdx);
+
+      expect(hintLines.join('\n')).toContain('Ctrl+A current cwd');
+      expect(hintLines.at(-1)).toContain('Esc cancel');
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      if (width === 20) expect(hintLines).toEqual(['Ctrl+A current cwd', 'Esc cancel']);
+      if (width === 100) expect(hintLines).toEqual(['Ctrl+A current cwd · Esc cancel']);
+    }
+  });
+
   it('renders all-sessions scope header and Ctrl+A current-cwd hint', () => {
     const component = new SessionPickerComponent({
       sessions: [

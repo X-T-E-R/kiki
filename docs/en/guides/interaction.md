@@ -87,7 +87,9 @@ The activity row shows `Working` and how long the turn has been running (from it
 The input box remains usable while the agent is thinking or calling tools, and supports the following extra actions:
 
 - **`Esc`**: interrupt the current turn (press twice if you have a draft); **`Ctrl-C`** clears a draft first, then interrupts; **`/stop`** does the same without special keys
-- **`Ctrl-O`**: globally toggle the collapsed/expanded state of tool output and compaction summaries
+- **`Ctrl-O`** or **`/expand`**: expand or collapse tool output, thinking, completed work and reminders
+
+If you interrupt before the agent has written any text or called a tool, Kiki puts the interrupted message back in the input box.
 
 ## External editor
 

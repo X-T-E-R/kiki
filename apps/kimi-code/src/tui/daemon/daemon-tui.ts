@@ -1,12 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { Spacer, Text, TuiAltScreen } from '@kiki/pi-tui';
+import { Container, Spacer, Text, TuiAltScreen, type Terminal } from '@kiki/pi-tui';
 import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
-import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
+import type { MessageContent, PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
+import { latestTurnId } from '@kiki/session-core/session';
 import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
 import { newSteerPromptId } from '@kiki/session-core/session/transcript/steer';
 import type {
@@ -23,6 +24,7 @@ import {
   ApprovalPanelComponent,
   type ApprovalPanelResponse,
 } from '#/tui/components/dialogs/approval-panel';
+import { ApprovalPreviewViewer } from '#/tui/components/dialogs/approval-preview';
 import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
 import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission-selector';
 import { HelpPanelComponent } from '#/tui/components/dialogs/help-panel';
@@ -181,9 +183,8 @@ export class DaemonTUI {
   private readonly fileAttachments = new Map<number, DaemonFileAttachment>();
   private nextFileAttachmentId = 1;
   private focusedAgentId = 'main';
-  /** A first press of a double-press key: exit (Ctrl-C/Ctrl-D) or interrupt (Esc). */
   private pendingConfirm:
-    | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape'; readonly timer: ReturnType<typeof setTimeout> }
+    | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape' | 'draft-cleared'; readonly timer: ReturnType<typeof setTimeout> }
     | undefined;
   private startupOverridesPending = true;
   private todoExpanded = false;
@@ -222,16 +223,14 @@ export class DaemonTUI {
   private fdPath: string | null = null;
   /** Startup's session open/create; input submitted meanwhile waits for it. */
   private sessionReady: Promise<void> | undefined;
+  private readonly transcriptBody = new Container();
 
-  constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput) {
+  constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput, terminal?: Terminal) {
     this.startup = startup;
-    this.state = createTUIState(createOptions(startup));
+    this.state = createTUIState(createOptions(startup), terminal);
     this.client = new DaemonClient(connection);
-    this.renderer = new DaemonTranscriptRenderer(
-      this.state.transcriptContainer,
-      this.state.ui,
-      startup.workDir,
-    );
+    this.state.transcriptContainer.addChild(this.transcriptBody);
+    this.renderer = new DaemonTranscriptRenderer(this.transcriptBody, this.state.ui, startup.workDir);
     this.buildLayout();
     this.installEditor();
     this.setupAutocomplete();
@@ -252,7 +251,9 @@ export class DaemonTUI {
       this.fdPath = detectFdPath();
       if (this.fdPath !== null) this.setupAutocomplete();
     });
-    this.state.transcriptContainer.addChild(new WelcomeComponent(this.state.appState));
+    this.state.transcriptContainer.clear();
+    this.state.transcriptContainer.addChild(new WelcomeComponent(this.state.appState, this.state.terminal.rows));
+    this.state.transcriptContainer.addChild(this.transcriptBody);
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
     this.state.todoPanelContainer.addChild(this.state.todoPanel);
@@ -660,8 +661,8 @@ export class DaemonTUI {
     // arms exit, so the shell habit of pressing Ctrl-C twice to drop a line
     // cannot quit the app.
     if (this.state.editor.getText().length > 0) {
-      this.clearPendingConfirm();
-      this.state.editor.setText('');
+      this.state.editor.setText('', { preservePasteRegistry: true });
+      this.armConfirm('draft-cleared');
       return;
     }
     if (this.controller?.getState().busy === true) {
@@ -680,6 +681,43 @@ export class DaemonTUI {
     }
   }
 
+  private restorePromptDraft(content: readonly MessageContent[], queued = false): void {
+    const editor = this.state.editor;
+    if (editor.inputMode === 'bash' && editor.getText() !== '') {
+      this.showStatus('Your message was not put back; press ↑ to recall it.', { transient: true });
+      return;
+    }
+    editor.setInputMode('prompt');
+    const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
+    const draft = editor.getText();
+    editor.setText([draft, text].filter((part) => part !== '').join('\n\n'), { preservePasteRegistry: true });
+    const notice = queued ? 'Withdrew the queued message; it is back in the input box.' : 'Your message is back in the input box.';
+    this.showStatus(content.some((part) => part.type !== 'text')
+      ? 'Your message is back in the input box; attach its files again.' : notice, { transient: true });
+  }
+
+  private async unqueuePrompt(): Promise<void> {
+    const controller = this.controller;
+    const id = controller?.getState().queuedPromptIds.at(-1);
+    if (controller === undefined || id === undefined) {
+      this.showStatus('Nothing is queued.', { transient: true });
+      return;
+    }
+    const content = await controller.readQueuedPromptContent(id);
+    if (content === undefined) {
+      this.showStatus('That message has already started.', { transient: true });
+      return;
+    }
+    if (this.controller !== controller) return;
+    const withdrawn = await controller.abortPrompt(id);
+    if (this.controller !== controller) return;
+    if (!withdrawn) {
+      this.showStatus('That message has already started.', { transient: true });
+      return;
+    }
+    this.restorePromptDraft(content, true);
+  }
+
   private confirmExit(kind: 'ctrl-c' | 'ctrl-d'): void {
     if (this.pendingConfirm?.kind === kind) {
       this.clearPendingConfirm();
@@ -689,7 +727,7 @@ export class DaemonTUI {
     this.armConfirm(kind);
   }
 
-  private armConfirm(kind: 'ctrl-c' | 'ctrl-d' | 'escape'): void {
+  private armConfirm(kind: NonNullable<DaemonTUI['pendingConfirm']>['kind']): void {
     this.clearPendingConfirm();
     const timer = setTimeout(() => {
       if (this.pendingConfirm?.timer !== timer) return;
@@ -698,7 +736,7 @@ export class DaemonTUI {
     }, kind === 'escape' ? INTERRUPT_CONFIRM_WINDOW_MS : EXIT_CONFIRM_WINDOW_MS);
     this.pendingConfirm = { kind, timer };
     this.state.footer.setTransientHint(
-      kind === 'ctrl-c' ? CTRL_C_HINT : kind === 'ctrl-d' ? CTRL_D_HINT : ESC_INTERRUPT_HINT,
+      kind === 'draft-cleared' ? 'Ctrl+- to restore' : kind === 'ctrl-c' ? CTRL_C_HINT : kind === 'ctrl-d' ? CTRL_D_HINT : ESC_INTERRUPT_HINT,
     );
     this.state.ui.requestRender();
   }
@@ -919,15 +957,43 @@ export class DaemonTUI {
     }
     this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
+    this.setAppState({
+      model: this.startupOverridesPending ? this.startup.cliOptions.model ?? '' : '',
+      agentProfile: this.startupOverridesPending ? this.startup.agentProfile : undefined,
+      thinkingEffort: this.startupOverridesPending ? this.startup.cliOptions.thinking ?? 'off' : 'off',
+    });
     const controller = new SessionController(this.client, this.client.klient.session(sessionId).view, sessionId);
     this.controller = controller;
-    this.mainControllerDispose = controller.subscribe(() => {
-      this.renderSession(controller.getState());
-    });
+    const unsubscribe = controller.subscribe(() => this.renderSession(controller.getState()));
+    const unsubscribeInterrupted = controller.subscribeInterruptedPrompt((content) => this.restorePromptDraft(content));
+    this.mainControllerDispose = () => {
+      unsubscribe();
+      unsubscribeInterrupted();
+    };
     await controller.open();
+    if (this.controller !== controller) return;
     this.renderSession(controller.getState());
     await this.configureExplicitSources(sessionId);
+    if (this.controller !== controller) return;
     await this.applyStartupOverrides(controller);
+    const models = await this.refreshModels();
+    if (this.controller !== controller) return;
+    const view = controller.getState();
+    if (view.session !== undefined && !view.busy && !view.model && !view.profile && !this.state.appState.agentProfile && !this.state.appState.model) {
+      const [configured, profiles] = await Promise.all([
+        this.client.klient.global.config.get<string | undefined>('defaultModel'),
+        this.client.listAgentProfiles(view.session.workspace_id),
+      ]);
+      if (this.controller !== controller) return;
+      const profile = profiles.items.find((item) => item.name === 'agent');
+      const preferred = models.find((item) => item.id === (profile?.pinned_model_alias ?? configured))
+        ?? (models.length === 1 && !profile?.pinned_model_alias ? models[0] : undefined);
+      if (profile?.executor !== undefined && profile.executor !== 'native') {
+        this.setAppState({ agentProfile: profile.name });
+      } else if (preferred !== undefined) {
+        this.setAppState({ model: preferred.id, thinkingEffort: profile?.thinking_effort ?? preferred.default_effort ?? 'off' });
+      }
+    }
     await this.refreshSkillCommands(sessionId);
     await this.refreshAgentCommands();
   }
@@ -975,7 +1041,7 @@ export class DaemonTUI {
       });
     }
     this.wasBusy = view.busy;
-    if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks, view.durableIngress);
+    if (this.focusedAgentId === 'main') this.renderTranscript(view);
     this.setAppState({
       sessionId: view.sessionId,
       model: view.model ?? this.state.appState.model,
@@ -1094,7 +1160,7 @@ export class DaemonTUI {
       );
     } else if (view.turnRetry !== undefined) {
       currentActivityKind = 'retry';
-      activityMessage = `Retrying attempt ${String(view.turnRetry.failedAttempt + 1)}/${String(view.turnRetry.maxAttempts)} in ${String(view.turnRetry.delayMs)}ms`;
+      activityMessage = `Retrying (attempt ${String(view.turnRetry.failedAttempt + 1)} of ${String(view.turnRetry.maxAttempts)}) in ${String(Math.max(1, Math.ceil(view.turnRetry.delayMs / 1_000)))}s`;
     } else if (view.busy) {
       currentActivityKind = 'busy';
       const runningTasks = view.tasks?.filter((task) => task.status === 'running').length ?? 0;
@@ -1266,6 +1332,12 @@ export class DaemonTUI {
     submission?: { accepted: boolean },
   ): Promise<void> {
     const controller = await this.ensureSession();
+    if (profile === undefined && !this.state.appState.agentProfile && !this.state.appState.model &&
+      controller.getState().goal?.status !== 'active') {
+      if (this.state.editor.getText() === '') this.state.editor.setText(text);
+      await this.showModelPicker();
+      return;
+    }
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
       refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
       refreshFile: (attachment) => this.refreshFileAttachment(attachment),
@@ -1732,11 +1804,11 @@ export class DaemonTUI {
         return;
       }
       if (this.state.editor.getText() === '') this.state.editor.setText(text);
-      this.showStatus(`Unknown daemon TUI command: /${rawToken}`, 'error');
+      this.showStatus(`Unknown command: /${rawToken}`, 'error');
       return;
     }
     if ('status' in resolved) {
-      this.showStatus(`Command is disabled in daemon TUI: /${resolved.name}`, 'error');
+      this.showStatus(`/${resolved.name} is not available in the terminal UI.`, 'error');
       return;
     }
     const argumentError = validateDaemonCommandArgs(resolved);
@@ -1754,6 +1826,9 @@ export class DaemonTUI {
           return;
         }
         await this.abortActivePrompt();
+        return;
+      case 'unqueue':
+        await this.unqueuePrompt();
         return;
       case 'expand':
         this.toggleToolOutput();
@@ -1926,15 +2001,32 @@ export class DaemonTUI {
     );
   }
 
+  private async refreshModels() {
+    const { items } = await this.client.listModels();
+    const available = items.filter((item) => item.enabled !== false);
+    this.setAppState({ availableModels: Object.fromEntries(available.map((item) => [item.id, {
+      provider: item.provider_id,
+      model: item.remote_id,
+      displayName: item.display_name ?? item.id,
+      maxContextSize: item.max_context_size,
+      capabilities: item.effective_capabilities ?? item.capabilities,
+      supportEfforts: item.support_efforts,
+      defaultEffort: item.default_effort,
+      protocol: item.effective_protocol ?? item.protocol,
+    }])) });
+    return available;
+  }
+
   private async applyModel(model: string): Promise<void> {
-    const models = await this.client.listModels();
-    if (!models.items.some((item) => item.id === model)) {
-      throw new Error(`Model "${model}" was not found.`);
-    }
+    const models = await this.refreshModels();
+    const choice = models.find((item) => item.id === model);
+    if (choice === undefined) throw new Error(`Model "${model}" was not found.`);
     const controller = await this.ensureSession();
     const session = await this.client.setModel(controller.sessionId, model);
     controller.handleSessionRecord(session);
-    this.setAppState({ model });
+    this.setAppState({ model, thinkingEffort: controller.getState().thinkingEffort ?? choice.default_effort ?? 'off' });
+    const { config, kosong } = this.client.klient.global;
+    if (!(await config.get<string | undefined>('defaultModel'))) await kosong.setDefaultModel(model);
   }
 
   private async applyThinking(thinking: string): Promise<void> {
@@ -2177,7 +2269,7 @@ export class DaemonTUI {
     const parsed = parseGoalCommand(args);
     if (parsed.kind === 'error') throw new Error(parsed.message);
     if (parsed.kind === 'next-add' || parsed.kind === 'next-manage') {
-      throw new Error('Goal queue management is not available in daemon TUI.');
+      throw new Error('Goal queue management is not available in the terminal UI.');
     }
     const controller = await this.ensureSession();
     if (parsed.kind === 'status') {
@@ -2452,10 +2544,14 @@ export class DaemonTUI {
   }
 
   private async showModelPicker(): Promise<void> {
-    const models = await this.client.listModels();
+    const models = await this.refreshModels();
+    if (models.length === 0) {
+      this.showStatus('No models configured. Run /login or configure a provider.', { transient: true });
+      return;
+    }
     const picker = new ChoicePickerComponent({
-      title: 'Switch LLM model',
-      options: models.items.map((item) => ({
+      title: 'Select a model',
+      options: models.map((item) => ({
         value: item.id,
         label: item.display_name ?? item.id,
         description: item.provider_id,
@@ -2580,14 +2676,21 @@ export class DaemonTUI {
     this.focusedAgentId = agentId;
     controller.setFocusedAgent(agentId);
     if (agentId === 'main') {
-      this.renderer.sync(controller.getState().blocks);
+      this.renderTranscript(controller.getState());
       return;
     }
-    const render = () => {
-      this.renderer.sync(controller.getAgentState(agentId).blocks);
-    };
+    const render = () => this.renderTranscript(controller.getAgentState(agentId));
     this.focusedControllerDispose = controller.subscribeAgent(agentId, render);
     render();
+  }
+
+  private renderTranscript(view: SessionViewState): void {
+    this.renderer.sync(view.blocks, {
+      liveTurnId: view.busy ? latestTurnId(view.blocks) : undefined,
+      forest: this.controller?.getForest(),
+      tasks: view.tasks,
+      ingress: this.focusedAgentId === 'main' ? view.durableIngress : undefined,
+    });
   }
 
   private async showSessionPicker(
@@ -2739,21 +2842,45 @@ export class DaemonTUI {
     }
     this.interactionDeferred = false;
     this.activeInteractionId = interaction.id;
-    if (interaction.kind === 'approval') this.showApproval(interaction);
-    else this.showQuestion(interaction);
+    if (interaction.kind === 'approval') {
+      if (interaction.request.tool_name === 'tool' && interaction.request.tool_input_display === undefined) {
+        const controller = this.controller!;
+        void this.client.klient.session(controller.sessionId).approvals.list().then((requests) => {
+          if (this.controller !== controller || this.activeInteractionId !== interaction.id) return;
+          const request = requests.find((item) => item.id === interaction.request.approval_id);
+          if (request !== undefined) this.showApproval(interaction, adaptApprovalRequest({
+            ...request,
+            toolCallId: request.toolCallId ?? interaction.request.tool_call_id ?? interaction.request.approval_id,
+          }));
+        }).catch((error: unknown) => {
+          if (this.controller !== controller || this.activeInteractionId !== interaction.id) return;
+          this.activeInteractionId = undefined;
+          this.showStatus(`Could not load approval: ${formatErrorMessage(error)} Run /reload to retry.`, 'error');
+        });
+      } else this.showApproval(interaction, approvalPanelData(interaction));
+    } else this.showQuestion(interaction);
   }
 
-  private showApproval(block: ApprovalBlock): void {
+  private showApproval(block: ApprovalBlock, data: ApprovalPanelData): void {
     // Returning the response promise makes the panel ignore keys until it
     // settles, so a second press cannot answer twice.
     const panel = new ApprovalPanelComponent(
-      { data: approvalPanelData(block) },
+      { data },
       (response) =>
         this.respondApproval(block, response).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
         }),
-      undefined,
-      undefined,
+      () => this.toggleToolOutput(),
+      (preview) => this.mountEditorReplacement(new ApprovalPreviewViewer({
+        block: preview,
+        maxRows: () => {
+          const { terminal, footer, dockContainer, activityContainer, todoPanelContainer } = this.state;
+          const width = Math.max(1, terminal.columns - 2 * CHROME_GUTTER);
+          return terminal.rows - footer.render(width).length - activityContainer.render(terminal.columns).length
+            - todoPanelContainer.render(terminal.columns).length - (dockContainer === undefined ? 0 : 1);
+        },
+        onClose: () => this.mountEditorReplacement(panel),
+      }, this.state.terminal)),
       this.interactionArming(),
     );
     this.mountEditorReplacement(panel);
@@ -2802,7 +2929,7 @@ export class DaemonTUI {
           this.showStatus(formatErrorMessage(error), 'error');
         }),
       undefined,
-      undefined,
+      () => this.toggleToolOutput(),
       this.interactionArming(),
     );
     this.mountEditorReplacement(dialog);
@@ -2848,7 +2975,7 @@ export class DaemonTUI {
     this.activeSessionPicker = undefined;
     if (
       this.activeInteractionId !== undefined &&
-      !(component instanceof ApprovalPanelComponent || component instanceof QuestionDialogComponent)
+      !(component instanceof ApprovalPanelComponent || component instanceof QuestionDialogComponent || component instanceof ApprovalPreviewViewer)
     ) {
       // A dialog the user asked for (e.g. a picker that finished loading after
       // an approval appeared) takes the slot; the approval comes back when it
@@ -3001,7 +3128,7 @@ function approvalPanelData(block: ApprovalBlock): ApprovalPanelData {
     toolCallId: request.tool_call_id,
     toolName: request.tool_name,
     action: request.action,
-    display: request.tool_input_display,
+    display: request.tool_input_display ?? { kind: 'generic', summary: request.action },
   } as Parameters<typeof adaptApprovalRequest>[0]);
 }
 

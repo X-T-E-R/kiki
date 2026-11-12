@@ -4637,16 +4637,17 @@ export class SessionController {
     if (turnId !== undefined) await this.client.abortTurn(this.sessionId, turnId);
   }
 
-  async abortPrompt(promptId: string, agentId = MAIN_AGENT_ID): Promise<void> {
+  async abortPrompt(promptId: string, agentId = MAIN_AGENT_ID): Promise<boolean> {
     const result = await this.client.abortPrompt(this.sessionId, promptId, agentId === MAIN_AGENT_ID ? undefined : agentId, true).catch(error => {
       if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) return { aborted: false };
       throw error;
     });
     this.clearPendingSteer(agentId, promptId);
-    if (agentId !== MAIN_AGENT_ID) {
-      if (!result.aborted) await this.resync();
-      return;
+    if (!result.aborted) {
+      await this.resync();
+      return false;
     }
+    if (agentId !== MAIN_AGENT_ID) return true;
     this.unprojectedQueueReceipts.delete(promptId);
     const main = this.viewOf(MAIN_AGENT_ID);
     const queuedPromptMeta = { ...main.queuedPromptMeta };
@@ -4656,7 +4657,7 @@ export class SessionController {
       blocks: main.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
     });
     await this.refreshPrompts();
-    if (!result.aborted) await this.resync();
+    return true;
   }
 
   async readQueuedPromptContent(promptId: string, signal?: AbortSignal): Promise<readonly MessageContent[] | undefined> {

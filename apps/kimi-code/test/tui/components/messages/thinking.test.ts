@@ -2,6 +2,7 @@ import { visibleWidth, type TUI } from '@kiki/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
+import { THINKING_PREVIEW_LINES } from '#/tui/constant/rendering';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 
 function strip(text: string): string {
@@ -64,6 +65,19 @@ describe('ThinkingComponent', () => {
     expect(out).not.toContain('line3');
     expect(out).not.toContain('line4');
     expect(out).toContain('... (5 more lines, Ctrl+O to expand)');
+  });
+
+  it.each([1, 2])('uses the correct line count for collapsed thinking (%i)', (remaining) => {
+    const text = Array.from(
+      { length: THINKING_PREVIEW_LINES + remaining },
+      (_, index) => `line${String(index + 1)}`,
+    ).join('\n');
+    const component = new ThinkingComponent(text);
+    const out = strip(component.render(80).join('\n'));
+
+    expect(out).toContain(
+      `... (${String(remaining)} more line${remaining === 1 ? '' : 's'}, Ctrl+O to expand)`,
+    );
   });
 
   it('expands and collapses after finalization', () => {

@@ -2,13 +2,16 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { inspectWorkspaceTrustSources } from '@kiki/node-sdk';
+import { Text, TuiMainScreen } from '@kiki/pi-tui';
+import { VirtualTerminal } from '../../../../../packages/pi-tui/test/virtual-terminal';
 
 import {
   canonicalWorkspaceRoot,
   gatedMcpServers,
   isWorkspaceTrusted,
+  runWorkspaceTrustGate,
   trustWorkspace,
   workspaceTrustKey,
 } from '#/tui/daemon/workspace-trust';
@@ -20,6 +23,51 @@ afterEach(async () => {
 });
 
 describe('daemon workspace trust', () => {
+  it.each([[120, 36], [52, 22]])('removes the trust prompt without erasing shell history at %sx%s', async (columns, rows) => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tui-trust-screen-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'tui-work-'));
+    tempDirs.push(homeDir, workDir);
+    const terminal = new VirtualTerminal(columns!, rows!);
+    terminal.write('Existing shell output\r\n');
+    const writes = vi.spyOn(terminal, 'write');
+    const choice = runWorkspaceTrustGate({ homeDir, workDir, terminal });
+    await vi.waitFor(async () => {
+      await terminal.flush();
+      expect(terminal.getScrollBuffer().join('\n')).toContain('Trust this folder?');
+    });
+    terminal.sendInput('\r');
+    await expect(choice).resolves.toBe(true);
+    const session = new TuiMainScreen(terminal);
+    session.addChild(new Text('Ready for your message', 0, 0));
+    session.start();
+    await vi.waitFor(async () => {
+      await terminal.flush();
+      expect(terminal.getScrollBuffer().join('\n')).toContain('Ready for your message');
+    });
+    const screen = terminal.getScrollBuffer().join('\n');
+    expect(screen).toContain('Existing shell output');
+    expect(screen).not.toContain('Trust this folder');
+    expect(writes.mock.calls.some(([data]) => data.includes('\x1b[3J'))).toBe(false);
+    session.stop();
+  });
+
+  it('restores the shell on rejection without remembering trust', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tui-trust-reject-'));
+    tempDirs.push(homeDir);
+    const terminal = new VirtualTerminal(80, 24);
+    terminal.write('Shell before Kiki\r\n');
+    const choice = runWorkspaceTrustGate({ homeDir, workDir: homeDir, terminal });
+    await vi.waitFor(async () => {
+      await terminal.flush();
+      expect(terminal.getScrollBuffer().join('\n')).toContain('Trust this folder?');
+    });
+    terminal.sendInput('\x1b');
+    await expect(choice).resolves.toBe(false);
+    await terminal.flush();
+    expect(terminal.getScrollBuffer().join('\n')).toContain('Shell before Kiki');
+    expect(terminal.getScrollBuffer().join('\n')).not.toContain('Trust this folder');
+    await expect(isWorkspaceTrusted(homeDir, homeDir)).resolves.toBe(false);
+  });
   it('uses the engine-compatible canonical key for Windows workspace roots', () => {
     const canonical = canonicalWorkspaceRoot('C:\\Repo\\Project\\');
     expect(canonical).toBe('c:/repo/project');

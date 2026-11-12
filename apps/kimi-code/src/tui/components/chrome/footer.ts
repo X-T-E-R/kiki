@@ -16,7 +16,7 @@ import { isRainbowDancing, renderDanceFooterModel } from '#/tui/easter-eggs/danc
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
 import type { AppState } from '#/tui/types';
-import { homeAlias } from '#/tui/utils/home-alias';
+import { shortenCwd } from '#/tui/utils/shorten-cwd';
 import {
   StatusLineCommandRunner,
   type StatusLinePayload,
@@ -36,7 +36,6 @@ import {
 
 const DEFAULT_STATUS_LINE_ITEMS = ['mode', 'goal', 'model', 'tasks', 'cwd', 'git'] as const;
 
-const MAX_CWD_SEGMENTS = 3;
 const GOAL_TIMER_INTERVAL_MS = 1_000;
 
 // Toolbar tips — rotates every 10s. Most tips are short and pair up (two
@@ -145,16 +144,7 @@ function formatBadgeElapsed(ms: number): string {
 function modelDisplayName(state: AppState): string {
   const model = state.availableModels[state.model];
   const effective = model === undefined ? undefined : effectiveModelAlias(model);
-  return effective?.displayName ?? effective?.model ?? state.model;
-}
-
-function shortenCwd(path: string): string {
-  if (!path) return path;
-  const work = homeAlias(path);
-  const segments = work.split(/[\\/]/u).filter((s) => s.length > 0);
-  if (segments.length <= MAX_CWD_SEGMENTS) return work;
-  const tail = segments.slice(-MAX_CWD_SEGMENTS).join('/');
-  return `…/${tail}`;
+  return effective?.displayName ?? effective?.model ?? (state.model || state.agentProfile || '/model to select');
 }
 
 /**

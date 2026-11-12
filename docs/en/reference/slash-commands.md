@@ -53,7 +53,8 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/plan clear` | — | Clear the current plan | No |
 | `/goal [...]` | — | Start or manage an autonomous goal | See below |
 | `/stop` | `/interrupt` | Interrupt the running turn, like `Esc` | Yes |
-| `/expand` | `/output` | Expand or collapse tool output, like `Ctrl-O` | Yes |
+| `/unqueue` | — | Withdraw the last queued message and put it back in the input box | Yes |
+| `/expand` | `/output` | Expand or collapse tool output, thinking, completed work and reminders, like `Ctrl-O` | Yes |
 | `/todos` | — | Expand or collapse a truncated todo list, like `Ctrl-T` | Yes |
 
 ::: warning

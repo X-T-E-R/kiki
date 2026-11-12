@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from '@kiki/pi-tui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session, SessionSnapshotResponse } from '@kiki/protocol';
+import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
 import type { TranscriptOpsCatchupResponse, TranscriptResponse } from '@kiki/transcript';
 import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
@@ -26,9 +26,13 @@ import * as clipboardImage from '#/utils/clipboard/clipboard-image';
 const created: DaemonTUI[] = [];
 const temporaryHomes: string[] = [];
 
+function plainText(text: string): string {
+  return text.replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
 /** Plain text of the transcript, where command read-outs land. */
 function transcriptText(tui: DaemonTUI, width = 120): string {
-  return tui.state.transcriptContainer.render(width).join('\n').replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+  return plainText(tui.state.transcriptContainer.render(width).join('\n'));
 }
 
 function freshUploadExpiry(): number {
@@ -39,7 +43,7 @@ function uploadMeta(id: string, expiresAt: number): { id: string; expires_at: st
   return { id, expires_at: new Date(expiresAt).toISOString() };
 }
 
-function sessionSnapshot(sessionId: string): SessionSnapshotResponse {
+function sessionSnapshot(sessionId: string, model: string | null = 'model-a'): SessionSnapshotResponse {
   const session = {
     id: sessionId,
     workspace_id: 'wd_fixture_000000000000',
@@ -49,7 +53,7 @@ function sessionSnapshot(sessionId: string): SessionSnapshotResponse {
     busy: false,
     main_turn_active: false,
     metadata: { cwd: 'C:\\repo' },
-    agent_config: { model: 'model-a' },
+    agent_config: { model: model === null ? '' : model },
     usage: {
       input_tokens: 0,
       output_tokens: 0,
@@ -105,9 +109,9 @@ function transcriptCatchup(sessionId: string): TranscriptOpsCatchupResponse {
   };
 }
 
-function sessionView(sessionId: string): SessionViewFacade {
+function sessionView(sessionId: string, model: string | null = 'model-a'): SessionViewFacade {
   return {
-    snapshot: vi.fn(async () => sessionSnapshot(sessionId)),
+    snapshot: vi.fn(async () => sessionSnapshot(sessionId, model)),
     transcript: {
       page: vi.fn(async () => transcriptPage(sessionId)),
       catchUp: vi.fn(async () => transcriptCatchup(sessionId)),
@@ -143,10 +147,12 @@ function driver(
     readonly skillsDirs?: readonly string[];
     readonly continue?: boolean;
     readonly session?: string;
+    readonly model?: string | null;
   } = {},
 ) {
   // Submitting through the editor persists input history under KIKI_HOME;
   // keep it out of the real home directory.
+  const sessionModel = sources.model === null ? null : 'model-a';
   const home = mkdtempSync(join(tmpdir(), 'kiki-tui-home-'));
   temporaryHomes.push(home);
   vi.stubEnv('KIKI_HOME', home);
@@ -159,7 +165,7 @@ function driver(
         yolo: false,
         auto: false,
         plan,
-        model: 'model-a',
+        model: sources.model === null ? undefined : sources.model ?? 'model-a',
         thinking: 'off',
         agentFiles: sources.agentFiles ?? [],
         skillsDirs: sources.skillsDirs ?? [],
@@ -187,8 +193,9 @@ function driver(
     goal: null as null | { status: 'active' | 'paused' | 'blocked' | 'complete' },
   };
   const controllerListeners = new Set<() => void>();
+  const queuedPromptContents = new Map<string, readonly MessageContent[]>();
   const controller = {
-    sessionId: 'session-1',
+    sessionId: 'session-1' as string,
     sendPrompt: vi.fn(async () => ({
       prompt_id: 'prompt-1',
       user_message_id: 'user-1',
@@ -203,6 +210,14 @@ function driver(
     steerQueued: vi.fn<SessionController['steerQueued']>().mockResolvedValue({ outcome: 'accepted' }),
     getPendingSteers: vi.fn<SessionController['getPendingSteers']>().mockReturnValue([]),
     abortActive: vi.fn(),
+    abortPrompt: vi.fn(async (promptId: string) => {
+      controllerState.queuedPromptIds = controllerState.queuedPromptIds.filter((id) => id !== promptId);
+      controllerState.blocks = controllerState.blocks.filter(
+        (block) => !(block['kind'] === 'user' && block['promptId'] === promptId),
+      );
+      return true;
+    }),
+    readQueuedPromptContent: vi.fn(async (promptId: string) => queuedPromptContents.get(promptId)),
     close: vi.fn(),
     handleSessionRecord: vi.fn(),
     getForest: vi.fn(() => undefined),
@@ -244,6 +259,7 @@ function driver(
       setPlanMode: ReturnType<typeof vi.fn>;
       setTitle: ReturnType<typeof vi.fn>;
       updateSessionProfile: ReturnType<typeof vi.fn>;
+      abortPrompt: ReturnType<typeof vi.fn>;
       renewServerLease: ReturnType<typeof vi.fn>;
       updateSessionSourceOverlay: ReturnType<typeof vi.fn>;
       resolveApproval: ReturnType<typeof vi.fn>;
@@ -261,7 +277,9 @@ function driver(
     configureExplicitSources(sessionId: string): Promise<void>;
     ensureSourceOverlayLease(): Promise<string>;
     initializeSession(): Promise<void>;
+    refreshModels(): Promise<unknown>;
     renderSession(view: unknown): void;
+    renderTranscript(view: unknown): void;
     renderActivityState(view: unknown): void;
     clearActivityTickTimer(): void;
     clearStatusNotice(): void;
@@ -306,10 +324,10 @@ function driver(
     agent: vi.fn(() => agentFacade),
     fork: vi.fn(async () => ({ id: 'fork-1' })),
     agents: vi.fn(async () => ({})),
-    view: sessionView('session-1'),
+    view: sessionView('session-1', sessionModel),
   };
   const configFacade = {
-    get: vi.fn(async () => undefined),
+    get: vi.fn(async (_key: string): Promise<string | undefined> => undefined),
     getAll: vi.fn(async () => ({})),
     replace: vi.fn(),
     replaceSections: vi.fn(),
@@ -328,6 +346,7 @@ function driver(
     addProvider: vi.fn(),
     removeProvider: vi.fn(),
     refreshProviders: vi.fn(),
+    setDefaultModel: vi.fn(async () => ({ model: 'model-b' })),
   };
   const authFacade = {
     startLogin: vi.fn(async () => ({
@@ -350,7 +369,7 @@ function driver(
   const klientClose = vi.fn();
   internal.client.klient = {
     close: klientClose,
-    session: vi.fn((sessionId: string) => ({ ...sessionFacade, view: sessionView(sessionId) })),
+    session: vi.fn((sessionId: string) => ({ ...sessionFacade, view: sessionView(sessionId, sessionModel) })),
     global: {
       config: configFacade,
       plugins: pluginsFacade,
@@ -419,6 +438,7 @@ function driver(
     internal,
     controller,
     controllerState,
+    queuedPromptContents,
     emitController: () => {
       for (const listener of controllerListeners) listener();
     },
@@ -840,19 +860,19 @@ describe('DaemonTUI commands', () => {
       const frame = lines.join('\n').replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
       if (frame === previous) break;
       previous = frame;
-      frames.push(frame.replaceAll(/\s+/g, ' '));
+      frames.push(frame);
       panel.handleInput?.('\u001B[B');
     }
     for (const text of [
       '/tasks [stop|output] [task-id]', 'Browse background tasks',
-      '/help (/h, /?)', 'Disabled in daemon TUI',
+      '/help (/h, /?)', 'Not available in the terminal UI',
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
       'type / in the input box', 'Ctrl+-',
       'press twice over a draft', '/stop',
       'Send the draft into the running turn',
       'with empty input, steer the next queued prompt',
       'Move foreground tasks to background',
-    ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
+    ]) expect(frames.some((frame) => frame.replaceAll(/\s+/g, ' ').includes(text)), text).toBe(true);
     controllerState.busy = true;
     (tui as unknown as { renderActivityState(view: unknown): void }).renderActivityState({
       ...controllerState, tasks: [],
@@ -959,16 +979,208 @@ describe('DaemonTUI commands', () => {
   });
 
   it('keeps a REST-selected model for subsequent prompts', async () => {
-    const { tui, internal, controller } = driver();
+    const { tui, internal, controller, providerFacade } = driver();
 
     await internal.handleSlash('/model model-b');
     await internal.handleInput('hello');
 
     expect(internal.client.setModel).toHaveBeenCalledWith('session-1', 'model-b');
+    expect(providerFacade.setDefaultModel).toHaveBeenCalledWith('model-b');
     expect(tui.state.appState.model).toBe('model-b');
     expect(controller.sendPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'hello', model: 'model-b' }),
     );
+  });
+
+  it('does not replace an existing configured default when a model is selected', async () => {
+    const { internal, configFacade, providerFacade } = driver();
+    configFacade.get.mockResolvedValue('model-a');
+
+    await internal.handleSlash('/model model-b');
+
+    expect(configFacade.get).toHaveBeenCalledWith('defaultModel');
+    expect(providerFacade.setDefaultModel).not.toHaveBeenCalled();
+  });
+
+  it('maps enabled REST models into the app-state catalog using effective metadata', async () => {
+    const { tui, internal } = driver();
+    internal.client.listModels.mockResolvedValue({
+      items: [
+        {
+          id: 'model-b',
+          provider_id: 'example',
+          remote_id: 'remote-b',
+          display_name: 'Model B',
+          max_context_size: 128_000,
+          enabled: true,
+          capabilities: ['chat'],
+          effective_capabilities: ['chat', 'tools'],
+          protocol: 'openai',
+          effective_protocol: 'kimi',
+          support_efforts: ['off', 'high'],
+          default_effort: 'high',
+        },
+        {
+          id: 'model-c',
+          provider_id: 'example',
+          remote_id: 'remote-c',
+          max_context_size: 64_000,
+          capabilities: ['vision'],
+          protocol: 'anthropic',
+        },
+        {
+          id: 'disabled-model',
+          provider_id: 'example',
+          remote_id: 'disabled-remote',
+          max_context_size: 32_000,
+          enabled: false,
+        },
+      ],
+    });
+
+    await internal.refreshModels();
+
+    expect(tui.state.appState.availableModels).toEqual({
+      'model-b': {
+        provider: 'example',
+        model: 'remote-b',
+        displayName: 'Model B',
+        maxContextSize: 128_000,
+        capabilities: ['chat', 'tools'],
+        defaultEffort: 'high',
+        supportEfforts: ['off', 'high'],
+        protocol: 'kimi',
+      },
+      'model-c': {
+        provider: 'example',
+        model: 'remote-c',
+        displayName: 'model-c',
+        maxContextSize: 64_000,
+        capabilities: ['vision'],
+        defaultEffort: undefined,
+        supportEfforts: undefined,
+        protocol: 'anthropic',
+      },
+    });
+  });
+
+  it('opens model selection and preserves the draft when no model is selected', async () => {
+    const { tui, internal, controller, providerFacade } = driver(false, { model: null });
+    internal.client.listModels.mockResolvedValue({
+      items: [
+        { id: 'model-b', provider_id: 'example', remote_id: 'remote-b', max_context_size: 128_000 },
+        { id: 'model-c', provider_id: 'example', remote_id: 'remote-c', max_context_size: 64_000 },
+      ],
+    });
+
+    await internal.handleInput('choose a model before sending');
+
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(internal.client.setModel).not.toHaveBeenCalled();
+    expect(providerFacade.setDefaultModel).not.toHaveBeenCalled();
+    expect(tui.state.editor.getText()).toBe('choose a model before sending');
+    expect(tui.state.editorContainer.children[0]).not.toBe(tui.state.editor);
+    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Select a model');
+  });
+
+  it('seeds the pinned default profile model ahead of the global default without binding it', async () => {
+    const { tui, internal, configFacade, providerFacade } = driver(false, { model: null });
+    internal.startupOverridesPending = false;
+    configFacade.get.mockResolvedValue('model-b');
+    internal.client.listModels.mockResolvedValue({
+      items: [
+        { id: 'model-b', provider_id: 'example', remote_id: 'remote-b', max_context_size: 128_000 },
+        { id: 'model-c', provider_id: 'example', remote_id: 'remote-c', max_context_size: 64_000 },
+      ],
+    });
+    internal.client.listAgentProfiles.mockResolvedValue({
+      items: [{
+        name: 'agent',
+        source: 'user',
+        workspace_id: 'workspace-1',
+        path: 'agent.md',
+        description: 'Default agent',
+        disabled: false,
+        routes: [],
+        pinned_model_alias: 'model-c',
+        thinking_effort: 'high',
+        executor: 'native',
+      }],
+    });
+
+    await internal.openSession('session-1');
+
+    expect(tui.state.appState.model).toBe('model-c');
+    expect(tui.state.appState.thinkingEffort).toBe('high');
+    expect(internal.client.listAgentProfiles).toHaveBeenCalledTimes(2);
+    expect(internal.client.listAgentProfiles).toHaveBeenNthCalledWith(1, 'wd_fixture_000000000000');
+    expect(internal.client.setModel).not.toHaveBeenCalled();
+    expect(providerFacade.setDefaultModel).not.toHaveBeenCalled();
+    expect(configFacade.get).toHaveBeenCalledWith('defaultModel');
+    await tui.close();
+  });
+
+  it('withdraws queued messages newest-first, merges them into the draft, and reports an empty queue', async () => {
+    const { tui, internal, controller, controllerState, queuedPromptContents } = driver();
+    controllerState.queuedPromptIds = ['queued-1', 'queued-2'];
+    controllerState.blocks = [
+      { kind: 'user', promptId: 'queued-1', promptStatus: 'queued' },
+      { kind: 'user', promptId: 'queued-2', promptStatus: 'queued' },
+    ];
+    queuedPromptContents.set('queued-1', [{ type: 'text', text: 'first queued message' }]);
+    queuedPromptContents.set('queued-2', [{ type: 'text', text: 'second queued message' }]);
+    tui.state.editor.setText('existing draft');
+
+    await internal.handleSlash('/unqueue');
+    expect(controller.abortPrompt).toHaveBeenCalledWith('queued-2');
+    expect(tui.state.editor.getText()).toBe('existing draft\n\nsecond queued message');
+    expect(internal.showStatus).toHaveBeenLastCalledWith(
+      'Withdrew the queued message; it is back in the input box.',
+      { transient: true },
+    );
+
+    await internal.handleSlash('/unqueue');
+    expect(controller.abortPrompt).toHaveBeenLastCalledWith('queued-1');
+    expect(tui.state.editor.getText()).toBe('existing draft\n\nsecond queued message\n\nfirst queued message');
+    await internal.handleSlash('/unqueue');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('Nothing is queued.', { transient: true });
+  });
+
+  it('does not restore a queued message that starts while /unqueue is withdrawing it', async () => {
+    const { tui, internal, controller, controllerState, queuedPromptContents } = driver();
+    controllerState.queuedPromptIds = ['queued-race'];
+    controllerState.blocks = [{ kind: 'user', promptId: 'queued-race', promptStatus: 'queued' }];
+    queuedPromptContents.set('queued-race', [{ type: 'text', text: 'message that started' }]);
+    tui.state.editor.setText('keep this draft');
+    controller.abortPrompt.mockImplementationOnce(async (promptId) => {
+      controllerState.queuedPromptIds = [];
+      controllerState.blocks = [{ kind: 'user', promptId, promptStatus: 'running' }];
+      return false;
+    });
+
+    await internal.handleSlash('/unqueue');
+
+    expect(controller.abortPrompt).toHaveBeenCalledWith('queued-race');
+    expect(tui.state.editor.getText()).toBe('keep this draft');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('That message has already started.', { transient: true });
+  });
+
+  it('does not restore queued content after switching sessions while reading it', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.queuedPromptIds = ['queued-old-session'];
+    tui.state.editor.setText('new session draft');
+    let resolveContent!: (content: readonly MessageContent[] | undefined) => void;
+    controller.readQueuedPromptContent.mockReturnValueOnce(
+      new Promise((resolve) => { resolveContent = resolve; }),
+    );
+
+    const pendingUnqueue = internal.handleSlash('/unqueue');
+    internal.controller = { ...controller, sessionId: 'session-2' };
+    resolveContent([{ type: 'text', text: 'message from previous session' }]);
+    await pendingUnqueue;
+
+    expect(controller.abortPrompt).not.toHaveBeenCalled();
+    expect(tui.state.editor.getText()).toBe('new session draft');
   });
 
   it('preserves plan mode in startup and prompt submissions', async () => {
@@ -1840,6 +2052,90 @@ describe('DaemonTUI commands', () => {
     expect(controller.abortActive).toHaveBeenCalledOnce();
   });
 
+  it('restores interrupted prompt text into drafts and avoids overwriting a shell command', async () => {
+    const { tui, internal } = driver();
+    internal.startupOverridesPending = false;
+    const abortPrompt = vi.spyOn(internal.client, 'abortPrompt').mockResolvedValue({ aborted: true, at_seq: 2 } as never);
+    await internal.openSession('session-1');
+    const controller = internal.controller as unknown as SessionController;
+    const editor = tui.state.editor;
+    let seq = 0;
+    const interrupt = async (promptId: string, text: string) => {
+      seq += 1;
+      const turnId = `turn-${promptId}`;
+      const userMessageId = `user-${promptId}`;
+      controller.handleTranscript({
+        type: 'transcript.reset',
+        session_id: 'session-1',
+        agent_id: 'main',
+        snapshot: {
+          items: [{
+            kind: 'turn',
+            turnId,
+            ordinal: seq,
+            state: 'running',
+            origin: { kind: 'user', payload: { promptId, userMessageId } },
+            prompt: text,
+            startedAt: '2026-01-01T00:00:00.000Z',
+            steps: [{ kind: 'step', stepId: `${turnId}.1`, turnId, ordinal: 1, state: 'running', frames: [] }],
+          }],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [{
+            promptId,
+            status: 'running',
+            userMessageId,
+            content: [{ type: 'text', text }],
+            createdAt: '2026-01-01T00:00:00.000Z',
+          }],
+          meta: { activity: 'turn' },
+          hasMoreOlder: false,
+        },
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq, epoch: 'epoch-1' },
+      } as never);
+      await controller.abortActive();
+    };
+
+    editor.setText('');
+    await interrupt('prompt-empty', 'interrupted with no draft');
+    expect(editor.getText()).toBe('interrupted with no draft');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('Your message is back in the input box.', { transient: true });
+
+    editor.setText('keep my follow-up');
+    await interrupt('prompt-merge', 'interrupted prompt');
+    expect(editor.getText()).toBe('keep my follow-up\n\ninterrupted prompt');
+
+    const largePaste = Array.from({ length: 15 }, (_, index) => `large pasted line ${String(index + 1)}`).join('\n');
+    editor.setText('');
+    editor.handleInput(`\u001B[200~${largePaste}\u001B[201~`);
+    expect(editor.getText()).toMatch(/\[paste #\d+/);
+    await interrupt('prompt-paste', 'interrupted after the paste');
+    expect(editor.getText()).toContain('[paste #');
+    expect(editor.getExpandedText()).toBe(`${largePaste}\n\ninterrupted after the paste`);
+
+    editor.setInputMode('bash');
+    editor.setText('');
+    await interrupt('prompt-shell-empty', 'restore into prompt mode');
+    expect(editor.inputMode).toBe('prompt');
+    expect(editor.getText()).toBe('restore into prompt mode');
+
+    editor.setInputMode('bash');
+    editor.setText('echo keep this');
+    await interrupt('prompt-shell-draft', 'do not overwrite shell input');
+    expect(editor.inputMode).toBe('bash');
+    expect(editor.getText()).toBe('echo keep this');
+    expect(internal.showStatus).toHaveBeenLastCalledWith(
+      'Your message was not put back; press ↑ to recall it.',
+      { transient: true },
+    );
+    expect(abortPrompt).toHaveBeenCalledTimes(5);
+    await tui.close();
+  });
+
   describe('Esc, Ctrl-C and Ctrl-D typed into the input box', () => {
     const ESC = '\u001B';
     const CTRL_C = '\u0003';
@@ -1916,7 +2212,7 @@ describe('DaemonTUI commands', () => {
       editor.setText('draft');
       editor.handleInput(CTRL_C);
       expect(editor.getText()).toBe('');
-      expect(hint()).toBeNull();
+      expect(hint()).toBe('Ctrl+- to restore');
       editor.handleInput(CTRL_C);
       expect(hint()).toBe('Press Ctrl+C again to exit');
       expect(stop).not.toHaveBeenCalled();
@@ -1992,7 +2288,7 @@ describe('DaemonTUI commands', () => {
       contextTokens: 10,
       maxContextTokens: 100,
       busy: true,
-      turnRetry: { failedAttempt: 1, maxAttempts: 3, delayMs: 500 },
+      turnRetry: { failedAttempt: 1, maxAttempts: 3, delayMs: 4_000 },
       todos: Array.from({ length: 6 }, (_, index) => ({
         title: `Todo ${String(index)}`,
         status: index === 0 ? 'in_progress' : 'pending',
@@ -2008,11 +2304,11 @@ describe('DaemonTUI commands', () => {
     });
 
     expect(tui.state.appState.contextUsage).toBe(0.1);
-    expect(tui.state.appState.stepRetry).toMatchObject({ nextAttempt: 2, delayMs: 500 });
+    expect(tui.state.appState.stepRetry).toMatchObject({ nextAttempt: 2, delayMs: 4_000 });
     expect(tui.state.todoPanel.hasOverflow()).toBe(true);
     expect(tui.state.editor.onToggleTodoExpand?.()).toBe(true);
     expect(internal.showStatus).toHaveBeenCalledWith(
-      expect.stringContaining('Retrying attempt'),
+      expect.stringContaining('Retrying (attempt 2 of 3) in 4s'),
       { tone: 'normal', source: 'activity' },
     );
     expect(tui.state.footer.render(120).join('\n')).toContain('task');
@@ -2078,9 +2374,11 @@ describe('DaemonTUI commands', () => {
 
     editor.handleInput('\u0003');
     expect(editor.getText()).toBe('');
+    expect(tui.state.footer.getTransientHint()).toBe('Ctrl+- to restore');
     expect(controller.abortActive).not.toHaveBeenCalled();
     editor.handleInput('\u001F');
     expect(editor.getText()).toBe(draft);
+    expect(tui.state.footer.getTransientHint()).toBeNull();
     expect(internal.client.undoSession).not.toHaveBeenCalled();
     expect(controller.resync).not.toHaveBeenCalled();
 
@@ -2135,7 +2433,7 @@ describe('DaemonTUI commands', () => {
     expect(configFacade.getAll).toHaveBeenCalledOnce();
     expect(transcriptText(tui)).toContain('example-flag');
     expect(internal.showStatus).toHaveBeenCalledWith(
-      'Unknown daemon TUI command: /custom',
+      'Unknown command: /custom',
       'error',
     );
     expect(controller.sendPrompt).not.toHaveBeenCalled();
@@ -2558,6 +2856,177 @@ describe('DaemonTUI commands', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('opens an approval preview, returns to the same choice, and restores the editor if settled elsewhere', () => {
+    vi.useFakeTimers();
+    try {
+      const { tui, internal } = driver();
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+      vi.spyOn(tui.state.terminal, 'rows', 'get').mockReturnValue(24);
+      const oldText = Array.from({ length: 30 }, (_, index) => `original-line-${String(index + 1)}`).join('\n');
+      const newText = Array.from({ length: 30 }, (_, index) => `preview-line-${String(index + 1)}`).join('\n');
+      const approval = {
+        kind: 'approval',
+        id: 'approval-preview',
+        request: {
+          approval_id: 'approval-preview',
+          session_id: 'session-1',
+          tool_call_id: 'tool-preview',
+          tool_name: 'Edit',
+          action: 'edit file',
+          tool_input_display: { kind: 'generic', detail: { file_path: 'example.txt', old_string: oldText, new_string: newText } },
+          created_at: '2026-01-01T00:00:00.000Z',
+          expires_at: '2026-01-01T00:01:00.000Z',
+        },
+        resolution: undefined,
+      };
+      const sync = (blocks: readonly unknown[]) => {
+        (internal as unknown as { syncInteractionBlocks(blocks: readonly unknown[]): void }).syncInteractionBlocks(blocks);
+      };
+      const mounted = () => tui.state.editorContainer.children[0];
+      tui.state.editorContainer.addChild(tui.state.editor);
+      tui.state.ui.setFocus(tui.state.editor);
+      sync([approval]);
+      const panel = mounted();
+      if (panel?.handleInput === undefined) throw new Error('Approval panel was not focused');
+      const panelOutput = () => plainText(tui.state.editorContainer.render(80).join('\n'));
+      const initialPanel = panelOutput();
+      expect(initialPanel).toContain('Ctrl+E preview');
+      expect(initialPanel).toContain('(Ctrl+E to preview)');
+      expect(initialPanel).not.toContain('preview-line-30');
+
+      vi.advanceTimersByTime(500);
+      panel.handleInput('\u001B[B');
+      const selectedPanel = panelOutput();
+      panel.handleInput('\u0005');
+      let viewer = mounted();
+      if (viewer?.handleInput === undefined || viewer === panel) throw new Error('Approval preview was not focused');
+      for (let index = 0; index < 50; index++) viewer.handleInput('\u001B[B');
+      expect(panelOutput()).toContain('preview-line-30');
+      expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+
+      viewer.handleInput('\u001B');
+      expect(mounted()).toBe(panel);
+      expect(panelOutput()).toBe(selectedPanel);
+      expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+
+      panel.handleInput('\u0005');
+      viewer = mounted();
+      if (viewer?.handleInput === undefined || viewer === panel) throw new Error('Approval preview was not reopened');
+      sync([]);
+      expect(mounted()).toBe(tui.state.editor);
+      expect(panelOutput()).not.toContain('preview-line-30');
+      expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('loads canonical approval details and can recover after a failed request', async () => {
+    const { tui, internal, sessionFacade } = driver();
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+    const list = vi.fn()
+      .mockRejectedValueOnce(new Error('Connection interrupted.'))
+      .mockResolvedValueOnce([{
+        id: 'approval-canonical',
+        toolName: 'Edit',
+        action: 'edit file',
+        display: { kind: 'generic', detail: { path: 'example.txt', old_string: 'old', new_string: 'new' } },
+      }]);
+    internal.client.klient['session'] = vi.fn(() => ({ ...sessionFacade, approvals: { list } }));
+    const approval = {
+      kind: 'approval',
+      id: 'approval-canonical',
+      request: { approval_id: 'approval-canonical', tool_name: 'tool', action: 'Approve the action' },
+      resolution: undefined,
+    };
+    const sync = () => (internal as unknown as {
+      syncInteractionBlocks(blocks: readonly unknown[]): void;
+    }).syncInteractionBlocks([approval]);
+    tui.state.editorContainer.addChild(tui.state.editor);
+    sync();
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith(
+      'Could not load approval: Connection interrupted. Run /reload to retry.', 'error',
+    ));
+    expect(tui.state.editorContainer.children[0]).toBe(tui.state.editor);
+    expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+    sync();
+    await vi.waitFor(() => expect(tui.state.editorContainer.children[0]).not.toBe(tui.state.editor));
+    const output = plainText(tui.state.editorContainer.render(80).join('\n'));
+    expect(output).toContain('example.txt');
+    expect(output).toContain('Ctrl+E preview');
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+  });
+
+  it('toggles transcript output from both the approval panel and question dialog', () => {
+    const { tui, internal } = driver();
+    const tool = {
+      kind: 'tool',
+      id: 'tool-output',
+      toolCallId: 'tool-output',
+      name: 'Read',
+      argsText: '{"path":"example.txt"}',
+      args: { path: 'example.txt' },
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: 'expanded-tool-output',
+      isError: false,
+      durationMs: 1,
+      progressText: undefined,
+      turnId: 'turn-1',
+    };
+    internal.renderTranscript({ blocks: [tool], busy: false, tasks: [] });
+    expect(transcriptText(tui)).not.toContain('expanded-tool-output');
+    const approval = {
+      kind: 'approval',
+      id: 'approval-toggle',
+      request: {
+        approval_id: 'approval-toggle',
+        session_id: 'session-1',
+        tool_call_id: 'tool-toggle',
+        tool_name: 'Bash',
+        action: 'run command',
+        tool_input_display: { kind: 'generic' },
+        created_at: '2026-01-01T00:00:00.000Z',
+        expires_at: '2026-01-01T00:01:00.000Z',
+      },
+      resolution: undefined,
+    };
+    const question = {
+      kind: 'question',
+      id: 'question-toggle',
+      request: {
+        question_id: 'question-toggle',
+        session_id: 'session-1',
+        questions: [{ id: 'q1', question: 'Choose?', options: [{ id: 'a', label: 'A' }] }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      outcome: undefined,
+    };
+    const sync = (blocks: readonly unknown[]) => {
+      (internal as unknown as { syncInteractionBlocks(blocks: readonly unknown[]): void }).syncInteractionBlocks(blocks);
+    };
+    const mounted = () => tui.state.editorContainer.children[0];
+
+    tui.state.editorContainer.addChild(tui.state.editor);
+    tui.state.ui.setFocus(tui.state.editor);
+    sync([approval]);
+    const approvalPanel = mounted();
+    if (approvalPanel?.handleInput === undefined) throw new Error('Approval panel was not focused');
+    approvalPanel.handleInput('\u000F');
+    expect(tui.state.toolOutputExpanded).toBe(true);
+    expect(transcriptText(tui)).toContain('expanded-tool-output');
+
+    sync([]);
+    sync([question]);
+    const questionDialog = mounted();
+    if (questionDialog?.handleInput === undefined) throw new Error('Question dialog was not focused');
+    questionDialog.handleInput('\u000F');
+    expect(tui.state.toolOutputExpanded).toBe(false);
+    expect(transcriptText(tui)).not.toContain('expanded-tool-output');
   });
 
   it('keeps interaction response failures inside the TUI', async () => {
@@ -3032,9 +3501,9 @@ describe('DaemonTUI commands', () => {
         internal.showStatus('Upload failed', 'error');
         vi.advanceTimersByTime(1_000);
         expect(frame()).toContain('Upload failed');
-        controllerState.turnRetry = { failedAttempt: 1, maxAttempts: 3, delayMs: 500 };
+        controllerState.turnRetry = { failedAttempt: 1, maxAttempts: 3, delayMs: 400 };
         vi.advanceTimersByTime(1_000);
-        expect(frame()).toContain('Retrying attempt 2/3');
+        expect(frame()).toContain('Retrying (attempt 2 of 3) in 1s');
         expect(internal.activityTickTimer).toBeUndefined();
         controllerState.resyncing = true;
         internal.renderActivityState(controllerState);

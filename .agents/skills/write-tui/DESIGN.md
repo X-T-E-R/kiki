@@ -1,7 +1,7 @@
 # TUI 设计规范（Design Spec）
 
 > 本目录所有 dialog / selector / 输入框的**单一真值源**。新增或改造交互组件前先读本文件，提交前对照文末「自查清单」。
-> 基准组件：`components/dialogs/model-selector.ts`（`/model`）。所有列表型 dialog 的头部、hint、搜索、选中/当前态都以它为准对齐。
+> 基准组件：`components/dialogs/choice-picker.ts`（`ChoicePickerComponent`）。所有列表型 dialog 的头部、hint、搜索、选中/当前态都以它为准对齐。
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## 3. 列表 dialog 标准布局
 
-以 `model-selector` 为准，自上而下逐行固定为：
+以 `choice-picker` 为准，自上而下逐行固定为：
 
 ```
 ─────────────────────────────────────────  ① 顶部边框（primary，整宽 ─）
@@ -53,7 +53,8 @@
 - **`(type to search)` 只出现在标题后缀**（可搜索且 query 为空时）；hint 行**不再**重复出现「type to search」。
 - **`Search:` 行在空行之下、列表之上**，只在有 query 时渲染。
 - hint 紧贴标题（中间无空行）；hint 与正文之间有 1 空行。
-- 每行最终经 `truncateToWidth(line, width)`，CJK / 窄终端不超宽。
+- 正文行经 `truncateToWidth(line, width)`。
+- **hint 行不截断**：超宽时在 ` · ` 处折成多行（参考 `approval-panel.ts` 的 `layoutHintLines`）。离开对话框的键（`Esc cancel` / `Esc reject`）必须在任何宽度下完整可见。
 
 ## 4. hint 行与文案词汇（英文 UI）
 
@@ -188,7 +189,8 @@
 - [ ] 「离开对话框」只说 `cancel`，不混用 close / back / exit / dismiss；对话框内子层级的 Esc 写 `Esc back`（见第 4 节）。
 - [ ] 开关列表用 `Space toggle` 就地切换、不关闭；状态标签 ` enabled`(`success`) / ` disabled`(`textDim`) 紧跟名称空 2 格（见第 7 节）。
 - [ ] 长列表有滚动 / 翻页指示（`▼ N more` 或 `x / y`），空态文案明确（`No matches` 等）。
-- [ ] 每行经 `truncateToWidth(line, width)`，CJK / 窄终端下不超宽。
+- [ ] 正文行经 `truncateToWidth(line, width)`。
+- [ ] hint 行不截断：超宽时在 ` · ` 处折成多行（参考 `approval-panel.ts` 的 `layoutHintLines`）；离开对话框的键（`Esc cancel` / `Esc reject`）必须在任何宽度下完整可见。
 - [ ] 复用 `SearchableList`；输入框圆角盒，多字段支持 `Tab/↑↓` 切换、Enter 推进 / 末段提交。
 - [ ] 系统主动弹出、替换输入框的对话框按第 11 节处理上膛时间、默认项、单次响应和分层 Esc。
 - [ ] 有对应的组件测试（render 快照 + handleInput 键行为）。

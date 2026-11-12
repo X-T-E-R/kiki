@@ -86,16 +86,10 @@ describe("CombinedAutocompleteProvider", () => {
 			}
 		});
 
-		it("does not trigger for slash commands", async () => {
+		it("does not trigger file completion while typing an unknown slash command", async () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");
-			const lines = ["/model"];
-			const cursorLine = 0;
-			const cursorCol = 6; // After "model"
-
-			const result = await getSuggestions(provider, lines, cursorLine, cursorCol, true);
-
-			console.log("Result:", result);
-			assert.strictEqual(result, null, "Should not trigger for slash commands");
+			const result = await getSuggestions(provider, ["/model"], 0, 6);
+			assert.strictEqual(result, null);
 		});
 
 		it("triggers for absolute paths after slash command argument", async () => {

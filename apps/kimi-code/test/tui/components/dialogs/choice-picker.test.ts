@@ -1,3 +1,4 @@
+import { visibleWidth } from '@kiki/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChoicePickerComponent, type ChoiceOption } from '#/tui/components/dialogs/choice-picker';
@@ -42,6 +43,70 @@ describe('ChoicePickerComponent', () => {
     expect(hint).not.toContain('esc cancel');
     // Blank line separates the hint from the body, like the model dialog.
     expect(lines[titleIdx + 2]).toBe('');
+  });
+
+  it('wraps complete hint segments at narrow widths and keeps the 100-column hint unchanged', () => {
+    const picker = new ChoicePickerComponent({
+      title: 'Pick a model',
+      options: [
+        { value: 'alpha', label: 'Alpha' },
+        { value: 'beta', label: 'Beta' },
+      ],
+      searchable: true,
+      pageSize: 1,
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    for (const width of [20, 40, 50, 100]) {
+      const lines = picker.render(width).map(strip);
+      const titleIdx = lines.findIndex((line) => line.includes('Pick a model'));
+      const blankIdx = lines.indexOf('', titleIdx + 1);
+      const hintLines = lines.slice(titleIdx + 1, blankIdx);
+
+      for (const segment of ['↑↓ navigate', '←→ page', 'Enter select', 'Esc cancel']) {
+        expect(hintLines.some((line) => line.includes(segment)), `width=${String(width)}`).toBe(true);
+      }
+      expect(hintLines.at(-1)).toContain('Esc cancel');
+      for (const line of lines) {
+        expect(visibleWidth(line), `width=${String(width)} line=${line}`).toBeLessThanOrEqual(width);
+      }
+      if (width === 100) {
+        expect(hintLines).toEqual([
+          ' ↑↓ navigate · ←→ page · Enter select · Esc cancel',
+        ]);
+      }
+    }
+
+    picker.handleInput('a');
+    const queryLines = picker.render(40).map(strip);
+    const titleIdx = queryLines.findIndex((line) => line.includes('Pick a model'));
+    const blankIdx = queryLines.indexOf('', titleIdx + 1);
+    const hintLines = queryLines.slice(titleIdx + 1, blankIdx);
+    expect(hintLines.at(-1)).toContain('Esc clear');
+    expect(hintLines.some((line) => line.includes('Esc clear'))).toBe(true);
+    expect(queryLines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+  });
+
+  it('wraps supplied hint segments without merging explicit lines', () => {
+    const picker = new ChoicePickerComponent({
+      title: 'Select an action',
+      hint: 'Ctrl+A all · Esc cancel\nEnter select · Esc reject',
+      options: [{ value: 'a', label: 'Alpha' }],
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    const lines = picker.render(24).map(strip);
+    const titleIdx = lines.findIndex((line) => line.includes('Select an action'));
+    const blankIdx = lines.indexOf('', titleIdx + 1);
+    const hintLines = lines.slice(titleIdx + 1, blankIdx);
+
+    expect(hintLines).toEqual([
+      ' Ctrl+A all · Esc cancel',
+      ' Enter select',
+      ' Esc reject',
+    ]);
   });
 
   it('renders optional descriptions below choice labels', () => {

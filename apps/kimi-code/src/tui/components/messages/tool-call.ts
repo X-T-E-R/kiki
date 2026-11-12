@@ -2104,7 +2104,7 @@ export class ToolCallComponent extends Container {
         this.addChild(
           new Text(
             currentTheme.dim(
-              `... (${String(remaining)} more lines, ${String(allLines.length)} total, Ctrl+O to expand)`,
+              `... (${String(remaining)} more line${remaining === 1 ? '' : 's'}, ${String(allLines.length)} total, Ctrl+O to expand)`,
             ),
             2,
             0,

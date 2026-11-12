@@ -35,8 +35,29 @@ describe('TruncatedOutputComponent', () => {
     expect(lines[1]).toBe('  ... (2 more lines, Ctrl+O to expand)');
   });
 
-  it('omits the ctrl+o promise when expandHint is false', () => {
-    const component = new TruncatedOutputComponent('a\nb\nc\nd', {
+  it.each([1, 2])('pluralizes the expand hint count correctly (%i)', (remaining) => {
+    const output = Array.from(
+      { length: 2 + remaining },
+      (_, index) => `line${String(index + 1)}`,
+    ).join('\n');
+    const component = new TruncatedOutputComponent(output, {
+      expanded: false,
+      isError: false,
+      maxLines: 2,
+    });
+
+    const lines = strip(component.render(80).join('\n')).split('\n');
+    expect(lines[2]).toBe(
+      `  ... (${String(remaining)} more line${remaining === 1 ? '' : 's'}, Ctrl+O to expand)`,
+    );
+  });
+
+  it.each([1, 2])('pluralizes the fixed-truncation count correctly (%i)', (remaining) => {
+    const output = Array.from(
+      { length: 2 + remaining },
+      (_, index) => `line${String(index + 1)}`,
+    ).join('\n');
+    const component = new TruncatedOutputComponent(output, {
       expanded: false,
       isError: false,
       maxLines: 2,
@@ -45,7 +66,7 @@ describe('TruncatedOutputComponent', () => {
     });
 
     const lines = strip(component.render(80).join('\n')).split('\n');
-    expect(lines[2]).toBe('    ... (2 more lines)');
+    expect(lines[2]).toBe(`    ... (${String(remaining)} more line${remaining === 1 ? '' : 's'})`);
   });
 
   it('renders all lines without a hint when expanded', () => {

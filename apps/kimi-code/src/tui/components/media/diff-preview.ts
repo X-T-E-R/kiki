@@ -304,10 +304,10 @@ export function renderDiffLinesClustered(
   if (truncated) {
     const hidden = changedCount - shownChanges;
     if (hidden > 0) {
-      const hint = opts.expandKeyHint ?? 'Ctrl+O';
+      const hint = opts.expandKeyHint ?? 'Ctrl+O to expand';
       output.push(
         s.meta(
-          `     … ${String(hidden)} more change${hidden > 1 ? 's' : ''} hidden (${hint} to expand)`,
+          `     … ${String(hidden)} more change${hidden > 1 ? 's' : ''} hidden (${hint})`,
         ),
       );
     }

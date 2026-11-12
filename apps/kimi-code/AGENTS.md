@@ -29,11 +29,13 @@ Main directories:
 - `src/tui/components/editor/`: the custom input box and the file mention provider.
 - `src/tui/components/media/`: image, diff, code highlight, and other media displays.
 - `src/tui/components/messages/`: message blocks in the transcript — assistant, user, tool call, thinking, usage, subagent, and so on.
-- `src/tui/components/panes/`: right-side / activity-area panes such as the activity pane and queue pane.
+- `src/tui/components/panes/`: legacy, unmounted pane implementations (`ActivityPaneComponent`, `QueuePaneComponent`, and `BtwPanelComponent`); `DaemonTUI` does not mount them.
 - `src/tui/interactions/`: neutral approval/question panel types and adapters.
 - `src/tui/theme/`: themes, color tokens, style helpers, terminal-background detection, and the pi-tui markdown theme.
 - `src/tui/utils/`: TUI-only utility functions.
 - `src/utils/`: app-wide utilities — clipboard, git, history, image, process, usage, and so on.
+
+Only code reached through `src/tui/daemon/daemon-tui.ts` and its mounted component tree runs in the interactive TUI. A dialog or component imported or re-exported elsewhere but not mounted or called through that path is legacy; do not fix interactive behavior there. `src/tui/commands/goal-parse.ts` is live (used by `DaemonTUI` and `src/cli/goal-prompt.ts`), so do not classify that directory as legacy; `src/tui/controllers/` does not exist in this tree. Port interactive behavior by wiring it into `DaemonTUI`, then delete the replaced legacy copy.
 
 ## Daemon TUI
 

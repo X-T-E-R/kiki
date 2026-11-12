@@ -21,6 +21,40 @@ function render(blocks: readonly Block[]): string {
 }
 
 describe('DaemonTranscriptRenderer', () => {
+  it.each([52, 120])('folds settled work and keeps Steer, replies and errors visible at %s columns', (width) => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const frame = () => strip(container.render(width).join('\n'));
+    const thinking = Array.from({ length: 30 }, (_, i) => `Internal thought ${i}`).join('\n');
+    const reads = [1, 2, 3].map((id) => ({
+      kind: 'tool' as const, id: `read-${id}`, toolCallId: `read-${id}`, name: 'Read', turnId: 't1',
+      args: { path: `file-${id}.txt` }, argsText: '', display: undefined, description: undefined,
+      status: 'done' as const, output: `Read detail ${id}`, isError: false, durationMs: undefined,
+      progressText: undefined,
+    }));
+    renderer.sync([
+      { kind: 'user', id: 'steer', text: 'Keep this follow-up', createdAt: '', turnId: 't1' },
+      { kind: 'system-reminder', id: 'directive', text: 'Recipe reminder detail\nAnother directive', createdAt: undefined, turnId: 't1' },
+      { kind: 'thinking', id: 'thought', text: thinking, streaming: false, createdAt: undefined, turnId: 't1' },
+      ...reads,
+      { kind: 'assistant', id: 'answer', text: 'This is the answer', streaming: false, createdAt: undefined, turnId: 't1' },
+      { ...reads[0]!, id: 'failed', toolCallId: 'failed', turnId: 't2', status: 'error', args: { path: 'failed.txt' }, output: 'File not found' },
+      { kind: 'system-reminder', id: 'standalone', variant: 'steer', text: 'Standalone reminder detail', createdAt: undefined },
+    ]);
+    expect(frame()).toContain('Worked · 3 steps · 1 thought · 1 note');
+    expect(frame()).toContain('This is the answer');
+    expect(frame()).toContain('failed.txt');
+    expect(frame().match(/Keep this follow-up/g)).toHaveLength(1);
+    expect(frame()).toContain('Steer');
+    expect(frame()).not.toMatch(/Recipe reminder detail|Standalone reminder detail|Internal thought|Read detail/);
+    renderer.setExpanded(true);
+    expect(frame()).toContain('Recipe reminder detail');
+    expect(frame()).toContain('Standalone reminder detail');
+    expect(frame()).toContain('Internal thought 29');
+    expect(frame()).toContain('file-3.txt');
+    renderer.setExpanded(false);
+    expect(frame()).not.toMatch(/Recipe reminder detail|Standalone reminder detail|Internal thought/);
+  });
   it('renders session-core user, assistant, tool, subagent, approval, and question blocks', () => {
     const output = render([
       {
@@ -572,8 +606,10 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('Streaming more');
   });
 
-  it('renders a preserved shell command separately from its output', () => {
-    const output = render([
+  it('shows a compact shell command and expands its output on demand', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    renderer.sync([
       {
         kind: 'shell',
         id: 'shell-command',
@@ -585,9 +621,12 @@ describe('DaemonTranscriptRenderer', () => {
       },
     ]);
 
-    expect(output).toContain('$ pnpm test');
-    expect(output).toContain('42 passed');
-    expect(output).not.toContain('$ 42 passed');
+    const compact = strip(container.render(80).join('\n'));
+    expect(compact).toContain('$ pnpm test');
+    expect(compact).not.toContain('42 passed');
+    renderer.setExpanded(true);
+    const expanded = strip(container.render(80).join('\n'));
+    expect(expanded).toMatch(/\$ pnpm test[^\n]*\n +42 passed/u);
   });
 
   it('maps question dialog labels back to REST option identifiers', () => {

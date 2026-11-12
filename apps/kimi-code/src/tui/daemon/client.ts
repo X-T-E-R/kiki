@@ -127,8 +127,10 @@ export class DaemonClient implements SessionTransport {
     return this.request('GET', '/models');
   }
 
-  listAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
-    return this.request('GET', '/agents', undefined, { expand: 'true' });
+  listAgentProfiles(workspaceId?: string): Promise<ListNamedAgentProfilesResponse> {
+    return this.request('GET', '/agents', undefined, workspaceId === undefined
+      ? { expand: 'true' }
+      : { workspace_id: workspaceId, effective: 'true' });
   }
 
   listSkills(sessionId: string): Promise<{

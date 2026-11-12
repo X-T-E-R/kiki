@@ -79,7 +79,7 @@ While streaming output is active, the input box can still receive input and supp
 
 The line above the input box shows how long the turn has been running and how to interrupt it. While the turn waits for your approval or answer, it says so instead.
 
-`Ctrl-S` includes attachments and inline skill activations with the draft. Shell input (`! …`) is not steered; slash commands follow their normal command path. When idle, `Ctrl-S` submits nonempty input normally. The status reports the prompt's actual delivery outcome. Deferred failures and held requests stay visible with their saved input. If delivery is unconfirmed, check the queue before retrying.
+`Ctrl-S` includes attachments and inline skill activations with the draft; [`/unqueue`](./slash-commands.md) takes the last queued message back. Shell input (`! …`) is not steered; slash commands follow their normal command path. When idle, `Ctrl-S` submits nonempty input normally. The status reports the prompt's actual delivery outcome. Deferred failures and held requests stay visible with their saved input. If delivery is unconfirmed, check the queue before retrying.
 
 `Ctrl-B` detaches foreground tasks, not the turn itself. If the model is streaming without a foreground task, the TUI reports that there is no task to move. At an idle prompt, the key keeps its normal cursor-left behavior.
 
@@ -87,9 +87,9 @@ The line above the input box shows how long the turn has been running and how to
 
 | Shortcut | Function |
 | --- | --- |
-| `Ctrl-O` | Expand or collapse tool output |
+| `Ctrl-O` | Expand or collapse tool output, thinking, completed work and reminders |
 
-When collapsed tool call results exist in the history, press `Ctrl-O` to toggle between collapsed and expanded views.
+Completed work and reminders are collapsed by default. Press `Ctrl-O` or run `/expand` to read their details; running and failed work stays visible.
 
 ## Approval Panel
 
@@ -101,7 +101,7 @@ When the Agent initiates a tool call that requires confirmation, the TUI display
 | `Enter` | Confirm the currently selected option |
 | `1` ~ `9` | Directly select the option at the corresponding index |
 | `Esc` / `Ctrl-C` / `Ctrl-D` | Reject the current request |
-| `Ctrl-E` | Expand or collapse the full content when the panel contains a diff or file preview |
+| `Ctrl-E` | Open the full diff or file content; `Esc`, `q` or `Ctrl-E` returns to the panel |
 | `Ctrl-O` | Toggle the collapsed state of other tool output |
 
 Options that require feedback (such as "Reject" or "Revise") switch to a feedback input state after confirmation: type the feedback text and press `Enter` to submit; press `Esc` to exit feedback input and return to the candidate list.

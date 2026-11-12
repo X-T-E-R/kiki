@@ -2,9 +2,8 @@
  * ApprovalPreviewViewer — full-screen preview of an Edit diff or Write
  * file content for the approval flow.
  *
- * Mounted by `kimi-tui.ts` via the same nested-takeover pattern as
- * `TaskOutputViewer`: the active approval panel is preserved underneath
- * and restored on close. The viewer is intentionally a snapshot — its
+ * DaemonTUI replaces the active approval panel with this viewer and restores
+ * the same panel on close. The viewer is intentionally a snapshot — its
  * lines are rendered once at construction and only sliced on scroll, so
  * the per-frame render cost stays in `O(viewport)` even when the
  * underlying diff/content is very large.
@@ -23,6 +22,7 @@ import {
   type Terminal,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Focusable,
 } from '@kiki/pi-tui';
 
@@ -39,6 +39,7 @@ export type ApprovalPreviewBlock = DiffDisplayBlock | FileContentDisplayBlock;
 export interface ApprovalPreviewViewerProps {
   readonly block: ApprovalPreviewBlock;
   readonly onClose: () => void;
+  readonly maxRows?: () => number;
 }
 
 function padToWidth(line: string, width: number): string {
@@ -96,11 +97,11 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
       this.scrollBy(1);
       return;
     }
-    if (matchesKey(data, Key.pageUp) || k === ' ' || data === '\x02') {
+    if (matchesKey(data, Key.pageUp) || data === '\x02') {
       this.scrollBy(-Math.max(1, visible - 1));
       return;
     }
-    if (matchesKey(data, Key.pageDown) || data === '\x06') {
+    if (matchesKey(data, Key.pageDown) || k === ' ' || data === '\x06') {
       this.scrollBy(Math.max(1, visible - 1));
       return;
     }
@@ -122,7 +123,10 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
     const built = buildBody(this.props.block);
     this.bodyLines = built.lines;
     this.headerTitle = built.title;
+    this.wrapped = undefined;
   }
+
+  private wrapped: { width: number; lines: string[] } | undefined;
 
   private scrollTo(target: number): void {
     this.scrollTop = Math.max(0, Math.min(target, this.maxScroll()));
@@ -130,16 +134,18 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
   }
 
   private maxScroll(): number {
-    return Math.max(0, this.bodyLines.length - this.viewableRows());
+    return Math.max(0, (this.wrapped?.lines.length ?? this.bodyLines.length) - this.viewableRows());
   }
 
-  /** Body rows = terminal rows − header(1) − top border(1) − bottom border(1) − footer(1). */
   private viewableRows(): number {
-    return Math.max(1, this.terminal.rows - 4);
+    return Math.max(1, (this.props.maxRows?.() ?? this.terminal.rows) - 4);
   }
 
   override render(width: number): string[] {
-    const rows = Math.max(3, this.terminal.rows);
+    if (this.wrapped?.width !== width) {
+      this.wrapped = { width, lines: this.bodyLines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 4))) };
+    }
+    const rows = Math.max(5, this.props.maxRows?.() ?? this.terminal.rows);
     const bodyHeight = rows - 2;
 
     const header = this.renderHeader(width);
@@ -168,7 +174,7 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
     const out: string[] = [top];
     for (let i = 0; i < viewRows; i++) {
       const lineIndex = this.scrollTop + i;
-      const raw = this.bodyLines[lineIndex] ?? '';
+      const raw = this.wrapped!.lines[lineIndex] ?? '';
       out.push(currentTheme.fg('primary', '│ ') + fitExactly(raw, innerWidth) + currentTheme.fg('primary', ' │'));
     }
     out.push(bottom);
@@ -179,7 +185,7 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
     const key = (text: string): string => currentTheme.boldFg('primary', text);
     const dim = (text: string): string => currentTheme.fg('textMuted', text);
 
-    const total = this.bodyLines.length;
+    const total = this.wrapped!.lines.length;
     const viewRows = Math.max(1, bodyHeight - 2);
     const maxScroll = Math.max(0, total - viewRows);
     const percent = maxScroll === 0 ? 100 : Math.round((this.scrollTop / maxScroll) * 100);
@@ -201,7 +207,7 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
     if (leftW + 2 + rightW <= width) {
       return left + ' '.repeat(width - leftW - rightW) + position;
     }
-    return fitExactly(left, width);
+    return fitExactly(currentTheme.fg('textMuted', ' Esc cancel · ↑↓ scroll · Space page'), width);
   }
 }
 

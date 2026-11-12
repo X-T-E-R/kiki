@@ -6,6 +6,7 @@ import {
   TuiMainScreen,
   VStack,
   type TUI,
+  type Terminal,
 } from '@kiki/pi-tui';
 
 import { clipboard } from '#/utils/clipboard/clipboard-native';
@@ -34,7 +35,7 @@ import {
 
 export interface TUIState {
   ui: TUI;
-  terminal: ProcessTerminal;
+  terminal: Terminal;
   transcriptContainer: Container;
   activityContainer: Container;
   todoPanelContainer: Container;
@@ -83,11 +84,10 @@ export interface TUIState {
   queuedMessageDispatchPending: boolean;
 }
 
-export function createTUIState(options: KimiTUIOptions): TUIState {
+export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new ProcessTerminal()): TUIState {
   const initialAppState = options.initialAppState;
   const theme = currentTheme;
 
-  const terminal = new ProcessTerminal();
   setMarkdownRenderLatex(initialAppState.renderLatex ?? DEFAULT_TUI_CONFIG.renderLatex ?? true);
   // Fullscreen is experimental and env-gated for now: KIKI_TUI_FULL_SCREEN=1.
   const fullscreen = process.env['KIKI_TUI_FULL_SCREEN'] === '1';

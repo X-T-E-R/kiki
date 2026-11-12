@@ -58,7 +58,7 @@ const COMMAND_GROUPS: readonly { readonly title: string; readonly names: readonl
   },
   {
     title: 'Agents & tasks',
-    names: ['stop', 'agents', 'agent-transcript', 'tasks', 'todos', 'goal', 'btw'],
+    names: ['agents', 'agent-transcript', 'btw', 'goal', 'stop', 'unqueue', 'tasks', 'todos'],
   },
   {
     title: 'Settings & integrations',
@@ -83,7 +83,7 @@ const COMMAND_GROUPS: readonly { readonly title: string; readonly names: readonl
 ];
 const OTHER_GROUP = 'Other';
 const SKILLS_GROUP = 'Skills';
-const DISABLED_GROUP = 'Disabled in daemon TUI';
+const DISABLED_GROUP = 'Not available in the terminal UI';
 
 /** Widest left column (usage + aliases) before a row falls back to stacked. */
 const MAX_LEFT_COLUMN = 30;
@@ -162,7 +162,7 @@ export class HelpPanelComponent extends Container implements Focusable {
 
     const lines: string[] = [bold('Slash commands')];
     for (const group of groupCommands(this.opts.commands ?? [])) {
-      lines.push('', bold(group.title));
+      lines.push('', ...wrapTextWithAnsi(group.title, width).map(bold));
       const column = Math.min(
         MAX_LEFT_COLUMN,
         Math.max(...group.commands.map((command) => commandLeft(command).width)),
@@ -221,9 +221,16 @@ function groupCommands(commands: readonly HelpPanelCommand[]): CommandGroup[] {
   for (const title of order) {
     const bucket = byGroup.get(title);
     if (bucket === undefined || bucket.length === 0) continue;
+    const taskOrder = title === 'Agents & tasks'
+      ? COMMAND_GROUPS.find((group) => group.title === title)?.names
+      : undefined;
     groups.push({
       title,
-      commands: bucket.toSorted((a, b) => a.name.localeCompare(b.name)),
+      commands: bucket.toSorted((a, b) =>
+        taskOrder === undefined
+          ? a.name.localeCompare(b.name)
+          : taskOrder.indexOf(a.name) - taskOrder.indexOf(b.name),
+      ),
     });
   }
   return groups;

@@ -72,7 +72,7 @@ describe('tool-result registry', () => {
     const renderer = pickResultRenderer('Bash');
     const out = strip(joinRender(renderer(call('Bash'), result('one\ntwo\nthree\nfour'), ctx)));
     expect(out).toContain('one');
-    expect(out).toContain('... (1 more lines, Ctrl+O to expand)');
+    expect(out).toContain('... (1 more line, Ctrl+O to expand)');
   });
 
   it('Read renders no body when collapsed (header chip carries the count)', () => {

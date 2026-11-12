@@ -388,28 +388,28 @@ describe("TUI Kitty image cleanup", () => {
 });
 
 describe("TUI resize handling", () => {
-	it("triggers full re-render when terminal height changes", async () => {
+	it("does not full-render on height-only changes on any terminal", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {
-			const terminal = new VirtualTerminal(40, 10);
+			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
 			const component = new TestComponent();
 			tui.addChild(component);
 
-			component.lines = ["Line 0", "Line 1", "Line 2"];
+			component.lines = Array.from({ length: 24 }, (_, i) => `Line ${i}`);
 			tui.start();
 			await terminal.waitForRender();
+			terminal.clearWrites();
 
 			const initialRedraws = tui.fullRedraws;
+			for (const height of [15, 8, 14, 11]) {
+				terminal.resize(40, height);
+				await terminal.waitForRender();
+			}
 
-			// Resize height
-			terminal.resize(40, 15);
-			await terminal.waitForRender();
-
-			// Should have triggered a full redraw
-			assert.ok(tui.fullRedraws > initialRedraws, "Height change should trigger full redraw");
-
-			const viewport = terminal.getViewport();
-			assert.ok(viewport[0]?.includes("Line 0"), "Content preserved after height change");
+			assert.strictEqual(tui.fullRedraws, initialRedraws, "Height-only changes should not trigger full redraw");
+			assert.ok(!terminal.getWrites().includes("\x1b[2J"), "Height-only changes should not clear the screen");
+			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Height-only changes should not clear scrollback");
+			assert.ok(terminal.getViewport().includes("Line 23"), "Latest content remains visible after resize");
 
 			tui.stop();
 		});

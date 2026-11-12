@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, win32 } from 'node:path';
 
 import { inspectWorkspaceTrustSources } from '@kiki/node-sdk';
-import { ProcessTerminal, TuiMainScreen } from '@kiki/pi-tui';
+import { ProcessTerminal, TuiAltScreen, type Terminal } from '@kiki/pi-tui';
 import type { WorkspaceTrustMcpServerInfo } from '@kiki/node-sdk';
 
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
@@ -29,13 +29,16 @@ export async function gatedMcpServers(
 export async function runWorkspaceTrustGate(options: {
   readonly homeDir: string;
   readonly workDir: string;
+  readonly terminal?: Terminal;
 }): Promise<boolean> {
   if (await isWorkspaceTrusted(options.homeDir, options.workDir)) return true;
 
-  const terminal = new ProcessTerminal();
-  const ui = new TuiMainScreen(terminal);
+  const terminal = options.terminal ?? new ProcessTerminal();
+  const ui = new TuiAltScreen(terminal, undefined, undefined, { mouse: false });
   const container = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
+  let cancel!: () => void;
   const choice = new Promise<TrustPromptChoice>((resolveChoice) => {
+    cancel = () => resolveChoice('distrust');
     const prompt = new TrustPromptComponent({
       workDir: options.workDir,
       gatedMcpServers: [],
@@ -50,14 +53,20 @@ export async function runWorkspaceTrustGate(options: {
       prompt.invalidateRender();
     });
   });
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+  for (const signal of signals) process.once(signal, cancel);
   ui.start();
   try {
     if ((await choice) !== 'trust') return false;
     await trustWorkspace(options.homeDir, options.workDir);
     return true;
   } finally {
-    await terminal.drainInput();
-    ui.stop();
+    for (const signal of signals) process.removeListener(signal, cancel);
+    try {
+      await terminal.drainInput();
+    } finally {
+      ui.stop({ preserveScreen: true });
+    }
   }
 }
 

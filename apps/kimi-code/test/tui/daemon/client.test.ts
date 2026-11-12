@@ -210,6 +210,8 @@ describe('DaemonClient', () => {
 
     await client.listModels();
     await client.listAgentProfiles();
+    await client.listAgentProfiles('workspace-a');
+    await client.listAgentProfiles('workspace-b');
     await client.listSkills('session-1');
     await client.activateSkill('session-1', 'review', 'staged changes');
     await client.setModel('session-1', 'model-b');
@@ -220,6 +222,8 @@ describe('DaemonClient', () => {
     expect(fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([
       'http://127.0.0.1:57580/api/models',
       'http://127.0.0.1:57580/api/agents?expand=true',
+      'http://127.0.0.1:57580/api/agents?workspace_id=workspace-a&effective=true',
+      'http://127.0.0.1:57580/api/agents?workspace_id=workspace-b&effective=true',
       'http://127.0.0.1:57580/api/sessions/session-1/skills',
       'http://127.0.0.1:57580/api/sessions/session-1/skills/review:activate',
       'http://127.0.0.1:57580/api/sessions/session-1/profile',
@@ -227,7 +231,7 @@ describe('DaemonClient', () => {
       'http://127.0.0.1:57580/api/sessions/session-1/profile',
       'http://127.0.0.1:57580/api/sessions/session-1/profile',
     ]);
-    expect(fetch.mock.calls.slice(3).map(([, init]) => jsonRequestBody(init))).toEqual([
+    expect(fetch.mock.calls.slice(5).map(([, init]) => jsonRequestBody(init))).toEqual([
       { args: 'staged changes' },
       { agent_config: { model: 'model-b' } },
       { agent_config: { permission_mode: 'auto' } },

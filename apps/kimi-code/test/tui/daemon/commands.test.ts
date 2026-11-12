@@ -30,6 +30,27 @@ describe('daemon command registry', () => {
     expect(resolved).toMatchObject({ name: canonical, invokedAs: alias });
   });
 
+  it('registers /unqueue as a supported command that takes no arguments', () => {
+    const resolved = resolveDaemonCommand('unqueue', '');
+    if (resolved === undefined || !('definition' in resolved)) {
+      throw new Error('/unqueue is unavailable');
+    }
+
+    expect(resolved).toMatchObject({
+      name: 'unqueue',
+      definition: {
+        aliases: [],
+        description: 'Withdraw the last queued message and put it back in the input box',
+        status: 'supported',
+        argument: 'none',
+      },
+    });
+    expect(validateDaemonCommandArgs(resolved)).toBeUndefined();
+    expect(validateDaemonCommandArgs({ ...resolved, args: 'older' })).toBe(
+      '/unqueue does not accept arguments.',
+    );
+  });
+
   it('validates command arguments before dispatch', () => {
     const exit = resolveDaemonCommand('q', 'now');
     const permission = resolveDaemonCommand('permission', 'root');
@@ -111,7 +132,7 @@ describe('daemon command registry', () => {
         (definition) => definition.name === item.name && definition.status === 'supported',
       ),
     );
-    for (const item of supported) expect(item.description).not.toContain('supported in daemon TUI');
+    for (const item of supported) expect(item.description).not.toContain('daemon TUI');
   });
 
   it('exposes the full catalog to /help with usage, aliases, and disabled flags', () => {
@@ -132,6 +153,9 @@ describe('daemon command registry', () => {
       disabled: false,
     });
     expect(entries.find((entry) => entry.name === 'export-md')?.disabled).toBe(true);
+    expect(entries.find((entry) => entry.name === 'help')?.description).toBe(
+      'Show commands and keyboard shortcuts',
+    );
     expect(DAEMON_HELP_DISCOVERY_NOTE).toContain('type / in the input box');
   });
 

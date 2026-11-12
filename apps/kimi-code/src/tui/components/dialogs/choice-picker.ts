@@ -18,6 +18,7 @@ import {
 } from '@kiki/pi-tui';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme, type ColorToken } from '#/tui/theme';
+import { layoutHintLines } from '#/tui/components/dialogs/hint-lines';
 import { printableChar } from '#/tui/utils/printable-key';
 import { SearchableList } from '#/tui/utils/searchable-list';
 
@@ -139,11 +140,18 @@ export class ChoicePickerComponent extends Container implements Focusable {
     if (view.page.pageCount > 1) navParts.push('←→ page');
     // With a query, Esc clears it first (two-stage Esc), so the hint says so.
     navParts.push('Enter select', view.query.length > 0 ? 'Esc clear' : 'Esc cancel');
-    const hint = this.opts.hint ?? navParts.join(' · ');
 
     const titleSuffix =
       searchable && view.query.length === 0 ? currentTheme.fg('textMuted', '  (type to search)') : '';
-    const hintLines = hint.split(/\r?\n/);
+    const hintWidth = Math.max(1, width - 1);
+    const hintLines =
+      this.opts.hint === undefined
+        ? layoutHintLines(navParts, hintWidth)
+        : this.opts.hint.split(/\r?\n/).flatMap((hintLine) =>
+            hintLine.length === 0
+              ? ['']
+              : layoutHintLines(hintLine.split(' · '), hintWidth),
+          );
     const lines: string[] = [
       currentTheme.fg('primary', '─'.repeat(width)),
       currentTheme.boldFg('primary', ` ${this.opts.title}`) + titleSuffix,

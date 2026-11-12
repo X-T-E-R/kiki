@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { extractKeyArgument, ToolCallComponent } from '#/tui/components/messages/tool-call';
+import { COMMAND_PREVIEW_LINES } from '#/tui/constant/rendering';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { darkColors } from '#/tui/theme/colors';
 
@@ -165,6 +166,27 @@ describe('ToolCallComponent', () => {
     expect(expanded).toContain('line4');
     expect(expanded).toContain('line5');
     expect(expanded).not.toContain('Ctrl+O to expand');
+  });
+
+  it.each([1, 2])('uses the correct line count for a collapsed Write preview (%i)', (remaining) => {
+    const lines = Array.from(
+      { length: COMMAND_PREVIEW_LINES + remaining },
+      (_, index) => `line${String(index + 1)}`,
+    );
+    const component = new ToolCallComponent(
+      {
+        id: `call_write_${String(remaining)}_hidden`,
+        name: 'Write',
+        args: { file_path: 'foo.ts', content: lines.join('\n') },
+      },
+      undefined,
+    );
+
+    const out = strip(component.render(100).join('\n'));
+    expect(out).toContain(
+      `... (${String(remaining)} more line${remaining === 1 ? '' : 's'}, ${String(lines.length)} total, Ctrl+O to expand)`,
+    );
+    expect(out).not.toContain(`line${String(lines.length)}`);
   });
 
   it('renders live Bash output while the command is running', () => {

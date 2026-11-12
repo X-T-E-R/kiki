@@ -94,9 +94,31 @@ describe('HelpPanelComponent', () => {
       maxVisible: 100,
     });
     const out = strip(panel.render(80).join('\n'));
-    expect(out).toContain('Disabled in daemon TUI');
-    expect(out.indexOf('/model')).toBeLessThan(out.indexOf('Disabled in daemon TUI'));
-    expect(out.indexOf('Disabled in daemon TUI')).toBeLessThan(out.indexOf('/add-dir'));
+    expect(out).toContain('Not available in the terminal UI');
+    expect(out.indexOf('/model')).toBeLessThan(out.indexOf('Not available in the terminal UI'));
+    expect(out.indexOf('Not available in the terminal UI')).toBeLessThan(out.indexOf('/add-dir'));
+  });
+
+  it('lists /unqueue immediately after /stop in Agents & tasks', () => {
+    const panel = new HelpPanelComponent({
+      commands: [
+        cmd('tasks', 'Browse background tasks'),
+        cmd('unqueue', 'Withdraw the last queued message and put it back in the input box'),
+        cmd('stop', 'Interrupt the running turn'),
+      ],
+      onClose: () => {},
+      maxVisible: 100,
+    });
+    const out = strip(panel.render(80).join('\n'));
+    const groupIndex = out.indexOf('Agents & tasks');
+    const stopIndex = out.indexOf('/stop');
+    const unqueueIndex = out.indexOf('/unqueue');
+    const tasksIndex = out.indexOf('/tasks');
+
+    expect(groupIndex).toBeGreaterThan(-1);
+    expect(stopIndex).toBeGreaterThan(groupIndex);
+    expect(stopIndex).toBeLessThan(unqueueIndex);
+    expect(unqueueIndex).toBeLessThan(tasksIndex);
   });
 
   it('renders the discovery note between commands and shortcuts', () => {
