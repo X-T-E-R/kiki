@@ -268,7 +268,7 @@ function ProofApp() {
             hasPersona ? 'border-selected-ink bg-selected font-medium' : 'border-hairline bg-paper'
           }`}
         >
-          {hasPersona ? '当前：角色模式 (林岚)' : '当前：纯线程 (无角色)'}
+          {hasPersona ? '当前：角色模式 (小柚)' : '当前：纯线程 (无角色)'}
         </button>
 
         <button
@@ -296,7 +296,7 @@ function ProofApp() {
             {activeSessionId === 'sess_release_044' ? '0.4.4 发布与多信道回归' : '线上故障排查值班'}
           </h1>
           <p className="text-[13px] text-ink-faint mt-1">
-            {hasPersona ? '角色：林岚 · Kiki' : '无角色纯线程'} · session_id: {activeSessionId}
+            {hasPersona ? '角色：小柚 · Kiki' : '无角色纯线程'} · session_id: {activeSessionId}
           </p>
         </div>
 
@@ -313,7 +313,7 @@ function ProofApp() {
           sessionId={activeSessionId}
           sessionTitle={activeSessionId === 'sess_release_044' ? '0.4.4 发布与多信道回归' : '线上故障排查值班'}
           personaId={hasPersona ? 'lin' : undefined}
-          personaName={hasPersona ? '林岚' : undefined}
+          personaName={hasPersona ? '小柚' : undefined}
           onOpenSettings={() => alert('Navigate to Settings')}
         />
       </div>

@@ -49,7 +49,7 @@ async function render(): Promise<HTMLElement> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(createElement(QueryClientProvider, { client: queryClient }, createElement(I18nProvider, null,
-      createElement(PersonaSettingsUpdate, { sessionId: 'session_daily_lin_lan' }))));
+      createElement(PersonaSettingsUpdate, { sessionId: 'session_daily_xiao_you' }))));
   });
   for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
@@ -64,14 +64,14 @@ async function renderDialog(onClose: () => void): Promise<HTMLElement> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(createElement(QueryClientProvider, { client: queryClient }, createElement(I18nProvider, null,
-      createElement(PersonaSettingsDialog, { sessionId: 'session_daily_lin_lan', onClose }))));
+      createElement(PersonaSettingsDialog, { sessionId: 'session_daily_xiao_you', onClose }))));
   });
   for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
 }
 
 const behind: SessionPersonaSettings = {
-  personaId: 'lin-lan', boundRevision: 'aaaaaaaa11111111', latestRevision: 'bbbbbbbb22222222', hasUpdate: true,
+  personaId: 'xiao-you', boundRevision: 'aaaaaaaa11111111', latestRevision: 'bbbbbbbb22222222', hasUpdate: true,
 };
 
 const stateOf = (container: HTMLElement) => container.querySelector('[data-persona-binding-state]')?.getAttribute('data-persona-binding-state');
@@ -113,7 +113,7 @@ describe('folded', () => {
   });
 
   it('says 已是最新 when nothing differs', async () => {
-    getPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
+    getPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
     const container = await render();
     expect(stateOf(container)).toBe('current');
     expect(container.querySelector(head)?.textContent).toContain('已是最新');
@@ -144,7 +144,7 @@ describe('the header menu\'s drawer', () => {
 
     // The drawer mounts through a body portal, like every other dialog here.
     const drawer = document.querySelector('[data-persona-settings-dialog]');
-    expect(drawer?.getAttribute('data-persona-settings-dialog')).toBe('lin-lan');
+    expect(drawer?.getAttribute('data-persona-settings-dialog')).toBe('xiao-you');
     expect(document.body.textContent).toContain('本对话的角色设置');
     expect(document.body.textContent).toContain('有更新');
     // No click needed: the readings, the rule and both actions are on screen.
@@ -154,14 +154,14 @@ describe('the header menu\'s drawer', () => {
   });
 
   it('is a way to restore defaults even when no new revision exists', async () => {
-    getPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false, overrides: { thinking: 'high' } });
+    getPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false, overrides: { thinking: 'high' } });
     const container = await renderDialog(vi.fn());
     expect(container.textContent).toBe('');
     expect(document.body.textContent).toContain('有会话自定义');
     expect(document.querySelector('[data-persona-binding-apply]')).toBeNull();
     expect(document.querySelector('[data-persona-binding-restore]')).not.toBeNull();
 
-    applyPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
+    applyPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
     await clickOn(document, '[data-persona-binding-restore]');
     expect(document.body.textContent).toContain('恢复角色默认？');
     // The drawer's own trigger carries the same words, so the confirmation is
@@ -170,7 +170,7 @@ describe('the header menu\'s drawer', () => {
     const confirm = [...alert.querySelectorAll('button')].find((button) => button.textContent === '恢复角色默认');
     await act(async () => { confirm!.click(); });
     for (let index = 0; index < 3; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_lin_lan', { restoreDefaults: true });
+    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_xiao_you', { restoreDefaults: true });
   });
 
   it('carries the failed read and its retry instead of an empty drawer', async () => {
@@ -200,7 +200,7 @@ describe('the header menu\'s drawer', () => {
 describe('opened', () => {
   it('shows the readings, applies the current settings, and follows the server', async () => {
     getPersonaSettings.mockResolvedValue({ ...behind, overrides: { model: 'fixture/kiki-pro' } });
-    applyPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
+    applyPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
     const container = await render();
 
     await click(container, head);
@@ -212,7 +212,7 @@ describe('opened', () => {
     expect(container.querySelector('[data-persona-binding-restore]')).not.toBeNull();
 
     await click(container, '[data-persona-binding-apply]');
-    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_lin_lan', {});
+    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_xiao_you', {});
     expect(stateOf(container)).toBe('current');
     expect(container.querySelector('[data-persona-binding-apply]')).toBeNull();
     expect(getToasts().some((toast) => toast.text.includes('已应用'))).toBe(true);
@@ -232,7 +232,7 @@ describe('opened', () => {
 
   it('confirms before dropping the conversation\'s own overrides', async () => {
     getPersonaSettings.mockResolvedValue({ ...behind, overrides: { model: 'fixture/kiki-pro' } });
-    applyPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
+    applyPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
     const container = await render();
 
     await click(container, head);
@@ -244,12 +244,12 @@ describe('opened', () => {
     await act(async () => { confirm!.click(); });
     for (let index = 0; index < 3; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_lin_lan', { restoreDefaults: true });
+    expect(applyPersonaSettings).toHaveBeenCalledWith('session_daily_xiao_you', { restoreDefaults: true });
     expect(stateOf(container)).toBe('current');
   });
 
   it('offers restore alone when only the overrides differ, and no action at all when nothing does', async () => {
-    getPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false, overrides: { thinking: 'high' } });
+    getPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false, overrides: { thinking: 'high' } });
     const container = await render();
     expect(stateOf(container)).toBe('overrides');
     await click(container, head);
@@ -257,7 +257,7 @@ describe('opened', () => {
     expect(container.querySelector('[data-persona-binding-apply]')).toBeNull();
     expect(container.querySelector('[data-persona-binding-restore]')).not.toBeNull();
 
-    getPersonaSettings.mockResolvedValue({ personaId: 'lin-lan', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
+    getPersonaSettings.mockResolvedValue({ personaId: 'xiao-you', boundRevision: 'bbbbbbbb22222222', latestRevision: 'bbbbbbbb22222222', hasUpdate: false });
     const plain = await render();
     await click(plain, head);
     expect(plain.querySelector('[data-persona-binding-apply]')).toBeNull();

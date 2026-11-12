@@ -10947,7 +10947,7 @@ describe('semantic tool cards', () => {
   it('locates a persona-owned write in its own namespace instead of the session workspace', async () => {
     const { container } = await renderCard(semanticTool('MemoryWrite', { reason: 'Role agreement' }, JSON.stringify({
       action: 'create', outcome: 'applied', id: 'm_persona', title: 'Publish confirmation',
-      scope: 'persona', owner_scope: { kind: 'persona', personaId: 'lin-lan' },
+      scope: 'persona', owner_scope: { kind: 'persona', personaId: 'xiao-you' },
       target: { scope: 'persona', id: 'm_persona', expected_revision: '1' },
       status: 'active', revision: '1', operation_id: 'op_persona',
     })));

@@ -48,8 +48,8 @@ const pick = (locale, en, zh) => (locale === 'zh' ? zh : en);
 /** Three personas for the room frame and the sidebar group frame. */
 function campaignPersonas(locale) {
   const LIN = {
-    id: 'lin-lan',
-    name: pick(locale, 'Lin Lan', '林岚'),
+    id: 'xiao-you',
+    name: pick(locale, 'Yuzu', '小柚'),
     title: pick(locale, 'Release coordinator', '发布协调'),
     job: pick(
       locale,
@@ -63,14 +63,14 @@ function campaignPersonas(locale) {
     description: pick(
       locale,
       [
-        'You are Lin Lan, the release coordinator for sample-app.',
+        'You are Yuzu, the release coordinator for sample-app.',
         '',
         '- Give the conclusion first, then the reasoning.',
         '- Never tag, push, or run a release action without the operator saying so.',
         '- When the operator says "ship", ship the changelog draft, not an announcement.',
       ].join('\n'),
       [
-        '你是林岚，负责 sample-app 的发布协调。',
+        '你是小柚，负责 sample-app 的发布协调。',
         '',
         '- 说话简短，先给结论。',
         '- 未经操作者批准，不推送、不打标、不执行发布动作。',
@@ -79,8 +79,8 @@ function campaignPersonas(locale) {
     ),
   };
   const CHE = {
-    id: 'a-che',
-    name: pick(locale, 'A Che', '阿澈'),
+    id: 'dou-dou',
+    name: pick(locale, 'Doudou', '豆豆'),
     title: pick(locale, 'Writing partner', '写作搭子'),
     job: pick(locale, 'Drafts the changelog and the release notes.', '起草 changelog 与发布说明。'),
     modelAlias: ROLE_BINDING.builder.id,
@@ -89,13 +89,13 @@ function campaignPersonas(locale) {
     greeting: pick(locale, 'Send me the notes and I will draft it.', '把要点发我，我来起草。'),
     description: pick(
       locale,
-      'You are A Che. Read what the notes actually say before writing, change one thing at a time, and say why each change was made.',
-      '你是阿澈。先读清要点再动笔，一次只改一处，并说明为什么这样改。',
+      'You are Doudou. Read what the notes actually say before writing, change one thing at a time, and say why each change was made.',
+      '你是豆豆。先读清要点再动笔，一次只改一处，并说明为什么这样改。',
     ),
   };
   const LAN = {
-    id: 'xiao-lan',
-    name: pick(locale, 'Xiao Lan', '小蓝'),
+    id: 'mi-li',
+    name: pick(locale, 'Mili', '米粒'),
     title: pick(locale, 'Researcher', '调研'),
     job: pick(locale, 'Looks things up and checks the facts.', '查资料、核对事实。'),
     modelAlias: ROLE_BINDING.explorer.id,
@@ -104,8 +104,8 @@ function campaignPersonas(locale) {
     greeting: pick(locale, 'What should I look up?', '要我查什么？'),
     description: pick(
       locale,
-      'You are Xiao Lan. Answer with the source, never a guess, and say plainly when something is unverified.',
-      '你是小蓝。给出处，不猜；没有核实过的就说没核实。',
+      'You are Mili. Answer with the source, never a guess, and say plainly when something is unverified.',
+      '你是米粒。给出处，不猜；没有核实过的就说没核实。',
     ),
   };
   return [LIN, CHE, LAN];
@@ -120,15 +120,15 @@ const LOCALIZED_SESSIONS = {
     release: 'Prepare the release',
     accessibility: 'Review accessibility',
     documentation: 'Update documentation',
-    daily: 'Lin Lan · daily',
-    design: 'Xiao Lan · research notes',
+    daily: 'Yuzu · daily',
+    design: 'Mili · research notes',
   },
   zh: {
     release: '准备 sample-app 发布',
     accessibility: '检查无障碍',
     documentation: '更新文档',
-    daily: '林岚 · 日常',
-    design: '小蓝 · 调研笔记',
+    daily: '小柚 · 日常',
+    design: '米粒 · 调研笔记',
   },
 };
 
@@ -325,39 +325,39 @@ function roomLog(locale) {
   return [
     msg('rc-1', 34, 'user', pick(
       locale,
-      'Can we still ship 0.4 this week? @Lin Lan',
-      '这周还能发 0.4 吗？@林岚',
-    ), { mentions: ['lin-lan'] }),
-    msg('rc-2', 33, 'lin-lan', pick(
+      'Can we still ship 0.4 this week? @Yuzu',
+      '这周还能发 0.4 吗？@小柚',
+    ), { mentions: ['xiao-you'] }),
+    msg('rc-2', 33, 'xiao-you', pick(
       locale,
-      'Yes, if two things land. @A Che — which changelog entries are still missing?\n@Xiao Lan — how long does the signing certificate renewal take?',
-      '可以，差两件事。@阿澈 —— changelog 还缺哪几条？\n@小蓝 —— 签名证书续期要多久？',
-    ), { mentions: ['a-che', 'xiao-lan'] }),
-    msg('rc-3', 31, 'a-che', pick(
+      'Yes, if two things land. @Doudou — which changelog entries are still missing?\n@Mili — how long does the signing certificate renewal take?',
+      '可以，差两件事。@豆豆 —— changelog 还缺哪几条？\n@米粒 —— 签名证书续期要多久？',
+    ), { mentions: ['dou-dou', 'mi-li'] }),
+    msg('rc-3', 31, 'dou-dou', pick(
       locale,
       'Three: #812, #815, #820. I will draft them in CHANGELOG.md — give me ten minutes.',
       '三条：#812、#815、#820。我起草到 CHANGELOG.md 里，给我十分钟。',
     )),
-    msg('rc-4', 27, 'xiao-lan', pick(
+    msg('rc-4', 27, 'mi-li', pick(
       locale,
       'The renewal takes one to two business days; the provider can accept the request this afternoon.',
       '续期要一到两个工作日；供应商今天下午能受理。',
     )),
-    msg('rc-5', 25, 'a-che', pick(
+    msg('rc-5', 25, 'dou-dou', pick(
       locale,
-      'Draft is in. @Lin Lan it is yours to read before anything ships.',
-      '草稿写好了。@林岚 你过一眼再发。',
-    ), { mentions: ['lin-lan'] }),
-    msg('rc-6', 22, 'lin-lan', pick(
+      'Draft is in. @Yuzu it is yours to read before anything ships.',
+      '草稿写好了。@小柚 你过一眼再发。',
+    ), { mentions: ['xiao-you'] }),
+    msg('rc-6', 22, 'xiao-you', pick(
       locale,
       'Then we ship Friday: certificate by Wednesday, freeze Thursday, tag Friday morning.',
       '那就按周五发来排：周三前续期，周四冻结，周五上午打 tag。',
     )),
     sys('rc-7', 20, 'member_joined', pick(
       locale,
-      'A Che joined the room.',
-      '阿澈加入了房间。',
-    ), { memberId: 'a-che', kind: 'persona' }),
+      'Doudou joined the room.',
+      '豆豆加入了房间。',
+    ), { memberId: 'dou-dou', kind: 'persona' }),
   ];
 }
 
@@ -373,7 +373,7 @@ export function buildA19(locale) {
     version: 1,
     id: ROOM_ID,
     name: pick(locale, 'Release 0.4', '0.4 发布'),
-    host: 'lin-lan',
+    host: 'xiao-you',
     mode: 'mention',
     members: personas.map((persona) => ({
       kind: 'persona',
@@ -417,19 +417,19 @@ export function buildA19(locale) {
 export function buildA18(locale) {
   const { personas } = campaignPersonaSessions(locale);
   const world = base(locale);
-  const extra = sessionRecord('session_campaign_daily_lin-lan_docs', {
-    title: pick(locale, 'Lin Lan · 0.4 upgrade notes', '林岚 · 0.4 升级说明'),
+  const extra = sessionRecord('session_campaign_daily_xiao-you_docs', {
+    title: pick(locale, 'Yuzu · 0.4 upgrade notes', '小柚 · 0.4 升级说明'),
     workspace_id: WORKSPACE_ID,
-    metadata: { cwd: PROJECT_ROOT, persona_id: 'lin-lan' },
-    agent_config: { model: ROLE_BINDING.thinker.id, persona: { id: 'lin-lan', name: personas[0].name } },
+    metadata: { cwd: PROJECT_ROOT, persona_id: 'xiao-you' },
+    agent_config: { model: ROLE_BINDING.thinker.id, persona: { id: 'xiao-you', name: personas[0].name } },
     updated_at: ts(180),
     created_at: ts(600),
   });
-  const third = sessionRecord('session_campaign_daily_a-che', {
-    title: pick(locale, 'A Che · changelog voice', '阿澈 · changelog 语气'),
+  const third = sessionRecord('session_campaign_daily_dou-dou', {
+    title: pick(locale, 'Doudou · changelog voice', '豆豆 · changelog 语气'),
     workspace_id: WORKSPACE_ID,
-    metadata: { cwd: PROJECT_ROOT, persona_id: 'a-che' },
-    agent_config: { model: ROLE_BINDING.builder.id, persona: { id: 'a-che', name: personas[1].name } },
+    metadata: { cwd: PROJECT_ROOT, persona_id: 'dou-dou' },
+    agent_config: { model: ROLE_BINDING.builder.id, persona: { id: 'dou-dou', name: personas[1].name } },
     updated_at: ts(240),
     created_at: ts(700),
   });
@@ -445,10 +445,10 @@ export function buildA18(locale) {
     sessions: [...world.sessions, extra, third],
     snapshots: {
       [SESSION.release]: { messages: [], has_more: false },
-      'session_campaign_daily_lin-lan': {
+      'session_campaign_daily_xiao-you': {
         messages: [
-          { id: 'msg_campaign_daily_u1', session_id: 'session_campaign_daily_lin-lan', role: 'user', content: [{ type: 'text', text: pick(locale, 'Which blockers are left for 0.4?', '0.4 还剩哪些阻塞？') }], created_at: ts(20) },
-          { id: 'msg_campaign_daily_a1', session_id: 'session_campaign_daily_lin-lan', role: 'assistant', content: [{ type: 'text', text: pick(locale, 'Two: the changelog entries A Che is drafting, and the signing certificate renewal.', '两件：阿澈在起草的 changelog 条目，和签名证书续期。') }], created_at: ts(19) },
+          { id: 'msg_campaign_daily_u1', session_id: 'session_campaign_daily_xiao-you', role: 'user', content: [{ type: 'text', text: pick(locale, 'Which blockers are left for 0.4?', '0.4 还剩哪些阻塞？') }], created_at: ts(20) },
+          { id: 'msg_campaign_daily_a1', session_id: 'session_campaign_daily_xiao-you', role: 'assistant', content: [{ type: 'text', text: pick(locale, 'Two: the changelog entries Doudou is drafting, and the signing certificate renewal.', '两件：豆豆在起草的 changelog 条目，和签名证书续期。') }], created_at: ts(19) },
         ],
       },
     },
@@ -585,7 +585,7 @@ export function buildA17(locale) {
           updated: ts(90),
         }),
       ],
-      'persona:lin-lan': [
+      'persona:xiao-you': [
         memoryEntry({
           id: 'mem_campaign_list_first',
           type: 'feedback',
@@ -607,7 +607,7 @@ export function buildA17(locale) {
       // The journal is queried per entry id, so a record only shows in the
       // history of the entry it belongs to. The frame opens the pinned
       // persona entry, so the record is filed against that one.
-      'persona:lin-lan': [
+      'persona:xiao-you': [
         {
           operationId: 'op_campaign_memory_1',
           action: 'update',

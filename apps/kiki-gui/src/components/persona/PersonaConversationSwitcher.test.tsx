@@ -30,7 +30,7 @@ afterEach(async () => {
 
 function persona(patch: Partial<PersonaDirectoryEntry> = {}): PersonaDirectoryEntry {
   return {
-    id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false,
+    id: 'xiao-you', name: '小柚', revision: 'revision-1', archived: false,
     homeSessionId: 'home_lin', pinned: false, hidden: false,
     life: 'idle', unreadCount: 0, unreadSessionIds: [],
     ...patch,
@@ -115,7 +115,7 @@ describe('the honest tests', () => {
 
     await act(async () => { menuItems(fresh.container)[0]?.click(); });
     // The stable address, not a session that does not exist yet.
-    expect(navigate).toHaveBeenCalledWith('/p/lin-lan/daily');
+    expect(navigate).toHaveBeenCalledWith('/p/xiao-you/daily');
   });
 
   it('sends the home row to the home session and marks the current conversation on paper', async () => {
@@ -202,11 +202,11 @@ describe('the honest tests', () => {
     await act(async () => {
       rendered.container.querySelector<HTMLElement>('[data-persona-switcher-new]')!.click();
     });
-    expect(navigate).toHaveBeenCalledWith('/new?persona=lin-lan&workspace=ws_a');
+    expect(navigate).toHaveBeenCalledWith('/new?persona=xiao-you&workspace=ws_a');
     await act(async () => {
       rendered.container.querySelector<HTMLElement>('[data-persona-switcher-all]')!.click();
     });
-    expect(navigate).toHaveBeenCalledWith('/personas?persona=lin-lan&view=conversations');
+    expect(navigate).toHaveBeenCalledWith('/personas?persona=xiao-you&view=conversations');
   });
 
   it('keeps the current conversation visible when the list is cut at eight', async () => {

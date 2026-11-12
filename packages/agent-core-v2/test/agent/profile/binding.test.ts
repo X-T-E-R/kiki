@@ -1654,8 +1654,8 @@ describe('AgentProfileService.bind', () => {
     });
     const persona = {
       definition: {
-        id: 'lin-lan',
-        name: '林岚',
+        id: 'xiao-you',
+        name: '小柚',
         title: '发布协调',
         profile: 'persona-profile',
         modelAlias: MOCK_MODEL,
@@ -1666,7 +1666,7 @@ describe('AgentProfileService.bind', () => {
     const personaStore = {
       _serviceBrand: undefined,
       onDidChange: Event.None,
-      get: async (id: string) => id === 'lin-lan' ? persona : undefined,
+      get: async (id: string) => id === 'xiao-you' ? persona : undefined,
     } as unknown as IPersonaStore;
     ctx = createTestAgent(
       appService(IPersonaStore, personaStore),
@@ -1677,11 +1677,11 @@ describe('AgentProfileService.bind', () => {
 
     const metadata = ctx.get(ISessionMetadata);
     await metadata.registerAgent('main', { type: 'main' });
-    await svc.bind({ persona: 'lin-lan' });
+    await svc.bind({ persona: 'xiao-you' });
 
-    expect((await metadata.read()).agents?.['main']?.personaId).toBe('lin-lan');
-    expect(svc.data()).toMatchObject({ profileName: 'persona-profile', modelAlias: MOCK_MODEL, personaId: 'lin-lan', personaRevision: 'r1' });
-    expect(svc.getSystemPrompt().startsWith('<persona name="林岚" title="发布协调">')).toBe(true);
+    expect((await metadata.read()).agents?.['main']?.personaId).toBe('xiao-you');
+    expect(svc.data()).toMatchObject({ profileName: 'persona-profile', modelAlias: MOCK_MODEL, personaId: 'xiao-you', personaRevision: 'r1' });
+    expect(svc.getSystemPrompt().startsWith('<persona name="小柚" title="发布协调">')).toBe(true);
     expect(svc.getSystemPrompt()).toContain('你运行在 Kiki 中');
     expect(svc.getSystemPrompt()).toContain('Profile capabilities.');
     expect(svc.getSystemPrompt()).not.toContain('You are Kiki');

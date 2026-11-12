@@ -129,7 +129,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
   );
 });
 
-/** "林岚 正在处理 · 读了 2 个文件" — one still line, never a breathing card. */
+/** "小柚 正在处理 · 读了 2 个文件" — one still line, never a breathing card. */
 export function PresenceLine({ text, detail }: { readonly text: string; readonly detail?: string }) {
   return (
     <div role="status" aria-live="polite" data-message-presence className="anim-enter flex min-h-6 items-center gap-2">
@@ -144,7 +144,7 @@ export function PresenceLine({ text, detail }: { readonly text: string; readonly
   );
 }
 
-/** A Bot-to-Bot handoff, identical on both sides: `林岚 → 阿澈：…`. */
+/** A Bot-to-Bot handoff, identical on both sides: `小柚 → 豆豆：…`. */
 export function HandoffRow({
   from,
   to,

@@ -7,7 +7,7 @@ import {
 } from '#/personaFile';
 
 const TEXT = `---
-name: 林岚
+name: 小柚
 title: 发布协调
 job: 负责发布节奏
 profile: agent
@@ -24,16 +24,16 @@ tags: [work]
 notes: maintainer
 home_workspace: /work/kiki
 ---
-你是林岚。
+你是小柚。
 
 先给结论。
 `;
 
 describe('personaFile', () => {
   it('parses the closed markdown format into camelCase', () => {
-    expect(parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: TEXT })).toEqual({
-      id: 'lin-lan',
-      name: '林岚',
+    expect(parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: TEXT })).toEqual({
+      id: 'xiao-you',
+      name: '小柚',
       title: '发布协调',
       job: '负责发布节奏',
       profile: 'agent',
@@ -48,31 +48,31 @@ describe('personaFile', () => {
       tags: ['work'],
       notes: 'maintainer',
       homeWorkspace: '/work/kiki',
-      description: '你是林岚。\n\n先给结论。',
+      description: '你是小柚。\n\n先给结论。',
     });
   });
 
   it('rejects permission fields and unknown keys', () => {
     expect(() => parsePersonaFileText({
-      path: '/personas/lin-lan/persona.md',
-      text: '---\nname: Lin\ntools: [Bash]\n---\nbody',
+      path: '/personas/xiao-you/persona.md',
+      text: '---\nname: Yuzu\ntools: [Bash]\n---\nbody',
     })).toThrow(/permissions belong to the referenced profile/);
     expect(() => parsePersonaFileText({
-      path: '/personas/lin-lan/persona.md',
-      text: '---\nname: Lin\nunknown_key: value\n---\nbody',
+      path: '/personas/xiao-you/persona.md',
+      text: '---\nname: Yuzu\nunknown_key: value\n---\nbody',
     })).toThrow(PersonaFileParseError);
   });
 
   it('round-trips canonical fields and body', () => {
-    const parsed = parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: TEXT });
+    const parsed = parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: TEXT });
     const serialized = serializePersonaFile(parsed);
-    expect(parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: serialized })).toEqual(parsed);
+    expect(parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: serialized })).toEqual(parsed);
   });
 
   it('rejects invalid delivery, memory, id, and empty body', () => {
-    expect(() => parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: '---\nname: Lin\ndelivery: stream\n---\nbody' })).toThrow(/delivery/);
-    expect(() => parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: '---\nname: Lin\nmemory:\n  shared: [persona]\n---\nbody' })).toThrow(/global or workspace/);
-    expect(() => parsePersonaFileText({ path: '/personas/not_valid/persona.md', text: '---\nname: Lin\n---\nbody' })).toThrow(/kebab-case/);
-    expect(() => parsePersonaFileText({ path: '/personas/lin-lan/persona.md', text: '---\nname: Lin\n---\n' })).toThrow(/description body/);
+    expect(() => parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: '---\nname: Yuzu\ndelivery: stream\n---\nbody' })).toThrow(/delivery/);
+    expect(() => parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: '---\nname: Yuzu\nmemory:\n  shared: [persona]\n---\nbody' })).toThrow(/global or workspace/);
+    expect(() => parsePersonaFileText({ path: '/personas/not_valid/persona.md', text: '---\nname: Yuzu\n---\nbody' })).toThrow(/kebab-case/);
+    expect(() => parsePersonaFileText({ path: '/personas/xiao-you/persona.md', text: '---\nname: Yuzu\n---\n' })).toThrow(/description body/);
   });
 });

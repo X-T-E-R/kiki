@@ -249,17 +249,17 @@ async function capture() {
       await page.waitForSelector('[data-sidebar-personas]', { timeout: 25_000 });
       const rows = page.locator('[data-sidebar-persona-row]');
       check(await rows.count() === 3, 'the sidebar lists all three personas', `count=${await rows.count()}`);
-      const switcher = await openSwitcherFromSidebar(page, '林岚');
+      const switcher = await openSwitcherFromSidebar(page, '小柚');
       const items = switcher.locator('[role="menuitem"]');
       check(await items.count() === 4, 'the switcher lists the daily conversation and three others', `count=${await items.count()}`);
       check((await items.first().textContent() ?? '').includes('日常对话'), 'the daily conversation is pinned first');
       check((await switcher.locator('[data-conversation-kind="room"]').textContent() ?? '').includes('发布房间'),
         'a room seat is named by its room');
-      check(await switcher.locator('[data-conversation-item="session_daily_lin_lan"]').getAttribute('aria-current') === null,
+      check(await switcher.locator('[data-conversation-item="session_daily_xiao_you"]').getAttribute('aria-current') === null,
         'no conversation claims to be current while /new is open');
       // The sidebar trigger anchors to its own row: the panel's left edge is
       // the row's, it hangs below it, and it stays inside the window.
-      const row = page.locator('[data-sidebar-persona-row]', { hasText: '林岚' }).first();
+      const row = page.locator('[data-sidebar-persona-row]', { hasText: '小柚' }).first();
       const rowBox = await row.boundingBox();
       const panelBox = await switcher.boundingBox();
       const size = page.viewportSize();
@@ -280,13 +280,13 @@ async function capture() {
     // leads, the greeting follows it, everything on one column line.
     {
       const page = await newPage({ width: 1440, height: 900 });
-      await page.goto(link('/p/a-che/daily'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/p/dou-dou/daily'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-hero-daily-identity]', { timeout: 25_000 });
       check(await page.locator('[data-hero-daily-banner]').count() === 0, 'the removed intro banner is gone');
       const headline = await page.locator('[data-hero-headline]').textContent();
       check(headline?.trim() === '日常对话', 'the draft leads with the fixed title', `headline=${headline?.trim()}`);
       const identity = await page.locator('[data-hero-daily-identity]').textContent();
-      check((identity ?? '').includes('阿澈'), 'the draft says whose daily conversation it is', `identity=${identity?.trim()}`);
+      check((identity ?? '').includes('豆豆'), 'the draft says whose daily conversation it is', `identity=${identity?.trim()}`);
       check(await page.locator('[data-hero-workspace]').textContent().then((text) => (text ?? '').includes('docs-site')),
         'the draft starts in the persona\'s own workspace');
       await checkDailyHero(page, { avatar: 56, label: '1440' });
@@ -308,14 +308,14 @@ async function capture() {
     // face steps down, the column line holds, nothing is cut.
     {
       const page = await newPage({ width: 1024, height: 900 });
-      await page.goto(link('/p/a-che/daily'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/p/dou-dou/daily'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-hero-daily-identity]', { timeout: 25_000 });
       await checkDailyHero(page, { avatar: 56, label: '1024' });
       await shot(page, 'nav-daily-draft-1024');
       await page.close?.();
 
       const narrow = await newPage({ width: 390, height: 844 });
-      await narrow.goto(link('/p/xiao-lan/daily'), { waitUntil: 'domcontentloaded' });
+      await narrow.goto(link('/p/mi-li/daily'), { waitUntil: 'domcontentloaded' });
       await narrow.waitForSelector('[data-hero-daily-identity]', { timeout: 25_000 });
       await checkDailyHero(narrow, { avatar: 48, label: '390' });
       const nameBox = await narrow.locator('[data-hero-persona-name]').boundingBox();
@@ -331,9 +331,9 @@ async function capture() {
     // header's own switcher (light, 1440).
     {
       const page = await newPage({ width: 1440, height: 900 });
-      await page.goto(link('/p/lin-lan/daily'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/p/xiao-you/daily'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-session-persona-identity]', { timeout: 25_000 });
-      check(new URL(page.url()).pathname === '/s/session_daily_lin_lan',
+      check(new URL(page.url()).pathname === '/s/session_daily_xiao_you',
         'the daily address resolves to the existing home', page.url());
       const line = await page.locator('[data-session-conversation-kind="daily"]').textContent();
       check(line?.trim() === '日常对话', 'the second line names the daily conversation', `line=${line?.trim()}`);
@@ -365,7 +365,7 @@ async function capture() {
         `actions=${round(actions.y + actions.height / 2)} band=${round(headerBox.top + headerBox.height / 2)}`);
       await shot(page, 'nav-home-identity-1440');
       await openSwitcherFromHeader(page);
-      const current = page.locator('[data-conversation-item="session_daily_lin_lan"]');
+      const current = page.locator('[data-conversation-item="session_daily_xiao_you"]');
       check(await current.getAttribute('aria-current') === 'true', 'the current conversation is marked in the switcher');
       await shot(page, 'nav-header-switcher-1440');
       await page.close?.();
@@ -376,7 +376,7 @@ async function capture() {
     // a member without `kind: 'persona'` is not a persona's seat.
     {
       const page = await newPage({ width: 1440, height: 900 });
-      await page.goto(link('/s/session_room_release-031_lin-lan'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/s/session_room_release-031_xiao-you'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-session-persona-identity]', { timeout: 25_000 });
       const seat = await page.locator('[data-session-conversation-kind="room"]').textContent();
       check(seat?.trim() === '发布房间', 'the room seat is named by its room, not by a fallback', `seat=${seat?.trim()}`);
@@ -387,7 +387,7 @@ async function capture() {
       const roster = await fetch(`${fixtureUrl}/api/rooms/release-031`, { headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } })
         .then((response) => response.json())
         .then((body) => (body.data ?? body).members ?? []);
-      check(roster.length === 1 && roster[0].kind === 'persona' && roster[0].personaId === 'lin-lan',
+      check(roster.length === 1 && roster[0].kind === 'persona' && roster[0].personaId === 'xiao-you',
         'the seeded room roster carries the persona discriminator the room filters read', JSON.stringify(roster));
       await shot(page, 'nav-room-identity-1440');
       await page.close?.();
@@ -426,7 +426,7 @@ async function capture() {
       await ordinary.close?.();
 
       const page = await newPage({ width: 1024, height: 900 });
-      await page.goto(link('/s/session_daily_lin_lan'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/s/session_daily_xiao_you'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-session-persona-identity]', { timeout: 25_000 });
       await openSwitcherFromHeader(page);
       await shot(page, 'nav-header-switcher-1024');
@@ -454,13 +454,13 @@ async function capture() {
     // 5. The detail page's conversation list (light, 1440).
     {
       const page = await newPage({ width: 1440, height: 900 });
-      await page.goto(link('/personas?persona=lin-lan&view=conversations'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/personas?persona=xiao-you&view=conversations'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-persona-conversation-row]', { timeout: 25_000 });
       const rows = page.locator('[data-persona-conversation-row]');
       check(await rows.count() === 4, 'the list is every conversation the server returns for the persona', `count=${await rows.count()}`);
       check(await page.locator('[data-persona-set-daily="session_lin_release"]').count() === 1,
         'a topic can become the daily conversation');
-      check(await page.locator('[data-persona-set-daily="session_daily_lin_lan"]').count() === 0,
+      check(await page.locator('[data-persona-set-daily="session_daily_xiao_you"]').count() === 0,
         'the current daily conversation does not offer to become itself');
       await page.locator('[data-persona-conversation-row="session_lin_release"]').hover();
       await shot(page, 'nav-conversations-1440');
@@ -473,7 +473,7 @@ async function capture() {
       await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-sidebar-personas]', { timeout: 25_000 });
       check(await setTheme(page, 'dark'), 'the dark palette really resolved');
-      await openSwitcherFromSidebar(page, '林岚');
+      await openSwitcherFromSidebar(page, '小柚');
       await shot(page, 'nav-sidebar-switcher-1440-dark');
       await page.close?.();
     }
@@ -481,7 +481,7 @@ async function capture() {
     // 7+8. 390: the header identity stack and the drawer.
     {
       const page = await newPage({ width: 390, height: 844 });
-      await page.goto(link('/s/session_daily_lin_lan'), { waitUntil: 'domcontentloaded' });
+      await page.goto(link('/s/session_daily_xiao_you'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-session-persona-identity]', { timeout: 25_000 });
       check(await page.locator('[data-session-persona-name]').isVisible(),
         'the phone header shows whose conversation this is, not only the face');

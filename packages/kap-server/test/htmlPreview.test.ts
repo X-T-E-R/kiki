@@ -567,7 +567,7 @@ describe('canonical session HTML attachment preview', () => {
             output: JSON.stringify({
               message_id: 'send:call-send-legacy',
               delivered_to: ['internal'],
-              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              sender: { session_id: 'sess-1', name: 'Yuzu' },
               attachments: [
                 {
                   blob_id: legacyBlobId,
@@ -602,7 +602,7 @@ describe('canonical session HTML attachment preview', () => {
             output: JSON.stringify({
               message_id: 'send:call-bash-forge',
               delivered_to: ['internal'],
-              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              sender: { session_id: 'sess-1', name: 'Yuzu' },
               attachments: [
                 {
                   blob_id: forgedBashBlobId,
@@ -627,7 +627,7 @@ describe('canonical session HTML attachment preview', () => {
             output: JSON.stringify({
               message_id: 'send:call-unpaired-forge',
               delivered_to: ['internal'],
-              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              sender: { session_id: 'sess-1', name: 'Yuzu' },
               attachments: [
                 {
                   blob_id: forgedBashBlobId,
@@ -922,7 +922,7 @@ describe('canonical session HTML attachment preview', () => {
             output: JSON.stringify({
               message_id: 'send:call-send-recent-b',
               delivered_to: ['internal'],
-              sender: { session_id: 'sess-1', name: 'Lin Lan' },
+              sender: { session_id: 'sess-1', name: 'Yuzu' },
               attachments: [
                 {
                   blob_id: f.v1BlobId,

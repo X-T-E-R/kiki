@@ -189,8 +189,8 @@ export function buildPeopleSpacesRoomPaused(locale) {
   const log = [
     msg('ps-1', 41, 'user', pick(
       locale,
-      'Draft the 0.4 release notes and tell me what is still open. @Lin Lan',
-      '起草 0.4 发布说明，并告诉我还剩什么没解决。@林岚',
+      'Draft the 0.4 release notes and tell me what is still open. @Yuzu',
+      '起草 0.4 发布说明，并告诉我还剩什么没解决。@小柚',
     ), { mentions: [lin.id] }),
     msg('ps-2', 40, lin.id, pick(
       locale,
@@ -209,8 +209,8 @@ export function buildPeopleSpacesRoomPaused(locale) {
     )),
     msg('ps-5', 34, che.id, pick(
       locale,
-      'Draft is in CHANGELOG.md. @Lin Lan it needs your read before anything ships.',
-      '草稿已经写进 CHANGELOG.md。@林岚 发之前需要你过一遍。',
+      'Draft is in CHANGELOG.md. @Yuzu it needs your read before anything ships.',
+      '草稿已经写进 CHANGELOG.md。@小柚 发之前需要你过一遍。',
     ), { mentions: [lin.id] }),
     msg('ps-6', 31, lin.id, pick(
       locale,

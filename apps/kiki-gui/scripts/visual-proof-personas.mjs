@@ -66,11 +66,11 @@ async function shot(page, name) {
 const walkers = {
   async page(page, tag, width) {
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-persona-row="lin-lan"]', { timeout: 30_000 });
+    await page.waitForSelector('[data-persona-row="xiao-you"]', { timeout: 30_000 });
     await shot(page, `personas-list-${tag}`);
-    await page.locator('[data-persona-row="lin-lan"]').click();
-    await page.waitForSelector('[data-persona-editor="lin-lan"] [data-persona-field="description"]', { timeout: 10_000 });
-    await page.waitForSelector('[data-persona-editor="lin-lan"] [data-persona-avatar-kind="image"]', { timeout: 10_000 });
+    await page.locator('[data-persona-row="xiao-you"]').click();
+    await page.waitForSelector('[data-persona-editor="xiao-you"] [data-persona-field="description"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-persona-editor="xiao-you"] [data-persona-avatar-kind="image"]', { timeout: 10_000 });
     await shot(page, `personas-editor-${tag}`);
     if (width < 600) {
       await page.locator('[data-persona-field="description"]').scrollIntoViewIfNeeded();
@@ -89,11 +89,11 @@ const walkers = {
     await page.keyboard.press('Escape');
     // Archived rows only on request.
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-persona-row="lin-lan"]');
+    await page.waitForSelector('[data-persona-row="xiao-you"]');
     await page.getByText('显示已归档').click();
     await page.waitForSelector('[data-persona-row="standup-bot"]');
-    await page.locator('[data-persona-row="a-che"]').click();
-    await page.waitForSelector('[data-persona-editor="a-che"]');
+    await page.locator('[data-persona-row="dou-dou"]').click();
+    await page.waitForSelector('[data-persona-editor="dou-dou"]');
     await shot(page, `personas-initial-${tag}`);
     // New persona draft.
     await page.locator('[data-persona-new]').click();
@@ -105,10 +105,10 @@ const walkers = {
     // Crop dialog: open a landscape picture, frame it square, then circle
     // zoomed in; save; the editor wears it round; remove goes back to the initial.
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-persona-row="a-che"]', { timeout: 30_000 });
-    await page.locator('[data-persona-row="a-che"]').click();
-    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-upload]');
-    await page.locator('[data-persona-editor="a-che"] input[type="file"][accept*="image/png"]').setInputFiles(join(root, 'fixtures', 'persona-media', 'landscape.jpg'));
+    await page.waitForSelector('[data-persona-row="dou-dou"]', { timeout: 30_000 });
+    await page.locator('[data-persona-row="dou-dou"]').click();
+    await page.waitForSelector('[data-persona-editor="dou-dou"] [data-persona-avatar-upload]');
+    await page.locator('[data-persona-editor="dou-dou"] input[type="file"][accept*="image/png"]').setInputFiles(join(root, 'fixtures', 'persona-media', 'landscape.jpg'));
     await page.waitForSelector('[data-persona-avatar-crop="ready"]');
     await shot(page, `avatar-crop-square-${tag}`);
     await page.locator('[data-persona-avatar-shape="circle"]').click();
@@ -118,20 +118,20 @@ const walkers = {
     await page.keyboard.press('ArrowUp');
     await shot(page, `avatar-crop-circle-${tag}`);
     await page.locator('[data-persona-avatar-save]').click();
-    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-shape="circle"][data-persona-avatar-kind="image"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-persona-editor="dou-dou"] [data-persona-avatar-shape="circle"][data-persona-avatar-kind="image"]', { timeout: 10_000 });
     await shot(page, `avatar-saved-${tag}`);
     await page.locator('[data-persona-avatar-remove]').click();
     await shot(page, `avatar-remove-confirm-${tag}`);
     await page.locator('[role="alertdialog"] button:has-text("移除头像"), [role="dialog"] button:has-text("移除头像")').last().click();
-    await page.waitForSelector('[data-persona-editor="a-che"] [data-persona-avatar-kind="initial"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-persona-editor="dou-dou"] [data-persona-avatar-kind="initial"]', { timeout: 10_000 });
   },
   async import(page, tag) {
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-persona-row="lin-lan"]', { timeout: 30_000 });
+    await page.waitForSelector('[data-persona-row="xiao-you"]', { timeout: 30_000 });
     await page.locator('[data-persona-import]').click();
     await page.waitForSelector('[data-persona-import-dialog="pick"]');
     await shot(page, `import-pick-${tag}`);
-    await page.locator('input[type="file"][accept*="charx"]').setInputFiles({ name: 'mira.png', mimeType: 'image/png', buffer: Buffer.from('fixture-card') });
+    await page.locator('input[type="file"][accept*="charx"]').setInputFiles({ name: 'nana.png', mimeType: 'image/png', buffer: Buffer.from('fixture-card') });
     await page.waitForSelector('[data-persona-import-preview]');
     await shot(page, `import-preview-${tag}`);
     await page.locator('[data-persona-import-block="examples"]').scrollIntoViewIfNeeded();
@@ -147,33 +147,33 @@ const walkers = {
     await page.goto(url('/new'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#composer-agent-profile-select', { timeout: 30_000 });
     await page.locator('#composer-agent-profile-select').click();
-    await page.waitForSelector('[data-option-value="persona:lin-lan"]');
+    await page.waitForSelector('[data-option-value="persona:xiao-you"]');
     await shot(page, `new-picker-${tag}`);
-    await page.locator('[data-option-value="persona:lin-lan"]').click();
-    await page.waitForSelector('[data-composer-persona-chip="lin-lan"]', { timeout: 10_000 });
-    await page.waitForSelector('[data-hero-persona-greeting="lin-lan"]', { timeout: 10_000 });
+    await page.locator('[data-option-value="persona:xiao-you"]').click();
+    await page.waitForSelector('[data-composer-persona-chip="xiao-you"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-hero-persona-greeting="xiao-you"]', { timeout: 10_000 });
     await shot(page, `new-picked-${tag}`);
     await page.fill('textarea[data-composer]', '这周发 0.9，先看发布清单。');
     await page.press('textarea[data-composer]', 'Control+Enter');
     await page.waitForURL(/\/s\/session_/, { timeout: 15_000 });
-    await page.waitForSelector('[data-session-persona="lin-lan"]', { timeout: 15_000 });
+    await page.waitForSelector('[data-session-persona="xiao-you"]', { timeout: 15_000 });
     await page.waitForTimeout(800);
     const create = posts.find((body) => body.includes('"agent_config"'));
-    if (create === undefined || !create.includes('"persona"') || !create.includes('lin-lan')) errors.push(`${tag}: create body lacks persona: ${create}`);
+    if (create === undefined || !create.includes('"persona"') || !create.includes('xiao-you')) errors.push(`${tag}: create body lacks persona: ${create}`);
     if (!posts.some((body) => body.includes('persona_greeting_reply') || body.includes('personaGreetingReply'))) errors.push(`${tag}: first prompt lacks greeting-reply bit: ${posts.join(' | ').slice(0, 600)}`);
     await shot(page, `new-sent-${tag}`);
   },
   async header(page, tag) {
     await page.goto(url('/s/session_fixture_persona'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-session-persona="lin-lan"] [data-persona-avatar-kind="image"]', { timeout: 30_000 });
+    await page.waitForSelector('[data-session-persona="xiao-you"] [data-persona-avatar-kind="image"]', { timeout: 30_000 });
     await shot(page, `header-${tag}`);
   },
   async memory(page, tag) {
-    await page.goto(url('/memory?persona=lin-lan'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-memory-persona="lin-lan"][aria-pressed="true"]', { timeout: 30_000 });
+    await page.goto(url('/memory?persona=xiao-you'), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-memory-persona="xiao-you"][aria-pressed="true"]', { timeout: 30_000 });
     await shot(page, `memory-persona-${tag}`);
-    await page.goto(url('/memory?persona=lin-lan&workspace=wd_fixture_000000000000'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('[data-memory-persona="lin-lan"][aria-pressed="true"]', { timeout: 30_000 });
+    await page.goto(url('/memory?persona=xiao-you&workspace=wd_fixture_000000000000'), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-memory-persona="xiao-you"][aria-pressed="true"]', { timeout: 30_000 });
     await shot(page, `memory-persona-workspace-${tag}`);
   },
 };

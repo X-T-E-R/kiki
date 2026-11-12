@@ -1346,7 +1346,7 @@ describe('Sidebar semantic structure', () => {
   });
 
   it('adds the persona group above the session list without disturbing its time groups', async () => {
-    listPersonas.mockResolvedValue([{ id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' }]);
+    listPersonas.mockResolvedValue([{ id: 'xiao-you', name: '小柚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' }]);
     const active = { ...session('active'), updated_at: fixtureStamp(6, 11) };
     const { container } = await mount({
       activeSessionId: 'active',
@@ -1359,10 +1359,10 @@ describe('Sidebar semantic structure', () => {
 
     const personaGroup = container.querySelector<HTMLElement>('[data-sidebar-personas] [role="group"]');
     expect(personaGroup?.getAttribute('aria-label')).toBe('Personas');
-    expect(personaGroup?.querySelector('[data-sidebar-persona-row="lin-lan"]')).not.toBeNull();
+    expect(personaGroup?.querySelector('[data-sidebar-persona-row="xiao-you"]')).not.toBeNull();
     // The name is the persona's stable daily address, never a fixed session.
-    const name = personaGroup!.querySelector<HTMLButtonElement>('[data-sidebar-persona-row="lin-lan"] button')!;
-    expect(name.textContent).toContain('小岚');
+    const name = personaGroup!.querySelector<HTMLButtonElement>('[data-sidebar-persona-row="xiao-you"] button')!;
+    expect(name.textContent).toContain('小柚');
 
     const sessionList = container.querySelector<HTMLElement>('[data-session-list]')!;
     expect([...sessionList.querySelectorAll<HTMLElement>('[role="group"][aria-label]')].map((node) => node.getAttribute('aria-label')))
@@ -2721,7 +2721,7 @@ describe('Sidebar room rows', () => {
       id: room.id,
       name: room.title,
       members: [],
-      host: 'lin-lan',
+      host: 'xiao-you',
       mode: 'mention',
       budget: { botMessagesPerUserMessage: 4 },
       workspace: room.workspace,

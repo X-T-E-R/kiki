@@ -15,8 +15,8 @@ import { I18nProvider } from '../../i18n';
 import { AVATAR_SOURCE_MAX_BYTES, PersonaAvatarControl } from './PersonaAvatarControl';
 
 const client = vi.hoisted(() => ({
-  putPersonaAvatar: vi.fn(async () => ({ id: 'lin-lan', mimeType: 'image/png', size: 10 })),
-  deletePersonaAvatar: vi.fn(async () => ({ id: 'lin-lan', deleted: true })),
+  putPersonaAvatar: vi.fn(async () => ({ id: 'xiao-you', mimeType: 'image/png', size: 10 })),
+  deletePersonaAvatar: vi.fn(async () => ({ id: 'xiao-you', deleted: true })),
   getPersonaAvatar: vi.fn(async () => null),
 }));
 const toasts = vi.hoisted(() => [] as { tone: string; text: string }[]);
@@ -71,7 +71,7 @@ async function mount(avatarUrl?: string): Promise<HTMLDivElement> {
     root.render(
       <QueryClientProvider client={queryClient}>
         <I18nProvider>
-          <PersonaAvatarControl personaId="lin-lan" persona={{ id: 'lin-lan', name: 'Lin Lan', avatarUrl }} />
+          <PersonaAvatarControl personaId="xiao-you" persona={{ id: 'xiao-you', name: 'Yuzu', avatarUrl }} />
         </I18nProvider>
       </QueryClientProvider>,
     );
@@ -96,7 +96,7 @@ const picture = (size: number, type = 'image/jpeg') => {
 describe('PersonaAvatarControl', () => {
   it('shows the initial and offers upload only, until there is a picture', async () => {
     const container = await mount();
-    expect(container.querySelector('[data-persona-avatar-kind="initial"]')?.textContent).toBe('L');
+    expect(container.querySelector('[data-persona-avatar-kind="initial"]')?.textContent).toBe('Y');
     expect(container.querySelector('[data-persona-avatar-upload]')?.textContent).toBe('Upload avatar');
     expect(container.querySelector('[data-persona-avatar-remove]')).toBeNull();
   });
@@ -122,7 +122,7 @@ describe('PersonaAvatarControl', () => {
     await flush();
     expect(client.putPersonaAvatar).toHaveBeenCalledTimes(1);
     const [id, file, shape] = client.putPersonaAvatar.mock.calls[0] as unknown as [string, File, string];
-    expect([id, file.type, file.name, shape]).toEqual(['lin-lan', 'image/png', 'avatar.png', 'circle']);
+    expect([id, file.type, file.name, shape]).toEqual(['xiao-you', 'image/png', 'avatar.png', 'circle']);
     expect(document.querySelector('[data-persona-avatar-crop]')).toBeNull();
     expect(toasts.at(-1)).toEqual({ tone: 'success', text: 'Avatar updated' });
   });
@@ -135,7 +135,7 @@ describe('PersonaAvatarControl', () => {
     const confirm = [...document.querySelectorAll<HTMLButtonElement>('button')].filter((button) => button.textContent === 'Remove avatar').at(-1)!;
     await act(async () => { confirm.click(); });
     await flush();
-    expect(client.deletePersonaAvatar).toHaveBeenCalledWith('lin-lan');
+    expect(client.deletePersonaAvatar).toHaveBeenCalledWith('xiao-you');
     expect(toasts.at(-1)).toEqual({ tone: 'success', text: 'Avatar removed' });
   });
 });

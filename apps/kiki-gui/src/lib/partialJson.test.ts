@@ -4,7 +4,7 @@ import { decodeJsonStringFragment, extractArrayItemStringField, extractStringFie
 
 describe('partial JSON field scanner', () => {
   it('reads the growing prefix of a string field, one delta at a time', () => {
-    const full = JSON.stringify({ to: '@阿澈', text: 'Hi "you"\nline two é' });
+    const full = JSON.stringify({ to: '@豆豆', text: 'Hi "you"\nline two é' });
     let previous = '';
     for (let cut = 0; cut <= full.length; cut += 1) {
       const value = streamingMessageText(full.slice(0, cut));

@@ -195,7 +195,7 @@ async function openSidebar(page, width) {
   await page.waitForTimeout(250);
 }
 
-const LIN = 'session_bot_lin_lan';
+const LIN = 'session_bot_xiao_you';
 
 const walkers = {
   async message(page, tag, width) {
@@ -209,13 +209,13 @@ const walkers = {
     const promoted = page.locator('[data-message-origin="ordinary_final"]');
     const promotedCount = await promoted.count();
     if (promotedCount !== 1) errors.push(`${tag}: expected one ordinary-final row, saw ${promotedCount}`);
-    if (!((await promoted.first().textContent()) ?? '').includes('小蓝还没回，我先不打扰用户')) {
+    if (!((await promoted.first().textContent()) ?? '').includes('米粒还没回，我先不打扰用户')) {
       errors.push(`${tag}: the ordinary-final row does not read the turn's reply`);
     }
     await shot(page, `message-${tag}`);
     // Sidebar Bots / Rooms groups.
     await openSidebar(page, width);
-    await page.waitForSelector('[data-sidebar-bot="lin-lan"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-sidebar-bot="xiao-you"]', { timeout: 10_000 });
     await shot(page, `sidebar-${tag}`);
     if (width < 768) await page.keyboard.press('Escape');
     await page.goto(url(`/s/${LIN}`), { waitUntil: 'domcontentloaded' });
@@ -258,7 +258,7 @@ const walkers = {
     await page.waitForSelector('[data-message-handoff]', { timeout: 30_000 });
     await page.locator('[data-message-handoff]').first().scrollIntoViewIfNeeded();
     await shot(page, `handoff-sender-${tag}`);
-    await page.goto(url('/s/session_bot_a_che'), { waitUntil: 'domcontentloaded' });
+    await page.goto(url('/s/session_bot_dou_dou'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-message-handoff]', { timeout: 30_000 });
     await shot(page, `handoff-receiver-${tag}`);
   },
@@ -296,7 +296,7 @@ const walkers = {
     await input.fill('');
     await page.locator('[data-room-system-continue]').click();
     await page.waitForSelector('[data-room-system="continued"]', { timeout: 10_000 });
-    await page.locator('[data-room-input]').fill('按周五发。@阿澈 公告也一起起草。');
+    await page.locator('[data-room-input]').fill('按周五发。@豆豆 公告也一起起草。');
     await page.locator('[data-room-input]').press('Enter');
     await page.waitForFunction(() => [...document.querySelectorAll('[data-room-from="user"]')].some((node) => node.textContent?.includes('公告也一起起草')), null, { timeout: 10_000 });
     await shot(page, `room-continued-${tag}`);

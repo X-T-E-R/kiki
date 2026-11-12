@@ -88,7 +88,7 @@ function task(patch: Partial<CronTask> & Pick<CronTask, 'id'>): CronTask {
   } as CronTask;
 }
 
-const persona: PersonaSummary = { id: 'lin-lan', name: '小岚', revision: 'r1', archived: false, homeSessionId: 'daily' };
+const persona: PersonaSummary = { id: 'xiao-you', name: '小柚', revision: 'r1', archived: false, homeSessionId: 'daily' };
 
 async function render(): Promise<HTMLElement> {
   const container = document.createElement('div');
@@ -125,7 +125,7 @@ describe('one persona\'s scheduled tasks', () => {
     ]);
     withRooms([]);
     const container = await render();
-    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ persona: 'lin-lan', include_archive: true }));
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ persona: 'xiao-you', include_archive: true }));
     expect([...container.querySelectorAll('[data-persona-cron-task]')].map((row) => row.getAttribute('data-persona-cron-task')))
       .toEqual(['t_daily', 't_topic']);
     // The row names the conversation it belongs to.
@@ -192,8 +192,8 @@ describe('one persona\'s rooms', () => {
     withPersonaSessions([session('daily', '日常对话')]);
     withCron([]);
     withRooms([
-      { id: 'room_release', name: '发布房间', paused: false, members: [{ kind: 'persona', personaId: 'lin-lan', sessionId: 'seat_1', muted: false }] },
-      { id: 'room_other', name: '别人的房间', paused: false, members: [{ kind: 'persona', personaId: 'a-che', sessionId: 'seat_2', muted: false }] },
+      { id: 'room_release', name: '发布房间', paused: false, members: [{ kind: 'persona', personaId: 'xiao-you', sessionId: 'seat_1', muted: false }] },
+      { id: 'room_other', name: '别人的房间', paused: false, members: [{ kind: 'persona', personaId: 'dou-dou', sessionId: 'seat_2', muted: false }] },
     ]);
     const container = await render();
     expect([...container.querySelectorAll('[data-persona-room-row]')].map((row) => row.getAttribute('data-persona-room-row')))

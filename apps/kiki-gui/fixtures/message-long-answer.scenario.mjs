@@ -23,7 +23,7 @@ import { sessionRecord, ts } from './helpers.mjs';
 
 const SID = 'session_fixture_message_long';
 const WS = 'wd_fixture_000000000000';
-const PERSONA = { id: 'lin-lan', name: '林岚' };
+const PERSONA = { id: 'xiao-you', name: '小柚' };
 
 /** Unique tail markers: a body is whole only when its own marker is on the page. */
 export const TAIL = {
@@ -86,14 +86,14 @@ export default {
       id: PERSONA.id, name: PERSONA.name, title: '发布协调',
       job: '负责每个版本的发布节奏：列清单、盯阻塞、写发布说明。',
       modelAlias: 'fixture/kiki-pro', thinkingEffort: 'high', delivery: 'message',
-      description: '你是林岚，负责 Kiki 的发布协调。说话简短，先给结论。',
+      description: '你是小柚，负责 Kiki 的发布协调。说话简短，先给结论。',
     },
   }],
   sessions: [sessionRecord(SID, {
     title: '0.31 发布清单',
     workspace_id: WS,
     delivery: 'message',
-    metadata: { cwd: 'C:/fixture/bots/lin-lan', bot_persona_id: PERSONA.id },
+    metadata: { cwd: 'C:/fixture/bots/xiao-you', bot_persona_id: PERSONA.id },
     agent_config: { model: 'fixture/kiki-pro', persona: { id: PERSONA.id, name: PERSONA.name } },
   })],
   snapshots: {

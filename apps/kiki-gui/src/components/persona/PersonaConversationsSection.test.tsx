@@ -50,7 +50,7 @@ function session(patch: Partial<Session> & Pick<Session, 'id'>): Session {
   } as Session;
 }
 
-const persona: PersonaSummary = { id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' };
+const persona: PersonaSummary = { id: 'xiao-you', name: '小柚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' };
 
 /** React reads `value` through its own tracker; the prototype setter is what a typist triggers. */
 async function type(input: HTMLInputElement, value: string): Promise<void> {
@@ -81,7 +81,7 @@ describe('one persona\'s conversations', () => {
   it('asks the server for this persona\'s conversations instead of reading a global window', async () => {
     listSessions.mockResolvedValue({ items: [session({ id: 'home_lin' }), session({ id: 'topic_1', title: '排查构建' })], has_more: false });
     const container = await render();
-    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ persona: 'lin-lan', include_archive: true }));
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ persona: 'xiao-you', include_archive: true }));
     expect([...container.querySelectorAll('[data-persona-conversation-row]')].map((row) => row.getAttribute('data-persona-conversation-row')))
       .toEqual(['home_lin', 'topic_1']);
     // Every conversation the server returned is shown: nothing is re-judged here.
@@ -110,13 +110,13 @@ describe('one persona\'s conversations', () => {
     for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     // The klient signature is (id, sessionId): an object here would 400.
-    expect(setHome).toHaveBeenCalledWith('lin-lan', 'topic_1');
+    expect(setHome).toHaveBeenCalledWith('xiao-you', 'topic_1');
     const toast = getToasts().at(-1);
     expect(toast?.undo?.run).toBeTypeOf('function');
 
     // The inverse restores the home id captured before the write.
     await act(async () => { await toast!.undo!.run(); });
-    expect(setHome).toHaveBeenLastCalledWith('lin-lan', 'home_lin');
+    expect(setHome).toHaveBeenLastCalledWith('xiao-you', 'home_lin');
   });
 
   it('reports a failed pointer change and leaves the choice on screen to retry', async () => {

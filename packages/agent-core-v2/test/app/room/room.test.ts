@@ -172,8 +172,8 @@ function setup(enabled = true, wakeError?: Error, flatListing = false, personaRe
       return {
         definition: {
           id,
-          name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '阿澈',
-          greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '阿澈 原始开场白。' : undefined,
+          name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '豆豆',
+          greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '豆豆 原始开场白。' : undefined,
           job: `${id} job`,
           description: `${id} persona`,
         },
@@ -855,7 +855,7 @@ describe('RoomService', () => {
   it('recognizes mentions immediately before full-width punctuation', async () => {
     const { service, calls, release, room: roomPromise } = setup();
     const room = await roomPromise;
-    await service.postUserMessage(room.id, { text: '@阿澈：在吗？' });
+    await service.postUserMessage(room.id, { text: '@豆豆：在吗？' });
     await eventually(() => calls.length === 1);
     expect(calls[0]!.target.sessionId).toContain('_charlie_');
     release(calls[0]!.id);

@@ -56,7 +56,7 @@ class FaultyPersonaStorage extends InMemoryStorageService {
   failNextAvatarMetadataDelete = false;
 
   override async delete(scope: string, key: string) {
-    if (scope === 'personas/lin-lan' && key === 'avatar.json' && this.failNextAvatarMetadataDelete) {
+    if (scope === 'personas/xiao-you' && key === 'avatar.json' && this.failNextAvatarMetadataDelete) {
       this.failNextAvatarMetadataDelete = false;
       throw new Error('avatar metadata delete failed');
     }
@@ -65,7 +65,7 @@ class FaultyPersonaStorage extends InMemoryStorageService {
 
   override async acquireLock(scope: string, key: string, options = {}) {
     const lock = await super.acquireLock(scope, key, options);
-    if (scope === 'personas/lin-lan' && key === 'persona-write' && this.injectWriteBetweenLock) {
+    if (scope === 'personas/xiao-you' && key === 'persona-write' && this.injectWriteBetweenLock) {
       this.injectWriteBetweenLock = false;
       await super.write(scope, 'persona.md', new TextEncoder().encode('---\nname: 外部\n---\n外部\n'));
       this.failNextPersonaWrite = true;
@@ -74,11 +74,11 @@ class FaultyPersonaStorage extends InMemoryStorageService {
   }
 
   override async write(scope: string, key: string, data: Uint8Array, options = {}) {
-    if (scope === 'personas/lin-lan' && key === 'persona.md' && this.failRollback) {
+    if (scope === 'personas/xiao-you' && key === 'persona.md' && this.failRollback) {
       this.failRollback = false;
       throw new Error('rollback write failed');
     }
-    if (scope === 'personas/lin-lan' && key === 'persona.md' && this.failNextPersonaWrite) {
+    if (scope === 'personas/xiao-you' && key === 'persona.md' && this.failNextPersonaWrite) {
       this.failNextPersonaWrite = false;
       if (this.failRollbackOnPrimary) this.failRollback = true;
       throw new Error('primary write failed');
@@ -88,15 +88,15 @@ class FaultyPersonaStorage extends InMemoryStorageService {
 }
 
 const definition: PersonaDefinition = {
-  id: 'lin-lan',
-  name: '林岚',
+  id: 'xiao-you',
+  name: '小柚',
   title: '发布协调',
   job: '负责发布节奏',
   profile: 'agent',
   modelAlias: 'fast-model',
   delivery: 'message',
   memory: { shared: ['global', 'workspace'] },
-  description: '你是林岚。\n\n先给结论。',
+  description: '你是小柚。\n\n先给结论。',
 };
 
 describe('PersonaStore', () => {
@@ -183,7 +183,7 @@ describe('PersonaStore', () => {
     await store.put(definition);
     faulty.injectWriteBetweenLock = true;
     await expect(store.put({ ...definition, name: '更新' })).rejects.toThrow('primary write failed');
-    expect((await store.get('lin-lan'))?.definition.name).toBe('外部');
+    expect((await store.get('xiao-you'))?.definition.name).toBe('外部');
   });
 
   it('reports rollback failure with the original error and logs inconsistency', async () => {
@@ -226,17 +226,17 @@ describe('PersonaStore', () => {
     expect(created.definition).toEqual(definition);
     expect(created.examples).toContain('hello');
     expect(created.revision).toHaveLength(64);
-    expect(await store.get('lin-lan')).toEqual(created);
+    expect(await store.get('xiao-you')).toEqual(created);
     expect(await store.list()).toEqual([
-      expect.objectContaining({ id: 'lin-lan', name: '林岚', archived: false, revision: created.revision }),
+      expect.objectContaining({ id: 'xiao-you', name: '小柚', archived: false, revision: created.revision }),
     ]);
 
-    await store.archive('lin-lan');
+    await store.archive('xiao-you');
     expect(await store.list()).toEqual([]);
     expect(await store.list({ includeArchived: true })).toEqual([
-      expect.objectContaining({ id: 'lin-lan', archived: true }),
+      expect.objectContaining({ id: 'xiao-you', archived: true }),
     ]);
-    expect(await store.get('lin-lan')).toEqual(created);
+    expect(await store.get('xiao-you')).toEqual(created);
   });
 
   it('rejects oversized serialized writes before changing assets or memory', async () => {
@@ -261,9 +261,9 @@ describe('PersonaStore', () => {
 
   it('accepts the exact UTF-8 file boundary and keeps successful writes readable and exportable', async () => {
     const first = await store.put({ ...definition, description: 'x' });
-    const overhead = (await storage.size('personas/lin-lan', 'persona.md'))! - 1;
+    const overhead = (await storage.size('personas/xiao-you', 'persona.md'))! - 1;
     const snapshot = await store.put({ ...definition, description: 'x'.repeat(1024 * 1024 - overhead), examples: 'x'.repeat(256 * 1024) });
-    expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024);
+    expect(await storage.size('personas/xiao-you', 'persona.md')).toBe(1024 * 1024);
     expect(await store.get(definition.id)).toEqual(snapshot);
     expect((await store.list())[0]?.revision).toBe(snapshot.revision);
     expect((await store.exportCard(definition.id, 'json')).data.byteLength).toBeGreaterThan(0);
@@ -296,7 +296,7 @@ describe('PersonaStore', () => {
     await store.put(definition);
     await store.updateState(definition.id, { homeSessionId: 'owned-session' });
     for (const raw of ['invalid frontmatter', 'x'.repeat(1024 * 1024 + 1)]) {
-      await storage.write('personas/lin-lan', 'persona.md', new TextEncoder().encode(raw));
+      await storage.write('personas/xiao-you', 'persona.md', new TextEncoder().encode(raw));
       await expect(store.get(definition.id)).rejects.toThrow();
       const restored = await store.put({ ...definition, description: 'Recovered' });
       expect(await store.get(definition.id)).toEqual(restored);
@@ -312,18 +312,18 @@ describe('PersonaStore', () => {
     store.setMemoryHooks({ importLorebook: async () => {}, deletePersonaNamespaces: async (id) => {
       order.push(`memory:${id}`);
       if (memoryFailure) throw new Error('memory unavailable');
-      expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024 + 1);
+      expect(await storage.size('personas/xiao-you', 'persona.md')).toBe(1024 * 1024 + 1);
       deletedPersonas.push(id);
     } });
-    await storage.write('personas/lin-lan', 'persona.md', new TextEncoder().encode('x'.repeat(1024 * 1024 + 1)));
+    await storage.write('personas/xiao-you', 'persona.md', new TextEncoder().encode('x'.repeat(1024 * 1024 + 1)));
     memoryFailure = true;
     expect((await store.delete(definition.id)).memory.status).toBe('failed');
-    expect(await storage.size('personas/lin-lan', 'persona.md')).toBe(1024 * 1024 + 1);
+    expect(await storage.size('personas/xiao-you', 'persona.md')).toBe(1024 * 1024 + 1);
     memoryFailure = false;
     expect((await store.delete(definition.id)).memory.status).toBe('committed');
-    expect(order).toEqual(['lifecycle:lin-lan', 'memory:lin-lan', 'lifecycle:lin-lan', 'memory:lin-lan']);
-    expect(deletedPersonas).toEqual(['lin-lan']);
-    expect(await storage.list('personas/lin-lan')).toEqual([]);
+    expect(order).toEqual(['lifecycle:xiao-you', 'memory:xiao-you', 'lifecycle:xiao-you', 'memory:xiao-you']);
+    expect(deletedPersonas).toEqual(['xiao-you']);
+    expect(await storage.list('personas/xiao-you')).toEqual([]);
     expect(await store.list()).toEqual([]);
   });
 
@@ -331,99 +331,99 @@ describe('PersonaStore', () => {
     await store.put(definition);
     let changes = 0;
     disposables.add(store.onDidChange(() => { changes++; }));
-    const raw = await storage.read('personas/lin-lan', 'persona.md');
+    const raw = await storage.read('personas/xiao-you', 'persona.md');
     if (raw === undefined) throw new Error('persona file was not written');
-    await storage.write('personas/lin-lan', 'persona.md', new TextEncoder().encode(new TextDecoder().decode(raw).replace('林岚', '外部林岚')), { atomic: true });
-    externalChange.fire({ path: '/kimi-test-home/personas/lin-lan/persona.md', action: 'modified', kind: 'file' });
+    await storage.write('personas/xiao-you', 'persona.md', new TextEncoder().encode(new TextDecoder().decode(raw).replace('小柚', '外部小柚')), { atomic: true });
+    externalChange.fire({ path: '/kimi-test-home/personas/xiao-you/persona.md', action: 'modified', kind: 'file' });
     await vi.waitFor(() => expect(changes).toBe(1), { timeout: 1_000 });
-    expect((await store.get('lin-lan'))?.definition.name).toBe('外部林岚');
+    expect((await store.get('xiao-you'))?.definition.name).toBe('外部小柚');
   });
 
   it('updates state without changing the frozen revision and preserves unknown fields', async () => {
     const created = await store.put(definition);
-    const initialState = await store.getState('lin-lan');
+    const initialState = await store.getState('xiao-you');
     expect(initialState).toEqual({ version: 1, archived: false, pinned: false, hidden: false });
-    expect(await storage.size('personas/lin-lan', 'state.json')).toBeUndefined();
-    const updated = await store.updateState('lin-lan', {
+    expect(await storage.size('personas/xiao-you', 'state.json')).toBeUndefined();
+    const updated = await store.updateState('xiao-you', {
       homeSessionId: 'session-1',
       pinned: true,
       runtimeExtension: { owner: 'bot' },
     });
     expect(updated).toMatchObject({ version: 1, archived: false, homeSessionId: 'session-1', pinned: true });
-    await store.archive('lin-lan');
-    expect(await store.getState('lin-lan')).toMatchObject({
+    await store.archive('xiao-you');
+    expect(await store.getState('xiao-you')).toMatchObject({
       archived: true,
       homeSessionId: 'session-1',
       pinned: true,
       runtimeExtension: { owner: 'bot' },
     });
-    expect((await store.get('lin-lan'))?.revision).toBe(created.revision);
+    expect((await store.get('xiao-you'))?.revision).toBe(created.revision);
   });
 
   it('does not remove persona assets when memory deletion fails, allowing retry', async () => {
     await store.put(definition);
     memoryFailure = true;
-    await expect(store.delete('lin-lan')).resolves.toEqual({ memory: { status: 'failed', error: 'memory unavailable' } });
-    expect(await store.get('lin-lan')).toBeDefined();
+    await expect(store.delete('xiao-you')).resolves.toEqual({ memory: { status: 'failed', error: 'memory unavailable' } });
+    expect(await store.get('xiao-you')).toBeDefined();
     memoryFailure = false;
-    await expect(store.delete('lin-lan')).resolves.toEqual({ memory: { status: 'committed' } });
-    expect(await store.get('lin-lan')).toBeUndefined();
+    await expect(store.delete('xiao-you')).resolves.toEqual({ memory: { status: 'committed' } });
+    expect(await store.get('xiao-you')).toBeUndefined();
   });
 
   it('stores avatar shape separately and removes only avatar files idempotently', async () => {
     const snapshot = await store.put({ ...definition, examples: 'example' });
-    const state = await store.updateState('lin-lan', { pinned: true });
+    const state = await store.updateState('xiao-you', { pinned: true });
     let changes = 0;
     disposables.add(store.onDidChange(() => { changes++; }));
-    const avatar = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
+    const avatar = await store.putAvatar('xiao-you', { data: AVATAR, shape: 'circle' });
     expect(avatar).toMatchObject({ width: 1, height: 1, shape: 'circle' });
-    expect(await store.getAvatar('lin-lan')).toEqual(avatar);
+    expect(await store.getAvatar('xiao-you')).toEqual(avatar);
     expect((await store.list())[0]?.avatarShape).toBe('circle');
-    expect(await store.deleteAvatar('lin-lan')).toBe(true);
-    expect(await store.deleteAvatar('lin-lan')).toBe(false);
-    expect(await store.getAvatar('lin-lan')).toBeUndefined();
+    expect(await store.deleteAvatar('xiao-you')).toBe(true);
+    expect(await store.deleteAvatar('xiao-you')).toBe(false);
+    expect(await store.getAvatar('xiao-you')).toBeUndefined();
     expect((await store.list())[0]?.avatarShape).toBeUndefined();
-    expect(await storage.read('personas/lin-lan', 'avatar.json')).toBeUndefined();
-    expect(await store.get('lin-lan')).toEqual(snapshot);
-    expect(await store.getState('lin-lan')).toEqual(state);
+    expect(await storage.read('personas/xiao-you', 'avatar.json')).toBeUndefined();
+    expect(await store.get('xiao-you')).toEqual(snapshot);
+    expect(await store.getState('xiao-you')).toEqual(state);
     expect(deletedPersonas).toEqual([]);
     expect(changes).toBe(2);
   });
 
   it('rejects oversized and invalid avatars without replacing the saved image or shape', async () => {
     await store.put(definition);
-    const original = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
-    await expect(store.putAvatar('lin-lan', new Uint8Array(2 * 1024 * 1024 + 1))).rejects.toThrow('2 MiB');
-    await expect(store.putAvatar('lin-lan', Uint8Array.of(1, 2, 3))).rejects.toThrow('not a PNG');
-    await expect(store.putAvatar('lin-lan', { data: AVATAR, mimeType: 'image/jpeg' })).rejects.toThrow('MIME type');
-    expect(await store.getAvatar('lin-lan')).toEqual(original);
-    await store.putAvatar('lin-lan', AVATAR);
-    expect((await store.getAvatar('lin-lan'))?.shape).toBeUndefined();
-    expect(await storage.read('personas/lin-lan', 'avatar.json')).toBeUndefined();
+    const original = await store.putAvatar('xiao-you', { data: AVATAR, shape: 'circle' });
+    await expect(store.putAvatar('xiao-you', new Uint8Array(2 * 1024 * 1024 + 1))).rejects.toThrow('2 MiB');
+    await expect(store.putAvatar('xiao-you', Uint8Array.of(1, 2, 3))).rejects.toThrow('not a PNG');
+    await expect(store.putAvatar('xiao-you', { data: AVATAR, mimeType: 'image/jpeg' })).rejects.toThrow('MIME type');
+    expect(await store.getAvatar('xiao-you')).toEqual(original);
+    await store.putAvatar('xiao-you', AVATAR);
+    expect((await store.getAvatar('xiao-you'))?.shape).toBeUndefined();
+    expect(await storage.read('personas/xiao-you', 'avatar.json')).toBeUndefined();
     await expect(store.putAvatar('missing', AVATAR)).rejects.toThrow('Persona not found');
     await expect(store.deleteAvatar('missing')).rejects.toThrow('Persona not found');
   });
 
   it('restores the avatar and shape when deletion partially fails', async () => {
     await store.put(definition);
-    const original = await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
+    const original = await store.putAvatar('xiao-you', { data: AVATAR, shape: 'circle' });
     (storage as FaultyPersonaStorage).failNextAvatarMetadataDelete = true;
-    await expect(store.deleteAvatar('lin-lan')).rejects.toThrow('avatar metadata delete failed');
-    expect(await store.getAvatar('lin-lan')).toEqual(original);
-    expect(await store.deleteAvatar('lin-lan')).toBe(true);
+    await expect(store.deleteAvatar('xiao-you')).rejects.toThrow('avatar metadata delete failed');
+    expect(await store.getAvatar('xiao-you')).toEqual(original);
+    expect(await store.deleteAvatar('xiao-you')).toBe(true);
   });
 
   it('duplicates assets without copying state or memory', async () => {
     await store.put({ ...definition, examples: 'example' });
-    await store.updateState('lin-lan', { homeSessionId: 'session-1', pinned: true });
-    await store.putAvatar('lin-lan', { data: AVATAR, shape: 'circle' });
-    const duplicate = await store.duplicate('lin-lan', { id: 'lin-lan-copy' });
-    expect(duplicate.definition.id).toBe('lin-lan-copy');
-    expect(duplicate.definition.name).toBe('林岚 副本');
+    await store.updateState('xiao-you', { homeSessionId: 'session-1', pinned: true });
+    await store.putAvatar('xiao-you', { data: AVATAR, shape: 'circle' });
+    const duplicate = await store.duplicate('xiao-you', { id: 'xiao-you-copy' });
+    expect(duplicate.definition.id).toBe('xiao-you-copy');
+    expect(duplicate.definition.name).toBe('小柚 副本');
     expect(duplicate.examples).toBe('example');
-    expect(await store.getAvatar('lin-lan-copy')).toMatchObject({ mimeType: 'image/png', shape: 'circle' });
-    expect(await store.getState('lin-lan-copy')).toEqual({ version: 1, archived: false, pinned: false, hidden: false });
-    expect(await storage.size('personas/lin-lan-copy', 'state.json')).toBeUndefined();
+    expect(await store.getAvatar('xiao-you-copy')).toMatchObject({ mimeType: 'image/png', shape: 'circle' });
+    expect(await store.getState('xiao-you-copy')).toEqual({ version: 1, archived: false, pinned: false, hidden: false });
+    expect(await storage.size('personas/xiao-you-copy', 'state.json')).toBeUndefined();
     expect(await store.list({ includeArchived: true })).toHaveLength(2);
     expect(importedLorebook).toEqual([]);
   });
@@ -463,11 +463,11 @@ describe('PersonaStore', () => {
 
   it('round-trips a CHARX archive with its avatar extension', async () => {
     await store.put(definition);
-    await store.putAvatar('lin-lan', AVATAR);
-    const exported = await store.exportCard('lin-lan', 'charx');
+    await store.putAvatar('xiao-you', AVATAR);
+    const exported = await store.exportCard('xiao-you', 'charx');
     expect(exported.extension).toBe('.charx');
     const preview = await store.previewImport({ data: exported.data, format: 'charx' });
-    expect(preview.definition.name).toBe('林岚');
+    expect(preview.definition.name).toBe('小柚');
     expect(preview.avatarMimeType).toBe('image/png');
   });
 
@@ -488,7 +488,7 @@ describe('PersonaStore', () => {
 
   it('exports active persona memory only when requested', async () => {
     await store.put(definition);
-    const exported = await store.exportCard('lin-lan', 'json', { includeMemory: true });
+    const exported = await store.exportCard('xiao-you', 'json', { includeMemory: true });
     expect(exported.memoryScopes).toEqual(['persona']);
     const preview = await store.previewImport({ data: exported.data, format: 'json' });
     expect(preview.memoryEntries).toEqual([

@@ -475,8 +475,8 @@ const SHOTS = [
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
       await open(page, link, '/personas', '[data-persona-row]');
-      await page.locator('[data-persona-row="lin-lan"]').click();
-      await page.locator('[data-persona-editor="lin-lan"]').waitFor({ timeout: 20_000 });
+      await page.locator('[data-persona-row="xiao-you"]').click();
+      await page.locator('[data-persona-editor="xiao-you"]').waitFor({ timeout: 20_000 });
       await settle(page);
       await shot();
     },
@@ -486,7 +486,7 @@ const SHOTS = [
     scenario: 'marketing-campaign-a18',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
-      await open(page, link, '/personas?persona=lin-lan&view=conversations', '[data-persona-conversation-row]');
+      await open(page, link, '/personas?persona=xiao-you&view=conversations', '[data-persona-conversation-row]');
       await settle(page);
       await shot();
     },

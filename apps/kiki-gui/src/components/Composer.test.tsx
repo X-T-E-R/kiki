@@ -223,7 +223,7 @@ beforeEach(() => {
   });
   listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
   listPersonas.mockReset().mockResolvedValue([
-    { id: 'lin-lan', name: '林岚', title: '全栈架构师', revision: '1', archived: false },
+    { id: 'xiao-you', name: '小柚', title: '全栈架构师', revision: '1', archived: false },
     { id: 'nia', name: '妮娅', title: '个人管家', revision: '1', archived: false },
   ]);
   previewAgentProfileFile.mockReset().mockResolvedValue({ profile: FILE_PROFILE });
@@ -792,18 +792,18 @@ describe('Composer execution control', () => {
       onChangeAgentProfile: () => {},
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
-      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
+      personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: () => {} },
     });
-    const chip = container.querySelector('[data-composer-persona-chip="lin-lan"]');
+    const chip = container.querySelector('[data-composer-persona-chip="xiao-you"]');
     // The persona branch of the profile control: the trigger keeps the face and the
     // name, and the panel behind it is still the engine/profile list.
     const trigger = container.querySelector('#composer-profile-select') ?? container.querySelector('#composer-execution-select');
     expect(chip).not.toBeNull();
-    expect(trigger?.querySelector('span.truncate')?.textContent).toBe('林岚');
+    expect(trigger?.querySelector('span.truncate')?.textContent).toBe('小柚');
     // No container-query rule may turn the name into a screen-reader-only label.
     expect(chip?.innerHTML).not.toContain('sr-only');
     const clear = container.querySelector('[data-composer-persona-clear]');
-    expect(clear?.getAttribute('aria-label')).toBe('Remove persona 林岚');
+    expect(clear?.getAttribute('aria-label')).toBe('Remove persona 小柚');
     await click(container.querySelector('#composer-profile-select')!);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).not.toBeNull();
   });
@@ -863,7 +863,7 @@ describe('Composer execution control', () => {
     });
     await settle();
     expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
-    expect(container.querySelector('[data-composer-persona-option="lin-lan"]')).toBeNull();
+    expect(container.querySelector('[data-composer-persona-option="xiao-you"]')).toBeNull();
   });
 
   it('renders persona failure and retry when persona catalog fails', async () => {
@@ -895,7 +895,7 @@ describe('Composer execution control', () => {
     expect(listPersonas).toHaveBeenCalledTimes(2);
     expect(container.textContent).not.toContain('Could not load personas');
     expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
-    expect(container.querySelector('[data-composer-persona-option="lin-lan"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-persona-option="xiao-you"]')).not.toBeNull();
   });
 
   it('keeps the persona-branch control openable while a turn runs', async () => {
@@ -905,7 +905,7 @@ describe('Composer execution control', () => {
       onChangeAgentProfile: () => {},
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
-      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
+      personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: () => {} },
     });
     const trigger = await waitForProfileTrigger(container);
     expect(trigger.disabled).toBe(false);
@@ -1004,7 +1004,7 @@ describe('Composer execution control', () => {
       onChangeAgentProfile: () => {},
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
-      personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: onPersona },
+      personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: onPersona },
     });
     // The chip is the persona branch; the engine choice is behind it.
     await click(await waitForProfileTrigger(container));

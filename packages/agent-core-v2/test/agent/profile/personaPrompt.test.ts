@@ -12,8 +12,8 @@ function snapshot(overrides: Partial<PersonaSnapshot['definition']> = {}, exampl
   return {
     revision: 'r1',
     definition: {
-      id: 'lin-lan',
-      name: '林岚',
+      id: 'xiao-you',
+      name: '小柚',
       title: '发布协调',
       description: '先给结论。',
       ...overrides,
@@ -30,7 +30,7 @@ describe('persona prompt overlay', () => {
       block,
     );
 
-    expect(result).toContain('<persona name="林岚" title="发布协调">');
+    expect(result).toContain('<persona name="小柚" title="发布协调">');
     expect(result).toContain('先给结论。');
     expect(result).toContain(PERSONA_CAPABILITY_NOTICE);
     expect(result).toContain('# Language');

@@ -681,11 +681,11 @@ describe('runV2Print', () => {
     mocks.bootstrap.mockReturnValue({ app });
     mocks.ensureMainAgent.mockResolvedValue(agent);
 
-    await runV2Print(opts({ persona: 'lin-lan' }) as never, '1.2.3-test', { stdout, stderr });
+    await runV2Print(opts({ persona: 'xiao-you' }) as never, '1.2.3-test', { stdout, stderr });
 
     const sessions = appServices.get(ISessionManager) as { create: ReturnType<typeof vi.fn> };
     const request = sessions.create.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(request['mainAgentBinding']).toEqual({ persona: 'lin-lan' });
+    expect(request['mainAgentBinding']).toEqual({ persona: 'xiao-you' });
   });
 
   it('does not materialize a main agent after fresh profile binding fails', async () => {

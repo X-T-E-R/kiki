@@ -84,7 +84,7 @@ afterAll(async () => {
   localStorage.clear();
 });
 
-const LIN = { id: 'lin-lan', name: '林岚' };
+const LIN = { id: 'xiao-you', name: '小柚' };
 const BOT_CONTEXT: MessageViewContextValue = { persona: LIN, sessionId: 'session_bot', internalProse: true };
 
 function state(blocks: Block[], overrides: Partial<SessionViewState> = {}): SessionViewState {
@@ -372,9 +372,9 @@ describe('message view (Bot mode)', () => {
     const { container, rerender } = await render(timeline([...base, running('{"text":"能，差')], 'message', { busy: true }));
     const draft = () => container.querySelector('[data-message-status="sending"] [data-message-text]')?.textContent ?? '';
     expect(draft()).toContain('能，差');
-    await rerender(timeline([...base, running('{"text":"能，差两件事。\\n@阿澈')], 'message', { busy: true }));
+    await rerender(timeline([...base, running('{"text":"能，差两件事。\\n@豆豆')], 'message', { busy: true }));
     expect(draft()).toContain('能，差两件事。');
-    expect(draft()).toContain('@阿澈');
+    expect(draft()).toContain('@豆豆');
     await rerender(timeline([...base, sendMessage('s1', 't1', '能，差两件事。')], 'message'));
     expect(container.querySelector('[data-message-status="sending"]')).toBeNull();
     expect(container.querySelector('[data-message-status="sent"]')?.textContent).toContain('能，差两件事。');
@@ -465,25 +465,25 @@ describe('message view (Bot mode)', () => {
 
   it('shows a handoff line on the sending side and on the receiving side (acceptance 4)', async () => {
     const outbound: Block[] = [
-      user('u1', '让阿澈起草 changelog', 't1'),
-      sendMessage('s1', 't1', 'changelog 还差三条，你来起草', { argsText: '{"to":"@阿澈","text":"changelog 还差三条，你来起草"}' }, {
-        delivered_to: ['a-che'],
-        handoff: { target_persona_id: 'a-che', target_session_id: 'session_ache', target_name: '阿澈', message_id: 'h1' },
+      user('u1', '让豆豆起草 changelog', 't1'),
+      sendMessage('s1', 't1', 'changelog 还差三条，你来起草', { argsText: '{"to":"@豆豆","text":"changelog 还差三条，你来起草"}' }, {
+        delivered_to: ['dou-dou'],
+        handoff: { target_persona_id: 'dou-dou', target_session_id: 'session_dou_dou', target_name: '豆豆', message_id: 'h1' },
       }),
     ];
     const sender = await render(timeline(outbound, 'message'));
     const sent = sender.container.querySelector('[data-message-handoff]');
-    expect(sent?.textContent).toContain('林岚 → 阿澈');
+    expect(sent?.textContent).toContain('小柚 → 豆豆');
     expect(sent?.textContent).toContain('changelog 还差三条');
 
     const inbound: Block[] = [
-      user('u9', '来自 林岚：changelog 还差三条，你来起草', 't1', {
+      user('u9', '来自 小柚：changelog 还差三条，你来起草', 't1', {
         peerThread: { sessionId: 'session_bot', personaId: LIN.id, senderName: LIN.name, messageId: 'h1' },
       }),
     ];
-    const receiver = await render(timeline(inbound, 'message', {}, { persona: { id: 'a-che', name: '阿澈' }, sessionId: 'session_ache', internalProse: true }));
+    const receiver = await render(timeline(inbound, 'message', {}, { persona: { id: 'dou-dou', name: '豆豆' }, sessionId: 'session_dou_dou', internalProse: true }));
     const received = receiver.container.querySelector('[data-message-handoff]');
-    expect(received?.textContent).toContain('林岚 → 阿澈');
+    expect(received?.textContent).toContain('小柚 → 豆豆');
     expect(received?.textContent).toContain('changelog 还差三条，你来起草');
     expect(received?.textContent).not.toContain('来自');
   });
@@ -503,14 +503,14 @@ describe('message view (Bot mode)', () => {
   it('says who is working while the turn runs, without the process spinner', async () => {
     const blocks: Block[] = [user('u1', '查一下', 't1'), tool('r1', 'Read', 't1', { status: 'running', output: undefined })];
     const { container } = await render(timeline(blocks, 'message', { busy: true, turnStartedAt: Date.now() }));
-    expect(container.querySelector('[data-message-presence]')?.textContent).toContain('林岚 正在处理');
+    expect(container.querySelector('[data-message-presence]')?.textContent).toContain('小柚 正在处理');
   });
 
   it('hands each bot-mode row its original block’s place in the session blocks', async () => {
     galleryOrderProbe.calls.length = 0;
     const blocks: Block[] = [
       // A received handoff: a real user block, so it owns its own place.
-      user('u9', '来自 林岚：changelog 还差三条，你来起草', 't1', {
+      user('u9', '来自 小柚：changelog 还差三条，你来起草', 't1', {
         peerThread: { sessionId: 'session_bot', personaId: LIN.id, senderName: LIN.name, messageId: 'h1' },
       }),
       user('u1', '发个消息', 't1'),

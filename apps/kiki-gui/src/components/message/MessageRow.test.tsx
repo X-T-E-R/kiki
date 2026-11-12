@@ -86,13 +86,13 @@ function row(container: HTMLDivElement): HTMLDivElement {
   return found;
 }
 
-const SPEAKER = { id: 'lin-lan', name: '林岚' };
+const SPEAKER = { id: 'xiao-you', name: '小柚' };
 
 function message(overrides: Partial<MessageBlock> = {}): MessageBlock {
   return {
     kind: 'message', id: 'm1', messageId: 'send:call', origin: 'send_message', status: 'sent',
     text: '清单在这里：周四冻结，周五打 tag。', attachments: [], deliveredTo: ['user'],
-    personaId: 'lin-lan', senderName: '林岚', turnId: 't1', ...overrides,
+    personaId: 'xiao-you', senderName: '小柚', turnId: 't1', ...overrides,
   };
 }
 

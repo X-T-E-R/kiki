@@ -52,20 +52,20 @@ vi.mock('../../state/connection', () => ({
 }));
 
 const PERSONAS: PersonaSummary[] = [
-  { id: 'lin-lan', name: '林岚', title: '发布协调', revision: 'r1', archived: false },
-  { id: 'a-che', name: '阿澈', title: '写作', revision: 'r1', archived: false },
-  { id: 'xiao-lan', name: '小蓝', title: '调研', revision: 'r1', archived: false },
+  { id: 'xiao-you', name: '小柚', title: '发布协调', revision: 'r1', archived: false },
+  { id: 'dou-dou', name: '豆豆', title: '写作', revision: 'r1', archived: false },
+  { id: 'mi-li', name: '米粒', title: '调研', revision: 'r1', archived: false },
 ];
 
 function roomDoc(overrides: Partial<RoomDocument> = {}): RoomDocument {
   return {
     version: 1, id: 'release-031', name: '0.31 发布',
     members: [
-      { kind: 'persona', personaId: 'lin-lan', sessionId: 'sess_lin', muted: false },
-      { kind: 'persona', personaId: 'a-che', sessionId: 'sess_che', muted: false },
-      { kind: 'persona', personaId: 'xiao-lan', sessionId: 'sess_lan', muted: false },
+      { kind: 'persona', personaId: 'xiao-you', sessionId: 'sess_lin', muted: false },
+      { kind: 'persona', personaId: 'dou-dou', sessionId: 'sess_che', muted: false },
+      { kind: 'persona', personaId: 'mi-li', sessionId: 'sess_lan', muted: false },
     ],
-    host: 'lin-lan', mode: 'mention', budget: { botMessagesPerUserMessage: 12 },
+    host: 'xiao-you', mode: 'mention', budget: { botMessagesPerUserMessage: 12 },
     workspace: 'C:/work/kiki', createdAt: '2026-10-01T08:00:00.000Z', generation: 0,
     paused: false, budgetUsed: 0, userMessageCount: 1, cursors: {},
     ...overrides,
@@ -151,9 +151,9 @@ describe('room mention helpers', () => {
   it('finds the @word under the caret and lists 所有人 first', () => {
     expect(mentionAtCaret('你好 @阿', 5)).toEqual({ start: 3, query: '阿' });
     expect(mentionAtCaret('mail@x', 6)).toBeUndefined();
-    const members = [{ personaId: 'a-che', name: '阿澈' }, { personaId: 'xiao-lan', name: '小蓝' }];
-    expect(mentionOptions(members, '', { label: '所有人', hint: '' }).map((option) => option.key)).toEqual(['*', 'a-che', 'xiao-lan']);
-    expect(mentionOptions(members, '阿', { label: '所有人', hint: '' }).map((option) => option.key)).toEqual(['a-che']);
+    const members = [{ personaId: 'dou-dou', name: '豆豆' }, { personaId: 'mi-li', name: '米粒' }];
+    expect(mentionOptions(members, '', { label: '所有人', hint: '' }).map((option) => option.key)).toEqual(['*', 'dou-dou', 'mi-li']);
+    expect(mentionOptions(members, '豆', { label: '所有人', hint: '' }).map((option) => option.key)).toEqual(['dou-dou']);
   });
 });
 
@@ -231,11 +231,11 @@ describe('RoomPage', () => {
     rooms.log.mockResolvedValue({ entries: [{
       id: 'failure-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
       text: 'Diagnostic text is not a routing contract',
-      data: { memberId: 'lin-lan', reason_code: code, provider: 'example-provider', reason: 'Original diagnostic' },
+      data: { memberId: 'xiao-you', reason_code: code, provider: 'example-provider', reason: 'Original diagnostic' },
     }] });
     const container = await renderRoom();
     const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
-    expect(line).toContain('林岚');
+    expect(line).toContain('小柚');
     expect(line).toContain(expected);
     expect(line).not.toContain('稍后会重试');
     if (code.startsWith('auth.') || code === 'provider.connection_error') expect(line).toContain('example-provider');
@@ -245,7 +245,7 @@ describe('RoomPage', () => {
     rooms.log.mockResolvedValue({ entries: [{
       id: 'quota-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
       text: 'Provider rejected the request',
-      data: { memberId: 'lin-lan', reason_code: 'provider.auth_error', reason: 'Weekly usage limit reached' },
+      data: { memberId: 'xiao-you', reason_code: 'provider.auth_error', reason: 'Weekly usage limit reached' },
     }] });
     const container = await renderRoom();
     const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
@@ -257,11 +257,11 @@ describe('RoomPage', () => {
   it('keeps the reason from legacy wake failures without promising automatic retries', async () => {
     rooms.log.mockResolvedValue({ entries: [{
       id: 'legacy-1', at: '2026-10-01T09:00:00.000Z', kind: 'system', from: 'system', event: 'wake_failed',
-      text: 'Unable to wake lin-lan; the wake remains retryable.', data: { reason: 'Legacy failure detail' },
+      text: 'Unable to wake xiao-you; the wake remains retryable.', data: { reason: 'Legacy failure detail' },
     }] });
     const container = await renderRoom();
     const line = container.querySelector('[data-room-system="wake_failed"]')?.textContent;
-    expect(line).toContain('林岚');
+    expect(line).toContain('小柚');
     expect(line).toContain('Legacy failure detail');
     expect(line).not.toContain('稍后会重试');
   });
@@ -270,20 +270,20 @@ describe('RoomPage', () => {
     const container = await renderRoom();
     const input = container.querySelector<HTMLTextAreaElement>('[data-room-input]')!;
     expect(input.placeholder).toContain('发到 0.31 发布');
-    expect(input.placeholder).toContain('不 @ 交给 林岚');
+    expect(input.placeholder).toContain('不 @ 交给 小柚');
     await act(async () => { type(input, '@'); });
     const options = [...container.querySelectorAll('[data-room-mention]')].map((node) => node.getAttribute('data-room-mention'));
-    expect(options).toEqual(['*', 'lin-lan', 'a-che', 'xiao-lan']);
+    expect(options).toEqual(['*', 'xiao-you', 'dou-dou', 'mi-li']);
     await act(async () => { key(input, 'ArrowDown'); key(input, 'ArrowDown'); });
     await act(async () => { key(input, 'Enter'); });
-    expect(input.value).toBe('@阿澈 ');
+    expect(input.value).toBe('@豆豆 ');
   });
 
   it('interjects through postUserMessage with an idempotency key while members run (acceptance 6)', async () => {
     client.getSession.mockImplementation(async (id: string) => ({ id, busy: id === 'sess_che', metadata: { cwd: 'C:/' } }));
     rooms.postUserMessage.mockResolvedValue({ id: 'm9', at: '2026-10-01T09:00:00.000Z', kind: 'message', from: 'user', text: '先停一下', mentions: [] });
     const container = await renderRoom();
-    expect(container.querySelector('[data-message-presence]')?.textContent).toContain('阿澈 正在处理');
+    expect(container.querySelector('[data-message-presence]')?.textContent).toContain('豆豆 正在处理');
     const input = container.querySelector<HTMLTextAreaElement>('[data-room-input]')!;
     await act(async () => { type(input, '先停一下，改成周五发'); });
     await act(async () => { key(input, 'Enter'); });
@@ -296,7 +296,7 @@ describe('RoomPage', () => {
     rooms.get.mockResolvedValue(roomDoc({ paused: true, pauseReason: 'budget', budgetUsed: 12 }));
     const entries: RoomLogEntry[] = [
       { id: 'm1', at: '2026-10-01T09:00:00.000Z', kind: 'message', from: 'user', text: '这周能发吗', mentions: [] },
-      { id: 'm2', at: '2026-10-01T09:00:10.000Z', kind: 'message', from: 'lin-lan', text: '能，差两件事。', mentions: [] },
+      { id: 'm2', at: '2026-10-01T09:00:10.000Z', kind: 'message', from: 'xiao-you', text: '能，差两件事。', mentions: [] },
       { id: 's1', at: '2026-10-01T09:05:00.000Z', kind: 'system', from: 'system', event: 'budget_exhausted', text: '', data: { budget: 12 } },
     ];
     rooms.log.mockResolvedValue({ entries });
@@ -317,7 +317,7 @@ describe('RoomPage', () => {
     if (container.querySelector('[data-room-members]') === null) {
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-roster]')?.click(); });
     }
-    const remove = container.querySelector<HTMLButtonElement>('[data-room-member="a-che"] [data-room-remove-member]')!;
+    const remove = container.querySelector<HTMLButtonElement>('[data-room-member="dou-dou"] [data-room-remove-member]')!;
     await act(async () => { remove.click(); });
     await flush();
     const banner = container.querySelector('[data-room-roster-locked]');
@@ -348,7 +348,7 @@ describe('RoomPage', () => {
 
   it('keeps host and mute editable and locks the roster while a member holds a question', async () => {
     rooms.usage.mockResolvedValue(usage({ questions: { activeSessionId: 'sess_lan', queued: 2 } }));
-    rooms.update.mockResolvedValue(roomDoc({ host: 'a-che' }));
+    rooms.update.mockResolvedValue(roomDoc({ host: 'dou-dou' }));
     client.listPendingQuestions.mockResolvedValue([{
       question_id: 'q1', session_id: 'sess_lan', created_at: '2026-10-01T09:00:00.000Z',
       questions: [{ id: 'i1', question: '证书续期走哪个供应商？', options: [{ id: 'o1', label: 'A' }, { id: 'o2', label: 'B' }] }],
@@ -360,10 +360,10 @@ describe('RoomPage', () => {
     expect(container.querySelector('[data-room-questions-queued]')?.textContent).toBe('还有 2 个问题');
     expect(container.textContent).toContain('证书续期走哪个供应商？');
     expect(container.querySelector('[data-room-roster-locked]')?.textContent).toContain('暂不能增减成员');
-    expect(container.querySelector<HTMLButtonElement>('[data-room-member="a-che"] [data-room-remove-member]')?.disabled).toBe(true);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-member="a-che"] [data-room-set-host]')?.click(); });
+    expect(container.querySelector<HTMLButtonElement>('[data-room-member="dou-dou"] [data-room-remove-member]')?.disabled).toBe(true);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-member="dou-dou"] [data-room-set-host]')?.click(); });
     await flush();
-    expect(rooms.update).toHaveBeenCalledWith('release-031', { host: 'a-che' });
+    expect(rooms.update).toHaveBeenCalledWith('release-031', { host: 'dou-dou' });
   });
 
   it('shows thread members by title, says a busy one replies after its turn, and leaves without touching the thread', async () => {

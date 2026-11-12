@@ -603,9 +603,9 @@ describe('buildNewSessionCreate', () => {
       profile: 'agent',
       permissionMode: 'manual',
       planMode: false,
-      persona: 'lin-lan',
+      persona: 'xiao-you',
     });
-    expect(body).toMatchObject({ persona: 'lin-lan', metadata: { cwd: 'C:/repo' } });
+    expect(body).toMatchObject({ persona: 'xiao-you', metadata: { cwd: 'C:/repo' } });
     expect(body.agent_config).not.toHaveProperty('profile');
     // The persona's own delivery decides: the composer never pins one, so a
     // persona saved as "reply" is not turned into a message session here.

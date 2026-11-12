@@ -263,11 +263,11 @@ function seedMemories(data: Record<string, MemoryEntry[]>, settings = enabledSet
 }
 function seedBot(shared?: ('global' | 'workspace')[]) {
   const snapshot: PersonaSnapshot = {
-    definition: { id: 'lin-lan', name: 'Lin Lan', description: 'Release coordination', memory: shared === undefined ? undefined : { shared }, homeWorkspace: '/fixture/bot-home' },
+    definition: { id: 'xiao-you', name: 'Yuzu', description: 'Release coordination', memory: shared === undefined ? undefined : { shared }, homeWorkspace: '/fixture/bot-home' },
     revision: 'persona_revision', examples: 'Keep this example.',
   };
-  vi.mocked(client.listPersonas).mockResolvedValue([{ id: 'lin-lan', name: 'Lin Lan', archived: false, revision: snapshot.revision }]);
-  listBots.mockResolvedValue([{ personaId: 'lin-lan', name: 'Lin Lan', homeSessionId: 'session_bot_home', hidden: true, pinned: false }]);
+  vi.mocked(client.listPersonas).mockResolvedValue([{ id: 'xiao-you', name: 'Yuzu', archived: false, revision: snapshot.revision }]);
+  listBots.mockResolvedValue([{ personaId: 'xiao-you', name: 'Yuzu', homeSessionId: 'session_bot_home', hidden: true, pinned: false }]);
   vi.spyOn(client, 'getSession').mockResolvedValue({ id: 'session_bot_home', workspace_id: 'wd_home' } as Session);
   vi.spyOn(client, 'getPersona').mockResolvedValue(snapshot);
   return snapshot;
@@ -396,11 +396,11 @@ describe('MemoryPage sources', () => {
   it('reaches a hidden Bot’s home memory through its workspace slice', async () => {
     seedBot([]);
     const list = seedMemories({
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona', title: 'Personal preference' })],
-      'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_home', title: 'Bot home rule' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona', title: 'Personal preference' })],
+      'persona_workspace:wd_home:xiao-you': [fixtureEntry({ id: 'm_home', title: 'Bot home rule' })],
       'global::': [fixtureEntry({ id: 'm_shared' })],
     });
-    const container = await renderPage('/memory?persona=lin-lan', [workspace]);
+    const container = await renderPage('/memory?persona=xiao-you', [workspace]);
     await flush();
     expect(container.querySelector('[data-memory-scope-kind]')?.getAttribute('data-memory-scope-kind')).toBe('persona');
     // Long-term stays long-term: the home slice is one picker step away, not projected.
@@ -410,7 +410,7 @@ describe('MemoryPage sources', () => {
     await click(container, '#memory-shard-picker');
     await click(container, '[data-option-value="wd_home"]');
     expect(rowIds(container)).toEqual(['m_home', 'm_persona']);
-    expect(container.querySelector('[data-memory-source="workspace:wd_home/persona:lin-lan"]')?.textContent).toContain('Role · Lin Lan');
+    expect(container.querySelector('[data-memory-source="workspace:wd_home/persona:xiao-you"]')?.textContent).toContain('Role · Yuzu');
     await search(container, 'home rule');
     expect(rowIds(container)).toEqual(['m_home']);
     expect(list.mock.calls.slice(-2).every(([, query]) => query?.query === 'home rule')).toBe(true);
@@ -421,16 +421,16 @@ describe('MemoryPage sources', () => {
     seedMemories({
       'global::': [fixtureEntry({ id: 'm_global' })],
       'workspace:wd_home:': [fixtureEntry({ id: 'm_workspace' })],
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })],
     });
     const put = vi.spyOn(client, 'putPersona').mockImplementation(async (input) => {
       const next = { ...input, revision: 'persona_next' };
       vi.mocked(client.getPersona).mockResolvedValue(next);
       return next;
     });
-    const container = await renderPage('/memory?persona=lin-lan', [workspace]);
+    const container = await renderPage('/memory?persona=xiao-you', [workspace]);
     await flush();
-    expect([...container.querySelectorAll('[data-memory-source]')].map((node) => node.getAttribute('data-memory-source'))).toEqual(['global', 'workspace:wd_home', 'persona:lin-lan']);
+    expect([...container.querySelectorAll('[data-memory-source]')].map((node) => node.getAttribute('data-memory-source'))).toEqual(['global', 'workspace:wd_home', 'persona:xiao-you']);
     expect(container.querySelector<HTMLInputElement>('#memory-share-global')!.checked).toBe(true);
     await click(container, '#memory-share-global');
     expect(put).toHaveBeenCalledWith({ ...snapshot, definition: { ...snapshot.definition, memory: { shared: ['workspace'] } } });
@@ -451,10 +451,10 @@ describe('MemoryPage sources', () => {
   });
 
   it('deduplicates the Bot home scope and treats persona policy separately from workspace enablement', () => {
-    expect(memorySourceTargets('wd_home', 'lin-lan', 'wd_home', { ...enabledSettings, workspaces: { wd_home: true } }, [])).toEqual([
-      { scope: 'persona', personaId: 'lin-lan' }, { scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: 'wd_home' },
+    expect(memorySourceTargets('wd_home', 'xiao-you', 'wd_home', { ...enabledSettings, workspaces: { wd_home: true } }, [])).toEqual([
+      { scope: 'persona', personaId: 'xiao-you' }, { scope: 'persona_workspace', personaId: 'xiao-you', workspaceId: 'wd_home' },
     ]);
-    expect(memorySourceTargets('wd_home', 'lin-lan', 'wd_home', enabledSettings, ['global'])[0]).toEqual({ scope: 'global' });
+    expect(memorySourceTargets('wd_home', 'xiao-you', 'wd_home', enabledSettings, ['global'])[0]).toEqual({ scope: 'global' });
     expect(memorySourceTargets('wd_home', undefined, undefined, { ...enabledSettings, workspaces: { wd_home: true } })).toEqual([{ scope: 'workspace', workspaceId: 'wd_home' }]);
   });
 });
@@ -726,7 +726,7 @@ describe('MemoryPage scope switcher', () => {
 
   it('keeps workspace and persona mutually exclusive', async () => {
     seedBot();
-    seedMemories({ 'global::': [], 'workspace:wd_current:': [], 'workspace:wd_home:': [], 'persona::lin-lan': [] });
+    seedMemories({ 'global::': [], 'workspace:wd_current:': [], 'workspace:wd_home:': [], 'persona::xiao-you': [] });
     const container = await renderPage('/memory?workspace=wd_current', [workspace]);
     expect(scopeKind(container)).toBe('workspace');
     await click(container, '[data-memory-kind="persona"]');
@@ -745,13 +745,13 @@ describe('MemoryPage scope switcher', () => {
   it('persona scope defaults to long-term memory and narrows to a workspace slice', async () => {
     seedBot([]);
     seedMemories({
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })],
-      'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_home' })],
-      'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })],
+      'persona_workspace:wd_home:xiao-you': [fixtureEntry({ id: 'm_home' })],
+      'persona_workspace:wd_current:xiao-you': [fixtureEntry({ id: 'm_current' })],
       'workspace:wd_current:': [fixtureEntry({ id: 'm_ws' })],
       'global::': [],
     });
-    const container = await renderPage('/memory?persona=lin-lan', [workspace]);
+    const container = await renderPage('/memory?persona=xiao-you', [workspace]);
     await flush();
     expect(scopeKind(container)).toBe('persona');
     // Long-term by default: no persona_workspace slice leaks in, not even the Bot's home.
@@ -794,8 +794,8 @@ describe('MemoryPage scope switcher', () => {
 
   it('treats an empty persona workspace URL parameter as long-term rather than an empty-id slice', async () => {
     seedBot([]);
-    const list = seedMemories({ 'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })] });
-    const container = await renderPage('/memory?persona=lin-lan&workspace=', [workspace]);
+    const list = seedMemories({ 'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })] });
+    const container = await renderPage('/memory?persona=xiao-you&workspace=', [workspace]);
     expect(scopeKind(container)).toBe('persona');
     expect(rowIds(container)).toEqual(['m_persona']);
     expect(list.mock.calls.every(([target]) => target.scope === 'persona')).toBe(true);
@@ -808,18 +808,18 @@ describe('MemoryPage scope switcher', () => {
   ])('falls back to persona long-term for unknown range $id and can read and write a valid slice afterwards', async ({ id, workspaces }) => {
     seedBot([]);
     const list = seedMemories({
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })],
-      [`persona_workspace:${id}:lin-lan`]: [fixtureEntry({ id: 'm_unknown' })],
-      'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_home' })],
-      'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })],
+      [`persona_workspace:${id}:xiao-you`]: [fixtureEntry({ id: 'm_unknown' })],
+      'persona_workspace:wd_home:xiao-you': [fixtureEntry({ id: 'm_home' })],
+      'persona_workspace:wd_current:xiao-you': [fixtureEntry({ id: 'm_current' })],
     });
     const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: fixtureEntry({ id: 'm_created' }), operationId: 'op_create' });
-    const container = await renderPage(`/memory?persona=lin-lan&workspace=${id}`, workspaces);
+    const container = await renderPage(`/memory?persona=xiao-you&workspace=${id}`, workspaces);
     expect(scopeKind(container)).toBe('persona');
     expect(container.querySelector('[data-memory-kind="persona"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('#memory-shard-picker')?.textContent).toContain('Long-term');
     expect(rowIds(container)).toEqual(['m_persona']);
-    expect(list.mock.calls.every(([target]) => target.scope === 'persona' && target.personaId === 'lin-lan')).toBe(true);
+    expect(list.mock.calls.every(([target]) => target.scope === 'persona' && target.personaId === 'xiao-you')).toBe(true);
 
     const createMemory = async () => {
       await click(container, '[data-memory-new]');
@@ -834,14 +834,14 @@ describe('MemoryPage scope switcher', () => {
       await click(container, '[data-memory-save]');
     };
     await createMemory();
-    expect(put).toHaveBeenLastCalledWith({ scope: 'persona', personaId: 'lin-lan' }, 'new', expect.objectContaining({ action: 'create' }));
+    expect(put).toHaveBeenLastCalledWith({ scope: 'persona', personaId: 'xiao-you' }, 'new', expect.objectContaining({ action: 'create' }));
     const validId = workspaces.length === 0 ? 'wd_home' : workspace.id;
     await click(container, '#memory-shard-picker');
     await click(container, `[data-option-value="${validId}"]`);
     expect(routeParams(container).get('workspace')).toBe(validId);
     expect(rowIds(container)).toEqual(validId === 'wd_home' ? ['m_home', 'm_persona'] : ['m_current', 'm_persona']);
     await createMemory();
-    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: validId }, 'new', expect.objectContaining({ action: 'create' }));
+    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'xiao-you', workspaceId: validId }, 'new', expect.objectContaining({ action: 'create' }));
     expect(list.mock.calls.some(([target]) => target.workspaceId === id)).toBe(false);
     expect(put.mock.calls.some(([target]) => target.workspaceId === id)).toBe(false);
   });
@@ -886,14 +886,14 @@ describe('MemoryPage scope switcher', () => {
   it('restores an out-of-directory Bot home deep link as a persona slice and preserves unrelated URL params', async () => {
     seedBot([]);
     const list = seedMemories({
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })],
-      'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_home' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })],
+      'persona_workspace:wd_home:xiao-you': [fixtureEntry({ id: 'm_home' })],
     });
-    const container = await renderPage('/memory?persona=lin-lan&workspace=wd_home&origin=example', [workspace]);
+    const container = await renderPage('/memory?persona=xiao-you&workspace=wd_home&origin=example', [workspace]);
     expect(scopeKind(container)).toBe('persona');
     expect(rowIds(container)).toEqual(['m_home', 'm_persona']);
     expect(container.querySelector('#memory-shard-picker')?.textContent).toContain('Home workspace');
-    expect(list.mock.calls.every(([target]) => target.personaId === 'lin-lan')).toBe(true);
+    expect(list.mock.calls.every(([target]) => target.personaId === 'xiao-you')).toBe(true);
     await click(container, '[data-memory-kind="workspace"]');
     expect(routeParams(container).get('workspace')).toBe(workspace.id);
     expect(routeParams(container).has('persona')).toBe(false);
@@ -927,27 +927,27 @@ describe('MemoryPage scope switcher', () => {
 
   it('waits for the persona directory before restoring a persona deep link without requesting another namespace', async () => {
     seedBot([]);
-    const personaList = [{ id: 'lin-lan', name: 'Lin Lan', archived: false, revision: 'persona_revision' }];
+    const personaList = [{ id: 'xiao-you', name: 'Yuzu', archived: false, revision: 'persona_revision' }];
     let resolvePersonas!: (items: typeof personaList) => void;
     vi.mocked(client.listPersonas).mockReturnValue(new Promise((resolve) => { resolvePersonas = resolve; }));
     const list = seedMemories({
-      'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })],
-      'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })],
+      'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })],
+      'persona_workspace:wd_current:xiao-you': [fixtureEntry({ id: 'm_current' })],
     });
-    const container = await renderPage('/memory?persona=lin-lan&workspace=wd_current', [workspace]);
+    const container = await renderPage('/memory?persona=xiao-you&workspace=wd_current', [workspace]);
     expect(list).not.toHaveBeenCalled();
     expect(container.querySelector('[data-memory-new]')).toBeNull();
     expect(scopeKind(container)).toBe('persona');
     expect(container.querySelector('[data-memory-kind="persona"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('[data-memory-kind="persona"]')?.textContent).toContain('Persona');
-    expect(routeParams(container).get('persona')).toBe('lin-lan');
+    expect(routeParams(container).get('persona')).toBe('xiao-you');
     await act(async () => { resolvePersonas(personaList); });
     await flush();
     expect(scopeKind(container)).toBe('persona');
     expect(container.querySelector('[data-memory-kind="persona"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('#memory-persona-picker')?.textContent).toContain('Lin Lan');
+    expect(container.querySelector('#memory-persona-picker')?.textContent).toContain('Yuzu');
     expect(rowIds(container)).toEqual(['m_current', 'm_persona']);
-    expect(list.mock.calls.every(([target]) => target.personaId === 'lin-lan')).toBe(true);
+    expect(list.mock.calls.every(([target]) => target.personaId === 'xiao-you')).toBe(true);
   });
 
   it('resets filters, detail and new drafts when changing namespaces, and Back restores the workspace URL', async () => {
@@ -1027,9 +1027,9 @@ const kindNames = (container: HTMLElement) => [...container.querySelectorAll('[d
 describe('MemoryPage pending range regressions', () => {
   it('waits for a legal persona workspace deep link before listing or creating, then keeps its draft across directory refresh', async () => {
     seedBot([]);
-    const list = seedMemories({ 'persona::lin-lan': [], 'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })] });
+    const list = seedMemories({ 'persona::xiao-you': [], 'persona_workspace:wd_current:xiao-you': [fixtureEntry({ id: 'm_current' })] });
     const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: fixtureEntry({ id: 'm_created' }), operationId: 'op_create' });
-    const { container, rerender } = await mountPage('/memory?persona=lin-lan&workspace=wd_current', [], true);
+    const { container, rerender } = await mountPage('/memory?persona=xiao-you&workspace=wd_current', [], true);
     expect(kindNames(container)).toEqual(['global', 'workspace', 'persona']);
     expect(container.querySelector('#memory-shard-picker')?.textContent).toContain('Loading workspaces');
     expect(container.querySelector('#memory-shard-picker')?.textContent).not.toContain('Long-term');
@@ -1048,17 +1048,17 @@ describe('MemoryPage pending range regressions', () => {
     expect(container.querySelector('[data-memory-editor]')).toBe(editor);
     expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Keep this draft');
     await click(container, '[data-memory-save]');
-    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: workspace.id }, 'new', expect.objectContaining({ action: 'create' }));
-    expect(list.mock.calls.every(([target]) => target.personaId === 'lin-lan')).toBe(true);
+    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'xiao-you', workspaceId: workspace.id }, 'new', expect.objectContaining({ action: 'create' }));
+    expect(list.mock.calls.every(([target]) => target.personaId === 'xiao-you')).toBe(true);
   });
 
   it('shows a recoverable directory error after pending and retries the shared App query without reading or writing the fallback', async () => {
     seedBot([]);
-    const list = seedMemories({ 'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })] });
+    const list = seedMemories({ 'persona_workspace:wd_current:xiao-you': [fixtureEntry({ id: 'm_current' })] });
     const put = vi.spyOn(client, 'putMemory');
     const directory = deferred<Awaited<ReturnType<KikiClient['listWorkspaceCatalog']>>>();
     const readDirectory = vi.spyOn(client, 'listWorkspaceCatalog').mockReturnValueOnce(directory.promise).mockResolvedValue({ items: [workspace] });
-    const { container } = await mountPage('/memory?persona=lin-lan&workspace=wd_current', [], false, true);
+    const { container } = await mountPage('/memory?persona=xiao-you&workspace=wd_current', [], false, true);
     expect(list).not.toHaveBeenCalled();
     await act(async () => { directory.reject(new Error('Directory unavailable')); });
     await flush();
@@ -1078,8 +1078,8 @@ describe('MemoryPage pending range regressions', () => {
 
   it('falls back only after a pending range is proven unknown in the loaded directory', async () => {
     seedBot([]);
-    const list = seedMemories({ 'persona::lin-lan': [fixtureEntry({ id: 'm_persona' })] });
-    const { container, rerender } = await mountPage('/memory?persona=lin-lan&workspace=wd_removed', [], true);
+    const list = seedMemories({ 'persona::xiao-you': [fixtureEntry({ id: 'm_persona' })] });
+    const { container, rerender } = await mountPage('/memory?persona=xiao-you&workspace=wd_removed', [], true);
     expect(list).not.toHaveBeenCalled();
     await rerender([workspace]);
     expect(rowIds(container)).toEqual(['m_persona']);
@@ -1089,9 +1089,9 @@ describe('MemoryPage pending range regressions', () => {
 
   it('keeps a chosen valid object and its draft when the earlier pending range arrives', async () => {
     seedBot([]);
-    const list = seedMemories({ 'persona::lin-lan': [], 'persona_workspace:wd_current:lin-lan': [] });
+    const list = seedMemories({ 'persona::xiao-you': [], 'persona_workspace:wd_current:xiao-you': [] });
     const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: fixtureEntry({ id: 'm_created' }), operationId: 'op_create' });
-    const { container, rerender } = await mountPage('/memory?persona=lin-lan&workspace=wd_later', [workspace], true);
+    const { container, rerender } = await mountPage('/memory?persona=xiao-you&workspace=wd_later', [workspace], true);
     expect(list).not.toHaveBeenCalled();
     await click(container, '#memory-shard-picker');
     await click(container, '[data-option-value="wd_current"]');
@@ -1107,9 +1107,9 @@ describe('MemoryPage pending range regressions', () => {
 
   it('does not restore an obsolete pending URL after switching to global and back while loading', async () => {
     seedBot([]);
-    const list = seedMemories({ 'global::': [], 'persona::lin-lan': [], 'persona_workspace:wd_current:lin-lan': [] });
+    const list = seedMemories({ 'global::': [], 'persona::xiao-you': [], 'persona_workspace:wd_current:xiao-you': [] });
     const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: fixtureEntry({ id: 'm_created' }), operationId: 'op_create' });
-    const { container, rerender } = await mountPage('/memory?persona=lin-lan&workspace=wd_current', [], true);
+    const { container, rerender } = await mountPage('/memory?persona=xiao-you&workspace=wd_current', [], true);
     expect(list).not.toHaveBeenCalled();
     await click(container, '[data-memory-kind="global"]');
     await click(container, '[data-memory-new]');
@@ -1124,13 +1124,13 @@ describe('MemoryPage pending range regressions', () => {
     await click(container, '[data-memory-new]');
     await fillDraft(container);
     await click(container, '[data-memory-save]');
-    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: workspace.id }, 'new', expect.anything());
+    expect(put).toHaveBeenLastCalledWith({ scope: 'persona_workspace', personaId: 'xiao-you', workspaceId: workspace.id }, 'new', expect.anything());
   });
 
   it.each([undefined, 'wd_home'])('does not block persona range %s on an unrelated directory and preserves a legal Bot-home draft', async (range) => {
     seedBot([]);
-    const list = seedMemories({ 'persona::lin-lan': [], 'persona_workspace:wd_home:lin-lan': [] });
-    const { container, rerender } = await mountPage(`/memory?persona=lin-lan${range === undefined ? '' : `&workspace=${range}`}`, [], true);
+    const list = seedMemories({ 'persona::xiao-you': [], 'persona_workspace:wd_home:xiao-you': [] });
+    const { container, rerender } = await mountPage(`/memory?persona=xiao-you${range === undefined ? '' : `&workspace=${range}`}`, [], true);
     expect(container.querySelector('[data-memory-new]')).not.toBeNull();
     await click(container, '[data-memory-new]');
     await fillDraft(container);
@@ -1583,8 +1583,8 @@ describe('memory S4 logic contracts', () => {
   it.each([
     { scope: 'global', owner: { kind: 'global' }, target: { scope: 'global' }, search: { entry: 'm_located' } },
     { scope: 'workspace', owner: { kind: 'workspace', workspaceId: 'wd_current' }, target: { scope: 'workspace', workspaceId: 'wd_current' }, search: { entry: 'm_located', workspace: 'wd_current' } },
-    { scope: 'persona', owner: { kind: 'persona', personaId: 'lin-lan' }, target: { scope: 'persona', personaId: 'lin-lan' }, search: { entry: 'm_located', persona: 'lin-lan' } },
-    { scope: 'persona_workspace', owner: { kind: 'persona_workspace', personaId: 'lin-lan', workspaceId: 'wd_home' }, target: { scope: 'persona_workspace', personaId: 'lin-lan', workspaceId: 'wd_home' }, search: { entry: 'm_located', persona: 'lin-lan', workspace: 'wd_home' } },
+    { scope: 'persona', owner: { kind: 'persona', personaId: 'xiao-you' }, target: { scope: 'persona', personaId: 'xiao-you' }, search: { entry: 'm_located', persona: 'xiao-you' } },
+    { scope: 'persona_workspace', owner: { kind: 'persona_workspace', personaId: 'xiao-you', workspaceId: 'wd_home' }, target: { scope: 'persona_workspace', personaId: 'xiao-you', workspaceId: 'wd_home' }, search: { entry: 'm_located', persona: 'xiao-you', workspace: 'wd_home' } },
   ])('View and Undo use the real $scope namespace and entry identity', async ({ scope, owner, target, search }) => {
     const undo = vi.spyOn(client, 'undoMemory').mockResolvedValue({ entry: null });
     const session = vi.spyOn(client, 'getSession');
@@ -1634,8 +1634,8 @@ describe('memory S4 logic contracts', () => {
 
   it('reads owning scope objects, complete metadata and old wire arrays without rewriting them', () => {
     const entry = fixtureEntry({ id: 'm_read', basis: { kind: 'human', note: 'Explicit request' }, validity: { check: 'Check current permission.' } });
-    const current = parseMemoryReadResult(JSON.stringify([{ ...entry, scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' }, target: { scope: 'persona_workspace', id: entry.id, expected_revision: entry.revision }, complete: false }]));
-    expect(current?.items[0]?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' });
+    const current = parseMemoryReadResult(JSON.stringify([{ ...entry, scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'xiao-you' }, target: { scope: 'persona_workspace', id: entry.id, expected_revision: entry.revision }, complete: false }]));
+    expect(current?.items[0]?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'xiao-you' });
     expect(current?.items[0]?.entry.basis?.note).toBe('Explicit request');
     expect(current?.items[0]?.applicability).toBe('recheck');
     expect(current?.complete).toBe(false);
@@ -1652,8 +1652,8 @@ describe('memory S4 logic contracts', () => {
 
   it('opens persona-workspace detail with the ID from View', async () => {
     seedBot([]);
-    seedMemories({ 'persona::lin-lan': [fixtureEntry({ id: 'm_located', body: 'Long-term copy.' })], 'persona_workspace:wd_home:lin-lan': [fixtureEntry({ id: 'm_located', body: 'Workspace-specific rule.' })] });
-    const container = await renderPage('/memory?persona=lin-lan&workspace=wd_home&entry=m_located', [workspace]);
+    seedMemories({ 'persona::xiao-you': [fixtureEntry({ id: 'm_located', body: 'Long-term copy.' })], 'persona_workspace:wd_home:xiao-you': [fixtureEntry({ id: 'm_located', body: 'Workspace-specific rule.' })] });
+    const container = await renderPage('/memory?persona=xiao-you&workspace=wd_home&entry=m_located', [workspace]);
     expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Workspace-specific rule.');
   });
 
@@ -1736,10 +1736,10 @@ describe('MemoryPage pending View location', () => {
 
   it.each([
     { suffix: '', target: { scope: 'global' as const } },
-    { suffix: '&persona=lin-lan&workspace=wd_current', target: { scope: 'persona_workspace' as const, personaId: 'lin-lan', workspaceId: 'wd_current' } },
+    { suffix: '&persona=xiao-you&workspace=wd_current', target: { scope: 'persona_workspace' as const, personaId: 'xiao-you', workspaceId: 'wd_current' } },
   ])('locates the 21st pending card after loading in its own $target.scope without approving or hiding neighbours', async ({ suffix, target }) => {
     if (target.scope === 'persona_workspace') seedBot([]);
-    seedMemories({ 'global::': [], 'persona::lin-lan': [], 'persona_workspace:wd_current:lin-lan': [] }, { ...enabledSettings, approval: 'review' });
+    seedMemories({ 'global::': [], 'persona::xiao-you': [], 'persona_workspace:wd_current:xiao-you': [] }, { ...enabledSettings, approval: 'review' });
     const inbox = deferred<{ items: readonly MemoryEntry[] }>();
     const read = vi.spyOn(client, 'memoryInbox').mockReturnValue(inbox.promise);
     const put = vi.spyOn(client, 'putMemory');
@@ -2191,12 +2191,12 @@ describe('MemoryPage governed store', () => {
 
   it('shows the running upgrade with its real counts and offers no migration control', async () => {
     const list = seedMemories({ 'global::': [current()] });
-    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...legacy, mode: 'migrating', migration: { id: '00000000-0000-4000-8000-000000000002', namespaces: ['memory/global', 'memory/personas/lin-lan', 'memory/workspaces/wd_a'], index: 1, after: 'm_release_owner', issues: [], phase: 'importing' } });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...legacy, mode: 'migrating', migration: { id: '00000000-0000-4000-8000-000000000002', namespaces: ['memory/global', 'memory/personas/xiao-you', 'memory/workspaces/wd_a'], index: 1, after: 'm_release_owner', issues: [], phase: 'importing' } });
     const retry = vi.spyOn(client, 'retryMemoryMigration');
     const container = await renderPage();
     const status = container.querySelector('[data-memory-write-hold="migrating"] [data-memory-upgrade="importing"]')!;
     expect(status.querySelector('[data-memory-upgrade-progress="1/3"]')!.textContent).toBe('1 of 3 imported');
-    expect(status.textContent).toContain('memory/personas/lin-lan · m_release_owner');
+    expect(status.textContent).toContain('memory/personas/xiao-you · m_release_owner');
     expect(status.textContent).not.toMatch(/%/u);
     for (const selector of ['[data-memory-resume]', '[data-memory-recover]', '[data-memory-upgrade-retry]', '[data-memory-row]']) expect(container.querySelector(selector)).toBeNull();
     expect(list).not.toHaveBeenCalled();
@@ -2634,12 +2634,12 @@ describe('MemoryPage Markdown import recovery', () => {
 
 describe('MemoryPage automatic upgrade', () => {
   const operation = '6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8';
-  const namespaces = ['memory/global', 'memory/personas/lin-lan'];
+  const namespaces = ['memory/global', 'memory/personas/xiao-you'];
   const sqlite = { version: 1, epoch: 3, backend: 'sqlite', mode: 'active', migrationId: operation } as const;
   const issues = [
     { scope: 'memory/global', key: 'm_deploy', issue: 'legacy_journal_head_mismatch' },
     { scope: 'memory/global', key: 'm_owner', issue: 'current_revision_preserved' },
-    { scope: 'memory/personas/lin-lan', key: '', issue: 'legacy_inventory_incomplete' },
+    { scope: 'memory/personas/xiao-you', key: '', issue: 'legacy_inventory_incomplete' },
     { scope: 'memory/global', key: 'm_a', issue: 'legacy_head_missing' },
     { scope: 'memory/global', key: 'm_b', issue: 'duplicate_legacy_identity' },
     { scope: 'memory/global', key: 'entries/m_reextracted.md', issue: 'source_lineage_preserved' },

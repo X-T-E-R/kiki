@@ -30,7 +30,7 @@ import { sessionRecord, ts } from './helpers.mjs';
 
 const SID = 'session_fixture_message_channels';
 const WS = 'wd_fixture_000000000000';
-const PERSONA = { id: 'lin-lan', name: '林岚' };
+const PERSONA = { id: 'xiao-you', name: '小柚' };
 
 const FIXTURES = dirname(fileURLToPath(import.meta.url));
 const COVER = readFileSync(join(FIXTURES, 'media-bytes', 'cover.png'));
@@ -75,13 +75,13 @@ export const MEDIA = {
     hasSource: true,
   },
   notes: { id: blobRef(NOTES), title: '0.31-发布清单.md', mime: 'text/markdown', bytes: NOTES, hasSource: true },
-  html: { id: blobRef(HTML_ENTRY), title: 'index.html', mime: 'text/html', bytes: HTML_ENTRY, path: 'C:/fixture/bots/lin-lan/roadshow/index.html', hasSource: true },
+  html: { id: blobRef(HTML_ENTRY), title: 'index.html', mime: 'text/html', bytes: HTML_ENTRY, path: 'C:/fixture/bots/xiao-you/roadshow/index.html', hasSource: true },
   pdf: { id: blobRef(PDF_DOC), title: '0.31-架构评审.pdf', mime: 'application/pdf', bytes: PDF_DOC, hasSource: true },
   zip: { id: blobRef(ZIP_ARCHIVE), title: '0.31-产物归档.zip', mime: 'application/zip', bytes: ZIP_ARCHIVE, hasSource: false },
 };
 
 function attachment(media, kind) {
-  const path = media.path ?? (media.hasSource === false ? `f_upload_${media.title}` : `C:/fixture/bots/lin-lan/${media.title}`);
+  const path = media.path ?? (media.hasSource === false ? `f_upload_${media.title}` : `C:/fixture/bots/xiao-you/${media.title}`);
   return {
     blob_id: media.id,
     ...(media.hasSource === false ? undefined : { source_id: sourceIdFor(media, path) }),
@@ -237,14 +237,14 @@ export default {
       id: PERSONA.id, name: PERSONA.name, title: '发布协调',
       job: '负责每个版本的发布节奏：列清单、盯阻塞、写发布说明。',
       modelAlias: 'fixture/kiki-pro', thinkingEffort: 'high', delivery: 'message',
-      description: '你是林岚，负责 Kiki 的发布协调。说话简短，先给结论。',
+      description: '你是小柚，负责 Kiki 的发布协调。说话简短，先给结论。',
     },
   }],
   sessions: [sessionRecord(SID, {
     title: '0.31 发布清单',
     workspace_id: WS,
     delivery: 'message',
-    metadata: { cwd: 'C:/fixture/bots/lin-lan', bot_persona_id: PERSONA.id },
+    metadata: { cwd: 'C:/fixture/bots/xiao-you', bot_persona_id: PERSONA.id },
     agent_config: { model: 'fixture/kiki-pro', persona: { id: PERSONA.id, name: PERSONA.name } },
   })],
   snapshots: {
@@ -280,9 +280,9 @@ export default {
     },
   ])),
   fsFiles: {
-    'C:/fixture/bots/lin-lan/roadshow/index.html': { content: '<!doctype html><html><body><h1>MODIFIED ON HOST DISK</h1></body></html>', mime: 'text/html' },
-    'C:/fixture/bots/lin-lan/roadshow/style.css': { content: HTML_CSS.toString('utf8'), mime: 'text/css' },
-    'C:/fixture/bots/lin-lan/roadshow/app.js': { content: HTML_JS.toString('utf8'), mime: 'text/javascript' },
+    'C:/fixture/bots/xiao-you/roadshow/index.html': { content: '<!doctype html><html><body><h1>MODIFIED ON HOST DISK</h1></body></html>', mime: 'text/html' },
+    'C:/fixture/bots/xiao-you/roadshow/style.css': { content: HTML_CSS.toString('utf8'), mime: 'text/css' },
+    'C:/fixture/bots/xiao-you/roadshow/app.js': { content: HTML_JS.toString('utf8'), mime: 'text/javascript' },
   },
   docPreviewPngBase64: COVER.toString('base64'),
 };

@@ -29,7 +29,7 @@ import { assistantMsg, sessionRecord, toolResultMsg, ts, userMsg, fid } from './
 
 const SID = 'session_fixture_memory_provenance';
 const WS_APP = 'wd_fixture_000000000000';
-const PERSONA = 'lin-lan';
+const PERSONA = 'xiao-you';
 
 const WRITE_APPLIED = fid('call');
 const WRITE_PENDING = fid('call');
@@ -117,7 +117,7 @@ const mergedEntry = entry({
 const personaEntry = entry({
   id: 'm_20261005_555555',
   type: 'user',
-  title: '林岚负责发布协调，需要先确认发布范围',
+  title: '小柚负责发布协调，需要先确认发布范围',
   body: '任何发布动作之前先列出版本、变更和验证结果，收到确认后再执行。',
   reason: '角色的工作约定',
   source: { writer: 'user' },

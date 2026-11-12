@@ -2111,11 +2111,11 @@ describe('memory timeline rows', () => {
   it('gives a receipt its real owning scope, so a persona entry is not read as the session workspace', () => {
     const parsed = parseMemoryWriteResult(JSON.stringify({
       id: 'm_3', title: 'Publish confirmation', scope: 'persona_workspace',
-      owner_scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' },
+      owner_scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'xiao-you' },
       target: { scope: 'persona_workspace', id: 'm_3', expected_revision: 'rev_3' },
       status: 'active', revision: 'rev_3', operation_id: 'op_3', outcome: 'applied',
     }));
-    expect(parsed?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' });
+    expect(parsed?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'xiao-you' });
   });
 
   it('reads a no-op write as unchanged and withholds the operation it never created', () => {
@@ -2147,14 +2147,14 @@ describe('memory timeline rows', () => {
     const read = parseMemoryReadResult(JSON.stringify([{
       id: 'm_5', type: 'project', title: 'GPU schedule', body: 'Check the schedule first.',
       status: 'active', revision: 'rev_5', complete: true,
-      scope: { kind: 'persona', personaId: 'lin-lan' },
+      scope: { kind: 'persona', personaId: 'xiao-you' },
       target: { scope: 'persona', id: 'm_5', expected_revision: 'rev_5' },
       applicability: 'expired',
       validity: { check: 'check the schedule', until: '2026-01-01T00:00:00Z' },
     }]));
     expect(read?.complete).toBe(true);
     expect(read?.items[0]?.applicability).toBe('expired');
-    expect(read?.items[0]?.owner_scope).toEqual({ scope: 'persona', workspaceId: undefined, personaId: 'lin-lan' });
+    expect(read?.items[0]?.owner_scope).toEqual({ scope: 'persona', workspaceId: undefined, personaId: 'xiao-you' });
     // An entry with no validity reads as unrecorded, which is not permanence.
     expect(memoryApplicability(undefined)).toBe('unrecorded');
     expect(memoryApplicability({ check: 'c' })).toBe('recheck');

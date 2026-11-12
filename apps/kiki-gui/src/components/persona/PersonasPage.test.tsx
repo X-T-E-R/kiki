@@ -95,7 +95,7 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-const LIN_LAN: PersonaSummary = { id: 'lin-lan', name: '林岚', title: '发布协调', job: '负责发布节奏', revision: 'revision-1', archived: false };
+const LIN_LAN: PersonaSummary = { id: 'xiao-you', name: '小柚', title: '发布协调', job: '负责发布节奏', revision: 'revision-1', archived: false };
 
 function snapshot(definition: Partial<PersonaDefinition> & Pick<PersonaDefinition, 'id' | 'name' | 'description'>): PersonaSnapshot {
   return { definition: definition as PersonaDefinition, revision: 'revision-1' };
@@ -120,8 +120,8 @@ async function render(path: string): Promise<HTMLElement> {
 describe('the personas page scope', () => {
   it('says where its cards write once, without repeating it under every heading', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', title: '发布协调', job: '负责发布节奏', description: '负责发布节奏。' }));
-    const container = await render('/personas?persona=lin-lan&view=settings');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', title: '发布协调', job: '负责发布节奏', description: '负责发布节奏。' }));
+    const container = await render('/personas?persona=xiao-you&view=settings');
 
     // All five cards are on this page: 身份 / 运行 / 可见性 / 记忆 / 任务与连接.
     const cards = [...container.querySelectorAll('[data-settings-card]')];

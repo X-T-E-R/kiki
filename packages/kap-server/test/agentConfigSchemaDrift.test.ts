@@ -29,7 +29,7 @@ describe('agent_config schema drift between the engine and the protocol package'
   it('preserves the persona projection and validates it identically on both reads', () => {
     const input = {
       model: 'stub',
-      persona: { id: 'lin-lan', name: 'Lin Lan', avatarUrl: '/api/personas/lin-lan/avatar' },
+      persona: { id: 'xiao-you', name: 'Yuzu', avatarUrl: '/api/personas/xiao-you/avatar' },
     };
     for (const schema of [engineReadSchema, protocolReadSchema]) {
       expect(schema.parse(input)).toEqual(input);

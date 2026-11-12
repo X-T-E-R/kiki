@@ -3,7 +3,7 @@ import { sessionRecord, ts } from './helpers.mjs';
 
 const HOME = 'wd_bot_home_111111111111';
 const BOT = 'session_memory_bot_home';
-const PERSONA = 'lin-lan';
+const PERSONA = 'xiao-you';
 const entry = (fields) => ({ status: 'active', pinned: false, created: ts(4000), updated: ts(90), source: { writer: 'agent', session: BOT }, reason: '', ...fields });
 const previous = entry({ id: 'm_release_old', type: 'project', title: '发布前手动核对安装包', body: '发版前手动打开安装包，确认版本号和快捷方式。\n\n完成后在发布记录中写下验证时间。', reason: '最初的发布约定', revision: 'revision_before_archive' });
 const retired = { ...previous, status: 'archived', updated: ts(20), reason: '安装包验证已纳入自动化流水线，手工清单不再使用。' };
@@ -11,10 +11,10 @@ const raw = ({ body, revision: _revision, ...meta }) => `---\n${JSON.stringify(m
 
 export default {
   ...memory,
-  workspaces: [...memory.workspaces, { id: HOME, root: 'C:/fixture/bots/lin-lan', name: '林岚的工作区', created_at: ts(4000), last_opened_at: ts(4), session_count: 1, pinned: false }],
-  sessions: [...memory.sessions, sessionRecord(BOT, { title: '林岚', workspace_id: HOME, metadata: { cwd: 'C:/fixture/bots/lin-lan', bot_persona_id: PERSONA } })],
-  personas: [{ definition: { id: PERSONA, name: '林岚', title: '发布协调', description: '负责版本发布的协调。', memory: { shared: [] } } }],
-  bots: [{ personaId: PERSONA, name: '林岚', title: '发布协调', homeSessionId: BOT, pinned: true, hidden: false }],
+  workspaces: [...memory.workspaces, { id: HOME, root: 'C:/fixture/bots/xiao-you', name: '小柚的工作区', created_at: ts(4000), last_opened_at: ts(4), session_count: 1, pinned: false }],
+  sessions: [...memory.sessions, sessionRecord(BOT, { title: '小柚', workspace_id: HOME, metadata: { cwd: 'C:/fixture/bots/xiao-you', bot_persona_id: PERSONA } })],
+  personas: [{ definition: { id: PERSONA, name: '小柚', title: '发布协调', description: '负责版本发布的协调。', memory: { shared: [] } } }],
+  bots: [{ personaId: PERSONA, name: '小柚', title: '发布协调', homeSessionId: BOT, pinned: true, hidden: false }],
   memoryEntries: {
     ...memory.memoryEntries,
     [`persona:${PERSONA}`]: [entry({ id: 'm_bot_checklist', type: 'feedback', title: '发布之前，先给我一份清单', body: '任何发布动作之前先列出版本、变更和验证结果，收到确认后再执行。', reason: '用户希望亲自确认发布范围', pinned: true })],

@@ -115,7 +115,7 @@ Each workspace can also add a board (via the optional `kiki-task-board` plugin) 
 
 ### Personas you can talk to
 
-A **persona** is a long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. Clicking its name lands you in the same conversation every time, so "ask Lin Lan" means one thing; the same persona can hold several conversations at once for different projects.
+A **persona** is a long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. Clicking its name lands you in the same conversation every time, so "ask Yuzu" means one thing; the same persona can hold several conversations at once for different projects.
 
 A **room** puts two to six of them on one topic, speaking in order, with a host, a budget, and pause and continue.
 

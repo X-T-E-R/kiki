@@ -34,15 +34,15 @@ vi.mock('../../state/connection', () => ({
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
 
 const PERSONAS: PersonaSummary[] = [
-  { id: 'lin-lan', name: '林岚', title: '发布协调', revision: 'r', archived: false },
-  { id: 'a-che', name: '阿澈', title: '写作', revision: 'r', archived: false },
-  { id: 'xiao-lan', name: '小蓝', title: '调研', revision: 'r', archived: false },
+  { id: 'xiao-you', name: '小柚', title: '发布协调', revision: 'r', archived: false },
+  { id: 'dou-dou', name: '豆豆', title: '写作', revision: 'r', archived: false },
+  { id: 'mi-li', name: '米粒', title: '调研', revision: 'r', archived: false },
   { id: 'lao-zhou', name: '老周', title: '审校', revision: 'r', archived: false },
 ];
 const BOTS: BotSummary[] = [
-  { personaId: 'a-che', name: '阿澈', title: '写作', homeSessionId: 'home_che', pinned: false, hidden: false },
-  { personaId: 'lin-lan', name: '林岚', title: '发布协调', homeSessionId: 'home_lin', pinned: true, hidden: false },
-  { personaId: 'xiao-lan', name: '小蓝', title: '调研', homeSessionId: 'home_lan', pinned: false, hidden: true },
+  { personaId: 'dou-dou', name: '豆豆', title: '写作', homeSessionId: 'home_che', pinned: false, hidden: false },
+  { personaId: 'xiao-you', name: '小柚', title: '发布协调', homeSessionId: 'home_lin', pinned: true, hidden: false },
+  { personaId: 'mi-li', name: '米粒', title: '调研', homeSessionId: 'home_lan', pinned: false, hidden: true },
 ];
 
 function session(id: string, extra: Partial<Session> = {}): Session {
@@ -94,8 +94,8 @@ async function mount(sessions: Session[] = []): Promise<HTMLDivElement> {
 
 describe('sidebar Bot helpers', () => {
   it('orders pinned first, drops hidden, and recognises Bot / room sessions', () => {
-    expect(visibleBots(BOTS).map((bot) => bot.personaId)).toEqual(['lin-lan', 'a-che']);
-    expect(isBotOrRoomSession(session('a', { metadata: { cwd: 'C:/', bot_persona_id: 'lin-lan' } }))).toBe(true);
+    expect(visibleBots(BOTS).map((bot) => bot.personaId)).toEqual(['xiao-you', 'dou-dou']);
+    expect(isBotOrRoomSession(session('a', { metadata: { cwd: 'C:/', bot_persona_id: 'xiao-you' } }))).toBe(true);
     expect(isBotOrRoomSession(session('b', { metadata: { cwd: 'C:/', room_member_of: 'release-031' } }))).toBe(true);
     expect(isBotOrRoomSession(session('c'))).toBe(false);
   });
@@ -105,7 +105,7 @@ describe('SidebarBotRoomGroups', () => {
   it('lists visible Bots with their home state', async () => {
     const container = await mount([session('home_che', { busy: true }), session('home_lin', { pending_interaction: 'question' })]);
     const rows = [...container.querySelectorAll('[data-sidebar-bot]')];
-    expect(rows.map((row) => row.getAttribute('data-sidebar-bot'))).toEqual(['lin-lan', 'a-che']);
+    expect(rows.map((row) => row.getAttribute('data-sidebar-bot'))).toEqual(['xiao-you', 'dou-dou']);
     expect(rows[0]?.getAttribute('aria-current')).toBe('page');
     expect(rows[0]?.textContent).toContain('发布协调');
     await act(async () => { (rows[1] as HTMLButtonElement).click(); });

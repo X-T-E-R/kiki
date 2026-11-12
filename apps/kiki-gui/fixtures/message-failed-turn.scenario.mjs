@@ -20,10 +20,10 @@ import { sessionRecord, ts } from './helpers.mjs';
 
 const SID = 'session_fixture_message_failed';
 const WS = 'wd_fixture_000000000000';
-const PERSONA = { id: 'lin-lan', name: '林岚' };
+const PERSONA = { id: 'xiao-you', name: '小柚' };
 
 /** The cut-off text, and the answer that follows it. */
-export const PARTIAL = '发布清单我核到一半：签名证书那边还在等小蓝回话，changelog 三条也';
+export const PARTIAL = '发布清单我核到一半：签名证书那边还在等米粒回话，changelog 三条也';
 export const ANSWER = '先给结论：周四冻结，周五上午打 tag，我不会直接推送。';
 
 function turnItem({ turnId, prompt, state, error, frames, minutesAgo }) {
@@ -59,14 +59,14 @@ export default {
       id: PERSONA.id, name: PERSONA.name, title: '发布协调',
       job: '负责每个版本的发布节奏：列清单、盯阻塞、写发布说明。',
       modelAlias: 'fixture/kiki-pro', thinkingEffort: 'high', delivery: 'message',
-      description: '你是林岚，负责 Kiki 的发布协调。说话简短，先给结论。',
+      description: '你是小柚，负责 Kiki 的发布协调。说话简短，先给结论。',
     },
   }],
   sessions: [sessionRecord(SID, {
     title: '0.31 发布清单',
     workspace_id: WS,
     delivery: 'message',
-    metadata: { cwd: 'C:/fixture/bots/lin-lan', bot_persona_id: PERSONA.id },
+    metadata: { cwd: 'C:/fixture/bots/xiao-you', bot_persona_id: PERSONA.id },
     agent_config: { model: 'fixture/kiki-pro', persona: { id: PERSONA.id, name: PERSONA.name } },
   })],
   snapshots: {

@@ -9,7 +9,7 @@
 
 import governance, { governanceSeed } from './memory-governance.scenario.mjs';
 
-export const upgradeNamespaces = ['memory/global', 'memory/personas/lin-lan', 'memory/workspaces/wd_fixture_000000000000'];
+export const upgradeNamespaces = ['memory/global', 'memory/personas/xiao-you', 'memory/workspaces/wd_fixture_000000000000'];
 
 export default {
   ...governance,

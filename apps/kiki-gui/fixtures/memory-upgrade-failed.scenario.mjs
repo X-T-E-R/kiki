@@ -23,7 +23,7 @@ export default {
       issues: [
         issue('memory/global', 'm_deploy_workers', 'legacy_journal_head_mismatch'),
         issue('memory/global', 'm_release_owner', 'current_revision_preserved'),
-        issue('memory/personas/lin-lan', '', 'legacy_inventory_incomplete'),
+        issue('memory/personas/xiao-you', '', 'legacy_inventory_incomplete'),
         issue('memory/workspaces/wd_fixture_000000000000', 'm_ws_build_cache', 'legacy_head_missing'),
         issue('memory/global', 'm_reply_language', 'duplicate_legacy_identity'),
         issue('memory/global', 'notes/2026-01.md', 'unreadable_source'),

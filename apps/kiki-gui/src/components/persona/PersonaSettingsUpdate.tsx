@@ -10,7 +10,7 @@
  *
  * Both carriers share one query, one mutation and one confirmation; only the
  * chrome around the content differs. A conversation freezes the persona copy it
- * was created with, so editing 林岚 never changes a conversation already
+ * was created with, so editing 小柚 never changes a conversation already
  * underway; this is the one place that states the difference and lets the user
  * close it on purpose.
  *

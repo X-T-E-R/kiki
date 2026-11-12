@@ -12,8 +12,8 @@ import {
 } from '../index';
 
 const definition = {
-  id: 'lin-lan',
-  name: 'Lin Lan',
+  id: 'xiao-you',
+  name: 'Yuzu',
   title: 'Release coordinator',
   job: 'Keeps releases moving',
   profile: 'agent',
@@ -38,7 +38,7 @@ describe('persona REST protocol', () => {
       definition,
       revision: 'rev-1',
     });
-    expect(personaPutInputSchema.parse({ definition, revision: 'rev-0' }).definition.id).toBe('lin-lan');
+    expect(personaPutInputSchema.parse({ definition, revision: 'rev-0' }).definition.id).toBe('xiao-you');
   });
 
   it('coerces query booleans without treating false as true', () => {
@@ -57,7 +57,7 @@ describe('persona REST protocol', () => {
       extensions: { vendor: { key: 'value' } },
     });
     expect(preview.definition.description).toBe('You coordinate releases.');
-    expect(personaAvatarDataSchema.parse({ id: 'lin-lan', name: 'Lin Lan' })).toEqual({ id: 'lin-lan', name: 'Lin Lan' });
+    expect(personaAvatarDataSchema.parse({ id: 'xiao-you', name: 'Yuzu' })).toEqual({ id: 'xiao-you', name: 'Yuzu' });
     expect(PERSONA_AVATAR_MAX_BYTES).toBe(2 * 1024 * 1024);
   });
 });

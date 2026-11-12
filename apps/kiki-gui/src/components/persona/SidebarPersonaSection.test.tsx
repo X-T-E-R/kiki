@@ -62,7 +62,7 @@ afterEach(async () => {
 
 function persona(patch: Partial<PersonaDirectoryEntry> = {}): PersonaDirectoryEntry {
   return {
-    id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false,
+    id: 'xiao-you', name: '小柚', revision: 'revision-1', archived: false,
     homeSessionId: undefined, pinned: false, hidden: false,
     life: 'idle', unreadCount: 0, unreadSessionIds: [],
     ...patch,
@@ -78,7 +78,7 @@ function session(patch: Partial<Session> & Pick<Session, 'id'>): Session {
 }
 
 /** A conversation the persona owns, the way the server binds one. */
-function hers(patch: Partial<Session> & Pick<Session, 'id'>, personaId = 'lin-lan'): Session {
+function hers(patch: Partial<Session> & Pick<Session, 'id'>, personaId = 'xiao-you'): Session {
   const base = session(patch);
   return { ...base, metadata: { ...base.metadata, bot_persona_id: personaId } } as Session;
 }
@@ -108,7 +108,7 @@ const switcherSessions = (container: HTMLElement) =>
 const switcherStatus = (container: HTMLElement) =>
   container.querySelector('[data-stub-switcher-status]')?.textContent;
 
-async function openSwitcher(container: HTMLElement, personaId = 'lin-lan') {
+async function openSwitcher(container: HTMLElement, personaId = 'xiao-you') {
   await act(async () => { container.querySelector<HTMLElement>(`[data-persona-switcher-toggle="${personaId}"]`)!.click(); });
 }
 
@@ -116,12 +116,12 @@ describe('the sidebar persona group', () => {
   it('gives every persona one row, pinned first, and hides the hidden ones', async () => {
     directory.entries = [
       persona({ id: 'zhou', name: '小周' }),
-      persona({ id: 'lan', name: '小岚', pinned: true }),
+      persona({ id: 'you', name: '小柚', pinned: true }),
       persona({ id: 'gui', name: '小桂', hidden: true }),
     ];
     const container = await render();
     expect([...container.querySelectorAll('[data-sidebar-persona-row]')].map((row) => row.getAttribute('data-sidebar-persona-row')))
-      .toEqual(['lan', 'zhou']);
+      .toEqual(['you', 'zhou']);
   });
 
   it('says nothing when there are no personas: the primary nav owns that address', async () => {
@@ -132,23 +132,23 @@ describe('the sidebar persona group', () => {
   it('sends the name to the stable daily address instead of a fixed session', async () => {
     directory.entries = [persona({ homeSessionId: 'home_lin' })];
     const container = await render([session({ id: 'home_lin' })], 'home_lin');
-    const row = container.querySelector<HTMLElement>('[data-sidebar-persona-row="lin-lan"] button')!;
+    const row = container.querySelector<HTMLElement>('[data-sidebar-persona-row="xiao-you"] button')!;
     expect(row.getAttribute('aria-current')).toBe('page');
     await act(async () => { row.click(); });
     // The pointer, not the snapshot: /p/:id/daily resolves the current home.
-    expect(navigate).toHaveBeenCalledWith('/p/lin-lan/daily');
+    expect(navigate).toHaveBeenCalledWith('/p/xiao-you/daily');
   });
 
   it('opens the shared switcher from the row-end control, and closes it again', async () => {
     directory.entries = [persona()];
     const container = await render();
-    const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="lin-lan"]')!;
+    const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="xiao-you"]')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { toggle.click(); });
-    expect(container.querySelector('[data-stub-switcher="lin-lan"]')).not.toBeNull();
+    expect(container.querySelector('[data-stub-switcher="xiao-you"]')).not.toBeNull();
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    await act(async () => { container.querySelector<HTMLElement>('[data-stub-switcher-close="lin-lan"]')!.click(); });
-    expect(container.querySelector('[data-stub-switcher="lin-lan"]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLElement>('[data-stub-switcher-close="xiao-you"]')!.click(); });
+    expect(container.querySelector('[data-stub-switcher="xiao-you"]')).toBeNull();
   });
 
   it('takes one unread conversation straight there and asks which one when there are several', async () => {
@@ -162,7 +162,7 @@ describe('the sidebar persona group', () => {
     directory.entries = [persona({ unreadCount: 2, unreadSessionIds: ['topic_9', 'topic_8'], life: 'done' })];
     const several = await render();
     await act(async () => { several.querySelector<HTMLElement>('[data-persona-unread-count="2"]')!.click(); });
-    expect(several.querySelector('[data-stub-switcher="lin-lan"]')).not.toBeNull();
+    expect(several.querySelector('[data-stub-switcher="xiao-you"]')).not.toBeNull();
   });
 });
 
@@ -183,7 +183,7 @@ describe('the sidebar switcher list', () => {
     await openSwitcher(container);
     await flush();
 
-    expect(listSessions).toHaveBeenCalledWith({ persona: 'lin-lan', page_size: 100 });
+    expect(listSessions).toHaveBeenCalledWith({ persona: 'xiao-you', page_size: 100 });
     expect(switcherSessions(container)).toEqual(['topic_loaded', 'topic_cold']);
     expect(switcherStatus(container)).toBe('ready');
   });

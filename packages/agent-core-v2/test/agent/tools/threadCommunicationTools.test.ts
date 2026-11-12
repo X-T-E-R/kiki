@@ -408,10 +408,10 @@ describe('thread communication tools', () => {
 
   it('passes persona-only bindings without injecting the default profile', async () => {
     const { tool, create } = createThreadFixture();
-    await executeThreadCreate(tool, { persona: 'lin-lan' });
+    await executeThreadCreate(tool, { persona: 'xiao-you' });
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace',
-      mainAgentBinding: { profile: undefined, persona: 'lin-lan', model: undefined, thinking: undefined, strictThinking: false },
+      mainAgentBinding: { profile: undefined, persona: 'xiao-you', model: undefined, thinking: undefined, strictThinking: false },
     });
   });
 
@@ -616,7 +616,7 @@ describe('thread communication tools', () => {
     expect(await executeThreadCreate(fixture.tool, { from_subagent: 'child-1', cwd: '/repo/other' })).toMatchObject({
       isError: true, output: expect.stringContaining('omit cwd'),
     });
-    expect(await executeThreadCreate(fixture.tool, { from_subagent: 'child-1', persona: 'lin-lan' })).toMatchObject({
+    expect(await executeThreadCreate(fixture.tool, { from_subagent: 'child-1', persona: 'xiao-you' })).toMatchObject({
       isError: true, output: expect.stringContaining('cannot be combined with persona'),
     });
     expect(fixture.promoteAgent).not.toHaveBeenCalled();
@@ -630,7 +630,7 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ title: '', cwd: '/example' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ prompt: '', agent_config: {} }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({
-      profile: 'agent', persona: 'lin-lan', model_alias: 'configured-alias', effort: 'high',
+      profile: 'agent', persona: 'xiao-you', model_alias: 'configured-alias', effort: 'high',
       permission_mode: 'review', plan_mode: true, prompt: 'Start',
     }).success).toBe(true);
     expect(ThreadCreateToolInputSchema.safeParse({ model_alias: '   ' }).success).toBe(false);

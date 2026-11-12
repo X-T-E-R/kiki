@@ -543,8 +543,8 @@ describe('AgentProfileService (wire-backed config.update)', () => {
   it('persists and replays the frozen persona and room binding fields', async () => {
     const persona = {
       definition: {
-        id: 'lin-lan',
-        name: '林岚',
+        id: 'xiao-you',
+        name: '小柚',
         title: '发布协调',
         description: '先给结论。',
         memory: { shared: ['global'] as const },
@@ -553,7 +553,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       examples: '示例',
     };
     svc.applyBindingSnapshot({
-      personaId: 'lin-lan',
+      personaId: 'xiao-you',
       personaRevision: 'r1',
       persona,
       roomPrompt: '<room>发布</room>',
@@ -562,11 +562,11 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       thinkingLevel: 'off',
       systemPrompt: 'persona prompt',
     });
-    expect(svc.data()).toMatchObject({ personaId: 'lin-lan', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
+    expect(svc.data()).toMatchObject({ personaId: 'xiao-you', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
     const records = await readRecords();
     expect(records).toContainEqual(expect.objectContaining({
       type: 'profile.bind',
-      personaId: 'lin-lan',
+      personaId: 'xiao-you',
       personaRevision: 'r1',
       persona,
       roomPrompt: '<room>发布</room>',
@@ -578,7 +578,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       testWireScope(SCOPE, 'profile-replay-persona'),
       records,
     );
-    expect(replay.svc.data()).toMatchObject({ personaId: 'lin-lan', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
+    expect(replay.svc.data()).toMatchObject({ personaId: 'xiao-you', personaRevision: 'r1', persona, roomPrompt: '<room>发布</room>' });
     await replay.ix.dispose();
   });
 

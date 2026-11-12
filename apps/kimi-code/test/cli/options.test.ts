@@ -626,7 +626,7 @@ describe('CLI options parsing', () => {
 
   describe('--persona', () => {
     it('parses a persona id for a new session', () => {
-      expect(parse(['--persona', 'lin-lan']).persona).toBe('lin-lan');
+      expect(parse(['--persona', 'xiao-you']).persona).toBe('xiao-you');
     });
 
     it('rejects an empty persona id', () => {
@@ -636,14 +636,14 @@ describe('CLI options parsing', () => {
     });
 
     it('rejects applying a persona to a resumed session', () => {
-      const opts = parse(['--persona', 'lin-lan', '--session', 'session-1']);
+      const opts = parse(['--persona', 'xiao-you', '--session', 'session-1']);
       expect(() => validateOptions(opts)).toThrow(
         'Cannot combine --persona with --session/--continue',
       );
     });
 
     it('allows explicit profile and model overrides with a persona', () => {
-      const opts = parse(['--persona', 'lin-lan', '--agent', 'reviewer', '--model', 'model-a']);
+      const opts = parse(['--persona', 'xiao-you', '--agent', 'reviewer', '--model', 'model-a']);
       expect(validateOptions(opts).uiMode).toBe('shell');
     });
   });

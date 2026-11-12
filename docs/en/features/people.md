@@ -42,7 +42,7 @@ See [Personas, Bots, and rooms](/en/customization/personas) for the full card re
 
 ## Daily conversation
 
-Every persona has a stable address for its daily conversation — the same entry the sidebar row, the switcher, the header, and the persona page all point at. Clicking a persona's name lands you in that one conversation, so "ask Xiaolan" means the same thing every time. If it does not exist yet, the entry opens a fresh daily draft and adopts it once it exists.
+Every persona has a stable address for its daily conversation — the same entry the sidebar row, the switcher, the header, and the persona page all point at. Clicking a persona's name lands you in that one conversation, so "ask Mili" means the same thing every time. If it does not exist yet, the entry opens a fresh daily draft and adopts it once it exists.
 
 A daily conversation is not a limit. The same persona can hold several conversations at once — a second one for a different project, say — and the persona page lists them, so you switch between them from there. Which conversation is the daily one is a property of the persona, not a separate setting: choosing a different conversation from that list moves the daily entry to it.
 

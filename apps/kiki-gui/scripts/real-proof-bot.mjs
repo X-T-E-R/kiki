@@ -6,7 +6,7 @@
  * and continue, and refuse / allow roster changes. Screenshots land in
  * .tmp/bot-real/<stamp>/.
  *
- *   KIKI_HOME=<isolated home> node scripts/real-proof-bot.mjs --server=http://127.0.0.1:59411 [--bot=lin-lan]
+ *   KIKI_HOME=<isolated home> node scripts/real-proof-bot.mjs --server=http://127.0.0.1:59411 [--bot=xiao-you]
  *
  * Without a model provider in that home a woken member cannot answer; the
  * script records what the server logged after the send (a Bot reply or a
@@ -42,15 +42,15 @@ async function api(path, init = {}) {
 }
 
 const PERSONAS = [
-  { id: 'lin-lan', name: '林岚', title: '发布协调', job: '负责发布节奏。', description: '你是林岚，负责发布协调。' },
-  { id: 'a-che', name: '阿澈', title: '写作', job: '起草 changelog。', description: '你是阿澈，负责写作。' },
-  { id: 'xiao-lan', name: '小蓝', title: '调研', job: '查资料、核对事实。', description: '你是小蓝，负责调研。' },
+  { id: 'xiao-you', name: '小柚', title: '发布协调', job: '负责发布节奏。', description: '你是小柚，负责发布协调。' },
+  { id: 'dou-dou', name: '豆豆', title: '写作', job: '起草 changelog。', description: '你是豆豆，负责写作。' },
+  { id: 'mi-li', name: '米粒', title: '调研', job: '查资料、核对事实。', description: '你是米粒，负责调研。' },
 ];
 for (const definition of PERSONAS) {
   const existing = await api(`/personas/${definition.id}`).catch(() => undefined);
   if (existing === undefined) await api(`/personas/${definition.id}`, { method: 'PUT', body: { definition } });
 }
-const botId = process.argv.find((arg) => arg.startsWith('--bot='))?.slice('--bot='.length) ?? 'lin-lan';
+const botId = process.argv.find((arg) => arg.startsWith('--bot='))?.slice('--bot='.length) ?? 'xiao-you';
 const bot = await api(`/bots/${botId}/enable`, { method: 'POST' });
 notes.push(`bot enabled: ${bot.personaId} home=${bot.homeSessionId}`);
 const workspace = resolve(root, '.tmp', 'real-room-workspace');
@@ -59,7 +59,7 @@ await mkdir(workspace, { recursive: true });
 // running server, not ones left cold by an earlier run.
 const room = await api('/rooms', {
   method: 'POST',
-  body: { name: `真实房间验证 ${new Date().toISOString().slice(11, 19)}`, workspace, host: 'lin-lan', members: PERSONAS.map((persona) => ({ personaId: persona.id })) },
+  body: { name: `真实房间验证 ${new Date().toISOString().slice(11, 19)}`, workspace, host: 'xiao-you', members: PERSONAS.map((persona) => ({ personaId: persona.id })) },
 });
 notes.push(`room ${room.id} members=${room.members.map((member) => `${member.personaId}:${member.sessionId}`).join(',')}`);
 
@@ -90,7 +90,7 @@ try {
 
   // 1. Send from the GUI; the real log must carry it.
   // A mention needs whitespace (or ASCII punctuation) before the `@`.
-  const text = `GUI 实测 ${new Date().toISOString().slice(11, 19)} @阿澈 回一句「收到」。`;
+  const text = `GUI 实测 ${new Date().toISOString().slice(11, 19)} @豆豆 回一句「收到」。`;
   await page.locator('[data-room-input]').fill(text);
   await page.locator('[data-room-input]').press('Enter');
   await page.waitForFunction((needle) => [...document.querySelectorAll('[data-room-from="user"]')].some((node) => node.textContent?.includes(needle)), text.slice(0, 12), { timeout: 20_000 });
@@ -150,11 +150,11 @@ try {
 
   // 4. Members rail: set host (allowed any time), mute toggle.
   if ((await page.locator('[data-room-members]').count()) === 0) await page.locator('[data-room-roster]').click();
-  await page.locator('[data-room-member="a-che"] [data-room-set-host]').click();
-  await page.waitForFunction(() => document.querySelector('[data-room-host-line]')?.textContent?.includes('阿澈'), null, { timeout: 10_000 });
+  await page.locator('[data-room-member="dou-dou"] [data-room-set-host]').click();
+  await page.waitForFunction(() => document.querySelector('[data-room-host-line]')?.textContent?.includes('豆豆'), null, { timeout: 10_000 });
   const hosted = await api(`/rooms/${room.id}`);
   notes.push(`host now ${hosted.host}`);
-  await page.locator('[data-room-member="lin-lan"] [data-room-set-host]').click();
+  await page.locator('[data-room-member="xiao-you"] [data-room-set-host]').click();
   await page.waitForTimeout(800);
   await shot(page, 'real-room-members');
 

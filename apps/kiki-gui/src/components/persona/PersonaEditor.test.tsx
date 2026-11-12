@@ -148,8 +148,8 @@ describe('PersonaEditor thinking effort display order', () => {
 describe('what each field says about itself', () => {
   it('keeps description and greeting off the first screen and one hover away', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
-    const container = await render('lin-lan');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。' }));
+    const container = await render('xiao-you');
 
     // Neither mechanism note occupies a line of its own any more.
     expect(container.textContent).not.toContain('系统提示词开头');
@@ -167,16 +167,16 @@ describe('what each field says about itself', () => {
     const created = await render(undefined);
     expect(created.textContent).toContain('用于目录名和记忆路径，创建后不能修改。');
 
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
-    const existing = await render('lin-lan');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。' }));
+    const existing = await render('xiao-you');
     expect(existing.textContent).toContain('工具、权限和子智能体来自这里。角色本身不带权限。');
   });
 
   it('saves what was typed whether or not the help was opened', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', greeting: '早上好。' }));
-    putPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', greeting: '早上好。今天发 0.9。' }));
-    const container = await render('lin-lan');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。', greeting: '早上好。' }));
+    putPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。', greeting: '早上好。今天发 0.9。' }));
+    const container = await render('xiao-you');
 
     await openHelp(helpBeside(container, '描述'));
     await fill(field(container, 'description') as HTMLTextAreaElement, '负责发布节奏。');
@@ -188,9 +188,9 @@ describe('what each field says about itself', () => {
   });
 
   it('saves the delivery the switch shows, and shows it again after the save', async () => {
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', delivery: 'message' }));
-    putPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', delivery: 'reply' }));
-    const container = await render('lin-lan');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。', delivery: 'message' }));
+    putPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。', delivery: 'reply' }));
+    const container = await render('xiao-you');
 
     const pressed = () => [...container.querySelectorAll('[data-persona-delivery]')]
       .filter((button) => button.getAttribute('aria-pressed') === 'true')
@@ -246,10 +246,10 @@ describe('existing persona', () => {
   it('shows the stored workspace as the registered workspace it is, and saves its directory', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({
-      id: 'lin-lan', name: '林岚', description: '负责发布节奏。', homeWorkspace: 'C:/work/workshop',
+      id: 'xiao-you', name: '小柚', description: '负责发布节奏。', homeWorkspace: 'C:/work/workshop',
     }));
-    putPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', homeWorkspace: 'C:/work/workshop' }));
-    const container = await render('lin-lan');
+    putPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。', homeWorkspace: 'C:/work/workshop' }));
+    const container = await render('xiao-you');
 
     // The picker names the workspace, not the path it stores.
     const picker = container.querySelector('[data-persona-field="homeWorkspace"]')!;
@@ -265,15 +265,15 @@ describe('existing persona', () => {
 
   it('keeps the typed draft and says why when the save fails', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。' }));
     putPersona.mockRejectedValue(new Error('disk is read-only'));
-    const container = await render('lin-lan');
+    const container = await render('xiao-you');
 
-    await fill(field(container, 'name') as HTMLInputElement, '林岚（发布）');
+    await fill(field(container, 'name') as HTMLInputElement, '小柚（发布）');
     await submit(container);
 
     expect(putPersona).toHaveBeenCalledTimes(1);
-    expect((field(container, 'name') as HTMLInputElement).value).toBe('林岚（发布）');
+    expect((field(container, 'name') as HTMLInputElement).value).toBe('小柚（发布）');
     expect(container.querySelector('[data-persona-save-failure]')?.textContent).toContain('disk is read-only');
     // Still dirty: the save bar is offered again rather than reporting success.
     expect(container.querySelector('[data-settings-draft][data-dirty="true"]')).not.toBeNull();
@@ -300,13 +300,13 @@ describe('existing persona', () => {
 
   it('re-seeds the form when another persona is opened', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
-    const first = await render('lin-lan');
-    expect((field(first, 'name') as HTMLInputElement).value).toBe('林岚');
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。' }));
+    const first = await render('xiao-you');
+    expect((field(first, 'name') as HTMLInputElement).value).toBe('小柚');
 
-    getPersona.mockResolvedValue(snapshot({ id: 'a-che', name: '阿澈', description: '陪你改稿。' }));
-    const second = await render('a-che');
-    expect((field(second, 'name') as HTMLInputElement).value).toBe('阿澈');
+    getPersona.mockResolvedValue(snapshot({ id: 'dou-dou', name: '豆豆', description: '陪你改稿。' }));
+    const second = await render('dou-dou');
+    expect((field(second, 'name') as HTMLInputElement).value).toBe('豆豆');
     expect((field(second, 'description') as HTMLTextAreaElement).value).toBe('陪你改稿。');
   });
 });
@@ -318,15 +318,15 @@ describe('existing persona', () => {
 describe('a new revision read back while the editor is open', () => {
   it('keeps the unsaved draft, and still saves against the revision it started from', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
-    const { container, queryClient, rerender } = await renderWith('lin-lan');
+    getPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
+    const { container, queryClient, rerender } = await renderWith('xiao-you');
 
     await fill(field(container, 'job') as HTMLInputElement, '写发布说明');
     expect(container.querySelector('[data-settings-draft][data-dirty="true"]')).not.toBeNull();
 
     // The other window's save lands in the same query cache.
-    queryClient.setQueryData(['persona', 'lin-lan'], {
-      definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition,
+    queryClient.setQueryData(['persona', 'xiao-you'], {
+      definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition,
       revision: 'revision-2',
     });
     await rerender();
@@ -338,7 +338,7 @@ describe('a new revision read back while the editor is open', () => {
 
     // And the save carries the fact the reader was looking at, so the server
     // refuses it instead of silently overwriting the other window's text.
-    putPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
+    putPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
     await submit(container);
     const body = putPersona.mock.calls[0]![0] as { revision?: string };
     expect(body.revision).toBe('revision-1');
@@ -346,19 +346,19 @@ describe('a new revision read back while the editor is open', () => {
 
   it('takes the new revision when the form is clean, and offers it as the conflict reload does', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
-    const { container, queryClient, rerender } = await renderWith('lin-lan');
+    getPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
+    const { container, queryClient, rerender } = await renderWith('xiao-you');
 
     // Nobody typed, so there is nothing to protect.
-    queryClient.setQueryData(['persona', 'lin-lan'], {
-      definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition,
+    queryClient.setQueryData(['persona', 'xiao-you'], {
+      definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition,
       revision: 'revision-2',
     });
     await rerender();
     expect((field(container, 'description') as HTMLTextAreaElement).value).toBe('改在另一窗口。');
 
     // A save after that sends the revision it now believes in.
-    putPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
+    putPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
     await fill(field(container, 'job') as HTMLInputElement, '写发布说明');
     await submit(container);
     const body = putPersona.mock.calls[0]![0] as { revision?: string };
@@ -367,16 +367,16 @@ describe('a new revision read back while the editor is open', () => {
 
   it('reads the newer text and the newer revision when the reader takes the conflict reload', async () => {
     listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
-    getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
-    const { container, queryClient, rerender } = await renderWith('lin-lan');
+    getPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
+    const { container, queryClient, rerender } = await renderWith('xiao-you');
 
     await fill(field(container, 'job') as HTMLInputElement, '写发布说明');
-    queryClient.setQueryData(['persona', 'lin-lan'], {
-      definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition,
+    queryClient.setQueryData(['persona', 'xiao-you'], {
+      definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition,
       revision: 'revision-2',
     });
     await rerender();
-    getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
+    getPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
 
     // The reader says "take theirs" through the existing conflict entry.
     putPersona.mockRejectedValue(new ApiError({ code: PERSONA_REVISION_CONFLICT, msg: 'revision conflict', data: null }));
@@ -391,7 +391,7 @@ describe('a new revision read back while the editor is open', () => {
     expect((field(container, 'job') as HTMLInputElement).value).toBe('');
     expect(container.querySelector('[data-settings-draft][data-dirty="true"]')).toBeNull();
     // The next save is against the revision that reload brought back.
-    putPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
+    putPersona.mockResolvedValue({ definition: { id: 'xiao-you', name: '小柚', description: '改在另一窗口。' } as PersonaDefinition, revision: 'revision-2' });
     await fill(field(container, 'job') as HTMLInputElement, '写发布说明');
     await submit(container);
     expect((putPersona.mock.calls.at(-1)![0] as { revision?: string }).revision).toBe('revision-2');

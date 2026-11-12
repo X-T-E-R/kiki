@@ -19,8 +19,8 @@ const WORKSPACES = [
 ];
 
 const imported = {
-  id: 'lin-lan',
-  name: '林岚',
+  id: 'xiao-you',
+  name: '小柚',
   description: '负责发布节奏。',
   greeting: '我在。',
   greetings: ['第二句开场白'],
@@ -33,11 +33,11 @@ describe('personaDraft', () => {
   it('keeps fields the editor does not show when saving', () => {
     const draft = { ...draftFromDefinition(imported), job: '写发布说明' };
     const saved = definitionFromDraft(draft, imported) as unknown as Record<string, unknown>;
-    expect(saved).toMatchObject({ id: 'lin-lan', job: '写发布说明', greetings: ['第二句开场白'], tags: ['release'] });
+    expect(saved).toMatchObject({ id: 'xiao-you', job: '写发布说明', greetings: ['第二句开场白'], tags: ['release'] });
   });
 
   it('round-trips the alternate greetings, room greeting, tags and notes it now shows', () => {
-    const base = { id: 'a-che', name: '阿澈', description: 'd' } as unknown as PersonaDefinition;
+    const base = { id: 'dou-dou', name: '豆豆', description: 'd' } as unknown as PersonaDefinition;
     const draft = {
       ...draftFromDefinition(base),
       greetings: '第一句\n\n第二句',
@@ -145,7 +145,7 @@ describe('personaDraft', () => {
 
   it('derives an id from the name, with a random suffix for non-ASCII names', () => {
     expect(personaIdFromName('Orin Hale')).toBe('orin-hale');
-    expect(personaIdFromName('林岚', () => 'a1b2c3')).toBe('persona-a1b2c3');
+    expect(personaIdFromName('小柚', () => 'a1b2c3')).toBe('persona-a1b2c3');
   });
 
   it('validates required fields, and the id only while creating', () => {

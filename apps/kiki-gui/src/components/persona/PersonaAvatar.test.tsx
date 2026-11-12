@@ -25,43 +25,43 @@ function renderAvatar(node: React.ReactNode): HTMLDivElement {
 
 describe('PersonaAvatar', () => {
   it('falls back to the first character of the name', () => {
-    const container = renderAvatar(<PersonaAvatar persona={{ id: 'lin-lan', name: '林岚' }} />);
-    const avatar = container.querySelector<HTMLElement>('[data-persona-avatar="lin-lan"]')!;
+    const container = renderAvatar(<PersonaAvatar persona={{ id: 'xiao-you', name: '小柚' }} />);
+    const avatar = container.querySelector<HTMLElement>('[data-persona-avatar="xiao-you"]')!;
     expect(avatar.getAttribute('role')).toBe('img');
-    expect(avatar.getAttribute('aria-label')).toBe('林岚');
-    expect(avatar.textContent).toBe('林');
+    expect(avatar.getAttribute('aria-label')).toBe('小柚');
+    expect(avatar.textContent).toBe('小');
     expect(avatar.dataset['personaAvatarKind']).toBe('initial');
   });
 
   it('renders a data URL directly and hides itself when decorative', () => {
     const container = renderAvatar(
-      <PersonaAvatar decorative persona={{ id: 'a-che', name: 'A Che', avatarUrl: 'data:image/png;base64,AAAA' }} />,
+      <PersonaAvatar decorative persona={{ id: 'dou-dou', name: 'Doudou', avatarUrl: 'data:image/png;base64,AAAA' }} />,
     );
-    const avatar = container.querySelector<HTMLElement>('[data-persona-avatar="a-che"]')!;
+    const avatar = container.querySelector<HTMLElement>('[data-persona-avatar="dou-dou"]')!;
     expect(avatar.getAttribute('aria-hidden')).toBe('true');
     expect(avatar.getAttribute('role')).toBeNull();
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
   });
 
   it('frames a circle picture round, and keeps the rounded card for an initial', () => {
-    const round = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'a-che', name: 'A Che', avatarUrl: 'data:image/png;base64,AAAA', avatarShape: 'circle' }} />);
-    const image = round.querySelector<HTMLElement>('[data-persona-avatar="a-che"]')!;
+    const round = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'dou-dou', name: 'Doudou', avatarUrl: 'data:image/png;base64,AAAA', avatarShape: 'circle' }} />);
+    const image = round.querySelector<HTMLElement>('[data-persona-avatar="dou-dou"]')!;
     expect(image.dataset['personaAvatarShape']).toBe('circle');
     expect(image.style.borderRadius).toBe('20px');
     // A circle chosen for a picture no longer applies once the picture is gone.
-    const initial = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'a-che', name: 'A Che', avatarShape: 'circle' }} />);
-    const fallback = initial.querySelector<HTMLElement>('[data-persona-avatar="a-che"]')!;
+    const initial = renderAvatar(<PersonaAvatar size={40} persona={{ id: 'dou-dou', name: 'Doudou', avatarShape: 'circle' }} />);
+    const fallback = initial.querySelector<HTMLElement>('[data-persona-avatar="dou-dou"]')!;
     expect(fallback.dataset['personaAvatarKind']).toBe('initial');
     expect(fallback.dataset['personaAvatarShape']).toBe('square');
     expect(fallback.style.borderRadius).toBe('11px');
-    expect(personaAvatarOf({ id: 'a-che', name: 'A Che', avatarShape: 'circle' }).avatarShape).toBeUndefined();
+    expect(personaAvatarOf({ id: 'dou-dou', name: 'Doudou', avatarShape: 'circle' }).avatarShape).toBeUndefined();
   });
 
   it('keeps initials, tints and avatar URLs stable', () => {
     expect(personaInitial('  archivist')).toBe('A');
     expect(personaInitial('')).toBe('?');
-    expect(personaTintIndex('lin-lan')).toBe(personaTintIndex('lin-lan'));
-    expect(personaAvatarOf({ id: 'lin-lan', name: '林岚' }).avatarUrl).toBeUndefined();
-    expect(personaAvatarOf({ id: 'lin-lan', name: '林岚', avatarMime: 'image/png' }).avatarUrl).toBe('/api/personas/lin-lan/avatar');
+    expect(personaTintIndex('xiao-you')).toBe(personaTintIndex('xiao-you'));
+    expect(personaAvatarOf({ id: 'xiao-you', name: '小柚' }).avatarUrl).toBeUndefined();
+    expect(personaAvatarOf({ id: 'xiao-you', name: '小柚', avatarMime: 'image/png' }).avatarUrl).toBe('/api/personas/xiao-you/avatar');
   });
 });

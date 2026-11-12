@@ -284,7 +284,7 @@ async function settle(page) {
  * would read as a mistake rather than as a deliberate crop.
  */
 async function framePersonaExecution(page) {
-  const editor = '[data-persona-editor="lin-lan"]';
+  const editor = '[data-persona-editor="xiao-you"]';
   await page.locator(`${editor} [data-persona-field="description"]`).waitFor({ timeout: 20_000 });
   // The work section is the last thing the editor renders; wait for its own
   // field rather than for the form, or the scroll below measures an empty box.
@@ -337,9 +337,9 @@ const SHOTS = [
     scenario: 'people-spaces-card',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
-      await open(page, link, '/personas?persona=lin-lan&view=settings', '[data-persona-row]', 60_000);
-      await page.locator('[data-persona-row="lin-lan"]').click();
-      await page.locator('[data-persona-editor="lin-lan"]').waitFor({ timeout: 20_000 });
+      await open(page, link, '/personas?persona=xiao-you&view=settings', '[data-persona-row]', 60_000);
+      await page.locator('[data-persona-row="xiao-you"]').click();
+      await page.locator('[data-persona-editor="xiao-you"]').waitFor({ timeout: 20_000 });
       await framePersonaExecution(page);
       await settle(page);
       await shot();

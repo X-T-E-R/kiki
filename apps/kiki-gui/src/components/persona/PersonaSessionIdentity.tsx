@@ -3,7 +3,7 @@
  * persona.
  *
  * Two lines, in the order a person reads them:
- *   [face] 小岚 ▾          who this conversation is with; ▾ opens the shared
+ *   [face] 小柚 ▾          who this conversation is with; ▾ opens the shared
  *                          conversation switcher, which unfolds from this
  *                          block's left edge into the content column;
  *   日常对话 · EasyAgent    which conversation, and which project it runs in.
