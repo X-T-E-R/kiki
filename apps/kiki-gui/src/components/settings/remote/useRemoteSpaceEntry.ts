@@ -12,9 +12,7 @@
 
 import { useCallback } from 'react';
 
-import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
-import { parseActiveSpacePayload } from '../../../lib/spaceStorage';
 import { requestScopeNavigation } from '../../../lib/navScope';
 import { remoteSpaceScope } from '../../../lib/remoteConnections';
 import { pushToast } from '../../../lib/toasts';
@@ -44,17 +42,8 @@ export function useRemoteSpaceEntry() {
  * reload could lose.
  */
 export function useReturnToLocalSpace() {
-  const host = useHost();
-  const { t } = useI18n();
+  const { activateLocal } = useConnection();
   return useCallback(() => {
-    const go = async () => {
-      const payload = host.activeSpace === undefined ? null : await host.activeSpace().catch(() => null);
-      const homeId = parseActiveSpacePayload(payload)?.homeId ?? 'main';
-      await requestScopeNavigation({ homeId, scopeId: 'local' });
-    };
-    void go().catch((error: unknown) => {
-      if (isAbort(error)) return;
-      pushToast({ tone: 'error', text: t('sidebar.space.backFailed') });
-    });
-  }, [host, t]);
+    activateLocal();
+  }, [activateLocal]);
 }

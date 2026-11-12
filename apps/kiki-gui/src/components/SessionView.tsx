@@ -17,6 +17,7 @@ import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/sessi
 import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, useModelSwitchFlow, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
+import { PhoneRemoteSpaceLine } from './PageChrome';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -496,36 +497,39 @@ function Header({
       <NavBackButton />
       {session !== undefined ? (
         <>
-          {persona !== undefined ? (
-            // Who this conversation is with and which one it is: two lines,
-            // with the switcher on the name's own chevron.
-            <PersonaSessionIdentity
-              session={session}
-              title={
-                <SessionTitle
-                  title={session.title}
-                  cwd={session.metadata.cwd}
-                  worktree={session.worktree}
-                  promotedFrom={session.promoted_from}
-                  editing={renaming}
-                  onEditingChange={setRenaming}
-                  onRename={onRenameSession}
-                  onOpenRail={railAvailable ? onToggleRail : undefined}
-                />
-              }
-            />
-          ) : (
-            <SessionTitle
-              title={session.title}
-              cwd={session.metadata.cwd}
-              worktree={session.worktree}
-              promotedFrom={session.promoted_from}
-              editing={renaming}
-              onEditingChange={setRenaming}
-              onRename={onRenameSession}
-              onOpenRail={railAvailable ? onToggleRail : undefined}
-            />
-          )}
+          <div className="flex min-w-0 flex-1 flex-col justify-center">
+            {persona !== undefined ? (
+              // Who this conversation is with and which one it is: two lines,
+              // with the switcher on the name's own chevron.
+              <PersonaSessionIdentity
+                session={session}
+                title={
+                  <SessionTitle
+                    title={session.title}
+                    cwd={session.metadata.cwd}
+                    worktree={session.worktree}
+                    promotedFrom={session.promoted_from}
+                    editing={renaming}
+                    onEditingChange={setRenaming}
+                    onRename={onRenameSession}
+                    onOpenRail={railAvailable ? onToggleRail : undefined}
+                  />
+                }
+              />
+            ) : (
+              <SessionTitle
+                title={session.title}
+                cwd={session.metadata.cwd}
+                worktree={session.worktree}
+                promotedFrom={session.promoted_from}
+                editing={renaming}
+                onEditingChange={setRenaming}
+                onRename={onRenameSession}
+                onOpenRail={railAvailable ? onToggleRail : undefined}
+              />
+            )}
+            <PhoneRemoteSpaceLine />
+          </div>
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
           {harness !== undefined ? <HarnessMark harness={harness} /> : null}
           {/* An externally driven session says which client drives it instead

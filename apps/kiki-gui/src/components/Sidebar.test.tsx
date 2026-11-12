@@ -88,15 +88,10 @@ const roomRest = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
-vi.mock('../state/connection', () => ({
-  useOptionalControllerRegistry: () => null,
-  useOptionalConnection: () => ({
-    client: { getSession },
-    scopeId: connectionScope.id,
-    config: connectionScope.brokerConfig,
-  }),
-  useConnection: () => ({
+vi.mock('../state/connection', () => {
+  const readConnection = () => ({
     client: {
+      getSession,
       getRequestGovernance: async () => ({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] }),
       searchMessages,
       retrySearchIndexer,
@@ -113,6 +108,7 @@ vi.mock('../state/connection', () => ({
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
+    config: connectionScope.brokerConfig,
     meta: {
       server_version: '1.0.0',
       capabilities: {
@@ -130,8 +126,13 @@ vi.mock('../state/connection', () => ({
     },
     wsStatus: connectionScope.ws,
     disconnect: () => {},
-  }),
-}));
+  });
+  return {
+    useOptionalControllerRegistry: () => null,
+    useOptionalConnection: readConnection,
+    useConnection: readConnection,
+  };
+});
 
 function hit(overrides: Partial<SearchMessageHit> & Pick<SearchMessageHit, 'session_id'>): SearchMessageHit {
   return {
@@ -1276,19 +1277,18 @@ describe('Sidebar entry distribution', () => {
     expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('2 queued');
   });
 
-  it('says nothing about a working connection and names a dropped one in words', async () => {
+  it('places connection state on the top position bar and never renders a footer connection mark', async () => {
     const { container } = await mount();
     const footer = container.querySelector('[data-sidebar-footer]');
     expect(footer?.querySelector('[data-nav-settings]')).not.toBeNull();
     expect(footer?.querySelector('[data-connection-status]')).toBeNull();
-    // Disconnect moved to settings → connection.
     expect(container.textContent ?? '').not.toContain('Disconnect');
 
     connectionScope.ws = 'connecting';
     const dropped = await mount();
-    const status = dropped.container.querySelector<HTMLButtonElement>('[data-sidebar-footer] [data-connection-status]');
-    expect(status?.textContent).toBe('Disconnected · reconnecting');
-    expect(status?.getAttribute('title')).toContain('1.0.0');
+    expect(dropped.container.querySelector('[data-sidebar-footer] [data-connection-status]')).toBeNull();
+    const subtitle = dropped.container.querySelector('[data-space-switcher-subtitle]');
+    expect(subtitle?.textContent).toBe('Reconnecting…');
   });
 
   it('offers a quick pin toggle per row and labels it from the pin state', async () => {

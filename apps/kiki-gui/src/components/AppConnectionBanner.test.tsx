@@ -2,11 +2,44 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { recordConnectionEvent, resetConnectionLog } from '../state/connectionDiagnostics';
 import { normalizeDesktopFailure, type DesktopRecovery } from '../state/desktopConnection';
 import { AppConnectionBanner } from './AppConnectionBanner';
+
+const remoteHarness = vi.hoisted(() => ({
+  connectionId: null as string | null,
+  spaceKey: 'main' as string,
+  sshLabel: null as string | null,
+  activateLocal: vi.fn(),
+  connectionsList: vi.fn<() => Promise<unknown[]>>(async () => []),
+}));
+
+vi.mock('../state/connection', () => {
+  const read = () => ({
+    client: null,
+    localClient: {
+      baseUrl: 'http://127.0.0.1:58627',
+      klient: {
+        rest: {
+          homes: { list: async () => ({ items: [{ id: 'main', name: 'Main space', path: 'C:/kiki', primary: true }] }) },
+          connections: { list: remoteHarness.connectionsList },
+        },
+      },
+    },
+    connectionId: remoteHarness.connectionId,
+    spaceKey: remoteHarness.spaceKey,
+    sshLabel: remoteHarness.sshLabel,
+    activateLocal: remoteHarness.activateLocal,
+  });
+  return {
+    useConnection: read,
+    useOptionalConnection: read,
+  };
+});
 
 const roots: Root[] = [];
 const hosts: HTMLElement[] = [];
@@ -16,6 +49,14 @@ beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 });
 afterAll(() => { delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT; });
+beforeEach(() => {
+  resetConnectionLog();
+  remoteHarness.connectionId = null;
+  remoteHarness.spaceKey = 'main';
+  remoteHarness.sshLabel = null;
+  remoteHarness.activateLocal.mockReset();
+  remoteHarness.connectionsList.mockReset().mockResolvedValue([]);
+});
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
   for (const host of hosts.splice(0)) host.remove();
@@ -28,12 +69,26 @@ async function mount(wsStatus: 'connecting' | 'open' | 'closed', recovery?: Desk
   hosts.push(container);
   const root = createRoot(container);
   roots.push(root);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onReconnect = vi.fn();
   const onOpenConnectionSettings = vi.fn();
   const render = async (status = wsStatus, state = recovery, suppress = suppressInitialConnecting) => {
     await act(async () => {
-      root.render(<I18nProvider><AppConnectionBanner wsStatus={status} suppressInitialConnecting={suppress} recovery={state} onReconnect={onReconnect} onOpenConnectionSettings={onOpenConnectionSettings} /></I18nProvider>);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <AppConnectionBanner
+              wsStatus={status}
+              suppressInitialConnecting={suppress}
+              recovery={state}
+              onReconnect={onReconnect}
+              onOpenConnectionSettings={onOpenConnectionSettings}
+            />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
     });
+    await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
   };
   await render();
   return { container, onReconnect, onOpenConnectionSettings, render };
@@ -61,6 +116,46 @@ describe('AppConnectionBanner', () => {
     expect(button?.textContent).toBe('Reconnect now');
     await click(button);
     expect(onReconnect).toHaveBeenCalledOnce();
+  });
+
+  it('names the remote space on disconnect and offers Back to Main space after repeated retry failures without exposing UUIDs', async () => {
+    const connId = '22222222-2222-4222-8222-222222222222';
+    remoteHarness.connectionId = connId;
+    remoteHarness.spaceKey = `remote:${connId}`;
+    remoteHarness.connectionsList.mockResolvedValue([
+      {
+        id: connId,
+        label: 'GPU Workstation',
+        endpoint: 'http://127.0.0.1:59001',
+        target: { homeId: connId, hostId: 'gpu-host', protocol: 1 },
+        credentialRef: connId,
+        enabled: true,
+        purposes: ['gui'],
+        backgroundSummary: false,
+        state: 'online',
+        activeLeases: 0,
+      },
+    ]);
+
+    const { container, render, onReconnect } = await mount('connecting');
+    const banner = container.querySelector('[data-app-banner]')!;
+    expect(banner.textContent).toContain('Lost connection to GPU Workstation. Reconnecting…');
+    expect(banner.textContent).not.toContain('remote:');
+    expect(banner.textContent).not.toContain(connId);
+    expect(container.querySelector('[data-banner-back-local]')).toBeNull();
+
+    await act(async () => { recordConnectionEvent({ kind: 'retry', attempt: 3, delayMs: 2_000 }); });
+    await render('connecting');
+    expect(banner.textContent).toContain('Still can’t reach GPU Workstation. Retrying.');
+    expect(container.querySelector('[data-banner-reconnect]')?.textContent).toBe('Retry now');
+    const backBtn = container.querySelector('[data-banner-back-local]');
+    expect(backBtn?.textContent).toBe('Back to Main space');
+    expect(remoteHarness.activateLocal).not.toHaveBeenCalled();
+
+    await click(container.querySelector('[data-banner-reconnect]'));
+    expect(onReconnect).toHaveBeenCalledOnce();
+    await click(backBtn);
+    expect(remoteHarness.activateLocal).toHaveBeenCalledOnce();
   });
 
   it('renders nothing while connected or during the initial connecting grace window', async () => {

@@ -17,6 +17,8 @@ import { useSearchParams } from 'react-router-dom';
 import type { Workspace } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
+import { usePhoneMode } from '../lib/layoutHooks';
+import { useSpaceLocation } from '../lib/spaceLocation';
 import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -29,6 +31,19 @@ export const PAGE_WIDTH = {
 } as const;
 
 export type PageWidth = keyof typeof PAGE_WIDTH;
+
+export function PhoneRemoteSpaceLine({ className = '' }: { readonly className?: string }) {
+  const phoneMode = usePhoneMode();
+  const { t } = useI18n();
+  const { inRemoteScope, spaceName } = useSpaceLocation();
+  if (!phoneMode || !inRemoteScope) return null;
+  const text = t('sidebar.space.inSpace', { space: spaceName });
+  return (
+    <span data-phone-space-line title={text} className={`block min-w-0 truncate text-[11px] leading-[14px] text-ink-faint ${className}`}>
+      {text}
+    </span>
+  );
+}
 
 export function PageHeader({
   title,
@@ -57,9 +72,12 @@ export function PageHeader({
         <Icon name="menu" size={16} />
       </button>
       <NavBackButton />
-      <h1 data-page-title className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-        {title}
-      </h1>
+      <div className="min-w-0 flex-1">
+        <h1 data-page-title className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+          {title}
+        </h1>
+        <PhoneRemoteSpaceLine />
+      </div>
       {children === undefined ? null : <div data-page-actions className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>}
     </>
   );

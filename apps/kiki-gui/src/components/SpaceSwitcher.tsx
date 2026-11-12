@@ -5,6 +5,7 @@ import { readDesktopPrefs } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { useSpacePreferencesFrame } from '../lib/spacePreferences';
+import { useSpaceLocation } from '../lib/spaceLocation';
 import { spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { browsableRemote, connectionAddress, remoteSummaryView, useRemoteConnections } from '../lib/remoteConnections';
 import { relativeTime } from '@kiki/session-core/util/time';
@@ -91,8 +92,6 @@ export function SpaceSwitcher() {
   const pending = mode === 'switch' ? otherSpacesPending(statuses.data) : 0;
 
   const label = (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name);
-  const currentName = here === null ? t('st.spaces.main') : (here.name ?? items.find((item) => item.id === here.homeId)?.name ?? t('sidebar.space.unnamed'));
-  const currentRemoteName = currentRemote?.label ?? t('sidebar.space.remoteKiki');
 
   const directoryRef = useRef(directoryClient);
   directoryRef.current = directoryClient;
@@ -178,37 +177,38 @@ export function SpaceSwitcher() {
 
   const title = pending > 0 ? `${t('sidebar.space.switcherAria')} · ${tp('sidebar.space.otherPending', pending)}` : t('sidebar.space.switcherAria');
   const enteringName = entering === null ? null : label(items.find((item) => item.id === entering) ?? { id: entering, name: entering } as SpaceListItem);
-  const shownName = enteringName !== null ? t('sidebar.space.starting', { name: enteringName })
-    : inRemoteScope ? (sshLabel ?? (currentRemote === undefined ? t('sidebar.space.remoteKiki') : currentRemote.label))
-      : here === null ? null : currentName;
+  const location = useSpaceLocation({ openingSpaceName: enteringName });
+  const barSpaceName = location.spaceName;
+  const barSubtitle = location.subtitle;
 
   return (
     <>
-      <button ref={triggerRef} type="button" data-space-switcher={inRemoteScope ? undefined : currentSpaceId()} data-space-remote={inRemoteScope ? '' : undefined} aria-haspopup="menu" aria-expanded={open}
-        aria-label={`kiki · ${inRemoteScope ? shownName ?? currentRemoteName : currentName} · ${title}`} title={title}
+      <button ref={triggerRef} type="button" data-space-switcher={location.inRemoteScope ? undefined : currentSpaceId()} data-space-remote={location.inRemoteScope ? '' : undefined} aria-haspopup="menu" aria-expanded={open}
+        aria-label={`kiki · ${barSpaceName}${barSubtitle !== '' ? ` · ${barSubtitle}` : ''} · ${title}`} title={title}
         onClick={() => { setOpen((value) => !value); }}
-        className="group -ml-2 flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
-        <span aria-hidden className="shrink-0"><Wordmark /></span>
-        {shownName !== null ? (
-          <>
-            {/* The space's dot doubles as the separator from the wordmark. */}
-            {!inRemoteScope && here !== null ? <SpaceDot color={here.color} className="ml-1" /> : null}
-            <span data-space-switcher-name title={shownName} className="min-w-0 truncate text-[13px] font-medium">{shownName}</span>
-            {inRemoteScope ? (
-              <span data-space-remote-tag className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] font-medium leading-[18px] text-ink-soft">{t('sidebar.space.remoteTag')}</span>
+        className="group -ml-2 flex h-11 w-[calc(100%+0.5rem)] min-w-0 flex-col justify-center rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+        <span className="flex w-full min-w-0 items-center gap-1.5 leading-tight">
+          <span aria-hidden className="shrink-0"><Wordmark /></span>
+          <SpaceDot color={location.spaceColor ?? (location.inRemoteScope || here === null ? 'var(--color-ink-faint)' : undefined)} className="ml-0.5" />
+          <span data-space-switcher-name title={barSpaceName} className="min-w-0 flex-1 truncate text-[13px] font-medium leading-[18px]">{barSpaceName}</span>
+          <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-hover:text-ink-soft group-aria-expanded:-rotate-90" />
+        </span>
+        {barSubtitle !== '' || pending > 0 ? (
+          <span className="flex w-full min-w-0 items-center gap-1.5 pl-[42px] leading-tight">
+            <span data-space-switcher-subtitle title={barSubtitle || undefined} className="min-w-0 flex-1 truncate text-[11px] leading-[15px] text-ink-faint">
+              {barSubtitle}
+            </span>
+            {pending > 0 ? (
+              <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent">{pending}</span>
             ) : null}
-          </>
+          </span>
         ) : null}
-        {pending > 0 ? (
-          <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums leading-[18px] text-on-accent">{pending}</span>
-        ) : null}
-        <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-hover:text-ink-soft group-aria-expanded:-rotate-90" />
       </button>
       {open ? (
         <SpaceMenu anchor={triggerRef} onClose={() => { setOpen(false); }}>
-          {inRemoteScope ? (
+          {location.inRemoteScope ? (
             <>
-              <p data-space-remote-note className="px-3 pt-2 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.remoteBody', { name: sshLabel ?? currentRemoteName })}</p>
+              <p data-space-remote-note className="px-3 pt-2 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.remoteBody', { name: barSpaceName })}</p>
               <button type="button" role="menuitem" data-space-back-local
                 onClick={backToLocal}
                 className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">

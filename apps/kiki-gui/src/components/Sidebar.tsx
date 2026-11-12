@@ -657,7 +657,7 @@ export function Sidebar({
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
-  const { client, meta, wsStatus, wsBannerSuppressed, scopeId } = useConnection();
+  const { client, scopeId } = useConnection();
   const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -1911,10 +1911,6 @@ export function Sidebar({
           <span className={location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.settings')}</span>
         </button>
-        {/* "Waiting on you" lives in the header's activity entry now; a second
-            footer copy of the same count was three readings of one fact. */}
-        <SidebarConnectionMark wsStatus={wsStatus} settling={wsBannerSuppressed === true} serverVersion={meta.server_version}
-          onOpen={() => { void navigate('/settings/connection'); }} />
         <button
           type="button"
           data-sidebar-toggle="collapse"
@@ -2988,36 +2984,6 @@ function WorkspaceGroupHeader({
         </button>
       )}
     </div>
-  );
-}
-
-/**
- * The footer's connection mark. Connected is the normal state and shows
- * nothing; a dropped socket says so in words, and still opens the connection
- * page. While the app is still making its first connection (`settling`)
- * nothing is said either: that is starting up, not a disconnect.
- */
-function SidebarConnectionMark({ wsStatus, settling, serverVersion, onOpen }: {
-  wsStatus: 'connecting' | 'open' | 'closed';
-  settling: boolean;
-  serverVersion: string;
-  onOpen: () => void;
-}) {
-  const { t } = useI18n();
-  if (wsStatus === 'open' || settling) return null;
-  // `connecting` after a drop is the socket's retry backoff; `closed` means
-  // it stopped retrying, so it must not claim to be reconnecting.
-  const words = wsStatus === 'connecting' ? t('sidebar.footer.reconnecting') : t('sidebar.footer.disconnected');
-  return (
-    <button
-      type="button"
-      data-connection-status={wsStatus}
-      onClick={onOpen}
-      title={t('sidebar.connTitle', { version: serverVersion, status: t(`sidebar.ws.${wsStatus}`) })}
-      className="flex h-8 min-w-0 max-w-[60%] shrink items-center rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-10"
-    >
-      <span className="truncate">{words}</span>
-    </button>
   );
 }
 
