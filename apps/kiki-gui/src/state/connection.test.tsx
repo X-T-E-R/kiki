@@ -691,8 +691,9 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Kiki stopped');
-    const stay = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Stay on this page');
+    const stay = [...container.querySelectorAll('button')].find((button) => button.getAttribute('data-nav-scope-exit') !== null);
     expect(stay).toBeDefined();
+    expect(stay?.textContent).toBe('Back to Main space');
     expect(container.textContent).not.toContain('Retry startup');
     await act(async () => { stay!.click(); });
     await flush();
@@ -915,7 +916,8 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
     expect(container.querySelector('[data-local-control-url]')?.textContent).toBe(localConfig.url);
     expect(localController.closed).toBe(false);
-    expect(container.querySelector('[data-space-remote-tag]')).not.toBeNull();
+    expect(container.querySelector('[data-space-remote]')).not.toBeNull();
+    expect(container.querySelector('[data-space-switcher-subtitle]')?.textContent).not.toBe('');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-space-remote]')!.click(); });
     expect(document.querySelector('[data-space-switch-item="remote-only"]')).toBeNull();
     expect(document.querySelector('[data-space-switch-item="local-only"]')?.textContent).toContain('GPU');

@@ -43,6 +43,7 @@ export function ActionSheet({
   modalOwnerId,
   autofocus = true,
   restoreFocus = true,
+  sheetClassName,
   children,
 }: {
   readonly ariaLabel: string;
@@ -56,6 +57,8 @@ export function ActionSheet({
   readonly autofocus?: boolean;
   /** False where the opener reveals itself on focus-within and would stay pinned open. */
   readonly restoreFocus?: boolean;
+  /** Optional variant class on `.kiki-action-sheet` (e.g. height cap or flex layout). */
+  readonly sheetClassName?: string;
   /** `role="menuitem"` buttons (separators allowed). */
   readonly children: ReactNode;
 }) {
@@ -116,7 +119,7 @@ export function ActionSheet({
         ref={sheetRef}
         role="menu"
         aria-label={ariaLabel}
-        className="kiki-action-sheet"
+        className={sheetClassName === undefined ? 'kiki-action-sheet' : `kiki-action-sheet ${sheetClassName}`}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
           const items = [...(sheetRef.current?.querySelectorAll<HTMLElement>(ITEM_SELECTOR) ?? [])];

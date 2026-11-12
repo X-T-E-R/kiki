@@ -11,6 +11,7 @@ import { launchWindowMode } from '../lib/spaces';
 import { readDesktopPrefs } from '@kiki/session-core/settings';
 import { destinationForLocation, isScopeEntityRoute, markScopeReload, prepareScopeDestination, registerScopeNavigation, requestScopeNavigation, ScopeRestoreError, type ScopeDestination, type ScopeLocation, type ScopeRestoreState } from '../lib/navScope';
 import { useHost } from '../host';
+import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { DirtyGuardContext, DirtyGuardStateContext, useDirtyGuardState, type GuardedNavigate, type NavigationRedirect } from './dirtyGuard';
 import { NavScopeRecovery, type RemoteRecoveryActions } from './NavScopeRecovery';
@@ -67,7 +68,8 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     if (source !== null) captureVisitSnapshots(source.visitId);
   };
   const preparationTailRef = useRef<Promise<void>>(Promise.resolve());
-  const prepare = useCallback(async (next: ScopeDestination, signal: AbortSignal, requestedLocation?: ScopeLocation): Promise<void | NavigationRedirect> => {
+  const prepare = useCallback(async (next: ScopeDestination, signal: AbortSignal, requestedLocation?: ScopeLocation, inPlace = false): Promise<void | NavigationRedirect> => {
+    const publish = inPlace ? () => {} : setState;
     const previous = preparationTailRef.current;
     let release!: () => void;
     preparationTailRef.current = new Promise<void>((resolve) => { release = resolve; });
@@ -90,7 +92,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         let prepared;
         try {
           if (candidateVisit?.missing === true) throw new ScopeRestoreError('target-missing');
-          prepared = await prepareScopeDestination(candidate, connection.scopeAdapter, signal, setState, token);
+          prepared = await prepareScopeDestination(candidate, connection.scopeAdapter, signal, publish, token);
         } catch (error) {
           assertCurrent();
           if (!(error instanceof ScopeRestoreError) || error.reason !== 'target-missing' || requestedLocation === undefined ||
@@ -124,8 +126,10 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         } catch (error) {
           acceptedRef.current = null;
           await prepared.dispose();
-          if (!signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+          if (!inPlace && !signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
             setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
+          } else if (inPlace) {
+            setState({ phase: 'idle' });
           }
           throw error;
         }
@@ -224,17 +228,20 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
       return;
     }
     const next = { scope, route: request.route ?? readHomeViewRoute(scope.homeId, scope.scopeId) ?? '/new' };
+    const inPlace = request.inPlace === true;
     let initialToken = request.token;
     const execute = async (signal: AbortSignal) => {
       tokenRef.current ??= initialToken;
       initialToken = undefined;
       explicitRef.current = null;
       acceptedRef.current = null;
-      const redirect = await prepare(next, signal);
+      const redirect = await prepare(next, signal, undefined, inPlace);
       signal.throwIfAborted();
       explicitRef.current = { target: acceptedRef.current ?? next, visitId: createVisitId(), redirect: redirect ?? undefined };
     };
-    retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(execute, next.route)).catch(() => {}); };
+    if (!inPlace) {
+      retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(execute, next.route)).catch(() => {}); };
+    }
     await guard.value.runAction?.(execute, next.route);
   }), [active, guard.value.runAction, guard.navigate, prepare]);
   const activeRef = useRef(active);
@@ -284,6 +291,11 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     },
     pairAgain: () => { cancel(PAIRING_SETTINGS_ROUTE); },
   };
+  const { t } = useI18n();
+  const here = activeSpace();
+  const localSpaceLabel = here !== null && !here.homeId.startsWith('remote:')
+    ? (here.name ?? t('sidebar.space.unnamed'))
+    : t('st.spaces.main');
   const value = { state, retry, cancel };
   return <ScopeRestoreContext.Provider value={value}>
     <DirtyGuardStateContext.Provider value={guard}>
@@ -291,7 +303,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         <div className="relative h-full">
           <div className="h-full" inert={state.phase !== 'idle'}>{safe ? children : null}</div>
           {state.phase !== 'idle' ? <div className="absolute inset-0 z-50 bg-canvas">
-            <NavScopeRecovery state={state} retry={retry} cancel={cancel} remote={remote} />
+            <NavScopeRecovery state={state} retry={retry} cancel={cancel} remote={remote} exitSpaceName={localSpaceLabel} />
           </div> : null}
         </div>
       </DirtyGuardContext.Provider>

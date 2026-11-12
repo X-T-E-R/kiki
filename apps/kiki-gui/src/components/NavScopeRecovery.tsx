@@ -38,6 +38,7 @@ export interface NavScopeRecoveryProps {
   retry: (token?: string) => void;
   cancel: () => void;
   remote?: RemoteRecoveryActions;
+  exitSpaceName?: string;
 }
 
 type FailureAction = 'retry' | 'turn-on' | 'pair-again' | 'remove' | 'none';
@@ -80,8 +81,11 @@ function attemptKey(target: ScopeDestination, reason?: ScopeRestoreFailure): str
   return `${target.scope.homeId}\u0000${target.scope.scopeId}\u0000${target.route}\u0000${reason ?? ''}`;
 }
 
-export function NavScopeRecovery({ state, retry, cancel, remote }: NavScopeRecoveryProps) {
+export function NavScopeRecovery({ state, retry, cancel, remote, exitSpaceName }: NavScopeRecoveryProps) {
   const { t, locale } = useI18n();
+  const exitLabel = exitSpaceName !== undefined && exitSpaceName.trim() !== ''
+    ? t('nav.scope.backToSpace', { space: exitSpaceName })
+    : t('nav.scope.stay');
   const [token, setToken] = useState('');
   const [revealed, setRevealed] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -158,8 +162,8 @@ export function NavScopeRecovery({ state, retry, cancel, remote }: NavScopeRecov
           </span>
         </p>
         <div className="mt-6">
-          <button type="button" className={QUIET_BUTTON} onClick={handleCancel}>
-            {t('nav.scope.stay')}
+          <button type="button" className={QUIET_BUTTON} data-nav-scope-exit onClick={handleCancel}>
+            {exitLabel}
           </button>
         </div>
       </Surface>
@@ -259,8 +263,8 @@ export function NavScopeRecovery({ state, retry, cancel, remote }: NavScopeRecov
               {t('nav.scope.remove')}
             </button>
           ) : null}
-          <button type="button" className={QUIET_BUTTON} onClick={handleCancel}>
-            {t('nav.scope.stay')}
+          <button type="button" className={QUIET_BUTTON} data-nav-scope-exit onClick={handleCancel}>
+            {exitLabel}
           </button>
         </div>
       )}

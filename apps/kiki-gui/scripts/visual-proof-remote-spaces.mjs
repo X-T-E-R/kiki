@@ -249,9 +249,9 @@ async function switcher(context) {
   await page.waitForTimeout(250);
 
   const rows = await page.$$('[data-space-remote-item]');
-  expect(rows.length === 3, `only gui-purpose, switched-on connections become spaces; saw ${rows.length}`);
+  expect(rows.length === 4, `gui-purpose connections (including paused) appear in the switch panel; saw ${rows.length}`);
   expect(await page.locator(`[data-space-remote-item="${ID_BRIDGE}"]`).count() === 0, 'a thread-message-only connection must not be offered as a space');
-  expect(await page.locator(`[data-space-remote-item="${ID_OFF}"]`).count() === 0, 'a switched-off connection must not be offered as a space');
+  expect(await page.getAttribute(`[data-space-remote-item="${ID_OFF}"]`, 'data-space-remote-state') === 'disabled', 'a paused connection shows Paused in the switch panel');
   expect(await page.getAttribute(`[data-space-remote-item="${ID_B}"]`, 'data-space-remote-state') === 'online', 'B should read online');
   expect((await page.textContent(`[data-space-remote-item="${ID_B}"] [data-space-remote-busy]`))?.includes('3') === true, 'B busy count');
   expect((await page.textContent(`[data-space-remote-item="${ID_B}"] [data-space-remote-needs]`))?.includes('2') === true, 'B needs-you count');

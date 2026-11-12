@@ -131,9 +131,9 @@ export function otherSpacesPending(statuses: readonly DesktopSpaceStatus[] | und
  * Same-window switching is a guarded Router visit with verified scope restore.
  * Windows mode still delegates to `open_space` to open or focus its own window.
  */
-export async function enterSpace(host: HostAdapter, id: string, mode: SpaceWindowMode): Promise<void> {
+export async function enterSpace(host: HostAdapter, id: string, mode: SpaceWindowMode, options?: { readonly inPlace?: boolean }): Promise<void> {
   if (mode === 'switch') {
-    await requestScopeNavigation({ homeId: id, scopeId: 'local' });
+    await requestScopeNavigation(options?.inPlace ? { homeId: id, scopeId: 'local', inPlace: true } : { homeId: id, scopeId: 'local' });
     return;
   }
   if (host.openSpace !== undefined) {

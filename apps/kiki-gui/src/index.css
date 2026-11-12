@@ -2025,3 +2025,10 @@ input[data-add-search]:focus-visible {
   line-height: 1.35;
   border-radius: 10px;
 }
+.kiki-action-sheet.kiki-space-switch-sheet {
+  max-height: min(calc(var(--kiki-visual-height, 100dvh) * 0.7), 70dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 0;
+}

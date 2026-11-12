@@ -20,11 +20,16 @@ import { PhoneRemoteSpaceLine } from './PageChrome';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { useConnection } from '../state/connection';
 import { resetLaunchWindowMode, useSpaces } from '../lib/spaces';
-import { registerScopeNavigation } from '../lib/navScope';
+import { ScopeRestoreError, registerScopeNavigation, type ScopeNavigationRequest } from '../lib/navScope';
 
 const list = vi.fn();
 const defaultClient = { klient: { rest: { homes: { list } } } };
-const host = { kind: 'tauri' as 'tauri' | 'browser', spaceStatuses: vi.fn(), openSpace: vi.fn(async (): Promise<void> => undefined) };
+const host = {
+  kind: 'tauri' as 'tauri' | 'browser',
+  spaceStatuses: vi.fn(),
+  openSpace: vi.fn(async (): Promise<void> => undefined),
+  openDesktopLogDirectory: vi.fn(async (): Promise<void> => undefined),
+};
 const navigate = vi.fn();
 /** Remote (SSH) connection state, toggleable per test. */
 const connection = vi.hoisted(() => ({
@@ -178,11 +183,11 @@ describe('SpaceSwitcher', () => {
     expect(navigate).toHaveBeenCalledWith('/settings/spaces?new=1');
   });
 
-  it('still offers the menu when the server cannot list spaces', async () => {
+  it('still offers the menu with retry when the server cannot list spaces', async () => {
     list.mockRejectedValue(new Error('404'));
     await render();
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-    expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(1);
+    expect(document.querySelector('[data-space-local-error]')?.textContent).toContain('Couldn\u2019t read this list.');
     expect(document.querySelector('[data-space-new-entry]')).not.toBeNull();
     expect(document.querySelector('[data-space-manage]')).not.toBeNull();
   });
@@ -198,9 +203,10 @@ describe('SpaceSwitcher', () => {
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
       expect(document.querySelector('[data-space-switch-item="main"]')?.getAttribute('data-space-state')).toBe('current');
       expect(document.querySelector('[data-space-switch-item="h-a"]')?.getAttribute('data-space-state')).toBe('hot');
+      expect(document.querySelector('[data-space-switch-item="h-a"]')?.textContent).toContain('2 waiting');
       expect(document.querySelector('[data-space-switch-item="h-b"]')?.getAttribute('data-space-state')).toBe('cold');
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-b"]')!.click(); });
-      expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({ homeId: 'h-b', scopeId: 'local' });
+      expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({ homeId: 'h-b', scopeId: 'local', inPlace: true });
       expect(host.openSpace).not.toHaveBeenCalled();
     } finally { unregister(); }
   });
@@ -234,8 +240,7 @@ describe('SpaceSwitcher', () => {
     expect(trigger?.getAttribute('aria-label')).toContain('kiki · dev-server-gpu');
 
     await act(async () => { (trigger as HTMLButtonElement).click(); });
-    expect(document.querySelector('[data-space-remote-note]')?.textContent).toContain('dev-server-gpu');
-    expect(document.querySelector('[data-space-back-local]')).not.toBeNull();
+    expect(document.querySelector('[data-space-back-local]')?.textContent).toContain('Back to Main space');
     expect(document.querySelector('[data-space-manage]')).not.toBeNull();
     expect(document.querySelectorAll('[data-space-switch-item]')).toHaveLength(3);
     expect(document.querySelector('[aria-current="true"]')).toBeNull();
@@ -412,22 +417,30 @@ describe('SpaceSwitcher', () => {
         activeLeases: 0,
       },
     ]);
+    list.mockResolvedValue(TWO);
     connection.client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes: { list }, connections: { list: connectionsList } } } } as unknown as typeof connection.client;
     connection.localClient = null;
     const scopeNavigate = vi.fn(async () => undefined);
     const unregister = registerScopeNavigation(scopeNavigate);
     try {
       await render();
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
       expect(list).not.toHaveBeenCalled();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(document.querySelector('[data-space-browser-hint]')?.textContent).toContain('Other spaces open only in the desktop app on that computer.');
+      expect(document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')?.disabled).toBe(true);
+      expect(document.querySelector('[data-space-new-entry]')).toBeNull();
       expect(connectionsList).toHaveBeenCalledTimes(1);
       const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
       expect(item).not.toBeNull();
       expect(item?.textContent).toContain('Shared Remote Alpha');
+      expect(item?.textContent).not.toContain('127.0.0.1:59001');
       await act(async () => { item!.click(); });
       expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({
         homeId: `remote:${remoteConnId}`,
         scopeId: `remote:${remoteConnId}`,
+        inPlace: true,
       });
     } finally {
       unregister();
@@ -569,6 +582,140 @@ describe('SpaceSwitcher', () => {
       expect(line?.textContent).toBe('In Another space');
       expect(line?.textContent).not.toContain('remote:');
       expect(line?.textContent).not.toContain(remoteConnId);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('keeps the panel open on remote and local switch failures and renders inline recovery actions', async () => {
+    const connUnreachable = '11111111-1111-4111-8111-111111111111';
+    const connClosed = '22222222-2222-4222-8222-222222222222';
+    const connNotApproved = '33333333-3333-4333-8333-333333333333';
+    const connIdentity = '44444444-4444-4444-8444-444444444444';
+    const connPaused = '55555555-5555-4555-8555-555555555555';
+    const connProtocol = '66666666-6666-4666-8666-666666666666';
+
+    const setEnabled = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const makeRecord = (id: string, label: string, state: 'online' | 'offline' | 'disabled' | 'identity_changed' | 'authentication_required' = 'online') => ({
+      id,
+      label,
+      endpoint: 'http://127.0.0.1:59001',
+      target: { homeId: id, hostId: `host-${id.slice(0, 4)}`, protocol: 1 },
+      credentialRef: id,
+      enabled: state !== 'disabled',
+      purposes: ['gui'],
+      backgroundSummary: true,
+      state,
+      activeLeases: 0,
+    });
+    const records = [
+      makeRecord(connUnreachable, 'Alpha Lab', 'offline'),
+      makeRecord(connClosed, 'Beta Studio'),
+      makeRecord(connNotApproved, 'Gamma Bench', 'authentication_required'),
+      makeRecord(connIdentity, 'Delta Host', 'identity_changed'),
+      makeRecord(connPaused, 'Epsilon Node', 'disabled'),
+      makeRecord(connProtocol, 'Zeta Old'),
+    ];
+    remove.mockImplementation(async (id: string) => {
+      const idx = records.findIndex((item) => item.id === id);
+      if (idx >= 0) records.splice(idx, 1);
+    });
+    const connectionsList = vi.fn(async () => [...records]);
+    list.mockResolvedValue(TWO);
+    connection.localClient = {
+      baseUrl: 'http://127.0.0.1:58627',
+      klient: { rest: { homes: { list }, connections: { list: connectionsList, setEnabled, remove } } },
+    };
+
+    const scopeNavigate = vi.fn(async (req: ScopeNavigationRequest) => {
+      if (req.scopeId === `remote:${connUnreachable}`) throw new ScopeRestoreError('remote-unreachable');
+      if (req.scopeId === `remote:${connClosed}`) throw new ScopeRestoreError('remote-closed');
+      if (req.scopeId === `remote:${connNotApproved}`) throw new ScopeRestoreError('remote-not-approved');
+      if (req.scopeId === `remote:${connIdentity}`) throw new ScopeRestoreError('remote-identity-changed');
+      if (req.scopeId === `remote:${connPaused}`) throw new ScopeRestoreError('remote-paused');
+      if (req.scopeId === `remote:${connProtocol}`) throw new ScopeRestoreError('remote-protocol');
+    });
+    const unregister = registerScopeNavigation(scopeNavigate);
+    try {
+      await render();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+
+      const clickRemote = async (id: string) => {
+        await act(async () => {
+          document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${id}"]`)!.click();
+        });
+      };
+
+      await clickRemote(connUnreachable);
+      expect(document.querySelector('[data-space-switcher-menu]')).not.toBeNull();
+      expect(document.querySelector('[data-space-row-failure="remote-unreachable"]')?.textContent).toContain('Can\u2019t reach it. That computer may be off or on another network.');
+      expect(document.querySelector('[data-space-row-action="retry"]')).not.toBeNull();
+
+      await clickRemote(connClosed);
+      expect(document.querySelector('[data-space-row-failure="remote-closed"]')?.textContent).toContain('Access is closed on that side.');
+
+      await clickRemote(connIdentity);
+      expect(document.querySelector('[data-space-row-failure="remote-identity-changed"]')?.textContent).toContain('That address now answers as a different space. Nothing was opened.');
+      const removeBtn = document.querySelector<HTMLButtonElement>('[data-space-row-action="remove"]')!;
+      removeBtn.focus();
+      await act(async () => {
+        removeBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(remove).toHaveBeenCalledWith(connIdentity);
+      expect(document.querySelector('[data-space-switcher-menu]')).not.toBeNull();
+
+      await clickRemote(connPaused);
+      expect(document.querySelector('[data-space-row-failure="remote-paused"]')?.textContent).toContain('This pairing is paused.');
+      scopeNavigate.mockResolvedValueOnce(undefined);
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="turn-on"]')!.click(); });
+      expect(setEnabled).toHaveBeenCalledWith(connPaused, true);
+      expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
+
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      await clickRemote(connProtocol);
+      expect(document.querySelector('[data-space-row-failure="remote-protocol"]')?.textContent).toContain('That side\u2019s version can\u2019t be opened from here.');
+      expect(document.querySelector('[data-space-row-action]')).toBeNull();
+
+      await clickRemote(connNotApproved);
+      expect(document.querySelector('[data-space-row-failure="remote-not-approved"]')?.textContent).toContain('That side no longer accepts this pairing.');
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="pair-again"]')!.click(); });
+      expect(navigate).toHaveBeenCalledWith('/settings/spaces#st-card-remote-connections');
+
+      // Local space start failure shows inline error + Retry + View log…
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      host.openSpace.mockRejectedValueOnce(new Error('spawn failed'));
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')!.click(); });
+      expect(document.querySelector('[data-space-row-failure="local-start"]')?.textContent).toContain('Couldn\u2019t start ACME.');
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="view-log"]')!.click(); });
+      expect(host.openDesktopLogDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('renders a bottom ActionSheet in phone touch mode with a scrolling middle list and fixed bottom actions', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse) and (max-width: 639px)' || query === '(pointer: coarse)',
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    host.kind = 'browser';
+    list.mockResolvedValue(TWO);
+    try {
+      await render();
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+      const sheet = document.querySelector('.kiki-space-switch-sheet');
+      expect(sheet).not.toBeNull();
+      expect(sheet?.querySelector('[data-space-switch-scroll]')).not.toBeNull();
+      expect(sheet?.querySelector('[data-space-switch-footer]')).not.toBeNull();
     } finally {
       window.matchMedia = originalMatchMedia;
     }

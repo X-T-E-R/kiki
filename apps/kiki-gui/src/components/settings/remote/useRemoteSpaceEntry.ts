@@ -22,16 +22,20 @@ function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-/** Switch this window into a registered remote Kiki's space. */
+/** Switch this window into a registered remote space. */
 export function useRemoteSpaceEntry() {
   const { connectionId } = useConnection();
   const { t } = useI18n();
-  return useCallback((id: string, name: string) => {
-    if (id === connectionId) return;
-    void requestScopeNavigation(remoteSpaceScope(id)).catch((error: unknown) => {
+  return useCallback((id: string, name: string, options?: { readonly inPlace?: boolean }): Promise<void> => {
+    if (id === connectionId) return Promise.resolve();
+    const scope = remoteSpaceScope(id);
+    const promise = requestScopeNavigation(options?.inPlace ? { ...scope, inPlace: true } : scope);
+    if (options?.inPlace) return promise;
+    void promise.catch((error: unknown) => {
       if (isAbort(error)) return;
       pushToast({ tone: 'error', text: t('sidebar.space.remoteFailed', { name }) });
     });
+    return promise;
   }, [connectionId, t]);
 }
 

@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { readDesktopPrefs } from '@kiki/session-core/settings';
+import type { RemoteConnection } from '@kiki/protocol';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { useSpacePreferencesFrame } from '../lib/spacePreferences';
+import { appShellConnectUrl } from '../lib/appShell';
+import type { PreparedScope } from '../lib/navScope';
+import { browsableRemote, connectionsApi, hasGuiPurpose, remoteConnectionKeys, useRemoteConnections } from '../lib/remoteConnections';
 import { useSpaceLocation } from '../lib/spaceLocation';
+import { useSpacePreferencesFrame } from '../lib/spacePreferences';
 import { spaceSettingsTargetOf } from '../lib/spaceSettings';
-import { browsableRemote, connectionAddress, remoteSummaryView, useRemoteConnections } from '../lib/remoteConnections';
-import { relativeTime } from '@kiki/session-core/util/time';
 import {
   MAIN_SPACE_ID,
   currentSpace,
@@ -16,79 +19,84 @@ import {
   enterSpace,
   launchWindowMode,
   otherSpacesPending,
-  spaceRunState,
-  spaceStatus,
   useSpaceStatuses,
   useSpaces,
   type SpaceListItem,
 } from '../lib/spaces';
-import { pushToast } from '../lib/toasts';
 import { readHomeViewRoute } from '../lib/spaceViewState';
-import type { PreparedScope } from '../lib/navScope';
+import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
-import type { RemoteConnection } from '@kiki/protocol';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
-import { AnchoredPopover } from './overlays/AnchoredPopover';
-import { SpaceDot } from './settings/spaces/SpaceDot';
-import { RemoteStateChip } from './settings/remote/parts';
 import { useRemoteSpaceEntry, useReturnToLocalSpace } from './settings/remote/useRemoteSpaceEntry';
+import { SpaceDot } from './settings/spaces/SpaceDot';
+import { SpaceSwitchSheet, classifyRemoteSwitchError, type SpaceRowFailure } from './SpaceSwitchSheet';
 import { Wordmark } from './Wordmark';
 
 /**
- * §6.4 / §9.4: the sidebar wordmark is the one space entry. It is always a
- * menu button, so a single-home user can discover "New space…" without an
- * extra row; the quiet chevron stays visible because touch has no hover.
- * Inside a space the wordmark is followed by the space's color and name. The
- * count is the other spaces' approvals and questions (this space's own are
- * already in Activity). Ctrl+Alt+1…9 opens the Nth space once there are two.
+ * §6.4 / §9.4: the sidebar position bar is the one space entry. It is always a
+ * menu button, so a single-home user can discover "New space…" and remote
+ * pairings without an extra row; the quiet chevron stays visible because touch
+ * has no hover. Ctrl+Alt+1…9 opens the Nth space once there are two.
  */
 export function SpaceSwitcher() {
   const { client, localClient, sshLabel, connectionId, activateLocal, restoreLocal, scopeAdapter, meta } = useConnection();
   const host = useHost();
+  const queryClient = useQueryClient();
   const navigate = useGuardedNavigate();
   const guard = useDirtyGuard();
   const { t, tp } = useI18n();
-  const directoryClient = host.kind === 'tauri' ? localClient : null;
-  const spaces = useSpaces(directoryClient);
-  // Remote Kikis are read from the local control home, the same list the
-  // settings page manages; a remote space itself is never asked for it.
-  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0);
-  const remoteClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
-  const remoteConnections = useRemoteConnections(remoteClient);
-  const enterRemoteSpace = useRemoteSpaceEntry();
-  const returnToLocal = useReturnToLocalSpace();
-  // One read of the current space's preferences, which the appearance surfaces
-  // and the portable settings bridge both consume from here on. It reads the
-  // same connection the origin marks and the space detail read, so the three
-  // never disagree about which server and home they are describing.
-  useSpacePreferencesFrame(spaceSettingsTargetOf(client, meta));
-  const statuses = useSpaceStatuses(host);
+
   const [open, setOpen] = useState(false);
   const [entering, setEntering] = useState<string | null>(null);
+  const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [failure, setFailure] = useState<SpaceRowFailure | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0);
+  const desktop = host.kind === 'tauri';
+  // Desktop always reads the local space directory for Ctrl+Alt+1…9 and pending
+  // counts; a browser/phone client reads it on demand when the switch panel opens
+  // (never from an SSH/remote server) so other local spaces on that server can be
+  // shown disabled with an explanation.
+  const browserDirectoryClient = typeof sshLabel === 'string' && sshLabel.length > 0
+    ? null
+    : (inRemoteScope ? localClient : (localClient ?? client));
+  const directoryClient = desktop ? localClient : (open ? browserDirectoryClient : null);
+  const spaces = useSpaces(directoryClient);
+
+  // Remote pairings live in the local control home, never inside a remote space.
+  const remoteClient = desktop ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const hasRemoteConnectionsApi = remoteClient?.klient.rest?.connections !== undefined;
+  const remoteConnections = useRemoteConnections(hasRemoteConnectionsApi ? remoteClient : null);
+  const enterRemoteSpace = useRemoteSpaceEntry();
+  const returnToLocal = useReturnToLocalSpace();
+
+  useSpacePreferencesFrame(spaceSettingsTargetOf(client, meta));
+  const statuses = useSpaceStatuses(host);
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
   const here = currentSpace();
   const records = remoteConnections.data ?? [];
-  // Only a connection whose purposes include browsing is a space; one kept for
-  // thread messages is managed in Settings, never entered from here.
-  const remoteItems = records.filter(browsableRemote);
-  const currentRemote = typeof connectionId !== 'string' ? undefined : records.find((record) => record.id === connectionId);
+  const remoteItems = records.filter(hasGuiPurpose);
+  const shortcutRemoteItems = records.filter(browsableRemote);
   const items = spaces.data ?? [];
   const others = items.filter((item) => item.id !== MAIN_SPACE_ID);
-  const ready = directoryClient !== null && !spaces.isPending;
-  // Preserve the single-home fallback only after a real local connection exists.
+  const localUnavailable = desktop && directoryClient === null;
+  const localLoading = localUnavailable || (directoryClient !== null && spaces.isPending);
+  const localError = directoryClient !== null && spaces.isError;
+  const ready = directoryClient !== null && !spaces.isPending && !spaces.isError;
+
   const mainItem = items.find((item) => item.id === MAIN_SPACE_ID) ?? ({ id: MAIN_SPACE_ID, name: MAIN_SPACE_ID } as SpaceListItem);
-  const ordered = ready ? [mainItem, ...others] : [];
-  // Local spaces first, remote spaces after: the shortcut numbering follows what
-  // the menu shows.
+  const ordered: readonly SpaceListItem[] = ready
+    ? [mainItem, ...others]
+    : (!desktop && !inRemoteScope && !localLoading && !localError ? [mainItem] : []);
+
   const entries = [
-    ...ordered.map((space) => ({ kind: 'local' as const, space })),
-    ...remoteItems.map((record) => ({ kind: 'remote' as const, record })),
+    ...(desktop ? ordered.map((space) => ({ kind: 'local' as const, space })) : []),
+    ...shortcutRemoteItems.map((record) => ({ kind: 'remote' as const, record })),
   ];
   const multi = entries.length > 1;
-  // Windows mode: each space window carries its own taskbar badge, and the
-  // desktop cannot read other processes' counts (§9.4).
   const pending = mode === 'switch' ? otherSpacesPending(statuses.data) : 0;
 
   const label = (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name);
@@ -97,6 +105,12 @@ export function SpaceSwitcher() {
   directoryRef.current = directoryClient;
   const enteringRef = useRef(false);
   const localView = () => readHomeViewRoute(currentSpaceId(), 'local') ?? '/new';
+
+  const closePanel = () => {
+    setOpen(false);
+    setFailure(null);
+  };
+
   const runAction = (action: (signal?: AbortSignal) => void | Promise<void>, target?: string) => {
     const result = guard?.runAction !== undefined ? guard.runAction(action, target)
       : Promise.resolve(action()).then(() => { if (target !== undefined) void navigate(target); });
@@ -105,16 +119,16 @@ export function SpaceSwitcher() {
       pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
     });
   };
+
   const backToLocal = () => {
-    setOpen(false);
-    // A remote space was never a local home: leaving it is a scope switch back
-    // to the space this window really belongs to, not a native home switch.
+    closePanel();
     if (typeof connectionId === 'string' && connectionId !== '') { returnToLocal(); return; }
     if (mode === 'switch') activateLocal();
     else runAction(restoreLocal, localView());
   };
+
   const openSettings = (target: string) => {
-    setOpen(false);
+    closePanel();
     if (!inRemoteScope) { void navigate(target); return; }
     const result = guard?.runAction !== undefined
       ? guard.runAction(restoreLocal, target)
@@ -124,15 +138,21 @@ export function SpaceSwitcher() {
       pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
     });
   };
-  const enter = (space: SpaceListItem) => {
-    setOpen(false);
-    if (!ready || enteringRef.current || (!inRemoteScope && space.id === currentSpaceId())) return;
-    if (host.kind !== 'tauri') return;
+
+  const enterLocalFromPanel = (space: SpaceListItem, fromShortcut = false) => {
+    if (!ready || enteringRef.current || (!inRemoteScope && space.id === currentSpaceId())) {
+      if (!fromShortcut && !inRemoteScope && space.id === currentSpaceId()) closePanel();
+      return;
+    }
+    if (!desktop) return;
+    const rowKey = `local:${space.id}`;
+    setFailure(null);
     const target = mode === 'windows' && inRemoteScope ? localView() : undefined;
-    const open = async (signal = new AbortController().signal) => {
+    const openTarget = async (signal = new AbortController().signal) => {
       if (directoryRef.current !== directoryClient || enteringRef.current) throw new DOMException('Space entry was superseded.', 'AbortError');
       enteringRef.current = true;
       setEntering(space.id);
+      if (!fromShortcut) setOpeningKey(rowKey);
       let prepared: PreparedScope | undefined;
       try {
         if (target !== undefined) {
@@ -141,22 +161,118 @@ export function SpaceSwitcher() {
         }
         signal.throwIfAborted();
         if (directoryRef.current !== directoryClient) throw new DOMException('The local space connection changed.', 'AbortError');
-        if (mode !== 'windows' || space.id !== currentSpaceId()) await enterSpace(host, space.id, mode);
-        // An opened native window is not compensated if this window cancels now.
+        if (mode !== 'windows' || space.id !== currentSpaceId()) {
+          await enterSpace(host, space.id, mode, { inPlace: !fromShortcut });
+        }
         signal.throwIfAborted();
         await prepared?.commit();
-      } catch (error) { await prepared?.dispose(); throw error; }
-      finally { enteringRef.current = false; setEntering(null); }
+      } catch (error) {
+        await prepared?.dispose();
+        throw error;
+      } finally {
+        enteringRef.current = false;
+        setEntering(null);
+        setOpeningKey(null);
+      }
     };
-    const result = mode === 'switch' ? open() : guard?.runAction !== undefined ? guard.runAction(open, target)
-      : open().then(() => { if (target !== undefined) void navigate(target); });
-    void result?.catch((error: unknown) => {
-      if (error instanceof Error && error.name === 'AbortError') return;
-      pushToast({ tone: 'error', text: t('st.spaces.switchFailed', { name: label(space) }) });
-    });
+    let actionStarted = false;
+    let guardCancelled = false;
+    const result = mode === 'switch'
+      ? ((actionStarted = true), openTarget())
+      : guard?.runAction !== undefined
+        ? guard.runAction((signal) => { actionStarted = true; return openTarget(signal); }, target, () => { guardCancelled = true; })
+        : ((actionStarted = true), openTarget().then(() => { if (target !== undefined) void navigate(target); }));
+
+    if (!fromShortcut && !actionStarted) {
+      closePanel();
+    }
+
+    void result
+      ?.then(() => {
+        if (!fromShortcut && !guardCancelled) closePanel();
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        if (fromShortcut) {
+          pushToast({ tone: 'error', text: t('st.spaces.switchFailed', { name: label(space) }) });
+          return;
+        }
+        setFailure({
+          rowKey,
+          kind: 'local-start',
+          spaceName: label(space),
+          spaceId: space.id,
+        });
+      });
   };
-  const enterRef = useRef(enter);
-  enterRef.current = enter;
+
+  const enterRemoteFromPanel = (record: RemoteConnection, fromShortcut = false) => {
+    if (record.id === connectionId) {
+      if (!fromShortcut) closePanel();
+      return;
+    }
+    if (fromShortcut) {
+      void enterRemoteSpace(record.id, record.label);
+      return;
+    }
+    const rowKey = `remote:${record.id}`;
+    setFailure(null);
+    setOpeningKey(rowKey);
+    void enterRemoteSpace(record.id, record.label, { inPlace: true })
+      .then(() => {
+        closePanel();
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setFailure({
+          rowKey,
+          kind: classifyRemoteSwitchError(error),
+          spaceName: record.label,
+          recordId: record.id,
+        });
+      })
+      .finally(() => {
+        setOpeningKey(null);
+      });
+  };
+
+  const handleTurnOnRemote = (recordId: string, record: RemoteConnection) => {
+    if (remoteClient === null || actionBusy) return;
+    setActionBusy(true);
+    void connectionsApi(remoteClient)
+      .setEnabled(recordId, true)
+      .then(async () => {
+        await queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+        setActionBusy(false);
+        enterRemoteFromPanel(record, false);
+      })
+      .catch((error: unknown) => {
+        setActionBusy(false);
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      });
+  };
+
+  const handleRemoveRemote = (recordId: string) => {
+    if (remoteClient === null || actionBusy) return;
+    setActionBusy(true);
+    void connectionsApi(remoteClient)
+      .remove(recordId)
+      .then(async () => {
+        setFailure(null);
+        await queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+      })
+      .catch((error: unknown) => {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => {
+        setActionBusy(false);
+      });
+  };
+
+  const enterLocalRef = useRef(enterLocalFromPanel);
+  enterLocalRef.current = enterLocalFromPanel;
+  const enterRemoteRef = useRef(enterRemoteFromPanel);
+  enterRemoteRef.current = enterRemoteFromPanel;
 
   // Window-level shortcut, never a global hotkey: Ctrl+Alt+1…9 → Nth space.
   useEffect(() => {
@@ -168,8 +284,8 @@ export function SpaceSwitcher() {
       const target = entries[Number(digit) - 1];
       if (target === undefined) return;
       event.preventDefault();
-      if (target.kind === 'local') enterRef.current(target.space);
-      else enterRemoteSpace(target.record.id, target.record.label);
+      if (target.kind === 'local') enterLocalRef.current(target.space, true);
+      else enterRemoteRef.current(target.record, true);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
@@ -180,13 +296,27 @@ export function SpaceSwitcher() {
   const location = useSpaceLocation({ openingSpaceName: enteringName });
   const barSpaceName = location.spaceName;
   const barSubtitle = location.subtitle;
+  const switchComputerUrl = appShellConnectUrl();
 
   return (
     <>
-      <button ref={triggerRef} type="button" data-space-switcher={location.inRemoteScope ? undefined : currentSpaceId()} data-space-remote={location.inRemoteScope ? '' : undefined} aria-haspopup="menu" aria-expanded={open}
-        aria-label={`kiki · ${barSpaceName}${barSubtitle !== '' ? ` · ${barSubtitle}` : ''} · ${title}`} title={title}
-        onClick={() => { setOpen((value) => !value); }}
-        className="group -ml-2 flex h-11 w-[calc(100%+0.5rem)] min-w-0 flex-col justify-center rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+      <button
+        ref={triggerRef}
+        type="button"
+        data-space-switcher={location.inRemoteScope ? undefined : currentSpaceId()}
+        data-space-remote={location.inRemoteScope ? '' : undefined}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`kiki · ${barSpaceName}${barSubtitle !== '' ? ` · ${barSubtitle}` : ''} · ${title}`}
+        title={title}
+        onClick={() => {
+          setOpen((value) => {
+            if (value) setFailure(null);
+            return !value;
+          });
+        }}
+        className="group -ml-2 flex h-11 w-[calc(100%+0.5rem)] min-w-0 flex-col justify-center rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+      >
         <span className="flex w-full min-w-0 items-center gap-1.5 leading-tight">
           <span aria-hidden className="shrink-0"><Wordmark /></span>
           <SpaceDot color={location.spaceColor ?? (location.inRemoteScope || here === null ? 'var(--color-ink-faint)' : undefined)} className="ml-0.5" />
@@ -205,162 +335,41 @@ export function SpaceSwitcher() {
         ) : null}
       </button>
       {open ? (
-        <SpaceMenu anchor={triggerRef} onClose={() => { setOpen(false); }}>
-          {location.inRemoteScope ? (
-            <>
-              <p data-space-remote-note className="px-3 pt-2 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.remoteBody', { name: barSpaceName })}</p>
-              <button type="button" role="menuitem" data-space-back-local
-                onClick={backToLocal}
-                className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
-                <Icon name="chevron" size={12} className="shrink-0 rotate-180 text-ink-soft" />
-                {t('sidebar.space.backToLocal')}
-              </button>
-              <div className="mx-1 my-1 border-t border-hairline" />
-            </>
-          ) : null}
-          <p className="px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('sidebar.space.groupLocal')}</p>
-          {!ready ? <p data-space-directory-pending role="status" className="px-3 pb-2 text-[12px] text-ink-soft">{t(host.kind === 'tauri' ? 'st.spaces.loading' : 'st.spaces.desktopOnly')}</p> : null}
-          {ready && !multi ? <p data-space-single-hint className="px-3 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.singleHint')}</p> : null}
-          {ordered.map((space, index) => {
-            const localRun = spaceRunState(space.id, statuses.data);
-            const run = inRemoteScope && localRun === 'current' ? 'hot' : localRun;
-            const count = spaceStatus(space.id, statuses.data)?.pendingCount ?? 0;
-            const current = run === 'current';
-            return (
-              <button key={space.id} type="button" role="menuitem" data-space-switch-item={space.id} data-space-state={run}
-                aria-current={current ? 'true' : undefined}
-                onClick={() => { enter(space); }}
-                className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
-                <SpaceDot color={space.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : space.color} />
-                <span className={`min-w-0 flex-1 truncate ${current ? 'font-medium' : ''}`}>{label(space)}</span>
-                {current ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-ink-soft"><Icon name="check" size={12} />{t('st.spaces.current')}</span>
-                ) : mode === 'switch' ? (
-                  <span className="inline-flex shrink-0 items-center gap-1 text-[11.5px] text-ink-faint">
-                    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${run === 'hot' ? 'bg-success' : 'border border-ink-faint/70'}`} />
-                    {t(run === 'hot' ? 'st.spaces.running' : 'st.spaces.notStarted')}
-                  </span>
-                ) : (
-                  <span className="shrink-0 text-[11.5px] text-ink-faint">{t('sidebar.space.openWindow')}</span>
-                )}
-                {count > 0 && !current && mode === 'switch' ? (
-                  <span className="shrink-0 rounded-full bg-attention-soft px-1.5 text-[11px] font-medium tabular-nums text-attention" aria-label={tp('st.spaces.pending', count)}>{count}</span>
-                ) : null}
-                {index < 9 && multi ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥{index + 1}</kbd> : null}
-              </button>
-            );
-          })}
-          {remoteItems.length > 0 ? (
-            <>
-              <div className="mx-1 my-1 border-t border-hairline" />
-              <p className="px-3 pt-1 pb-1 text-[12px] font-medium text-ink-faint">{t('sidebar.space.groupRemote')}</p>
-              {remoteItems.map((record, index) => (
-                <RemoteSpaceRow key={record.id} record={record} current={connectionId === record.id}
-                  shortcut={ordered.length + index + 1} showShortcut={ordered.length + index < 9 && multi}
-                  onEnter={() => { setOpen(false); enterRemoteSpace(record.id, record.label); }} />
-              ))}
-            </>
-          ) : null}
-          <div className="mx-1 my-1 border-t border-hairline" />
-          {here === null ? (
-            <button type="button" role="menuitem" data-space-new-entry
-              onClick={() => { openSettings('/settings/spaces?new=1'); }}
-              className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
-              <Icon name="plus" size={14} className="shrink-0 text-ink-soft" />
-              {t('sidebar.space.new')}
-            </button>
-          ) : null}
-          <button type="button" role="menuitem" data-space-manage
-            onClick={() => { openSettings('/settings/spaces'); }}
-            className="flex h-9 w-full items-center rounded-md px-3 text-left text-[13px] text-ink-soft outline-none transition-colors hover:bg-paper hover:text-ink focus-visible:bg-paper">
-            {t('sidebar.space.manage')}
-          </button>
-        </SpaceMenu>
+        <SpaceSwitchSheet
+          anchorRef={triggerRef}
+          onClose={closePanel}
+          desktop={desktop}
+          mode={mode}
+          inRemoteScope={location.inRemoteScope}
+          localSpaceName={location.localSpaceName}
+          localComputerName={location.localComputerName}
+          localItems={ordered}
+          localLoading={localLoading}
+          localError={localError}
+          onRetryLocal={() => { void spaces.refetch(); }}
+          statuses={statuses.data}
+          remoteItems={remoteItems}
+          remoteLoading={hasRemoteConnectionsApi && remoteClient !== null && remoteConnections.isPending}
+          remoteError={hasRemoteConnectionsApi && remoteClient !== null && remoteConnections.isError}
+          onRetryRemote={() => { void remoteConnections.refetch(); }}
+          currentConnectionId={typeof connectionId === 'string' ? connectionId : null}
+          multi={multi}
+          openingKey={openingKey}
+          failure={failure}
+          actionBusy={actionBusy}
+          switchComputerUrl={switchComputerUrl}
+          onBackToLocal={backToLocal}
+          onSelectLocal={(space) => { enterLocalFromPanel(space, false); }}
+          onSelectRemote={(record) => { enterRemoteFromPanel(record, false); }}
+          onTurnOnRemote={handleTurnOnRemote}
+          onRemoveRemote={handleRemoveRemote}
+          onPairAgain={() => { openSettings('/settings/spaces#st-card-remote-connections'); }}
+          onViewLog={desktop && host.openDesktopLogDirectory !== undefined ? () => { void host.openDesktopLogDirectory?.(); } : undefined}
+          onPairRemote={() => { openSettings('/settings/spaces#st-card-remote-connections'); }}
+          onNewSpace={desktop && here === null ? () => { openSettings('/settings/spaces?new=1'); } : undefined}
+          onManageSpaces={() => { openSettings('/settings/spaces'); }}
+        />
       ) : null}
     </>
-  );
-}
-
-/**
- * One remote Kiki in the menu: its own name and state lead, the address and the
- * last contact stay secondary, and a stale reading says when it was taken
- * instead of reading as a fresh zero.
- */
-function RemoteSpaceRow({ record, current, shortcut, showShortcut, onEnter }: {
-  record: RemoteConnection;
-  current: boolean;
-  shortcut: number;
-  showShortcut: boolean;
-  onEnter: () => void;
-}) {
-  const { t, locale } = useI18n();
-  const summary = remoteSummaryView(record);
-  const stale = summary !== null && summary.stale && summary.asOf !== undefined;
-  const secondary = [
-    connectionAddress(record.endpoint),
-    stale && summary?.asOf !== undefined
-      ? t('sidebar.space.remoteAsOf', { time: relativeTime(new Date(summary.asOf).toISOString(), locale) })
-      : record.lastConnectedAt === undefined
-        ? t('sidebar.space.remoteNever')
-        : relativeTime(new Date(record.lastConnectedAt).toISOString(), locale),
-  ].join(' · ');
-  return (
-    <button type="button" role="menuitem" data-space-remote-item={record.id} data-space-remote-state={record.state}
-      data-space-remote-stale={stale ? '' : undefined}
-      aria-current={current ? 'true' : undefined}
-      onClick={onEnter}
-      className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
-      <Icon name="web" size={14} className="shrink-0 text-ink-faint" />
-      {/* The name keeps its own line: a long one truncates rather than pushing
-          the state, the counts or the shortcut out of the row. */}
-      <span className="min-w-0 flex-1 py-0.5">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className={`min-w-0 truncate ${current ? 'font-medium' : ''}`} title={record.label}>{record.label}</span>
-          <RemoteStateChip state={record.state} className="text-[11px]" />
-          {current ? (
-            <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-ink-soft"><Icon name="check" size={12} />{t('st.spaces.current')}</span>
-          ) : null}
-        </span>
-        <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-faint" title={`${record.label} · ${record.endpoint}`}>{secondary}</span>
-        {summary !== null && (summary.busy > 0 || summary.needsYou > 0) ? (
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-faint">
-            {summary.busy > 0 ? <span data-space-remote-busy className="tabular-nums">{t('sidebar.space.remoteBusy', { count: summary.busy })}</span> : null}
-            {summary.needsYou > 0 ? (
-              <span data-space-remote-needs className="tabular-nums text-attention">{t('sidebar.space.remoteNeedsYou', { count: summary.needsYou })}</span>
-            ) : null}
-          </span>
-        ) : null}
-      </span>
-      {showShortcut ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥{shortcut}</kbd> : null}
-    </button>
-  );
-}
-
-function SpaceMenu({ anchor, onClose, children }: { anchor: React.RefObject<HTMLButtonElement | null>; onClose: () => void; children: React.ReactNode }) {
-  const { t } = useI18n();
-  return (
-    <AnchoredPopover
-      open
-      onClose={onClose}
-      anchorRef={anchor}
-      id="space-switcher-menu"
-      label={t('sidebar.space.menuTitle')}
-      role="menu"
-      widthClassName="w-[296px]"
-      className="p-1"
-      data={{ 'data-space-switcher-menu': '' }}
-      initialFocusSelector='[aria-current="true"]'
-      onSurfaceKeyDown={(event) => {
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
-        const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
-        if (buttons.length === 0) return false;
-        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-        event.preventDefault();
-        buttons[event.key === 'ArrowDown' ? (index + 1) % buttons.length : (index - 1 + buttons.length) % buttons.length]?.focus();
-        return true;
-      }}
-    >
-      {children}
-    </AnchoredPopover>
   );
 }
