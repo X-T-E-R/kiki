@@ -214,7 +214,11 @@ it('clicking a held message retries the same durable prompt exactly once', async
   const controller = {
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeInterruptedPrompt: () => () => {},
-    subscribeAgent: () => () => {},
+    subscribeAgent: (agentId: string, listener: () => void) => {
+      if (agentId !== 'main') return () => {};
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     getState: () => state,
     getAgentState: () => state,
     getForest: () => ({ roots: [], byId: {} }),
@@ -282,7 +286,11 @@ it('keeps the admitted body pending until a canonical projection takes over', as
   const controller = {
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeInterruptedPrompt: () => () => {},
-    subscribeAgent: () => () => {},
+    subscribeAgent: (agentId: string, listener: () => void) => {
+      if (agentId !== 'main') return () => {};
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     getState: () => state,
     getAgentState: () => state,
     getForest: () => ({ roots: [], byId: {} }),
@@ -1075,7 +1083,11 @@ describe('the session announcer', () => {
     fixture.controller = {
       subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       subscribeInterruptedPrompt: () => () => {},
-      subscribeAgent: () => () => {},
+      subscribeAgent: (agentId: string, listener: () => void) => {
+        if (agentId !== 'main') return () => {};
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
       getState: () => state,
       getAgentState: () => state,
       getForest: () => ({ roots: [], byId: {} }),
@@ -1365,7 +1377,11 @@ describe('an edit approval in the composer card', () => {
       subscribeContent: (listener: () => void) => { contentListeners.add(listener); return () => { contentListeners.delete(listener); }; },
       getContentRevision: () => contentRevision,
       subscribeInterruptedPrompt: () => () => {},
-      subscribeAgent: () => () => {},
+      subscribeAgent: (agentId: string, listener: () => void) => {
+        if (agentId !== 'main') return () => {};
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
       getState: () => state,
       getAgentState: () => state,
       getForest: () => ({ roots: [], byId: {} }),

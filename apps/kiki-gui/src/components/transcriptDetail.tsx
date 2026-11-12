@@ -124,7 +124,12 @@ export function useTranscriptDetail(
     void api.load(agentId, kind, id);
   }, [api, agentId, kind, id]);
   if (api === null || kind === undefined || id === undefined) return { request: undefined, status: undefined };
-  return { request, status: api.loads[transcriptDetailKey(kind, id)] };
+  const key = transcriptDetailKey(kind, id);
+  const loads =
+    api.controller !== undefined && agentId !== undefined && agentId !== api.session?.agentId
+      ? api.controller.getAgentState(agentId).detailLoads
+      : api.loads;
+  return { request, status: loads[key] };
 }
 
 /** The canonical entity a rendered body came from, field for field. */

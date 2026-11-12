@@ -155,6 +155,70 @@ describe('on-demand transcript detail', () => {
     await click(chip);
     expect(load).toHaveBeenCalledTimes(1);
   });
+
+  it('reads main loading and error states when a detail row in a child timeline references main content', async () => {
+    const key = transcriptDetailKey('task', 'task-1');
+    const contentListeners = new Set<() => void>();
+    let contentRevision = 0;
+    let mainDetailLoads: Record<string, TranscriptDetailStatus> = {};
+    const childDetailLoads: Record<string, TranscriptDetailStatus> = {};
+    const publishMainLoads = (next: Record<string, TranscriptDetailStatus>) => {
+      mainDetailLoads = next;
+      contentRevision += 1;
+      for (const listener of contentListeners) listener();
+    };
+    const controller = {
+      subscribeContent: (listener: () => void) => {
+        contentListeners.add(listener);
+        return () => { contentListeners.delete(listener); };
+      },
+      getContentRevision: () => contentRevision,
+      getAgentState: (agentId: string) => ({
+        detailLoads: agentId === 'main' ? mainDetailLoads : childDetailLoads,
+      }),
+    } as unknown as SessionController;
+    const load = vi.fn()
+      .mockImplementationOnce(async (agentId: string) => {
+        expect(agentId).toBe('main');
+        publishMainLoads({ [key]: { status: 'loading' } });
+        return true;
+      })
+      .mockImplementationOnce(async (agentId: string) => {
+        expect(agentId).toBe('main');
+        publishMainLoads({ [key]: { status: 'error', message: 'offline' } });
+        return false;
+      });
+
+    const container = await render(
+      <TranscriptDetailProvider
+        controller={controller}
+        load={load}
+        loads={childDetailLoads}
+        sessionId="sess-1"
+        agentId="child"
+      >
+        <ShellMessage block={truncatedShell} />
+      </TranscriptDetailProvider>,
+    );
+    await click(container.querySelector('[data-shell] button'));
+
+    const row = () => container.querySelector('[data-shell-output-detail]');
+    const action = () => container.querySelector<HTMLButtonElement>('[data-shell-output-detail-action]');
+    expect(row()?.getAttribute('data-shell-output-detail')).toBe('idle');
+
+    await click(action());
+    expect(row()?.getAttribute('data-shell-output-detail')).toBe('loading');
+    expect(action()?.disabled).toBe(true);
+    expect(action()?.getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      publishMainLoads({ [key]: { status: 'error', message: 'offline' } });
+    });
+    expect(row()?.getAttribute('data-shell-output-detail')).toBe('error');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('Could not load the full output.');
+    expect(action()?.textContent).toBe('Try again');
+    expect(load).toHaveBeenCalledTimes(1);
+  });
 });
 
 type Shell = Extract<Block, { kind: 'shell' }>;

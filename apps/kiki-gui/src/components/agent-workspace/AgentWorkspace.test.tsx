@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createRef, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react';
+import { act, createRef, useMemo, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -22,8 +22,11 @@ import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { composerInput, setComposerInputValue, type ComposerInputElement } from '../composerInputTestUtils';
 import { AgentTreeView } from '../AgentTreeView';
 import { relatedAgentNodes } from '../AgentBreadcrumb';
+import { Composer } from '../Composer';
+import { registerTimelineLocator, type TimelineTarget } from '../../lib/timelineLocate';
 import { agentContinuationAvailable } from './AgentWorkspace';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
+import { useAgentTimeline } from './useAgentTimeline';
 
 const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
@@ -2863,4 +2866,260 @@ it('enters and exits child plan mode live and restores a failed choice', async (
   expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('child mode write failed') }));
   await clickRuntimeControl('[data-mode-switch="normal"]');
   expect(dock.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
+});
+
+it.each(['main', 'child'] as const)(
+  'wires loadOlder, approvals, questions, cancelQueued, and pendingInteractionCount identically for %s via useAgentTimeline',
+  async (agentId) => {
+    const loadOlderMessages = vi.fn().mockResolvedValue(true);
+    const resolveApproval = vi.fn().mockResolvedValue(undefined);
+    const answerQuestion = vi.fn().mockResolvedValue(undefined);
+    const dismissQuestion = vi.fn().mockResolvedValue(undefined);
+    const abortPrompt = vi.fn().mockRejectedValueOnce(new Error('queue locked'));
+    const retainAgentView = vi.fn();
+    const releaseAgentView = vi.fn();
+    const blocks = [
+      { kind: 'approval', id: 'app-pending', resolution: undefined },
+      { kind: 'approval', id: 'app-settled', resolution: 'approved' },
+      { kind: 'question', id: 'q-pending', outcome: undefined },
+      { kind: 'question', id: 'q-settled', outcome: 'answered' },
+    ] as unknown as ReturnType<typeof createViewState>['blocks'];
+    const agentState = {
+      ...createViewState('session'),
+      loaded: true,
+      transcriptReady: true,
+      blocks,
+    };
+    const forest = testForest();
+    const controller = Object.assign(
+      controllerStub({ forest, agentStates: { [agentId]: agentState } }),
+      {
+        sessionId: 'session',
+        loadOlderMessages,
+        resolveApproval,
+        answerQuestion,
+        dismissQuestion,
+        abortPrompt,
+        retainAgentView,
+        releaseAgentView,
+      },
+    );
+
+    let captured!: ReturnType<typeof useAgentTimeline>;
+    function Probe() {
+      captured = useAgentTimeline(controller, agentId, {
+        visible: true,
+        sessionId: 'session',
+        sessionState: agentState,
+        forest,
+      });
+      return null;
+    }
+
+    await act(async () => root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider>
+          <MemoryRouter>
+            <Probe />
+          </MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    ));
+    await settle();
+
+    expect(captured.pendingInteractionCount).toBe(2);
+    if (agentId === 'main') {
+      expect(retainAgentView).not.toHaveBeenCalled();
+    } else {
+      expect(retainAgentView).toHaveBeenCalledWith(expect.stringMatching(/^workspace:session:child:/), 'child', 'delta');
+      expect(captured.actions.jumpToSpawn).toBeTypeOf('function');
+    }
+    if (agentId === 'main') {
+      expect(captured.actions.jumpToSpawn).toBeUndefined();
+    }
+
+    const signal = new AbortController().signal;
+    await expect(captured.actions.loadOlder(signal)).resolves.toBe(true);
+    expect(loadOlderMessages).toHaveBeenCalledWith(agentId, signal);
+
+    await captured.actions.resolveApproval('app-pending', 'approved', 'session', 'opt-1');
+    expect(resolveApproval).toHaveBeenCalledWith('app-pending', 'approved', 'session', 'opt-1', undefined);
+
+    await captured.actions.answerQuestion('q-pending', { q1: { kind: 'single', option_id: 'yes' } });
+    expect(answerQuestion).toHaveBeenCalledWith('q-pending', { q1: { kind: 'single', option_id: 'yes' } });
+
+    await captured.actions.dismissQuestion('q-pending');
+    expect(dismissQuestion).toHaveBeenCalledWith('q-pending');
+
+    await captured.actions.cancelQueued('prompt-1');
+    if (agentId === 'main') {
+      expect(abortPrompt).toHaveBeenCalledWith('prompt-1');
+    } else {
+      expect(abortPrompt).toHaveBeenCalledWith('prompt-1', 'child');
+    }
+    expect(harness.pushToast).toHaveBeenCalledWith({
+      tone: 'error',
+      text: translate('en', 'sv.cancelQueuedFailed', { detail: 'queue locked' }),
+    });
+  },
+);
+
+it('reveals the latest message when sending from a subagent page starts or joins a turn now, and stays in place when queued', async () => {
+  const located: TimelineTarget[] = [];
+  const sessionId = 'session-reveal-subagent';
+  const unregister = registerTimelineLocator(sessionId, 'child', {
+    isVisible: () => true,
+    locate: async (target) => {
+      located.push(target);
+      return { status: 'found' };
+    },
+  });
+  try {
+    // 1. Idle child: plain send starts the turn now -> reveals latest
+    harness.sendAgentMessage.mockResolvedValue(null);
+    const idleForest = testForest('completed', false);
+    await renderWorkspace({
+      target: { sessionId, agentId: 'child' },
+      forest: idleForest,
+      controller: controllerStub({
+        forest: idleForest,
+        agentStates: { child: { ...createViewState(sessionId), loaded: true, transcriptReady: true, busy: false } },
+      }),
+    });
+    await settle();
+    expect(located).toEqual([]);
+    await typeText(composerInput(dock), 'start turn while scrolled up');
+    await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
+    await settle();
+    expect(located).toEqual([{ kind: 'latest' }]);
+
+    // 2. Busy child with a pending switch: plain send queues behind the switch -> leaves reader in place
+    located.length = 0;
+    harness.listAgentModelSwitches.mockResolvedValue([pendingSwitch('tail-operation', 1)]);
+    const busyForest = testForest('running', true);
+    const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'steered-1', outcome: 'steered' });
+    const busyController = Object.assign(
+      controllerStub({
+        forest: busyForest,
+        agentStates: { child: { ...createViewState(sessionId), loaded: true, transcriptReady: true, busy: true } },
+      }),
+      { sendPromptNow },
+    );
+    await renderWorkspace({ target: { sessionId, agentId: 'child' }, forest: busyForest, controller: busyController });
+    await settle();
+    await typeText(composerInput(dock), 'queued behind switch');
+    await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Queue prompt"]')?.click(); });
+    await settle();
+    expect(located).toEqual([]);
+
+    // 3. Explicit Send now on the busy child joins the turn now -> reveals latest
+    await typeText(composerInput(dock), 'join turn now');
+    await sendNowFromComposer();
+    await settle();
+    expect(sendPromptNow).toHaveBeenCalledOnce();
+    expect(located).toEqual([{ kind: 'latest' }]);
+  } finally {
+    unregister();
+  }
+});
+
+it('does not re-render the main timeline while its composer is typed into', async () => {
+  const mainState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    blocks: [{ id: 'u1', kind: 'user', text: 'start' }] as never,
+  };
+  const forest = testForest();
+  const controller = Object.assign(
+    controllerStub({ forest, agentStates: { main: mainState } }),
+    { sessionId: 'session' },
+  );
+  const stableOpenAgent = vi.fn();
+  const disabledCatalogMode = { mode: 'disabled' as const };
+  function MainSurfaceHarness() {
+    const [draft, setDraft] = useState('');
+    const { state, actions } = useAgentTimeline(controller, 'main', { visible: true, sessionId: 'session' });
+    const timelineState = useMemo(() => ({ ...state, blocks: state.blocks }), [state]);
+    const handleCancelQueuedChips = useMemo(() => (promptId: string) => { void actions.cancelQueued(promptId); }, [actions.cancelQueued]);
+    return (
+      <>
+        <AgentWorkspace
+          target={{ sessionId: 'session', agentId: 'main' }}
+          controller={controller}
+          sessionState={state}
+          forest={forest}
+          navigation={{ openAgent: stableOpenAgent, openAgentRoute: vi.fn(), openSession: vi.fn() }}
+          railOpen={false}
+          railIsOverlay={false}
+          onToggleRail={vi.fn()}
+          onCloseRail={vi.fn()}
+          onCancelTask={vi.fn()}
+          onStopAgentTask={vi.fn().mockResolvedValue(undefined)}
+          inheritMediaPreview
+          slots={{ header, dock: null, rail: null, heroFooter: null, footer: null, preview: null }}
+          main={{
+            header: <header data-main-header />,
+            timeline: {
+              state: timelineState,
+              onLoadOlder: actions.loadOlder,
+              onResolveApproval: actions.resolveApproval,
+              onAnswerQuestion: actions.answerQuestion,
+              onDismissQuestion: actions.dismissQuestion,
+              onCancelQueued: handleCancelQueuedChips,
+              onRetryLoad: actions.retryLoad,
+              forest,
+              onOpenAgent: stableOpenAgent,
+            },
+            dock: null,
+            rail: null,
+          }}
+        />
+        <div>
+          <Composer
+            busy={false}
+            disabled={false}
+            value={draft}
+            onChange={setDraft}
+            model="fixture/kiki-pro"
+            defaultModel="fixture/kiki-pro"
+            serverDefaultModel="fixture/kiki-pro"
+            modelSource="session"
+            permissionMode="manual"
+            planMode={false}
+            efforts={undefined}
+            effort={undefined}
+            sessionId="session"
+            agentProfileCatalogMode={disabledCatalogMode}
+            attachments={[]}
+            onChangeAttachments={vi.fn()}
+            onChangeModel={vi.fn()}
+            onChangePermissionMode={vi.fn()}
+            onChangePlanMode={vi.fn()}
+            onChangeEffort={vi.fn()}
+            onSend={vi.fn()}
+          />
+        </div>
+      </>
+    );
+  }
+
+  harness.transcriptRenders = 0;
+  await act(async () => root.render(
+    <QueryClientProvider client={queries}>
+      <I18nProvider>
+        <MemoryRouter>
+          <MainSurfaceHarness />
+        </MemoryRouter>
+      </I18nProvider>
+    </QueryClientProvider>,
+  ));
+  await settle();
+  const rendered = harness.transcriptRenders;
+  expect(rendered).toBeGreaterThan(0);
+  await typeText(composerInput(container), 'a');
+  await typeText(composerInput(container), 'ab');
+  await settle();
+  expect(composerInput(container).value).toBe('ab');
+  expect(harness.transcriptRenders).toBe(rendered);
 });

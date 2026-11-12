@@ -57,10 +57,7 @@ import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from '../mod
 import { resolveSwitchEffort } from '../model-switch/switchEffort';
 import { useModelSwitches } from '../model-switch/useModelSwitches';
 import { pushToast } from '../../lib/toasts';
-import type { PlanReviewResponse } from '../Interactions';
 import { useConnection } from '../../state/connection';
-import { locateSpawnTarget } from '../../lib/timelineLocate';
-import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
 import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
 import { NavBackButton } from '../NavBackButton';
 import { useMediaQuery } from '../../lib/layoutHooks';
@@ -84,6 +81,7 @@ import { Transcript } from '../Transcript';
 import { withOptimisticUserBlock, type OptimisticSubmission } from '../timeline/AdmissionLine';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
+import { useAgentTimeline } from './useAgentTimeline';
 import { registerOverlay } from '../../lib/uiBusy';
 
 /** Inspector toggle mark, drawn from the shared icon family at header size. */
@@ -666,9 +664,6 @@ function ChildAgentWorkspace({
   const { client, klient, scopeId } = useConnection();
   const liveSettings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const queryClient = useQueryClient();
-  // 派发处 is an explicit visit, not a plain scroll: the arrow returns to what
-  // the reader was looking at before the jump.
-  const navigateTimeline = useTimelineNavigation();
   const { sessionId, agentId } = target;
   const promoteAction = usePromoteAgent(sessionId, agentId);
   // Target identity owns both the composition and Composer's transient state.
@@ -762,18 +757,17 @@ function ChildAgentWorkspace({
     staleTime: 60_000,
   });
 
-  // Live per-agent channel: child-agent frames land in their own sub-store, so
-  // this workspace re-renders from here without the main transcript
-  // republishing for every hidden child delta. Listening adds no demand: the
-  // leases below are what make the controller receive these agents.
-  const subscribeAgent = useCallback(
-    (listener: () => void) =>
-      controller === null || !transcriptVisible ? () => {} : controller.subscribeAgent(agentId, listener),
-    [controller, agentId, transcriptVisible],
-  );
-  const agentLiveState = useSyncExternalStore(subscribeAgent, () =>
-    controller !== null ? controller.getAgentState(agentId) : emptyAgentView,
-  );
+  const {
+    state: agentTimelineState,
+    actions: timelineActions,
+    pendingInteractionCount: agentPendingInteractionCount,
+  } = useAgentTimeline(controller, agentId, {
+    visible: transcriptVisible,
+    sessionId,
+    sessionState,
+    forest,
+  });
+  const agentLiveState = agentTimelineState;
   const parentAgentId =
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
   const subscribeParentAgent = useCallback(
@@ -789,26 +783,11 @@ function ChildAgentWorkspace({
       : emptyAgentView,
   );
 
-  // Demand, held while this workspace is mounted: this agent's timeline at
-  // `delta` while it is visible (`off` while its tab is hidden), and a nested
-  // agent's parent at `turn` for the parent's task list (the stop control);
-  // main's tasks need no lease, the session holds main at `turn`. The lease
-  // is this instance's own, so the routed page and a tab showing the same
-  // agent never release each other's demand, and it is retained once and
-  // updated on visibility so a flip changes the grade in one step.
+  // A nested agent's parent is held at `turn` for the parent's task list (the
+  // stop control); main's tasks need no lease because the session holds main at
+  // `turn`, and this agent's own `delta`/`off` lease is owned by `useAgentTimeline`.
   const leaseId = useId();
   const workspaceViewId = `workspace:${sessionId}:${agentId}:${leaseId}`;
-  const transcriptVisibleRef = useRef(transcriptVisible);
-  transcriptVisibleRef.current = transcriptVisible;
-  useEffect(() => {
-    if (controller === null || typeof controller.retainAgentView !== 'function') return;
-    controller.retainAgentView(workspaceViewId, agentId, transcriptVisibleRef.current ? 'delta' : 'off');
-    return () => { controller.releaseAgentView?.(workspaceViewId); };
-  }, [controller, workspaceViewId, agentId]);
-  useEffect(() => {
-    if (controller === null || typeof controller.updateAgentView !== 'function') return;
-    controller.updateAgentView(workspaceViewId, transcriptVisible ? 'delta' : 'off');
-  }, [controller, workspaceViewId, transcriptVisible]);
   const nestedParentId = parentAgentId !== undefined && parentAgentId !== MAIN_AGENT_ID ? parentAgentId : undefined;
   useEffect(() => {
     if (controller === null || nestedParentId === undefined || !transcriptVisible || typeof controller.retainAgentView !== 'function') return;
@@ -817,42 +796,7 @@ function ChildAgentWorkspace({
     return () => { controller.releaseAgentView?.(parentViewId); };
   }, [controller, workspaceViewId, nestedParentId, transcriptVisible]);
 
-  // Same query key as the session view: one catalog fetch, shared cache.
-  const handleLoadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
-    if (controller === null) return false;
-    return controller.loadOlderMessages(agentId, signal);
-  }, [controller, agentId]);
-  const handleResolveApproval = useCallback(
-    (
-      approvalId: string,
-      decision: 'approved' | 'rejected' | 'cancelled',
-      scope?: 'session',
-      selectedOptionId?: string,
-      review?: PlanReviewResponse,
-    ) =>
-      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId, review) ??
-      Promise.resolve(),
-    [controller],
-  );
-  const handleAnswerQuestion = useCallback(
-    (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
-      controller?.answerQuestion(questionId, answers) ?? Promise.resolve(),
-    [controller],
-  );
-  const handleDismissQuestion = useCallback(
-    (questionId: string) => controller?.dismissQuestion(questionId) ?? Promise.resolve(),
-    [controller],
-  );
-
   const capturedBlocks = agentLiveState.blocks;
-  // Pending approvals/questions waiting on THIS agent — feeds the rail's
-  // Needs-input badge. (agentState.pendingInteraction below stays 'none':
-  // that flag gates the main session's composer chrome, not this count.)
-  const agentPendingInteractionCount = capturedBlocks.filter(
-    (block) =>
-      (block.kind === 'approval' && block.resolution === undefined) ||
-      (block.kind === 'question' && block.outcome === undefined),
-  ).length;
   const selectedNode = forest.byId[agentId];
   const selectedSubagent = sessionState.blocks.find(
     (block): block is SubagentBlock =>
@@ -892,16 +836,6 @@ function ChildAgentWorkspace({
     return [mainNode, childNode];
   }, [crumbs, agentId, sessionState.session?.title, t, displayName, selectedStatus, headerBusy]);
 
-  // Parent jump-back: navigate to the spawning agent's timeline, then locate
-  // this agent's card there (the locate entry waits for the target view to
-  // mount, pages older history in, and reports when the card is gone). Both
-  // branches name the same target — parent timeline AND this child's card —
-  // so the return arrow can undo the jump.
-  const handleJumpToSpawn = (): void => {
-    const spawnParentId = selectedNode?.parentAgentId ?? selectedSubagent?.parentAgentId ?? MAIN_AGENT_ID;
-    const spawn = locateSpawnTarget(sessionId, agentId, spawnParentId);
-    navigateTimeline(spawn.target, { ...spawn.options, route: spawn.route });
-  };
   // The child run is a task on the PARENT agent's task service; nested agents
   // therefore need the parent's per-agent snapshot rather than the main one.
   const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
@@ -932,8 +866,11 @@ function ChildAgentWorkspace({
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
-  const agentReadUnavailable = controller !== null && agentLiveState.transcriptReady && !agentKnown;
   const composerDisabled = !agentKnown || executorId === undefined;
+  const revealOwnSend = useCallback((joinsNow: boolean) => {
+    if (!joinsNow && headerBusy) return;
+    timelineActions.revealLatest();
+  }, [headerBusy, timelineActions.revealLatest]);
   const handleFsSearch = useCallback(
     (query: string, page?: FsSearchPageArgs) =>
       client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
@@ -966,6 +903,7 @@ function ChildAgentWorkspace({
     const keyedEcho = !externalExecutor && !hasNonTextAttachment;
     setSendEcho({ scope: sendScope, id: submission.key, text, content, createdAt: new Date().toISOString(),
       slow: false, preserved: false, retryable: false, status: 'sending' });
+    revealOwnSend(false);
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
       // The server already defaults to agent_idle; keep the ordinary six-arg
@@ -1050,6 +988,7 @@ function ChildAgentWorkspace({
       ? previous
       : { scope: sendScope, payload, key: crypto.randomUUID(), afterModelSwitch: modelSwitches.dependency?.input.operationId };
     pendingSendRef.current = submission;
+    revealOwnSend(false);
     await client.activateSkill(sessionId, name, {
       ...activation, agent_id: agentId, user_input: userInput, prompt_id: submission.key,
       after_model_switch: submission.afterModelSwitch,
@@ -1078,6 +1017,7 @@ function ChildAgentWorkspace({
     setSendNotice(null);
     setDraft('');
     setAttachments([]);
+    revealOwnSend(true);
     try {
       const result = await controller.sendPromptNow({
         agentId,
@@ -1521,22 +1461,12 @@ function ChildAgentWorkspace({
     () => withOptimisticUserBlock(agentBlocks, scopedEcho),
     [agentBlocks, scopedEcho],
   );
-  // Load failure is the session's: an agent's own view never carries one.
-  const agentLoadError = sessionState.loadError ??
-    (agentReadUnavailable ? t('subagent.name.unreported', { id: agentId }) :
-      !agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined);
   // Memoised like the main session's `timelineState`: `Transcript` and its
   // rows compare the state and the callbacks below by identity, so rebuilding
   // them on every render (each composer keystroke) re-rendered the timeline.
   const agentState = useMemo<SessionViewState>(() => ({
     ...agentLiveState,
-    session: sessionState.session,
     blocks: agentBlocks,
-    // The child's own transcript decides: the session being loaded says
-    // nothing about this agent's rows, and landing before they arrive
-    // would spend the one-time initial scroll on an empty list.
-    loaded: agentLiveState.loaded,
-    loadError: agentLoadError,
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -1546,24 +1476,16 @@ function ChildAgentWorkspace({
     usage: displayUsage,
     pendingInteraction: 'none',
   }), [
-    agentLiveState, sessionState.session, agentBlocks, agentLoadError, headerBusy, displayModel,
+    agentLiveState, agentBlocks, headerBusy, displayModel,
     displayEffort, displayContextTokens, displayMaxContextTokens, displayUsage,
   ]);
   const timelineState = useMemo(
     () => timelineBlocks === agentBlocks ? agentState : { ...agentState, blocks: timelineBlocks },
     [agentState, agentBlocks, timelineBlocks],
   );
-  const handleRetryLoad = useMemo(
-    () => controller === null ? undefined : () => { void controller.retryOpen(); },
-    [controller],
-  );
   const handleCancelQueued = useMemo(
-    () => controller === null ? undefined : (promptId: string) => {
-      void controller.abortPrompt(promptId, agentId).catch((error: unknown) => {
-        pushToast({ tone: 'error', text: t('sv.cancelQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
-      });
-    },
-    [controller, agentId, t],
+    () => controller === null ? undefined : (promptId: string) => { void timelineActions.cancelQueued(promptId); },
+    [controller, timelineActions.cancelQueued],
   );
 
   const composerWorking = headerBusy && agentState.pendingInteraction === 'none';
@@ -1602,15 +1524,15 @@ function ChildAgentWorkspace({
         showHistoryBack={historyBack}
         freshContextAvailable={agentBlocks.length > 0 && displayModel !== undefined}
         onFreshContext={openFreshContextPanel}
-        onLocateSpawn={locateSpawnInMenu ? handleJumpToSpawn : undefined}
+        onLocateSpawn={locateSpawnInMenu ? timelineActions.jumpToSpawn : undefined}
         promote={promoteAction}
       />}
       timeline={{
         state: timelineState,
-        agentId, onLoadOlder: handleLoadOlder, showQueuedPrompts: true,
-        onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
-        onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
-        onRetryLoad: handleRetryLoad,
+        agentId, onLoadOlder: timelineActions.loadOlder, showQueuedPrompts: true,
+        onResolveApproval: timelineActions.resolveApproval, onAnswerQuestion: timelineActions.answerQuestion,
+        onDismissQuestion: timelineActions.dismissQuestion, forest, onOpenAgent: navigation.openAgent,
+        onRetryLoad: timelineActions.retryLoad,
         onCancelQueued: handleCancelQueued,
         visible: transcriptVisible,
       }}
@@ -1683,7 +1605,7 @@ function ChildAgentWorkspace({
         className={`app-rail ${railOpen ? 'open' : ''}`} state={agentState} forest={forest}
         selectedAgentId={agentId}
         subagent={{ agentId, block: selectedSubagent,
-          pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: handleJumpToSpawn }}
+          pendingInteractionCount: agentPendingInteractionCount, onJumpToSpawn: timelineActions.jumpToSpawn }}
         taskOwnerAgentId={agentId} onCancelTask={onCancelTask}
         onStopAgentTask={onStopAgentTask} onOpenSubagent={navigation.openAgent}
         onClose={onCloseRail}

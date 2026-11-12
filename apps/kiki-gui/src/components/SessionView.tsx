@@ -14,7 +14,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 
-import { AgentWorkspace, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -181,7 +181,7 @@ import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 import { useTimelineNavigation } from '../lib/useTimelineNavigation';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
-import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
+import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { externalClientsFacade } from '../lib/externalClients';
 import { ExternalClientMark, ExternalSessionComposer, useExternalClientMark } from './externalClients/ExternalClientSession';
 import { HarnessMark } from './harness/HarnessMark';
@@ -2592,10 +2592,10 @@ export function SessionView({
     return () => { window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten); };
   }, [controller, sessionId]);
 
-  const state = useSyncExternalStore(
-    controller?.subscribe ?? noopSubscribe,
-    controller?.getState ?? emptyState,
-  );
+  const { state, actions: mainTimelineActions } = useAgentTimeline(controller, MAIN_AGENT_ID, {
+    visible: true,
+    sessionId,
+  });
   const [abortPending, trackAbort] = useAbortPending(state.busy);
   const sessionSendReady = resolveSessionSendReady({
     controllerAvailable: controller !== null,
@@ -3986,32 +3986,11 @@ export function SessionView({
           pushAbortFailureToast(controller, `${message}${t('sv.abortStillRunning')}`);
           // Not rethrown: the sticky toast (with retry) carries the failure.
         }),
-      resolveApproval: (
-        approvalId: string,
-        decision: 'approved' | 'rejected' | 'cancelled',
-        scope?: 'session',
-        selectedOptionId?: string,
-        review?: PlanReviewResponse,
-      ) => controller.resolveApproval(approvalId, decision, scope, selectedOptionId, review),
-      answerQuestion: (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
-        controller.answerQuestion(questionId, answers),
-      dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
       cancelTask: (taskId: string) => {
         void controller.cancelTask(taskId).catch((error: unknown) => {
           pushToast({
             tone: 'error',
             text: t('sv.stopTaskFailed', {
-              detail: error instanceof Error ? error.message : String(error),
-            }),
-          });
-        });
-      },
-      cancelQueued: (promptId: string) => {
-        // Returned so the queue strip can hold its row pending until settle.
-        return controller.abortPrompt(promptId).catch((error: unknown) => {
-          pushToast({
-            tone: 'error',
-            text: t('sv.cancelQueuedFailed', {
               detail: error instanceof Error ? error.message : String(error),
             }),
           });
@@ -4238,14 +4217,6 @@ boundExecution,
       }
     });
   }, [batchConfirm, controller, t, tp]);
-
-  // Stable transcript callbacks: inline arrows would change identity on every
-  // publish, re-registering TopEdge's scroll listener and defeating the
-  // memoized block components.
-  const handleLoadOlder = useCallback(
-    (signal?: AbortSignal) => controller?.loadOlderMessages(MAIN_AGENT_ID, signal) ?? Promise.resolve(false),
-    [controller],
-  );
 
   // ---- message-closure row actions (edit-resend / regenerate / fork) ----
 
@@ -4513,12 +4484,7 @@ boundExecution,
     () => (controller !== null && panelFocusAgent !== undefined ? controller.getAgentState(panelFocusAgent) : emptyView),
   );
   const panelFocusPendingCount = useMemo(
-    () =>
-      panelAgentState.blocks.filter(
-        (block) =>
-          (block.kind === 'approval' && block.resolution === undefined) ||
-          (block.kind === 'question' && block.outcome === undefined),
-      ).length,
+    () => countPendingInteractions(panelAgentState.blocks),
     [panelAgentState.blocks],
   );
   const handlePanelFocusJumpToSpawn = useCallback(() => {
@@ -4577,36 +4543,11 @@ boundExecution,
   const openFileInPreview = useCallback((path: string) => { previewRef.current?.openFile(path); }, []);
   const openImageInPreview = useCallback((src: string, name: string) => { previewRef.current?.openImage(src, name); }, []);
 
-  const handleResolveApproval = useCallback(
-    (
-      approvalId: string,
-      decision: 'approved' | 'rejected' | 'cancelled',
-      scope?: 'session',
-      selectedOptionId?: string,
-      review?: PlanReviewResponse,
-    ) =>
-      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId, review) ??
-      Promise.resolve(),
-    [controller],
-  );
-  const handleAnswerQuestion = useCallback(
-    (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
-      controller?.answerQuestion(questionId, answers) ?? Promise.resolve(),
-    [controller],
-  );
-  const handleDismissQuestion = useCallback(
-    (questionId: string) => controller?.dismissQuestion(questionId) ?? Promise.resolve(),
-    [controller],
-  );
-  const handleCancelQueued = useCallback(
-    async (promptId: string) => { await actions?.cancelQueued(promptId); },
-    [actions],
-  );
   // Transcript's prop type predates the queue strip and wants a void return:
   // hand it a memoized fire-and-forget view of the same action.
   const handleCancelQueuedChips = useCallback(
-    (promptId: string) => { void handleCancelQueued(promptId); },
-    [handleCancelQueued],
+    (promptId: string) => { void mainTimelineActions.cancelQueued(promptId); },
+    [mainTimelineActions.cancelQueued],
   );
   const handleSendNowQueued = useCallback(
     (promptId: string) => actions?.sendNowQueued(promptId),
@@ -4785,8 +4726,8 @@ boundExecution,
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
     setAnnotations(edit.savedAnnotations);
-    void handleCancelQueued(edit.promptId);
-  }, [queueEdit, updateDraft, handleCancelQueued]);
+    void mainTimelineActions.cancelQueued(edit.promptId);
+  }, [queueEdit, updateDraft, mainTimelineActions.cancelQueued]);
   const handleMoveQueued = useCallback(
     (promptId: string, targetIndex: number) =>
       controller?.moveQueued(promptId, targetIndex).then(() => {
@@ -4853,7 +4794,6 @@ boundExecution,
       });
     };
   }, [controller, editHoldPromptId]);
-  const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
   const retryPendingSubmission = useCallback((promptId: string) => {
     const pending = pendingRetryRef.current;
     if (pending?.id === promptId) pending.run();
@@ -4974,8 +4914,8 @@ boundExecution,
   // above the composer, so the reader stays where they are.
   const revealOwnSend = useCallback((joinsNow: boolean) => {
     if (!joinsNow && controller?.getState().busy !== false) return;
-    void locateInTimeline({ kind: 'latest' }, { sessionId, agentId: MAIN_AGENT_ID, notify: false });
-  }, [controller, sessionId]);
+    mainTimelineActions.revealLatest();
+  }, [controller, mainTimelineActions.revealLatest]);
   const handleActivateSkill = useCallback(
     (name: string, args: string, skillAttachments: readonly ComposerAttachment[], userInput: string) => {
       revealOwnSend(false);
@@ -5087,7 +5027,7 @@ boundExecution,
           load={(agentId, kind, id) => controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false)}
           loadContent={(ref) => controller?.loadContentSegment(MAIN_AGENT_ID, ref) ?? Promise.resolve(false)}>
         <QueueStrip
-          items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
+          items={queuedItems} onSendNow={handleSendNowQueued} onRemove={mainTimelineActions.cancelQueued}
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
           modelSwitches={modelSwitches.switches}
@@ -5103,7 +5043,7 @@ boundExecution,
       ),
     };
   }, [
-    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
+    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
@@ -5205,9 +5145,9 @@ boundExecution,
           footer={footer}
           items={trayItems}
           agentNames={trayAgentNames}
-          onResolveApproval={handleResolveApproval}
-          onAnswerQuestion={handleAnswerQuestion}
-          onDismissQuestion={handleDismissQuestion}
+          onResolveApproval={mainTimelineActions.resolveApproval}
+          onAnswerQuestion={mainTimelineActions.answerQuestion}
+          onDismissQuestion={mainTimelineActions.dismissQuestion}
           onRequestBatchResolve={handleBatchResolve}
           permissionMode={permissionMode}
           onChangePermissionMode={handlePermissionChange}
@@ -5215,7 +5155,7 @@ boundExecution,
         </TranscriptDetailProvider>
       ),
     }
-  ), [trayItems, trayAgentNames, reviewRequest?.seq, handleResolveApproval, handleAnswerQuestion, handleDismissQuestion, handleBatchResolve,
+  ), [trayItems, trayAgentNames, reviewRequest?.seq, mainTimelineActions.resolveApproval, mainTimelineActions.answerQuestion, mainTimelineActions.dismissQuestion, handleBatchResolve,
     controller, state.detailLoads, state.contentRefs, sessionId, permissionMode, handlePermissionChange]);
   const handleLocateAnnotation = useCallback((annotation: SelectionAnnotation) => {
     const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
@@ -5624,12 +5564,12 @@ boundExecution,
             view: timelineView,
             state: timelineState,
             connected: wsStatus === 'open',
-            onLoadOlder: handleLoadOlder,
-            onResolveApproval: handleResolveApproval,
-            onAnswerQuestion: handleAnswerQuestion,
-            onDismissQuestion: handleDismissQuestion,
+            onLoadOlder: mainTimelineActions.loadOlder,
+            onResolveApproval: mainTimelineActions.resolveApproval,
+            onAnswerQuestion: mainTimelineActions.answerQuestion,
+            onDismissQuestion: mainTimelineActions.dismissQuestion,
             onCancelQueued: handleCancelQueuedChips,
-            onRetryLoad: handleRetryLoad,
+            onRetryLoad: mainTimelineActions.retryLoad,
             onRetryPending: retryPendingSubmission,
             forest,
             onOpenAgent: openAgent,
@@ -5673,7 +5613,7 @@ boundExecution,
             onOpenSubagent={openAgent} onClose={closeRail}
             onInspectMain={inspectMain} onOpenFile={openFileInPreview}
             onReviewPending={reviewPending}
-            sessionPending={trayItems} onResolveApproval={handleResolveApproval}
+            sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
           /> : null,
         }}
       />
