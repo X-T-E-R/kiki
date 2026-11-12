@@ -165,6 +165,7 @@ describe('args-validator cross-field messages', () => {
       type: 'object',
       properties: { cursor: { type: 'string' }, order: { type: 'string' }, resume: { type: 'string' }, profile: { type: 'string' } },
       allOf: [
+        // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema uses the reserved `then` keyword.
         { if: { required: ['cursor'] }, then: { not: { anyOf: [{ required: ['order'] }] } } },
         { not: { allOf: [{ required: ['resume'] }, { anyOf: [{ required: ['profile'] }] }] } },
       ],

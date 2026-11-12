@@ -73,7 +73,7 @@ export class PageLoadBoundary extends Component<PageLoadBoundaryProps, PageLoadB
   override render(): ReactNode {
     const { error } = this.state;
     if (error === null) return this.props.children;
-    if (!(error instanceof PageLoadError)) throw error;
+    if (!(error instanceof PageLoadError)) throw error instanceof Error ? error : new Error('Page failed to render', { cause: error });
     return (
       <>
         {this.props.header}

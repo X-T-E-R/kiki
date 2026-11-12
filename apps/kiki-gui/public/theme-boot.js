@@ -11,7 +11,7 @@
     dark =
       pref === 'dark' ||
       (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  } catch (_) {
+  } catch {
     dark = false;
   }
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';

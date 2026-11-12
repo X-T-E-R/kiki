@@ -374,7 +374,7 @@ export class ReadTool implements IReadTool {
         throw error;
       }
       if (stat.isDirectory) {
-        return this.listDirectory(fs, args.path, safePath);
+        return await this.listDirectory(fs, args.path, safePath);
       }
       if (!stat.isFile) {
         return { isError: true, output: `"${args.path}" is neither a regular file nor a directory, so Read cannot open it.` };

@@ -45,7 +45,7 @@ export function NotifyAskBanner() {
           type="button"
           data-notify-ask-no
           className="rounded-md px-2 py-1 text-[12px] text-ink-soft underline-offset-2 hover:text-ink hover:underline pointer-coarse:min-h-11"
-          onClick={() => { answerNotificationAsk(false); }}
+          onClick={() => { void answerNotificationAsk(false); }}
         >
           {t('firstRun.notify.no')}
         </button>
