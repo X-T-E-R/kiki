@@ -49,8 +49,10 @@ import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
+import { isNativeExecutor } from '@kiki/session-core/composer';
 import { importHistoryPath, isFirstRunHintDone, markFirstRunHintDone } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
+import { useExecutorCatalogQuery } from './settings/profileEditor/engines';
 import { composerInputOf } from '../lib/composerInput';
 
 /**
@@ -258,11 +260,17 @@ function NewSessionPageContent({
   const heroAvatarSize = narrow ? 48 : 56;
   const personaPick = useMemo(() => ({ value: personaChip, onChange: state.selectPersona }), [personaChip, state.selectPersona]);
   const echo = useTypingEcho(state.draft);
-  // No model yet: the connect card takes the composer's seat. The card can
-  // also hold it while a key it just saved is being checked, so models that
-  // are saved but not yet known to answer do not bring the composer back.
+  // The connection card repairs native model setup only. An external execution
+  // selection or catalogued external executor keeps the composer in reach even
+  // when its login or setup still needs attention. An unresolved catalog read
+  // cannot prove that no alternative exists.
+  const executorCatalogQuery = useExecutorCatalogQuery();
+  const hasExternalAlternative = executorCatalogQuery.isLoading || executorCatalogQuery.isError
+    || (executorCatalogQuery.data?.items ?? []).some((item) => !isNativeExecutor(item.id) && item.status !== 'unavailable');
   const [cardHeld, setCardHeld] = useState(false);
-  const connectFirst = state.needsProviderSetup || cardHeld;
+  const connectFirst = isNativeExecutor(state.execution.executor)
+    && !hasExternalAlternative
+    && (state.needsProviderSetup || cardHeld);
   // Once the card was on screen in this visit and a connection replaced it,
   // the composer says what got connected. Which way connected, when known,
   // comes from the card itself.
@@ -381,6 +389,7 @@ function NewSessionPageContent({
       personaPick,
       state.inheritedDefault,
       state.modelSource,
+      state.execution,
       state.setExecution,
       state.cancelCreation,
       state.permissionMode,

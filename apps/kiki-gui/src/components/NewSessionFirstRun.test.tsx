@@ -11,13 +11,14 @@
  * sidebar's session list or the composer's agent picker.
  */
 
-import { act, useState } from 'react';
+import { act, useCallback, useState, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSummary, Workspace } from '@kiki/protocol';
+import type { AuthSummary, ExecutorCatalogItem, Workspace } from '@kiki/protocol';
+import type { ExecutionChoice } from '@kiki/session-core/composer';
 
 import { I18nProvider } from '../i18n';
 import {
@@ -56,6 +57,7 @@ const firstRun = vi.hoisted(() => ({
     connectOriginalOAuth: vi.fn(async (_body: { provider: string; expected_account_id?: string }): Promise<unknown> => ({})),
     listSessions: vi.fn(async (): Promise<unknown> => ({ items: [{ id: 'session-example' }], has_more: false })),
     listModels: vi.fn(async (): Promise<{ items: { id: string }[] }> => ({ items: [] })),
+    listExecutors: vi.fn(async (): Promise<{ items: ExecutorCatalogItem[] }> => ({ items: [] })),
     listCatalogProviders: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
     listProviders: vi.fn(async (): Promise<{ items: { id: string }[] }> => ({ items: [] })),
     importCatalogProvider: vi.fn(async (body: { catalog_id: string; api_key?: string }): Promise<unknown> => ({ provider: { id: body.catalog_id }, models_imported: 1 })),
@@ -68,7 +70,7 @@ const firstRun = vi.hoisted(() => ({
 }));
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: firstRun.client }),
+  useConnection: () => ({ client: firstRun.client, scopeId: 'first-run', meta: undefined }),
 }));
 
 vi.mock('./discovery', async (importOriginal) => ({
@@ -100,7 +102,11 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
   return {
     ...actual,
     useNewSessionDraft: () => {
-      const [execution, setExecution] = useState(firstRun.execution);
+      const [execution, setExecutionState] = useState(firstRun.execution);
+      const setExecution = useCallback((next: ExecutionChoice) => {
+        firstRun.execution = next;
+        setExecutionState(next);
+      }, []);
       return {
         draft: '',
       attachments: [],
@@ -153,16 +159,27 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       setModelOverride: () => {},
       setAgentProfile: () => {},
       execution,
-      setExecution: (next: any) => {
-        firstRun.execution = next;
-        setExecution(next);
-      },
+      setExecution,
       send: () => {},
       activateSkill: () => {},
     };
   },
   };
 });
+
+type SeatComposerProps = {
+  readonly execution: ExecutionChoice;
+  readonly onChangeExecution: (next: ExecutionChoice) => void;
+};
+
+function composerFromSeat(): ReactElement<SeatComposerProps> {
+  const seat = firstRun.seat?.composer as ReactElement<{ readonly children?: ReactElement<SeatComposerProps> }> | undefined;
+  const composer = seat?.props.children;
+  if (composer?.props.execution === undefined || composer.props.onChangeExecution === undefined) {
+    throw new Error('The /new seat did not publish Composer');
+  }
+  return composer;
+}
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
@@ -195,6 +212,7 @@ beforeEach(() => {
   localStorage.removeItem('kiki.onboarding');
   vi.clearAllMocks();
   firstRun.client.listSessions.mockResolvedValue({ items: [{ id: 'session-example' }], has_more: false });
+  firstRun.client.listExecutors.mockReset().mockResolvedValue({ items: [] });
 });
 
 async function unmountAll() {
@@ -387,6 +405,10 @@ describe('needsProviderSetup', () => {
     expect(needsProviderSetup(auth(), [{ model: 'kimi-k2' }])).toBe(false);
   });
 
+  it('does not require a native provider for a selected external execution', () => {
+    expect(needsProviderSetup(auth(), [], { executor: 'claude-acp' })).toBe(false);
+  });
+
   it('stays silent while a probe is in flight or failed', () => {
     expect(needsProviderSetup(undefined, [])).toBe(false);
     expect(needsProviderSetup(auth(), undefined)).toBe(false);
@@ -466,19 +488,60 @@ describe('the /new page', () => {
     expect(container.textContent).not.toContain('Choose another workspace');
   });
 
-  it('passes a changed execution choice through the memoized composer seat', async () => {
+  it('refreshes the memoized Composer after an override-only executor-instance change', async () => {
+    firstRun.execution = {
+      executor: 'claude-acp', profile: undefined, profile_file: undefined,
+      overrides: { executor_instance: 'auto' },
+    };
     await mountNewSessionPage();
-    const composer = () => (firstRun.seat as { composer: { props: { children: { props: {
-      execution: { readonly profile_file?: string };
-      onChangeExecution: (next: unknown) => void;
-    } } } } }).composer.props.children;
-    expect(composer().props.execution.profile_file).toBeUndefined();
-    await act(async () => {
-      composer().props.onChangeExecution({
-        executor: 'native', profile: undefined, profile_file: 'C:/fixture/workshop/profiles/selected.md', overrides: undefined,
-      });
-    });
-    expect(composer().props.execution.profile_file).toBe('C:/fixture/workshop/profiles/selected.md');
+    await settle();
+    const before = composerFromSeat().props.execution;
+    expect(before.overrides?.['executor_instance']).toBe('auto');
+    const changed: ExecutionChoice = {
+      ...before,
+      overrides: { ...(before.overrides ?? {}), executor_instance: 'instance-work' },
+    };
+    await act(async () => { composerFromSeat().props.onChangeExecution(changed); });
+    expect(composerFromSeat().props.execution).toEqual(changed);
+  });
+
+  it('keeps an external-only execution editable with no native model or installed alternative', async () => {
+    firstRun.needsProviderSetup = true;
+    firstRun.execution = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const container = await mountNewSessionPage();
+    await settle();
+    expect(composerFromSeat().props.execution.executor).toBe('claude-acp');
+    expect(container.querySelector('[data-hero-target]')).not.toBeNull();
+    expect(document.querySelector('#first-run-hero-footer [data-hero-starter]')).not.toBeNull();
+  });
+
+  it('keeps the native Composer reachable when an installed external executor still needs authentication', async () => {
+    firstRun.needsProviderSetup = true;
+    firstRun.client.listExecutors.mockResolvedValue({ items: [{
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready',
+      model_binding: 'mapped', thinking_binding: 'mapped',
+      connection: { command: 'claude', login_status: 'logged_out', default_args: [] },
+    }] });
+    const container = await mountNewSessionPage();
+    await settle();
+    expect(composerFromSeat().props.execution.executor).toBe('native');
+    expect(container.querySelector('[data-hero-target]')).not.toBeNull();
+    expect(document.querySelector('#first-run-hero-footer [data-hero-starter]')).not.toBeNull();
+  });
+
+  it('uses the connect card only when native setup is needed and no external engine is available', async () => {
+    firstRun.needsProviderSetup = true;
+    firstRun.client.listExecutors.mockResolvedValue({ items: [{
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'unavailable',
+      model_binding: 'mapped', thinking_binding: 'mapped',
+      connection: { command: 'claude', login_status: 'logged_out', default_args: [] },
+    }] });
+    const container = await mountNewSessionPage();
+    await settle();
+    const seat = firstRun.seat?.composer as ReactElement<{ readonly fallback: null }>;
+    expect(seat.props.fallback).toBeNull();
+    expect(container.querySelector('[data-hero-target]')).toBeNull();
+    expect(document.querySelector('#first-run-hero-footer [data-hero-starter]')).toBeNull();
   });
 
   it('states a failed workspace read in the hero instead of asking for another target', async () => {
@@ -628,6 +691,7 @@ describe('first run without a model', () => {
       signed_in: false, account: { state: 'unknown' }, quota: { state: 'unknown' },
     }]);
     const page = await mountNewSessionPage();
+    await settle();
     const seat = await renderSeat();
     expect(seat.querySelector('[data-first-run-card="lanes"]')).not.toBeNull();
     expect([...seat.querySelectorAll<HTMLElement>('[data-first-run-lane]')].map((lane) => lane.dataset['firstRunLane']))
@@ -642,6 +706,7 @@ describe('first run without a model', () => {
     await unmountAll();
     firstRun.needsProviderSetup = false;
     await mountNewSessionPage();
+    await settle();
     const composerSeat = await renderSeat();
     expect(composerSeat.querySelector('[data-first-run-card]')).toBeNull();
   });

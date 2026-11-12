@@ -2644,16 +2644,20 @@ describe('persona model and effort choice sources', () => {
     expect(handoff.thinking).toBe(explicit ? 'high' : undefined);
   });
 
-  it('carries a bare external engine to the first message with the same emptiness', async () => {
+  it('carries a bare external engine to the first message when no native model is available', async () => {
     // The create body and the first prompt are two hops, and the second one
     // used to re-send the displayed model, effort and approval mode — putting
     // back exactly the overrides the create had just declined to send.
+    client.getAuth.mockResolvedValue({ ready: false, providers_count: 0, default_model: null, managed_provider: null });
+    client.listModels.mockResolvedValue({ items: [] });
     await renderDraft({});
-    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    let state = await settleDraft((value) => value.needsProviderSetup && !value.agentProfileCatalogPending);
     await act(async () => {
       state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
     });
     state = latestDraftState!;
+    expect(state.needsProviderSetup).toBe(false);
+    expect(state.selectionReady).toBe(true);
     // The page still shows Kiki's own default; none of it was chosen here, and
     // whatever it is, it must not reach the harness.
     expect(state.permissionMode).toBe('auto');
