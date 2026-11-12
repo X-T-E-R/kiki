@@ -8,6 +8,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentTaskService, type AgentTaskInfo, type AgentTaskNotificationContext } from '#/agent/task/task';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
+import { isSubstantiveContentPart } from '#/agent/contextMemory/vacuousContent';
 import {
   IAgentFullCompactionService,
   type FullCompactionTask,
@@ -492,7 +493,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     if (event.reason === 'failed' && event.error !== undefined && this.observedFailureTurnId !== event.turnId) {
       const payload = toKimiErrorPayload(event.error);
       this.fireAndForget('StopFailure', {
-        ...failureHookInput(payload),
+        ...failureHookInput(payload, this.hasPartialOutput(event.turnId)),
         modelAlias: this.profile?.data?.()?.modelAlias,
         turnId: event.turnId,
         recoverable: false,
@@ -507,6 +508,14 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     this.observedFailureTurnId = undefined;
   }
 
+  private hasPartialOutput(turnId: number, stepId?: string): boolean {
+    return this.context.get().some((message) =>
+      message.role === 'assistant' && message.partial === true &&
+      message.source?.turnId === turnId && (stepId === undefined || message.source.stepId === stepId) &&
+      (message.toolCalls.length > 0 || message.content.some(isSubstantiveContentPart)),
+    );
+  }
+
   private async runStopFailure(ctx: LoopErrorContext): Promise<boolean> {
     const signal = ctx.currentStep === undefined ? ctx.signal : AbortSignal.any([ctx.signal, ctx.currentStep.signal]);
     signal.throwIfAborted();
@@ -516,6 +525,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     }
     this.observedFailureTurnId = ctx.turnId;
     const payload = toKimiErrorPayload(ctx.error);
+    const hasPartialOutput = ctx.requestFailed === true && this.hasPartialOutput(ctx.turnId, ctx.stepId);
     const recoverable = ctx.requestFailed === true && permitsFailureContinuation(payload) &&
       this.failureRecoveries < MAX_FAILURE_RECOVERIES_PER_STREAK;
     let results;
@@ -527,7 +537,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         sessionId: this.sessionContext.sessionId,
         additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
         inputData: this.withSessionFacts({
-          ...failureHookInput(payload),
+          ...failureHookInput(payload, hasPartialOutput),
           modelAlias: this.profile?.data?.()?.modelAlias,
           turnId: ctx.turnId,
           step: ctx.step,
@@ -542,17 +552,24 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     }
     signal.throwIfAborted();
     if (!recoverable || results.some((result) => result.action === 'block')) return false;
-    const recoveries = results.flatMap((result) => result.recovery === undefined ? [] : [result.recovery]);
-    const recovery = recoveries[0];
-    if (recovery === undefined || recoveries.some((entry) => entry.userMessage !== recovery.userMessage)) return false;
+    const messages = new Set(results.flatMap(({ recovery }) => {
+      if (recovery === undefined) return [];
+      return [recovery.action === 'retry' || (recovery.action === 'auto' && !hasPartialOutput)
+        ? undefined
+        : recovery.userMessage];
+    }));
+    if (messages.size !== 1) return false;
+    const [userMessage] = messages;
     this.failureRecoveries += 1;
     this.observedFailureTurnId = undefined;
-    this.context.appendObservable({
-      role: 'user',
-      content: [{ type: 'text', text: recovery.userMessage }],
-      toolCalls: [],
-      origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
-    });
+    if (userMessage !== undefined) {
+      this.context.appendObservable({
+        role: 'user',
+        content: [{ type: 'text', text: userMessage }],
+        toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'failure_recovery_hook' },
+      });
+    }
     ctx.retry(new ContinuationStepRequest({ kind: 'failure_recovery_hook', admission: 'activeTurnOnly' }), { at: 'head' });
     return true;
   }

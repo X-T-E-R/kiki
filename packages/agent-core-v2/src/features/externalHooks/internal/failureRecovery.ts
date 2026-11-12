@@ -3,8 +3,9 @@ import { readProviderErrorIdentifier, sameRequestRetryProhibition } from '#/koso
 
 export const MAX_FAILURE_RECOVERIES_PER_STREAK = 1;
 
-export function failureHookInput(error: ErrorPayload): Record<string, unknown> {
+export function failureHookInput(error: ErrorPayload, hasPartialOutput: boolean): Record<string, unknown> {
   return {
+    hasPartialOutput,
     errorType: error.name,
     errorMessage: error.message,
     errorCode: error.code,

@@ -225,7 +225,7 @@ describe('google model-turn continuation', () => {
       });
       expect(generateContentStream).toHaveBeenCalledTimes(1);
       expect(promptCount(local, 'Continue.')).toBe(0);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([]);
       expect((await local.persistedWireRecords()).filter((record) => record.type === 'usage.record')).toHaveLength(1);
       await local.expectResumeMatches();
     } finally {

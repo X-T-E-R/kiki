@@ -105,7 +105,7 @@ export const commandContributionSchema = z.object({
   prompt: z.string().min(1).max(16_384),
 }).strict();
 
-export const requestProjectionStrategySchema = z.enum(['passthrough', 'tool_result_appendix']);
+export const requestProjectionStrategySchema = z.enum(['passthrough', 'tool_result_appendix', 'tool_result_trailing_text']);
 export type PluginRequestProjectionStrategy = z.infer<typeof requestProjectionStrategySchema>;
 
 export const requestProjectionContributionSchema = z.object({

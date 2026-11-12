@@ -1,12 +1,12 @@
 {
   "name": "argon-error-recovery",
-  "version": "0.2.1",
-  "description": "Unofficial, one-time continuation per failure streak after an Argon stream interruption.",
+  "version": "0.3.0",
+  "description": "Unofficial Argon recovery: retry in place without retained output, or continue from retained output.",
   "license": "MIT",
   "author": "Community",
   "interface": {
     "displayName": "Argon Error Recovery (Unofficial)",
-    "shortDescription": "Continue once per failure streak after an Argon stream interruption."
+    "shortDescription": "Retry in place without retained output, or continue from retained output."
   },
   "hooks": [
     {

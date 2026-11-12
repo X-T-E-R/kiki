@@ -306,6 +306,28 @@ describe('reduceContextTranscript', () => {
     expect(result.foldedLength).toBe(1);
   });
 
+  it('drops a failed signed-thinking shell before retry while preserving intentional and user-interrupted thinking', () => {
+    const reducer = createContextTranscriptReducer();
+    reducer.add(appendMessage(userMessage('q')));
+    for (const record of [
+      loopEvent({ type: 'step.begin', uuid: 'failed' }),
+      loopEvent({ type: 'content.part', stepUuid: 'failed', part: { type: 'think', think: '', encrypted: 'failed-signature' } }),
+      loopEvent({ type: 'step.end', uuid: 'failed', finishReason: 'error' }),
+    ]) reducer.add(record);
+    expect(reducer.result().entries.map((message) => message.role)).toEqual(['user']);
+    expect(reducer.result().logicalEntries.map((message) => message.role)).toEqual(['user']);
+    for (const finishReason of ['other', 'interrupted']) {
+      reducer.add(loopEvent({ type: 'step.begin', uuid: finishReason }));
+      reducer.add(loopEvent({ type: 'content.part', stepUuid: finishReason, part: { type: 'think', think: 'plan', encrypted: finishReason } }));
+      reducer.add(loopEvent({ type: 'step.end', uuid: finishReason, finishReason }));
+    }
+    expect(reducer.result().entries).toMatchObject([
+      { role: 'user' },
+      { role: 'assistant', content: [{ encrypted: 'other' }] },
+      { role: 'assistant', partial: true, content: [{ encrypted: 'interrupted' }] },
+    ]);
+  });
+
   it('drops a failed attempt left open when the retry begins', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('q')),

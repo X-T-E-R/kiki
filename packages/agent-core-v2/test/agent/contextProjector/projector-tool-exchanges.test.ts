@@ -11,6 +11,7 @@ import { AgentContextProjectorService } from '#/agent/contextProjector/contextPr
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
+import { shapeDynamicToolContext, renderLoadableToolsAnnouncement } from '#/agent/toolSelect/dynamicTools';
 import type { Message } from '#/kosong/contract/message';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
@@ -1262,6 +1263,117 @@ describe('projector tool-exchange normalization', () => {
         ]);
         expect(projected[2]?.content).toHaveLength(2);
       }
+    });
+
+    it('keeps same-anchor host reminders in the appendix before a steered user boundary', () => {
+      const source = { turnId: 7, stepId: 'steer-boundary' };
+      const history = [user('start'), assistant('', ['c1']), toolResult('c1', 'result'),
+        { ...hostInjection('model guidance', 'model_steering'), source },
+        { ...hostInjection('current runtime', 'runtime_snapshot'), source },
+        { ...user('Use the new plan'), source },
+      ];
+      const projected = projector.project(history, { toolResultAppendix: 'host_auto_injections' });
+      expect(projected.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'user']);
+      expect(JSON.stringify(projected[2]?.content)).toContain('model guidance');
+      expect(JSON.stringify(projected[2]?.content)).toContain('current runtime');
+      expect(projected[3]?.content).toEqual(history[5]?.content);
+    });
+
+    it.each([false, true])('folds the complete plain-text tail in canonical order (user first: %s)', (userFirst) => {
+      const source = { turnId: 7, stepId: 'steer-boundary' };
+      const steer = { ...user('Use the new plan'), source };
+      const guidance = { ...hostInjection('model guidance', 'model_steering'), source };
+      const peer: ContextMessage = { ...user('<peer-message>Peer update</peer-message>'), source, origin: { kind: 'peer_thread', source: { hostId: 'host', workspaceId: 'workspace', sessionId: 'session' }, messageId: 'peer-1', acceptedAt: 1 } };
+      const agent: ContextMessage = { ...user('<agent-message>Parent update</agent-message>'), source, origin: { kind: 'agent_message', messageId: 'message-1', senderAgentId: 'parent', senderTaskName: 'review' } };
+      const skill: ContextMessage = { ...user('<skill-loaded name="demo">Skill body</skill-loaded>'), source, origin: { kind: 'skill_activation', activationId: 'activation-1', skillName: 'demo', trigger: 'user-slash' } };
+      const history = [user('start'), assistant('', ['c1', 'c2']), toolResult('c1', 'first'), toolResult('c2', 'last'),
+        ...(userFirst ? [steer, guidance] : [guidance, steer]), peer, agent, skill, hostInjection('todo state', 'todo_list_reminder'),
+      ];
+      const canonical = structuredClone(history);
+      let stats;
+      const policy = { toolResultAppendix: 'trailing_user_text', onToolResultAppendix: (value: { projectedBatches: number; projectedMessages: number }) => { stats = value; } } as const;
+      const projected = projector.project(history, policy);
+      expect(projected.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'tool']);
+      expect(projected[2]?.content).toEqual([{ type: 'text', text: 'first' }]);
+      const text = JSON.stringify(projected[3]?.content);
+      expect(text).toContain('<tool-result-appendix>');
+      for (const origin of ['user', 'peer_thread', 'agent_message', 'skill_activation']) {
+        expect(text).toContain(`<tool-result-followup role=\\"user\\" origin=\\"${origin}\\">`);
+      }
+      expect(text.indexOf('Use the new plan') < text.indexOf('model guidance')).toBe(userFirst);
+      expect(text.indexOf('Peer update')).toBeLessThan(text.indexOf('Parent update'));
+      expect(text.indexOf('Parent update')).toBeLessThan(text.indexOf('Skill body'));
+      expect(text.indexOf('Skill body')).toBeLessThan(text.indexOf('todo state'));
+      expect(stats).toEqual({ projectedBatches: 1, projectedMessages: 6 });
+      expect(projector.project(history, policy)).toEqual(projected);
+      expect(history).toEqual(canonical);
+    });
+
+    it('stops trailing-text folding at media, attachments, resource links, partials, declarations and summaries', () => {
+      const boundaries: ContextMessage[] = [
+        { ...user('image'), content: [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AA==' } }] },
+        { ...user('audio'), content: [{ type: 'audio_url', audioUrl: { url: 'https://example.test/clip.mp3' } }] },
+        { ...user('video'), content: [{ type: 'video_url', videoUrl: { url: 'https://example.test/clip.mp4' } }] },
+        { ...user('attachment'), content: [{ type: 'text', text: 'file', attachment: { fileId: 'f1', mimeType: 'text/plain', size: 4 } }] },
+        { ...user('resource'), content: [{ type: 'text', text: 'resource', resourceLink: { uri: 'file:///example.txt' } }] },
+        { ...user('partial'), partial: true },
+        { ...user('tools'), tools: schemaMessage('Lookup').tools },
+        { ...user('summary'), origin: { kind: 'compaction_summary' } },
+      ];
+      for (const boundary of boundaries) {
+        const history = [user('start'), assistant('', ['c1']), toolResult('c1', 'result'), user('fold before boundary'), boundary, hostInjection('after boundary', 'runtime_snapshot')];
+        const projected = projector.project(history, { toolResultAppendix: 'trailing_user_text' });
+        expect(JSON.stringify(projected[2]?.content)).toContain('fold before boundary');
+        expect(JSON.stringify(projected[2]?.content)).not.toContain('after boundary');
+        expect(JSON.stringify(projected.at(-1)?.content)).toContain('after boundary');
+        if (boundary.partial !== true) expect(projected[3]?.content).toEqual(boundary.content);
+      }
+    });
+
+    it.each(['inside_batch', 'after_batch'])('keeps canonical schema boundaries when tool shaping removes them (%s)', (position) => {
+      const call = assistant('', ['c1']);
+      const result = toolResult('c1', 'result');
+      const schema = schemaMessage('Lookup');
+      const followup = user('Keep this input separate');
+      const history = [user('start'), call, ...(position === 'inside_batch' ? [schema, result] : [result, schema]), followup];
+      const { messages, sourceIndexes } = shapeDynamicToolContext(history);
+      expect(messages).toHaveLength(history.length - 1);
+      const projected = projector.project(messages, {
+        toolResultAppendix: 'trailing_user_text',
+        toolResultAppendixHistory: { canonical: history, sourceIndexes: sourceIndexes! },
+      });
+      expect(projected.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'user']);
+      expect(projected.at(-1)?.content).toEqual(followup.content);
+      expect(projected[2]?.content).toEqual(result.content);
+    });
+
+    it.each(['host_auto_injections', 'trailing_user_text'] as const)('folds a rewritten host reminder at its canonical position (%s)', (toolResultAppendix) => {
+      const parts = [
+        { variant: 'loadable-tools', content: renderLoadableToolsAnnouncement(['HiddenTool'], []) },
+        { variant: 'agent_profile_changes', content: 'Profile changed' },
+      ];
+      const delta: ContextMessage = {
+        ...user(parts.map(({ content }) => content).join('\n')),
+        origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } },
+      };
+      const history = [user('start'), assistant('', ['c1']), toolResult('c1', 'result'), delta, user('Follow-up')];
+      const { messages, sourceIndexes } = shapeDynamicToolContext(history);
+      expect(sourceIndexes).toEqual([0, 1, 2, 3, 4]);
+      const projected = projector.project(messages, {
+        toolResultAppendix,
+        toolResultAppendixHistory: { canonical: history, sourceIndexes: sourceIndexes! },
+      });
+      expect(projected[2]?.content).toContainEqual({ type: 'text', text: expect.stringContaining('Profile changed') });
+      expect(JSON.stringify(projected)).not.toContain('HiddenTool');
+      expect(projected.at(-1)?.role).toBe(toolResultAppendix === 'host_auto_injections' ? 'user' : 'tool');
+      expect(JSON.stringify(projected.at(-1)?.content)).toContain('Follow-up');
+    });
+
+    it('never folds conversational tail text into a repaired incomplete exchange', () => {
+      const history = [user('start'), assistant('', ['c1', 'c2']), toolResult('c1', 'result'), user('Follow-up must survive')];
+      const projected = projector.project(history, { structure: 'strict', toolResultAppendix: 'trailing_user_text' });
+      expect(projected.at(-1)?.role).toBe('user');
+      expect(projected.at(-1)?.content).toEqual(history.at(-1)?.content);
     });
 
     it('refuses to append into incomplete, reordered (foreignBetween), or duplicate-toolCallId batches so strict projection never drops reminders', () => {

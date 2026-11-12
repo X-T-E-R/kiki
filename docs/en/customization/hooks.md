@@ -204,12 +204,12 @@ You can also return a JSON object via stdout to block:
 ```
 
 ::: info Which events can block?
-`PreToolUse`, `Stop` and `UserPromptSubmit` can block their pending operation. `StopFailure` can request a [continuation after a model failure](#continuing-after-a-model-failure); a failed hook leaves the original model error unchanged. Other events are observation-only.
+`PreToolUse`, `Stop` and `UserPromptSubmit` can block their pending operation. `StopFailure` is not a blocking hook, but it can request [bounded recovery after a model failure](#recovering-after-a-model-failure); a failed hook leaves the original model error unchanged. Other events are observation-only.
 :::
 
-### Continuing after a model failure
+### Recovering after a model failure
 
-A legacy `StopFailure` script can ask the native agent loop to append a new user message and continue after a model request fails. Automatic retries of the same request run first. The hook can append a new message after those retries stop or run out; it cannot resend the failed request.
+A legacy `StopFailure` script can ask the native agent loop to retry a failed step without adding a message, or append a user message and continue with a new step. Automatic retries of the same request run first; the hook runs only after those retries stop or exhaust their budget.
 
 Alongside the base event fields, the script receives:
 
@@ -220,27 +220,27 @@ Alongside the base event fields, the script receives:
 | `upstream_error_code` | Structured upstream error identifier, when available; do not infer it from message text |
 | `model_alias` | Current model binding from the agent profile, when available; use it to scope model-specific recovery |
 | `turn_id`, `step` | Current turn and step; `step` may be absent for a turn-end observation |
-| `recoverable` | Whether the host permits continuation for this failure |
-| `recovery_attempts`, `max_recovery_attempts` | Continuations already used in the current failure streak and the host limit of `1`; present when the loop asks for recovery |
+| `has_partial_output` | Boolean; true only when the failed step retained substantive non-thinking answer, media, or tool-call output |
+| `recoverable` | Whether the host permits recovery for this failure |
+| `recovery_attempts`, `max_recovery_attempts` | Recovery actions already used in the current failure streak and the host limit of `1`; present when the loop asks for recovery |
 
-When `recoverable` is `true` and the structured error matches a case your script handles, exit with `0` and write:
+The `has_partial_output` fact concerns model failures: thinking alone is not substantive, and when a model request errors with a partial assistant message containing only thinking, Kiki drops it immediately. A separate user-cancellation interruption keeps its partial thinking under the existing cancellation behavior and does not request `StopFailure` recovery.
 
-```json
-{
-  "hookSpecificOutput": {
-    "recovery": {
-      "action": "continue",
-      "userMessage": "Continue from the preserved answer."
-    }
-  }
-}
-```
+When `recoverable` is `true` and the structured error matches a case your script handles, exit with `0` and write one of these `hookSpecificOutput.recovery` values:
 
-`userMessage` must contain non-whitespace text and fit within 8 KiB of UTF-8. Kiki appends it as a user message with a hook origin and starts the next step in the same turn. The last failed attempt's partial assistant output and completed tool results stay in context; output discarded for earlier retries stays discarded. This action does not replay the failed request or previous tool calls. There is no `retry` action.
+| Action | Recovery value | Effect |
+| --- | --- | --- |
+| `continue` | `{ "action": "continue", "userMessage": "Continue from the preserved answer." }` | Append that text as a user message with a hook origin, then start the next step in the same turn. |
+| `retry` | `{ "action": "retry" }` | Retry the failed step without adding a synthetic user message. |
+| `auto` | `{ "action": "auto", "userMessage": "Continue from the preserved answer." }` | Continue with the message when `has_partial_output` is `true`; otherwise retry without adding a message. |
 
-The host permits at most one hook continuation per consecutive failure streak; if that continuation fails again recovery stops, and once it completes a full model response with usable content or model tool calls the budget resets so a later failure streak in the same turn can continue once again. HTTP 200 alone, heartbeats, partial output, or tool execution results alone do not reset the budget. Cancellation, credentials, billing, quota, safety filtering, context overflow, invalid configuration, an ordinary HTTP 429, and permanent provider rejections still stop recovery. A provider-named `gateway_stream_terminal_error`, on a stream event or an HTTP error body, forbids resending that request but can be followed by a new user message. Ambiguous or unknown delivery of a native model request does not by itself block that new message; external executors retain their own recovery contracts. An upstream boolean `retryable: false` also stops only the same-request retry. Scripts should match their supported structured failures and use `model_alias` when the policy is model-specific.
+For `continue` and `auto`, `userMessage` must contain non-whitespace text and fit within 8,192 bytes in UTF-8. A continuation does not replay the failed request or previous tool calls; the last failed attempt's retained output and completed tool results stay in context, while output discarded for earlier native retries stays discarded.
 
-Without a continuation request, the original failure ends the turn normally. The same happens if a hook fails, times out, returns invalid output, or requests a different message from another matching hook. A synchronous `StopFailure` invocation is not repeated as a turn-end notification for the same failure; later failures can trigger it again. Return values on observation-only invocations (`recoverable = false`) do not change the outcome.
+With multiple matching hooks, Kiki compares their effective recovery: retry without a synthetic user message, or the exact user message to append. Identical effective outcomes are accepted; a retry mixed with a continuation, or different messages, aborts recovery and leaves the original error in place. A hook failure, timeout, or invalid output also leaves the original error unchanged.
+
+The host permits at most one recovery action per consecutive failure streak. If that action fails again, recovery stops; completing a full model response with usable content or model tool calls resets the budget, so a later failure streak in the same turn can recover once again. HTTP 200 alone, heartbeats, partial output, or tool execution results alone do not reset it. Cancellation, credentials, billing, quota, safety filtering, context overflow, invalid configuration, an ordinary HTTP 429, and permanent provider rejections remain ineligible. A provider-named `gateway_stream_terminal_error`, on a stream event or an HTTP error body, disables automatic retries of that request. An eligible hook can still request a new logical step with `retry`, `continue`, or `auto`. Ambiguous or unknown delivery does not by itself block native hook recovery; external executors retain their own recovery contracts. An upstream boolean `retryable: false` also stops only the automatic same-request retry. Scripts should match their supported structured failures and use `model_alias` when the policy is model-specific.
+
+A synchronous `StopFailure` invocation is not repeated as a turn-end notification for the same failure; later failures can trigger it again. Return values on observation-only invocations (`recoverable = false`) do not change the outcome.
 
 ## Event reference
 
@@ -261,7 +261,7 @@ Without a continuation request, the original failure ends the turn normally. The
 | `SubagentStart` | Sub-agent name | — | Triggered before a sub-agent starts running |
 | `SubagentStop` | Sub-agent name | — | Triggered after a sub-agent completes successfully (observation only) |
 | `TaskStarted` | Task kind (`agent`, `process`, or `question`) | — | Triggered when a background task starts; the payload includes `task_id`, `description`, and `detached` (observation only) |
-| `StopFailure` | Error type | — | Observes a failure; a native model-request failure can request a [bounded continuation](#continuing-after-a-model-failure) before the turn ends |
+| `StopFailure` | Error type | — | Observes failures and includes `has_partial_output`; eligible native model-request failures can request [bounded recovery](#recovering-after-a-model-failure) before the turn ends |
 | `Interrupt` | Empty string | — | Triggered when the user interrupts the current turn (e.g. pressing Esc); not fired for timeouts or other programmatic aborts. `Stop` does not fire on interrupts, so this event fires instead. The payload includes a `reason` field (observation only) |
 | `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes (observation only) |

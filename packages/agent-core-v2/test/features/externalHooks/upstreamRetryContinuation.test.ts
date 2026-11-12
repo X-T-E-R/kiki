@@ -130,7 +130,7 @@ function jsonResponse(status: number, reason: string, body: unknown): Buffer {
 }
 
 interface Replay {
-  readonly requests: { readonly url: string | undefined; readonly body: unknown }[];
+  readonly requests: { readonly url: string | undefined; readonly body: Record<string, unknown> }[];
   readonly responseBodies: Buffer[];
   readonly retryEvents: unknown[];
   readonly local: TestAgentContext;
@@ -158,7 +158,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const raw = Buffer.concat(chunks).toString('utf8');
-    const body = raw.length === 0 ? undefined : JSON.parse(raw) as unknown;
+    const body = raw.length === 0 ? {} : JSON.parse(raw) as Record<string, unknown>;
     requests.push({ url: req.url, body });
     continued ||= JSON.stringify(body).includes('继续');
     const selected = choose(requests.length, continued);
@@ -265,8 +265,8 @@ describe('provider failures through the real Messages SDK', () => {
     await Promise.all(pending.map(async (replayed) => replayed.close()));
   });
 
-  it('receives one missing-terminal wire, appends one continuation, and converges on the new message', async () => {
-    const replayed = await replay((_requestNumber, continued) => continued ? terminalSse('Synthetic terminal after continuation.') : missingTerminalHttp);
+  it('retries a missing-terminal wire without changing the user messages', async () => {
+    const replayed = await replay((requestNumber) => requestNumber === 2 ? terminalSse('Recovered answer.') : missingTerminalHttp);
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
@@ -275,19 +275,21 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
     expect(replayed.responseBodies[0]).toEqual(missingTerminalWire);
-    expect(continuations(replayed.local)).toHaveLength(1);
-    expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
     const call = stops(replayed)[0]?.[1]?.inputData;
     expect(call).toMatchObject({
+      hasPartialOutput: false,
       recoverable: true,
       recoveryAttempts: 0,
       upstreamErrorCode: 'antigravity_missing_terminal',
       error: { details: { upstream_retryable: false, upstreamErrorCode: 'antigravity_missing_terminal' } },
     });
     expect((call?.['error'] as { details?: Record<string, unknown> }).details).not.toHaveProperty('retry');
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
   }, 60_000);
 
-  it('does not send a third request when the new message fails with the same wire', async () => {
+  it('does not send a third request when the silent retry fails with the same wire', async () => {
     const replayed = await replay(() => missingTerminalHttp);
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
@@ -297,12 +299,18 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
     expect(replayed.responseBodies.every((body) => body.equals(missingTerminalWire))).toBe(true);
-    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['hasPartialOutput'])).toEqual([false, false]);
+    expect(await stopResults(replayed)).toMatchObject([
+      [{ exitCode: 0, recovery: { action: 'retry' } }],
+      [{ exitCode: 0, stdout: '' }],
+    ]);
   }, 60_000);
 
-  it('continues a new missing-terminal failure streak after a completed tool-call response and stops on a consecutive repeat failure', async () => {
+  it('silently retries missing-terminal failures across completed tool calls while preserving the consecutive streak cap', async () => {
     const encryptedEmptyMissingTerminal = Buffer.concat([
       Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n'),
       Buffer.from(sse([
@@ -336,11 +344,17 @@ describe('provider failures through the real Messages SDK', () => {
       expect(replayed.requests).toHaveLength(4);
       expect(replayed.retryEvents).toHaveLength(0);
       expect(replayed.tools).toBe(1);
-      expect(continuations(replayed.local)).toHaveLength(2);
+      expect(continuations(replayed.local)).toEqual([]);
+      expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
+      expect(replayed.requests[3]?.body['messages']).toEqual(replayed.requests[2]?.body['messages']);
       expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0]);
       expect(stops(replayed).map(([, args]) => args?.inputData?.['maxRecoveryAttempts'])).toEqual([1, 1]);
       expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true]);
-      expect(JSON.stringify(replayed.requests[3]?.body).split('继续')).toHaveLength(3);
+      expect(stops(replayed).map(([, args]) => args?.inputData?.['hasPartialOutput'])).toEqual([false, false]);
+      expect(await stopResults(replayed)).toMatchObject([
+        [{ exitCode: 0, recovery: { action: 'retry' } }],
+        [{ exitCode: 0, recovery: { action: 'retry' } }],
+      ]);
     } finally {
       await replayed.close();
     }
@@ -354,12 +368,20 @@ describe('provider failures through the real Messages SDK', () => {
     expect(await (await prompt(repeatedAfterReset)).completion).toMatchObject({ state: 'failed' });
     expect(repeatedAfterReset.requests).toHaveLength(4);
     expect(repeatedAfterReset.tools).toBe(1);
-    expect(continuations(repeatedAfterReset.local)).toHaveLength(2);
+    expect(continuations(repeatedAfterReset.local)).toEqual([]);
+    expect(repeatedAfterReset.requests[1]?.body['messages']).toEqual(repeatedAfterReset.requests[0]?.body['messages']);
+    expect(repeatedAfterReset.requests[3]?.body['messages']).toEqual(repeatedAfterReset.requests[2]?.body['messages']);
     expect(stops(repeatedAfterReset).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 0, 1]);
     expect(stops(repeatedAfterReset).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true, false]);
+    expect(stops(repeatedAfterReset).map(([, args]) => args?.inputData?.['hasPartialOutput'])).toEqual([false, false, false]);
+    expect(await stopResults(repeatedAfterReset)).toMatchObject([
+      [{ exitCode: 0, recovery: { action: 'retry' } }],
+      [{ exitCode: 0, recovery: { action: 'retry' } }],
+      [{ exitCode: 0, stdout: '' }],
+    ]);
   }, 60_000);
 
-  it('does not reset the streak budget on HTTP 200 heartbeats, partial text, or prior tool results when the continuation fails', async () => {
+  it('keeps the streak cap after a silent failure is followed by partial output and prior tool results', async () => {
     const partialAfterHeartbeat = sse([
       ...Array.from({ length: 4 }, () => ['ping', { type: 'ping' }] as const),
       messageStart('msg_partial_after_ping'),
@@ -378,9 +400,15 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.tools).toBe(1);
     expect(replayed.requests).toHaveLength(3);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[2]?.body['messages']).toEqual(replayed.requests[1]?.body['messages']);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoveryAttempts'])).toEqual([0, 1]);
     expect(stops(replayed).map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, false]);
+    expect(stops(replayed).map(([, args]) => args?.inputData?.['hasPartialOutput'])).toEqual([false, true]);
+    expect(await stopResults(replayed)).toMatchObject([
+      [{ exitCode: 0, recovery: { action: 'retry' } }],
+      [{ exitCode: 0, stdout: '' }],
+    ]);
   }, 60_000);
 
   it.each([false, true])('keeps the completed tool result without executing a call from the failed stream (block closed: %s)', async (blockClosed) => {
@@ -390,9 +418,10 @@ describe('provider failures through the real Messages SDK', () => {
       ...(blockClosed ? [['content_block_stop', { type: 'content_block_stop', index: 0 }] as const] : []),
       gatewayTerminalEvent,
     ]);
-    const replayed = await replay((requestNumber, continued) => {
+    const replayed = await replay((requestNumber) => {
       if (requestNumber === 1) return toolSse();
-      return continued ? terminalSse('Continued after the saved tool.') : failed;
+      if (requestNumber === 2) return failed;
+      return terminalSse('Retried after the saved tool.');
     }, { tool: true, modelAlias: argonModel });
     open.push(replayed);
     expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
@@ -400,12 +429,19 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.requests).toHaveLength(3);
     expect(replayed.retryEvents).toHaveLength(0);
     expect(replayed.responseBodies[1]?.toString()).toBe(failed);
-    expect(continuations(replayed.local)).toHaveLength(1);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[2]?.body['messages']).toEqual(replayed.requests[1]?.body['messages']);
     const nextRequest = JSON.stringify(replayed.requests[2]?.body);
     expect(nextRequest).toContain('saved');
     expect(nextRequest).toContain('toolu_probe');
     expect(nextRequest).not.toContain('toolu_interrupted');
-    expect(nextRequest.split('继续')).toHaveLength(2);
+    expect(nextRequest).not.toContain('继续');
+    expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
+      hasPartialOutput: false,
+      recoverable: true,
+      recoveryAttempts: 0,
+    });
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
     const toolResults = (await replayed.local.persistedWireRecords()).filter((record) => record.type === 'context.append_loop_event')
       .map((record) => record['event'] as { type: string; toolCallId?: string; result?: { output?: string } })
       .filter((event) => event.type === 'tool.result');
@@ -454,31 +490,38 @@ describe('provider failures through the real Messages SDK', () => {
     await replayed.local.expectResumeMatches();
   }, 60_000);
 
-  it.each([argonModel, 'example-model'])('keeps native read retries first and limits exhausted continuation to Argon: %s', async (modelAlias) => {
+  it.each([argonModel, 'example-model'])('keeps native read retries first and limits silent no-output recovery to Argon: %s', async (modelAlias) => {
     const partial = sse([messageStart('msg_disconnect')]);
-    const replayed = await replay((_number, continued) => continued ? terminalSse('Continued after exhausted native retries.') : partial, { maxAttempts: 2, modelAlias });
+    const replayed = await replay((requestNumber) => requestNumber <= 2 ? partial : terminalSse('Recovered after exhausted native retries.'), { maxAttempts: 2, modelAlias });
     open.push(replayed);
     const argon = modelAlias === argonModel;
     expect(await (await prompt(replayed)).completion).toMatchObject({ state: argon ? 'completed' : 'failed' });
     expect(replayed.requests).toHaveLength(argon ? 3 : 2);
     expect(replayed.retryEvents).toHaveLength(1);
-    expect(continuations(replayed.local)).toHaveLength(argon ? 1 : 0);
+    expect(continuations(replayed.local)).toEqual([]);
+    for (const request of replayed.requests.slice(1)) {
+      expect(request.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
+    }
     expect(stops(replayed)).toHaveLength(1);
     const input = stops(replayed)[0]?.[1]?.inputData;
     expect(input).toMatchObject({
+      hasPartialOutput: false,
       recoverable: true,
       recoveryAttempts: 0,
       errorCode: 'provider.connection_error',
       error: { details: { retry: false, retry_exhausted: true, retry_attempts: 2, retry_max_attempts: 2 } },
     });
     const serialized = JSON.stringify(input?.['error']);
+    expect(await stopResults(replayed)).toMatchObject(argon
+      ? [[{ exitCode: 0, recovery: { action: 'retry' } }]]
+      : [[{ exitCode: 0, stdout: '' }]]);
     expect(serialized).toContain('before message_stop');
     expect(serialized).not.toContain('request_delivery');
     expect(serialized).not.toContain('upstream_retryable');
   }, 60_000);
 
-  it('appends a new user message for the Argon gateway terminal event without retrying the original request', async () => {
-    const replayed = await replay((_requestNumber, continued) => continued ? terminalSse('Completed after continuation.') : gatewayTerminalWire, { modelAlias: argonModel });
+  it('silently retries the Argon gateway terminal event without changing user messages', async () => {
+    const replayed = await replay((requestNumber) => requestNumber === 1 ? gatewayTerminalWire : terminalSse('Recovered after gateway terminal.'), { modelAlias: argonModel });
     open.push(replayed);
     const spawn = HostProcessService.prototype.spawn;
     const inputs: Array<MockInstance<Awaited<ReturnType<typeof spawn>>['stdin']['end']>> = [];
@@ -495,36 +538,38 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.responseBodies[0]?.toString()).toBe(gatewayTerminalWire);
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(continuations(replayed.local)).toHaveLength(1);
-    expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
     const details = { errorSource: 'provider_event', upstreamErrorCode: gatewayTerminalError.code, upstreamErrorType: 'upstream_error', upstreamStatus: 502, retry: false, requestId: null, traceId: null };
     const input = stops(replayed)[0]?.[1]?.inputData;
-    expect(input).toMatchObject({ modelAlias: argonModel, recoverable: true, recoveryAttempts: 0, errorDetails: details });
+    expect(input).toMatchObject({ modelAlias: argonModel, hasPartialOutput: false, recoverable: true, recoveryAttempts: 0, errorDetails: details });
     expect(input?.['errorDetails']).not.toHaveProperty('upstream_retryable');
     expect(inputs).toHaveLength(1);
     const stdin = inputs[0]?.mock.calls[0]?.[0];
-    expect(JSON.parse(String(stdin))).toMatchObject({ hook_event_name: 'StopFailure', model_alias: argonModel, recoverable: true, recovery_attempts: 0, upstream_error_code: gatewayTerminalError.code, error_details: details });
-    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'continue', userMessage: '继续' } }]]);
+    expect(JSON.parse(String(stdin))).toMatchObject({ hook_event_name: 'StopFailure', model_alias: argonModel, has_partial_output: false, recoverable: true, recovery_attempts: 0, upstream_error_code: gatewayTerminalError.code, error_details: details });
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
   }, 60_000);
 
-  it('continues an Argon HTTP 502 that names the gateway terminal code without resending that request', async () => {
+  it('silently retries an Argon HTTP 502 that names the gateway terminal code', async () => {
     const body = { type: 'error', error: gatewayTerminalError };
-    const replayed = await replay((_requestNumber, continued) => continued
-      ? terminalSse('Completed after the HTTP gateway terminal.')
-      : jsonResponse(502, 'Bad Gateway', body), { modelAlias: argonModel });
+    const replayed = await replay((requestNumber) => requestNumber === 1
+      ? jsonResponse(502, 'Bad Gateway', body)
+      : terminalSse('Recovered after the HTTP gateway terminal.'), { modelAlias: argonModel });
     open.push(replayed);
     expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
     expect(replayed.requests).toHaveLength(2);
     expect(replayed.retryEvents).toHaveLength(0);
-    expect(continuations(replayed.local)).toHaveLength(1);
-    expect(JSON.stringify(replayed.requests[1]?.body).split('继续')).toHaveLength(2);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
     expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
       modelAlias: argonModel,
+      hasPartialOutput: false,
       recoverable: true,
       recoveryAttempts: 0,
       upstreamErrorCode: gatewayTerminalError.code,
       errorDetails: { errorSource: 'provider_http', statusCode: 502, retry: false },
     });
+    expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
   }, 60_000);
 
   it('still retries an ordinary HTTP 502 that does not name a terminal code', async () => {
@@ -629,7 +674,7 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
     readonly home: string;
     readonly local: TestAgentContext;
     readonly requests: Array<{ readonly url: string | undefined; readonly body: Record<string, unknown> }>;
-    sendWithHistory(history: readonly ContextMessage[], modelAlias?: string): Promise<Record<string, unknown>>;
+    sendWithHistory(history: readonly ContextMessage[], modelAlias?: string, toolUse?: boolean): Promise<Record<string, unknown>>;
     close(): Promise<void>;
   }
 
@@ -708,7 +753,7 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
       home,
       local,
       requests,
-      async sendWithHistory(history: readonly ContextMessage[], modelAlias = argonModel): Promise<Record<string, unknown>> {
+      async sendWithHistory(history: readonly ContextMessage[], modelAlias = argonModel, toolUse = true): Promise<Record<string, unknown>> {
         local.configure({
           provider: {
             type: 'anthropic',
@@ -721,7 +766,7 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
             video_in: true,
             audio_in: false,
             thinking: true,
-            tool_use: true,
+            tool_use: toolUse,
             max_context_tokens: 200_000,
           },
         });
@@ -800,7 +845,7 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
       },
     ]);
 
-    const activeHarness = await createAppendixHarness({ installPlugin: true });
+    const activeHarness = await createAppendixHarness({ installPlugin: true, pluginSettings: { strategy: 'tool_result_appendix' } });
     openHarnesses.push(activeHarness);
     const historySnapshot = structuredClone(history);
     const projectedArgonBody = await activeHarness.sendWithHistory(history, argonModel);
@@ -898,8 +943,148 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
     expect(passthroughBody).toEqual(baselineArgonBody);
   }, 60_000);
 
+  it('defaults to trailing plain-text projection for same-anchor user, host, peer, and agent guidance', async () => {
+    const harness = await createAppendixHarness({
+      installPlugin: true,
+      pluginSettings: { targetModels: 'example-model' },
+    });
+    openHarnesses.push(harness);
+    const anchor = { turnId: 7, stepId: 'trailing-text-step' };
+    const history: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Inspect the workspace.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([
+        { id: 'toolu_trailing_first', name: 'ReadFile' },
+        { id: 'toolu_trailing_last', name: 'ReadFile' },
+      ]),
+      { role: 'tool', content: [{ type: 'text', text: 'first tool result' }], toolCalls: [], toolCallId: 'toolu_trailing_first' },
+      { role: 'tool', content: [{ type: 'text', text: 'final tool result' }], toolCalls: [], toolCallId: 'toolu_trailing_last' },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Use the new plan.' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+        source: anchor,
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<system-reminder>Model guidance for the next step.</system-reminder>' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'model_steering' },
+        source: anchor,
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<peer-message>Peer review is ready.</peer-message>' }],
+        toolCalls: [],
+        origin: {
+          kind: 'peer_thread',
+          source: { hostId: 'host', workspaceId: 'workspace', sessionId: 'session' },
+          messageId: 'peer-trailing-1',
+          acceptedAt: 1,
+        },
+        source: anchor,
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: '<agent-message>Parent guidance is ready.</agent-message>' }],
+        toolCalls: [],
+        origin: { kind: 'agent_message', messageId: 'agent-trailing-1', senderAgentId: 'parent', senderTaskName: 'review' },
+        source: anchor,
+      },
+    ];
+    const canonicalHistory = structuredClone(history);
+    const projectedBody = await harness.sendWithHistory(history, 'example-model');
+    expect(history).toEqual(canonicalHistory);
+
+    const messages = projectedBody['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(messages).toHaveLength(3);
+    const finalUserTurn = messages.at(-1);
+    expect(finalUserTurn?.role).toBe('user');
+    expect(finalUserTurn?.content.map((part) => part['type'])).toEqual(['tool_result', 'tool_result']);
+    const finalToolResult = finalUserTurn?.content.at(-1);
+    expect(finalToolResult).toMatchObject({ type: 'tool_result', tool_use_id: 'toolu_trailing_last' });
+    const finalToolResultContent = finalToolResult?.['content'] as Array<Record<string, unknown>>;
+    const finalToolResultText = finalToolResultContent
+      .flatMap((part) => typeof part['text'] === 'string' ? [part['text']] : [])
+      .join('\n\n');
+    expect(finalToolResultText).toContain('<tool-result-appendix>');
+    expect(finalToolResultText).toContain('Model guidance for the next step.');
+    expect(finalToolResultText).toContain('<tool-result-followup role="user" origin="user">');
+    expect(finalToolResultText).toContain('<tool-result-followup role="user" origin="peer_thread">');
+    expect(finalToolResultText).toContain('<tool-result-followup role="user" origin="agent_message">');
+
+    const repeatedBody = await harness.sendWithHistory(history, 'example-model');
+    expect(repeatedBody).toEqual(projectedBody);
+    expect(history).toEqual(canonicalHistory);
+    expect(harness.local.get(IPluginService).requestProjectionMetrics('argon-tool-result-appendix')).toEqual({
+      evaluatedRequests: 2,
+      matchedRequests: 2,
+      passthroughRequests: 0,
+      projectedRequests: 2,
+      projectedBatches: 2,
+      projectedMessages: 8,
+    });
+  }, 60_000);
+
+  it('keeps trailing user text outside a complete tool result across a schema-only message stripped by tool selection', async () => {
+    const harness = await createAppendixHarness({
+      installPlugin: true,
+      pluginSettings: { targetModels: 'example-model' },
+    });
+    openHarnesses.push(harness);
+    const anchor = { turnId: 8, stepId: 'schema-boundary-step' };
+    const followupText = 'Keep this user follow-up standalone after the schema boundary.';
+    const schemaOnlyMessage: ContextMessage = {
+      role: 'system',
+      content: [],
+      toolCalls: [],
+      tools: [{ name: 'plugin__schema_only', description: 'Schema-only boundary', parameters: {} }],
+      origin: { kind: 'injection', variant: 'dynamic_tool_schema' },
+      source: anchor,
+    };
+    const history: readonly ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'Inspect both files.' }], toolCalls: [], origin: { kind: 'user' } },
+      buildAssistantToolUse([
+        { id: 'toolu_schema_first', name: 'ReadFile' },
+        { id: 'toolu_schema_last', name: 'ReadFile' },
+      ]),
+      { role: 'tool', content: [{ type: 'text', text: 'first schema test result' }], toolCalls: [], toolCallId: 'toolu_schema_first' },
+      { role: 'tool', content: [{ type: 'text', text: 'last schema test result' }], toolCalls: [], toolCallId: 'toolu_schema_last' },
+      schemaOnlyMessage,
+      {
+        role: 'user',
+        content: [{ type: 'text', text: followupText }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+        source: anchor,
+      },
+    ];
+    const canonicalHistory = structuredClone(history);
+    const body = await harness.sendWithHistory(history, 'example-model', false);
+    expect(history).toEqual(canonicalHistory);
+
+    const messages = body['messages'] as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    const finalUserTurn = messages.at(-1);
+    expect(finalUserTurn?.role).toBe('user');
+    const toolResults = finalUserTurn?.content.filter((part) => part['type'] === 'tool_result') ?? [];
+    expect(toolResults).toHaveLength(2);
+    expect(JSON.stringify(toolResults)).not.toContain(followupText);
+    expect(finalUserTurn?.content).toContainEqual(expect.objectContaining({ type: 'text', text: followupText }));
+    expect(JSON.stringify(messages)).not.toContain('plugin__schema_only');
+
+    const repeatedBody = await harness.sendWithHistory(history, 'example-model', false);
+    expect(repeatedBody).toEqual(body);
+    expect(history).toEqual(canonicalHistory);
+    expect(harness.local.get(IPluginService).requestProjectionMetrics('argon-tool-result-appendix')).toMatchObject({
+      evaluatedRequests: 2,
+      matchedRequests: 2,
+      projectedBatches: 0,
+      projectedMessages: 0,
+    });
+  }, 60_000);
+
   it('covers tool_result only, multi-tool with media, real human user follow-up, failure recovery continuation, compaction summary, and undo idempotence', async () => {
-    const harness = await createAppendixHarness({ installPlugin: true });
+    const harness = await createAppendixHarness({ installPlugin: true, pluginSettings: { strategy: 'tool_result_appendix' } });
     openHarnesses.push(harness);
 
     const toolOnlyHistory: readonly ContextMessage[] = [
@@ -1099,7 +1284,7 @@ describe('argon-tool-result-appendix projection through real AnthropicChatProvid
       },
     ];
 
-    const harness = await createAppendixHarness({ installPlugin: true });
+    const harness = await createAppendixHarness({ installPlugin: true, pluginSettings: { strategy: 'tool_result_appendix' } });
     openHarnesses.push(harness);
     const settingsService = harness.local.get(IPluginSettingsService);
     const initialInspect = await settingsService.inspect('argon-tool-result-appendix');

@@ -223,6 +223,47 @@ describe('loop-event fold parity', () => {
     expect(folded).toEqual([]);
   });
 
+  it('drops thinking-only shells immediately on error, including after state recovery', () => {
+    for (const part of [
+      { type: 'think', think: '', encrypted: 'sig' },
+      { type: 'think', think: 'internal reasoning' },
+      { type: 'text', text: '   ' },
+    ] as const) {
+      let state = foldAll([], [
+        { type: 'step.begin', uuid: 'failed' },
+        { type: 'content.part', stepUuid: 'failed', part },
+      ]);
+      state = structuredClone(state);
+      state = foldLoopEvent(state, { type: 'step.end', uuid: 'failed', finishReason: 'error' });
+      expect(state).toEqual([]);
+      expect(foldAll(state, [{ type: 'step.begin', uuid: 'retry' }, { type: 'step.end', uuid: 'retry' }])).toEqual([]);
+    }
+  });
+
+  it.each(['error', 'interrupted'])('preserves substantive partial output on %s', (finishReason) => {
+    for (const part of [
+      { type: 'text', text: 'half an answer' },
+      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AA==' } },
+      { type: 'text', text: '', attachment: { fileId: 'file', mimeType: 'text/plain', size: 1 } },
+    ] as const) {
+      const state = foldAll([], [
+        { type: 'step.begin', uuid: 'failed' },
+        { type: 'content.part', stepUuid: 'failed', part },
+        { type: 'step.end', uuid: 'failed', finishReason },
+      ]);
+      expect(state).toMatchObject([{ role: 'assistant', partial: true, content: [part] }]);
+      expect(foldAll(structuredClone(state), [{ type: 'step.begin', uuid: 'retry' }])[0]?.partial).toBeUndefined();
+    }
+  });
+
+  it('preserves signed thinking sealed intentionally with other', () => {
+    expect(foldAll([], [
+      { type: 'step.begin', uuid: 'thinking' },
+      { type: 'content.part', stepUuid: 'thinking', part: { type: 'think', think: 'plan', encrypted: 'sig' } },
+      { type: 'step.end', uuid: 'thinking', finishReason: 'other' },
+    ])).toMatchObject([{ role: 'assistant', content: [{ type: 'think', think: 'plan', encrypted: 'sig' }] }]);
+  });
+
   it('keeps the open assistant untouched when step.end reports an interruption', () => {
     const folded = foldAll([], [
       { type: 'step.begin', uuid: 's1' },

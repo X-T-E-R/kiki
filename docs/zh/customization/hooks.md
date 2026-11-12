@@ -204,12 +204,12 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 ```
 
 ::: info 哪些事件可以阻断？
-`PreToolUse`、`Stop` 和 `UserPromptSubmit` 可以阻断待执行的操作。`StopFailure` 可以请求[在模型失败后继续](#模型失败后继续)；hook 自身失败时保留原模型错误。其余事件只供观察。
+`PreToolUse`、`Stop` 和 `UserPromptSubmit` 可以阻断待执行的操作。`StopFailure` 本身不是阻断型 hook，但可请求[模型失败后的有限恢复](#模型失败后恢复)；hook 自身失败时保留原模型错误。其余事件只供观察。
 :::
 
-### 模型失败后继续
+### 模型失败后恢复
 
-模型请求失败后，legacy `StopFailure` 脚本可以请求原生 Agent loop 追加一条新的用户消息并继续。宿主先处理同一请求的自动重试；重试停止或预算耗尽后，hook 可以追加新消息，但不能重发失败请求。
+模型请求失败后，legacy `StopFailure` 脚本可以请求原生 Agent loop 不附加新消息、直接重试失败步骤，也可以追加一条用户消息并开始下一步。宿主先处理同一请求的自动重试；自动重试停止或预算耗尽后，hook 才会运行。
 
 除基础事件字段外，脚本还会收到：
 
@@ -220,27 +220,27 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 | `upstream_error_code` | 上游结构化错误标识，有值时才提供；不要从错误文字猜码 |
 | `model_alias` | Agent profile 当前绑定的模型别名，有值时才提供；用于限定特定模型的恢复策略 |
 | `turn_id`、`step` | 当前轮次和步骤；轮次结束时的观察通知可能没有 `step` |
-| `recoverable` | 宿主是否允许对本次失败继续执行 |
-| `recovery_attempts`、`max_recovery_attempts` | 当前连续失败段已用的 hook 接续次数和宿主上限 `1`；loop 请求恢复时提供 |
+| `has_partial_output` | 布尔值；只有失败步骤保留了非思考的实质性回答、媒体或工具调用输出时才为 `true` |
+| `recoverable` | 宿主是否允许恢复本次失败 |
+| `recovery_attempts`、`max_recovery_attempts` | 当前连续失败段已使用的恢复动作数和宿主上限 `1`；loop 请求恢复时提供 |
 
-只有 `recoverable` 为 `true`，且结构化错误命中脚本处理的情形时，才以退出码 `0` 输出：
+`has_partial_output` 用于判断失败步骤保留了什么：单独的思考内容不算实质输出，模型请求报错且失败的 partial assistant 消息只含思考时，Kiki 会立即丢弃它。用户主动取消走独立的 Interrupt 路径，仍按原有行为保留被中断的 partial thinking，不会触发 `StopFailure` 恢复。
 
-```json
-{
-  "hookSpecificOutput": {
-    "recovery": {
-      "action": "continue",
-      "userMessage": "从保留的回答继续。"
-    }
-  }
-}
-```
+只有 `recoverable` 为 `true`，且结构化错误命中脚本处理的情形时，才以退出码 `0` 在 `hookSpecificOutput.recovery` 中返回以下一种动作：
 
-`userMessage` 必须包含非空白文字，UTF-8 编码不超过 8 KiB。Kiki 将它追加为带 hook 来源标记的 user 消息，在同一轮开始下一步。最后一次失败尝试的部分 Assistant 输出和已完成的工具结果留在上下文中；此前为重试而丢弃的输出不会恢复。这个动作不会重放失败请求或此前的工具调用。不支持 `retry` 动作。
+| 动作 | `recovery` 值 | 效果 |
+| --- | --- | --- |
+| `continue` | `{ "action": "continue", "userMessage": "从保留的回答继续。" }` | 将文字作为带 hook 来源标记的 user 消息追加到上下文，并在同一轮开始下一步。 |
+| `retry` | `{ "action": "retry" }` | 不添加合成的 user 消息，直接重试失败步骤。 |
+| `auto` | `{ "action": "auto", "userMessage": "从保留的回答继续。" }` | `has_partial_output` 为 `true` 时用该消息接续；为 `false` 时不添加消息并重试。 |
 
-每个连续失败段最多允许一次 hook 接续；接续请求若再次失败则停止，完成一次含有效正文或模型工具调用的完整模型响应后预算重置，同一轮后续新的失败段可再次接续一次。仅收到 HTTP 200、心跳、部分输出或仅工具执行成功不会重置预算。取消、凭据、计费、配额、安全过滤、上下文溢出、无效配置、普通 HTTP 429 和供应商的永久拒绝仍会停止恢复。供应商标明的 `gateway_stream_terminal_error`，无论出现在流事件还是 HTTP 错误体里，都禁止重发同一请求，但允许接上一条新用户消息。原生模型请求的送达或执行情况不明，本身不再阻止这条新消息；外部执行器仍使用各自的恢复合同。上游布尔值 `retryable: false` 也只禁止同请求重试。脚本应匹配自己支持的结构化失败；模型专属策略应使用 `model_alias` 限定范围。
+`continue` 和 `auto` 的 `userMessage` 必须包含非空白文字，UTF-8 编码不超过 8,192 字节。接续不会重放失败请求或此前的工具调用；最后一次失败尝试保留的输出和已完成工具结果继续留在上下文中，此前原生重试丢弃的输出不会恢复。
 
-没有接续请求时，原错误照常结束本轮。hook 失败、超时、输出非法，或多个命中 hook 请求的消息不同，也保留原错误。同一次失败已经同步调用 `StopFailure` 后，不会在轮次结束时重复通知；后续不同失败仍可再次触发。纯观察调用（`recoverable = false`）的返回值不改变结果。
+多个 hook 命中时，Kiki 比较它们最终生效的恢复结果：不附加合成 user 消息的重试，或要追加的确切 user 消息。结果相同时可以恢复；一个要求重试、另一个要求接续，或接续消息不同，都会取消恢复并保留原错误。hook 失败、超时或输出非法也会保留原错误。
+
+每个连续失败段最多允许一次恢复动作；该动作再次失败时不再恢复。完成一次含有效正文或模型工具调用的完整模型响应后预算重置，同一轮后续新的失败段可再次恢复一次。仅收到 HTTP 200、心跳、部分输出或仅工具执行成功不会重置预算。取消、凭据、计费、配额、安全过滤、上下文溢出、无效配置、普通 HTTP 429 和供应商的永久拒绝仍不允许恢复。供应商标明的 `gateway_stream_terminal_error`，无论出现在流事件还是 HTTP 错误体里，都会禁用同一请求的自动重试。符合准入条件的 hook 仍可通过 `retry`、`continue` 或 `auto` 请求一个新的逻辑步骤。送达或执行情况不明，本身不会阻止原生 hook 恢复；外部执行器仍使用各自的恢复合同。上游布尔值 `retryable: false` 也只禁止同请求自动重试。脚本应匹配自己支持的结构化失败；模型专属策略应使用 `model_alias` 限定范围。
+
+同一次失败已经同步调用 `StopFailure` 后，不会在轮次结束时重复通知；后续不同失败仍可再次触发。纯观察调用（`recoverable = false`）的返回值不改变结果。
 
 ## 事件一览
 
@@ -261,7 +261,7 @@ subagent 会额外附带 `parent_agent_id`，基于文件加载的 profile 或�
 | `SubagentStart` | subagent 名称 | — | subagent 开始运行前触发 |
 | `SubagentStop` | subagent 名称 | — | subagent 成功完成后触发（观察用） |
 | `TaskStarted` | 任务类型（`agent`、`process` 或 `question`） | — | 后台任务启动时触发；payload 含 `task_id`、`description` 和 `detached`（观察用） |
-| `StopFailure` | 错误类型 | — | 观察失败；原生模型请求失败时，可在本轮结束前请求[有限次数的接续](#模型失败后继续) |
+| `StopFailure` | 错误类型 | — | 观察失败并包含 `has_partial_output`；符合准入条件的原生模型请求失败可在本轮结束前请求[有限恢复](#模型失败后恢复) |
 | `Interrupt` | 空字符串 | — | 用户中断本轮时触发（例如按下 Esc）；超时或其他程序性中断不会触发。中断时 `Stop` 不会触发，由本事件替代。payload 含 `reason` 字段（观察用） |
 | `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发（观察用） |

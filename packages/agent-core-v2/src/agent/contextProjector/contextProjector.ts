@@ -12,7 +12,11 @@ export interface MediaStripSnapshot {
 export interface ProjectionPolicy {
   readonly structure?: 'strict';
   readonly media?: 'degraded' | { readonly strip: MediaStripSnapshot };
-  readonly toolResultAppendix?: 'host_auto_injections';
+  readonly toolResultAppendix?: 'host_auto_injections' | 'trailing_user_text';
+  readonly toolResultAppendixHistory?: {
+    readonly canonical: readonly ContextMessage[];
+    readonly sourceIndexes: readonly number[];
+  };
   readonly onToolResultAppendix?: (stats: {
     readonly projectedBatches: number;
     readonly projectedMessages: number;

@@ -382,7 +382,10 @@ describe('thinking-only continuation', () => {
         expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
         expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
         expect(storedThinking(local)).toEqual([]);
-      } else expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      } else {
+        expect(terminal.state).toBe('failed');
+        expect(storedThinking(local)).toEqual([]);
+      }
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -395,7 +398,7 @@ describe('thinking-only continuation', () => {
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: 'plan', encrypted: 'sig-plan' });
+      expect(storedThinking(local)).toEqual([]);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -410,7 +413,7 @@ describe('thinking-only continuation', () => {
       expect(terminal.state).toBe('failed');
       expect(create).toHaveBeenCalledTimes(2);
       expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
-      expect(storedThinking(local)).toHaveLength(2);
+      expect(storedThinking(local)).toHaveLength(second === 'normal' ? 2 : 1);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();

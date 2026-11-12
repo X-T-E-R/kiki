@@ -5,7 +5,7 @@ import { createToolMessage, type ContentPart, type ToolCall } from '#/kosong/con
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import type { ContextMessage, ContextMessageSource } from './types';
-import { isVacuousContentPart } from './vacuousContent';
+import { isSubstantiveContentPart, isVacuousContentPart } from './vacuousContent';
 
 const TOOL_INTERRUPTED_ON_RESUME_OUTPUT =
   'Tool execution was interrupted before its result was recorded. Do not assume the tool completed successfully.';
@@ -93,6 +93,7 @@ export function createLoopEventFold(sink: LoopEventFoldSink): LoopEventFold {
 interface InitialFoldState {
   readonly openHasToolCalls: boolean;
   readonly openVacuous: boolean;
+  readonly openHasSubstantiveOutput: boolean;
   readonly pendingToolCallIds: readonly string[];
   readonly pendingToolSources?: ReadonlyMap<string, ContextMessageSource>;
 }
@@ -104,6 +105,7 @@ function createLoopEventFoldWithState(
   let openStepUuid: string | null | undefined = initial === undefined ? undefined : null;
   let openHasToolCalls = initial?.openHasToolCalls ?? false;
   let openVacuous = initial?.openVacuous ?? true;
+  let openHasSubstantiveOutput = initial?.openHasSubstantiveOutput ?? false;
   const pending = new Map<string, ContextMessageSource | undefined>(
     initial?.pendingToolCallIds.map((id) => [id, initial.pendingToolSources?.get(id)]),
   );
@@ -157,10 +159,19 @@ function createLoopEventFoldWithState(
           openStepUuid = event.uuid;
           openHasToolCalls = false;
           openVacuous = true;
+          openHasSubstantiveOutput = false;
           return;
         }
         case 'step.end': {
-          if (event.finishReason === 'interrupted' || event.finishReason === 'error') return;
+          if (event.finishReason === 'interrupted') return;
+          if (event.finishReason === 'error') {
+            if (acceptsOpenStep(event.uuid) && !openHasSubstantiveOutput) {
+              sink.dropOpenAssistant();
+              openStepUuid = undefined;
+              flushDeferred();
+            }
+            return;
+          }
           settleOpen(time);
           flushDeferred();
           return;
@@ -169,6 +180,7 @@ function createLoopEventFoldWithState(
           if (!acceptsOpenStep(event.stepUuid)) return;
           sink.appendOpenContent(event.part);
           openVacuous = openVacuous && isVacuousContentPart(event.part);
+          openHasSubstantiveOutput ||= isSubstantiveContentPart(event.part);
           return;
         }
         case 'tool.call': {
@@ -179,11 +191,12 @@ function createLoopEventFoldWithState(
             id: event.toolCallId,
             name: event.name,
             arguments: event.args === undefined ? null : JSON.stringify(event.args),
-            ...(event.extras !== undefined ? { extras: event.extras } : {}),
+            extras: event.extras,
           };
           sink.appendOpenToolCall(call, source);
           pending.set(event.toolCallId, source);
           openHasToolCalls = true;
+          openHasSubstantiveOutput = true;
           return;
         }
         case 'tool.result': {
@@ -219,6 +232,7 @@ function createLoopEventFoldWithState(
       openStepUuid = undefined;
       openHasToolCalls = false;
       openVacuous = true;
+      openHasSubstantiveOutput = false;
       pending.clear();
       deferred = [];
     },
@@ -376,6 +390,7 @@ function recoverFoldState(state: readonly ContextMessage[]): InitialFoldState | 
   return {
     openHasToolCalls: open.toolCalls.length > 0,
     openVacuous: open.content.every(isVacuousContentPart),
+    openHasSubstantiveOutput: open.toolCalls.length > 0 || open.content.some(isSubstantiveContentPart),
     pendingToolCallIds,
     pendingToolSources: new Map(
       pendingToolCallIds.map((toolCallId) => [toolCallId, open.toolCallSources?.[toolCallId]])

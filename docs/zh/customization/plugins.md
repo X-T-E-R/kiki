@@ -451,9 +451,13 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 ### 模型请求投影
 
-插件可以用 `x-kiki.requestProjection` 为选定的原生模型声明发送策略，无需 `entry`。设置 `schemaVersion: 1`，用 `strategySetting` 和 `modelsSetting` 指向两个字符串设置（默认为 `strategy` 和 `targetModels`）。`defaultStrategy` 可取 `passthrough` 或 `tool_result_appendix`；`defaultModels` 是默认模型列表。模型设置接受以换行、逗号或分号分隔的精确模型别名、ID 或名称。
+插件可以用 `x-kiki.requestProjection` 为选定的原生模型声明发送策略，无需 `entry`。设置 `schemaVersion: 1`，用 `strategySetting` 和 `modelsSetting` 指向两个字符串设置（默认为 `strategy` 和 `targetModels`）。`defaultStrategy` 可取 `passthrough`、`tool_result_appendix` 或 `tool_result_trailing_text`；引擎 schema 的默认值仍是仅处理宿主提醒的 `tool_result_appendix`，插件需要明确选择 `tool_result_trailing_text` 才会启用对话文本折叠。`defaultModels` 是默认模型列表。模型设置接受以换行、逗号或分号分隔的精确模型别名、ID 或名称。
 
-`tool_result_appendix` 只将紧随完整工具批次的自动宿主提醒放进最后一个工具结果的独立文本附录。原工具内容、用户输入和已保存的会话历史保持不变。关闭插件或选用 `passthrough` 后，后续请求沿用原来的消息布局。插件详情的「诊断」显示当前宿主进程的投影计数。
+`tool_result_appendix` 只把完整、规范且工具调用 ID 全局唯一的工具批次之后、经验证的自动宿主提醒并入最后一个完整 `tool_result` 的 `<tool-result-appendix>` 文本片段。即使提醒和后续真实用户消息共享同一轮／步骤锚点，提醒仍会并入附录，用户消息仍单独保留。
+
+`tool_result_trailing_text` 会按规范历史顺序，把完整工具批次后连续出现的、完全由纯文本组成的 `user` 角色消息折叠进最后一个完整 `tool_result`。这包括真实用户消息，以及 `origin` 为 `peer_thread`、`agent_message` 或 `skill_activation` 的 user 角色消息，还有宿主提醒。宿主提醒使用 `<tool-result-appendix>`；对话 followup 使用 `<tool-result-followup role="user" origin="...">`。
+
+遇到 `partial` 消息、带 `tools` 声明的消息、压缩摘要（`compaction_summary`）、非文本媒体片段、附件（`attachment`）或资源链接（`resourceLink`）时，折叠会停止；该消息及其后的文本保持独立。不完整、非规范或工具调用 ID 不唯一的批次不会投影。两种策略都只改变发往模型的请求，不改规范 Wire 记录、已保存的会话历史、时间线 UI 或 undo 锚点。关闭插件或选择 `passthrough` 后，后续请求恢复原消息布局。插件详情的「诊断」显示当前宿主进程的投影计数。
 
 ### 宿主模型与凭据
 
@@ -797,7 +801,7 @@ plugin hooks 与全局 hooks 机制相同——事件列表、stdin JSON 载荷�
 
 安装 plugin 不会运行它的 hooks，它们在启用期间匹配到事件时才触发。
 
-模型恢复插件可以声明 `StopFailure`，返回带 `userMessage` 的显式 `continue` 请求。[失败接续协议](./hooks.md#模型失败后继续)定义了结构化错误字段、原生恢复优先级和每轮次数限制。legacy `Stop` 阻断则用于让正常完成的模型响应继续，不负责恢复模型失败。这两种动作都不能批准工具调用。
+模型恢复插件可以声明 `StopFailure`，并返回 `continue`、`retry` 或 `auto`。`auto` 根据 `has_partial_output` 在追加 user 消息接续和不加消息重试之间选择。[模型失败后的恢复协议](./hooks.md#模型失败后恢复)说明了输入字段、多个 hook 的有效结果比较、错误资格和每个连续失败段的动作上限。legacy `Stop` 阻断用于让正常完成的模型响应继续，不负责恢复模型失败；这些恢复动作都不能批准工具调用。
 
 ## 会话历史导入
 

@@ -384,7 +384,7 @@ function createService(
   const toolSelect: Partial<IAgentToolSelectService> = {
     enabled: () => false,
     shapeTools: (entries) => entries,
-    shapeHistory: (messages) => messages,
+    shapeHistory: (messages) => ({ messages }),
     resolveBridgeCall: (call) => call,
   };
   const testSnapshot = Object.freeze({}) as MediaStripSnapshot;

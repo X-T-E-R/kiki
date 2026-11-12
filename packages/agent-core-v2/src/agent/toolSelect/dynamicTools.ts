@@ -2,7 +2,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { capabilityDeltaParts, capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import { sliceUtf16 } from '#/_base/text/utf16';
 
-import { SELECT_TOOLS_TOOL_NAME } from './toolSelect';
+import { SELECT_TOOLS_TOOL_NAME, type ShapedToolHistory } from './toolSelect';
 
 export const DYNAMIC_TOOL_SCHEMA_VARIANT = 'dynamic_tool_schema';
 
@@ -26,27 +26,41 @@ export function isLoadableToolsAnnouncement(message: ContextMessage): boolean {
 export function stripDynamicToolContext(
   history: readonly ContextMessage[],
 ): readonly ContextMessage[] {
-  if (!history.some((m) => isDynamicToolSchemaMessage(m) || isLoadableToolsAnnouncement(m))) {
-    return history;
-  }
-  const out: ContextMessage[] = [];
-  for (const message of history) {
+  return shapeDynamicToolContext(history).messages;
+}
+
+export function shapeDynamicToolContext(history: readonly ContextMessage[]): ShapedToolHistory {
+  return shapeToolHistory(history, (message) => {
     if (isLoadableToolsAnnouncement(message)) {
       const parts = capabilityDeltaParts(message).filter((part) => part.variant !== LOADABLE_TOOLS_VARIANT);
-      if (parts.length) out.push({ ...message, content: [{ type: 'text', text: `<system-reminder>\n${parts.map((part) => part.content).join('\n\n')}\n</system-reminder>` }],
-        origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } } });
-      continue;
+      if (parts.length === 0) return undefined;
+      return { ...message, content: [{ type: 'text', text: `<system-reminder>\n${parts.map((part) => part.content).join('\n\n')}\n</system-reminder>` }],
+        origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } } };
     }
-    if (isDynamicToolSchemaMessage(message)) {
-      const { tools: _tools, ...rest } = message;
-      void _tools;
-      if (rest.content.length === 0 && rest.toolCalls.length === 0) continue;
-      out.push(rest);
-      continue;
+    if (!isDynamicToolSchemaMessage(message)) return message;
+    if (message.content.length === 0 && message.toolCalls.length === 0) return undefined;
+    const { tools: _tools, ...rest } = message;
+    return rest;
+  });
+}
+
+export function shapeToolHistory(
+  history: readonly ContextMessage[],
+  transform: (message: ContextMessage) => ContextMessage | undefined,
+): ShapedToolHistory {
+  let shaped: { messages: ContextMessage[]; sourceIndexes: number[] } | undefined;
+  for (const [index, message] of history.entries()) {
+    const next = transform(message);
+    if (shaped === undefined) {
+      if (next === message) continue;
+      shaped = { messages: history.slice(0, index), sourceIndexes: Array.from({ length: index }, (_, i) => i) };
     }
-    out.push(message);
+    if (next !== undefined) {
+      shaped.messages.push(next);
+      shaped.sourceIndexes.push(index);
+    }
   }
-  return out;
+  return shaped ?? { messages: history };
 }
 
 export function collectLoadedDynamicToolNames(

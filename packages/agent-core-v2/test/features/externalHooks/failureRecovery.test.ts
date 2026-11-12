@@ -105,6 +105,55 @@ function textStream(text: string, fail = false) {
 }
 
 describe('StopFailure continuation recovery', () => {
+  function recoveryHook(recovery: unknown): HookDef {
+    return { event: 'StopFailure', command: nodeCommand(`process.stdout.write(JSON.stringify(${JSON.stringify({ hookSpecificOutput: { recovery } })}));`), timeout: 5 };
+  }
+
+  it.each(['retry', 'auto', 'plugin'] as const)('retries thinking/signature-only failed steps without synthetic user input (%s)', async (mode) => {
+    const f = await fixture({ hooks: mode === 'plugin' ? undefined : [recoveryHook(mode === 'retry' ? { action: mode } : { action: mode, userMessage: '继续' })] });
+    try {
+      f.local.mockNextProviderResponse({ parts: [{ type: 'think', think: 'private reasoning', encrypted: 'failed-signature' }], error: missingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Recovered cleanly' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(2);
+      expect(continuations(f.local)).toEqual([]);
+      expect(f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData).toMatchObject({ hasPartialOutput: false });
+      expect(JSON.stringify(f.local.llmCalls[1])).not.toContain('failed-signature');
+      expect(JSON.stringify(f.local.llmCalls[1])).not.toContain('继续');
+      expect(f.local.contextData().history.filter((message) => message.role === 'assistant')).toHaveLength(1);
+      await f.local.expectResumeMatches();
+    } finally { await f.dispose(); }
+  });
+
+  it.each(['continue', 'retry', 'auto'] as const)('honors %s with partial visible output and exposes the partial-output fact', async (action) => {
+    const f = await fixture({ hooks: [recoveryHook(action === 'retry' ? { action } : { action, userMessage: '继续' })] });
+    try {
+      f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'Partial answer' }], error: missingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Final answer' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(continuations(f.local)).toHaveLength(action === 'retry' ? 0 : 1);
+      expect(f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData).toMatchObject({ hasPartialOutput: true });
+      expect(JSON.stringify(f.local.llmCalls[1])).toContain('Partial answer');
+    } finally { await f.dispose(); }
+  });
+
+  it.each([
+    { partial: false, second: { action: 'retry' }, succeeds: true },
+    { partial: true, second: { action: 'continue', userMessage: '继续' }, succeeds: true },
+    { partial: false, second: { action: 'continue', userMessage: '继续' }, succeeds: false },
+    { partial: true, second: { action: 'retry' }, succeeds: false },
+    { partial: true, second: { action: 'continue', userMessage: 'Different instruction' }, succeeds: false },
+  ])('compares effective recoveries from multiple hooks ($partial, $second.action)', async ({ partial, second, succeeds }) => {
+    const f = await fixture({ hooks: [recoveryHook({ action: 'auto', userMessage: '继续' }), recoveryHook(second)] });
+    try {
+      f.local.mockNextProviderResponse({ parts: partial ? [{ type: 'text', text: 'Partial' }] : [], error: deniedMissingTerminal() });
+      f.local.mockNextResponse({ type: 'text', text: 'Recovered' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: succeeds ? 'completed' : 'failed' });
+      expect(f.local.llmCalls).toHaveLength(succeeds ? 2 : 1);
+      expect(continuations(f.local)).toHaveLength(succeeds && partial ? 1 : 0);
+    } finally { await f.dispose(); }
+  });
+
   it('loads the independent plugin and continues a real Messages failure with its partial assistant output', async () => {
     const streams = [textStream('Partial assistant answer.', true), textStream('Completed answer.')];
     const create = vi.fn(async (_params: unknown) => streams[create.mock.calls.length - 1]!());
@@ -239,8 +288,8 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
-  it('continues one explicit same-request denial and sends no third request when the new message fails', async () => {
-    const f = await fixture();
+  it('honors a legacy continue hook after an explicit same-request denial and stops at the streak cap', async () => {
+    const f = await fixture({ hooks: [alwaysContinue] });
     try {
       f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
       f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
@@ -265,7 +314,8 @@ describe('StopFailure continuation recovery', () => {
       f.local.mockNextResponse({ type: 'text', text: 'Continued without replaying the tool' });
       expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
       expect(tools).toBe(1);
-      expect(continuations(f.local)).toHaveLength(1);
+      expect(continuations(f.local)).toHaveLength(0);
+      expect(f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData?.['hasPartialOutput']).toBe(false);
       expect(f.local.llmCalls).toHaveLength(3);
     } finally { await f.dispose(); }
   });
@@ -410,7 +460,7 @@ describe('StopFailure continuation recovery', () => {
   });
 
   it.each(['crash', 'invalid', 'throw'] as const)('preserves the original provider failure when the recovery hook fails (%s)', async (mode) => {
-    const f = await fixture({ hooks: [{ event: 'StopFailure', command: mode === 'invalid' ? nodeCommand('process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: { action: "retry" } } }));') : nodeCommand('process.exit(1);'), timeout: 5 }] });
+    const f = await fixture({ hooks: [{ event: 'StopFailure', command: mode === 'invalid' ? nodeCommand('process.stdout.write(JSON.stringify({ hookSpecificOutput: { recovery: { action: "unknown" } } }));') : nodeCommand('process.exit(1);'), timeout: 5 }] });
     try {
       if (mode === 'throw') {
         f.trigger.mockImplementation(async (event) => {

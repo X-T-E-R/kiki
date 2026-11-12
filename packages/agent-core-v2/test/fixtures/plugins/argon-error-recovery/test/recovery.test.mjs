@@ -8,13 +8,26 @@ import applyArgonPlugin, { registerArgonExtensionPorts } from '../lib/native.mjs
 import { recoveryFor } from '../lib/recovery.mjs';
 
 const input = { hook_event_name: 'StopFailure', error_code: 'provider.api_error', upstream_error_code: 'antigravity_missing_terminal', recoverable: true, recovery_attempts: 0 };
-const gateway = { ...input, model_alias: 'axon-message/gemini-4-argon', upstream_error_code: 'gateway_stream_terminal_error', error_details: { retry: false } };
+const inputCodelessSse = {
+  hook_event_name: 'StopFailure',
+  error_code: 'provider.api_error',
+  upstream_error_code: undefined,
+  error_message: 'Anthropic error: antigravity_missing_terminal: Upstream completed without a usable answer. [type=api_error]',
+  recoverable: true,
+  recovery_attempts: 0,
+};
+const gateway = { ...input, model_alias: 'axon-message/gemini-4-carbon', upstream_error_code: 'gateway_stream_terminal_error', error_details: { retry: false } };
+const gatewayLegacy = { ...gateway, model_alias: 'axon-message/gemini-4-argon' };
 const disconnected = { ...gateway, error_code: 'provider.connection_error', upstream_error_code: undefined, error_details: { retry: false, retry_exhausted: true } };
-const expected = { hookSpecificOutput: { recovery: { action: 'continue', userMessage: '继续' } } };
+const expectedContinue = { hookSpecificOutput: { recovery: { action: 'continue', userMessage: '继续' } } };
+const expectedRetry = { hookSpecificOutput: { recovery: { action: 'retry' } } };
+const matchingEvents = [input, inputCodelessSse, gateway, gatewayLegacy, disconnected];
 
-for (const [name, event] of Object.entries({ missingTerminal: input, gateway, disconnected })) {
-  test(`continues ${name} exactly once when the host permits it`, () => {
-    assert.deepEqual(recoveryFor(event), expected);
+for (const [name, event] of Object.entries({ missingTerminal: input, missingTerminalCodelessSse: inputCodelessSse, gateway, gatewayLegacy, disconnected })) {
+  test(`chooses recovery for ${name} from retained partial output`, () => {
+    assert.deepEqual(recoveryFor(event), expectedRetry);
+    assert.deepEqual(recoveryFor({ ...event, has_partial_output: false }), expectedRetry);
+    assert.deepEqual(recoveryFor({ ...event, has_partial_output: true }), expectedContinue);
     for (const attempts of [1, 2, undefined]) assert.equal(recoveryFor({ ...event, recovery_attempts: attempts }), undefined);
     assert.equal(recoveryFor({ ...event, recoverable: false }), undefined);
     assert.equal(recoveryFor({ ...event, hook_event_name: 'Stop' }), undefined);
@@ -201,14 +214,20 @@ test('ships an installable dependency-free hook and exercises real stdin/stdout'
   const manifest = JSON.parse(await readFile(new URL('../kimi.plugin.json', import.meta.url), 'utf8'));
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.name, 'argon-error-recovery');
-  assert.equal(manifest.version, '0.2.1');
+  assert.equal(manifest.version, '0.3.0');
   assert.equal(pkg.version, manifest.version);
   assert.match(manifest.interface.displayName, /Unofficial/);
   assert.deepEqual(manifest.hooks, [{ event: 'StopFailure', command: 'node ./scripts/recover.mjs', timeout: 5 }]);
-  for (const event of [input, gateway, disconnected]) {
-    const result = spawnSync(process.execPath, ['./scripts/recover.mjs'], { cwd: root, input: JSON.stringify(event), encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), expected);
+  for (const event of matchingEvents) {
+    for (const { event: inputEvent, expected } of [
+      { event: { ...event, has_partial_output: true }, expected: expectedContinue },
+      { event: { ...event, has_partial_output: false }, expected: expectedRetry },
+      { event, expected: expectedRetry },
+    ]) {
+      const result = spawnSync(process.execPath, ['./scripts/recover.mjs'], { cwd: root, input: JSON.stringify(inputEvent), encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), expected);
+    }
   }
   for (const event of [{ ...gateway, recoverable: false }, { ...gateway, recovery_attempts: 1 }, { ...gateway, model_alias: 'example-model' }]) {
     const result = spawnSync(process.execPath, ['./scripts/recover.mjs'], { cwd: root, input: JSON.stringify(event), encoding: 'utf8' });

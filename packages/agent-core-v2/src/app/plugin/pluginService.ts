@@ -469,7 +469,7 @@ export class PluginService extends Service implements IPluginService {
       activeEntries.push({ pluginId: entry.pluginId, strategy, targetModels });
     }
     for (const entry of activeEntries) {
-      if (entry.strategy !== 'tool_result_appendix') continue;
+      if (entry.strategy === 'passthrough') continue;
       if (!entry.targetModels.some((target) => candidates.has(target))) continue;
       const allowed = await this.isProjectionPluginAllowed(
         entry.pluginId,
@@ -477,7 +477,7 @@ export class PluginService extends Service implements IPluginService {
         input.sessionId,
       );
       if (allowed) {
-        return { strategy: 'tool_result_appendix', pluginId: entry.pluginId };
+        return { strategy: entry.strategy, pluginId: entry.pluginId };
       }
     }
     return { strategy: 'passthrough', pluginId: activeEntries[0]?.pluginId };

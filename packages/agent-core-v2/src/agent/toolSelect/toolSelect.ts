@@ -17,6 +17,11 @@ export interface LoadToolsResult {
   readonly unknown: readonly string[];
 }
 
+export interface ShapedToolHistory {
+  readonly messages: readonly ContextMessage[];
+  readonly sourceIndexes?: readonly number[];
+}
+
 export interface IAgentToolSelectService {
   readonly _serviceBrand: undefined;
 
@@ -29,7 +34,7 @@ export interface IAgentToolSelectService {
   /** Every name for which `isLoadable` holds, computed once for callers that test many names. */
   loadableNames(): ReadonlySet<string>;
 
-  shapeHistory(messages: readonly ContextMessage[]): readonly ContextMessage[];
+  shapeHistory(messages: readonly ContextMessage[]): ShapedToolHistory;
 
   load(names: readonly string[]): LoadToolsResult;
 

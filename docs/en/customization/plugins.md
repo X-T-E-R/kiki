@@ -450,9 +450,13 @@ Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` a
 
 ### Model request projection
 
-Plugins can declare a send strategy for selected native models with `x-kiki.requestProjection`, without an `entry`. Set `schemaVersion: 1` and use `strategySetting` and `modelsSetting` to name two string settings (by default `strategy` and `targetModels`). Set `defaultStrategy` to `passthrough` or `tool_result_appendix`, and use `defaultModels` for the default model list. The model setting accepts exact model aliases, IDs, or names separated by newlines, commas, or semicolons.
+Plugins can declare a send strategy for selected native models with `x-kiki.requestProjection`, without an `entry`. Set `schemaVersion: 1` and use `strategySetting` and `modelsSetting` to name two string settings (by default `strategy` and `targetModels`). `defaultStrategy` accepts `passthrough`, `tool_result_appendix`, or `tool_result_trailing_text`; the engine schema still defaults to the host-only `tool_result_appendix`, so plugins opt into trailing-text folding explicitly. Use `defaultModels` for the default model list. The model setting accepts exact model aliases, IDs, or names separated by newlines, commas, or semicolons.
 
-`tool_result_appendix` moves automatic host reminders immediately following a complete tool batch into a separate text part on the last tool result. Tool content, user input, and saved conversation history stay intact. Disable the plugin or select `passthrough` to restore the original message layout on subsequent requests. The plugin detail's Diagnostics section shows projection counts for the current host process.
+`tool_result_appendix` moves only verified host-generated automatic reminders after a complete, canonical tool batch with globally unique call IDs into a tagged text part of the final complete `tool_result`. Even when a following real-user message shares the reminder's turn/step anchor, the reminder still goes into the appendix and the user's message stays separate.
+
+`tool_result_trailing_text` folds a contiguous run of fully plain-text `user`-role followups after that batch into the final complete `tool_result`, in canonical history order. This includes real user prompts and peer (`peer_thread`), agent (`agent_message`), skill-activation (`skill_activation`), and host-reminder messages. Host reminders use `<tool-result-appendix>`; conversational followups use `<tool-result-followup role="user" origin="...">`.
+
+Folding stops at a `partial` message, a message with tool declarations, a `compaction_summary`, or any media part, attachment, or `resourceLink`; that message and following text stay separate. Incomplete, non-canonical, or non-unique tool batches are not projected. Both strategies change only the outbound request: canonical Wire records, saved history, transcript display and UI, and undo anchors remain untouched. Disable the plugin or select `passthrough` to restore the original message layout on subsequent requests. The plugin detail's Diagnostics section shows projection counts for the current host process.
 
 ### Host models and credentials
 
@@ -796,7 +800,7 @@ Plugin hooks work like global ones — [Hooks](./hooks.md) has the event list, t
 
 Installing a plugin does not run its hooks; they fire when a matching event occurs while it is enabled.
 
-A model-recovery plugin can declare `StopFailure` and return an explicit `continue` request with a `userMessage`. The [failure-continuation contract](./hooks.md#continuing-after-a-model-failure) defines the structured error fields, native-recovery priority, and per-turn limits. A legacy `Stop` block instead continues a model response that finished normally; it does not recover model failures. Neither action approves tool calls.
+A model-recovery plugin can declare `StopFailure` and return `continue`, `retry`, or `auto`. The [failure-recovery contract](./hooks.md#recovering-after-a-model-failure) defines `has_partial_output`, effective outcomes when multiple hooks match, error eligibility, and the one-action streak limit. A legacy `Stop` block instead continues a model response that finished normally; it does not recover model failures. None of these recovery actions approves tool calls.
 
 ## Session history import
 

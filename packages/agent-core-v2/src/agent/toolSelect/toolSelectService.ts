@@ -25,7 +25,8 @@ import {
   collectLoadedDynamicToolNames,
   foldAnnouncedToolNames,
   renderLoadableToolsAnnouncement,
-  stripDynamicToolContext,
+  shapeDynamicToolContext,
+  shapeToolHistory,
 } from './dynamicTools';
 import { TOOL_SELECT_FLAG_ID } from './flag';
 import {
@@ -34,6 +35,7 @@ import {
   SELECT_TOOLS_TOOL_NAME,
   type LoadToolsResult,
   type ShapedToolEntry,
+  type ShapedToolHistory,
 } from './toolSelect';
 
 export const toolSelectPendingLoadedKey = defineState<Set<string>>(
@@ -135,26 +137,17 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     return new Set(this.loadableToolNames());
   }
 
-  shapeHistory(messages: readonly ContextMessage[]): readonly ContextMessage[] {
-    if (!this.enabled()) return stripDynamicToolContext(messages);
-    let shaped: ContextMessage[] | undefined;
-    for (let i = 0; i < messages.length; i += 1) {
-      const message = messages[i]!;
+  shapeHistory(messages: readonly ContextMessage[]): ShapedToolHistory {
+    if (!this.enabled()) return shapeDynamicToolContext(messages);
+    return shapeToolHistory(messages, (message) => {
       const tools = message.tools;
-      if (tools === undefined || !tools.some((tool) => this.isHistoricallyDisabled(tool.name))) {
-        if (shaped !== undefined) shaped.push(message);
-        continue;
-      }
+      if (tools === undefined || !tools.some((tool) => this.isHistoricallyDisabled(tool.name))) return message;
       const kept = tools.filter((tool) => !this.isHistoricallyDisabled(tool.name));
-      if (shaped === undefined) shaped = messages.slice(0, i);
-      if (kept.length > 0) shaped.push({ ...message, tools: kept });
-      else if (message.content.length > 0 || message.toolCalls.length > 0) {
-        const { tools: _tools, ...rest } = message;
-        void _tools;
-        shaped.push(rest);
-      }
-    }
-    return shaped ?? messages;
+      if (kept.length > 0) return { ...message, tools: kept };
+      if (message.content.length === 0 && message.toolCalls.length === 0) return undefined;
+      const { tools: _tools, ...rest } = message;
+      return rest;
+    });
   }
 
   private isHistoricallyDisabled(name: string): boolean {

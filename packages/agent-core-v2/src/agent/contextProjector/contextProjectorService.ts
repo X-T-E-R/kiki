@@ -79,6 +79,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
       (anomaly) => anomalies.push(anomaly),
       {
         toolResultAppendix: policy.toolResultAppendix,
+        appendixHistory: policy.toolResultAppendixHistory,
         onToolResultAppendix: policy.onToolResultAppendix,
       },
     );

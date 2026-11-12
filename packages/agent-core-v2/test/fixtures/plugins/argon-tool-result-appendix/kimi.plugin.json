@@ -1,14 +1,14 @@
 {
   "name": "argon-tool-result-appendix",
-  "version": "0.1.0",
-  "description": "Projects host-generated automatic reminders immediately following a complete tool batch into the last tool_result appendix for explicitly configured Argon models.",
+  "version": "0.2.0",
+  "description": "Projects eligible host reminders or trailing plain text into the final complete tool result for selected native Argon models.",
   "author": { "name": "Local Unofficial Plugin" },
   "license": "MIT",
   "keywords": ["argon", "tool-result", "projection", "appendix", "anthropic"],
   "interface": {
     "displayName": "Argon Tool Result Appendix",
-    "shortDescription": "Pack contiguous host auto-injections into the last tool_result appendix for selected Argon models.",
-    "longDescription": "Keeps canonical contextMemory and wire records untouched while projecting verified host auto-injections immediately following a complete, unique tool call batch into the final tool_result block as an explicitly tagged appendix text part."
+    "shortDescription": "Choose host-only reminders or trailing plain-text folding into the final complete tool result.",
+    "longDescription": "On selected native Argon models, tool_result_appendix moves only verified host-generated automatic reminders after a complete tool batch into a tagged text part of the final complete tool result. tool_result_trailing_text folds eligible trailing plain-text user, peer, agent, and skill messages after a complete tool batch into that result. Both strategies leave canonical conversation history, transcript UI, and undo anchors unchanged; media parts remain at their original message boundaries and are not folded."
   },
   "x-kiki": {
     "engines": { "kiki": "^0.4.3" },
@@ -16,8 +16,8 @@
       "schemaVersion": 1,
       "strategySetting": "strategy",
       "modelsSetting": "targetModels",
-      "defaultStrategy": "tool_result_appendix",
-      "defaultModels": ["axon-message/gemini-4-argon"]
+      "defaultStrategy": "tool_result_trailing_text",
+      "defaultModels": ["axon-message/gemini-4-carbon", "axon-message/gemini-4-argon"]
     },
     "settings": {
       "schemaVersion": 1,
@@ -27,26 +27,26 @@
           "strategy": {
             "type": "string",
             "title": "Projection Strategy",
-            "description": "Choose whether host auto-injections after a complete tool batch are sent as-is (passthrough) or appended to the final tool_result block (tool_result_appendix).",
-            "default": "tool_result_appendix",
-            "enum": ["passthrough", "tool_result_appendix"],
+            "description": "Choose how text after a complete tool batch is sent: passthrough keeps the original message layout; tool_result_appendix moves only verified host-generated automatic reminders into a tagged text part of the final complete tool result; tool_result_trailing_text folds eligible trailing plain-text user, peer, agent, and skill messages into that result. Both strategies leave canonical history, transcript UI, and undo anchors unchanged; media parts remain at their original message boundaries and are not folded.",
+            "default": "tool_result_trailing_text",
+            "enum": ["passthrough", "tool_result_appendix", "tool_result_trailing_text"],
             "localizations": {
               "zh-CN": {
                 "title": "发送投影策略",
-                "description": "选择同批工具完成后的自动宿主注入是原样发送（passthrough），还是并入最后一个 tool_result 的独立标识附录（tool_result_appendix）。"
+                "description": "选择完整工具批次后的文本如何发送：passthrough 保持原消息布局；tool_result_appendix 只把经验证的宿主自动提醒移入最后一个完整工具结果的标记文本附录；tool_result_trailing_text 把符合条件、紧随完整工具批次的 user、peer、agent 和 skill 纯文本折叠进该结果。两种投影都不改规范会话历史、时间线 UI 或 undo 锚点；媒体片段保留在原消息边界，不会折叠。"
               }
             }
           },
           "targetModels": {
             "type": "string",
             "title": "Target Models",
-            "description": "Comma, semicolon, or newline separated model aliases or IDs that opt into tool_result appendix projection.",
-            "default": "axon-message/gemini-4-argon",
+            "description": "Comma, semicolon, or newline separated model aliases or IDs that opt into request projection.",
+            "default": "axon-message/gemini-4-carbon, axon-message/gemini-4-argon",
             "multiline": true,
             "localizations": {
               "zh-CN": {
                 "title": "启用模型列表",
-                "description": "使用逗号、分号或换行分隔的目标模型别名或模型 ID（仅明确列出的模型会启用工具结果附录投影）。"
+                "description": "使用逗号、分号或换行分隔的目标模型别名或模型 ID（仅明确列出的模型会启用请求投影）。"
               }
             }
           }

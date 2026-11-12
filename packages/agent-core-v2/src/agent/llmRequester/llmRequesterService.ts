@@ -592,7 +592,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     };
     this.retryAttribution = { key: retryKey, value: attribution };
     this.toolCallIdNormalizer.seedFrom(this.context.get());
-    const shaped = this.toolSelect.shapeHistory(request.messages);
+    const { messages: shaped, sourceIndexes } = this.toolSelect.shapeHistory(request.messages);
     const recoveredStrip = this.mediaStripSnapshotForTurn(request.source);
     let policy: ProjectionPolicy | undefined =
       recoveredStrip !== undefined
@@ -632,10 +632,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       let projectedBatches = 0;
       let projectedMessages = 0;
       const effectivePolicy: ProjectionPolicy | undefined =
-        projectionDecision.strategy === 'tool_result_appendix'
+        projectionDecision.strategy !== 'passthrough'
           ? {
               ...policy,
-              toolResultAppendix: 'host_auto_injections',
+              toolResultAppendix: projectionDecision.strategy === 'tool_result_trailing_text'
+                ? 'trailing_user_text'
+                : 'host_auto_injections',
+              toolResultAppendixHistory: sourceIndexes === undefined ? undefined : { canonical: request.messages, sourceIndexes },
               onToolResultAppendix: (stats) => {
                 projectedBatches = stats.projectedBatches;
                 projectedMessages = stats.projectedMessages;
@@ -645,7 +648,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const projected = this.projector.project(shaped, effectivePolicy);
       pluginService?.recordRequestProjectionOutcome({
         pluginId: projectionDecision.pluginId,
-        matched: projectionDecision.strategy === 'tool_result_appendix',
+        matched: projectionDecision.strategy !== 'passthrough',
         projectedBatches,
         projectedMessages,
       });

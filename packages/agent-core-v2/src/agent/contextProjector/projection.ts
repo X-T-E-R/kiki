@@ -60,7 +60,11 @@ export function summarizeProjectionRepairs(
 }
 
 export interface ProjectOptions {
-  readonly toolResultAppendix?: 'host_auto_injections';
+  readonly toolResultAppendix?: 'host_auto_injections' | 'trailing_user_text';
+  readonly appendixHistory?: {
+    readonly canonical: readonly ContextMessage[];
+    readonly sourceIndexes: readonly number[];
+  };
   readonly onToolResultAppendix?: (stats: {
     readonly projectedBatches: number;
     readonly projectedMessages: number;
@@ -130,6 +134,7 @@ type Block =
       readonly kind: 'message';
       readonly source: ContextMessage;
       readonly content: ContentPart[];
+      readonly ownerIndex: number;
     }
   | { readonly kind: 'exchange'; readonly exchange: Exchange }
   | { readonly kind: 'boundary' };
@@ -201,7 +206,7 @@ function pairBlocks(
     }
     markForeignBetween();
     if (message.toolCalls.length === 0) {
-      blocks.push({ kind: 'message', source: message, content });
+      blocks.push({ kind: 'message', source: message, content, ownerIndex: index });
       continue;
     }
 
@@ -630,6 +635,7 @@ function collectGloballyUniqueToolCallIds(history: readonly ContextMessage[]): R
 function isCompleteCanonicalToolBatch(
   history: readonly ContextMessage[],
   exchange: Exchange,
+  canonicalOwnerIndex: number,
   uniqueCallIds: ReadonlySet<string>,
 ): boolean {
   const count = exchange.pending.length;
@@ -646,7 +652,7 @@ function isCompleteCanonicalToolBatch(
   if (expectedIds.size !== count) return false;
   const seenIds = new Set<string>();
   for (let offset = 1; offset <= count; offset += 1) {
-    const candidate = history[exchange.ownerIndex + offset];
+    const candidate = history[canonicalOwnerIndex + offset];
     if (
       candidate === undefined ||
       candidate.partial === true ||
@@ -688,16 +694,53 @@ function formatToolResultAppendixPart(
   };
 }
 
+function isPlainTextUserMessage(message: ContextMessage): boolean {
+  return message.role === 'user' && message.partial !== true &&
+    message.toolCalls.length === 0 && !hasDeclaredTools(message) &&
+    message.origin?.kind !== 'compaction_summary' && message.content.every(isPlainTextPart);
+}
+
+function isPlainTextPart(part: ContentPart): boolean {
+  return part.type === 'text' && part.attachment === undefined && part.resourceLink === undefined;
+}
+
+function formatToolResultTail(messages: readonly AttachedResult[]): ContentPart[] {
+  const parts: ContentPart[] = [];
+  let hostMessages: AttachedResult[] = [];
+  const flushHost = (): void => {
+    const appendix = formatToolResultAppendixPart(hostMessages);
+    if (appendix !== undefined) parts.push(appendix);
+    hostMessages = [];
+  };
+  for (const message of messages) {
+    if (isHostAutoInjectedMessage(message.source)) {
+      hostMessages.push(message);
+    } else {
+      flushHost();
+      const text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n\n');
+      parts.push({
+        type: 'text',
+        text: `<tool-result-followup role="user" origin="${message.source.origin?.kind ?? 'unknown'}">\nNew conversational input received after the tool completed (not tool output):\n${text}\n</tool-result-followup>`,
+      });
+    }
+  }
+  flushHost();
+  return parts;
+}
+
 function applyToolResultAppendix(
   history: readonly ContextMessage[],
   blocks: readonly Block[],
   options: ProjectOptions | undefined,
 ): readonly Block[] {
-  if (options?.toolResultAppendix !== 'host_auto_injections') {
+  if (options?.toolResultAppendix === undefined) {
     options?.onToolResultAppendix?.({ projectedBatches: 0, projectedMessages: 0 });
     return blocks;
   }
-  const uniqueCallIds = collectGloballyUniqueToolCallIds(history);
+  const canonical = options.appendixHistory?.canonical ?? history;
+  const sourceIndexes = options.appendixHistory?.sourceIndexes;
+  const canonicalIndex = (index: number): number => sourceIndexes === undefined ? index : sourceIndexes[index]!;
+  const uniqueCallIds = collectGloballyUniqueToolCallIds(canonical);
   const out: Block[] = [];
   let projectedBatches = 0;
   let projectedMessages = 0;
@@ -707,7 +750,7 @@ function applyToolResultAppendix(
     const block = blocks[index]!;
     if (
       block.kind !== 'exchange' ||
-      !isCompleteCanonicalToolBatch(history, block.exchange, uniqueCallIds)
+      !isCompleteCanonicalToolBatch(canonical, block.exchange, canonicalIndex(block.exchange.ownerIndex), uniqueCallIds)
     ) {
       out.push(block);
       index += 1;
@@ -715,51 +758,28 @@ function applyToolResultAppendix(
     }
 
     let cursor = index + 1;
-    const candidateBlocks: Array<{ readonly source: ContextMessage; readonly content: ContentPart[] }> = [];
+    const tail: AttachedResult[] = [];
+    const expectedHistoryStart = canonicalIndex(block.exchange.ownerIndex) + block.exchange.pending.length + 1;
+    const hostOnly = options.toolResultAppendix === 'host_auto_injections';
     while (cursor < blocks.length) {
-      const nextBlock = blocks[cursor]!;
+      const next = blocks[cursor]!;
+      const candidateIndex = expectedHistoryStart + tail.length;
+      const candidate = canonical[candidateIndex];
       if (
-        nextBlock.kind !== 'message' ||
-        !isHostAutoInjectedMessage(nextBlock.source) ||
-        !nextBlock.content.every((part) => part.type === 'text')
+        next.kind !== 'message' || candidate === undefined ||
+        canonicalIndex(next.ownerIndex) !== candidateIndex ||
+        !isPlainTextUserMessage(candidate) ||
+        !next.content.every(isPlainTextPart) ||
+        (hostOnly && !isHostAutoInjectedMessage(next.source))
       ) {
         break;
       }
-      candidateBlocks.push(nextBlock);
+      tail.push(next);
       cursor += 1;
     }
 
-    const trailingBlock = blocks[cursor];
-    if (trailingBlock?.kind === 'message') {
-      const trailingAnchor = userMergeAnchor(trailingBlock.source);
-      if (trailingAnchor !== undefined) {
-        while (candidateBlocks.length > 0) {
-          const lastCandidate = candidateBlocks.at(-1)!;
-          const candidateAnchor = userMergeAnchor(lastCandidate.source);
-          if (candidateAnchor !== undefined && sameUserMergeAnchor(candidateAnchor, trailingAnchor)) {
-            candidateBlocks.pop();
-            cursor -= 1;
-          } else {
-            break;
-          }
-        }
-      }
-    }
-
-    const expectedHistoryStart = block.exchange.ownerIndex + block.exchange.pending.length + 1;
-    let contiguousInHistory = true;
-    for (const [offset, candidate] of candidateBlocks.entries()) {
-      if (history[expectedHistoryStart + offset] !== candidate.source) {
-        contiguousInHistory = false;
-        break;
-      }
-    }
-
-    const appendixPart =
-      contiguousInHistory && candidateBlocks.length > 0
-        ? formatToolResultAppendixPart(candidateBlocks)
-        : undefined;
-    if (appendixPart === undefined) {
+    const appendixParts = formatToolResultTail(tail);
+    if (appendixParts.length === 0) {
       out.push(block);
       index += 1;
       continue;
@@ -778,7 +798,7 @@ function applyToolResultAppendix(
         ...pending,
         result: {
           source: pending.result.source,
-          content: [...pending.result.content, appendixPart],
+          content: [...pending.result.content, ...appendixParts],
         },
       };
     });
@@ -790,7 +810,7 @@ function applyToolResultAppendix(
       },
     });
     projectedBatches += 1;
-    projectedMessages += candidateBlocks.length;
+    projectedMessages += tail.length;
     index = cursor;
   }
 

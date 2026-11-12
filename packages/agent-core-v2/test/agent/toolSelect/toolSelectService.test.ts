@@ -596,7 +596,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
   it('shapeHistory returns the identical array when there is nothing to strip', () => {
     const h = createHarness();
     const messages: readonly ContextMessage[] = [userMessage('a'), userMessage('b')];
-    expect(h.sut.shapeHistory(messages)).toBe(messages);
+    expect(h.sut.shapeHistory(messages).messages).toBe(messages);
   });
 
   it('shapeTools filters SelectTools itself out of the view', () => {
@@ -652,7 +652,7 @@ describe('AgentToolSelectService S0 baseline (gate closed)', () => {
     const h = createHarness();
     h.contextMemory.landAnnouncement('<tools_added>\nt\n</tools_added>');
     h.contextMemory.history.push(schemaMessage('t'), userMessage('keep'));
-    const shaped = h.sut.shapeHistory(h.contextMemory.get());
+    const { messages: shaped } = h.sut.shapeHistory(h.contextMemory.get());
     expect(shaped.map((message) => message.role)).toEqual(['user']);
     expect(h.contextMemory.get()).toHaveLength(3);
   });
@@ -833,7 +833,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
     h.contextMemory.history.push(userMessage('a'), schemaMessage(MCP_ALPHA));
     const messages = h.contextMemory.get();
-    expect(h.sut.shapeHistory(messages)).toBe(messages);
+    expect(h.sut.shapeHistory(messages).messages).toBe(messages);
   });
 
   it('shapeHistory removes loaded schemas when the profile disables them', () => {
@@ -843,7 +843,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     h.contextMemory.history.push(schemaMessage(MCP_ALPHA, MCP_BETA), userMessage('keep'));
     activeToolNames = new Set([MCP_BETA]);
 
-    const shaped = h.sut.shapeHistory(h.contextMemory.get());
+    const { messages: shaped } = h.sut.shapeHistory(h.contextMemory.get());
 
     expect(shaped).toHaveLength(2);
     expect(shaped[0]!.tools?.map((tool) => tool.name)).toEqual([MCP_BETA]);
@@ -877,16 +877,16 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
 
     expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
     expect(h.sut.shapeTools(h.registry.list())).toEqual([]);
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toEqual([]);
 
     allowedTools = ['BoardRead'];
     expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: ['BoardRead'], unknown: [] });
     expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).toEqual(['BoardRead']);
-    expect(h.sut.shapeHistory(h.contextMemory.get())[0]?.tools?.map((tool) => tool.name)).toEqual(['BoardRead']);
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages[0]?.tools?.map((tool) => tool.name)).toEqual(['BoardRead']);
 
     allowedTools = [];
     expect(h.sut.load(['BoardRead']).unknown).toEqual(['BoardRead']);
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toEqual([]);
   });
 
   it('preserves a resident schema after unregister without exposing the tool', async () => {
@@ -895,7 +895,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
     await registration.dispose();
 
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toBe(h.contextMemory.get());
     expect(h.sut.load([USER_DEFERRED])).toEqual({
       toLoad: [],
       alreadyAvailable: [],
@@ -912,7 +912,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     h.contextMemory.history.push(schemaMessage(USER_DEFERRED));
     registerUser(h, new EchoTool(USER_DEFERRED));
 
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toBe(h.contextMemory.get());
     const inline = h.sut
       .shapeTools(h.registry.list())
       .find((entry) => entry.name === USER_DEFERRED);
@@ -1306,10 +1306,10 @@ describe('AgentToolSelectService executor interception', () => {
     h.contextMemory.history.push(schemaMessage(tool.name));
     expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === tool.name)?.deferred).toBe(true);
     await plugin.dispose();
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toEqual([]);
     expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(tool.name);
     disposables.add(h.registry.register(new EchoTool(tool.name), { source: 'plugin', disclosure: 'deferred' }));
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toBe(h.contextMemory.get());
     expect(h.sut.load([tool.name]).alreadyAvailable).toEqual([tool.name]);
     expect(h.sut.drainPendingToolSchemas()).toBeUndefined();
     expect(wire()).toBe(initial);
@@ -1340,14 +1340,14 @@ describe('AgentToolSelectService executor interception', () => {
       tools: [{ name: tool.name, description: tool.description, parameters: tool.parameters }] });
     const initial = JSON.stringify(h.sut.shapeTools(h.registry.list()));
     await first.dispose();
-    expect(h.sut.shapeHistory(h.contextMemory.get()).flatMap((message) => message.tools ?? [])).toEqual([]);
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages.flatMap((message) => message.tools ?? [])).toEqual([]);
     expect(h.contextMemory.get().flatMap((message) => message.tools ?? []).map((tool) => tool.name)).toEqual([MCP_ALPHA]);
     expect(h.sut.load([MCP_ALPHA])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: [MCP_ALPHA] });
     expect(h.sut.isLoadable(MCP_ALPHA)).toBe(false);
     expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).not.toContain(MCP_ALPHA);
     expect(h.sut.loadableToolsAnnouncement()).toContain(`<tools_removed>\n${MCP_ALPHA}\n</tools_removed>`);
     disposables.add(h.registry.register(new StubMcpTool(MCP_ALPHA), { source: 'mcp' }));
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).messages).toBe(h.contextMemory.get());
     expect(h.sut.load([MCP_ALPHA]).alreadyAvailable).toEqual([MCP_ALPHA]);
     expect(JSON.stringify(h.sut.shapeTools(h.registry.list()))).toBe(initial);
     expect(h.sut.loadableToolsAnnouncement()).toBeUndefined();

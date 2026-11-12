@@ -35,10 +35,9 @@ export interface HookDef {
   readonly env?: Record<string, string>;
 }
 
-export interface HookFailureRecovery {
-  readonly action: 'continue';
-  readonly userMessage: string;
-}
+export type HookFailureRecovery =
+  | { readonly action: 'continue' | 'auto'; readonly userMessage: string }
+  | { readonly action: 'retry' };
 
 export interface HookResult {
   readonly action: 'allow' | 'block';

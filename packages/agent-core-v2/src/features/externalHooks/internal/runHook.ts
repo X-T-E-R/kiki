@@ -41,10 +41,13 @@ const HookSpecificOutputSchema = z.strictObject({
   message: OptionalStringSchema,
   permissionDecision: z.enum(['allow', 'deny']).optional(),
   permissionDecisionReason: z.string().optional(),
-  recovery: z.strictObject({
-    action: z.literal('continue'),
-    userMessage: z.string().refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 8192),
-  }).optional(),
+  recovery: z.discriminatedUnion('action', [
+    z.strictObject({ action: z.literal('retry') }),
+    z.strictObject({
+      action: z.enum(['continue', 'auto']),
+      userMessage: z.string().refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 8192),
+    }),
+  ]).optional(),
 });
 const HookJsonOutputSchema = z.strictObject({
   message: OptionalStringSchema,
