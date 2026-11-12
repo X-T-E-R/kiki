@@ -44,8 +44,12 @@ function decodeRequestPath(rawUrl: string): string | null {
   }
 }
 
+export function isSessionAccessExchange(req: FastifyRequest): boolean {
+  return req.method === 'POST' && req.routeOptions.url === '/api/session-access/exchange';
+}
+
 function defaultIsBypassed(req: FastifyRequest, bypassSeatDelegation: boolean): boolean {
-  if (req.method === 'OPTIONS') {
+  if (req.method === 'OPTIONS' || isSessionAccessExchange(req)) {
     return true;
   }
   const path = decodeRequestPath(req.url);
@@ -83,7 +87,7 @@ export function createAuthHook(
     opts?.validateCredential ?? ((candidate) => authTokenService.isValid(candidate));
 
   return async (req, reply) => {
-    if (opts?.limiter?.isBanned(req.ip) === true) {
+    if (!isSessionAccessExchange(req) && opts?.limiter?.isBanned(req.ip) === true) {
       return reply.code(429).send(errEnvelope(AUTH_RATE_LIMIT_CODE, AUTH_RATE_LIMIT_MSG, req.id));
     }
 

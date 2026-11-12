@@ -20,6 +20,7 @@ All `/api/*` paths (including `/openapi.json` and `/asyncapi.json`) require the 
 
 - `OPTIONS` preflight requests
 - `GET /api/healthz` (liveness probe)
+- `POST /api/session-access/exchange` (no bearer; loopback socket only, not from Web access or a peer, and no `Origin` header; failures return HTTP 401 with code `40101` and `msg: "invalid_ticket"` — see [Terminal hand-off](#session-access-terminal-handoff))
 - Static web assets (non-`/api/` paths)
 
 Trusted local clients use the private `server.local-owner` capability. REST carries it in `Authorization: Bearer <token>`; local WebSocket upgrades accept that header or `kimi-code.bearer.<token>`. Remote GUI peers instead need an enabled inbound gate and an approved per-source grant (`X-Kiki-Connection-Grant` on HTTP), authenticating either with the per-peer token issued by short-code pairing / SSH connect or with the current owner credential plus a legacy invitation grant. They use `/api/klient/events`, not the legacy `/api/ws` endpoint. Connection management and forwarding are local-owner-only; `POST /api/remote-connections/pair/claim` is rate-limited for unauthenticated short-code redemption, and four thread-bridge data endpoints use independent bridge credentials. See [Authentication](./local-server.md#authentication) and [`kiki pair` and `kiki connections`](../reference/command.md#kiki-pair) for setup and rotation.
@@ -88,7 +89,7 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 
 ### Session access tokens
 
-The local owner issues, lists, and revokes session access tokens. These management routes always require the local-owner credential, including with `--dangerous-bypass-auth`; peer, Web access, external-client (`kec_`), seat-delegation, and session-access (`ksa_`) credentials cannot use them.
+The local owner issues, lists, and revokes session access tokens. These management routes and the ticket, presence, and release routes below always require the local-owner credential, including with `--dangerous-bypass-auth`; peer, Web access, external-client (`kec_`), seat-delegation, and session-access (`ksa_`) credentials cannot use them. The exchange route is the sole exception and follows the loopback rule below.
 
 | Method and path | Request | Response data |
 | --- | --- | --- |
@@ -97,7 +98,28 @@ The local owner issues, lists, and revokes session access tokens. These manageme
 | `DELETE /api/session-access/tokens/{token_id}` | — | `{ revoked: n }` |
 | `DELETE /api/session-access/tokens` | — | `{ revoked: n }` |
 
-An owner-issued secret begins with `ksa_`; its public id begins with `sat_` and is safe to use when revoking it later. Issue at least one of `read`, `prompt`, or `abort`. The session must exist; an unknown session returns the HTTP 200 envelope with code `40401`. `client.name` is 1–64 printable ASCII characters; `client.version` is at most 32 characters. `ttl_seconds` defaults to 3600 and accepts 60–86400 seconds. Invalid fields return the usual HTTP 200 envelope with code `40001` and the offending field. When `[session_access].enabled` is false, `GET /api/session-access` still reports the setting and token requests return HTTP 401 with code `40101`; POST and DELETE management routes return HTTP 403 with envelope code `40101` and `msg: "session_access_disabled"`, and active tokens are revoked.
+An owner-issued secret begins with `ksa_`; its public id begins with `sat_` and is safe to use when revoking it later. Issue at least one of `read`, `prompt`, or `abort`. The session must exist; an unknown session returns the HTTP 200 envelope with code `40401`. `client.name` is 1–64 printable ASCII characters; `client.version` is at most 32 characters. `ttl_seconds` defaults to 3600 and accepts 60–86400 seconds. Invalid fields return the usual HTTP 200 envelope with code `40001` and the offending field. When `[session_access].enabled` is false, `GET /api/session-access` still reports the setting; requests using a session-access token return HTTP 401 with code `40101`, and token-management plus ticket, presence, and release routes return HTTP 403 with code `40101` and `msg: "session_access_disabled"`. Turning this setting off revokes all active tokens. The unauthenticated `POST /api/session-access/exchange` route still returns its generic HTTP 401 response with code `40101` and `msg: "invalid_ticket"`.
+
+#### Terminal hand-off {#session-access-terminal-handoff}
+
+These routes provide the server side of terminal hand-off; client-side TUI reporting is separate. The ticket, presence, and release routes require the local-owner credential. `exchange` is the only unauthenticated route, and it accepts only loopback socket requests that are not from Web access or a peer and have no `Origin` header.
+
+| Method and path | Request | Response data |
+| --- | --- | --- |
+| `POST /api/session-access/tickets` | `{ session_id, challenge, holder_id }` | `{ ticket, expires_at }` |
+| `GET /api/session-access/holders/{holder_id}/presence` | — | `text/event-stream`: one `ready` event, then silent while the stream is open |
+| `POST /api/session-access/release` | `{ holder_id, session_id? }` | `{ revoked: n }` (removed tickets and tokens) |
+| `POST /api/session-access/exchange` | `{ ticket, verifier, client: { name, version? } }` (no Authorization) | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }`; the token secret is returned once |
+
+Open the presence stream before requesting a ticket. It sends one `ready` event, then stays silent; keep it open. `holder_id` must be 16–64 ASCII letters, digits, `_`, or `-`, and the session must exist. Without an open stream for that holder, ticket creation returns HTTP 409 with code `40901` and `msg: "holder_not_present"`.
+
+Create a private 43–128 character base64url `verifier` and set `challenge = base64url(SHA-256(ASCII bytes of the verifier's base64url text))`. Send the challenge with the ticket request and keep the verifier out of terminal output; only the ticket should appear there. The ticket is 32 random bytes encoded as base64url, expires after 60 seconds, is single-use, and is stored only as a digest. Each holder can have at most eight unexpired tickets; issuing another drops the oldest.
+
+The exchange body accepts exactly the fields shown. Any attempt that names a ticket consumes it before the verifier, body, source, `Origin`, or hand-off setting is checked, so do not retry a failed exchange. Every failure—including an expired or used ticket, wrong verifier, extra body field, non-loopback caller, `Origin` header, or disabled hand-off—returns HTTP 401 with code `40101` and `msg: "invalid_ticket"`. A successful exchange issues a `channel: "terminal"` token with the fixed `read`, `prompt`, and `abort` scopes; it expires after one hour and cannot be renewed. The exchange `client.name` and `client.version` use the same limits described above. Request another ticket while the presence stream remains open. See [`[session_access]`](../configuration/config-files.md#session-access) for the hand-off switch.
+
+When the last presence stream for a holder closes, a 20-second grace period starts. Reopen a stream with the same `holder_id` before it ends to preserve that holder's tickets and tokens; otherwise they are revoked. `release` with `session_id` revokes that holder's tickets and tokens for the session; without it, all of that holder's tickets and tokens are revoked. Its count includes both tickets and tokens, and revoking tokens closes their open WebSocket connections. Tickets, holders, and tokens are in memory only and become invalid when the server restarts.
+
+#### Token scopes {#session-access-token-scopes}
 
 | Scope | Allowed operations |
 | --- | --- |
@@ -577,7 +599,7 @@ A REST prompt is an ordinary user message in the transcript, just like input sen
 
 With a session access token, `POST /api/sessions/{session_id}/prompts` accepts `content` made only of text blocks without `presentation`, optional `prompt_id` and `metadata`, and `agent_id` omitted or set to `main`. No other top-level body field is accepted. In particular, `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode`, and `admission` return HTTP 200 with code `40001` naming the field. A token prompt cannot use durable admission; when a server-switch fence blocks submission, it returns HTTP 200 with code `40950` (`work.admission_fenced`) instead of entering the waiting-switch fallback.
 
-A token-submitted prompt remains a user message and records `metadata.origin.via = { client, channel: "owner" }`. Read `via` through `GET /api/sessions/{session_id}/messages`; this version does not add it to the transcript projection. If a multi-prompt `:steer` merges queued prompts, the merged message gets a plain user origin and loses `via`.
+A token-submitted prompt remains a user message and records `metadata.origin.via = { client, channel }`: `channel` is `"owner"` for an owner-issued token and `"terminal"` for a hand-off token. Read `via` through `GET /api/sessions/{session_id}/messages`; this version does not add it to the transcript projection. If a multi-prompt `:steer` merges queued prompts, the merged message gets a plain user origin and loses `via`.
 
 Add `?observe=true` to the prompt list for a read-only view of the current main agent's active and queued prompts. An inactive saved session or an unstarted main returns `{ active: null, queued: [] }` without restoring or creating an agent. This view does not enumerate saved prompt requests; use `admission=durable` for those.
 

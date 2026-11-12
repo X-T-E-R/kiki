@@ -63,7 +63,9 @@ import { registerEventLoopDiagnostics } from './services/eventLoopDiagnostics';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
 import { registerSessionAccessRoutes } from './routes/sessionAccess';
+import { registerSessionAccessHandoffRoutes } from './routes/sessionAccessHandoff';
 import { isSessionAccessLoopback, registerSessionAccessAdmission, sessionAccessToken } from './services/sessionAccess/access';
+import { SessionAccessHandoff } from './services/sessionAccess/handoff';
 import { SessionAccessStore, type SessionAccessToken } from './services/sessionAccess/store';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import {
@@ -120,7 +122,7 @@ import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
 import { registerHostMediaPreviewRoutes } from './routes/hostMediaPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
 import { resolveLocalSpaceTransport } from './services/connections/localSpace';
-import { createAuthHook } from './middleware/auth';
+import { createAuthHook, isSessionAccessExchange } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
 import { TranscriptService } from './services/transcript/transcriptService';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
@@ -248,6 +250,7 @@ export interface ServerStartOptions {
   readonly idleExitMs?: number;
   readonly leaseTtlMs?: number;
   readonly sessionAccessClock?: () => number;
+  readonly sessionAccessPresenceGraceMs?: number;
   readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
@@ -661,8 +664,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const webRequests = new WeakSet<IncomingMessage>();
   const peerRequests = new WeakSet<IncomingMessage>();
   const sessionAccess = new SessionAccessStore(core, opts.sessionAccessClock);
+  const sessionAccessHandoff = new SessionAccessHandoff(core, sessionAccess, opts.sessionAccessPresenceGraceMs);
   registerSessionAccessAdmission(app, sessionAccess, localOwnerToken, webRequests, peerRequests);
-  app.addHook('preClose', async () => { sessionAccess.close(); });
+  app.addHook('preClose', async () => { sessionAccessHandoff.close(); sessionAccess.close(); });
   registerSessionAccessRoutes(app, core, sessionAccess, registration.serverId, serverVersion);
   let peerListeners: PeerListeners | undefined;
   let peerAdmissionHook: { dispose(): void } | undefined;
@@ -688,12 +692,20 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     extra: opts.sshManaged === true ? [] : [...parseAllowedHosts(process.env), ...(opts.allowedHosts ?? [])],
     disable: opts.sshManaged === true ? false : opts.disableHostCheck ?? isHostCheckDisabled(),
   });
+  registerSessionAccessHandoffRoutes(app, {
+    core, store: sessionAccess, handoff: sessionAccessHandoff,
+    server_id: registration.serverId, server_version: serverVersion,
+    canExchange: (request) => isSessionAccessLoopback(request, webRequests, peerRequests) &&
+      (hostCheck.isAllowed(request.headers.host) || web.hostAllowed(request.headers.host)),
+  });
   const allowedOrigins = opts.sshManaged === true ? [] : opts.corsOrigins ?? parseCorsOrigins();
   app.addHook('onRequest', async (request, reply) => {
+    if (isSessionAccessExchange(request)) return;
     if (webRequests.has(request.raw) && (!web.status().enabled || !web.hostAllowed(request.headers.host))) return reply.code(403).send({ code: 40101, msg: 'web_host_not_allowed' });
     if (!web.hostAllowed(request.headers.host)) return hostCheck.onRequest(request, reply);
   });
-  app.addHook('onRequest', createOriginHook({ allowedOrigins }));
+  const originHook = createOriginHook({ allowedOrigins });
+  app.addHook('onRequest', async (request, reply) => isSessionAccessExchange(request) ? undefined : originHook(request, reply));
   const authHook = createAuthHook(authTokenService, {
     bypassSeatDelegation: exposureClass === 'loopback',
     limiter: authFailureLimiter,

@@ -33,7 +33,7 @@ Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保�
 | 设置 | 生效时机 |
 | --- | --- |
 | [`request_governance`](#request-governance) | 修改加载后立即重新判断等待中的请求和 Agent 启动；在飞工作正常结束 |
-| [`session_access`](#session-access) | 立即生效；将 `enabled` 设为 `false` 会撤销现有令牌并拒绝后续令牌请求 |
+| [`session_access`](#session-access) | 立即生效；`enabled = false` 会撤销所有现有令牌并停用交接路由；`terminal_handoff = false` 会清除待兑换票据、撤销 `terminal` 渠道会话访问令牌并拒绝票据签发与兑换，不影响 `owner` 渠道会话访问令牌 |
 | [`cpu_workers`](#cpu-workers) | 下次启动进程；创建 App 服务时读取本节配置 |
 | [`session_residency`](#session-residency) | 下一次恢复或回收决策；修改恢复限额会唤醒排队中的恢复，但不会中断正在恢复的会话。回收 sweep 的定时器间隔在服务启动时设置 |
 | [`transcript_memory`](#transcript-memory) | 下一次缓存准入、淘汰或驻留维护；不会取消已经开始的读取 |
@@ -1323,12 +1323,12 @@ prompt_overrides:
 
 ## `[session_access]`
 
-`[session_access]` 控制本地所有者签发的会话访问令牌，让本地程序按已授予的权限范围访问一个会话。配置加载后立即生效；将 `enabled` 设为 `false` 会撤销所有现有令牌并拒绝后续令牌请求。本地所有者仍可通过 `GET /api/session-access` 查看状态。令牌仅保存在内存中，服务重启后失效。路由见 [会话访问令牌](../server/rest-api.md#会话访问令牌)，命令用法见 [`kiki session-access`](../reference/command.md#kiki-session-access)。
+`[session_access]` 控制会话访问令牌和终端交接。两个设置修改后立即生效。将 `enabled` 设为 `false` 会撤销所有现有令牌并停用交接路由；本地所有者仍可通过 `GET /api/session-access` 查看状态。将 `terminal_handoff` 设为 `false` 会清除待兑换票据并撤销 `terminal` 渠道会话访问令牌，但 `owner` 渠道会话访问令牌仍可用。令牌与票据仅保存在内存中，服务重启后失效。路由见 [会话访问令牌](../server/rest-api.md#会话访问令牌)，尤其是 [终端交接](../server/rest-api.md#session-access-terminal-handoff)；命令用法见 [`kiki session-access`](../reference/command.md#kiki-session-access)。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | 是否接受会话访问令牌；设为 `false` 后拒绝令牌请求并撤销现有令牌 |
-| `terminal_handoff` | `boolean` | `true` | 由 `GET /api/session-access` 返回；不改变本地所有者签发的会话访问令牌行为 |
+| `enabled` | `boolean` | `true` | 是否启用会话访问；设为 `false` 后撤销所有现有令牌，并停用令牌管理、票据、presence 和 release 路由（`GET /api/session-access` 状态查询除外）；`exchange` 返回统一的 `invalid_ticket` 错误 |
+| `terminal_handoff` | `boolean` | `true` | 是否启用终端交接；设为 `false` 会清除待兑换票据并撤销 `terminal` 渠道会话访问令牌，票据签发返回 HTTP 403、`msg: "session_access_disabled"`，兑换返回 HTTP 401、码 `40101`、`msg: "invalid_ticket"`；`owner` 渠道会话访问令牌不受影响 |
 
 ```toml
 [session_access]

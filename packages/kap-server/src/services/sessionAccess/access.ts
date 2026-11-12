@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { errEnvelope } from '../../envelope';
+import { isSessionAccessExchange } from '../../middleware/auth';
 import { matchesLocalOwner } from '../auth/localOwner';
 import { peerGrant } from '../connections/audience';
 import type { SessionAccessStore, SessionAccessToken } from './store';
@@ -38,6 +39,11 @@ function sessionAccessOperation(token: SessionAccessToken, request: FastifyReque
 
 export function registerSessionAccessAdmission(app: FastifyInstance, store: SessionAccessStore, owner: string, web: WeakSet<IncomingMessage>, peers: WeakSet<IncomingMessage>): void {
   app.addHook('onRequest', async (request, reply) => {
+    if (isSessionAccessExchange(request)) {
+      reply.header('cache-control', 'no-store');
+      request.headers.authorization = undefined;
+      return;
+    }
     const path = request.url.split('?', 1)[0]!;
     const bearer = request.headers.authorization?.slice(0, 7) === 'Bearer ' ? request.headers.authorization.slice(7) : undefined;
     if (bearer?.startsWith('ksa_')) {

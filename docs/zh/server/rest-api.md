@@ -20,6 +20,7 @@
 
 - `OPTIONS` 预检请求
 - `GET /api/healthz`（探活）
+- `POST /api/session-access/exchange`（无需 bearer；只接受 socket 对端为本机回环、请求不来自 Web 访问或 peer 且没有 `Origin` 头的请求；失败统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`，详见 [终端交接](#session-access-terminal-handoff)）
 - 静态 web 资源（非 `/api/` 路径）
 
 可信本地客户端使用私有的 `server.local-owner` 凭据。REST 通过 `Authorization: Bearer <token>` 携带；本地 WebSocket 升级接受该请求头或 `kimi-code.bearer.<token>`。远端 GUI peer 则需要有效入站开关及已批准的逐源 grant（HTTP 使用 `X-Kiki-Connection-Grant`），使用短码配对／SSH 连接签发的独立对等凭据，或使用当前 owner 凭据配合旧版邀请 grant。它们连接 `/api/klient/events`，不使用旧 `/api/ws`。连接管理与转发限 local-owner；`POST /api/remote-connections/pair/claim` 提供带限流的免预置短码兑换，四个 thread-bridge 数据端点使用独立桥凭据。配置与轮换见 [鉴权](./local-server.md#鉴权)和 [`kiki pair` 与 `kiki connections`](../reference/command.md#kiki-pair)。
@@ -88,7 +89,7 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 ### 会话访问令牌
 
-本地所有者负责签发、列出和撤销会话访问令牌。这些管理路由始终要求 local-owner 凭据，即使启用 `--dangerous-bypass-auth` 也一样；peer、Web 访问、外部客户端（`kec_`）、席位委派和会话访问令牌（`ksa_`）均不能调用。
+本地所有者负责签发、列出和撤销会话访问令牌。管理路由以及下方的 ticket、presence 和 release 路由始终要求 local-owner 凭据，即使启用 `--dangerous-bypass-auth` 也一样；peer、Web 访问、外部客户端（`kec_`）、席位委派和会话访问令牌（`ksa_`）均不能调用。兑换路由是唯一例外，仍受下文的本机回环规则限制。
 
 | 方法与路径 | 请求 | 响应 data |
 | --- | --- | --- |
@@ -97,7 +98,28 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `DELETE /api/session-access/tokens/{token_id}` | — | `{ revoked: n }` |
 | `DELETE /api/session-access/tokens` | — | `{ revoked: n }` |
 
-会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt` 或 `abort`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 秒。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；会话访问令牌请求返回 HTTP 401、码 `40101`，POST 和 DELETE 管理路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`，并撤销现有令牌。
+会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt` 或 `abort`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 秒。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；使用会话访问令牌的请求返回 HTTP 401、码 `40101`，令牌管理以及票据、presence 和 release 路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`。关闭该开关会撤销所有现有令牌。未鉴权的 `POST /api/session-access/exchange` 路由仍统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。
+
+#### 终端交接 {#session-access-terminal-handoff}
+
+这组路由实现终端交接的服务端部分；TUI 客户端向终端报告状态属于另一项能力。`tickets`、`presence` 和 `release` 路由要求 local-owner 凭据；只有 `exchange` 无需 bearer。该路由仍只接受 socket 对端为本机回环、请求不经 Web 访问或 peer，且没有 `Origin` 头的调用。
+
+| 方法与路径 | 请求 | 响应 data |
+| --- | --- | --- |
+| `POST /api/session-access/tickets` | `{ session_id, challenge, holder_id }` | `{ ticket, expires_at }` |
+| `GET /api/session-access/holders/{holder_id}/presence` | — | `text/event-stream`：发送一个 `ready` 事件，之后保持静默 |
+| `POST /api/session-access/release` | `{ holder_id, session_id? }` | `{ revoked: n }`（删除的票据与令牌数） |
+| `POST /api/session-access/exchange` | `{ ticket, verifier, client: { name, version? } }`（无需 Authorization） | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }`；令牌密钥只返回一次 |
+
+先打开 `presence` 长连接，再请求票据。流返回 `text/event-stream`，先发送一个 `ready` 事件，之后保持静默；必须保持连接。`holder_id` 由 16–64 个 ASCII 字母、数字、`_` 或 `-` 组成，目标会话必须存在。没有该 holder 的打开 presence 流时，签发票据返回 HTTP 409、码 `40901`、`msg: "holder_not_present"`。
+
+生成 43–128 个字符的 base64url `verifier`（私密校验串），并计算 `challenge = base64url(SHA-256(verifier 的 base64url 文本的 ASCII 字节))`。签发请求携带 `challenge`；将 `verifier` 保持私密，不要放进终端输出，只有 `ticket` 会经过终端输出传递。票据由 32 个随机字节的 base64url 编码构成，有效 60 秒且只能兑换一次；服务端只保存摘要。每个 holder 最多保留 8 张未过期票据，超出时丢弃最早的一张。
+
+`exchange` 请求体只能含表中三项。请求一旦带上某张已知 `ticket`，服务端会先消耗它，再校验 `verifier`、请求体、调用方地址、`Origin` 和交接开关；失败后不要重试。所有兑换失败都返回相同的 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。成功后令牌的 `channel` 为 `"terminal"`，固定拥有 `read`、`prompt`、`abort` 权限范围，有效期 1 小时且不能续期；presence 流仍打开时可重新申请票据。`client` 字段沿用上方的名称和版本限制，交接开关见 [`[session_access]`](../configuration/config-files.md#session-access)。
+
+holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期。在宽限期结束前用同一 `holder_id` 重新连接，可保留该 holder 的票据和令牌；否则两者都会撤销。`release` 带 `session_id` 时只撤销该 holder 在该会话的票据和令牌；省略时撤销该 holder 的全部票据和令牌。`revoked` 计数包括票据与令牌；被撤销令牌的 WebSocket 连接会关闭。票据、holder 和令牌只保存在内存中，服务重启后失效。
+
+#### 令牌权限范围 {#session-access-token-scopes}
 
 | 权限范围 | 允许的操作 |
 | --- | --- |
@@ -564,7 +586,7 @@ REST 提交的提示词与界面输入一样，在转录中显示为普通用户
 
 使用会话访问令牌时，`POST /api/sessions/{session_id}/prompts` 只接受 `content`（仅文本块，且不能带 `presentation`）、可选的 `prompt_id` 和 `metadata`，以及省略或设为 `main` 的 `agent_id`。不接受其他顶层字段。特别是 `model`、`thinking`、`permission_mode`、`plan_mode`、`plan_gate`、`profile`、`execution`、`disabled_tools`、`skills`、`goal_*`、`delivery_mode` 和 `admission` 都会返回 HTTP 200、码 `40001`，并指出被拒的字段。会话访问令牌不能携带 `admission` 来请求持久准入；若服务器切换期间准入围栏拒绝该请求，服务端返回 HTTP 200、码 `40950`（`work.admission_fenced`），不会转入等待切换的后备路径。
 
-令牌提交的提示词仍是普通用户消息，来源记录包含 `metadata.origin.via = { client, channel: "owner" }`。通过 `GET /api/sessions/{session_id}/messages` 读取 `via`；当前版本不会把该字段加入转录投影。多条排队提示词通过多项 `:steer` 合并时，服务会重建普通用户来源，因此合并消息不保留 `via`。
+令牌提交的提示词仍是普通用户消息，来源记录包含 `metadata.origin.via = { client, channel }`：`channel` 为 `"owner"` 时表示 owner 渠道会话访问令牌，为 `"terminal"` 时表示终端交接渠道会话访问令牌。通过 `GET /api/sessions/{session_id}/messages` 读取 `via`；当前版本不会把该字段加入转录投影。多条排队提示词通过多项 `:steer` 合并时，服务会重建普通用户来源，因此合并消息不保留 `via`。
 
 提示词列表加上 `?observe=true` 时，只读观察当前主 Agent 正在处理和排队的提示词。未激活的已保存会话或尚未创建的主 Agent 返回 `{ active: null, queued: [] }`，不恢复或创建 Agent。此视图不列出已保存的请求；读取这些请求请使用 `admission=durable`。
 

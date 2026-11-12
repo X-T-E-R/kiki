@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { getLiveSessionById, IAgentLifecycleService, IAgentLoopService, IWorkAdmissionService } from '@kiki/agent-core-v2';
 import { describe, expect, it } from 'vitest';
@@ -204,6 +205,43 @@ describe('server-v2 session access REST integration', () => {
     const loop = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentLoopService);
     await loop.settled();
     expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'cancelled' });
+  });
+
+  it('stores a terminal-channel prompt as a user message with its terminal via', async () => {
+    const sessionId = await fixture.createSession(fixture.home!);
+    await fixture.createHeldMainAgent(sessionId);
+    const holder_id = randomBytes(16).toString('base64url');
+    const presence = await fetch(`${fixture.base}/api/session-access/holders/${holder_id}/presence`, {
+      headers: { authorization: `Bearer ${bearerToken(fixture.server!)}` },
+    });
+    expect(presence.status).toBe(200);
+    const reader = presence.body!.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('event: ready');
+      const verifier = randomBytes(32).toString('base64url');
+      const ticket = await fixture.call<{ ticket: string }>('POST', '/api/session-access/tickets', {
+        session_id: sessionId, holder_id, challenge: createHash('sha256').update(verifier, 'ascii').digest('base64url'),
+      });
+      expect(ticket.body.code).toBe(0);
+      const exchanged = await fetch(`${fixture.base}/api/session-access/exchange`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticket: ticket.body.data.ticket, verifier, client: { name: 'terminal-fixture' } }),
+      });
+      const issued = await exchanged.json() as Envelope<SessionAccessIssue>;
+      expect(issued.code).toBe(0);
+      const submitted = await request<PromptReceipt>('POST', `/api/sessions/${sessionId}/prompts?receipt=true`, issued.data.token, {
+        prompt_id: 'terminal-channel-prompt', content: [{ type: 'text', text: 'A terminal prompt.' }],
+      });
+      expect(submitted.body.code).toBe(0);
+      const messages = await request<MessagePage>('GET', `/api/sessions/${sessionId}/messages`, issued.data.token);
+      expect(messages.body.data.items).toContainEqual(expect.objectContaining({
+        id: submitted.body.data.user_message_id, role: 'user',
+        metadata: { origin: { kind: 'user', via: { client: 'terminal-fixture', channel: 'terminal' } } },
+      }));
+      expect((await request('POST', `/api/sessions/${sessionId}:abort`, issued.data.token, {})).body.code).toBe(0);
+    } finally {
+      await reader.cancel();
+    }
   });
 
   it('rejects another session, out-of-scope operations, foreign content references, and Origin-bearing token requests', async () => {

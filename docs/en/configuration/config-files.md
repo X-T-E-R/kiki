@@ -33,7 +33,7 @@ Reloading a file and applying a setting have different timing:
 | Setting | When it takes effect |
 | --- | --- |
 | [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
-| [`session_access`](#session-access) | Applies immediately; setting `enabled = false` revokes active tokens and rejects token requests |
+| [`session_access`](#session-access) | Applies immediately; setting `enabled = false` revokes all active tokens and rejects token requests; `terminal_handoff = false` clears tickets, refuses ticket requests and exchange, and revokes terminal-channel tokens without affecting owner-issued tokens |
 | [`cpu_workers`](#cpu-workers) | Next process start; the pool reads the section when the App service is created |
 | [`session_residency`](#session-residency) | The next restore or eviction decision; changing restore limits wakes queued restores, but does not interrupt an active restore. The sweep timer interval is set when the service starts |
 | [`transcript_memory`](#transcript-memory) | The next cache admission, eviction, or residency-maintenance pass; an in-progress read is not canceled |
@@ -1337,12 +1337,12 @@ In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this 
 
 ## `[session_access]`
 
-`[session_access]` controls owner-issued tokens that grant a local program fixed access to one session. These settings reload immediately; switching `enabled` off revokes every active token. `GET /api/session-access` remains available to the local owner to inspect the setting, but token requests are refused while it is off. Tokens are held in memory and become invalid after a server restart. See [Session access tokens](../server/rest-api.md#session-access-tokens) for the routes and [kiki session-access](../reference/command.md#kiki-session-access) for CLI management.
+`[session_access]` controls owner-issued tokens that grant a local program fixed access to one session and the terminal hand-off channel. Both settings take effect immediately. Turning `enabled` off revokes all active tokens and disables the hand-off routes; `GET /api/session-access` remains available to the local owner. Turning `terminal_handoff` off clears pending tickets and revokes terminal-channel tokens without affecting owner-channel tokens. Tokens and tickets are held in memory and become invalid after a server restart. See [Session access tokens](../server/rest-api.md#session-access-tokens), especially [Terminal hand-off](../server/rest-api.md#session-access-terminal-handoff), and [kiki session-access](../reference/command.md#kiki-session-access) for CLI management.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | Whether session access tokens can be used; `false` refuses token requests and revokes active tokens |
-| `terminal_handoff` | `boolean` | `true` | Reported by `GET /api/session-access`; does not change owner-issued token behavior |
+| `enabled` | `boolean` | `true` | Whether session access is enabled; `false` revokes all active tokens and disables token-management, ticket, presence, and release routes. `GET /api/session-access` remains available to the local owner, and exchange returns the generic `invalid_ticket` error |
+| `terminal_handoff` | `boolean` | `true` | Whether terminal hand-off is enabled; `false` clears pending tickets, refuses ticket issuance with HTTP 403 (`session_access_disabled`), and makes exchange return HTTP 401 with code `40101` and `msg: "invalid_ticket"`. Owner-channel tokens keep working |
 
 ```toml
 [session_access]

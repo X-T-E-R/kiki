@@ -38,6 +38,8 @@ daemon 本身只监听 `127.0.0.1`。不带 `--port` 时，Web 访问复用 daem
 
 只需访问单个会话的本地程序，应使用本地所有者签发的会话访问令牌，不要共享 `server.local-owner`。令牌以 `ksa_` 开头，只能访问一个会话，并固定携带签发时选择的 `read`、`prompt`、`abort` 权限范围；默认有效 1 小时，可请求 60 秒至 24 小时。REST 请求通过 `Authorization: Bearer <token>` 携带；WebSocket 客户端可用同一请求头，或使用子协议 `kimi-code.bearer.<token>`。只有请求的 socket 对端地址是本机回环地址（loopback）、请求不经 Web 访问或 peer，且没有 `Origin` 请求头时，服务器才接受令牌。SSH 隧道或本机反向代理仍可能让远端调用方看起来来自本机，这与外部客户端凭据的限制相同。令牌仅保存在内存中，服务重启后失效。使用 [`kiki session-access`](../reference/command.md#kiki-session-access) 签发、列出或撤销令牌；允许的路由见 [会话访问令牌](./rest-api.md#会话访问令牌)。
 
+终端交接时，可以通过终端输出传递短效的一次性 `ticket`：它 60 秒后失效，且没有私密 `verifier`（用于证明持有者掌握密钥的校验串）就无法兑换；不要把 `verifier` 放进终端输出。兑换请求必须从运行 Kiki 服务的同一台机器通过本机回环地址（loopback）发出。若 TUI 运行在 SSH 连接的远端主机，本地终端可以显示状态，但不能向远端服务兑换 `ticket`。这些路由只提供服务端能力，当前 TUI 还不会向终端上报交接状态。具体路由和生命周期见 [终端交接](./rest-api.md#session-access-terminal-handoff)。
+
 远端 GUI 访问要求目标开启入站开关，并持有针对源 home 审批的 grant（连接许可）。使用十分钟有效的一次性配对码（`kiki pair`）或一步式 SSH 连接（`kiki connections ssh connect`）会为该条授权签发独立的对等凭据，并在 daemon 绑定回环地址时自动在本机可达的局域网和 Tailscale IPv4 地址上开启直连对等监听；旧版邀请连接则额外校验目标 `server.token` 中的当前 owner token。单独的 owner token、loopback 隧道或代理请求头都不能获得普通 REST/WebSocket 访问。源后端保存远端凭据，只为固定连接转发受支持的操作；renderer 不保留远端秘密。配对、邀请与 SSH 配置见 [`kiki pair` 与 `kiki connections`](../reference/command.md#kiki-pair)。Thread bridge 使用独立凭据，撤销某次配对授权会同时撤销随该次配对签发的 bridge 授权。
 
 可信本地客户端可按以下方式携带 local-owner 凭据：
