@@ -887,8 +887,10 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
 
 export function ExternalClientsSection() {
   const { t, locale } = useI18n();
-  const { client } = useConnection();
-  const api = useMemo(() => externalClientsFacade(client.klient), [client]);
+  const { client, localClient, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const targetClient = inPairedSpace ? localClient : client;
+  const api = useMemo(() => (targetClient === null ? undefined : externalClientsFacade(targetClient.klient)), [targetClient]);
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
 
@@ -921,7 +923,9 @@ export function ExternalClientsSection() {
     <ToolCatalogContext value={listQuery.data?.toolCatalog ?? []}>
     <SectionCard id="st-card-external-clients" title={t('st.section.externalClients')}>
       <div data-external-clients className="space-y-3">
-        {api === undefined ? (
+        {targetClient === null ? (
+          <Hint>{t('st.remote.controlUnavailable')}</Hint>
+        ) : api === undefined ? (
           <div role="alert" data-xc-unsupported className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
             <p className="text-[12px] leading-4 text-ink-soft">{t('st.xc.unsupported')}</p>
           </div>
@@ -994,7 +998,7 @@ export function ExternalClientsSection() {
         ) : null}
         {/* The other job this tab answers: using Kiki from inside another
             client, which installs a skill there rather than granting access. */}
-        <HostSkillInstallCard />
+        {inPairedSpace ? null : <HostSkillInstallCard />}
       </div>
     </SectionCard>
     </ToolCatalogContext>

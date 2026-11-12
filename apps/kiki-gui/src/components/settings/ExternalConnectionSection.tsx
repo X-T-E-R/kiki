@@ -26,7 +26,9 @@ const ICON_BUTTON =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10';
 
 export function ExternalConnectionSection() {
-  const { client } = useConnection();
+  const { client, localClient, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const targetClient = inPairedSpace ? localClient : client;
   const { t, locale } = useI18n();
 
   const [connection, setConnection] = useState<CloudflareConnection | null>(null);
@@ -49,14 +51,20 @@ export function ExternalConnectionSection() {
 
   // Initialize client helper once
   useEffect(() => {
+    if (targetClient == null) {
+      setConnection(null);
+      setSnapshot(null);
+      setLoading(false);
+      return;
+    }
     try {
-      const conn = createCloudflareConnection(client.klient);
+      const conn = createCloudflareConnection(targetClient.klient);
       setConnection(conn);
     } catch (err) {
       setReadError(errorText(locale, err));
       setLoading(false);
     }
-  }, [client, locale]);
+  }, [targetClient, locale]);
 
   // Initial read — only read on mount, never auto-install or auto-start
   const loadSnapshot = useCallback(async () => {
@@ -270,7 +278,9 @@ export function ExternalConnectionSection() {
         <div className="space-y-4" data-conn-external>
           <p className="text-[12.5px] text-ink-soft">{t('st.conn.ext.intro')}</p>
 
-          {loading ? (
+          {targetClient == null ? (
+            <Hint>{t('st.remote.controlUnavailable')}</Hint>
+          ) : loading ? (
             <Hint>{t('st.spaces.loading')}</Hint>
           ) : readError ? (
             // A read failure is one quiet line plus its retry, not a standing alert.

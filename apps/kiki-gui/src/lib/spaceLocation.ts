@@ -16,13 +16,14 @@ export interface SpaceLocation {
   readonly inRemoteScope: boolean;
   readonly localSpaceName: string;
   readonly localComputerName?: string;
+  readonly localMachineName?: string;
   readonly spaceColor?: string;
   readonly subtitle: string;
 }
 
 const UUID_LIKE_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-function sanitizeHumanLabel(value: string | null | undefined): string | undefined {
+export function sanitizeHumanLabel(value: string | null | undefined): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   if (trimmed === '' || trimmed.startsWith('remote:') || UUID_LIKE_PATTERN.test(trimmed)) return undefined;
@@ -76,6 +77,7 @@ export function useSpaceLocation(options?: { readonly openingSpaceName?: string 
 
   const resolvedConnectionId =
     (typeof connectionId === 'string' && connectionId !== '' ? connectionId : null) ??
+    connectionIdOfSpaceKey(currentSpace()?.homeId ?? '') ??
     (typeof spaceKey === 'string' ? connectionIdOfSpaceKey(spaceKey) : null);
   const cleanSshLabel = sanitizeHumanLabel(sshLabel);
   const inRemoteScope = resolvedConnectionId !== null || (typeof sshLabel === 'string' && sshLabel.trim().length > 0);
@@ -83,16 +85,17 @@ export function useSpaceLocation(options?: { readonly openingSpaceName?: string 
   const controlClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const spaces = useSpaces(host.kind === 'tauri' ? controlClient : null);
   const remoteConnections = useRemoteConnections(controlClient);
-  const handshake = useServerHandshake(host.kind === 'tauri' ? null : controlClient);
+  const handshake = useServerHandshake(controlClient);
 
   const here = currentSpace();
   const items = spaces.data ?? [];
   const localResolved = resolveLocalSpace(here, items, t('st.spaces.main'), t('sidebar.space.unnamed'));
   const localSpaceName = localResolved.name;
+  const localMachineName = sanitizeHumanLabel(handshake.data?.targetLabel);
   const localComputerName =
     host.kind === 'tauri'
       ? t('sidebar.space.thisComputer')
-      : sanitizeHumanLabel(handshake.data?.targetLabel);
+      : localMachineName;
 
   const state: SpaceConnectionState =
     wsStatus === 'open' || wsStatus === undefined || (wsStatus === 'connecting' && wsBannerSuppressed === true)
@@ -147,6 +150,7 @@ export function useSpaceLocation(options?: { readonly openingSpaceName?: string 
     inRemoteScope,
     localSpaceName,
     localComputerName,
+    localMachineName,
     spaceColor,
     subtitle,
   };

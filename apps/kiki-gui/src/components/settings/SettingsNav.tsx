@@ -25,6 +25,19 @@ import { SECTIONS, type SectionId } from './sections';
 import { isImeKeyEvent } from '../../lib/shortcuts';
 import { useCoarsePointer } from '../../lib/layoutHooks';
 
+const REMOTE_SPACE_NAV_GROUPS = new Set<string>(['device', 'connection']);
+
+export const REMOTE_SPACE_NAV_TREE: readonly SettingsNavNode[] = SETTINGS_NAV_TREE.filter(
+  (node) => node.kind === 'group' && REMOTE_SPACE_NAV_GROUPS.has(node.id),
+);
+
+export function settingsSectionAllowedInRemoteSpace(sectionId: string): boolean {
+  const canonical = canonicalNavSection(sectionId);
+  return REMOTE_SPACE_NAV_TREE.some(
+    (node) => node.kind === 'group' && (node.sections.includes(sectionId) || node.sections.includes(canonical)),
+  );
+}
+
 /**
  * Keyboard shortcuts only record key presses, so touch neither lists the
  * section nor finds it in search. `/settings/shortcuts` still opens it, for a
@@ -79,9 +92,9 @@ function pluginBroken(plugin: PluginSummary): boolean {
  * nothing: what is not known is not shown, and a read that failed is not a
  * problem with any object, so it never marks a leaf either.
  */
-export function useSettingsAttention(): readonly SettingsAttentionItem[] {
+export function useSettingsAttention(disabled = false): readonly SettingsAttentionItem[] {
   const client = useOptionalConnection()?.client;
-  const enabled = client !== undefined;
+  const enabled = client !== undefined && !disabled;
   const reads = { enabled, staleTime: ATTENTION_STALE_MS, refetchOnWindowFocus: false, refetchOnReconnect: false } as const;
   const providers = useQuery({ queryKey: ['providers'], queryFn: () => client!.listProviders(), ...reads });
   const plugins = useQuery({ queryKey: PLUGIN_QUERY_KEYS.installed, queryFn: () => client!.listPlugins(), ...reads });
@@ -136,7 +149,11 @@ export function SettingsSearch({
   const inputRef = useRef<HTMLInputElement>(null);
   const coarsePointer = useCoarsePointer();
   const index = useMemo(() => {
-    const entries = buildSettingsSearchIndex(settingsSectionLabels(t), t, navTree);
+    const visibleSections = new Set(
+      navTree.flatMap((node) => (node.kind === 'group' ? node.sections : [node.section])),
+    );
+    const entries = buildSettingsSearchIndex(settingsSectionLabels(t), t, navTree)
+      .filter((entry) => visibleSections.has(entry.section));
     return coarsePointer ? entries.filter((entry) => listedOnTouch(entry.section)) : entries;
   }, [t, navTree, coarsePointer]);
   const results = useMemo(() => searchSettings(index, query), [index, query]);
@@ -220,6 +237,7 @@ export function SettingsNavTree({
   onAfterNavigate,
   tree = SETTINGS_NAV_TREE,
   showAttention = false,
+  remoteNotice,
 }: {
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
@@ -236,10 +254,12 @@ export function SettingsNavTree({
    * the leaves only.
    */
   showAttention?: boolean;
+  /** Shown below the remaining groups when in another computer's space (#18). */
+  remoteNotice?: string;
 }) {
   const { t } = useI18n();
   const coarsePointer = useCoarsePointer();
-  const attention = useSettingsAttention();
+  const attention = useSettingsAttention(remoteNotice !== undefined);
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
   const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
   const attentionLeaves = useMemo(() => new Set<string>(attention.map((item) => item.section)), [attention]);
@@ -320,6 +340,11 @@ export function SettingsNavTree({
           </div>
         </div>
       ))}
+      {remoteNotice !== undefined ? (
+        <p data-settings-remote-nav-note className="border-t border-hairline px-2 pt-3 text-[12px] leading-[1.45] text-ink-faint">
+          {remoteNotice}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -331,6 +356,8 @@ export function SettingsNav({
   onNavigate,
   onSearchHit,
   showAttention = false,
+  navTree = SETTINGS_NAV_TREE,
+  remoteNotice,
 }: {
   active: SectionId | null;
   activeTab?: string | null;
@@ -339,6 +366,8 @@ export function SettingsNav({
   onSearchHit: (entry: SettingsSearchEntry) => void;
   /** The phone index lists what needs attention above the groups. */
   showAttention?: boolean;
+  navTree?: readonly SettingsNavNode[];
+  remoteNotice?: string;
 }) {
   const { t } = useI18n();
   return (
@@ -346,8 +375,8 @@ export function SettingsNav({
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        navTree={SETTINGS_NAV_TREE}
-        idle={<SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} tree={SETTINGS_NAV_TREE} showAttention={showAttention} />}
+        navTree={navTree}
+        idle={<SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} tree={navTree} showAttention={showAttention} remoteNotice={remoteNotice} />}
       />
     </nav>
   );

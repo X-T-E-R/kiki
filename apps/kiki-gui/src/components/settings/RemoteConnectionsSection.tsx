@@ -60,26 +60,28 @@ export function RemoteConnectionsSection() {
   const enterRemoteSpace = useRemoteSpaceEntry();
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all }); };
 
+  const listSshProfiles = host.connection?.listSshProfiles;
+
   const reloadSshProfiles = () => {
-    if (!host.connection?.listSshProfiles) return;
-    void host.connection.listSshProfiles().then(
+    if (!listSshProfiles) return;
+    void listSshProfiles().then(
       (items) => { setSshProfiles(items); },
       () => { setSshProfiles([]); },
     );
   };
 
   useEffect(() => {
-    if (!host.connection?.listSshProfiles) {
-      setSshProfiles([]);
+    if (!listSshProfiles) {
+      setSshProfiles((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     let active = true;
-    void host.connection.listSshProfiles().then(
+    void listSshProfiles().then(
       (items) => { if (active) setSshProfiles(items); },
       () => { if (active) setSshProfiles([]); },
     );
     return () => { active = false; };
-  }, [host]);
+  }, [listSshProfiles]);
 
   const run = (record: RemoteConnection, work: (api: ReturnType<typeof connectionsApi>) => Promise<unknown>, done: Feedback) => {
     if (api === null) return;

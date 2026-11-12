@@ -12,11 +12,14 @@ export const SHORTCUTS_QUERY_KEY = ['gui-shortcuts'] as const;
  * active; the Settings card reports the failure where it can be retried.
  */
 export function useShortcutPreferencesSync(): void {
-  const { client } = useConnection();
+  const { client, localClient, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const targetClient = inPairedSpace ? localClient : client;
   const platform = shortcutState().platform;
   const query = useQuery({
     queryKey: [...SHORTCUTS_QUERY_KEY, platform],
-    queryFn: () => client.readShortcuts(platform),
+    queryFn: () => targetClient!.readShortcuts(platform),
+    enabled: targetClient !== null,
     staleTime: 60_000,
     retry: false,
   });
@@ -25,5 +28,5 @@ export function useShortcutPreferencesSync(): void {
     if (preferences !== undefined) applyShortcutPreferences(preferences);
   }, [preferences]);
   // A different server brings its own table; never carry the old one over.
-  useEffect(() => () => { resetShortcutRuntime(platform); }, [client, platform]);
+  useEffect(() => () => { resetShortcutRuntime(platform); }, [targetClient, platform]);
 }

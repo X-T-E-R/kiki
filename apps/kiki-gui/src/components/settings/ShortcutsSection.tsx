@@ -161,7 +161,9 @@ export function serverConflictText(
 }
 
 export function ShortcutsSection() {
-  const { client } = useConnection();
+  const { client, localClient, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const targetClient = inPairedSpace ? localClient : client;
   const { t, locale } = useI18n();
   const host = useHost();
   const desktop = host.kind === 'tauri';
@@ -179,7 +181,8 @@ export function ShortcutsSection() {
 
   const query = useQuery({
     queryKey: [...SHORTCUTS_QUERY_KEY, platform],
-    queryFn: () => client.readShortcuts(platform),
+    queryFn: () => targetClient!.readShortcuts(platform),
+    enabled: targetClient !== null,
     staleTime: 60_000,
     retry: false,
   });
@@ -224,7 +227,7 @@ export function ShortcutsSection() {
   const bindings = data?.bindings;
 
   const setChords = async (action: ShortcutAction, chords: readonly ShortcutChord[], recorded?: ShortcutChord) => {
-    if (preferences === undefined) return;
+    if (preferences === undefined || targetClient === null) return;
     const next = withOverride(preferences, platform, action, chords);
     const conflicts = detectShortcutConflicts(next, platform);
     const text = recorded === undefined ? null : conflictText(conflicts, action, recorded, platform, t);
@@ -233,7 +236,7 @@ export function ShortcutsSection() {
       return;
     }
     setIssue(null);
-    await commit(() => client.writeShortcuts(platform, next), { action });
+    await commit(() => targetClient.writeShortcuts(platform, next), { action });
   };
 
   const record = (target: Recording, chord: ShortcutChord) => {
@@ -254,8 +257,9 @@ export function ShortcutsSection() {
   };
 
   const resetAction = (action: ShortcutAction) => {
+    if (targetClient === null) return;
     setIssue(null);
-    void commit(() => client.resetShortcuts(platform, { platform, action }), { action });
+    void commit(() => targetClient.resetShortcuts(platform, { platform, action }), { action });
   };
 
   const resetPlatform = () => {
@@ -263,15 +267,15 @@ export function ShortcutsSection() {
     // Resetting rewrites only this platform's overrides, and the full
     // preferences are in hand, so the inverse is writing them back: run the
     // reset and offer Undo rather than asking first.
-    if (preferences === undefined) return;
+    if (preferences === undefined || targetClient === null) return;
     const before = preferences;
-    void commit(() => client.resetShortcuts(platform, { platform })).then((done) => {
+    void commit(() => targetClient.resetShortcuts(platform, { platform })).then((done) => {
       if (!done) return;
       pushUndoToast({
         text: t('st.shortcuts.resetDone', { name: PLATFORM_LABEL[platform] }),
         undoFailedText: t('toast.undoFailed'),
         undo: async () => {
-          await commit(() => client.writeShortcuts(platform, before));
+          await commit(() => targetClient.writeShortcuts(platform, before));
         },
       });
     });
@@ -309,8 +313,9 @@ export function ShortcutsSection() {
               {t('st.shortcuts.otherPlatform', { name: PLATFORM_LABEL[platform] })}
             </p>
           ) : null}
-          {query.isLoading ? <Hint>{t('st.shortcuts.loading')}</Hint> : null}
-          {query.isError ? (
+          {targetClient === null ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
+          {targetClient !== null && query.isLoading ? <Hint>{t('st.shortcuts.loading')}</Hint> : null}
+          {targetClient !== null && query.isError ? (
             <div className="space-y-1">
               <InlineError error={query.error} />
               <Hint>{t('st.shortcuts.loadFailed')}</Hint>

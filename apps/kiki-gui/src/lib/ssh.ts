@@ -94,11 +94,18 @@ export function visibleState(status: SshHostStatus | undefined): SshVisibleState
  * availability consumer keyed on `enabled === true` does not flip off and back
  * while `/meta` reloads — only a fresh answer changes what it shows.
  */
-export function useNativeSshEnabled(client: KikiClient): { enabled: boolean | undefined; loading: boolean } {
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000, placeholderData: keepPreviousData });
+export function useNativeSshEnabled(client: KikiClient | null, scopeKey?: string): { enabled: boolean | undefined; loading: boolean } {
+  const key = scopeKey === undefined ? ['meta'] : ['meta', scopeKey];
+  const meta = useQuery({
+    queryKey: key,
+    queryFn: () => client!.meta(),
+    enabled: client !== null,
+    staleTime: 15_000,
+    placeholderData: keepPreviousData,
+  });
   return {
     enabled: meta.data === undefined ? undefined : meta.data.experimental_flags?.[NATIVE_SSH_FLAG] === true,
-    loading: meta.isLoading,
+    loading: client !== null && meta.isLoading,
   };
 }
 

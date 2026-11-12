@@ -15,6 +15,7 @@ import {
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useCoarsePointer, usePhoneMode } from '../../lib/layoutHooks';
+import { useOptionalConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Toggle } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -34,6 +35,8 @@ import { SettingsTransferCard } from './settingsTransfer/SettingsTransferCard';
 export function GeneralSection() {
   const host = useHost();
   const { t, locale, setLocale } = useI18n();
+  const connectionId = useOptionalConnection()?.connectionId;
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
@@ -202,7 +205,7 @@ export function GeneralSection() {
         </SectionCard>
       ) : null}
 
-      <SettingsTransferCard />
+      {inPairedSpace ? null : <SettingsTransferCard />}
       {confirmClearDrafts ? (
         <ConfirmDialog
           open

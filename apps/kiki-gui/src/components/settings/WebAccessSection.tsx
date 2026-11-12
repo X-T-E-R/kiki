@@ -136,14 +136,15 @@ type Confirm =
  */
 export function WebAccessSection() {
   const host = useHost();
-  const { client, localClient, connectionSource } = useConnection();
+  const { client, localClient, connectionId, sshLabel, connectionSource } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   // A browser signed in through a web link owns nothing on this machine.
   const webGuest = connectionSource === 'web-cookie';
   // Only this machine's own server can hand out an entry link. A remote space
   // has its own; opening it from here would be configuring somebody else's.
-  const control = host.kind === 'tauri' ? localClient : client;
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useWebAccessStatus(control);
   const remoteConnections = useRemoteConnections(control);
   const [busy, setBusy] = useState<null | Mode | 'off' | 'revoke' | 'link' | 'shared'>(null);
@@ -243,7 +244,7 @@ export function WebAccessSection() {
       .finally(() => { setBusy(null); refresh(); });
   };
 
-  if (webGuest) return <WebGuestSession client={client} />;
+  if (webGuest) return <WebGuestSession client={control} />;
 
   return (
     <SectionCard id="st-card-web-access" title={t('st.web.title')} scope="server" aside={t('st.web.hint')}>

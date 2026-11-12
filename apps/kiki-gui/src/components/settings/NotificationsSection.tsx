@@ -5,6 +5,7 @@ import type { ImSessionSnapshot } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { useOptionalConnection } from '../../state/connection';
 import { FeedbackLine } from '../controls';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
 import { ATTENTION_STATES, ChannelsCard } from './notifications/ChannelsCard';
@@ -74,8 +75,10 @@ function tabLabelKey(tab: NotifySubTab): I18nKey {
  */
 export function NotificationsSection() {
   const { t, locale } = useI18n();
+  const connectionId = useOptionalConnection()?.connectionId;
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
   const queryClient = useQueryClient();
-  const { settings, providers } = useNotificationData();
+  const { settings, providers } = useNotificationData(!inPairedSpace);
   const { hash, search } = useLocation();
   const flashId = useContext(SettingsFlashContext);
   const target = hash === `#${ADD_CARD}` || flashId === ADD_CARD;
@@ -188,6 +191,14 @@ export function NotificationsSection() {
   const pushBody = settings.isError || providers.isError
     ? <FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} />
     : data === undefined || providers.data === undefined ? <div data-notify-loading aria-busy="true" className="min-h-40" /> : null;
+
+  if (inPairedSpace) {
+    return (
+      <div className="space-y-5">
+        <AwayNotificationsCard />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">

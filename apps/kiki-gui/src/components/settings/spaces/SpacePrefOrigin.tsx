@@ -39,7 +39,8 @@ interface SpacePrefOriginProps {
 }
 
 export function SpacePrefOrigin(props: SpacePrefOriginProps) {
-  const { client, meta } = useConnection();
+  const { client, meta, connectionId } = useConnection();
+  if (typeof connectionId === 'string' && connectionId !== '') return null;
   const target = spaceSettingsTargetOf(client, meta);
   return <SpacePrefOriginContext key={`${spaceSettingsClientKey(client)}|${target?.identity.serverId ?? 'unidentified'}|${target?.identity.homeId ?? 'unidentified'}`} target={target} {...props} />;
 }

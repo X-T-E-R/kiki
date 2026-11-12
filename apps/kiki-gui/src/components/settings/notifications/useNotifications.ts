@@ -12,11 +12,11 @@ export const NOTIFY_DELIVERIES_KEY = ['notifications', 'deliveries'] as const;
  * on the page. The log is one newest-first list (the server keeps the last
  * 100); rows group it by channel.
  */
-export function useNotificationData() {
+export function useNotificationData(enabled = true) {
   const { client } = useConnection();
-  const settings = useQuery({ queryKey: NOTIFY_SETTINGS_KEY, queryFn: () => client.notifications.getSettings(), staleTime: 15_000 });
-  const providers = useQuery({ queryKey: NOTIFY_PROVIDERS_KEY, queryFn: () => client.notifications.listProviders(), staleTime: 60_000 });
-  const deliveries = useQuery({ queryKey: NOTIFY_DELIVERIES_KEY, queryFn: () => client.notifications.listDeliveries(), staleTime: 15_000 });
+  const settings = useQuery({ queryKey: NOTIFY_SETTINGS_KEY, queryFn: () => client.notifications.getSettings(), staleTime: 15_000, enabled });
+  const providers = useQuery({ queryKey: NOTIFY_PROVIDERS_KEY, queryFn: () => client.notifications.listProviders(), staleTime: 60_000, enabled });
+  const deliveries = useQuery({ queryKey: NOTIFY_DELIVERIES_KEY, queryFn: () => client.notifications.listDeliveries(), staleTime: 15_000, enabled });
   return { settings, providers, deliveries };
 }
 

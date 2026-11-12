@@ -198,12 +198,27 @@ const client = {
   },
 };
 
-const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn(), localClient: undefined as unknown }));
+const connectionMock = vi.hoisted(() => ({
+  token: '',
+  url: 'http://127.0.0.1:8080',
+  applyConnection: vi.fn(),
+  localClient: undefined as unknown,
+  connectionId: null as string | null,
+  spaceKey: undefined as string | undefined,
+}));
+const hostMock = vi.hoisted(() => ({
+  kind: 'browser' as 'browser' | 'tauri',
+  restartServer: undefined as (() => Promise<void>) | undefined,
+  connection: {},
+}));
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => ({
     client,
     config: { url: connectionMock.url, token: connectionMock.token },
     scopeId: 'direct:http://127.0.0.1:8080',
+    connectionId: connectionMock.connectionId,
+    spaceKey: connectionMock.spaceKey,
+    localClient: connectionMock.localClient,
   }),
   useConnection: () => ({
     client,
@@ -211,6 +226,8 @@ vi.mock('../state/connection', () => ({
     config: { url: connectionMock.url, token: connectionMock.token },
     scopeId: 'direct:http://127.0.0.1:8080',
     sshLabel: null,
+    connectionId: connectionMock.connectionId,
+    spaceKey: connectionMock.spaceKey,
     meta: { server_version: 'test', backend: 'v2' },
     wsStatus: 'open',
     socket: { nudge: vi.fn() },
@@ -222,7 +239,7 @@ vi.mock('../state/connection', () => ({
 }));
 
 vi.mock('../host', () => ({
-  useHost: () => ({ kind: 'browser', connection: {} }),
+  useHost: () => hostMock,
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -245,6 +262,10 @@ beforeEach(() => {
   connectionMock.url = 'http://127.0.0.1:8080';
   connectionMock.applyConnection.mockClear();
   connectionMock.localClient = undefined;
+  connectionMock.connectionId = null;
+  connectionMock.spaceKey = undefined;
+  hostMock.kind = 'browser';
+  hostMock.restartServer = undefined;
   configureSpaceStorage(null);
   klient.global.mcp.list.mockReset();
   klient.global.mcp.add.mockReset();
@@ -417,7 +438,8 @@ describe('SettingsPage panel scopes', () => {
     for (const page of [general, await renderSettings('/settings/permissions')]) {
       expect(page.querySelector('[data-settings-page-status]')).toBeNull();
       expect(page.querySelector('[data-settings-remote-line]')).toBeNull();
-      expect(page.textContent).not.toMatch(/This device|All sessions|Applies to all your sessions|Only affects this app|127\.0\.0\.1/);
+      const paneText = page.querySelector('[data-settings-scroll]')?.textContent ?? '';
+      expect(paneText).not.toMatch(/This device|All sessions|Applies to all your sessions|Only affects this app|127\.0\.0\.1/);
     }
   });
 
@@ -447,6 +469,144 @@ describe('SettingsPage panel scopes', () => {
       expect(container.querySelector('[data-settings-space-band]')?.textContent).toBe('Current: Workstation B');
       expect(container.textContent).not.toContain('remote:');
       expect(container.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    } finally {
+      configureSpaceStorage(null);
+    }
+  });
+
+  it('scopes Settings to App and Spaces & devices in a paired space and shows a plain-language notice on deep-linked server pages', async () => {
+    const pairing = '9d5b4bd0-8f2b-4a1f-9f37-52c1b48a1a01';
+    connectionMock.connectionId = pairing;
+    connectionMock.spaceKey = `remote:${pairing}`;
+    connectionMock.localClient = {
+      baseUrl: 'http://127.0.0.1:8080',
+      klient: {
+        rest: {
+          connections: {
+            list: async () => [{
+              id: pairing,
+              label: 'Workstation B — Main space',
+              endpoint: 'https://workstation-b.example.test:58627',
+              state: 'connected',
+              enabled: true,
+              purposes: ['gui'],
+              target: { homeId: 'main', hostId: 'Workstation B' },
+            }],
+            handshake: async () => ({ targetLabel: 'Workstation A' }),
+          },
+        },
+      },
+    };
+    configureSpaceStorage({ homeId: `remote:${pairing}` });
+    try {
+      const ai = await renderSettings('/settings/ai');
+      await flush();
+      expect(ai.querySelector('[data-settings-space-band]')?.textContent).toBe(
+        'Current: Workstation B — Main space (Workstation B)',
+      );
+      expect(ai.querySelectorAll('[data-settings-nav-group]')).toHaveLength(2);
+      expect(ai.querySelector('[data-settings-nav-group="device"]')).not.toBeNull();
+      expect(ai.querySelector('[data-settings-nav-group="connection"]')).not.toBeNull();
+      expect(ai.querySelector('[data-settings-nav-group="intelligence"]')).toBeNull();
+      expect(ai.querySelector('[data-settings-remote-nav-note]')?.textContent).toBe(
+        'Workstation B — Main space’s settings are changed on its own computer.',
+      );
+      expect(ai.querySelector('[data-settings-remote-only-notice]')?.textContent).toBe(
+        'Workstation B — Main space’s settings are changed on its own computer.',
+      );
+      expect(ai.querySelector('#st-card-providers')).toBeNull();
+      expect(ai.querySelector('[data-settings-scroll] input, [data-settings-scroll] select, [data-settings-scroll] textarea, [data-settings-scroll] button')).toBeNull();
+      expect(ai.textContent).not.toContain('remote:');
+      expect(ai.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+
+      const general = await renderSettings('/settings/general');
+      await flush();
+      expect(general.querySelector('#st-card-composer')).not.toBeNull();
+      expect(general.querySelector('#st-card-settings-transfer')).toBeNull();
+
+      const appearance = await renderSettings('/settings/appearance');
+      await flush();
+      expect(appearance.querySelector('#st-card-appearance')).not.toBeNull();
+      expect(appearance.querySelector('#st-card-appearance-background')).toBeNull();
+      expect(appearance.querySelector('#st-card-skin-files')).toBeNull();
+    } finally {
+      configureSpaceStorage(null);
+    }
+  });
+
+  it('renders 1 hop locally vs 2 hops in a paired space on This device’s connection and names the local service restart', async () => {
+    const pairing = '9d5b4bd0-8f2b-4a1f-9f37-52c1b48a1a01';
+    const retry = vi.fn(async () => ({}));
+
+    // Browser connected locally: 1 segment, no owned desktop restart card.
+    client.klient.rest = {
+      connections: {
+        list: async () => [],
+        handshake: async () => ({ targetLabel: 'Workstation A' }),
+      },
+    };
+    try {
+      const localBrowser = await renderSettings('/settings/connection');
+      await flush();
+      expect(localBrowser.querySelectorAll('[data-conn-segment]')).toHaveLength(1);
+      expect(localBrowser.querySelector('[data-conn-hop-heading="local"]')?.textContent).toBe(
+        'This device → Workstation A',
+      );
+      expect(localBrowser.querySelector('#st-card-conn-owned')).toBeNull();
+    } finally {
+      client.klient.rest = undefined;
+    }
+
+    // Desktop connected to a paired space: 2 segments matching the position bar's space name, plus owned restart card.
+    hostMock.kind = 'tauri';
+    hostMock.restartServer = vi.fn(async () => {});
+    connectionMock.connectionId = pairing;
+    connectionMock.spaceKey = `remote:${pairing}`;
+    connectionMock.localClient = {
+      baseUrl: 'http://127.0.0.1:8080',
+      klient: {
+        rest: {
+          connections: {
+            list: async () => [{
+              id: pairing,
+              label: 'Workstation B — Main space',
+              endpoint: 'https://workstation-b.example.test:58627',
+              state: 'connected',
+              enabled: true,
+              purposes: ['gui'],
+              lastConnectedAt: Date.now() - 60_000,
+              target: { homeId: 'main', hostId: 'Workstation B' },
+            }],
+            handshake: async () => ({ targetLabel: 'Workstation A' }),
+            retry,
+          },
+        },
+      },
+    };
+    configureSpaceStorage({ homeId: `remote:${pairing}` });
+    try {
+      const pairedDesktop = await renderSettings('/settings/connection');
+      await flush();
+      expect(pairedDesktop.querySelectorAll('[data-conn-segment]')).toHaveLength(2);
+      expect(pairedDesktop.querySelector('[data-conn-hop-heading="local"]')?.textContent).toBe(
+        'This device → Workstation A (this computer)',
+      );
+      expect(pairedDesktop.querySelector('[data-conn-hop-heading="remote"]')?.textContent).toBe(
+        'Workstation A → Workstation B — Main space',
+      );
+      expect(pairedDesktop.querySelector('[data-conn-remote-url]')?.textContent).toBe(
+        'workstation-b.example.test:58627',
+      );
+      const retryBtn = pairedDesktop.querySelector<HTMLButtonElement>('[data-conn-remote-retry]');
+      expect(retryBtn).not.toBeNull();
+      await click(retryBtn!);
+      expect(retry).toHaveBeenCalledWith(pairing);
+
+      const ownedCard = pairedDesktop.querySelector('#st-card-conn-owned');
+      expect(ownedCard).not.toBeNull();
+      expect(ownedCard?.querySelector('[data-conn-restart]')?.textContent).toBe(
+        'Restart the Kiki service on this computer',
+      );
     } finally {
       configureSpaceStorage(null);
     }

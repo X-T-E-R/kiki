@@ -10,6 +10,7 @@ import {
   validateReadingTimeoutSeconds,
   writeSettings,
 } from '@kiki/session-core/settings';
+import { relativeTime } from '@kiki/session-core/util/time';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import {
@@ -21,6 +22,15 @@ import {
 } from '../../lib/androidBridge';
 import { appShellConnectUrl, isEmbeddedAndroidHost } from '../../lib/appShell';
 import { useBusySessionCount } from '../../lib/busySessionsHook';
+import {
+  connectionAddress,
+  connectionIdOfSpaceKey,
+  connectionsApi,
+  remoteConnectionKeys,
+  useRemoteConnections,
+} from '../../lib/remoteConnections';
+import { useSpaceLocation } from '../../lib/spaceLocation';
+import { currentSpace } from '../../lib/spaces';
 import { useConnection } from '../../state/connection';
 import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
 import { copyTextToClipboard } from '../../lib/clipboard';
@@ -29,6 +39,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { RemoteStateChip, connectionFailureText } from './remote/parts';
 import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
@@ -54,14 +65,26 @@ export function ConnectionSection() {
 
 function CurrentConnectionContent() {
   const host = useHost();
-  const { config, meta, wsStatus, socket, scopeId, sshLabel, connectionSource, activateLocal, disconnect, applyConnection } = useConnection();
+  const { config, meta, wsStatus, socket, scopeId, sshLabel, connectionId, spaceKey, localClient, connectionSource, activateLocal, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const spaceLocation = useSpaceLocation();
   const isDesktop = host.kind === 'tauri';
   const isSsh = scopeId.startsWith('ssh:');
+  const activeConnectionId =
+    (typeof connectionId === 'string' && connectionId !== '' ? connectionId : null) ??
+    connectionIdOfSpaceKey(currentSpace()?.homeId ?? '') ??
+    (typeof spaceKey === 'string' ? connectionIdOfSpaceKey(spaceKey) : null);
+  const inPairedSpace = activeConnectionId !== null;
+  const remoteConnections = useRemoteConnections(inPairedSpace ? (localClient ?? null) : null);
+  const remoteRecord = inPairedSpace
+    ? (remoteConnections.data ?? []).find((entry) => entry.id === activeConnectionId)
+    : undefined;
   const isShellPaired = connectionSource === 'app-shell';
   const shellConnect = appShellConnectUrl();
   const [restarting, setRestarting] = useState(false);
+  const [retryingRemote, setRetryingRemote] = useState(false);
+  const [remoteRetryFeedback, setRemoteRetryFeedback] = useState<Feedback>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
@@ -141,6 +164,21 @@ function CurrentConnectionContent() {
     }
   };
 
+  const retryRemoteHop = async () => {
+    if (activeConnectionId === null || localClient === null) return;
+    setRetryingRemote(true);
+    setRemoteRetryFeedback(null);
+    try {
+      await connectionsApi(localClient).retry(activeConnectionId);
+      await queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+    } catch (error) {
+      const reason = connectionFailureText(error instanceof Error ? error.message : '');
+      setRemoteRetryFeedback({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
+    } finally {
+      setRetryingRemote(false);
+    }
+  };
+
   const statusDotClass = wsStatus === 'open'
     ? 'bg-success'
     : wsStatus === 'connecting'
@@ -151,6 +189,21 @@ function CurrentConnectionContent() {
     : wsStatus === 'connecting'
       ? 'text-amber-ink'
       : 'text-danger';
+
+  const localMachine = spaceLocation.localMachineName;
+  const hop1To = isDesktop
+    ? (localMachine !== undefined
+      ? t('st.conn.hopThisComputerSuffix', { computer: localMachine })
+      : t('st.conn.hopThisComputerOnly'))
+    : (localMachine ?? t('st.conn.hopServerFallback'));
+  const hop1Heading = t('st.conn.hopArrow', { from: t('st.conn.hopThisDevice'), to: hop1To });
+  const hop2From = localMachine ?? (isDesktop ? t('st.conn.hopThisComputerOnly') : t('st.conn.hopServerFallback'));
+  const hop2Heading = t('st.conn.hopArrow', { from: hop2From, to: spaceLocation.spaceName });
+  const remoteEndpoint = remoteRecord === undefined ? undefined : connectionAddress(remoteRecord.endpoint);
+  const remoteLastConnected = remoteRecord?.lastConnectedAt === undefined
+    ? undefined
+    : relativeTime(new Date(remoteRecord.lastConnectedAt).toISOString(), locale);
+  const canEditLocalEndpoint = !isSsh && !inPairedSpace;
 
   return (
     <div className="space-y-4">
@@ -170,77 +223,82 @@ function CurrentConnectionContent() {
 
         <SettingsBox>
           {!editingEndpoint ? (
-            <SettingField
-              label={
-                <span className="flex items-center gap-2" data-conn-ws-status={wsStatus}>
-                  <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
-                  <span className={`font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
-                  <span className="break-all font-mono text-ink" data-conn-url>
-                    {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
+            <div data-conn-segment="local" className="contents">
+              <SettingField
+                label={
+                  <span className="flex flex-col gap-0.5">
+                    <span className="font-medium text-ink" data-conn-hop-heading="local">{hop1Heading}</span>
+                    <span className="flex flex-wrap items-center gap-2 text-[12px]" data-conn-ws-status={wsStatus}>
+                      <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
+                      <span className={`font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
+                      <span className="break-all font-mono text-ink-soft" data-conn-url>
+                        {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
+                      </span>
+                    </span>
                   </span>
-                </span>
-              }
-              help={
-                <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                  <span>{t('st.conn.version')} <span className="font-mono">{meta.server_version}</span></span>
-                  <span aria-hidden>·</span>
-                  <span>{t('st.conn.backend')} <span className="font-mono">{meta.backend ?? 'v1'}</span></span>
-                  <span aria-hidden>·</span>
-                  {closes > 0 ? (
-                    <a
-                      href="#st-card-conn-log"
-                      data-conn-drops-link
-                      onClick={(event) => {
-                        event.preventDefault();
-                        document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                      }}
-                      className="underline decoration-hairline underline-offset-2 hover:text-ink"
-                    >
-                      {t('st.conn.dropsSinceStart', { closes })}
-                    </a>
-                  ) : (
-                    <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
-                  )}
-                  {!isSsh && config.token.trim() === '' ? (
-                    <>
-                      <span aria-hidden>·</span>
-                      <span data-conn-no-token>{t('st.conn.noToken')}</span>
-                    </>
-                  ) : null}
-                </span>
-              }
-            >
-              <button
-                type="button"
-                data-conn-reconnect
-                onClick={() => { socket?.nudge(); }}
-                className={wsStatus !== 'open' ? PRIMARY_BUTTON : SECONDARY_BUTTON}
+                }
+                help={
+                  <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    <span>{t('st.conn.version')} <span className="font-mono">{meta.server_version}</span></span>
+                    <span aria-hidden>·</span>
+                    <span>{t('st.conn.backend')} <span className="font-mono">{meta.backend ?? 'v1'}</span></span>
+                    <span aria-hidden>·</span>
+                    {closes > 0 ? (
+                      <a
+                        href="#st-card-conn-log"
+                        data-conn-drops-link
+                        onClick={(event) => {
+                          event.preventDefault();
+                          document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }}
+                        className="underline decoration-hairline underline-offset-2 hover:text-ink"
+                      >
+                        {t('st.conn.dropsSinceStart', { closes })}
+                      </a>
+                    ) : (
+                      <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
+                    )}
+                    {canEditLocalEndpoint && config.token.trim() === '' ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span data-conn-no-token>{t('st.conn.noToken')}</span>
+                      </>
+                    ) : null}
+                  </span>
+                }
               >
-                {t('st.conn.reconnect')}
-              </button>
-              {!isSsh ? (
                 <button
                   type="button"
-                  data-conn-edit
-                  onClick={() => { setEditingEndpoint(true); }}
-                  className={SECONDARY_BUTTON}
+                  data-conn-reconnect
+                  onClick={() => { socket?.nudge(); }}
+                  className={wsStatus !== 'open' ? PRIMARY_BUTTON : SECONDARY_BUTTON}
                 >
-                  {t('st.secret.edit')}
+                  {t('st.conn.reconnect')}
                 </button>
-              ) : null}
-              {shellConnect !== null ? (
-                <a
-                  href={shellConnect}
-                  data-conn-app-shell
-                  className={SECONDARY_BUTTON}
-                >
-                  {t('connect.switchComputer')}
-                </a>
-              ) : null}
-            </SettingField>
+                {canEditLocalEndpoint ? (
+                  <button
+                    type="button"
+                    data-conn-edit
+                    onClick={() => { setEditingEndpoint(true); }}
+                    className={SECONDARY_BUTTON}
+                  >
+                    {t('st.secret.edit')}
+                  </button>
+                ) : null}
+                {shellConnect !== null ? (
+                  <a
+                    href={shellConnect}
+                    data-conn-app-shell
+                    className={SECONDARY_BUTTON}
+                  >
+                    {t('connect.switchComputer')}
+                  </a>
+                ) : null}
+              </SettingField>
+            </div>
           ) : null}
 
-          {!isSsh && editingEndpoint ? <form
+          {canEditLocalEndpoint && editingEndpoint ? <form
             className="space-y-4"
             onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
           >
@@ -286,6 +344,52 @@ function CurrentConnectionContent() {
             />
             {draftsDirty ? <Hint>{t('st.conn.applyHint')}</Hint> : null}
           </form> : null}
+
+          {inPairedSpace ? (
+            <div data-conn-segment="remote" className="contents">
+              <SettingField
+                label={
+                  <span className="flex flex-col gap-0.5">
+                    <span className="font-medium text-ink" data-conn-hop-heading="remote">{hop2Heading}</span>
+                    <span className="flex flex-wrap items-center gap-2 text-[12px]">
+                      {remoteRecord !== undefined ? (
+                        <RemoteStateChip state={remoteRecord.state} />
+                      ) : null}
+                      {remoteEndpoint !== undefined ? (
+                        <span className="break-all font-mono text-ink-soft" data-conn-remote-url>
+                          {remoteEndpoint}
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
+                }
+                help={
+                  remoteLastConnected !== undefined || remoteRetryFeedback !== null ? (
+                    <span className="flex flex-col gap-1">
+                      {remoteLastConnected !== undefined ? (
+                        <span data-conn-remote-last-connected>
+                          {t('st.remote.lastConnected', { time: remoteLastConnected })}
+                        </span>
+                      ) : null}
+                      {remoteRetryFeedback !== null ? (
+                        <span className="text-danger">{remoteRetryFeedback.text}</span>
+                      ) : null}
+                    </span>
+                  ) : undefined
+                }
+              >
+                <button
+                  type="button"
+                  data-conn-remote-retry
+                  disabled={retryingRemote || localClient === null}
+                  onClick={() => { void retryRemoteHop(); }}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('st.remote.retry')}
+                </button>
+              </SettingField>
+            </div>
+          ) : null}
 
           {/* Same connection, so the waits live with the address rather than a
               second card: the two numbers this device applies to requests on it. */}
@@ -364,14 +468,14 @@ function CurrentConnectionContent() {
 
       {/* The browser cannot restart the desktop's own server, so the card is
           simply absent there rather than a "desktop only" shell. */}
-      {!isSsh && isDesktop ? (
+      {!isSsh && isDesktop && host.restartServer !== undefined ? (
         <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')}>
           <SettingsBox>
             <SettingField
               label={t('st.conn.restart')}
               help={busySessions !== undefined && busySessions > 0 ? t('st.conn.busySessions', { count: busySessions }) : t('st.conn.ownedBody')}
             >
-              <button type="button" className={SECONDARY_BUTTON} disabled={restarting} onClick={() => { setConfirmRestart(true); }}>
+              <button type="button" data-conn-restart className={SECONDARY_BUTTON} disabled={restarting} onClick={() => { setConfirmRestart(true); }}>
                 {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
               </button>
             </SettingField>

@@ -30,15 +30,15 @@ const EFFECT_KEY = {
 } as const satisfies Record<ExperimentalFlagEffect, string>;
 
 /** Server-reported flags plus saved overrides, restricted to one page's rows. */
-export function useExperimentalFlags() {
+export function useExperimentalFlags(enabled = true) {
   const { client } = useConnection();
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const metaQuery = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, enabled });
+  const metaQuery = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000, enabled });
   const rows = experimentalFlagRows(metaQuery.data ?? {}, configQuery.data ?? {});
   return {
     rows,
     effective: metaQuery.data?.experimental_flags ?? {},
-    loading: configQuery.isLoading || metaQuery.isLoading,
+    loading: enabled && (configQuery.isLoading || metaQuery.isLoading),
     error: configQuery.error ?? metaQuery.error,
     ready: configQuery.data !== undefined && metaQuery.data !== undefined,
   };

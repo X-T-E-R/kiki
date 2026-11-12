@@ -202,9 +202,10 @@ function ScaleStepper({
 export function AppearanceSection() {
   const { t } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
-  const { client, meta } = useConnection();
+  const { client, meta, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
   const spaceTarget = spaceSettingsTargetOf(client, meta);
-  const appearanceScope = spaceSettingsTargetIsSpace(spaceTarget) ? 'space' : 'app';
+  const appearanceScope = !inPairedSpace && spaceSettingsTargetIsSpace(spaceTarget) ? 'space' : 'app';
   const inSpace = appearanceScope === 'space';
   const deviceBadge = inSpace ? t('st.scope.device') : undefined;
   const skinPrefs = useSkinPrefs();
@@ -372,13 +373,15 @@ export function AppearanceSection() {
         </SettingsBox>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
-        <div className="space-y-2">
-          <Hint>{t('st.bg.hint')}</Hint>
-          <SpacePrefOrigin item="background" label={t('st.bg.title')} />
-          <BackgroundSettings theme={theme} />
-        </div>
-      </SectionCard>
+      {inPairedSpace ? null : (
+        <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
+          <div className="space-y-2">
+            <Hint>{t('st.bg.hint')}</Hint>
+            <SpacePrefOrigin item="background" label={t('st.bg.title')} />
+            <BackgroundSettings theme={theme} />
+          </div>
+        </SectionCard>
+      )}
 
       <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
         <div>
@@ -487,14 +490,16 @@ export function AppearanceSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>
-        <div className="space-y-6">
-          <AppearancePacks />
-          <div className="pt-5">
-            <SkinFiles />
+      {inPairedSpace ? null : (
+        <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>
+          <div className="space-y-6">
+            <AppearancePacks />
+            <div className="pt-5">
+              <SkinFiles />
+            </div>
           </div>
-        </div>
-      </SectionCard>
+        </SectionCard>
+      )}
     </div>
   );
 }

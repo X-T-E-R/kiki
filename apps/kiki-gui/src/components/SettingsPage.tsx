@@ -59,13 +59,19 @@ import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { SessionsSection } from './settings/SessionsSection';
 import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
-import { SettingsNav, SettingsSearch } from './settings/SettingsNav';
+import {
+  REMOTE_SPACE_NAV_TREE,
+  SettingsNav,
+  SettingsSearch,
+  settingsSectionAllowedInRemoteSpace,
+} from './settings/SettingsNav';
 import { useOptionalInstalledPlugins } from './capabilities/usePlugins';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace, useSpaces } from '../lib/spaces';
 import { connectionIdOfSpaceKey, useRemoteConnections } from '../lib/remoteConnections';
+import { sanitizeHumanLabel, useServerHandshake, useSpaceLocation } from '../lib/spaceLocation';
 import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
@@ -184,20 +190,34 @@ function SectionIntro({ section, workspaceName, remoteAddress, dirty, hidePurpos
  */
 function SpaceBand() {
   const { t } = useI18n();
-  const { localClient } = useConnection();
+  const { localClient, connectionId, spaceKey } = useConnection();
   const space = currentSpace();
-  const pairingId = space === null ? null : connectionIdOfSpaceKey(space.homeId);
+  const pairingId =
+    (typeof connectionId === 'string' && connectionId !== '' ? connectionId : null) ??
+    (space === null ? null : connectionIdOfSpaceKey(space.homeId)) ??
+    (typeof spaceKey === 'string' ? connectionIdOfSpaceKey(spaceKey) : null);
   const pairings = useRemoteConnections(pairingId === null ? null : localClient ?? null);
   const spaces = useSpaces(space !== null && pairingId === null && space.name === undefined ? localClient ?? null : null);
-  if (space === null) return null;
+  const localHandshake = useServerHandshake(space !== null && pairingId === null ? localClient ?? null : null);
+  if (space === null && pairingId === null) return null;
+  const record = pairingId === null ? undefined : pairings.data?.find((entry) => entry.id === pairingId);
   const name = pairingId !== null
-    ? pairings.data?.find((record) => record.id === pairingId)?.label
-    : space.name ?? spaces.data?.find((item) => item.id === space.homeId)?.name;
+    ? sanitizeHumanLabel(record?.label)
+    : sanitizeHumanLabel(space?.name) ?? sanitizeHumanLabel(spaces.data?.find((item) => item.id === space?.homeId)?.name);
+  const rawComputer = pairingId !== null
+    ? sanitizeHumanLabel(record?.target?.hostId)
+    : sanitizeHumanLabel(localHandshake.data?.targetLabel);
+  const computer = rawComputer !== undefined && rawComputer !== name ? rawComputer : undefined;
+  const bandText = name === undefined
+    ? t('st.spaces.bandUnnamed')
+    : computer !== undefined
+      ? t('st.spaces.bandWithComputer', { name, computer })
+      : t('st.spaces.band', { name });
   return (
     <p data-settings-space-band className="mb-5 flex items-center gap-2 border-l-2 py-0.5 pl-3 text-[12px] text-ink-soft"
-      style={{ borderColor: space.color ?? 'var(--color-hairline-strong)' }}>
-      <SpaceDot color={space.color} size={7} />
-      <span className="min-w-0 truncate">{name === undefined || name === '' ? t('st.spaces.bandUnnamed') : t('st.spaces.band', { name })}</span>
+      style={{ borderColor: space?.color ?? 'var(--color-hairline-strong)' }}>
+      <SpaceDot color={space?.color} size={7} />
+      <span className="min-w-0 truncate">{bandText}</span>
     </p>
   );
 }
@@ -209,8 +229,19 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const rawNavigate = useNavigate();
   const dirty = useDirtyGuard()?.dirty === true;
   const remoteAddress = useRemoteServerAddress();
-  const { client, meta } = useConnection();
+  const { client, meta, connectionId, spaceKey } = useConnection();
+  const spaceLocation = useSpaceLocation();
+  const inPairedSpace =
+    (typeof connectionId === 'string' && connectionId !== '') ||
+    connectionIdOfSpaceKey(currentSpace()?.homeId ?? '') !== null ||
+    (typeof spaceKey === 'string' && connectionIdOfSpaceKey(spaceKey) !== null);
   const inSpace = spaceSettingsTargetIsSpace(spaceSettingsTargetOf(client, meta));
+  const navTree = inPairedSpace ? REMOTE_SPACE_NAV_TREE : SETTINGS_NAV_TREE;
+  const remoteSpaceNotice = inPairedSpace
+    ? (spaceLocation.spaceName !== t('sidebar.space.unnamed')
+      ? t('st.spaces.remoteSettingsNote', { space: spaceLocation.spaceName })
+      : t('st.spaces.remoteSettingsNoteUnnamed'))
+    : undefined;
   const [cardRequest, setCardRequest] = useState<{ cardId: string; section: string; locationKey: string; nonce: number } | null>(null);
   const [flashCard, setFlashCard] = useState<{ cardId: string; nonce: number } | null>(null);
 
@@ -443,10 +474,16 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     void navigate(`/settings/${target}?${params.toString()}`);
   };
 
+  const hiddenInRemoteSpace = inPairedSpace && active !== null && !settingsSectionAllowedInRemoteSpace(active);
   // Import history is a built-in session surface, not a plugin sub-view. It
   // answers `/settings/sessions/import` directly; the legacy plugin address is
   // redirected there above, so it has exactly one home.
   const pane = active === null ? null
+    : hiddenInRemoteSpace ? (
+        <p data-settings-remote-only-notice className="text-[13px] leading-5 text-ink-soft">
+          {remoteSpaceNotice}
+        </p>
+      )
     : section === 'sessions/import' ? <SessionsImportPage />
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
@@ -503,7 +540,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // pages show them on one tab only, so a hit on the rows lands where they are.
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
   // A plugin's own page is about that plugin; the page's flags stay on the list.
-  const showExperimental = active !== null && active !== 'labs' && activePluginId === null
+  const showExperimental = !inPairedSpace && !hiddenInRemoteSpace
+    && active !== null && active !== 'labs' && activePluginId === null
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
   // A workspace's own page names the workspace in the breadcrumb, the way an
@@ -545,7 +583,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               focusToken={headerSearchToken}
               onSearchHit={(entry) => { setHeaderSearchToken(null); onSearchHit(entry); }}
               onDismiss={() => { setHeaderSearchToken(null); }}
-              navTree={SETTINGS_NAV_TREE}
+              navTree={navTree}
               floatingResults
             />
             <button
@@ -579,14 +617,14 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         ) : null}
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
-        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} navTree={navTree} remoteNotice={remoteSpaceNotice} /></div>
         {settingsIndex ? (
           // The narrow list marks no leaf as current (nothing is open yet), and
           // a search hit always opens its section: the General pane under the
           // list is display:none here, so locating a card in place would land
           // on a page nobody can see.
           <div data-settings-index className="flex min-w-0 flex-1 lg:hidden">
-            <SettingsNav active={null} activeTab={null} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={openSearchHit} showAttention />
+            <SettingsNav active={null} activeTab={null} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={openSearchHit} showAttention navTree={navTree} remoteNotice={remoteSpaceNotice} />
           </div>
         ) : null}
         <div className={`${settingsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col`}>
@@ -600,12 +638,14 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                   column: rail + editor need the room a reading column does not. */}
               <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">
                 <SpaceBand />
-                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
+                {hiddenInRemoteSpace ? null : (
+                  <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
+                )}
                 <SettingsPageScopeContext.Provider value={pageScope}>
                   <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>
                     <div className="space-y-6">
                       {pane}
-                      {(active === 'plugins' || active === 'extensions') && activePluginId === null ? (
+                      {!hiddenInRemoteSpace && (active === 'plugins' || active === 'extensions') && activePluginId === null ? (
                         <PluginSettingsSectionSlotList workspaceId={activeWorkspaceId ?? undefined} />
                       ) : null}
                       {showExperimental ? <ExperimentalRows section={active} /> : null}

@@ -61,13 +61,22 @@ const COPY_BUTTON =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10';
 
 export function SshSection() {
-  const { client } = useConnection();
+  const { client, localClient, connectionId } = useConnection();
+  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const targetClient = inPairedSpace ? localClient : client;
   const { t } = useI18n();
-  const flag = useNativeSshEnabled(client);
+  const flag = useNativeSshEnabled(targetClient, inPairedSpace ? 'local-control' : undefined);
 
+  if (targetClient === null) {
+    return (
+      <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
+        <Hint>{t('st.remote.controlUnavailable')}</Hint>
+      </SectionCard>
+    );
+  }
   if (flag.loading) return <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}><Hint>{t('st.ssh.loading')}</Hint></SectionCard>;
-  if (flag.enabled !== true) return <SshFlagOffCard />;
-  return <SshHostsSettings />;
+  if (flag.enabled !== true) return <SshFlagOffCard readOnly={inPairedSpace} />;
+  return <SshHostsSettings client={targetClient} />;
 }
 
 /**
@@ -76,15 +85,15 @@ export function SshSection() {
  * reports the flag and could leave that link scrolling nowhere. It is the
  * same three-way ExperimentalRow the page would show below.
  */
-function SshFlagOffCard() {
+function SshFlagOffCard({ readOnly = false }: { readonly readOnly?: boolean }) {
   const { t } = useI18n();
-  const { rows, effective, loading } = useExperimentalFlags();
+  const { rows, effective, loading } = useExperimentalFlags(!readOnly);
   const saved = rows.find((row) => row.id === NATIVE_SSH_FLAG);
   return (
     <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
       <div data-ssh-flag-off className="space-y-3">
         <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.flagOff')}</p>
-        {loading ? <Hint>{t('st.ssh.loading')}</Hint> : (
+        {readOnly ? null : loading ? <Hint>{t('st.ssh.loading')}</Hint> : (
           <SettingsBox>
             <ExperimentalRow id={NATIVE_SSH_FLAG} override={saved?.override} effective={effective[NATIVE_SSH_FLAG]} />
           </SettingsBox>
@@ -94,8 +103,7 @@ function SshFlagOffCard() {
   );
 }
 
-function SshHostsSettings() {
-  const { client } = useConnection();
+function SshHostsSettings({ client }: { readonly client: NonNullable<ReturnType<typeof useConnection>['localClient']> }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const hostsQuery = useSshHosts(client);
@@ -219,6 +227,7 @@ function SshHostsSettings() {
             // reader has to learn. Kiki's own hosts first (they are the ones the
             // user can edit), the system config's aliases after.
             <HostList
+              client={client}
               hosts={hosts}
               statusFor={statusFor}
               busy={busy}
@@ -239,7 +248,7 @@ function SshHostsSettings() {
         </div>
       </SectionCard>
 
-      <ConnectionCard />
+      <ConnectionCard client={client} />
 
       {remoteSpace !== null ? (
         <AddConnectionBySshDialog client={client} profiles={hosts} defaultHome={mainSpacePath}
@@ -279,9 +288,10 @@ function SshHostsSettings() {
 }
 
 function HostList({
-  hosts, statusFor, busy, feedbackFor, overridden,
+  client, hosts, statusFor, busy, feedbackFor, overridden,
   onEdit, onRemoteSpace, onDelete, onWriteBack, onOverride, onDisconnect,
 }: {
+  client: NonNullable<ReturnType<typeof useConnection>['localClient']>;
   hosts: readonly SshHost[];
   statusFor: (id: string) => SshHostStatus | undefined;
   busy: string | null;
@@ -299,6 +309,7 @@ function HostList({
       {hosts.map((host) => (
         <HostRow
           key={host.id}
+          client={client}
           host={host}
           status={statusFor(host.id)}
           busy={busy === host.id}
@@ -317,8 +328,9 @@ function HostList({
 }
 
 function HostRow({
-  host, status, busy, feedback, overridesConfig, onEdit, onRemoteSpace, onDelete, onWriteBack, onOverride, onDisconnect,
+  client, host, status, busy, feedback, overridesConfig, onEdit, onRemoteSpace, onDelete, onWriteBack, onOverride, onDisconnect,
 }: {
+  client: NonNullable<ReturnType<typeof useConnection>['localClient']>;
   host: SshHost;
   status: SshHostStatus | undefined;
   busy: boolean;
@@ -416,7 +428,7 @@ function HostRow({
           </dd>
         </dl>
 
-        {showKeys ? <HostKeyPanel host={host} regionId={keyRegionId} /> : null}
+        {showKeys ? <HostKeyPanel client={client} host={host} regionId={keyRegionId} /> : null}
 
         <div className="flex flex-wrap items-center gap-1 pt-1">
           {onEdit !== undefined ? (
@@ -511,8 +523,11 @@ function recordReasonKey(record: HostKeyRecord): I18nKey | undefined {
  * first-seen or changed key is decided on the connection card, and a revoked
  * entry is not a thing a settings row should wave away.
  */
-function HostKeyPanel({ host, regionId }: { host: SshHost; regionId: string }) {
-  const { client } = useConnection();
+function HostKeyPanel({ client, host, regionId }: {
+  client: NonNullable<ReturnType<typeof useConnection>['localClient']>;
+  host: SshHost;
+  regionId: string;
+}) {
   const { t, locale } = useI18n();
   const query = useSshHostKeys(client, host.id, true);
   const info = query.data;
@@ -670,8 +685,7 @@ function HostKeyPanel({ host, regionId }: { host: SshHost; regionId: string }) {
  * shows a loading line, and a failed read shows the retry instead of a switch
  * nobody can trust.
  */
-function ConnectionCard() {
-  const { client } = useConnection();
+function ConnectionCard({ client }: { readonly client: NonNullable<ReturnType<typeof useConnection>['localClient']> }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const approvalQuery = useQuery({
