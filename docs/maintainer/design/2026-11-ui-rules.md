@@ -263,7 +263,7 @@ Lists that ask the person to pick one or several values had grown four forms: th
 
 ## What is built
 
-The rules and conventions are in the tree, as listed under [Conventions and fixed wording](#conventions-and-fixed-wording), and every key the redesign added exists in both dictionaries. Beyond that, the following is built:
+The rules and conventions are in the tree, as listed under [Conventions and fixed wording](#conventions-and-fixed-wording), and every key the redesign added exists in both dictionaries. Beyond that, the following items shipped in the November GUI interaction & mobile pass live on the pass branch (`perf/gui-interaction-mobile-pass`, PR #59) rather than pre-merge `kiki`:
 
 - **Settings frame**: the 20-leaf navigation tree with Recipes as a Models tab (`packages/session-core/src/settings/settings.ts`, `SETTINGS_NAV_TREE`, `AI_SETTINGS_TABS`); Developer & labs with `overview`, `engine` and `identity` tabs (`DEVELOPER_SETTINGS_TABS`) and redirects for moved tabs (`MOVED_SETTINGS_TABS`); the leaf word and the phone index's "Needs attention" group (`apps/kiki-gui/src/components/settings/SettingsNav.tsx`); the list-tool threshold applied by the shared list primitives (`apps/kiki-gui/src/components/settings/list/`).
 All GUI paths below are under `apps/kiki-gui/src/`.
@@ -278,7 +278,7 @@ All GUI paths below are under `apps/kiki-gui/src/`.
 
 ## What is not built
 
-Each item is tracked by an issue with the title given.
+Each remaining follow-up item is tracked by an issue with the title given (#3–#58).
 
 - **"Make Settings › Models lead with which connection needs attention"**: the state card and "Needs attention" block, the Recipes tab drawn by `AiSection` itself (the strip lists it on every tab today, but `SettingsPage` still draws that tab on the Models page's behalf), the Concurrency card, "Add connection" as the first-run component, the new purpose sentence (the old one is still in the dictionaries), ink decision-source links, the retryable sign-in-methods failure, and state words on phone rows.
 - **"Finish the Agents, Permissions and Sessions settings pages"**: Agents still has two tabs (`AGENTS_SETTINGS_TABS`), no Advanced fold, no built-in sentence, the generic diagnostics and a raw load error; the Permissions Tools card summary; the Auto hint (`st.defaults.permission.autoHint` still holds an older sentence); the archive card's title and the leftover Sessions tab plumbing (`SESSIONS_SETTINGS_TABS`); the unused `apps/kiki-gui/src/components/settings/SessionTitleModelSettings.tsx`.

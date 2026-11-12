@@ -68,7 +68,7 @@ These are the only things a token can do. Everything else is refused, and a rout
 | `prompt` | `POST /api/sessions/{id}/prompts` with the restricted body below; the query `receipt=true` is allowed |
 | `abort` | `POST /api/sessions/{id}:abort` only, matched exactly as `^/api/sessions/([^/:]+):abort$` |
 
-Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); the per-prompt routes (`GET /api/sessions/{id}/prompts/{prompt_id}`, `POST …/prompts/{tail}`, `POST …/prompts::steer`); the per-message action routes (`POST …/messages/{tail}`); every other `:{action}` on a session; answering approvals and questions; `/api/klient/call` and `/api/klient/events`; and every non-session surface.
+Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); the per-prompt routes (`GET /api/sessions/{id}/prompts/{prompt_id}`, `POST …/prompts/{tail}`, `POST …/prompts:steer`); the per-message action routes (`POST …/messages/{tail}`); every other `:{action}` on a session; answering approvals and questions; `/api/klient/call` and `/api/klient/events`; and every non-session surface.
 
 Because the router decodes parameters after matching, and the session filesystem registers a catch-all `POST /sessions/{session_id}/{tail}` (`packages/kap-server/src/routes/fs.ts`), raw paths are checked before matching for `ksa_` requests: a path containing `%`, `//`, a `.` or `..` segment, or a trailing slash is refused, and so is `HEAD`.
 
@@ -144,14 +144,14 @@ A GUI row for listing and revoking tokens belongs in the planned "Spaces & devic
 
 ## Terminal status over OSC 7501
 
-The TUI implements the Program Status Protocol (OSC 7501), revision 0.4. It reports only after a successful probe and never writes any OSC 7501 sequence in a terminal that did not answer it, so every other terminal, tmux included, is unaffected.
+The TUI implements the Program Status Protocol (OSC 7501), revision 0.4. It sends status reports only after a successful probe; an unsupported terminal receives the initial probe once and no subsequent status reports, so every other terminal, tmux included, is unaffected.
 
 ### The protocol as Kiki uses it
 
 - A report is `ESC ] 7501 ; key=value:key=value:… ST`, where `ST` is `ESC \` or `BEL`. Pairs are separated by `:` and keys from values by `=`, so no value may contain `:` or `;`. The whole sequence is at most 4096 bytes. Receivers ignore unknown keys. Each report replaces the previous one completely, so every report carries every key the TUI wants kept.
 - `state` (required): `idle`, `working`, `done`, `blocked`, `error` or `clear`. `kind`, only with `state=blocked`: `permission`, `question` or `auth`. `app=kiki` on every report. `title`: the session title as base64 of UTF-8, at most 192 bytes before encoding, omitted when there is none. `msg`: base64 of UTF-8, one line, at most 2048 bytes before encoding. Kiki does not use `progress` or `id`.
 - A report that breaks a limit is discarded whole by the terminal, so control characters (newlines included) are stripped first, `title` and `msg` are truncated on a UTF-8 boundary before encoding, and `msg` is shortened further if the whole sequence would still exceed 4096 bytes.
-- **Probe.** At start-up the TUI writes `ESC ] 7501 ; ? ST` immediately followed by a DA1 query `ESC [ c`. A supporting terminal answers with an OSC 7501 reply whose body starts with `?` (further pairs are ignored) **before** its DA1 reply. If the DA1 reply arrives first, the terminal does not support the protocol, and the process never writes an OSC 7501 sequence. A body starting with `?ticket=` is a ticket request, not a probe reply.
+- **Probe.** At start-up the TUI writes `ESC ] 7501 ; ? ST` immediately followed by a DA1 query `ESC [ c`. A supporting terminal answers with an OSC 7501 reply whose body starts with `?` (further pairs are ignored) **before** its DA1 reply. If the DA1 reply arrives first, the terminal does not support the protocol, and the process writes no subsequent status reports. A body starting with `?ticket=` is a ticket request, not a probe reply.
 
 ### State mapping
 
@@ -167,7 +167,7 @@ The state is projected from session-core's `SessionViewState`, not rebuilt from 
 | A turn ended normally and the person has not looked yet | `state=done`; where the TUI cannot tell whether the person has looked, `state=idle` is acceptable |
 | A turn ended with an error | `state=error`, `msg` a short summary |
 
-The TUI reports once after the probe succeeds; whenever the reported state, kind, title or message changes; whenever the open session changes by any route (`/new`, `/clear`, `/sessions`, `/resume`, a persona switch, deleting the current session, a fork that moves the TUI); and when the server restarted and the TUI reconnected with a new port or `server_id`. It never emits two identical consecutive reports and never re-emits periodically. Every exit path that restores the terminal writes `state=clear` (only if the probe succeeded): the normal stop path, the double Ctrl-C or Ctrl-D exit, and the emergency and signal exits.
+The TUI reports once after the probe succeeds; whenever the reported state, kind, title or message changes; whenever the open session changes by any route (`/new`, `/clear`, `/sessions`, `/resume`, a persona switch, deleting the current session, a fork that moves the TUI); and when the server restarted and the TUI reconnected to the same endpoint with a new `server_id`. It never emits two identical consecutive reports and never re-emits periodically. Every exit path that restores the terminal writes `state=clear` (only if the probe succeeded): the normal stop path, the double Ctrl-C or Ctrl-D exit, and the emergency and signal exits.
 
 The probe reply and ticket requests must never reach the editor or any key handler, whatever screen is showing (dialogs, pickers, paste mode), and must survive being split across reads. The TUI consumes them in an input listener that runs before components, as it already does for focus reports, and coordinates with the DA1 query pi-tui writes for keyboard-protocol negotiation so that neither steals the other's reply.
 
@@ -204,7 +204,7 @@ The terminal writes into the TUI's input `ESC ] 7501 ; ?ticket=<challenge> ST`, 
 
 The terminal then calls `exchange` with the ticket, its verifier and its own `client` name and version.
 
-The TUI process has one `holder_id`, base64url of 16 random bytes. It opens its presence stream lazily on the first ticket request and keeps it until exit, reopening it when its connection to the server comes back. On every session switch it calls `release { holder_id, session_id: <old> }` before emitting the new report, so a token for the old session stops working. On exit it calls `release { holder_id }`, best effort and bounded to 500 ms, then writes `state=clear`. After a server restart, which invalidates every ticket, token and presence stream, the TUI re-reads `server_id` and the port when its connection returns, and if either changed it reopens the presence stream and reports again at once.
+The TUI process has one `holder_id`, base64url of 16 random bytes. It opens its presence stream lazily on the first ticket request and keeps it until exit, reopening it when its connection to the server comes back. On every session switch it calls `release { holder_id, session_id: <old> }` before emitting the new report, so a token for the old session stops working. On exit it calls `release { holder_id }`, best effort and bounded to 500 ms, then writes `state=clear`. After a server restart, which invalidates every ticket, token and presence stream, the TUI re-reads `server_id` when its connection returns to the same endpoint, and if `server_id` changed it reopens the presence stream and reports again at once.
 
 ### Versioning
 
@@ -212,15 +212,13 @@ The TUI process has one `holder_id`, base64url of 16 random bytes. It opens its 
 
 ## Behaviours token clients rely on
 
-A client holding a token depends on behaviours of prompt submission, turn events and history reads that are believed to hold but have no direct test. Each must be proved by a test against the real server, or its actual behaviour written into the REST docs:
+A client holding a token depends on behaviours of prompt submission, turn events and history reads. While `packages/kap-server/test/prompts.integration.ts` already covers same-body replay, conflicting `prompt_id` reuse, and queued receipts, the genuine remaining coverage gaps must be proved by tests against the real server, or their actual behaviour written into the REST docs:
 
 1. A prompt submitted over REST appears as a user message in the transcript projection every TUI and GUI renders.
-2. `prompt_id` is idempotent: the same id with the same body returns the first receipt without running twice; the same id with a different body is a conflict.
-3. A prompt submitted while a turn runs is queued (receipt `status: 'queued'`) and starts when the turn ends.
-4. `turn.started` carries the `promptId` that started it, and `turn.ended` carries `reason`, one of `completed`, `cancelled`, `failed`, `blocked`.
-5. Durable `/api/ws` events carry `seq` and `epoch`; reconnecting with `subscribe.cursors` replays the gap; a gap that is too large answers `resync_required`, after which the client reads `snapshot`.
-6. A client can read every message after a given one, oldest first. `GET …/messages?after_id=` does not do this (it returns the newest page above the anchor, newest first), and `GET …/transcript/ops?since_seq=` covers only the live journal. If `GET …/transcript?after_turn=` pages strictly forward, it is the documented way; otherwise `messages` gains an ascending option.
-7. A message keeps its `id` across a server restart and a session reload. Generated ids fall back to `msg_<sessionId>_<index>` (`packages/kap-server/src/services/messages/messageProjection.ts`), which depends on absolute position, so undo or compaction may change them; the docs must say exactly when an id can change.
+2. `turn.started` carries the `promptId` that started it, and `turn.ended` carries `reason`, one of `completed`, `cancelled`, `failed`, `blocked`.
+3. Durable `/api/ws` events carry `seq` and `epoch`; reconnecting with `subscribe.cursors` replays the gap; a gap that is too large answers `resync_required`, after which the client reads `snapshot`.
+4. A client can read every message after a given one, oldest first. `GET …/messages?after_id=` does not do this (it returns the newest page above the anchor, newest first), and `GET …/transcript/ops?since_seq=` covers only the live journal. If `GET …/transcript?after_turn=` pages strictly forward, it is the documented way; otherwise `messages` gains an ascending option.
+5. A message keeps its `id` across a server restart and a session reload. Generated ids fall back to `msg_<sessionId>_<index>` (`packages/kap-server/src/services/messages/messageProjection.ts`), which depends on absolute position, so undo or compaction may change them; the docs must say exactly when an id can change.
 
 `--ephemeral` sessions are not indexed, and `GET …/messages` answers `40401` for them; the TUI does not offer them for hand-off.
 
@@ -244,13 +242,13 @@ Each piece is tracked by an issue with the title given, in this order:
 - **"Add the terminal hand-off channel for session access tokens (server)"**: tickets, presence, release and `exchange`.
 - **"Report the TUI's status to terminals that support OSC 7501 program status"**: the probe, the encoder, the state mapping and `state=clear`. Any change to `packages/pi-tui`, which is vendored, must be minimal and registered as a local divergence in `packages/pi-tui/AGENTS.md` with a guarding test.
 - **"Let the hosting terminal request a session access ticket from the TUI"**: the hand-off keys, ticket requests and the holder lifecycle.
-- **"Pin down with tests the session behaviours that REST prompt clients rely on"**: the seven behaviours above. It does not depend on tokens and can run in parallel.
+- **"Pin down with tests the session behaviours that REST prompt clients rely on"**: the five remaining coverage gaps above. It does not depend on tokens and can run in parallel.
 
 ## What was never verified
 
 Everything here was settled by reading the code; nothing was run against a server or a terminal.
 
-- That a prompt submitted over REST renders as a user message; `prompt_id` replay and conflict behaviour; the queued-while-busy receipt; `turn.started.promptId` and `turn.ended.reason`; whether `transcript?after_turn=` pages strictly forward; and when message ids change.
+- That a prompt submitted over REST renders as a user message; `turn.started.promptId` and `turn.ended.reason`; whether `transcript?after_turn=` pages strictly forward; and when message ids change (`packages/kap-server/test/prompts.integration.ts` already covers same-body replay, conflicting `prompt_id` reuse, and queued receipts).
 - That no content reference passed to the large-field read can resolve into another session.
 - Whether the rule that every built-in setting needs a Settings home and en/zh copy applies to plain config keys such as `[session_access]`. It is written for flag ids; `packages/session-core/src/settings/settings.test.ts` decides.
 - How a long-lived `text/event-stream` response interacts with the server's idle exit and lease accounting. A presence stream should not keep an otherwise idle server alive beyond what the TUI's own lease already does.

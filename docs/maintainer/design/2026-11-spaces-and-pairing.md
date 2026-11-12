@@ -16,7 +16,7 @@ What people met as a result:
 
 - **What was shown did not match what was read.** Inside a space on another computer, the settings band showed the internal key `remote:<uuid>`; "Connected server" showed this device's own address and offered to restart this device's server; owner-only pages kept their "Add" buttons although the broker refuses those operations (`Operation is not available to a remote space`, `packages/klient/src/transports/http/connections.ts`); and the Spaces page asked this device's server for the settings of a space called `remote:<uuid>`, which the server's `main | h-…` parameter rejects.
 - **Different failures looked like one.** The broker route packed every admission error into envelope code 40101, and the GUI read 40101 as "this space needs an access token". A closed gate on the other side, a paused pairing, a changed identity, a local space that had not started and a broken SSH channel all showed a full-page "needs an access token" form whose value the remote branch never used.
-- **Things happened that nobody chose.** Pressing "Pairing code" switched the inbound gate on for good and started listening on the local network and Tailscale (`createPairCode` sets `state.enabled = true` in `packages/kap-server/src/services/connections/admission.ts`), and the dialog did not say so. Pairing also set up thread messages every time, while the same page said thread-message permission was granted separately.
+- **Things happened that nobody chose.** Pressing "Pairing code" switched the inbound gate on for good and started listening on the local network and Tailscale (`createPairCode` sets `state.enabled = true` in `packages/kap-server/src/services/connections/admission.ts`), and the dialog did not say so. Outbound pairing also requested thread-message access by default (`remoteConnections.ts`), while the same page said thread-message permission was granted separately.
 - **One task had two mechanisms.** "Connect to a remote Kiki" existed twice: an SSH alias plus a typed owner token at the bottom of Settings › Workspaces (the window switches to the other server with owner rights), and pairing under "Access from elsewhere" (a peer credential through the broker with limited rights). Both called the result "remote Kiki". "Kikis I connect to" sat on the page about who may connect *to* this Kiki, and the switcher's "Manage spaces…" led to a page where the remote entries were not listed.
 - **Too many words.** One home was called space, Kiki, remote Kiki, other Kiki, this Kiki, home, server; one machine was 本机, computer, machine, SSH host, host; entering was switch, switch over, open in a new window. In a phone browser, 「本机」 meant the computer running the server, not the phone.
 
@@ -32,7 +32,7 @@ These are the pieces the model is built from. None of them changes in the first 
 | Space | A home registered in the main home's `homes.json`; the main home's own id is `main` (`packages/protocol/src/rest/space.ts`, `apps/kiki-gui/src/lib/spaces.ts`) | The list is per computer; only the main space's server writes it |
 | Outbound pairing record | This home's pointer to another home: label, endpoint, target identity, `purposes ⊆ {gui, bridge}`, transport, state, background summary (`packages/protocol/src/rest/connections.ts`) | The current home's `server/outbound-connections.json` and connection secrets |
 | Space on another computer | An enabled outbound record with `gui`, entered as scope `remote:<connectionId>`; every read and write goes through the current home's broker, limited to `CONNECTION_OPERATIONS` (`packages/protocol/src/rest/connection-operations.ts`) | As above |
-| Inbound gate, grants and pairing codes | Who may connect to the current home; the gate is off by default; a code is 8 characters, ten minutes, single use | The current home's server |
+| Inbound gate, grants and pairing codes | Who may connect to the current home; the gate is off by default; a code is 8 characters, ten minutes by default, single use | The current home's server |
 | Thread bridge | A one-way thread-message permission between two homes: source and target scopes, `operations ⊆ {read, send, wait, wake}`, expiry (`packages/protocol/src/rest/thread-bridge.ts`) | The current home's `server/thread-bridges.json` |
 | Web access | A one-time link exchanged for a browser cookie, plus the list of outbound spaces such a browser may switch to | The current home's `server/web-access.json` |
 | Owner (SSH) profile | A desktop-saved SSH alias; connecting tunnels to the other server and asks for its owner token (scope `ssh:<id>`) | Per device; the token is not saved |
@@ -269,10 +269,10 @@ Changing the GUI's default for thread messages ends "pair, and agents can alread
 
 ## What is built
 
-Phase 1 is built except for one item:
+Phase 1 items shipped in the November GUI interaction & mobile pass live on the pass branch (`perf/gui-interaction-mobile-pass`, PR #59) rather than pre-merge `kiki` (except for one pending item):
 
 - Paired-space failures map the broker's reason strings to their own reasons (`apps/kiki-gui/src/lib/navScopeConnection.ts`; `ScopeRestoreFailure` in `apps/kiki-gui/src/lib/navScope.ts`), and the recovery page shows each with its own title and action and no token field (`apps/kiki-gui/src/components/NavScopeRecovery.tsx`, copy under `nav.scope.failed.remote-*`).
-- The settings band names a paired space from its record and otherwise says 「当前：另一个空间」 (`SpaceBand` in `apps/kiki-gui/src/components/SettingsPage.tsx`); the switcher falls back to 「另一个空间」 instead of an internal key (`apps/kiki-gui/src/components/SpaceSwitcher.tsx`).
+- The settings band names a paired space from its record and otherwise says 「当前：另一个空间」 (`SpaceBand` in `apps/kiki-gui/src/components/SettingsPage.tsx`); the switcher falls back to `远端 Kiki` / `Remote Kiki` (`sidebar.space.remoteKiki` in `apps/kiki-gui/src/components/SpaceSwitcher.tsx`) instead of an internal key.
 - The Access page's note now says that pairing with a code also allows thread messages (read, send, wait) when both sides have a workspace, and that the list does not show them yet (`st.inbound.bridgeNote`).
 - The launcher's directions name the path that exists today, "Settings → Access from elsewhere → Other Kiki → Pairing code" (`apps/kiki-gui/mobile/launcher/launcher.js`, `index.html`).
 - In a browser, the connect screen offers to find a local Kiki only when the page was served from this device, and it shows errors in plain words with the raw text under "Details" (`apps/kiki-gui/src/components/ConnectScreen.tsx`).
@@ -282,7 +282,7 @@ Not built from phase 1: the main space still shows no name on the switcher (`sho
 
 ## What is not built
 
-Each item is tracked by an issue with the title given.
+Each remaining follow-up item is tracked by an issue with the title given (#3–#58).
 
 - **"Use the typed access token when returning to a hand-entered address"**: the token typed on the recovery page is ignored for `direct:` scopes and the field is also offered to web-cookie and phone-app connections.
 - **"Replace the sidebar space button with a two-line position bar"**: the bar, the shared name hook, the phone "In {space}" line, the banner naming the space, and removing the footer mark.
