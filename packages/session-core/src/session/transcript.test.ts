@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
+import { AgentTranscript, placeTranscriptItems, type AgentTranscriptSnapshot, type ContentRef, type TranscriptItem, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
 import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
 
 import {
@@ -26,6 +26,7 @@ import { translate } from '../i18n';
 import { selectionCarryoverPresentation } from '../composer/selectionQuote';
 import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
 import { patchTranscriptContent } from './transcript/content';
+import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
@@ -48,7 +49,6 @@ import {
   liveSourcesFromAgentSnapshots,
   overlayLiveSourcesWithSnapshotSubagents,
   overlaySnapshotSubagentFields,
-  prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
   projectMessageView,
@@ -689,7 +689,25 @@ describe('transcript authority projection', () => {
     ]);
   });
 
-  it('prepends older pages by entity id and stays idempotent', () => {
+  const placeWindowPage = (
+    current: AgentTranscriptSnapshot,
+    older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly has_more?: boolean },
+  ): AgentTranscriptSnapshot => {
+    const items = placeTranscriptItems(current.items, older.items, (resident: TranscriptItem, incoming: TranscriptItem) =>
+      resident.kind === 'turn' && incoming.kind === 'turn'
+        ? resolveTurnCopies(resident, incoming, false).turn
+        : resolveItemCopies(resident, incoming, false));
+    const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
+    const olderAttachments = older.attachments.filter((attachment) => !existingAttachments.has(attachment.attachmentId));
+    return {
+      ...current,
+      items,
+      attachments: [...olderAttachments, ...current.attachments],
+      hasMoreOlder: older.hasMoreOlder ?? older.has_more ?? current.hasMoreOlder,
+    };
+  };
+
+  it('places older pages in the window by entity id and stays idempotent', () => {
     const current = {
       items: [
         { kind: 'turn' as const, turnId: 't2', ordinal: 2, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] },
@@ -713,8 +731,8 @@ describe('transcript authority projection', () => {
       ],
       has_more: false,
     };
-    const first = prependOlderTranscriptSnapshot(current, older);
-    const second = prependOlderTranscriptSnapshot(first, older);
+    const first = placeWindowPage(current, older);
+    const second = placeWindowPage(first, older);
     expect(first.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind))).toEqual(['t1', 't2']);
     expect(second.items).toEqual(first.items);
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
@@ -727,10 +745,10 @@ describe('transcript authority projection', () => {
       steps: [{ kind: 'step', stepId: 's5', turnId: 't1', ordinal: 5, state: 'completed', frames: [] }], contentRefs: [bodyRef] };
     const opening: TranscriptTurn = { ...body, state: 'running', steps: [], origin: { kind: 'user' }, prompt: 'opening', promptId: 'opening-1',
       startedAt: FIXED_AT, attachmentIds: ['opening-image'], contentRefs: [promptRef] };
-    const first = prependOlderTranscriptSnapshot(emptySnapshot({ items: [body] }), { items: [opening], attachments: [], hasMoreOlder: false });
+    const first = placeWindowPage(emptySnapshot({ items: [body] }), { items: [opening], attachments: [], hasMoreOlder: false });
     expect(first.items[0]).toMatchObject({ state: 'completed', prompt: 'opening', promptId: 'opening-1', startedAt: FIXED_AT, attachmentIds: ['opening-image'], contentRefs: [bodyRef, promptRef] });
     expect(first.items[0]?.kind === 'turn' && first.items[0].steps).toBe(body.steps);
-    expect(prependOlderTranscriptSnapshot(first, { items: [opening], attachments: [] }).items).toEqual(first.items);
+    expect(placeWindowPage(first, { items: [opening], attachments: [] }).items).toEqual(first.items);
   });
 
   it('deduplicates repeated older-page entities without crossing turn, marker, and taskref identities', () => {
@@ -739,7 +757,7 @@ describe('transcript authority projection', () => {
       origin: { kind: 'user' as const }, steps: [] };
     const marker = { kind: 'marker' as const, markerId: sharedId, marker: 'message.delivery', at: FIXED_AT };
     const taskref = { kind: 'taskref' as const, refId: sharedId, taskId: sharedId, at: FIXED_AT_1 };
-    const merged = prependOlderTranscriptSnapshot(emptySnapshot({ items: [turn] }), {
+    const merged = placeWindowPage(emptySnapshot({ items: [turn] }), {
       items: [turn, turn, marker, marker, taskref, taskref],
       attachments: [],
       hasMoreOlder: false,
@@ -837,13 +855,13 @@ describe('transcript authority projection', () => {
       attachments: [],
       hasMoreOlder: false,
     };
-    const loaded = projectAgentTranscriptView(residentState, 'main', prependOlderTranscriptSnapshot(resident, olderPage));
+    const loaded = projectAgentTranscriptView(residentState, 'main', placeWindowPage(resident, olderPage));
     const loadedRows = loaded.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
     expect(loadedRows).toHaveLength(1);
     expect(loadedRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't111', promptId, userMessageId });
   });
 
-  it('keeps leading marker and taskref page boundaries in source order while prepending', () => {
+  it('keeps leading marker and taskref page boundaries in source order when placing pages', () => {
     const at = (minute: number) => `2026-10-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
     const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
       startedAt: at(ordinal * 10), state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
@@ -852,11 +870,11 @@ describe('transcript authority projection', () => {
     const latest = { ...emptySnapshot(), items: [marker, ref, turn(5)] };
     const middle = [turn(3), { kind: 'marker' as const, markerId: 'm3', marker: 'message.delivery', at: at(35) }];
     const first = [turn(0), turn(1)];
-    const merged = prependOlderTranscriptSnapshot(prependOlderTranscriptSnapshot(latest,
+    const merged = placeWindowPage(placeWindowPage(latest,
       { items: middle, attachments: [], hasMoreOlder: true }), { items: first, attachments: [], hasMoreOlder: false });
     expect(merged.items).toEqual([...first, ...middle, ...latest.items]);
     expect(merged.items.at(-1)).toBe(latest.items.at(-1));
-    expect(prependOlderTranscriptSnapshot(merged, { items: middle, attachments: [], hasMoreOlder: true }).items).toEqual(merged.items);
+    expect(placeWindowPage(merged, { items: middle, attachments: [], hasMoreOlder: true }).items).toEqual(merged.items);
   });
 
   it('places a recovered middle gap before the following turn’s leading activity without moving earlier activity', () => {
@@ -866,7 +884,7 @@ describe('transcript authority projection', () => {
       at: `2026-10-01T00:0${ordinal}:30.000Z` });
     const current = { ...emptySnapshot(), items: [turn(0), marker(0), turn(1), marker(3), turn(4)] };
     const gap = [turn(2), marker(2), turn(3)];
-    expect(prependOlderTranscriptSnapshot(current, { items: gap, attachments: [], hasMoreOlder: true }).items)
+    expect(placeWindowPage(current, { items: gap, attachments: [], hasMoreOlder: true }).items)
       .toEqual([...current.items.slice(0, 3), ...gap, ...current.items.slice(3)]);
   });
 
@@ -912,8 +930,8 @@ describe('transcript authority projection', () => {
       hasMoreOlder: false,
     };
 
-    const afterFirst = prependOlderTranscriptSnapshot(current, older1);
-    const afterSecond = prependOlderTranscriptSnapshot(afterFirst, older2);
+    const afterFirst = placeWindowPage(current, older1);
+    const afterSecond = placeWindowPage(afterFirst, older2);
     expect(afterSecond.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId))).toEqual([
       't19',
       't20',
@@ -1004,8 +1022,8 @@ describe('transcript authority projection', () => {
       hasMoreOlder: true,
     };
 
-    const once = prependOlderTranscriptSnapshot(current, older);
-    const twice = prependOlderTranscriptSnapshot(once, older);
+    const once = placeWindowPage(current, older);
+    const twice = placeWindowPage(once, older);
     const ids = (snapshot: AgentTranscriptSnapshot) =>
       snapshot.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind === 'taskref' ? item.refId : item.markerId));
 
@@ -1046,8 +1064,8 @@ describe('transcript authority projection', () => {
     ] as const) {
       const residentSnap = emptySnapshot({ items: resident.map(mkTurn), hasMoreOlder: true });
       const pageSnap = { items: page.map(mkTurn), attachments: [], hasMoreOlder: true };
-      const mergedOnce = prependOlderTranscriptSnapshot(residentSnap, pageSnap);
-      const mergedTwice = prependOlderTranscriptSnapshot(mergedOnce, pageSnap);
+      const mergedOnce = placeWindowPage(residentSnap, pageSnap);
+      const mergedTwice = placeWindowPage(mergedOnce, pageSnap);
       expect(ids(mergedOnce)).toEqual(expected);
       expect(ids(mergedTwice)).toEqual(expected);
     }

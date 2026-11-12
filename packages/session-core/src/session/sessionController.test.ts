@@ -20,7 +20,7 @@ import type { TranscriptEvent } from '@kiki/transcript';
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { turnContentOps } from './transcript/content';
-import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
+import { buildFloorEntries, queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
@@ -3368,23 +3368,25 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
-  it('drops a lower-grade window on a raised-grade tail reset so older pages fill those turns in', async () => {
+  it.each(['main', 'child'] as const)('drops a lower-grade window on a raised-grade tail reset for %s so older pages fill those turns in', async (agentId) => {
     const { controller, client } = await openTranscriptController();
     const turns = Array.from({ length: 6 }, (_, ordinal) => answeredTurn(ordinal));
-    // A rail observes the child at turn grade: six turn headers, no steps.
-    const unsubscribe = controller.subscribeAgent('child', () => {});
+    // Observed at turn grade: six turn headers, no steps.
+    const unsubscribe = controller.subscribeAgent(agentId, () => {});
     try {
-      controller.handleTranscript(gradedReset('child', turns.map((turn) => ({ ...turn, steps: [] })), 2, 'turn', false));
-      // Opening its page raises it to delta; the byte-bounded tail carries two turns.
-      controller.retainAgentView('workspace:child', 'child', 'delta');
-      controller.handleTranscript(gradedReset('child', turns.slice(-2), 3, 'delta', true));
-      expect(composedTurns(controller, 'child').map((turn) => `${turn.turnId}:${turn.steps.length}`)).toEqual(['t4:1', 't5:1']);
-      expect(controller.getAgentState('child').hasMoreHistory).toBe(true);
-      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'child', items: turns.slice(0, 4), has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
-      await expect(controller.loadOlderHistory('child')).resolves.toEqual({ kind: 'exhausted', changed: true });
-      expect(composedTurns(controller, 'child').map((turn) => `${turn.turnId}:${turn.steps.length}`))
+      if (agentId === 'main') controller.setFocusedAgent('other-child');
+      controller.handleTranscript(gradedReset(agentId, turns.map((turn) => ({ ...turn, steps: [] })), 2, 'turn', false));
+      // Raised to delta; the byte-bounded tail carries two turns.
+      if (agentId === 'main') controller.setFocusedAgent('main');
+      else controller.retainAgentView('workspace:child', agentId, 'delta');
+      controller.handleTranscript(gradedReset(agentId, turns.slice(-2), 3, 'delta', true));
+      expect(composedTurns(controller, agentId).map((turn) => `${turn.turnId}:${turn.steps.length}`)).toEqual(['t4:1', 't5:1']);
+      expect(controller.getAgentState(agentId).hasMoreHistory).toBe(true);
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, items: turns.slice(0, 4), has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+      await expect(controller.loadOlderHistory(agentId)).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(composedTurns(controller, agentId).map((turn) => `${turn.turnId}:${turn.steps.length}`))
         .toEqual(['t0:1', 't1:1', 't2:1', 't3:1', 't4:1', 't5:1']);
-      expect(controller.getAgentState('child').blocks.filter((block) => block.kind === 'assistant').map((block) => block.text))
+      expect(controller.getAgentState(agentId).blocks.filter((block) => block.kind === 'assistant').map((block) => block.text))
         .toEqual(turns.map((turn) => `answer ${turn.ordinal}`));
     } finally {
       unsubscribe();
@@ -3392,27 +3394,33 @@ describe('SessionController transcript authority', () => {
     }
   });
 
-  it('lets a re-read page replace a retained turn that was still running when the window was left', async () => {
+  it.each(['main', 'child'] as const)('lets a re-read page replace a retained %s turn that was still running when the window was left', async (agentId) => {
     const { controller, client } = await openTranscriptController();
+    if (agentId !== 'main') controller.retainAgentView('workspace:child', agentId, 'delta');
     const leftRunning: import('@kiki/transcript').TranscriptTurn = { ...answeredTurn(2, 'half an ans'), state: 'running', endedAt: undefined,
       steps: [{ ...answeredTurn(2, 'half an ans').steps[0]!, state: 'running' }] };
-    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [answeredTurn(0), answeredTurn(1), leftRunning] }), 2));
+    controller.handleTranscript(resetEvent(agentId, emptySnapshot({ items: [answeredTurn(0), answeredTurn(1), leftRunning] }), 2));
     try {
-      // A child page takes focus and main drops to off: t2 finishes and t3..t12
-      // happen unseen. Back on main, the bounded tail no longer reaches t2.
-      controller.setFocusedAgent('child');
-      controller.setFocusedAgent('main');
-      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [10, 11, 12].map((ordinal) => answeredTurn(ordinal)) }), 40, true));
+      // Another view takes focus and this agent drops below delta: t2 finishes and
+      // t3..t12 happen unseen. Raised again, the bounded tail no longer reaches t2.
+      if (agentId === 'main') {
+        controller.setFocusedAgent('child');
+        controller.setFocusedAgent('main');
+      } else {
+        controller.retainAgentView('workspace:child', agentId, 'off');
+        controller.retainAgentView('workspace:child', agentId, 'delta');
+      }
+      controller.handleTranscript(resetEvent(agentId, emptySnapshot({ items: [10, 11, 12].map((ordinal) => answeredTurn(ordinal)) }), 40, true));
       client.getAgentTranscript
-        .mockResolvedValueOnce({ agent_id: 'main', items: [3, 4, 5, 6, 7, 8, 9].map((ordinal) => answeredTurn(ordinal)), has_more: true, next_cursor: 'before-t3' })
-        .mockResolvedValueOnce({ agent_id: 'main', items: [answeredTurn(0), answeredTurn(1), answeredTurn(2, 'the complete answer')], has_more: false,
+        .mockResolvedValueOnce({ agent_id: agentId, items: [3, 4, 5, 6, 7, 8, 9].map((ordinal) => answeredTurn(ordinal)), has_more: true, next_cursor: 'before-t3' })
+        .mockResolvedValueOnce({ agent_id: agentId, items: [answeredTurn(0), answeredTurn(1), answeredTurn(2, 'the complete answer')], has_more: false,
           coverage: { kind: 'full', hasMoreOlder: false } });
-      await controller.loadOlderHistory('main');
-      await controller.loadOlderHistory('main');
-      const turns = composedTurns(controller, 'main');
+      await controller.loadOlderHistory(agentId);
+      await controller.loadOlderHistory(agentId);
+      const turns = composedTurns(controller, agentId);
       expect(turns.map((turn) => `${turn.turnId}:${turn.state}`)).toEqual(Array.from({ length: 13 }, (_, ordinal) => `t${ordinal}:completed`));
-      expect(controller.getState().blocks.find((block) => block.kind === 'assistant' && block.turnId === 't2')).toMatchObject({ text: 'the complete answer' });
-      expect(controller.getState().blocks.some((block) => 'streaming' in block && block.streaming === true)).toBe(false);
+      expect(controller.getAgentState(agentId).blocks.find((block) => block.kind === 'assistant' && block.turnId === 't2')).toMatchObject({ text: 'the complete answer' });
+      expect(controller.getAgentState(agentId).blocks.some((block) => 'streaming' in block && block.streaming === true)).toBe(false);
     } finally { controller.close(); }
   });
 
@@ -3481,24 +3489,64 @@ describe('SessionController transcript authority', () => {
     } finally { cold.controller.close(); }
   });
 
-  it('describes where a partial turn is missing content, and joins a head and a tail it read separately', async () => {
+  it.each(['main', 'child'] as const)('describes where a partial %s turn is missing content, and joins a head and a tail it read separately', async (agentId) => {
     const step = (turnId: string, stepId: string, ordinal: number, text: string) => ({ kind: 'step' as const, stepId, turnId, ordinal, state: 'completed' as const,
       frames: [{ kind: 'text' as const, frameId: `${stepId}.f`, role: 'assistant' as const, text }] });
     const tail: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't5', ordinal: 5, state: 'completed', origin: { kind: 'other' },
-      stepsPartial: true, steps: [step('t5', 't5.s9', 9, 'tail')] };
+      stepsPartial: true, steps: [37, 38, 39].map((ordinal) => step('t5', `t5.s${ordinal}`, ordinal, `tail ${ordinal}`)) };
     const head: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't5', ordinal: 5, state: 'completed', origin: { kind: 'user' },
-      prompt: 'opening', startedAt: '2026-01-01T00:00:00.000Z', stepsPartial: true, steps: [step('t5', 't5.s0', 0, 'head')] };
-    const unplaced: import('@kiki/transcript').TranscriptTurn = { ...answeredTurn(6), stepsPartial: true };
+      prompt: 'opening', startedAt: '2026-01-01T00:00:00.000Z', stepsPartial: true, steps: [0, 1].map((ordinal) => step('t5', `t5.s${ordinal}`, ordinal, `head ${ordinal}`)) };
     const { controller, client } = await openTranscriptController();
+    if (agentId !== 'main') controller.retainAgentView('workspace:child', agentId, 'delta');
     try {
-      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [tail, unplaced] }), 1, true));
-      expect(controller.getState()).toMatchObject({ incompleteTurnIds: ['t5', 't6'],
-        turnGaps: { t5: { at: 'start', reason: 'partial' }, t6: { at: 'turn', reason: 'partial' } } });
-      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [head], has_more: false });
-      await controller.loadOlderMessages();
-      expect(controller.getState().turnGaps).toEqual({ t5: { at: 'between', afterStepId: 't5.s0', reason: 'partial' }, t6: { at: 'turn', reason: 'partial' } });
-      expect(historyTexts(controller)).toEqual(['opening', 'prompt 6']);
-      expect(controller.getState().blocks.flatMap((block) => block.kind === 'assistant' && block.turnId === 't5' ? [block.text] : [])).toEqual(['head', 'tail']);
+      controller.handleTranscript(resetEvent(agentId, emptySnapshot({ items: [tail] }), 1, true));
+      expect(controller.getAgentState(agentId)).toMatchObject({
+        hasMoreHistory: true,
+        incompleteTurnIds: ['t5'],
+        turnGaps: { t5: { at: 'start', reason: 'partial' } },
+      });
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, items: [head], has_more: false });
+      await controller.loadOlderMessages(agentId);
+      const state = controller.getAgentState(agentId);
+      expect(state.incompleteTurnIds).toEqual(['t5']);
+      expect(state.turnGaps).toEqual({ t5: { at: 'between', afterStepId: 't5.s1', reason: 'partial' } });
+      expect(state.hasMoreHistory).toBe(true);
+      expect(state.blocks.filter((block): block is UserBlock => block.kind === 'user').map((block) => block.text)).toEqual(['opening']);
+      expect(state.blocks.flatMap((block) => block.kind === 'assistant' && block.turnId === 't5' ? [block.text] : []))
+        .toEqual(['head 0', 'head 1', 'tail 37', 'tail 38', 'tail 39']);
+    } finally { controller.close(); }
+  });
+
+  it('handles find, copy, floor navigation and locate cleanly when old turns are released from the window', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const turns = Array.from({ length: 65 }, (_, ordinal) => answeredTurn(ordinal));
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [turns[0]!] }), 1));
+    client.getAgentTranscript.mockImplementation(async (_session, _agent, options) => {
+      const input = options as { beforeItem?: string; beforeTurn?: string; pageSize: number };
+      const end = input.beforeItem !== undefined ? Number(input.beforeItem) : Number(input.beforeTurn!.slice(1));
+      const start = Math.max(0, end - input.pageSize);
+      return { agent_id: 'main', items: turns.slice(start, end), has_more: start > 0, next_cursor: start > 0 ? String(start) : undefined,
+        coverage: start > 0 ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false } };
+    });
+    try {
+      for (let ordinal = 1; ordinal < turns.length; ordinal += 1) {
+        const lease = controller.retainHistoryPreview('main', `t${ordinal - 1}`);
+        controller.handleTranscript(opsEvent('main', [{ op: 'turn.upsert', turn: turns[ordinal]! }], ordinal + 1));
+        flushAll();
+        lease();
+      }
+      // Turns t0..t20 were released when the window crossed 60 turns.
+      expect(controller.getState().oldestMessageId).toBe('t21');
+      expect(controller.getState().hasMoreHistory).toBe(true);
+      expect(buildFloorEntries(controller.getState().blocks).map((entry) => entry.preview)).not.toContain('prompt 0');
+      expect(controller.incompleteTurnOrdinals('main').has(0)).toBe(false);
+      await expect(controller.completeTurnContent('main', 0)).rejects.toThrow('Search target is not loaded');
+      await expect(controller.copyContentField('main', { kind: 'turn', id: 't0' }, ['prompt'])).rejects.toThrow('Copy target unavailable');
+      // Locating a released turn pages older history in until it returns to the window.
+      await expect(controller.locateTurn('main', 't0')).resolves.toMatchObject({ changed: true });
+      expect(controller.getState().oldestMessageId).toBe('t0');
+      expect(buildFloorEntries(controller.getState().blocks)[0]?.preview).toBe('prompt 0');
+      await expect(controller.copyContentField('main', { kind: 'turn', id: 't0' }, ['prompt'])).resolves.toBe('prompt 0');
     } finally { controller.close(); }
   });
 

@@ -71,7 +71,6 @@ export {
   latestFinalAssistantBlockId,
   mergeResponseThinking,
   overlaySnapshotSubagentFields,
-  prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   reminderCategory,
   snapshotSubagentAgentId,

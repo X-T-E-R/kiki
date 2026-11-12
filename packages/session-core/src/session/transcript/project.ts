@@ -16,8 +16,7 @@ import type {
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
 import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
-import { placeTranscriptItems } from '@kiki/transcript';
-import { resolveItemCopies, resolveTurnCopies, turnGapOf } from './window';
+import { turnGapOf } from './window';
 
 export { recoverTranscriptTurn } from './window';
 import type {
@@ -4302,34 +4301,6 @@ export function completeTranscriptTurnStructure(current: TranscriptTurn, canonic
       ...(current.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps' && (!orphan || (ref.path[0] !== 'prompt' && ref.path[0] !== 'attachmentIds'))),
       ...(orphan ? (canonical.contentRefs ?? []).filter(ref => ref.path[0] === 'prompt' || ref.path[0] === 'attachmentIds') : []),
     ] });
-}
-
-/**
- * Lay an older history page under a snapshot, by the server's ordering: turns
- * by ordinal, other items before the next turn their own source put them
- * before. Kept for callers outside the controller, which now places pages in
- * its single per-agent window; with no read marks to compare, the copy already
- * held is kept, except that an opening-less turn is joined with the opening
- * the page brings and a task reference keeps its earlier time.
- */
-export function prependOlderTranscriptSnapshot(
-  current: AgentTranscriptSnapshot,
-  older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
-): AgentTranscriptSnapshot {
-  const items = placeTranscriptItems(current.items, older.items, (resident, incoming) =>
-    resident.kind === 'turn' && incoming.kind === 'turn'
-      ? resolveTurnCopies(resident, incoming, false).turn
-      : resolveItemCopies(resident, incoming, false));
-  const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
-  const olderAttachments = older.attachments.filter(
-    (attachment) => !existingAttachments.has(attachment.attachmentId),
-  );
-  return {
-    ...current,
-    items,
-    attachments: [...olderAttachments, ...current.attachments],
-    hasMoreOlder: older.hasMoreOlder ?? older.hasMore ?? older.has_more ?? current.hasMoreOlder,
-  };
 }
 
 export function agentBusyFromMeta(

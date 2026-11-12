@@ -3382,7 +3382,7 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
-  it('hydrates a bounded message.delivery marker loaded into olderPages via loadOlderMessages', async () => {
+  it('hydrates a bounded message.delivery marker placed in the window via loadOlderMessages', async () => {
     const fullText = 'OLDER_DELIVERY_HEAD:' + 'older-marker-body-'.repeat(160) + ':OLDER_DELIVERY_TAIL';
     const canonicalMarker = {
       kind: 'marker' as const,
