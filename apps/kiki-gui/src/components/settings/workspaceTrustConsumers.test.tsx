@@ -123,15 +123,27 @@ describe('workspace trust consumers', () => {
 
   it('filters the listed catalog entries by name and by path', async () => {
     client.listWorkspaceCatalog.mockResolvedValue({
-      items: [catalogEntry('/work/project', 'Example'), catalogEntry('/work/other', 'Other', 'wd_other_000000000000')],
+      items: [
+        catalogEntry('/work/project', 'Example'),
+        catalogEntry('/work/other', 'Other', 'wd_other_000000000000'),
+        ...Array.from({ length: 6 }, (_, index) => catalogEntry(
+          `/work/fixture-${index + 1}`, `Fixture ${index + 1}`, `wd_fixture_${index + 1}`,
+        )),
+      ],
     });
     const container = await mount(<WorkspacesSection />);
     const search = container.querySelector<HTMLInputElement>('[data-list-search]')!;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { setter.call(search, 'Other'); search.dispatchEvent(new Event('input', { bubbles: true })); });
-    await flush();
-    const rows = [...container.querySelectorAll('[data-workspace-row]')];
-    expect(rows.map((node) => node.getAttribute('data-workspace-row'))).toEqual(['wd_other_000000000000']);
+    const searchFor = async (value: string) => {
+      await act(async () => { setter.call(search, value); search.dispatchEvent(new Event('input', { bubbles: true })); });
+      await flush();
+    };
+    await searchFor('Other');
+    expect([...container.querySelectorAll('[data-workspace-row]')].map((node) => node.getAttribute('data-workspace-row')))
+      .toEqual(['wd_other_000000000000']);
+    await searchFor('work/project');
+    expect([...container.querySelectorAll('[data-workspace-row]')].map((node) => node.getAttribute('data-workspace-row')))
+      .toEqual(['wd_example_000000000000']);
   });
 
   it('answers the first screen while another surface is still waiting on the legacy full list', async () => {
@@ -161,14 +173,20 @@ describe('workspace trust consumers', () => {
     expect(container.querySelector('[data-workspace-pin="wd_other_000000000000"]')!.getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('offers only the facts a catalog entry really has: pinned, recent, name', async () => {
+  it('offers a pinned filter for a long catalog list without inventing session counts or sort controls', async () => {
+    catalogEntries = [
+      { ...catalogEntry('/work/project', 'Example'), pinned: true },
+      ...Array.from({ length: 7 }, (_, index) => catalogEntry(
+        `/work/fixture-${index + 1}`, `Fixture ${index + 1}`, `wd_fixture_${index + 1}`,
+      )),
+    ];
     const container = await mount(<WorkspacesSection />);
     expect([...container.querySelectorAll('[data-list-filter]')].map((node) => node.getAttribute('data-list-filter')))
       .toEqual(['all', 'pinned']);
-    expect([...container.querySelectorAll('[data-list-sort-option]')].map((node) => node.getAttribute('data-list-sort-option')))
-      .toEqual(['recent', 'name']);
+    expect(container.querySelectorAll('[data-list-sort-option]')).toHaveLength(0);
     // The chips that a count would have carried are gone with the count, not
-    // left behind as a filter that can no longer be answered.
+    // left behind as a filter that can no longer be answered; this page keeps
+    // its default recent ordering rather than exposing a sort switch.
     expect(container.querySelector('[data-list-toolbar]')!.textContent).not.toContain('No sessions');
   });
 

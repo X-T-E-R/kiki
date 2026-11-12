@@ -701,7 +701,7 @@ describe('PluginsSection', () => {
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
     // The market stays in Capabilities: this leaf links there once, and offers
     // no catalog address of its own.
-    expect(container.querySelector('[data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('[data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities?view=market');
     expect(container.querySelector('[data-catalog-source]')).toBeNull();
     // Configuration happens on the plugin's own page, never inside this list.
     expect(container.querySelector('[data-plugin-settings]')).toBeNull();
@@ -720,7 +720,7 @@ describe('PluginsSection', () => {
     // Ahead of the list it acts on, and reachable from the card's first screen.
     expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(link.getAttribute('href')).toBe('/capabilities');
+    expect(link.getAttribute('href')).toBe('/capabilities?view=market');
     // Labelled as finding a plugin, which is not this page's own job of
     // managing the installed ones.
     expect(link.textContent).toContain('Find plugins in the market');

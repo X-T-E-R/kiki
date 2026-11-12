@@ -3392,7 +3392,7 @@ describe('sidebar on a phone', () => {
     for (let index = 0; index < 3; index += 1) await settle();
     expect(open.container.querySelector('[data-request-governance-badge]')?.textContent).toBe('2 queued');
     expect(listEphemeralSessions).toHaveBeenCalled();
-    expect(listPrompts).toHaveBeenCalledWith('s-busy');
+    expect(listPrompts).toHaveBeenCalledWith('s-busy', { observe: true });
     expect(listTasks).toHaveBeenCalled();
   });
 });

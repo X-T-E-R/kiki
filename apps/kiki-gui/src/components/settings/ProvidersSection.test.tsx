@@ -196,6 +196,12 @@ const FRESH_ACCOUNT = {
   account: { state: 'unknown' },
   quota: { state: 'unknown' },
 };
+const SEARCHABLE_FILLERS = Array.from({ length: 6 }, (_, index) => ({
+  id: `search-fixture-${index + 1}`,
+  type: 'openai',
+  status: 'connected',
+  base_url: `https://search-fixture-${index + 1}.example.test/v1`,
+}));
 
 function zoneRows(container: ParentNode, zone: string): string[] {
   return [...container.querySelectorAll(`[data-providers-zone="${zone}"] [data-connection-row]`)]
@@ -223,6 +229,7 @@ describe('ProvidersSection configured rows', () => {
     listProviders.mockResolvedValue({ items: [
       { id: 'acme', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
       { id: 'other', type: 'openai', status: 'connected', base_url: 'https://other.example.test/v1' },
+      ...SEARCHABLE_FILLERS,
     ] });
     listModels.mockResolvedValue({ items: [
       { id: 'acme/zz-local', provider_id: 'acme', remote_id: 'zz-remote', display_name: 'Northwind Writer', max_context_size: 8000 },
@@ -261,15 +268,14 @@ describe('ProvidersSection configured rows', () => {
     expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
     expect(container.querySelector('[data-providers-zone="oauth"] [data-oauth-method="grok-build"]')).not.toBeNull();
     expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="copilot"]')).toBeNull();
-    expect([...container.querySelectorAll('[data-list-filter]')].map((chip) => chip.getAttribute('data-list-filter')))
-      .toEqual(['all', 'api', 'account', 'local', 'attention']);
-    const search = container.querySelector('[data-list-search]');
-    expect(search).not.toBeNull();
-    expect(container.querySelector('[data-providers-zone="apikey"]')!.contains(search)).toBe(false);
+    // This short list keeps its add action but does not need search or filter controls.
+    expect(container.querySelector('[data-list-filter]')).toBeNull();
+    expect(container.querySelector('[data-list-search]')).toBeNull();
   });
 
   it('searches across zones and a miss drops rows without dropping the sign-in catalog', async () => {
     installMixedProviders();
+    listProviders.mockResolvedValue({ items: [LOCAL_PROVIDER, ACCOUNT_PROVIDER, API_PROVIDER, ...SEARCHABLE_FILLERS.slice(0, 5)] });
     const container = await render();
     await typeSearch(container, 'ollama');
     expect(zoneRows(container, 'apikey')).toEqual(['ollama']);
@@ -283,7 +289,10 @@ describe('ProvidersSection configured rows', () => {
     expect(container.querySelector('[data-oauth-method="grok-build"]')).not.toBeNull();
 
     await typeSearch(container, '');
-    expect(zoneRows(container, 'apikey')).toEqual(['openai-api', 'ollama']);
+    expect(zoneRows(container, 'apikey')).toHaveLength(7);
+    expect(zoneRows(container, 'apikey')).toEqual(expect.arrayContaining([
+      'openai-api', 'ollama', ...SEARCHABLE_FILLERS.slice(0, 5).map((provider) => provider.id),
+    ]));
     expect(zoneRows(container, 'oauth')).toEqual(['copilot']);
     expect(zoneRows(container, 'harnesses')).toEqual([]);
   });

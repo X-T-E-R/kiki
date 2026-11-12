@@ -32,7 +32,7 @@ const imSessions = {
 };
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions, getConfig: async () => ({}) } }),
+  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions, klient: { global: { media: undefined } }, getConfig: async () => ({}) } }),
 }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 

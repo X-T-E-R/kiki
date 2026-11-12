@@ -169,6 +169,20 @@ const PROJECTED_CAPABILITIES: NbSearchCapabilities = {
   },
 };
 
+function searchableDirectoryCapabilities(): NbSearchCapabilities {
+  const template = PROJECTED_CAPABILITIES.fetch.pipelines[0]!;
+  return {
+    ...PROJECTED_CAPABILITIES,
+    fetch: {
+      ...PROJECTED_CAPABILITIES.fetch,
+      pipelines: [
+        ...PROJECTED_CAPABILITIES.fetch.pipelines,
+        ...Array.from({ length: 6 }, (_, index) => ({ ...template, id: `fixture.fetch-${index + 1}` })),
+      ],
+    },
+  };
+}
+
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
 let renderedQueryClient: QueryClient;
@@ -468,7 +482,7 @@ describe('NbSearchSection status', () => {
   });
 
   it('adds a service from the searchable directory using its real instance id', async () => {
-    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
+    getNbSearchCapabilities.mockResolvedValue(searchableDirectoryCapabilities());
     const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
     const directory = await openDirectory(container);
@@ -1911,18 +1925,19 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
   });
 
   it('narrows the service directory instead of a whole-catalogue form list', async () => {
-    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
+    getNbSearchCapabilities.mockResolvedValue(searchableDirectoryCapabilities());
     const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
     const directory = await openDirectory(container);
 
-    // Services without a card yet are listed with one Add each.
-    expect(directory.querySelectorAll('[data-nb-search-directory-row]')).toHaveLength(2);
+    // Services without a card yet are listed with one Add each, and the long
+    // directory exposes search without listing configuration forms.
+    expect(directory.querySelectorAll('[data-nb-search-directory-row]')).toHaveLength(8);
     expect(directory.textContent).toContain('Jina Reader');
     expect(directory.textContent).toContain('Direct HTTP');
 
     const searchInput = directory.querySelector<HTMLInputElement>('input[type="search"]')!;
-    await setInputValue(searchInput, 'direct');
+    await setInputValue(searchInput, 'direct.fetch');
     expect(directory.querySelector('[data-nb-search-directory-row="direct.fetch"]')).not.toBeNull();
     expect(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')).toBeNull();
 

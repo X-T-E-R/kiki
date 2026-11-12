@@ -1465,7 +1465,7 @@ describe('SettingsPage batch-3 leaves', () => {
     // The list is the leaf's subject; the market is reached by one link, and no
     // configuration form opens in place.
     expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities?view=market');
     expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
     // The browser runtime card is a browser fact, not a plugin one.
     expect(container.querySelector('#st-card-webbridge')).toBeNull();

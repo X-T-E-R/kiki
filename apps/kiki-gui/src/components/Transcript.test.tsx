@@ -1865,10 +1865,11 @@ describe('live and event chrome', () => {
 
   it('does not certify an unverified empty cold read as a blank session', async () => {
     const retry = vi.fn();
+    const loadOlder = vi.fn(async () => false);
     const { root, container } = makeRoot();
     await renderSettled(root, <Transcript
       state={transcriptState([], { historyCoverageKind: 'unknown', hasMoreHistory: true })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onLoadOlder={loadOlder} onResolveApproval={noopActions}
       onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
     />);
     expect(container.textContent).not.toContain('A blank page');
@@ -1876,7 +1877,8 @@ describe('live and event chrome', () => {
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
     await act(async () => { click(button!); });
-    expect(retry).toHaveBeenCalledOnce();
+    expect(loadOlder).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it('keeps loaded historical rows visible beside a retryable refresh error', async () => {
@@ -10032,23 +10034,21 @@ describe('settled history folds and the unified locate entry', () => {
 
       // 1) Initial load is still in flight (!loaded, !initialScrollDoneRef.current); locate() enters its rAF wait loop.
       let waitingOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
-      await act(async () => {
-        void capturedLocator!.locate({ kind: 'turn', turnId: 't1' }).then((value) => {
-          waitingOutcome = value;
-        });
-        await new Promise((resolve) => setTimeout(resolve, 0));
+      const waiting = capturedLocator!.locate({ kind: 'turn', turnId: 't1' }).then((value) => {
+        waitingOutcome = value;
+        return value;
       });
-      for (let frame = 0; frame < 5; frame += 1) {
-        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
-      }
+      await act(async () => {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      });
       expect(waitingOutcome).toBeUndefined();
 
       // After a delay, a hard loadError arrives before initial load ever completes: locate() must settle as 'load-failed' on the next frame without hanging or calling onLoadOlder.
       state = { ...state, loadError: 'Session failed to open' };
       await render();
-      for (let frame = 0; frame < 5 && waitingOutcome === undefined; frame += 1) {
-        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
-      }
+      // The locator's pending frame observes the rerendered load error; wait on
+      // the actual locate promise rather than assuming a second frame ordering.
+      await act(async () => { await waiting; });
       expect(waitingOutcome).toEqual({ status: 'load-failed' });
       expect(onLoadOlder).not.toHaveBeenCalled();
 
