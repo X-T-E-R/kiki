@@ -199,7 +199,8 @@ describe('ProviderModelList row editor', () => {
     const started = performance.now();
     const container = await renderCard();
     expect(container.textContent).not.toContain('Loading model catalog');
-    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('[data-default-model-name]')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('#st-default-model')?.textContent).toContain('Change');
     expect(container.querySelector('#st-default-model')?.hasAttribute('disabled')).toBe(false);
     expect(container.querySelector('[data-group-attention]')).toBeNull();
     expect(performance.now() - started).toBeLessThan(1000);
@@ -213,7 +214,7 @@ describe('ProviderModelList row editor', () => {
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['models'] }); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.textContent).toContain('fixture revalidation failed');
-    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('[data-default-model-name]')?.textContent).toContain('Kimi K2');
     expect(container.querySelector('#st-default-model')?.hasAttribute('disabled')).toBe(false);
     expect(queryClient.getQueryData(['models'])).toEqual({ items: MODELS });
   });
@@ -228,7 +229,7 @@ describe('ProviderModelList row editor', () => {
     await act(async () => { await queryClient.cancelQueries({ queryKey: ['models'] }); });
     await act(async () => { resolve({ items: [] }); await revalidation; });
     expect(queryClient.getQueryData(['models'])).toEqual({ items: MODELS });
-    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('[data-default-model-name]')?.textContent).toContain('Kimi K2');
     expect(container.textContent).not.toContain('Loading model catalog');
   });
 
@@ -244,7 +245,7 @@ describe('ProviderModelList row editor', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(current.textContent).not.toContain('Old connection model');
     expect(nextQueryClient.getQueryData(['models'])).toEqual({ items: MODELS });
-    expect(current.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(current.querySelector('[data-default-model-name]')?.textContent).toContain('Kimi K2');
   });
 
   it('fetches suggestions only on click and saves the selected suggestion as a model', async () => {
@@ -1131,7 +1132,7 @@ describe('default model cross-tab selection ownership', () => {
     expect(server).toEqual(initial);
     expect(queryClient.getQueryData(['config'])).toEqual(server);
     expect(readSettings()).toMatchObject({ defaultModel: modelB.id, defaultEffort: 'high' });
-    expect(container.querySelector('#st-default-model')!.textContent).toContain('Kimi K2');
+    expect(container.querySelector('[data-default-model-name]')!.textContent).toContain('Kimi K2');
   });
 
   it('lets the latest catalog pick run after an older DefaultModelBar request rejects, without stale error recovery', async () => {

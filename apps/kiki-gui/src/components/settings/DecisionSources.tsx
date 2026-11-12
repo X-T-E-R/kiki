@@ -38,13 +38,13 @@ import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectO
 import { hostLabel } from '../providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
-import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
+import { FieldIssue, SettingsDraftFooter, TEXT_BUTTON } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 import { isImeKeyEvent } from '../../lib/shortcuts';
 
 const PICKER =
   'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
-const LINK = 'text-[12px] font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink';
+const LINK = TEXT_BUTTON;
 
 const providersQueryOptions = (client: ReturnType<typeof useConnection>['client']) => ({
   queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000,
@@ -89,15 +89,23 @@ export function DecisionSourcePicker({ id, consumer, value, onChange, disabled, 
     const decision = (providers ?? []).filter(isDecisionConnection).map((provider): SearchableSelectOption => {
       const protocol = decisionProtocolOf(provider) ?? 'system_one';
       const allowed = decisionProtocolAllowed(consumer, protocol);
+      const host = hostLabel(provider.effective_base_url ?? provider.base_url);
+      const isJev = protocol !== 'pair_score' && host === 'api.typesafe.ai';
+      const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
+      const needsModel = (provider.default_model ?? '') === '';
+      const statusDesc = provider.status === 'error' ? t('st.connections.statusError')
+        : envMissing ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
+          : needsModel ? t('st.decision.status.needsModel') : t('st.decision.status.ready');
+      const jevDesc = isJev ? `${t('st.decision.preset.jev')} · ${statusDesc}` : statusDesc;
       return {
         value: `connection:${provider.id}`,
         label: provider.id,
-        hint: [hostLabel(provider.effective_base_url ?? provider.base_url), provider.default_model].filter(Boolean).join(' · ') || undefined,
-        description: allowed ? undefined : t('st.decision.picker.pairScoreOnly'),
+        hint: [host, provider.default_model].filter(Boolean).join(' · ') || undefined,
+        description: allowed ? jevDesc : t('st.decision.picker.pairScoreOnly'),
         badges: [{ label: t(`st.decision.protocol.${protocol}`) }],
         group: t('st.decision.picker.groupDecision'),
         disabled: !allowed,
-        keywords: `${provider.id} ${provider.base_url ?? ''} ${provider.default_model ?? ''}`,
+        keywords: `${provider.id} ${isJev ? 'Jev TypeSafe' : ''} ${provider.base_url ?? ''} ${provider.default_model ?? ''}`,
       };
     });
     const chat = buildCatalogModelOptions(models, t, { groupLabel }).map((option) => ({

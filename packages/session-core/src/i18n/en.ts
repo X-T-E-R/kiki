@@ -3109,7 +3109,7 @@ export const en = {
   'st.scope.connectedServer': 'connected server',
   'st.scope.diagnostic': 'diagnostic view',
   'st.purpose.general': 'Language, composer, and desktop behaviour for this device.',
-  'st.purpose.ai': 'Manage models, providers, sign-in, new-session defaults, and request identity.',
+  'st.purpose.ai': 'Which models Kiki answers with, and which connection needs attention.',
   'st.purpose.connectionServices': 'Let a browser, another Kiki or an agent reach this Kiki.',
   'st.purpose.subagents': 'Set subagent defaults, model rules, tools, and runtime limits. Edit agent definitions under Agents.',
   'st.purpose.search': 'Choose search sources and page-fetching behavior; manage credentials and timeouts.',

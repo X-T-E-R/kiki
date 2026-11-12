@@ -963,16 +963,15 @@ describe('Connections list', () => {
     const rows = [...container.querySelectorAll<HTMLElement>('[data-connection-row]')];
     expect(rows.map((row) => [row.dataset['connectionRow'], row.dataset['connectionKind']])).toEqual([
       ['edge:gateway', 'api'],
-      // A local HTTP server lists with the API services; its kind tag still says local.
-      ['ollama', 'local'],
       ['managed:kimi-code', 'account'],
+      ['ollama', 'local'],
     ]);
     // The account row names the sign-in and its kind, never a wire protocol.
-    const accountSummary = rows[2]!.querySelector('summary')!.textContent;
+    const accountSummary = rows[1]!.querySelector('summary')!.textContent;
     expect(accountSummary).toContain('Kimi Code');
     expect(accountSummary).toContain('Account');
     expect(accountSummary).not.toContain('Moonshot');
-    expect(rows[1]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
+    expect(rows[2]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
     expect(rows[0]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
     // No per-row protocol/identity/key pills in the collapsed row.
     expect(rows[0]!.querySelector('summary')!.textContent).not.toContain('key stored');
@@ -1062,7 +1061,7 @@ describe('Connections list', () => {
     expect(advanced.textContent).toContain('Provider request identity');
   });
 
-  it('offers one add entry — sign in, or a service by key — over an empty list', async () => {
+  it('offers one add entry — three first-run lanes — directly inline over an empty list without a dashed empty box', async () => {
     listProviders.mockResolvedValue({ items: [] });
     listOAuthMethods.mockResolvedValue([
       { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
@@ -1072,26 +1071,32 @@ describe('Connections list', () => {
     ]);
     const { container } = await renderSurface(<ConnectionsTab />);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-connections-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-connections-empty]')).toBeNull();
 
-    // An empty page is the add flow, and the two ways in are one question.
-    const picker = container.querySelector<HTMLElement>('[data-connection-method-picker]')!;
-    expect(picker.dataset['connectionMethod']).toBe('api');
-    // A key needs a service, so the directory leads and the hand-written path
-    // is a switch away — not a second card to find.
-    expect(picker.querySelector<HTMLElement>('[data-connection-source]')!.dataset['connectionSource']).toBe('directory');
-    expect(picker.querySelector('[data-catalog-picker]')).not.toBeNull();
-    expect(picker.querySelectorAll('[data-provider-protocol]')).toHaveLength(0);
-    await act(async () => { picker.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
-    expect(picker.querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
+    const card = container.querySelector<HTMLElement>('[data-first-run-card="lanes"]')!;
+    expect(card).not.toBeNull();
+    expect([...card.querySelectorAll<HTMLElement>('[data-first-run-lane]')].map((lane) => lane.dataset['firstRunLane']))
+      .toEqual(['account', 'key', 'local']);
 
+    // Opening the key lane shows the directory picker, and "Another service or a custom address" opens the full form in place.
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-lane="key"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-first-run-key]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-switch]')!.click(); });
 
-    // Signing in is the other lane, and it offers only what the list does not
-    // already have. The fixture has no connections at all, so both appear.
-    await act(async () => { picker.querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
-    const methods = [...picker.querySelectorAll<HTMLElement>('[data-oauth-method]')];
+    // Signing in is the account lane, offering every unconfigured method.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const methods = [...container.querySelectorAll<HTMLElement>('[data-oauth-method]')];
     expect(methods.map((row) => row.getAttribute('data-oauth-method'))).toEqual(['kimi-code', 'openai-codex']);
     expect(methods[1]!.querySelector('[data-account-sign-in-button]')).not.toBeNull();
+
+    // Switching to key lane and pressing "Add it in Settings" opens the full NewProviderWizard inside the same add flow.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-switch]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-lane="key"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-key-elsewhere]')!.click(); });
+    const picker = container.querySelector<HTMLElement>('[data-connection-method-picker]')!;
+    expect(picker).not.toBeNull();
   });
 
   it('offers no sign-in for an account the list already has, and leaves that row to recover it', async () => {
@@ -1111,19 +1116,17 @@ describe('Connections list', () => {
     const { container } = await renderSurface(<ConnectionsTab />);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    // The add flow opens beside a list that already has rows, in a portaled
-    // side panel, so it is reached through the document rather than the tree
-    // the page rendered into.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-add-connection]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const picker = document.querySelector<HTMLElement>('[data-connection-method-picker]');
-    expect(picker, 'the add flow opened').not.toBeNull();
-    await act(async () => { picker!.querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
+    const panel = document.querySelector<HTMLElement>('[data-add-connection-panel]');
+    expect(panel, 'the add flow opened').not.toBeNull();
+    await act(async () => { panel!.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     // The filter is the configured provider id, not the credential: a spent
     // Grok token still has a connection, and that row is where it is recovered.
-    const offered = [...picker!.querySelectorAll('[data-oauth-method]')].map((row) => row.getAttribute('data-oauth-method'));
+    const offered = [...panel!.querySelectorAll('[data-oauth-method]')].map((row) => row.getAttribute('data-oauth-method'));
     expect(offered).toEqual(['openai-codex']);
     // And both connections are still on the list, Grok among them.
     expect([...container.querySelectorAll('[data-connection-row]')].map((row) => row.getAttribute('data-connection-row')))
@@ -1209,8 +1212,8 @@ describe('Connections list', () => {
     const { container } = await renderSurface(<ConnectionsTab />);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    const picker = () => document.querySelector<HTMLElement>('[data-connection-method-picker]')!;
-    await act(async () => { picker().querySelector<HTMLButtonElement>('[data-connection-choice="account"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const row = () => container.querySelector<HTMLElement>('[data-oauth-method="openai-codex"]')!;
     await act(async () => { row().querySelector<HTMLButtonElement>('[data-account-sign-in-button]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -1281,10 +1284,8 @@ describe('Connections list', () => {
     listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER] });
     const unmount = await renderLinked();
     expect(announce).toHaveBeenCalledWith('st-card-auth');
-    const flow = document.querySelector<HTMLElement>('[data-connection-method-picker]');
+    const flow = document.querySelector<HTMLElement>('[data-first-run-open-lane="account"]');
     expect(flow).not.toBeNull();
-    // The account lane is the one a sign-in link asked for, not the key form.
-    expect(flow!.querySelector<HTMLElement>('[data-connection-choice="account"]')!.getAttribute('aria-checked')).toBe('true');
     // Exactly one element owns the id, so the page's scroll lands on one place.
     expect(document.querySelectorAll('#st-card-auth')).toHaveLength(1);
     await unmount();
@@ -1294,7 +1295,7 @@ describe('Connections list', () => {
     listProviders.mockResolvedValue({ items: [] });
     const unmountEmpty = await renderLinked();
     expect(announce).toHaveBeenCalledWith('st-card-auth');
-    expect(document.querySelector('[data-connection-method-picker]')).not.toBeNull();
+    expect(document.querySelector('[data-first-run-open-lane="account"]')).not.toBeNull();
     expect(document.querySelectorAll('#st-card-auth')).toHaveLength(1);
     await unmountEmpty();
   });

@@ -4,7 +4,6 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
-  AI_SETTINGS_TABS,
   BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
   CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB,
   DEVELOPER_SETTINGS_DEFAULT_TAB,
@@ -13,13 +12,11 @@ import {
   EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
-  aiTabLabelKey,
   developerTabLabelKey,
   experimentalTabForSection,
   normalizeAiTab,
   normalizeDeveloperTab,
   pluginSettingsIdFromQuery,
-  recipeSettingsIdFromQuery,
   resolveSettingsRoute,
   settingsSectionIsDeviceOnly,
   settingsSectionSupportsSpace,
@@ -38,9 +35,7 @@ import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { ProvidersSection } from './settings/ProvidersSection';
-import { RecipesSection } from './settings/RecipesSection';
 import { DefaultsTab } from './settings/ModelsSection';
-import { DefaultModelBar } from './settings/DefaultModelBar';
 import { EngineParametersSection } from './settings/EngineParametersSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
@@ -432,19 +427,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const aiTab = active === 'ai' ? normalizeAiTab(pageTab) ?? AI_SETTINGS_DEFAULT_TAB : null;
   const developerTab = normalizeDeveloperTab(pageTab) ?? DEVELOPER_SETTINGS_DEFAULT_TAB;
 
-  // One Recipe's own page, or the library list (the Models page's Recipes
-  // tab). The query selects the package, exactly as `?plugin=` selects a
-  // plugin's own settings page.
-  const activeRecipeId = aiTab === 'recipes' && !onListCard
-    ? recipeSettingsIdFromQuery(search)
-    : null;
-  const recipeInitialEdit = activeRecipeId !== null
-    && new URLSearchParams(search).get('view') === 'edit';
-
   const currentTab = active === 'developer' ? developerTab
+    : active === 'ai' ? aiTab
     : rawTab
-    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB
-      : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
+    ?? (active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
       : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
       : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
       : active === 'sessions' ? SESSIONS_SETTINGS_DEFAULT_TAB
@@ -471,22 +457,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'appearance' ? <AppearanceSection />
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
-    // Models › Recipes. Until the Models page draws its own Recipes tab, this
-    // page draws that tab in the Models page's shape (default-model bar, the
-    // strip, the library); once `AiSection` renders `tab === 'recipes'` itself,
-    // this branch goes and `<AiSection />` answers every tab.
-    : active === 'ai' && aiTab === 'recipes' ? (
-        <div className="space-y-4">
-          <DefaultModelBar tab="recipes" />
-          <SettingsTabs tabs={AI_SETTINGS_TABS} current="recipes" ariaLabel={t('st.section.ai')} dataAttr="data-ai-tab"
-            labelOf={(tab) => t(aiTabLabelKey(tab))}
-            onSelect={(tab) => { selectTab('ai', tab, ['recipe', 'view']); }} />
-          {/* One Recipe's own page, or the library. The query selects the
-              package for every address except the list's own card hash. */}
-          <RecipesSection recipeId={activeRecipeId} initialEdit={recipeInitialEdit} />
-        </div>
-      )
-    : active === 'ai' ? <AiSection />
+    : active === 'ai' ? <AiSection resolvedTab={aiTab ?? undefined} />
     : active === 'providers' ? <ProvidersSection />
     : active === 'models' ? <DefaultsTab />
     : active === 'connection-services' ? <ConnectionServicesSection />

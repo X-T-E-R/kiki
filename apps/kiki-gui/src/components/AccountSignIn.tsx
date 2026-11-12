@@ -15,6 +15,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
+import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
@@ -29,8 +30,9 @@ import {
 } from './accountSignInState';
 import { useOAuthFlow } from './useOAuthFlow';
 import { isOriginalSourceMethod, OriginalSourcePanel } from './OriginalSourcePanel';
-import { FeedbackLine, InlineError } from './controls';
+import { FeedbackLine } from './controls';
 import { Icon } from './icons';
+import { SettingsLoadFailure } from './settings/SettingsPrimitives';
 import { SECONDARY_BUTTON } from './ui';
 
 export const OAUTH_METHODS_QUERY_KEY = ['oauth-methods'] as const;
@@ -83,7 +85,7 @@ export function AccountSignIn({
   configuredProviderIds?: ReadonlySet<string>;
 }) {
   const { client } = useConnection();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const flow = useOAuthFlow(onChanged);
 
   const methodsQuery = useQuery({
@@ -187,7 +189,13 @@ export function AccountSignIn({
         ) : null}
       </ul>
       {flow.feedback !== null ? <FeedbackLine feedback={flow.feedback.value} /> : null}
-      {methodsQuery.isError ? <InlineError error={methodsQuery.error} /> : null}
+      {methodsQuery.isError ? (
+        <SettingsLoadFailure
+          message={t('firstRun.account.loadFailed', { detail: errorText(locale, methodsQuery.error) })}
+          retrying={methodsQuery.isFetching}
+          onRetry={() => { void methodsQuery.refetch(); }}
+        />
+      ) : null}
     </div>
   );
 }

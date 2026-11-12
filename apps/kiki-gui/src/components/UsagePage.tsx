@@ -40,7 +40,7 @@ import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { ApiError } from '../lib/client';
 import { usePhoneMode } from '../lib/layoutHooks';
-import { RequestGovernanceView } from './RequestGovernanceView';
+import { CONCURRENCY_RULES_SETTINGS_HREF, RequestGovernanceView } from './RequestGovernanceView';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
 import { UsageExportPanel } from './usage/export/UsageExportPanel';
 import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
@@ -954,7 +954,14 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const queryClient = useQueryClient();
   const { t, tp, locale } = useI18n();
   const location = useLocation();
+  const navigate = useNavigate();
   const [, setSearchParams] = useSearchParams();
+  const rawPanel = new URLSearchParams(location.search).get('panel');
+  const redirectingLimits = rawPanel === 'limits';
+  useEffect(() => {
+    if (!redirectingLimits) return;
+    void navigate(CONCURRENCY_RULES_SETTINGS_HREF, { replace: true });
+  }, [redirectingLimits, navigate]);
   const panel = usagePanelFromSearch(location.search);
   const selectPanel = (next: UsagePanel) => {
     const params = new URLSearchParams(location.search);
@@ -1323,7 +1330,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : panel === 'quota' ? (
             <ProviderQuotaPanel />
           ) : panel !== 'history' ? (
-            <RequestGovernanceView view={searchParams.get('panel') === 'limits' ? 'limits' : 'realtime'} />
+            redirectingLimits ? null : <RequestGovernanceView />
           ) : <>
           <LiveBand onOpen={() => { selectPanel('realtime'); }} />
           <FilterBar

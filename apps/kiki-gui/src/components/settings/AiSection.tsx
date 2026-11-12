@@ -6,91 +6,74 @@ import {
   AI_SETTINGS_TABS,
   aiTabLabelKey,
   normalizeAiTab,
+  recipeSettingsIdFromQuery,
   type AiSettingsTab,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
-import { IdentitySection } from './IdentitySection';
 import { DefaultsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';
+import { RecipesSection } from './RecipesSection';
+import { SettingsTabs } from './SettingsPrimitives';
+
+const RECIPES_LIBRARY_HASH = '#st-card-recipes-library';
 
 /**
- * Visual tab order follows the path a person takes: connect something and
- * edit the models it brings, decide which model each job uses, then manage the
- * Recipe packages those models can be bound to. The Recipes tab itself is
- * drawn by `SettingsPage`; listing it here keeps it one click away from the
- * other two.
+ * Settings › Models: one navigation leaf, three stable tabs — Connections
+ * (account sign-ins, API services, local servers and their models), Defaults
+ * (per-job models, thinking, compaction, concurrency limits), and Recipes.
+ * The status card sits above the tab strip on every tab.
  */
-const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'defaults', 'recipes'] as const)
-  .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
-
-/**
- * The merged "Models & providers" entry: one navigation leaf, three stable
- * tabs — Providers & accounts (OAuth, API keys, provider lifecycle, and each
- * connection's models with their one complete editor), Defaults (per-job
- * models, thinking, compaction), and Identity (request identity profiles,
- * version tracks, usage, observations).
- * The new-session default model is a bar above the tabs, so it is stated once
- * and reachable from wherever the reader lands. The active tab is the `?tab=`
- * query so deep links, search hits, and legacy `/settings/models`,
- * `/settings/providers`, and `/settings/identity` redirects all land on the
- * right one; unknown values fall back to the default tab.
- */
-export function AiSection() {
+export function AiSection({ resolvedTab }: { resolvedTab?: AiSettingsTab } = {}) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const rawNavigate = useNavigate();
   const { search, hash } = useLocation();
-  const rawTab = new URLSearchParams(search).get('tab');
-  const tab: AiSettingsTab = normalizeAiTab(rawTab) ?? AI_SETTINGS_DEFAULT_TAB;
+  const params = new URLSearchParams(search);
+  const rawTab = params.get('tab');
+  const tab: AiSettingsTab = normalizeAiTab(rawTab ?? resolvedTab) ?? AI_SETTINGS_DEFAULT_TAB;
+  const activeRecipeId = tab === 'recipes' && hash !== RECIPES_LIBRARY_HASH
+    ? recipeSettingsIdFromQuery(search)
+    : null;
+  const recipeInitialEdit = activeRecipeId !== null && params.get('view') === 'edit';
 
   // The retired Models tab: its models are edited inside their connection
   // now, so an old `?tab=models` link is rewritten in place (with `?model=`
   // and any card hash kept) rather than left naming a tab that is not there.
   useEffect(() => {
     if (rawTab !== 'models') return;
-    const params = new URLSearchParams(search);
-    params.set('tab', AI_SETTINGS_DEFAULT_TAB);
-    void rawNavigate(`/settings/ai?${params.toString()}${hash}`, { replace: true });
+    const next = new URLSearchParams(search);
+    next.set('tab', AI_SETTINGS_DEFAULT_TAB);
+    void rawNavigate(`/settings/ai?${next.toString()}${hash}`, { replace: true });
   }, [rawTab, search, hash, rawNavigate]);
 
   // Tab switches go through the guarded navigator: an unsaved provider or
-  // identity draft arms the same leave-guard as a section switch.
+  // recipe draft arms the same leave-guard as a section switch.
   const selectTab = (next: AiSettingsTab) => {
     if (next === tab) return;
-    const params = new URLSearchParams(search);
-    params.set('tab', next);
-    void navigate(`/settings/ai?${params.toString()}`);
+    const nextParams = new URLSearchParams(search);
+    if (next !== 'recipes') {
+      nextParams.delete('recipe');
+      nextParams.delete('view');
+    }
+    nextParams.set('tab', next);
+    void navigate(`/settings/ai?${nextParams.toString()}`);
   };
 
   return (
     <div className="space-y-4">
       <DefaultModelBar tab={tab} />
-      <div role="tablist" aria-label={t('st.section.ai')} className="flex flex-wrap gap-1 border-b border-hairline">
-        {AI_TAB_ORDER.map((candidate) => {
-          const active = candidate === tab;
-          return (
-            <button
-              key={candidate}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              data-ai-tab={candidate}
-              onClick={() => { selectTab(candidate); }}
-              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-                active
-                  ? 'border-ink font-medium text-ink'
-                  : 'border-transparent text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t(aiTabLabelKey(candidate))}
-            </button>
-          );
-        })}
-      </div>
+      <SettingsTabs
+        tabs={AI_SETTINGS_TABS}
+        current={tab as (typeof AI_SETTINGS_TABS)[number]}
+        ariaLabel={t('st.section.ai')}
+        dataAttr="data-ai-tab"
+        labelOf={(candidate) => t(aiTabLabelKey(candidate))}
+        onSelect={selectTab}
+      />
       {tab === 'defaults' ? <DefaultsTab />
-        : tab === 'identity' ? <IdentitySection />
+        : tab === 'recipes' ? <RecipesSection recipeId={activeRecipeId} initialEdit={recipeInitialEdit} />
         : <ConnectionsTab />}
     </div>
   );

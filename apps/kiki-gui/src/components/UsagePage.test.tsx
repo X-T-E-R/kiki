@@ -207,7 +207,7 @@ function usageResponse(overrides: {
 
 function LocationProbe() {
   const location = useLocation();
-  return <span data-location-probe>{`${location.pathname}${location.search}`}</span>;
+  return <span data-location-probe data-location-hash={location.hash}>{`${location.pathname}${location.search}`}</span>;
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
@@ -655,7 +655,7 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('keeps historical reads out of the Live view and reads no rule catalogs until the editor is opened', async () => {
+  it('keeps historical reads and rule catalogs out of the Live view and links Manage rules to Settings', async () => {
     const { container, root } = await renderPage('/usage?panel=realtime');
     expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
@@ -664,17 +664,12 @@ describe('UsagePage (V2)', () => {
     expect(mainCalls()).toHaveLength(0);
     expect(listWorkspaces).not.toHaveBeenCalled();
     expect(listWorkspaceCatalog).not.toHaveBeenCalled();
-    // The rules are one summary line; the editor (and its model/provider
-    // suggestions) loads only when asked for.
     expect(container.querySelector('[data-governance-rules-summary]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rules]')).toBeNull();
     expect(listModels).not.toHaveBeenCalled();
     expect(listProviders).not.toHaveBeenCalled();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-manage]')!.click(); });
-    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
-    expect(listModels).toHaveBeenCalledTimes(1);
-    expect(listProviders).toHaveBeenCalledTimes(1);
+    expect(container.querySelector<HTMLAnchorElement>('[data-governance-manage]')?.getAttribute('href'))
+      .toBe('/settings/ai?tab=defaults#st-card-concurrency');
     expect(getSession).not.toHaveBeenCalled();
     expect(container.querySelector('[data-usage-rescan]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
@@ -768,17 +763,20 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it.each(['realtime', 'limits'])('preserves the %s deep link in the combined Live tab', async (panel) => {
-    const { container, root } = await renderPage(`/usage?panel=${panel}`);
+  it('preserves the realtime deep link in the Live tab and redirects legacy panel=limits to Settings', async () => {
+    const { container, root } = await renderPage('/usage?panel=realtime');
     expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-rules-summary]')).not.toBeNull();
-    // A Limits link opens the editor and focuses it; a plain Live link keeps it folded.
-    expect(container.querySelector('[data-governance-rules]') !== null).toBe(panel === 'limits');
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
     expect(mainCalls()).toHaveLength(0);
-    if (panel === 'limits') expect(document.activeElement).toBe(container.querySelector('#usage-limits'));
-    expect(container.querySelector('[data-location-probe]')?.textContent).toBe(`/usage?panel=${panel}`);
+    expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=realtime');
     await act(async () => { root.unmount(); });
+
+    const limits = await renderPage('/usage?panel=limits');
+    expect(limits.container.querySelector('[data-location-probe]')?.textContent).toBe('/settings/ai?tab=defaults');
+    expect(limits.container.querySelector('[data-location-probe]')?.getAttribute('data-location-hash')).toBe('#st-card-concurrency');
+    await act(async () => { limits.root.unmount(); });
   });
 
   it('defaults historical usage to local today without an all-history notice', async () => {

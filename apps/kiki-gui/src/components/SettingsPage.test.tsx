@@ -1620,6 +1620,12 @@ describe('SettingsPage search ownership', () => {
     // the search index does not index per-plugin cards.
     rendered.delete('st-card-plugin-settings');
     rendered.delete('st-card-plugin-manage');
+    // The add-connection flow mounts only when no connection is configured yet
+    // or when the Add connection side panel is open; OAuthAccountCard stays
+    // exported for isolated unit tests while #st-card-auth routes into the add flow.
+    rendered.delete('st-card-auth');
+    indexed.delete('st-card-providers-add');
+    indexed.delete('st-card-auth');
     // The flag rows' card mounts only while the server reports a browser-page
     // flag; this sweep's meta reports none.
     indexed.delete('st-card-exp-browser-control');

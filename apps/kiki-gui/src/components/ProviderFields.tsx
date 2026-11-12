@@ -13,7 +13,7 @@
  * `modelPatchBody`), so the GUI owns no second copy of the wire contract.
  */
 
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
@@ -59,6 +59,7 @@ import {
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { usePhoneMode } from '../lib/layoutHooks';
 import { DisclosureChevron, Icon } from './icons';
 import { useConnection } from '../state/connection';
 import { ChipSelect } from './ChipSelect';
@@ -1207,6 +1208,7 @@ export function ProviderEditor({
   density = 'comfortable',
   modelList,
   defaultOpen = false,
+  openFocusKeySignal = 0,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
@@ -1225,8 +1227,12 @@ export function ProviderEditor({
   modelList?: React.ReactNode;
   /** Open on arrival, for a link that names one of its models. */
   defaultOpen?: boolean;
+  /** Incremented when Needs attention asks to open this row and focus its key input. */
+  openFocusKeySignal?: number;
 }) {
   const { t, locale, time } = useI18n();
+  const phone = usePhoneMode();
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
@@ -1503,8 +1509,37 @@ export function ProviderEditor({
     }
   };
 
+  useEffect(() => {
+    if (openFocusKeySignal === 0) return;
+    const details = detailsRef.current;
+    if (details === null) return;
+    details.open = true;
+    const focusKey = () => {
+      const editBtn = details.querySelector<HTMLButtonElement>('[data-secret-field] [data-secret-edit]');
+      if (editBtn !== null && !editBtn.disabled) {
+        editBtn.click();
+        return;
+      }
+      const input = details.querySelector<HTMLInputElement>('[data-secret-field] input');
+      input?.focus();
+    };
+    requestAnimationFrame(focusKey);
+  }, [openFocusKeySignal]);
+
+  const statusBadge = (
+    <span data-connection-status={healthTone}
+      title={checkedAgo === undefined ? undefined : t('st.connections.testedAgo', { time: checkedAgo })}
+      className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+      healthTone === 'error' ? 'text-danger' : healthTone === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+        healthTone === 'error' ? 'bg-danger' : healthTone === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+      <span>{statusText}</span>
+    </span>
+  );
+
   return (
     <details
+      ref={detailsRef}
       data-connection-row={provider.id}
       data-connection-kind={kind}
       data-connection-health={healthTone}
@@ -1517,35 +1552,28 @@ export function ProviderEditor({
           <Icon name={kind === 'account' ? 'agent' : kind === 'local' ? 'system' : 'web'} size={14} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{accountLabel ?? vendor ?? provider.id}</span>
-            {accountLabel !== undefined || vendor !== undefined ? (
-              <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
-            ) : null}
+          <span className={`flex min-w-0 items-baseline ${phone ? 'justify-between gap-2' : 'gap-2'}`}>
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className="truncate text-[13px] font-medium text-ink">{accountLabel ?? vendor ?? provider.id}</span>
+              {accountLabel !== undefined || vendor !== undefined ? (
+                <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
+              ) : null}
+            </span>
+            {phone ? statusBadge : null}
           </span>
           {density === 'compact' ? null : (
             <span className="block truncate text-[12px] text-ink-faint">
               {t(`st.connections.kind.${kind}`)}
-              {identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
-              {host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
+              {!phone && identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
+              {!phone && host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
               {' · '}{t('st.connections.modelCount', { count })}
-              {quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
+              {!phone && quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
                 title={quota?.reset_at === undefined ? undefined : t('st.connections.quotaResets', { time: time.absoluteTime(quota.reset_at) ?? quota.reset_at })}>{quotaText}</span></> : null}
             </span>
           )}
         </span>
         {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
-        <span data-connection-status={healthTone}
-          title={checkedAgo === undefined ? undefined : t('st.connections.testedAgo', { time: checkedAgo })}
-          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-          healthTone === 'error' ? 'text-danger' : healthTone === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-            healthTone === 'error' ? 'bg-danger' : healthTone === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
-          {/* An account connection says what its sign-in is doing, in the same
-              words as its panel; a key connection says its transport's health. */}
-          <span className="hidden sm:inline">{statusText}</span>
-          <span className="sr-only sm:hidden">{statusText}</span>
-        </span>
+        {phone ? null : statusBadge}
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">

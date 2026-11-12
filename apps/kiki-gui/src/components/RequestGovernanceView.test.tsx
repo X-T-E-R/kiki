@@ -5,7 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
-import { RequestGovernanceBadge, RequestGovernanceView } from './RequestGovernanceView';
+import { CONCURRENCY_RULES_SETTINGS_HREF, RequestGovernanceBadge, RequestGovernanceView } from './RequestGovernanceView';
+import { ConcurrencyCard } from './settings/ModelsSection';
 import { clearToasts, getToasts } from '../lib/toasts';
 import type { RequestGovernanceSnapshot } from '@kiki/protocol';
 
@@ -66,7 +67,7 @@ const snapshot: RequestGovernanceSnapshot = {
 /** Exposes the router path so a test can see where a session name led. */
 function LocationProbe() {
   const location = useLocation();
-  return <span hidden data-location={location.pathname} />;
+  return <span hidden data-location={location.pathname} data-full-location={`${location.pathname}${location.search}${location.hash}`} />;
 }
 
 function mount(view: 'realtime' | 'limits', withBadge = false, seed?: (queryClient: QueryClient) => void) {
@@ -79,10 +80,10 @@ function mount(view: 'realtime' | 'limits', withBadge = false, seed?: (queryClie
   const render = () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/usage?panel=realtime']}>
+        <MemoryRouter initialEntries={[view === 'limits' ? CONCURRENCY_RULES_SETTINGS_HREF : '/usage?panel=realtime']}>
           <I18nProvider>
             {withBadge ? <RequestGovernanceBadge /> : null}
-            <RequestGovernanceView view={view} />
+            {view === 'limits' ? <ConcurrencyCard /> : <RequestGovernanceView />}
             <LocationProbe />
           </I18nProvider>
         </MemoryRouter>
@@ -100,7 +101,7 @@ async function settle(render: () => void, ms = 10) {
 }
 
 describe('live request governance', () => {
-  it('reports the rules in one line under the live summary and opens the editor only on request', async () => {
+  it('reports the rules in one line under the live summary and links Manage rules to Settings › Models › Defaults', async () => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
@@ -109,18 +110,15 @@ describe('live request governance', () => {
     await settle(render);
     const live = container.querySelector<HTMLElement>('[data-governance-live]')!;
     const summary = container.querySelector<HTMLElement>('[data-governance-rules-summary]')!;
-    // The live detail is a section on the page, not a collapsible card: the
-    // request table is what this tab is for, so it is always shown.
     expect(live.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
-    // Only the rules in force count; the editor stays folded.
     expect(summary.textContent).toContain('Limited by 1 concurrency rule');
     expect(container.querySelector('[data-governance-rules]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-manage]')!.click(); });
-    expect(container.querySelector('[data-governance-rules]')?.textContent).toContain('Concurrency limits');
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
-    expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
+    const manage = container.querySelector<HTMLAnchorElement>('[data-governance-manage]')!;
+    expect(manage.getAttribute('href')).toBe(CONCURRENCY_RULES_SETTINGS_HREF);
+    await act(async () => { manage.click(); });
+    expect(container.querySelector('[data-full-location]')?.getAttribute('data-full-location')).toBe(CONCURRENCY_RULES_SETTINGS_HREF);
   });
 
   it('shows one dimension at a time instead of stacking the cuts into one table', async () => {

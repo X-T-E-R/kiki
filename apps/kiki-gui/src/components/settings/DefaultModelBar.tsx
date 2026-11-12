@@ -1,40 +1,55 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { AiSettingsTab } from '@kiki/session-core/settings';
+import type { ProviderCatalogItem } from '@kiki/protocol';
+import type { OAuthMethodStatus } from '@kiki/klient';
+import { isDecisionConnection, type AiSettingsTab } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
 import { FeedbackLine, SavedTick, type Feedback } from '../controls';
-import { Icon } from '../icons';
-import { buildCatalogModelOptions } from '../modelSelectOptions';
-import { vendorLabelFor } from '../providerPresets';
-import { SearchableSelect } from '../SearchableSelect';
+import { ModelPicker } from '../ModelPicker';
+import { isLocalBaseUrl } from '../providerPresets';
 import { selectGlobalDefaultModel } from './defaultModelSelection';
+import { LOADING_DELAY_MS, TEXT_BUTTON } from './SettingsPrimitives';
 import { OriginBadge } from './spaces/OriginBadge';
 import { useSavedTick } from './useSavedTick';
 
-const BAR_PICKER =
-  'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.05] px-2.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.08] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint sm:w-[19rem]';
+export function connectionNeedsAttention(
+  provider: ProviderCatalogItem,
+  method: OAuthMethodStatus | undefined,
+): boolean {
+  const needsKey = method === undefined && !isLocalBaseUrl(provider.base_url)
+    && !provider.has_api_key && provider.api_key_env === undefined;
+  return provider.status === 'error'
+    || provider.status === 'unconfigured'
+    || needsKey
+    || (method !== undefined && method.signed_in && method.connection_state === 'reconnect_required');
+}
 
 /**
- * The one statement of the new-session default model, above every tab of
- * Models & providers. It applies on pick through the same queue the star in
- * the model list uses, so a pick here and a star there land in order and the
- * screen always shows what the server saved.
+ * The status card above every tab of Models: states which model new
+ * conversations use (with Change opening the shared ModelPicker) and how many
+ * connections exist / need attention.
  */
 export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
+  const [delayedLoading, setDelayedLoading] = useState(false);
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
+  const providersQuery = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => client.listProviders(),
+    staleTime: 60_000,
+    enabled: typeof client.listProviders === 'function',
+  });
   const methodsQuery = useQuery({
     queryKey: OAUTH_METHODS_QUERY_KEY,
     queryFn: () => client.listOAuthMethods(),
@@ -42,17 +57,31 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
     enabled: typeof client.listOAuthMethods === 'function',
   });
 
+  const providersLoading = providersQuery.isLoading && typeof client.listProviders === 'function';
+  useEffect(() => {
+    if (!providersLoading) {
+      setDelayedLoading(false);
+      return;
+    }
+    const timer = setTimeout(() => { setDelayedLoading(true); }, LOADING_DELAY_MS);
+    return () => { clearTimeout(timer); };
+  }, [providersLoading]);
+
   const models = modelsQuery.data?.items ?? [];
   const config = configQuery.data;
   const defaultModel = config?.default_model ?? '';
-  const options = useMemo(() => buildCatalogModelOptions(models, t), [models, t]);
   const current = models.find((item) => item.id === defaultModel);
+  const methods = methodsQuery.data ?? [];
 
-  const connectionLabel = (providerId: string): string => {
-    const account = (methodsQuery.data ?? []).find((method) => method.provider === providerId)?.label;
-    const provider = (providersQuery.data?.items ?? []).find((item) => item.id === providerId);
-    return account ?? vendorLabelFor(provider?.base_url) ?? providerId;
-  };
+  const chatConnections = useMemo(
+    () => (providersQuery.data?.items ?? []).filter((provider) => !isDecisionConnection(provider)),
+    [providersQuery.data],
+  );
+  const attentionCount = useMemo(
+    () => chatConnections.filter((provider) =>
+      connectionNeedsAttention(provider, methods.find((method) => method.provider === provider.id))).length,
+    [chatConnections, methods],
+  );
 
   const pick = async (modelId: string) => {
     const item = models.find((candidate) => candidate.id === modelId);
@@ -69,36 +98,67 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
     }
   };
 
+  const providersLoaded = providersQuery.isSuccess;
+  const emptyConnections = providersLoaded && chatConnections.length === 0 && models.length === 0;
+  const modelLabel = current !== undefined
+    ? (current.display_name ?? current.id)
+    : defaultModel !== ''
+      ? defaultModel
+      : t('common.defaultUnknown');
+  const defaultSentence = t('st.ai.status.default', { model: modelLabel });
+  const comma = locale.startsWith('zh') ? '，' : ', ';
+  const countLine = providersLoaded && chatConnections.length > 0
+    ? `${tp('st.ai.status.count', chatConnections.length)}${attentionCount > 0 ? `${comma}${tp('st.ai.status.attention', attentionCount)}` : ''}`
+    : null;
+
   return (
-    <div data-default-model-bar data-default-model-line
-      className="-mt-2 pb-3 pt-2">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        <label htmlFor="st-default-model" className="shrink-0 text-[13px] text-ink-soft">{t('st.models.newSessionsUse')}</label>
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="min-w-0 flex-1 sm:flex-none">
-            <SearchableSelect
-              id="st-default-model"
-              value={defaultModel}
-              options={options}
-              onChange={(value) => void pick(value)}
-              ariaLabel={t('st.defaults.row.newSession')}
-              searchPlaceholder={t('st.models.searchPlaceholder')}
-              emptyText={t('st.models.noDefault')}
-              disabled={busy || models.length === 0}
-              buttonClassName={BAR_PICKER}
-              triggerIcon={<Icon name={current !== undefined ? 'starFilled' : 'star'} size={12}
-                className={current !== undefined ? 'shrink-0 text-ink' : 'shrink-0 text-ink-faint'} />}
-              triggerLabel={current !== undefined ? (
-                <span className="flex min-w-0 items-baseline gap-1.5">
-                  <span data-default-model-name className="truncate font-medium">{current.display_name ?? current.id}</span>
-                  <span className="truncate text-[12px] text-ink-faint">{connectionLabel(current.provider_id)}</span>
-                </span>
-              ) : defaultModel !== '' ? defaultModel : undefined}
-            />
+    <div
+      data-default-model-bar
+      data-default-model-line
+      data-ai-status-card
+      className="rounded-lg border border-hairline bg-panel px-4 py-3"
+    >
+      {emptyConnections ? (
+        <p data-ai-status-empty className="text-[13px] leading-5 text-ink-soft">
+          {t('st.ai.status.empty')}
+        </p>
+      ) : (
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+            <p className="min-w-0 text-[13.5px] font-medium text-ink" data-default-model-name>
+              {defaultSentence}
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <SavedTick show={tick} />
+              <ModelPicker
+                id="st-default-model"
+                models={models}
+                value={defaultModel}
+                allowCustomValue={false}
+                missing={false}
+                disabled={busy || models.length === 0}
+                onChange={(value) => { void pick(value); }}
+                ariaLabel={`${t('st.decision.change')} · ${defaultSentence}`}
+                searchPlaceholder={t('st.models.searchPlaceholder')}
+                emptyText={t('st.models.noDefault')}
+                align="end"
+                hideChevron
+                triggerLabel={t('st.decision.change')}
+                buttonClassName={`inline-flex min-h-7 items-center px-1 pointer-coarse:min-h-11 ${TEXT_BUTTON}`}
+              />
+            </div>
           </div>
-          <SavedTick show={tick} />
+          {providersLoading && delayedLoading ? (
+            <p role="status" data-ai-status-loading className="text-[12.5px] text-ink-faint">
+              {t('st.ai.status.loading')}
+            </p>
+          ) : countLine !== null ? (
+            <p data-ai-status-connections className={`text-[12.5px] ${attentionCount > 0 ? 'text-amber-ink' : 'text-ink-soft'}`}>
+              {countLine}
+            </p>
+          ) : null}
         </div>
-      </div>
+      )}
       <div className="pt-1 empty:hidden" data-default-origin="new-session">
         <OriginBadge config={config} domain="default_model" keyPath={[]} label={t('st.defaults.row.newSession')} />
       </div>

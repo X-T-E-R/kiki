@@ -254,10 +254,12 @@ export function ExternalEnginesVisibilitySwitch() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const catalogQuery = useExecutorCatalogQuery();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
   const prefs = engineVisibilityOf(engineOverridesOf(configQuery.data), engineDisplayOf(configQuery.data));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const hasEngines = (catalogQuery.data?.items ?? []).some((item) => item.id !== 'native');
 
   const toggle = async (next: boolean) => {
     const patch = engineVisibilityPatch(prefs, { externals: next });
@@ -273,6 +275,8 @@ export function ExternalEnginesVisibilitySwitch() {
       setSaving(false);
     }
   };
+
+  if (!hasEngines) return null;
 
   return (
     <div data-external-visibility data-visible={prefs.externalsVisible ? 'true' : 'false'} className="flex items-center gap-2">

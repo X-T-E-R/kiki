@@ -3079,7 +3079,7 @@ export const zh = {
   'st.scope.connectedServer': '已连接的服务器',
   'st.scope.diagnostic': '诊断信息',
   'st.purpose.general': '本设备的语言、输入框与桌面行为。',
-  'st.purpose.ai': '管理模型、提供商、登录、新会话默认设置与请求身份。',
+  'st.purpose.ai': 'Kiki 用哪些模型回答，哪个连接需要处理。',
   'st.purpose.connectionServices': '让别处的浏览器、Kiki 或智能体连到这台 Kiki。',
   'st.purpose.subagents': '设置子智能体默认值、模型规则、工具与运行限制；智能体定义在「智能体」中编辑。',
   'st.purpose.search': '选择搜索来源和网页抓取方式，管理凭证与超时。',

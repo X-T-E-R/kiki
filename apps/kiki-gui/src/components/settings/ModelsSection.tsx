@@ -51,7 +51,10 @@ import { CompactPointField } from './CompactPointField';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './identityCatalog';
 import { SearchableSelect } from '../SearchableSelect';
+import { ModelPicker } from '../ModelPicker';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
+import { useRequestGovernance } from '../../lib/useRequestGovernance';
+import { ConcurrencyRulesEditor } from '../usage/ConcurrencyRulesEditor';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
@@ -425,7 +428,6 @@ export function GlobalDefaultsCard() {
   const titleModel = configQuery.data?.session_title?.model ?? '';
   const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
   const fastModel = configQuery.data?.fast_model ?? '';
-  const options = useMemo(() => buildCatalogModelOptions(models, t), [models, t]);
 
   // These two keys PATCH the normal config route, then re-read GET /config.
   const pickConfigModel = async (which: 'subagent' | 'fast', modelId: string) => {
@@ -469,16 +471,12 @@ export function GlobalDefaultsCard() {
         ? t('st.defaults.row.titleUnset')
         : t('st.defaults.row.titleHelp'),
       picker: (
-        <SearchableSelect
+        <ModelPicker
           id="st-default-title-model"
+          models={models}
           value={titleModel}
-          options={[{
-            value: '',
-            label: t('st.sessionTitleModel.noneDefault'),
-            // The engine writes titles with this model and nothing else, so
-            // the empty option is "no titles", not a hidden default.
-            description: t('st.sessionTitleModel.noneDesc'),
-          }, ...options]}
+          unsetLabel={t('st.sessionTitleModel.noneDefault')}
+          unsetDescription={t('st.sessionTitleModel.noneDesc')}
           onChange={(value) => void pickTitle(value)}
           ariaLabel={t('st.defaults.row.title')}
           searchPlaceholder={t('st.models.searchPlaceholder')}
@@ -495,10 +493,11 @@ export function GlobalDefaultsCard() {
       label: t('st.defaults.row.fast'),
       help: t('st.defaults.row.fastHelp'),
       picker: (
-        <SearchableSelect
+        <ModelPicker
           id="st-default-fast-model"
+          models={models}
           value={fastModel}
-          options={[{ value: '', label: t('st.defaults.row.fastUnset') }, ...options]}
+          unsetLabel={t('st.defaults.row.fastUnset')}
           onChange={(value) => void pickConfigModel('fast', value)}
           ariaLabel={t('st.defaults.row.fast')}
           searchPlaceholder={t('st.models.searchPlaceholder')}
@@ -515,10 +514,11 @@ export function GlobalDefaultsCard() {
       label: t('st.defaults.row.subagent'),
       help: t('st.defaults.row.subagentHelp'),
       picker: (
-        <SearchableSelect
+        <ModelPicker
           id="st-default-subagent-model"
+          models={models}
           value={subagentModel}
-          options={[{ value: '', label: t('st.defaults.row.subagentUnset') }, ...options]}
+          unsetLabel={t('st.defaults.row.subagentUnset')}
           onChange={(value) => void pickConfigModel('subagent', value)}
           ariaLabel={t('st.defaults.row.subagent')}
           searchPlaceholder={t('st.models.searchPlaceholder')}
@@ -1033,10 +1033,19 @@ export function ModelMaintenance() {
   );
 }
 
+export function ConcurrencyCard() {
+  const { t } = useI18n();
+  const { snapshot } = useRequestGovernance();
+  return (
+    <SectionCard id="st-card-concurrency" title={t('usage.governance.limitsTitle')}>
+      <ConcurrencyRulesEditor rules={snapshot?.rules ?? []} showHeading={false} />
+    </SectionCard>
+  );
+}
+
 /**
  * Defaults tab: which model each job uses, then how models behave by default
- * (thinking, compaction), then what new sessions are allowed to do. Request
- * identity is a protocol-level override and sits last.
+ * (thinking, compaction), then what new sessions are allowed to do.
  */
 export function DefaultsTab() {
   return (
@@ -1048,6 +1057,7 @@ export function DefaultsTab() {
       <LoopLimitsCard />
       <RetryPolicyCard />
       <TokenCountingCard />
+      <ConcurrencyCard />
     </div>
   );
 }

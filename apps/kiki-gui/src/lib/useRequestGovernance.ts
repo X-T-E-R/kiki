@@ -8,12 +8,13 @@ import { useConnection } from '../state/connection';
  */
 export function useRequestGovernance(options?: { readonly enabled?: boolean }) {
   const { client, scopeId, wsStatus } = useConnection();
+  const available = typeof client.getRequestGovernance === 'function';
   const query = useQuery({
     queryKey: ['request-governance', scopeId],
     queryFn: () => client.getRequestGovernance(),
     refetchInterval: 1000,
     retry: false,
-    enabled: options?.enabled ?? true,
+    enabled: available && (options?.enabled ?? true),
   });
-  return { snapshot: query.data, stale: query.isError || wsStatus !== 'open', loading: query.isPending };
+  return { snapshot: query.data, stale: query.isError || wsStatus !== 'open', loading: available && query.isPending };
 }

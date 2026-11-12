@@ -9,7 +9,8 @@
  * words) instead of a grid whose last columns would be cut off.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import type { RequestGovernanceSnapshot } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -27,10 +28,10 @@ import {
 } from '../lib/liveAgentGovernance';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useSessionNames } from '../lib/threadTitles';
-import { ConcurrencyRulesEditor } from './usage/ConcurrencyRulesEditor';
 import { ExecutionSessionList, PauseAllExecutions, sessionLabelOf, sessionLabelText } from './usage/ExecutionControls';
 import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
-import { DisclosureChevron } from './icons';
+
+export const CONCURRENCY_RULES_SETTINGS_HREF = '/settings/ai?tab=defaults#st-card-concurrency';
 
 /**
  * The sidebar's Usage badge. Running requests need nothing from the reader
@@ -60,20 +61,9 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
   );
 }
 
-export function RequestGovernanceView({ view }: { view: 'realtime' | 'limits' }) {
+export function RequestGovernanceView({ view: _view }: { view?: 'realtime' | 'limits' } = {}) {
   const { snapshot, stale, loading } = useRequestGovernance();
   const { t, tp, time } = useI18n();
-  const limitsRef = useRef<HTMLDivElement>(null);
-  const ready = snapshot !== undefined;
-  // The editor is a server setting, not a reading: it stays folded under the
-  // one-line rule count until asked for. A legacy Limits link asks for it.
-  const [rulesOpen, setRulesOpen] = useState(view === 'limits');
-  useEffect(() => {
-    if (view !== 'limits' || !ready) return;
-    setRulesOpen(true);
-    limitsRef.current?.scrollIntoView?.({ block: 'start' });
-    limitsRef.current?.focus({ preventScroll: true });
-  }, [view, ready]);
   if (snapshot === undefined) {
     return (
       <p role="status" className="py-12 text-center text-[13px] text-ink-faint">
@@ -90,26 +80,17 @@ export function RequestGovernanceView({ view }: { view: 'realtime' | 'limits' })
         </p>
       ) : null}
       <RealtimePanel snapshot={snapshot} />
-      <div ref={limitsRef} id="usage-limits" role="region" aria-label={t('usage.governance.limitsTitle')} tabIndex={-1} className="scroll-mt-4" style={{ outline: 'none' }}>
+      <div id="usage-limits" role="region" aria-label={t('usage.governance.limitsTitle')} className="scroll-mt-4">
         <p data-governance-rules-summary className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3 text-[12.5px] text-ink-soft">
           <span>{enabledRules > 0 ? tp('usage.live.rules', enabledRules) : t('usage.governance.emptyTitle')}</span>
-          <button
-            type="button"
+          <Link
+            to={CONCURRENCY_RULES_SETTINGS_HREF}
             data-governance-manage
-            aria-expanded={rulesOpen}
-            aria-controls="usage-limits-editor"
-            onClick={() => { setRulesOpen((open) => !open); }}
             className="inline-flex min-h-8 items-center gap-1 rounded-sm font-medium text-ink underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
           >
             {t('usage.live.manageRules')}
-            <DisclosureChevron open={rulesOpen} className="text-ink-faint" />
-          </button>
+          </Link>
         </p>
-        {rulesOpen ? (
-          <div id="usage-limits-editor" className="pt-4">
-            <ConcurrencyRulesEditor rules={snapshot.rules} />
-          </div>
-        ) : null}
       </div>
     </div>
   );

@@ -7,6 +7,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
+import { AiSection } from './AiSection';
+import { DefaultModelBar } from './DefaultModelBar';
 import { ProvidersSection } from './ProvidersSection';
 import { resetListPrefsCache } from './list';
 
@@ -19,6 +21,9 @@ const listExecutors = vi.fn();
 const getCatalogProvider = vi.fn();
 const getProviderEntity = vi.fn();
 const getModel = vi.fn();
+const listCatalogProviders = vi.fn();
+const listRecipes = vi.fn();
+const getRequestGovernance = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -32,6 +37,9 @@ vi.mock('../../state/connection', () => ({
       getCatalogProvider,
       getProviderEntity,
       getModel,
+      listCatalogProviders,
+      listRecipes,
+      getRequestGovernance,
     },
   }),
 }));
@@ -49,14 +57,17 @@ beforeEach(() => {
   localStorage.clear();
   resetListPrefsCache();
   listDiscoveredModels.mockReset().mockResolvedValue({ items: [] });
+  listCatalogProviders.mockReset().mockResolvedValue({ items: [] });
+  listRecipes.mockReset().mockResolvedValue([]);
+  getRequestGovernance.mockReset().mockResolvedValue({ revision: 'rev-1', rules: [], runtime: { inflight: [], queued: [] } });
   listProviders.mockReset().mockResolvedValue({
     items: [
-      { id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
+      { id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1', has_api_key: true },
     ],
   });
   listModels.mockReset().mockResolvedValue({
     items: [
-      { id: 'gpt-4o', provider_id: 'openai-api', model: 'gpt-4o' },
+      { id: 'gpt-4o', provider_id: 'openai-api', remote_id: 'gpt-4o', display_name: 'GPT-4o', max_context_size: 128000 },
     ],
   });
   listOAuthMethods.mockReset().mockResolvedValue([
@@ -65,11 +76,13 @@ beforeEach(() => {
       provider: 'kimi',
       label: 'Kimi Code',
       signed_in: true,
-      connection_state: 'connected',
+      connection_state: 'ready',
       account: { state: 'known', id: 'user@example.test' },
+      quota: { state: 'unknown' },
     },
   ]);
   getConfig.mockReset().mockResolvedValue({
+    default_model: 'gpt-4o',
     agent_executors: [],
     agent_executor_display: { externals_visible: true },
   });
@@ -90,6 +103,8 @@ beforeEach(() => {
 afterEach(() => {
   for (const root of roots.splice(0)) root.unmount();
   for (const container of containers.splice(0)) container.remove();
+  vi.unstubAllGlobals();
+  vi.stubGlobal('navigator', { language: 'en-US' });
 });
 
 afterAll(() => {
@@ -97,7 +112,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function render(): Promise<HTMLDivElement> {
+async function render(node: React.ReactElement = <ProvidersSection />, initialEntries: string[] = ['/settings/ai']): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -108,8 +123,8 @@ async function render(): Promise<HTMLDivElement> {
     root.render(
       <QueryClientProvider client={queryClient}>
         <I18nProvider>
-          <MemoryRouter>
-            <ProvidersSection />
+          <MemoryRouter initialEntries={initialEntries}>
+            {node}
           </MemoryRouter>
         </I18nProvider>
       </QueryClientProvider>,
@@ -119,59 +134,26 @@ async function render(): Promise<HTMLDivElement> {
   return container;
 }
 
-describe('ProvidersSection zone order and status', () => {
-  it('renders the zones in order: API, OAuth, Local harnesses, then decision services', async () => {
-    const container = await render();
-    const zones = [...container.querySelectorAll('[data-providers-zone]')];
-    expect(zones.map((zone) => zone.getAttribute('data-providers-zone')))
-      .toEqual(['apikey', 'oauth', 'harnesses', 'decision']);
-  });
-
-  it('lists a decision service in its own card and not among chat connections', async () => {
-    listProviders.mockResolvedValue({ items: [
-      { id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
-      { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: false },
-    ] });
-    const container = await render();
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="typesafe"]')).toBeNull();
-    expect(container.querySelector('[data-providers-zone="decision"] [data-decision-row="typesafe"]')).not.toBeNull();
-  });
-
-  it('renders cards for all three zones with correct ids and clean unnumbered titles in order', async () => {
-    const container = await render();
-    const providersCard = container.querySelector('#st-card-providers');
-    const authCard = container.querySelector('#st-card-auth');
-    const enginesCard = container.querySelector('#st-card-engines');
-    expect(providersCard).not.toBeNull();
-    expect(authCard).not.toBeNull();
-    expect(enginesCard).not.toBeNull();
-    expect(providersCard?.textContent).toContain('API services');
-    expect(providersCard?.textContent).not.toMatch(/[①②③]/);
-    expect(authCard?.textContent).toContain('Account sign-in (subscription)');
-    expect(authCard?.textContent).not.toMatch(/[①②③]/);
-    expect(enginesCard?.textContent).toContain('CLI engines on this machine');
-    expect(enginesCard?.textContent).not.toContain('Local CLI harnesses');
-    expect(enginesCard?.textContent).not.toMatch(/[①②③]/);
-  });
-
-  it('shows a failed model read on the providers card and retries it in place', async () => {
-    listModels.mockRejectedValueOnce(new Error('fixture local read failed'));
-    const container = await render();
-    const card = container.querySelector('#st-card-providers')!;
-    expect(card.textContent).toContain('fixture local read failed');
-    const retry = [...card.querySelectorAll<HTMLButtonElement>('[data-providers-read-error] button')]
-      .find((button) => button.textContent === 'Retry');
-    expect(retry).toBeDefined();
-    await act(async () => { retry!.click(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(card.textContent).not.toContain('fixture local read failed');
-    expect(listModels).toHaveBeenCalledTimes(2);
-  });
-});
+function installPhoneTouchMatchMedia(): () => void {
+  const prev = window.matchMedia;
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query.includes('pointer: coarse') && query.includes('max-width: 639px'),
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+  return () => { window.matchMedia = prev; };
+}
 
 const API_PROVIDER = {
-  id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1',
+  id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1', has_api_key: true,
+};
+const MISSING_KEY_PROVIDER = {
+  id: 'alt-api', type: 'openai', status: 'unconfigured', base_url: 'https://api.alt.example.test/v1', has_api_key: false,
 };
 const ACCOUNT_PROVIDER = {
   id: 'copilot', type: 'openai', status: 'connected', base_url: 'https://api.githubcopilot.com',
@@ -201,17 +183,12 @@ const SEARCHABLE_FILLERS = Array.from({ length: 6 }, (_, index) => ({
   type: 'openai',
   status: 'connected',
   base_url: `https://search-fixture-${index + 1}.example.test/v1`,
+  has_api_key: true,
 }));
 
-function zoneRows(container: ParentNode, zone: string): string[] {
-  return [...container.querySelectorAll(`[data-providers-zone="${zone}"] [data-connection-row]`)]
+function connectionRows(container: ParentNode): string[] {
+  return [...container.querySelectorAll('[data-providers-zone="connections"] [data-connection-row]')]
     .map((row) => row.getAttribute('data-connection-row') ?? '');
-}
-
-function installMixedProviders() {
-  listProviders.mockResolvedValue({ items: [LOCAL_PROVIDER, ACCOUNT_PROVIDER, API_PROVIDER] });
-  listModels.mockResolvedValue({ items: [] });
-  listOAuthMethods.mockResolvedValue([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]);
 }
 
 async function typeSearch(container: HTMLElement, value: string) {
@@ -224,11 +201,175 @@ async function typeSearch(container: HTMLElement, value: string) {
   });
 }
 
-describe('ProvidersSection configured rows', () => {
-  it('finds a connection by a model display name that shares nothing with its ids', async () => {
+describe('Models status card, attention, and tabs', () => {
+  it('shows the status card first with default model and attention count, and all three tabs on AiSection', async () => {
+    listProviders.mockResolvedValue({ items: [API_PROVIDER, MISSING_KEY_PROVIDER] });
+    const container = await render(<AiSection />);
+
+    const statusCard = container.querySelector('[data-ai-status-card]')!;
+    expect(statusCard).not.toBeNull();
+    expect(statusCard.textContent).toContain('New conversations use GPT-4o');
+    expect(statusCard.textContent).toContain('2 connections, 1 needs attention');
+
+    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim());
+    expect(tabs).toEqual(['Connections', 'Defaults', 'Recipes']);
+
+    // Fewer than 8 connections: no search, filter, or sort clutter.
+    expect(container.querySelector('[data-list-search]')).toBeNull();
+    expect(container.querySelector('[data-list-filter]')).toBeNull();
+  });
+
+  it('shows the empty status message and inline three-lane add card when nothing is connected', async () => {
+    listProviders.mockResolvedValue({ items: [] });
+    listModels.mockResolvedValue({ items: [] });
+    getConfig.mockResolvedValue({ default_model: '', agent_executors: [] });
+    const container = await render(<AiSection />);
+
+    const statusCard = container.querySelector('[data-ai-status-card]')!;
+    expect(statusCard.textContent).toContain('No model connected yet. Connect one so Kiki can answer.');
+    expect(container.querySelector('[data-connections-empty]')).toBeNull();
+    expect(container.querySelector('[data-first-run-card="lanes"]')).not.toBeNull();
+  });
+
+  it('surfaces a missing-key connection in Needs attention with Add key opening and focusing its key input', async () => {
+    listProviders.mockResolvedValue({ items: [API_PROVIDER, MISSING_KEY_PROVIDER] });
+    getProviderEntity.mockImplementation(async (id: string) => ({
+      id,
+      type: 'openai',
+      has_api_key: id === 'openai-api',
+      status: id === 'openai-api' ? 'connected' : 'unconfigured',
+      revision: 'rev-1',
+      custom_header_keys: [],
+      env_keys: [],
+    }));
+    const container = await render(<ProvidersSection />);
+
+    const attention = container.querySelector('[data-connections-attention]')!;
+    expect(attention).not.toBeNull();
+    expect(attention.textContent).toContain('Needs attention');
+    expect(attention.textContent).toContain('alt-api');
+    expect(attention.textContent).toContain('Needs a key');
+
+    const addKeyButton = attention.querySelector<HTMLButtonElement>('[data-attention-row="alt-api"] [data-attention-fix]')!;
+    expect(addKeyButton.textContent).toBe('Add key');
+    expect(addKeyButton.className).not.toContain('text-accent-ink');
+
+    await act(async () => { addKeyButton.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    const targetRow = container.querySelector<HTMLDetailsElement>('[data-connection-row="alt-api"]')!;
+    expect(targetRow.open).toBe(true);
+    const keyInput = targetRow.querySelector<HTMLInputElement>('[data-secret-field] input')!;
+    expect(keyInput).not.toBeNull();
+    expect(document.activeElement).toBe(keyInput);
+  });
+
+  it('renders every connection row with its visible status word on phone touch mode', async () => {
+    const restoreMatchMedia = installPhoneTouchMatchMedia();
+    try {
+      listProviders.mockResolvedValue({ items: [API_PROVIDER, MISSING_KEY_PROVIDER] });
+      const container = await render(<ProvidersSection />);
+
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-providers-zone="connections"] [data-connection-row]')];
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        const statusEl = row.querySelector<HTMLElement>('[data-connection-status]')!;
+        expect(statusEl).not.toBeNull();
+        expect(statusEl.querySelector('.sr-only')).toBeNull();
+        expect(statusEl.querySelector('.hidden')).toBeNull();
+      }
+      const byId = new Map(rows.map((row) => [row.dataset['connectionRow'], row.querySelector('[data-connection-status]')!.textContent]));
+      expect(byId.get('openai-api')).toContain('Connected');
+      expect(byId.get('alt-api')).toContain('Needs a key');
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it('shows the Concurrency card on Defaults tab', async () => {
+    const container = await render(<AiSection />, ['/settings/ai?tab=defaults']);
+    const concurrencyCard = container.querySelector('#st-card-concurrency');
+    expect(concurrencyCard).not.toBeNull();
+    expect(concurrencyCard!.textContent).toContain('Concurrency limits');
+  });
+
+  it('shows SettingsLoadFailure with Retry when listOAuthMethods fails in the account lane', async () => {
+    listProviders.mockResolvedValue({ items: [] });
+    listOAuthMethods.mockRejectedValue(new Error('oauth backend offline'));
+    const container = await render(<ProvidersSection />);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.textContent).toContain("Couldn't load the available sign-in methods: oauth backend offline");
+    listOAuthMethods.mockResolvedValue([FRESH_ACCOUNT]);
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find((btn) => btn.textContent === 'Retry')!;
+    expect(retry).toBeDefined();
+    await act(async () => { retry.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-oauth-method="grok-build"]')).not.toBeNull();
+  });
+});
+
+describe('ProvidersSection unified connections list and folds', () => {
+  it('renders unified connections list followed by Command-line agents and Decision models folds without a flat account catalogue', async () => {
+    listProviders.mockResolvedValue({ items: [LOCAL_PROVIDER, ACCOUNT_PROVIDER, API_PROVIDER] });
+    listModels.mockResolvedValue({ items: [] });
+    listOAuthMethods.mockResolvedValue([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]);
+    const container = await render();
+
+    const zones = [...container.querySelectorAll('[data-providers-zone]')].map((z) => z.getAttribute('data-providers-zone'));
+    expect(zones).toEqual(['connections', 'harnesses', 'decision']);
+    expect(container.querySelector('#st-card-auth')).toBeNull();
+    expect(container.querySelectorAll('[data-oauth-method]')).toHaveLength(0);
+
+    expect(connectionRows(container)).toEqual(['openai-api', 'copilot', 'ollama']);
+    expect(container.querySelector('[data-engines-fold] summary')!.textContent)
+      .toContain('Command-line agents (on the computer running Kiki)');
+    expect(container.querySelector('[data-decision-fold] summary')!.textContent)
+      .toContain('Decision models (which model reviews approvals and which picks memories)');
+
+    // No external engines configured: the visibility switch does not show inside the engines fold.
+    expect(container.querySelector('[data-external-engines-visibility]')).toBeNull();
+  });
+
+  it('lists a decision service inside the Decision models fold and not among chat connections', async () => {
     listProviders.mockResolvedValue({ items: [
-      { id: 'acme', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
-      { id: 'other', type: 'openai', status: 'connected', base_url: 'https://other.example.test/v1' },
+      API_PROVIDER,
+      { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: false },
+    ] });
+    const container = await render(<ProvidersSection />, ['/settings/ai#st-card-decision-connections']);
+    expect(container.querySelector('[data-providers-zone="connections"] [data-connection-row="typesafe"]')).toBeNull();
+    expect(container.querySelector('[data-providers-zone="decision"] [data-decision-row="typesafe"]')).not.toBeNull();
+  });
+
+  it('shows a failed connection list read with Retry and falls back to Default (unknown) on the status card when default model cannot resolve', async () => {
+    listProviders.mockRejectedValueOnce(new Error('fixture connection list failed'));
+    getConfig.mockResolvedValue({ default_model: '', agent_executors: [] });
+    listModels.mockResolvedValue({ items: [] });
+    const container = await render(
+      <>
+        <DefaultModelBar />
+        <ProvidersSection />
+      </>,
+    );
+    expect(container.querySelector('[data-ai-status-card]')!.textContent).toContain('Default (unknown)');
+    const card = container.querySelector('#st-card-providers')!;
+    expect(card.textContent).toContain("Couldn't load the connection list: fixture connection list failed");
+
+    listProviders.mockResolvedValueOnce({ items: [API_PROVIDER] });
+    const retry = [...card.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Retry')!;
+    expect(retry).toBeDefined();
+    await act(async () => { retry.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(connectionRows(container)).toEqual(['openai-api']);
+  });
+
+  it('searches across connections at >= 8 rows and finds by model display name', async () => {
+    listProviders.mockResolvedValue({ items: [
+      { id: 'acme', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1', has_api_key: true },
+      { id: 'other', type: 'openai', status: 'connected', base_url: 'https://other.example.test/v1', has_api_key: true },
       ...SEARCHABLE_FILLERS,
     ] });
     listModels.mockResolvedValue({ items: [
@@ -236,115 +377,10 @@ describe('ProvidersSection configured rows', () => {
       { id: 'other/plain', provider_id: 'other', remote_id: 'plain', display_name: 'Plain', max_context_size: 8000 },
     ] });
     const container = await render();
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await typeSearch(container, 'Northwind');
-    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
-    await typeSearch(container, 'zz-remote');
-    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
-    await typeSearch(container, 'acme/zz-local');
-    expect(zoneRows(container, 'apikey')).toEqual(['acme']);
-    await typeSearch(container, 'Plain');
-    expect(zoneRows(container, 'apikey')).toEqual(['other']);
-  });
-
-  it('puts each configured provider in one zone and does not sign in a configured account again', async () => {
-    installMixedProviders();
-    const container = await render();
-    // A local HTTP server is an API at a local address: it lists with the API
-    // services, and the CLI-engine card holds no connection rows.
-    expect(zoneRows(container, 'apikey')).toEqual(['openai-api', 'ollama']);
-    expect(zoneRows(container, 'oauth')).toEqual(['copilot']);
-    expect(zoneRows(container, 'harnesses')).toEqual([]);
-    const rows = [...container.querySelectorAll('[data-connection-row]')];
-    expect(rows.map((row) => row.getAttribute('data-connection-row'))).toEqual(['openai-api', 'ollama', 'copilot']);
-    expect(new Set(rows.map((row) => row.getAttribute('data-connection-row'))).size).toBe(3);
-
-    const account = container.querySelector<HTMLElement>('[data-providers-zone="oauth"] [data-connection-row="copilot"]');
-    expect(account?.tagName).toBe('DETAILS');
-    expect(account?.getAttribute('data-connection-kind')).toBe('account');
-    expect(account?.querySelector('[data-connection-account-panel="github-copilot"]')).not.toBeNull();
-    expect(account?.textContent).toContain('Models');
-    expect(account?.textContent).toContain('Save provider');
-    expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
-    expect(container.querySelector('[data-providers-zone="oauth"] [data-oauth-method="grok-build"]')).not.toBeNull();
-    expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="copilot"]')).toBeNull();
-    // This short list keeps its add action but does not need search or filter controls.
-    expect(container.querySelector('[data-list-filter]')).toBeNull();
-    expect(container.querySelector('[data-list-search]')).toBeNull();
-  });
-
-  it('searches across zones and a miss drops rows without dropping the sign-in catalog', async () => {
-    installMixedProviders();
-    listProviders.mockResolvedValue({ items: [LOCAL_PROVIDER, ACCOUNT_PROVIDER, API_PROVIDER, ...SEARCHABLE_FILLERS.slice(0, 5)] });
-    const container = await render();
-    await typeSearch(container, 'ollama');
-    expect(zoneRows(container, 'apikey')).toEqual(['ollama']);
-    expect(zoneRows(container, 'harnesses')).toEqual([]);
-    expect(zoneRows(container, 'oauth')).toEqual([]);
-    expect(container.querySelector('[data-list-empty="no-match"]')).toBeNull();
-
+    expect(connectionRows(container)).toEqual(['acme']);
     await typeSearch(container, 'zzzz-no-match');
-    expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(0);
+    expect(connectionRows(container)).toEqual([]);
     expect(container.querySelector('[data-list-empty="no-match"]')).not.toBeNull();
-    expect(container.querySelector('[data-oauth-method="grok-build"]')).not.toBeNull();
-
-    await typeSearch(container, '');
-    expect(zoneRows(container, 'apikey')).toHaveLength(7);
-    expect(zoneRows(container, 'apikey')).toEqual(expect.arrayContaining([
-      'openai-api', 'ollama', ...SEARCHABLE_FILLERS.slice(0, 5).map((provider) => provider.id),
-    ]));
-    expect(zoneRows(container, 'oauth')).toEqual(['copilot']);
-    expect(zoneRows(container, 'harnesses')).toEqual([]);
-  });
-
-  it('keeps every row when oauth methods resolve after providers, then moves the account', async () => {
-    let resolveMethods: (value: unknown) => void = () => {};
-    listProviders.mockResolvedValue({ items: [API_PROVIDER, ACCOUNT_PROVIDER, LOCAL_PROVIDER] });
-    listModels.mockResolvedValue({ items: [] });
-    listOAuthMethods.mockReturnValue(new Promise((resolve) => { resolveMethods = resolve; }));
-    const container = await render();
-    expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(3);
-    expect(zoneRows(container, 'apikey')).toEqual(['copilot', 'openai-api', 'ollama']);
-    expect(zoneRows(container, 'oauth')).toEqual([]);
-    expect(zoneRows(container, 'harnesses')).toEqual([]);
-
-    await act(async () => { resolveMethods([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]); });
-    await expect.poll(() => ({
-      api: zoneRows(container, 'apikey'),
-      oauth: zoneRows(container, 'oauth'),
-      local: zoneRows(container, 'harnesses'),
-    })).toEqual({
-      api: ['openai-api', 'ollama'],
-      oauth: ['copilot'],
-      local: [],
-    });
-    expect(container.querySelectorAll('[data-connection-row="copilot"]')).toHaveLength(1);
-    expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
-  });
-
-  it('keeps every row when providers resolve after oauth methods', async () => {
-    let resolveProviders: (value: unknown) => void = () => {};
-    listOAuthMethods.mockResolvedValue([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]);
-    listModels.mockResolvedValue({ items: [] });
-    listProviders.mockReturnValue(new Promise((resolve) => { resolveProviders = resolve; }));
-    const container = await render();
-    expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(0);
-    expect(container.querySelector('[data-oauth-method="github-copilot"]')).not.toBeNull();
-
-    await act(async () => {
-      resolveProviders({ items: [LOCAL_PROVIDER, API_PROVIDER, ACCOUNT_PROVIDER] });
-    });
-    await expect.poll(() => ({
-      api: zoneRows(container, 'apikey'),
-      oauth: zoneRows(container, 'oauth'),
-      local: zoneRows(container, 'harnesses'),
-    })).toEqual({
-      api: ['openai-api', 'ollama'],
-      oauth: ['copilot'],
-      local: [],
-    });
-    expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(3);
-    expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
-    expect(container.querySelector('[data-oauth-method="grok-build"]')).not.toBeNull();
   });
 });

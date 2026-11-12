@@ -156,6 +156,7 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
           <DecisionJudgeRows />
         </div>
         <div className="space-y-2" data-decision-services>
+          <p className="text-[12px] font-medium text-ink-soft">{t('st.decision.servicesTitle')}</p>
           {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
             <div data-decision-list>
               {providers.map((provider) => (

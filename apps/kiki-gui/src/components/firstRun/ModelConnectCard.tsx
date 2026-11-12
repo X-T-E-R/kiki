@@ -44,7 +44,9 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import type { OriginalProvider } from '../useOriginalOAuthSource';
 import { LocalSignInLane, ORIGINAL_PROVIDERS, useLocalSignInCheck } from './LocalSignInLane';
 
-type Lane = 'account' | 'key' | 'local';
+export type ConnectLane = 'account' | 'key' | 'local';
+
+type Lane = ConnectLane;
 
 /** Settings' add-connection form, for a service or address the key lane does not list. */
 const CONNECT_ELSEWHERE_HREF = '/settings/ai?tab=providers#st-card-providers-add';
@@ -57,7 +59,14 @@ function listNames(names: readonly string[], locale: Locale): string {
   return new Intl.ListFormat('en', { style: 'long', type: 'disjunction' }).format(names);
 }
 
-export function ModelConnectCard({ onConnected, onHold }: {
+export function ModelConnectCard({
+  onConnected,
+  onHold = () => {},
+  surface = 'firstRun',
+  initialLane = null,
+  configuredProviderIds,
+  onOpenCustomForm,
+}: {
   /** A way in connected something, named when the lane knows its name. Called before the model queries refresh. */
   readonly onConnected: (name: string | undefined) => void;
   /**
@@ -65,13 +74,19 @@ export function ModelConnectCard({ onConnected, onHold }: {
    * if the saved models would otherwise bring the composer back. Released by
    * `onConnected`.
    */
-  readonly onHold: () => void;
+  readonly onHold?: () => void;
+  /** `settings` omits the first-run title, locale switch and outer composer seat. */
+  readonly surface?: 'firstRun' | 'settings';
+  readonly initialLane?: ConnectLane | null;
+  readonly configuredProviderIds?: ReadonlySet<string>;
+  /** Inside Settings, opens the full custom-provider form in place instead of navigating to Settings. */
+  readonly onOpenCustomForm?: () => void;
 }) {
   const { client, scopeId } = useConnection();
   const host = useHost();
   const { t, locale, setLocale } = useI18n();
   const queryClient = useQueryClient();
-  const [lane, setLane] = useState<Lane | null>(null);
+  const [lane, setLane] = useState<Lane | null>(initialLane);
   // "This computer" only in the desktop app on its own server; a phone or a
   // browser may be looking at another computer's Kiki.
   const remote = !(host.kind === 'tauri' && scopeId === 'local');
@@ -126,13 +141,17 @@ export function ModelConnectCard({ onConnected, onHold }: {
   };
   const current = lanes.find((candidate) => candidate.id === lane);
 
-  return (
-    <div className="px-3 pb-3 sm:px-6 sm:pb-5" data-first-run-card-seat>
-      <section
-        data-first-run-card={lane ?? 'lanes'}
-        aria-labelledby="first-run-card-title"
-        className="composer-card mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] overflow-hidden rounded-[18px] bg-panel text-left"
-      >
+  const inSettings = surface === 'settings';
+  const card = (
+    <section
+      data-first-run-card={lane ?? 'lanes'}
+      aria-labelledby={inSettings ? undefined : 'first-run-card-title'}
+      aria-label={inSettings ? t('st.connections.addTitle') : undefined}
+      className={inSettings
+        ? 'w-full overflow-hidden rounded-lg border border-hairline bg-panel text-left'
+        : 'composer-card mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] overflow-hidden rounded-[18px] bg-panel text-left'}
+    >
+      {inSettings ? null : (
         <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 pt-4 pb-3">
           <h2 id="first-run-card-title" className="min-w-0 font-display text-[16px] font-semibold tracking-tight text-ink">
             {t('firstRun.card.title')}
@@ -145,53 +164,61 @@ export function ModelConnectCard({ onConnected, onHold }: {
             choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
           />
         </header>
+      )}
 
-        <div className="divide-y divide-hairline border-t border-hairline">
-          {current === undefined ? (
-            lanes.map((candidate) => (
-              <button key={candidate.id} type="button" data-first-run-lane={candidate.id} className={LANE_ROW} onClick={() => { openLane(candidate.id); }}>
-                <LaneLabel title={candidate.title} line={candidate.line} />
-                <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
-              </button>
-            ))
-          ) : (
-            <>
-              <div data-first-run-open-lane={current.id}>
-                {current.id === 'local' ? (
-                  // Pressing the open lane's own row asks again.
-                  <button type="button" data-first-run-lane="local" className={LANE_ROW} onClick={localCheck.check}>
-                    <LaneLabel title={current.title} line={current.line} />
-                    <Icon name="refresh" size={14} className="shrink-0 text-ink-faint" />
-                  </button>
-                ) : (
-                  <div className="px-4 pt-3 pb-1">
-                    <LaneLabel title={current.title} line={current.line} />
-                  </div>
-                )}
-                <div className="px-4 pt-1 pb-4">
-                  {current.id === 'account' ? <AccountLane methods={listed} onConnected={connected} /> : null}
-                  {current.id === 'key' ? <KeyLane onConnected={connected} onHold={onHold} /> : null}
-                  {current.id === 'local' ? <LocalSignInLane check={localCheck} remote={remote} /> : null}
+      <div className={`divide-y divide-hairline ${inSettings ? '' : 'border-t border-hairline'}`}>
+        {current === undefined ? (
+          lanes.map((candidate) => (
+            <button key={candidate.id} type="button" data-first-run-lane={candidate.id} className={LANE_ROW} onClick={() => { openLane(candidate.id); }}>
+              <LaneLabel title={candidate.title} line={candidate.line} />
+              <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
+            </button>
+          ))
+        ) : (
+          <>
+            <div data-first-run-open-lane={current.id}>
+              {current.id === 'local' ? (
+                // Pressing the open lane's own row asks again.
+                <button type="button" data-first-run-lane="local" className={LANE_ROW} onClick={localCheck.check}>
+                  <LaneLabel title={current.title} line={current.line} />
+                  <Icon name="refresh" size={14} className="shrink-0 text-ink-faint" />
+                </button>
+              ) : (
+                <div className="px-4 pt-3 pb-1">
+                  <LaneLabel title={current.title} line={current.line} />
                 </div>
+              )}
+              <div className="px-4 pt-1 pb-4">
+                {current.id === 'account' ? <AccountLane methods={listed} configuredProviderIds={configuredProviderIds} onConnected={connected} /> : null}
+                {current.id === 'key' ? <KeyLane onConnected={connected} onHold={onHold} onOpenCustomForm={onOpenCustomForm} /> : null}
+                {current.id === 'local' ? <LocalSignInLane check={localCheck} remote={remote} /> : null}
               </div>
-              <button
-                type="button"
-                data-first-run-switch
-                className={LANE_ROW}
-                onClick={() => {
-                  if (lane === 'local') localCheck.cancel();
-                  setLane(null);
-                }}
-              >
-                <span className="min-w-0 flex-1 text-[13px] text-ink-soft">{t('firstRun.lane.switch')}</span>
-                <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
-              </button>
-            </>
-          )}
-        </div>
+            </div>
+            <button
+              type="button"
+              data-first-run-switch
+              className={LANE_ROW}
+              onClick={() => {
+                if (lane === 'local') localCheck.cancel();
+                setLane(null);
+              }}
+            >
+              <span className="min-w-0 flex-1 text-[13px] text-ink-soft">{t('firstRun.lane.switch')}</span>
+              <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
+            </button>
+          </>
+        )}
+      </div>
 
-        <AgentSetupLine />
-      </section>
+      {inSettings ? null : <AgentSetupLine />}
+    </section>
+  );
+
+  if (inSettings) return card;
+
+  return (
+    <div className="px-3 pb-3 sm:px-6 sm:pb-5" data-first-run-card-seat>
+      {card}
     </div>
   );
 }
@@ -212,8 +239,9 @@ function LaneLabel({ title, line }: { readonly title: string; readonly line: str
  * after connecting names the method that turned signed-in since the lane
  * opened.
  */
-function AccountLane({ methods, onConnected }: {
+function AccountLane({ methods, configuredProviderIds, onConnected }: {
   readonly methods: readonly OAuthMethodStatus[] | undefined;
+  readonly configuredProviderIds?: ReadonlySet<string>;
   readonly onConnected: (name: string | undefined) => Promise<void>;
 }) {
   const queryClient = useQueryClient();
@@ -227,7 +255,7 @@ function AccountLane({ methods, onConnected }: {
     const fresh = latest.find((method) => method.signed_in && signedInBefore.current?.has(method.id) !== true);
     await onConnected(fresh?.label);
   }, [onConnected, queryClient]);
-  return <AccountSignIn compact originalSource={false} onChanged={signedIn} />;
+  return <AccountSignIn compact originalSource={false} configuredProviderIds={configuredProviderIds} onChanged={signedIn} />;
 }
 
 /**
@@ -247,9 +275,10 @@ function AccountLane({ methods, onConnected }: {
  * before the press (added elsewhere meanwhile) is never removed, though the
  * import has put the failed key on it.
  */
-function KeyLane({ onConnected, onHold }: {
+function KeyLane({ onConnected, onHold, onOpenCustomForm }: {
   readonly onConnected: (name: string | undefined) => Promise<void>;
   readonly onHold: () => void;
+  readonly onOpenCustomForm?: () => void;
 }) {
   const { client } = useConnection();
   const { t, tp, locale } = useI18n();
@@ -415,7 +444,10 @@ function KeyLane({ onConnected, onHold }: {
           type="button"
           data-first-run-key-elsewhere
           className="rounded-sm text-ink underline decoration-hairline-strong underline-offset-[3px] hover:decoration-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-          onClick={() => { void navigate(CONNECT_ELSEWHERE_HREF); }}
+          onClick={() => {
+            if (onOpenCustomForm !== undefined) onOpenCustomForm();
+            else void navigate(CONNECT_ELSEWHERE_HREF);
+          }}
         >
           {t('firstRun.key.otherAction')}
         </button>
