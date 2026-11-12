@@ -174,7 +174,6 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     beginContentRead() { return { release() {}, retry() {} }; }
     isContentRange() { return false; }
     turnStructurePending() { return false; }
-    historyPreviewPending() { return false; }
     retainHistoryPreview() { return () => {}; }
     getForest() { return undefined; }
   }

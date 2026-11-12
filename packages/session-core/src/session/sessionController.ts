@@ -2096,15 +2096,6 @@ export class SessionController {
   }
 
   /**
-   * Older pages are no longer trimmed to preview headers: a held turn is
-   * either whole or carries its gap in the published `turnGaps`. Kept for
-   * readers written against the preview cache; nothing is ever pending.
-   */
-  historyPreviewPending(_agentId: string, _turnId: string): boolean {
-    return false;
-  }
-
-  /**
    * A mounted timeline row of this turn. The window keeps every turn from the
    * oldest one a row is mounted for, and while rows are mounted the reader
    * follows the tail only if one of them belongs to the newest turn (see
@@ -2126,11 +2117,6 @@ export class SessionController {
       if (remaining > 0) leases.set(turnId, remaining);
       else leases.delete(turnId);
     };
-  }
-
-  /** See `historyPreviewPending`: there is no trimmed preview to restore. */
-  async loadHistoryPreview(_agentId: string, _turnId: string): Promise<boolean> {
-    return false;
   }
 
   private cancelHistoryRead(agentId: string): void {

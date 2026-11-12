@@ -99,6 +99,7 @@ import {
   type ToolBlock,
   type ToolGroup,
   type TurnExecutionInfo,
+  type TurnGap,
   type TurnReplyGap,
   type TurnRetryInfo,
   type TurnTailInfo,
@@ -1629,33 +1630,62 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
  * A complete turn can still have cut step frames; those sit behind the turn's
  * folds, so they read only while their steps are on screen (`autoRead`).
  */
-function TurnStepsContinuation({ agentId, turnId, state, incomplete, autoRead }: {
+interface TurnGapNode {
+  readonly kind: 'turn-gap';
+  readonly id: string;
+  readonly turnId: string;
+  readonly gap: TurnGap;
+}
+
+/**
+ * A gap row placed where a turn's content is missing (`start`, `between`, or
+ * `turn`). An incomplete turn is read by the transcript itself while any of its
+ * rows is in the window, whatever its folds, so this row reports on that read
+ * and offers a retry when needed.
+ */
+function TurnGapRow({
+  agentId,
+  turnId,
+  gap,
+  status,
+}: {
   agentId: string;
   turnId: string;
-  state: SessionViewState;
-  incomplete: boolean;
-  autoRead: boolean;
+  gap: TurnGap;
+  status: 'idle' | 'loading' | 'error';
 }) {
   const { t } = useI18n();
   const controller = useTranscriptController();
+  const progress = t(gap.reason === 'stale' ? 'transcript.turnStale' : 'transcript.stepsPending');
+  return (
+    <div
+      data-turn-structure={status}
+      data-turn-gap={gap.at}
+      data-turn-gap-reason={gap.reason}
+    >
+      <ContinuationRow
+        kind="steps"
+        state={status}
+        progress={progress}
+        error={t('transcript.content.failed')}
+        label={t('transcript.content.steps')}
+        onRequest={() => { controller?.retryTurnStructureRead(agentId, turnId); }}
+      />
+    </div>
+  );
+}
+
+/**
+ * A complete turn can still have cut step frames; those sit behind the turn's
+ * folds, so they read only while their steps are on screen (`autoRead`).
+ */
+function TurnStepsContinuation({ turnId, autoRead }: {
+  turnId: string;
+  autoRead: boolean;
+}) {
+  const { t } = useI18n();
   const source = useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]);
   const continuation = useContentContinuation(source, TURN_STEP_ROOTS);
-  if (incomplete && controller !== undefined) {
-    const status = state.detailLoads[`structure:${turnId}`]?.status;
-    const read = status === 'error' ? 'error' : status === 'loading' ? 'loading' : 'idle';
-    return (
-      <div data-transcript-lane="agent" data-turn-structure={read} className={AGENT_LANE}>
-        <ContinuationRow
-          kind="steps"
-          state={read}
-          progress={t('transcript.stepsPending')}
-          error={t('transcript.content.failed')}
-          label={t('transcript.content.steps')}
-          onRequest={() => { controller.retryTurnStructureRead(agentId, turnId); }}
-        />
-      </div>
-    );
-  }
   if (continuation.pending.length === 0 || !autoRead) return null;
   return (
     <div data-transcript-lane="agent" className={AGENT_LANE}>
@@ -2816,6 +2846,10 @@ function EndedRow({
  * the outcome column the way a read run marks one (success stays silent);
  * the failed row itself carries the warning once opened.
  */
+type FoldMemberNode = HistoryFold['members'][number] | TurnGapNode;
+type RenderHistoryFold = Omit<HistoryFold, 'members'> & { readonly members: readonly FoldMemberNode[] };
+type RenderNode = Exclude<DisplayNode, HistoryFold> | RenderHistoryFold | TurnGapNode;
+
 function HistoryFoldRow({
   fold,
   expanded,
@@ -2823,7 +2857,7 @@ function HistoryFoldRow({
   onToggle,
   renderMember,
 }: {
-  fold: HistoryFold;
+  fold: RenderHistoryFold;
   expanded: boolean;
   /**
    * The fold's turn has steps the window did not carry. The counts below are
@@ -2831,7 +2865,7 @@ function HistoryFoldRow({
    */
   incomplete: boolean;
   onToggle: (id: string) => void;
-  renderMember: (member: DisplayNode) => ReactNode;
+  renderMember: (member: RenderNode) => ReactNode;
 }) {
   const { t, tp, time } = useI18n();
   const sentParts = (fold.sentMessages ?? []).map((item) =>
@@ -3142,11 +3176,12 @@ function ProcessMessage({ block }: { block: MessageBlock }) {
 }
 
 /** A timeline row: the process view's display nodes plus the message view's activity summaries. */
-type TimelineNode = DisplayNode | ActivitySummary;
+type TimelineNode = RenderNode | ActivitySummary;
+type MessageTimelineNode = MessageViewNode | TurnGapNode;
 
 /**
  * Rows the message view draws itself; everything else (your bubbles, open
- * question and approval cards, dividers) keeps the process view's row.
+ * question and approval cards, dividers, gap rows) keeps the process view's row.
  */
 function isMessageViewOwnRow(node: TimelineNode): node is MessageBlock | ActivitySummary | NoticeBlock | UserBlock {
   if (node.kind === 'message' || node.kind === 'activity-summary') return true;
@@ -3166,7 +3201,7 @@ const MessageViewRow = memo(function MessageViewRow({
   blockOrder,
 }: {
   node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
-  previous: MessageViewNode | undefined;
+  previous: MessageTimelineNode | undefined;
   blockById: ReadonlyMap<string, Block>;
   agentId: string;
   agentNames: ReadonlyMap<string, string>;
@@ -3203,7 +3238,7 @@ const MessageViewRow = memo(function MessageViewRow({
         <MessageRow
           block={node}
           speaker={speaker}
-          continued={speakerKey(previous) === speakerKey(node) && speakerKey(node) !== undefined}
+          continued={messageSpeakerKey(previous) === messageSpeakerKey(node) && messageSpeakerKey(node) !== undefined}
           replyToText={replyToText}
           currentSessionId={context.sessionId ?? preview?.sessionId}
           onOpenProcess={() => { onOpenProcess(turnId, node.id); }}
@@ -3289,6 +3324,10 @@ function SubagentEventLine({ name, status, onOpen }: { name: string; status: Sub
   );
 }
 
+function messageSpeakerKey(node: TimelineNode | undefined): string | undefined {
+  return node === undefined || node.kind === 'turn-gap' ? undefined : speakerKey(node as MessageViewNode);
+}
+
 function nodeKey(node: TimelineNode): string {
   return node.id;
 }
@@ -3312,8 +3351,8 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
     // off the message above them: 8px instead of the 16px between speakers.
     if (isMessageViewStatusRow(node)) return '-mt-2';
     // A speaker's consecutive messages read as one run: 8px.
-    const speaker = speakerKey(node as MessageViewNode);
-    if (speaker !== undefined && speakerKey(previous as MessageViewNode) === speaker) return '-mt-2';
+    const speaker = messageSpeakerKey(node);
+    if (speaker !== undefined && messageSpeakerKey(previous) === speaker) return '-mt-2';
   }
   if (node.kind === 'user') return 'mt-2';
   const lane = timelineLane(node);
@@ -3322,7 +3361,7 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
 
 /** Message-view rows that are a single status line rather than speech. */
 function isMessageViewStatusRow(node: TimelineNode): boolean {
-  if (node.kind === 'activity-summary') return true;
+  if (node.kind === 'activity-summary' || node.kind === 'turn-gap') return true;
   if (node.kind === 'notice') return node.executor === undefined && node.externalText === undefined;
   return node.kind === 'message' && (node.status === 'failed' || node.status === 'cancelled');
 }
@@ -3526,10 +3565,11 @@ export function useStableForest<T extends AgentForest | undefined>(forest: T): T
   return stable as T;
 }
 
-function inheritOpenHistoryFolds(previous: readonly DisplayNode[], current: readonly DisplayNode[], open: ReadonlySet<string>): ReadonlySet<string> {
+function inheritOpenHistoryFolds(previous: readonly RenderNode[], current: readonly RenderNode[], open: ReadonlySet<string>): ReadonlySet<string> {
   if (open.size === 0) return open;
-  const memberIds = (fold: HistoryFold) => fold.members.flatMap(member => member.kind === 'tool-group'
-    ? [member.id, ...member.members.map(item => item.id)] : [member.id]);
+  const memberIds = (fold: RenderHistoryFold) => fold.members.flatMap(member =>
+    member.kind === 'turn-gap' ? [] : member.kind === 'tool-group'
+      ? [member.id, ...member.members.map(item => item.id)] : [member.id]);
   const previousByMember = new Map<string, string>();
   for (const node of previous) if (node.kind === 'history-fold' && open.has(node.id))
     for (const id of memberIds(node)) previousByMember.set(id, node.id);
@@ -3547,8 +3587,12 @@ function inheritOpenHistoryFolds(previous: readonly DisplayNode[], current: read
   return next ?? open;
 }
 
-function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
+function displayNodesEqual(a: RenderNode, b: RenderNode): boolean {
   if (a === b) return true;
+  if (a.kind === 'turn-gap' && b.kind === 'turn-gap') {
+    return a.id === b.id && a.turnId === b.turnId &&
+      a.gap.at === b.gap.at && a.gap.afterStepId === b.gap.afterStepId && a.gap.reason === b.gap.reason;
+  }
   // groupBlocks rebuilds the ToolGroup wrapper per publish while the step
   // blocks inside keep identity — compare every ordered member element-wise
   // (same rule as ToolGroupRow's own memo comparator): the tool list alone
@@ -3580,6 +3624,150 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
     );
   }
   return false;
+}
+
+function nodeMatchesStepId(node: TimelineNode, stepId: string): boolean {
+  switch (node.kind) {
+    case 'assistant':
+    case 'thinking':
+    case 'tool':
+    case 'shell':
+      return node.stepId === stepId;
+    case 'message':
+      return node.sourceTool?.stepId === stepId || node.sourceBlock?.stepId === stepId;
+    case 'tool-group':
+    case 'media-run':
+    case 'subagent-group':
+      return node.members.some((member) => nodeMatchesStepId(member, stepId));
+    case 'history-fold':
+      return node.members.some((member) => member.kind !== 'turn-gap' && nodeMatchesStepId(member, stepId));
+    case 'activity-summary':
+      return node.members.some((member) => nodeMatchesStepId(member, stepId));
+    default:
+      return 'contentSource' in node && node.contentSource?.kind === 'frame' && node.contentSource.stepId === stepId;
+  }
+}
+
+function isTurnOpeningRow(node: TimelineNode): boolean {
+  if (node.kind === 'user') return node.contentSource?.kind !== 'frame';
+  if (node.kind === 'system' || node.kind === 'system-reminder' || node.kind === 'skill') {
+    return node.contentSource?.kind !== 'frame';
+  }
+  return false;
+}
+
+function nodeContainsTurnGap(node: TimelineNode): boolean {
+  if (node.kind === 'turn-gap') return true;
+  return node.kind === 'history-fold' && node.members.some((member) => member.kind === 'turn-gap');
+}
+
+function resolveVisibleTurnGaps(
+  state: SessionViewState,
+  liveTurnId: string | undefined,
+): ReadonlyMap<string, TurnGap> {
+  const rawGaps = state.turnGaps;
+  const hasRawGaps = rawGaps !== undefined && Object.keys(rawGaps).length > 0;
+  if (!hasRawGaps && state.incompleteTurnIds.length === 0) return EMPTY_TURN_GAPS;
+  const map = new Map<string, TurnGap>();
+  if (rawGaps !== undefined) {
+    for (const [turnId, gap] of Object.entries(rawGaps)) {
+      if (gap.reason === 'stale' && state.busy && sameTurn(turnId, liveTurnId)) continue;
+      map.set(normalizeTurnId(turnId), gap);
+    }
+  }
+  for (const turnId of state.incompleteTurnIds) {
+    const key = normalizeTurnId(turnId);
+    if (!map.has(key)) map.set(key, { at: 'turn', reason: 'partial' });
+  }
+  return map;
+}
+
+const EMPTY_TURN_GAPS: ReadonlyMap<string, TurnGap> = new Map();
+
+function placeTurnGapNodes<T extends TimelineNode>(
+  nodes: readonly T[],
+  turnGaps: ReadonlyMap<string, TurnGap>,
+): readonly (T | RenderHistoryFold | TurnGapNode)[] {
+  if (turnGaps.size === 0 || nodes.length === 0) return nodes;
+  const turnFirstIndex = new Map<string, number>();
+  const turnLastIndex = new Map<string, number>();
+  const turnOpeningEndIndex = new Map<string, number>();
+  const turnPastOpening = new Set<string>();
+  nodes.forEach((node, index) => {
+    const rawTurnId = displayNodeTurnId(node);
+    if (rawTurnId === undefined) return;
+    const key = normalizeTurnId(rawTurnId);
+    if (!turnGaps.has(key)) return;
+    if (!turnFirstIndex.has(key)) turnFirstIndex.set(key, index);
+    turnLastIndex.set(key, index);
+    if (!turnPastOpening.has(key)) {
+      if (isTurnOpeningRow(node)) turnOpeningEndIndex.set(key, index);
+      else turnPastOpening.add(key);
+    }
+  });
+  if (turnFirstIndex.size === 0) return nodes;
+
+  const beforeAt = new Map<number, TurnGapNode[]>();
+  const afterAt = new Map<number, TurnGapNode[]>();
+  const foldReplacements = new Map<number, RenderHistoryFold>();
+  const push = (bucket: Map<number, TurnGapNode[]>, index: number, gapNode: TurnGapNode) => {
+    const list = bucket.get(index);
+    if (list === undefined) bucket.set(index, [gapNode]);
+    else list.push(gapNode);
+  };
+
+  for (const [turnKey, firstIndex] of turnFirstIndex) {
+    const gap = turnGaps.get(turnKey);
+    if (gap === undefined) continue;
+    const lastIndex = turnLastIndex.get(turnKey)!;
+    const canonicalTurnId = displayNodeTurnId(nodes[firstIndex]!) ?? turnKey;
+    const gapNode: TurnGapNode = { kind: 'turn-gap', id: `turn-gap-${canonicalTurnId}`, turnId: canonicalTurnId, gap };
+    if (gap.at === 'start') {
+      const openingEnd = turnOpeningEndIndex.get(turnKey);
+      if (openingEnd !== undefined) push(afterAt, openingEnd, gapNode);
+      else push(beforeAt, firstIndex, gapNode);
+      continue;
+    }
+    if (gap.at === 'between' && gap.afterStepId !== undefined) {
+      let anchorIndex: number | undefined;
+      for (let index = firstIndex; index <= lastIndex; index += 1) {
+        const candidate = nodes[index]!;
+        const candidateTurn = displayNodeTurnId(candidate);
+        if (candidateTurn !== undefined && normalizeTurnId(candidateTurn) === turnKey && nodeMatchesStepId(candidate, gap.afterStepId)) {
+          anchorIndex = index;
+        }
+      }
+      if (anchorIndex !== undefined) {
+        const anchorNode = nodes[anchorIndex]!;
+        if (anchorNode.kind === 'history-fold') {
+          let memberAnchor: number | undefined;
+          anchorNode.members.forEach((member, memberIndex) => {
+            if (member.kind !== 'turn-gap' && nodeMatchesStepId(member, gap.afterStepId!)) memberAnchor = memberIndex;
+          });
+          if (memberAnchor !== undefined && memberAnchor < anchorNode.members.length - 1) {
+            const existing = foldReplacements.get(anchorIndex) ?? anchorNode;
+            const nextMembers = [...existing.members];
+            nextMembers.splice(memberAnchor + 1, 0, gapNode);
+            foldReplacements.set(anchorIndex, { ...existing, members: nextMembers });
+            continue;
+          }
+        }
+        push(afterAt, anchorIndex, gapNode);
+        continue;
+      }
+    }
+    push(afterAt, lastIndex, gapNode);
+  }
+
+  const out: (T | RenderHistoryFold | TurnGapNode)[] = [];
+  for (let index = 0; index < nodes.length; index += 1) {
+    const before = beforeAt.get(index);
+    if (before !== undefined) out.push(...before);
+    out.push(foldReplacements.get(index) ?? nodes[index]!);
+    const after = afterAt.get(index);
+    if (after !== undefined) out.push(...after);
+  }
+  return out;
 }
 
 /**
@@ -3794,7 +3982,7 @@ function MeasuredTranscriptRow({ index, virtualizer, onDetach, arriving, childre
 }
 
 type TranscriptRowProps = {
-  node: DisplayNode;
+  node: RenderNode;
   agentId: string;
   readOnly: boolean;
   approvalShortcutHints: boolean;
@@ -3817,6 +4005,8 @@ type TranscriptRowProps = {
   openFolds: ReadonlySet<string>;
   /** This row is a history fold whose turn's structure is incomplete. */
   foldIncomplete: boolean;
+  /** Read state for a turn-gap row (or a fold containing one). */
+  gapReadStatus?: 'idle' | 'loading' | 'error';
   onToggleFold: (foldId: string) => void;
   onResolveApproval: (
     approvalId: string,
@@ -3841,7 +4031,7 @@ type TranscriptRowProps = {
   promotedReplyIds?: ReadonlySet<string>;
 };
 
-function nodeUsesAgentNames(node: DisplayNode): boolean {
+function nodeUsesAgentNames(node: RenderNode): boolean {
   return (
     node.kind === 'history-fold' ||
     node.kind === 'approval' ||
@@ -3852,14 +4042,14 @@ function nodeUsesAgentNames(node: DisplayNode): boolean {
 }
 
 function subagentBranchEqual(
-  node: DisplayNode,
+  node: RenderNode,
   previousForest: AgentForest | undefined,
   nextForest: AgentForest | undefined,
 ): boolean {
   // Cards now also sit inside folds and live groups; each must repaint with
   // its own agent's node.
   if (node.kind === 'history-fold') {
-    return node.members.every((member) => member.kind === 'tool-group' || subagentBranchEqual(member, previousForest, nextForest));
+    return node.members.every((member) => member.kind === 'tool-group' || member.kind === 'turn-gap' || subagentBranchEqual(member, previousForest, nextForest));
   }
   if (node.kind === 'subagent-group') {
     return node.members.every((member) => subagentBranchEqual(member, previousForest, nextForest));
@@ -3869,7 +4059,7 @@ function subagentBranchEqual(
 }
 
 /** Assistant block ids a row draws, including the ones inside its folds. */
-function assistantIdsOf(node: DisplayNode): string[] {
+function assistantIdsOf(node: RenderNode): string[] {
   if (node.kind === 'assistant') return [node.id];
   if (node.kind !== 'history-fold') return [];
   return node.members.flatMap((member) => assistantIdsOf(member));
@@ -3911,6 +4101,7 @@ const TranscriptRow = memo(
     onToggleSubagentForm,
     openFolds,
     foldIncomplete,
+    gapReadStatus,
     onToggleFold,
     onResolveApproval,
     onAnswerQuestion,
@@ -3928,8 +4119,15 @@ const TranscriptRow = memo(
     const rowTurnId = displayNodeTurnId(node);
     // Inside a live group every agent is one compact line until the reader
     // opens it; elsewhere a running card takes its full form.
-    const renderNode = (member: DisplayNode, cardForm?: SubagentCardForm): ReactNode =>
-      member.kind === 'history-fold' ? (
+    const renderNode = (member: RenderNode, cardForm?: SubagentCardForm): ReactNode =>
+      member.kind === 'turn-gap' ? (
+        <TurnGapRow
+          agentId={agentId}
+          turnId={member.turnId}
+          gap={member.gap}
+          status={gapReadStatus ?? 'idle'}
+        />
+      ) : member.kind === 'history-fold' ? (
         <HistoryFoldRow
           fold={member}
           expanded={openFolds.has(member.id)}
@@ -4015,6 +4213,7 @@ const TranscriptRow = memo(
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     (prev.node.kind !== 'history-fold' || prev.openFolds.has(prev.node.id) === next.openFolds.has(next.node.id)) &&
     prev.foldIncomplete === next.foldIncomplete &&
+    prev.gapReadStatus === next.gapReadStatus &&
     prev.onToggleFold === next.onToggleFold &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
@@ -4078,18 +4277,25 @@ function JumpToBottom({
  * its state is said once, at the turn's tail (`TurnStepsContinuation`), not
  * above each of the turn's rows.
  */
-function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; turnId: string; state: SessionViewState }) {
+function TurnPreviewLease({ agentId, turnId }: { agentId: string; turnId: string }) {
   const controller = useTranscriptController();
-  const { t } = useI18n();
   useEffect(() => controller?.retainHistoryPreview(agentId, turnId), [controller, agentId, turnId]);
-  if (controller === undefined || !controller.historyPreviewPending(agentId, turnId)) return null;
-  const status = state.detailLoads[`history:${turnId}`];
-  return <div role="status" data-history-preview className="flex items-center gap-2 text-[12px] text-ink-faint">
-    {status?.status === 'error' ? <><span>{status.message}</span><button type="button" onClick={() => {
-      void controller.loadHistoryPreview(agentId, turnId);
-    }}>{t('transcript.retryEarlier')}</button></>
-      : <><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />{t('transcript.loadingEarlier')}</>}
-  </div>;
+  return null;
+}
+
+function RefreshingStatusLine() {
+  const { t } = useI18n();
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-transcript-refreshing
+      className="anim-enter flex min-h-6 items-center gap-2 text-[12px] text-ink-faint"
+    >
+      <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
+      <span>{t('transcript.catchingUp')}</span>
+    </div>
+  );
 }
 
 /**
@@ -4811,16 +5017,6 @@ export const Transcript = memo(function Transcript({
   // scrolled up (`heldRows`) are left in place until they return.
   const liveTurnId = state.busy ? latestTurnId(mergedNodes) : undefined;
   const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
-  const processNodes = useMemo(
-    () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows, forest: stableForest }),
-    [mergedNodes, liveTurnId, heldRows, stableForest],
-  );
-  const [previousFoldNodes, setPreviousFoldNodes] = useState(processNodes);
-  if (previousFoldNodes !== processNodes) {
-    setPreviousFoldNodes(processNodes);
-    const inherited = inheritOpenHistoryFolds(previousFoldNodes, processNodes, openFolds);
-    if (inherited !== openFolds) setOpenFolds(inherited);
-  }
   // Message view: the same blocks through the delivery projection — speech,
   // your cards, one activity line per stretch, outcomes. Nothing is dropped:
   // every block stays inside a summary's members, except the turn's own reply
@@ -4832,7 +5028,25 @@ export const Transcript = memo(function Transcript({
   // Every loaded turn the transcript reports as failed: its partial text is not
   // a reply the reader received, and it says on its own bubble why it stopped.
   const failedTurnIds = state.failedTurnIds ?? EMPTY_TURN_IDS;
-  const messageNodes = useMemo<readonly MessageViewNode[]>(
+  const visibleTurnGaps = useMemo(
+    () => resolveVisibleTurnGaps(state, runningTurnId ?? liveTurnId),
+    [state, runningTurnId, liveTurnId],
+  );
+  const baseProcessNodes = useMemo(
+    () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows, forest: stableForest }),
+    [mergedNodes, liveTurnId, heldRows, stableForest],
+  );
+  const processNodes = useMemo(
+    () => placeTurnGapNodes(baseProcessNodes, visibleTurnGaps) as readonly RenderNode[],
+    [baseProcessNodes, visibleTurnGaps],
+  );
+  const [previousFoldNodes, setPreviousFoldNodes] = useState(processNodes);
+  if (previousFoldNodes !== processNodes) {
+    setPreviousFoldNodes(processNodes);
+    const inherited = inheritOpenHistoryFolds(previousFoldNodes, processNodes, openFolds);
+    if (inherited !== openFolds) setOpenFolds(inherited);
+  }
+  const baseMessageNodes = useMemo<readonly MessageViewNode[]>(
     () => (view === 'message'
       // A silent stretch draws nothing; as a virtual row it would still
       // take a gap, so it is not a row at all.
@@ -4840,6 +5054,12 @@ export const Transcript = memo(function Transcript({
         .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
       : []),
     [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
+  );
+  const messageNodes = useMemo<readonly MessageTimelineNode[]>(
+    () => (view === 'message'
+      ? placeTurnGapNodes(baseMessageNodes, visibleTurnGaps) as readonly MessageTimelineNode[]
+      : []),
+    [view, baseMessageNodes, visibleTurnGaps],
   );
   const rawGroupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
   const phoneMode = usePhoneMode();
@@ -4918,7 +5138,7 @@ export const Transcript = memo(function Transcript({
     pendingProcessTarget.current = { turnId, blockId };
     writeTimelineView(sessionIdForLocate, 'process');
   }, [sessionIdForLocate]);
-  const presence = useMemo(() => (view === 'message' ? presenceOf(messageNodes, state.busy) : undefined), [view, messageNodes, state.busy]);
+  const presence = useMemo(() => (view === 'message' ? presenceOf(baseMessageNodes, state.busy) : undefined), [view, baseMessageNodes, state.busy]);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
@@ -5407,15 +5627,39 @@ export const Transcript = memo(function Transcript({
   for (const item of virtualizer.getVirtualItems()) {
     const node = virtualNodes[item.index];
     const turnId = node === undefined ? undefined : displayNodeTurnId(node);
-    if (turnId !== undefined) windowTurnIds.add(turnId);
+    if (turnId !== undefined) windowTurnIds.add(normalizeTurnId(turnId));
   }
   // The one place the timeline asks which turns are incomplete: the published
-  // set (timeline order, same reference while unchanged), narrowed to the
-  // turns in the window and keyed by value so a scroll that keeps the same
-  // incomplete turns in view does not restart their reads.
+  // set plus any explicit gap in `turnGaps`, narrowed to the turns in the
+  // window and keyed by value so a scroll that keeps the same incomplete turns
+  // in view does not restart their reads.
+  const incompleteTurnCandidates = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const turnId of state.incompleteTurnIds) {
+      const key = normalizeTurnId(turnId);
+      if (visibleTurnGaps.has(key) && !seen.has(key)) {
+        seen.add(key);
+        ordered.push(turnId);
+      }
+    }
+    if (state.turnGaps !== undefined) {
+      for (const turnId of Object.keys(state.turnGaps)) {
+        const key = normalizeTurnId(turnId);
+        if (visibleTurnGaps.has(key) && !seen.has(key)) {
+          seen.add(key);
+          ordered.push(turnId);
+        }
+      }
+    }
+    return ordered;
+  }, [state.incompleteTurnIds, state.turnGaps, visibleTurnGaps]);
   const incompleteTurnKey = controller === undefined ? '[]'
-    : JSON.stringify(state.incompleteTurnIds.filter((turnId) => windowTurnIds.has(turnId)));
-  const incompleteTurns = useMemo(() => new Set(JSON.parse(incompleteTurnKey) as string[]), [incompleteTurnKey]);
+    : JSON.stringify(incompleteTurnCandidates.filter((turnId) => windowTurnIds.has(normalizeTurnId(turnId))));
+  const incompleteTurns = useMemo(
+    () => new Set((JSON.parse(incompleteTurnKey) as string[]).map(normalizeTurnId)),
+    [incompleteTurnKey],
+  );
   const incompleteStructureReads = useRef(new Map<string, ReturnType<SessionController['beginContentRead']>>());
   useEffect(() => {
     const reads = incompleteStructureReads.current;
@@ -5959,11 +6203,12 @@ export const Transcript = memo(function Transcript({
   // collapsed line, but the tool output inside it is loaded and the tool
   // checkbox selects it: it is searched here too, and the items carry the
   // "process view only" mark that routes their landing below.
+  const findSourceNodes = view === 'message' ? baseMessageNodes : baseProcessNodes;
   const findItems = useMemo(
     () => (findOpen
-      ? buildFindItems(groupedNodes, true)
+      ? buildFindItems(findSourceNodes, true)
       : []),
-    [findOpen, groupedNodes],
+    [findOpen, findSourceNodes],
   );
   const loadedTurns = useMemo(() => {
     const turns = new Set<number>();
@@ -6151,7 +6396,7 @@ export const Transcript = memo(function Transcript({
     const keys = new Set<string>();
     if (liveTurnId === undefined) return keys;
     for (const node of groupedNodes) {
-      if (node.kind === 'history-fold' || node.kind === 'user' || node.kind === 'assistant') continue;
+      if (node.kind === 'history-fold' || node.kind === 'user' || node.kind === 'assistant' || node.kind === 'turn-gap') continue;
       if (normalizeTurnId(displayNodeTurnId(node) ?? '') === liveTurnId) keys.add(node.id);
     }
     return keys;
@@ -6164,7 +6409,7 @@ export const Transcript = memo(function Transcript({
     }
     const onScreen = virtualizer.getVirtualItems()
       .map((item) => virtualNodes[item.index])
-      .filter((node): node is DisplayNode => node !== undefined && liveProcessKeys.has(node.id))
+      .filter((node): node is TimelineNode => node !== undefined && liveProcessKeys.has(node.id))
       .map((node) => node.id);
     const missing = onScreen.filter((id) => !heldRows.has(id));
     if (missing.length > 0) setHeldRows((previous) => new Set([...previous, ...missing]));
@@ -6209,7 +6454,9 @@ export const Transcript = memo(function Transcript({
     );
   }
 
-  if (!loaded) return <TranscriptLoading rootRef={surfaceRef} />;
+  if (!loaded || (state.refreshing === true && timelineBlocks.length === 0 && !state.busy)) {
+    return <TranscriptLoading rootRef={surfaceRef} />;
+  }
 
   const topEdgeState = olderBatchActive && !state.loadingOlder && state.olderError === undefined && state.hasMoreHistory
     ? { ...state, loadingOlder: true }
@@ -6303,10 +6550,18 @@ export const Transcript = memo(function Transcript({
             // list, or one step's frames), and that outlet belongs here rather
             // than at the end of the whole page.
             const turnTailId = node === undefined ? undefined : displayNodeTurnId(node);
+            const normalizedTurnId = turnTailId === undefined ? undefined : normalizeTurnId(turnTailId);
             const nextNode = virtualNodes[virtualItem.index + 1];
             const isTurnTail =
               turnTailId !== undefined &&
               (nextNode === undefined || displayNodeTurnId(nextNode) !== turnTailId);
+            const gapLoadStatus = turnTailId === undefined
+              ? undefined
+              : state.detailLoads[`structure:${turnTailId}`]?.status ?? (normalizedTurnId === undefined ? undefined : state.detailLoads[`structure:${normalizedTurnId}`]?.status);
+            const gapReadStatus: 'idle' | 'loading' | 'error' | undefined =
+              node !== undefined && nodeContainsTurnGap(node)
+                ? gapLoadStatus === 'error' ? 'error' : gapLoadStatus === 'loading' ? 'loading' : 'idle'
+                : undefined;
             return (
               <MeasuredTranscriptRow
                 key={virtualItem.key}
@@ -6317,12 +6572,12 @@ export const Transcript = memo(function Transcript({
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
-                  {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
+                  {visible && turnTailId !== undefined ? <TurnPreviewLease agentId={agentId} turnId={turnTailId} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>
                       <MessageViewRow
                         node={node}
-                        previous={virtualNodes[virtualItem.index - 1] as MessageViewNode | undefined}
+                        previous={virtualNodes[virtualItem.index - 1] as MessageTimelineNode | undefined}
                         blockById={blockById}
                         agentId={agentId}
                         agentNames={agentNames}
@@ -6334,13 +6589,13 @@ export const Transcript = memo(function Transcript({
                   ) : (
                     <div data-transcript-lane={node.kind === 'user' ? 'user' : 'agent'} className={node.kind === 'user' ? undefined : AGENT_LANE}>
                       {view === 'message' && node.kind === 'question'
-                        && speakerKey(virtualNodes[virtualItem.index - 1] as MessageViewNode | undefined) !== 'bot:self' ? (
+                        && messageSpeakerKey(virtualNodes[virtualItem.index - 1]) !== 'bot:self' ? (
                           // A question in Bot mode is the Bot talking: its face
                           // and name lead the card (design §4.6).
                           <SpeakerHead persona={messageContext.persona ?? { id: 'kiki-agent', name: t('agentMessage.agent') }} />
                         ) : null}
                       <TranscriptRow
-                        node={node as DisplayNode}
+                        node={node as RenderNode}
                         agentId={agentId}
                         readOnly={readOnly}
                         approvalShortcutHints={hasUnresolvedApproval}
@@ -6356,7 +6611,8 @@ export const Transcript = memo(function Transcript({
                         subagentFormOverrides={cardForms}
                         onToggleSubagentForm={handleToggleSubagentForm}
                         openFolds={openFolds}
-                        foldIncomplete={node.kind === 'history-fold' && turnTailId !== undefined && incompleteTurns.has(turnTailId)}
+                        foldIncomplete={node.kind === 'history-fold' && normalizedTurnId !== undefined && incompleteTurns.has(normalizedTurnId)}
+                        gapReadStatus={gapReadStatus}
                         onToggleFold={handleToggleFold}
                         onResolveApproval={onResolveApproval}
                         onAnswerQuestion={onAnswerQuestion}
@@ -6370,9 +6626,8 @@ export const Transcript = memo(function Transcript({
                       />
                     </div>
                   )}
-                  {isTurnTail && turnTailId !== undefined ? (
-                    <TurnStepsContinuation agentId={agentId} turnId={turnTailId} state={state}
-                      incomplete={incompleteTurns.has(turnTailId)} autoRead={visible && !closedFoldTurns.has(turnTailId)} />
+                  {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
+                    <TurnStepsContinuation turnId={turnTailId} autoRead={visible && !closedFoldTurns.has(turnTailId)} />
                   ) : null}
                   {last && view === 'message' && presence !== undefined ? (
                     <div className={AGENT_LANE}>
@@ -6404,6 +6659,11 @@ export const Transcript = memo(function Transcript({
                         onRetry={tailRetry}
                         retryDisabled={promptOutcomeActions.disabled === true}
                       />
+                    </div>
+                  ) : null}
+                  {last && state.refreshing === true ? (
+                    <div className={AGENT_LANE}>
+                      <RefreshingStatusLine />
                     </div>
                   ) : null}
                   {/* The session's own remainder moved to the composer's footer,

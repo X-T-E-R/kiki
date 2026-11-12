@@ -1805,6 +1805,8 @@ export const zh = {
   'transcript.loadingEarlier': '正在加载更早的消息…',
   'transcript.loadingEarlierElapsed': '正在加载更早的消息… 已等待 {seconds} 秒',
   'transcript.stepsPending': '这一轮还有步骤未载入',
+  'transcript.turnStale': '离开期间这一轮有更新，正在同步',
+  'transcript.catchingUp': '正在同步最新进度…',
   'transcript.fold.incomplete': '还有步骤未载入',
   'transcript.olderFailed': '无法加载更早的消息',
   'transcript.retryEarlier': '重试',

@@ -433,7 +433,6 @@ it('tracks child agent working line and last response dynamically', async () => 
     getForest: () => forest,
     retainHistoryRead: () => () => {},
     retainHistoryPreview: () => () => {},
-    historyPreviewPending: () => false,
   } as unknown as SessionController;
 
   // 1. Cold busy child-1 mounts: seeds lastResponseAt from its own block timestamp
@@ -1334,7 +1333,6 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     getForest: () => forest,
     retainHistoryRead: () => () => {},
     retainHistoryPreview: () => () => {},
-    historyPreviewPending: () => false,
   } as unknown as SessionController;
   function MountedWorkspace() {
     const state = useSyncExternalStore(subscribe, () => sessionState);
@@ -1406,7 +1404,6 @@ it.each([
     getForest: () => testForest(status, busy),
     retainHistoryRead: () => () => {},
     retainHistoryPreview: () => () => {},
-    historyPreviewPending: () => false,
   } as unknown as SessionController;
   await renderWorkspace({ forest: testForest(status, busy), controller, sessionState: { ...createViewState('session'), loaded: true } });
   await settle();
@@ -1832,7 +1829,6 @@ function controllerStub(input: {
     getForest: () => input.forest,
     retainHistoryRead: () => () => {},
     retainHistoryPreview: () => () => {},
-    historyPreviewPending: () => false,
   } as unknown as SessionController;
 }
 

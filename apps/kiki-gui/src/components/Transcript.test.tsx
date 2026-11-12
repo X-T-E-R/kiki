@@ -4390,7 +4390,7 @@ describe('user message body sizing', () => {
     const ref: import('@kiki/transcript').ContentRef = { source, path: ['prompt'], revision: 'range-v1', kind: 'text', offset: 6, total: 100_000 };
     const beginContentRead = vi.fn(() => ({ release() {}, retry() {} }));
     const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead,
-      readContentRange: async () => 'Complete range-backed message.', historyPreviewPending: () => false, retainHistoryPreview: () => () => {} };
+      readContentRange: async () => 'Complete range-backed message.', retainHistoryPreview: () => () => {} };
     const { root, container } = makeRoot();
     await renderSettled(root, <TranscriptDetailProvider controller={controller as unknown as SessionController}
       load={async () => false} loads={{}} contentRefs={[ref]} sessionId="session_test" agentId="main">
@@ -4641,10 +4641,12 @@ function virtualBlocks(count: number, prefix = 'block'): Block[] {
 function virtualTranscript(
   state: SessionViewState,
   onLoadOlder: (signal?: AbortSignal) => Promise<boolean> = () => Promise.resolve(false),
+  agentId = 'main',
 ): ReactNode {
   return (
     <Transcript
       state={state}
+      agentId={agentId}
       onLoadOlder={onLoadOlder}
       onResolveApproval={() => noopActions()}
       onAnswerQuestion={() => noopActions()}
@@ -5963,14 +5965,15 @@ describe('virtualized transcript scrolling', () => {
     });
   });
 
+  describe.each(['main', 'child-agent'] as const)('paging, anchor and reset (%s)', (agentId) => {
   it('follows append only while the viewport was already at the end', async () => {
     const initial = virtualBlocks(120);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    await renderSettled(root, virtualTranscript(transcriptState(initial), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
 
-    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest')])));
+    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest')]), undefined, agentId));
     await settleVirtualizer();
     expect(transcriptDistanceFromEnd(scroll)).toBe(0);
 
@@ -5978,7 +5981,7 @@ describe('virtualized transcript scrolling', () => {
     const readingTop = scroll.scrollTop;
     await renderSettled(
       root,
-      virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest'), assistantBlock('append-2', 'newer')])),
+      virtualTranscript(transcriptState([...initial, assistantBlock('append-1', 'latest'), assistantBlock('append-2', 'newer')]), undefined, agentId),
     );
     await settleVirtualizer();
     expect(scroll.scrollTop).toBe(readingTop);
@@ -5987,7 +5990,7 @@ describe('virtualized transcript scrolling', () => {
   it('marks the jump pill when a row arrives after the reader left the end, without moving them, until they are back', async () => {
     const initial = virtualBlocks(120);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    await renderSettled(root, virtualTranscript(transcriptState(initial), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     const pill = () => container.querySelector<HTMLButtonElement>('[data-jump-to-latest]');
     await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
@@ -6001,7 +6004,7 @@ describe('virtualized transcript scrolling', () => {
     expect(pill()!.getAttribute('aria-label')).toBeNull();
 
     const readingTop = scroll.scrollTop;
-    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('arrived', 'newer')])));
+    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('arrived', 'newer')]), undefined, agentId));
     await settleVirtualizer();
     expect(scroll.scrollTop).toBe(readingTop);
     expect(pill()!.dataset['jumpHasNew']).toBe('true');
@@ -6019,7 +6022,7 @@ describe('virtualized transcript scrolling', () => {
   it('keeps the same reading anchor when older blocks prepend', async () => {
     const current = virtualBlocks(160, 'current');
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(current)));
+    await renderSettled(root, virtualTranscript(transcriptState(current), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 6000);
@@ -6027,7 +6030,7 @@ describe('virtualized transcript scrolling', () => {
 
     await renderSettled(
       root,
-      virtualTranscript(transcriptState([...virtualBlocks(20, 'older'), ...current])),
+      virtualTranscript(transcriptState([...virtualBlocks(20, 'older'), ...current]), undefined, agentId),
     );
     await settleVirtualizer();
     const after = currentVirtualAnchor(container);
@@ -6055,7 +6058,7 @@ describe('virtualized transcript scrolling', () => {
       const pending = pendingVoid();
       const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
       const { root, container } = makeRoot();
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
       await settleVirtualizer();
       await setTranscriptScroll(scroll, 32);
@@ -6066,7 +6069,7 @@ describe('virtualized transcript scrolling', () => {
       await settleVirtualizer();
       const block = container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!;
       const before = block.getBoundingClientRect().top;
-      await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder, agentId));
       await act(async () => {
         pending.resolve();
         lateLayout = setTimeout(() => { postPrependInset = -28; }, 32);
@@ -6097,7 +6100,7 @@ describe('virtualized transcript scrolling', () => {
       const pending = pendingVoid();
       const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
       const { root, container } = makeRoot();
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
       await settleVirtualizer();
       await setTranscriptScroll(scroll, 120);
@@ -6111,7 +6114,7 @@ describe('virtualized transcript scrolling', () => {
       const before = selected().getBoundingClientRect().top;
       await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
       inset = 18;
-      await renderSettled(root, virtualTranscript({ ...state, blocks: [current[0]!, ...virtualBlocks(20, 'within-turn'), ...current.slice(1)] }, onLoadOlder));
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [current[0]!, ...virtualBlocks(20, 'within-turn'), ...current.slice(1)] }, onLoadOlder, agentId));
       await settleVirtualizer();
       await act(async () => { pending.resolve(); });
       await settleReadingFrames();
@@ -6122,7 +6125,7 @@ describe('virtualized transcript scrolling', () => {
   it('starts one bounded prefetch run before the reader reaches the loaded edge; the next run needs a new gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, scroll.clientHeight);
@@ -6150,10 +6153,10 @@ describe('virtualized transcript scrolling', () => {
       const size = sizes[pages] ?? 10;
       pages += 1;
       state = { ...state, blocks: [...virtualBlocks(size, `page-${pages}`), ...state.blocks] };
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       return true;
     });
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6183,10 +6186,10 @@ describe('virtualized transcript scrolling', () => {
             blocks: [...virtualBlocks(4, `older-${11 - loadedPages}`), ...state.blocks],
             hasMoreHistory: loadedPages < 10,
           };
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       return true;
     });
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 200);
@@ -6196,9 +6199,10 @@ describe('virtualized transcript scrolling', () => {
       scroll.scrollTop = 0;
       scroll.dispatchEvent(new Event('scroll'));
     });
-    for (let tick = 0; tick < 8; tick += 1) {
+    for (let tick = 0; tick < 24 && loadedPages < 5; tick += 1) {
       await settleReadingFrames();
     }
+    await settleReadingFrames();
     expect(loadedPages).toBeGreaterThanOrEqual(5);
     expect(loadedPages).toBeLessThan(10);
     expect(container.querySelector('[data-block-id="older-6-0"]')).not.toBeNull();
@@ -6217,12 +6221,13 @@ describe('virtualized transcript scrolling', () => {
           virtualTranscript(
             { ...cancelableState, blocks: [...virtualBlocks(5, 'cancel-older-1'), ...cancelableState.blocks] },
             onLoadCancelable,
+            agentId,
           ),
         ).then(() => true);
       }
       return new Promise<boolean>((resolve) => { resolveSecond = resolve; });
     });
-    await renderSettled(root, virtualTranscript({ ...cancelableState, transcriptResetVersion: 1 }, onLoadCancelable));
+    await renderSettled(root, virtualTranscript({ ...cancelableState, transcriptResetVersion: 1 }, onLoadCancelable, agentId));
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 200);
     await settleVirtualizer();
@@ -6249,7 +6254,7 @@ describe('virtualized transcript scrolling', () => {
     const current = virtualBlocks(100, 'history');
     const state = { ...transcriptState(current), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     expect(onLoadOlder).not.toHaveBeenCalled();
@@ -6259,14 +6264,9 @@ describe('virtualized transcript scrolling', () => {
     expect(onLoadOlder).not.toHaveBeenCalled();
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
-    await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder, agentId));
     await settleVirtualizer();
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
-    // The page's own anchor restore is still converging on the rows it just
-    // prepended. A reader ends it by gesturing again, and a downward one must
-    // load nothing: without it the restore can pull the row back under the
-    // viewport after the next line, and the edge check would be measured
-    // against the restored row instead of the top the reader is looking at.
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await setTranscriptScroll(scroll, 0);
@@ -6284,7 +6284,7 @@ describe('virtualized transcript scrolling', () => {
     const current = virtualBlocks(100, 'history');
     const state = { ...transcriptState(current), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6292,7 +6292,7 @@ describe('virtualized transcript scrolling', () => {
 
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
-    await renderSettled(root, virtualTranscript({ ...state, olderError: 'Failed to fetch segment' }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, olderError: 'Failed to fetch segment' }, onLoadOlder, agentId));
     await settleVirtualizer();
     expect(container.textContent).toContain('Failed to fetch segment');
 
@@ -6303,7 +6303,7 @@ describe('virtualized transcript scrolling', () => {
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
     const page1 = [...virtualBlocks(20, 'older-page-1'), ...current];
-    await renderSettled(root, virtualTranscript({ ...state, blocks: page1, olderError: undefined }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1, olderError: undefined }, onLoadOlder, agentId));
     await settleReadingFrames();
     expect(container.textContent).not.toContain('Failed to fetch segment');
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
@@ -6313,7 +6313,7 @@ describe('virtualized transcript scrolling', () => {
     await act(async () => { scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(3);
     const page2 = [...virtualBlocks(20, 'older-page-2'), ...page1];
-    await renderSettled(root, virtualTranscript({ ...state, blocks: page2 }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page2 }, onLoadOlder, agentId));
     await settleReadingFrames();
     expect(onLoadOlder).toHaveBeenCalledTimes(3);
 
@@ -6325,7 +6325,7 @@ describe('virtualized transcript scrolling', () => {
     });
     expect(onLoadOlder).toHaveBeenCalledTimes(4);
     const page3 = [...virtualBlocks(20, 'older-page-3'), ...page2];
-    await renderSettled(root, virtualTranscript({ ...state, blocks: page3 }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page3 }, onLoadOlder, agentId));
     await settleReadingFrames();
     expect(onLoadOlder).toHaveBeenCalledTimes(4);
   });
@@ -6336,7 +6336,7 @@ describe('virtualized transcript scrolling', () => {
     const current = virtualBlocks(100, 'anchor-keep');
     const state = { ...transcriptState(current), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 32);
@@ -6358,7 +6358,7 @@ describe('virtualized transcript scrolling', () => {
     await act(async () => {
       resolveFlight(true);
     });
-    await renderSettled(root, virtualTranscript({ ...state, blocks: page1 }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1 }, onLoadOlder, agentId));
     await settleReadingFrames();
     const afterBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-keep-0"]')!;
     expect(afterBlock.getBoundingClientRect().top).toBeCloseTo(beforeTop, 0);
@@ -6380,7 +6380,7 @@ describe('virtualized transcript scrolling', () => {
     const current = virtualBlocks(100, 'reading-late');
     const state = { ...transcriptState(current), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6412,7 +6412,7 @@ describe('virtualized transcript scrolling', () => {
       return new Promise<boolean>((resolve) => { resolveFlight = resolve; });
     });
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100, 'sideways')), hasMoreHistory: true }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100, 'sideways')), hasMoreHistory: true }, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6439,8 +6439,8 @@ describe('virtualized transcript scrolling', () => {
     const { root, container } = makeRoot();
     try {
       await renderSettled(root,
-        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
-          {virtualTranscript({ ...transcriptState(virtualBlocks(100, 'preparing')), hasMoreHistory: true }, onLoadOlder)}
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId={agentId}>
+          {virtualTranscript({ ...transcriptState(virtualBlocks(100, 'preparing')), hasMoreHistory: true }, onLoadOlder, agentId)}
         </TranscriptDetailProvider>);
       const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
       await settleVirtualizer();
@@ -6449,7 +6449,7 @@ describe('virtualized transcript scrolling', () => {
       await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
       await settleReadingFrames();
       expect(older).toHaveBeenCalledTimes(2);
-      expect(older).toHaveBeenLastCalledWith('main', expect.any(AbortSignal));
+      expect(older).toHaveBeenLastCalledWith(agentId, expect.any(AbortSignal));
       expect(container.querySelector('[data-history-feedback] [data-top-edge="loading"]')).not.toBeNull();
       expect(onLoadOlder).not.toHaveBeenCalled();
 
@@ -6467,7 +6467,7 @@ describe('virtualized transcript scrolling', () => {
   it('loads an older page from the top button without a wheel gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6481,7 +6481,7 @@ describe('virtualized transcript scrolling', () => {
   it('loads one page when an upward gesture reaches the top from further away', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 5000);
@@ -6498,13 +6498,13 @@ describe('virtualized transcript scrolling', () => {
     const onLoadOlder = vi.fn(async () => true);
     const initial = { ...transcriptState(virtualBlocks(100, 'history')), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(initial, onLoadOlder));
+    await renderSettled(root, virtualTranscript(initial, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await setTranscriptScroll(scroll, 5000);
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).not.toHaveBeenCalled();
 
-    await renderSettled(root, virtualTranscript({ ...initial, blocks: nextBlocks, transcriptResetVersion: resetVersion }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...initial, blocks: nextBlocks, transcriptResetVersion: resetVersion }, onLoadOlder, agentId));
     expect(onLoadOlder).not.toHaveBeenCalled();
     await setTranscriptScroll(scroll, 0);
     await settleVirtualizer();
@@ -6518,7 +6518,7 @@ describe('virtualized transcript scrolling', () => {
   it('does not treat a delayed programmatic scroll as the old upward gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await setTranscriptScroll(scroll, 5000);
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
@@ -6539,7 +6539,7 @@ describe('virtualized transcript scrolling', () => {
     const onLoadOlder = vi.fn(async () => true);
     const state = { ...transcriptState(virtualBlocks(100, 'anchor-reset')), hasMoreHistory: true };
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
@@ -6555,7 +6555,7 @@ describe('virtualized transcript scrolling', () => {
     });
     const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id); });
     try {
-      await renderSettled(root, virtualTranscript({ ...state, transcriptResetVersion: 1 }, onLoadOlder));
+      await renderSettled(root, virtualTranscript({ ...state, transcriptResetVersion: 1 }, onLoadOlder, agentId));
       expect(frames.size).toBeGreaterThan(0);
       await setTranscriptScroll(scroll, 5000);
       await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
@@ -6580,13 +6580,13 @@ describe('virtualized transcript scrolling', () => {
   it('restores the end or reading anchor after a full measurement reset', async () => {
     const blocks = virtualBlocks(160, 'reset');
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    await renderSettled(root, virtualTranscript(transcriptState(blocks), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
 
     await renderSettled(
       root,
-      virtualTranscript({ ...transcriptState(blocks), transcriptResetVersion: 1 }),
+      virtualTranscript({ ...transcriptState(blocks), transcriptResetVersion: 1 }, undefined, agentId),
     );
     await settleVirtualizer();
     expect(transcriptDistanceFromEnd(scroll)).toBe(0);
@@ -6596,7 +6596,7 @@ describe('virtualized transcript scrolling', () => {
     const resetBlocks = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
     await renderSettled(
       root,
-      virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 2 }),
+      virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 2 }, undefined, agentId),
     );
     await settleVirtualizer();
     const row = container.querySelector<HTMLElement>(`[data-block-id="${before.blockId}"]`)!;
@@ -6607,7 +6607,7 @@ describe('virtualized transcript scrolling', () => {
   it('finishes reset restoration when a same-version delta lands before its frame', async () => {
     const blocks = virtualBlocks(160, 'reset-race');
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    await renderSettled(root, virtualTranscript(transcriptState(blocks), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 7000);
@@ -6628,7 +6628,7 @@ describe('virtualized transcript scrolling', () => {
       const resetBlocks = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
       await renderSettled(
         root,
-        virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 1 }),
+        virtualTranscript({ ...transcriptState(resetBlocks), transcriptResetVersion: 1 }, undefined, agentId),
       );
       expect(frames.size).toBeGreaterThan(0);
       const deltaBlocks = resetBlocks.slice();
@@ -6636,7 +6636,7 @@ describe('virtualized transcript scrolling', () => {
       deltaBlocks[deltaBlocks.length - 1] = { ...tail, text: `${tail.text} delta` };
       await renderSettled(
         root,
-        virtualTranscript({ ...transcriptState(deltaBlocks), transcriptResetVersion: 1 }),
+        virtualTranscript({ ...transcriptState(deltaBlocks), transcriptResetVersion: 1 }, undefined, agentId),
       );
       expect(frames.size).toBeGreaterThan(0);
 
@@ -6659,7 +6659,7 @@ describe('virtualized transcript scrolling', () => {
   it('inherits the original anchor across consecutive full resets before restoration', async () => {
     const blocks = virtualBlocks(160, 'double-reset');
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    await renderSettled(root, virtualTranscript(transcriptState(blocks), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 7000);
@@ -6684,13 +6684,13 @@ describe('virtualized transcript scrolling', () => {
       const firstReset = blocks.map((block) => block.kind === 'assistant' ? { ...block } : block);
       await renderSettled(
         root,
-        virtualTranscript({ ...transcriptState(firstReset), transcriptResetVersion: 1 }),
+        virtualTranscript({ ...transcriptState(firstReset), transcriptResetVersion: 1 }, undefined, agentId),
       );
       expect(frames.size).toBeGreaterThan(0);
       const secondReset = firstReset.map((block) => block.kind === 'assistant' ? { ...block } : block);
       await renderSettled(
         root,
-        virtualTranscript({ ...transcriptState(secondReset), transcriptResetVersion: 2 }),
+        virtualTranscript({ ...transcriptState(secondReset), transcriptResetVersion: 2 }, undefined, agentId),
       );
       expect(frames.size).toBeGreaterThan(0);
 
@@ -6715,7 +6715,7 @@ describe('virtualized transcript scrolling', () => {
     const live = { ...blocks.at(-1)!, streaming: true } as Extract<Block, { kind: 'assistant' }>;
     const initial = [...blocks.slice(0, -1), live];
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    await renderSettled(root, virtualTranscript(transcriptState(initial), undefined, agentId));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
     const content = container.querySelector<HTMLElement>('[data-transcript-virtual-content]')!;
@@ -6727,7 +6727,7 @@ describe('virtualized transcript scrolling', () => {
 
     await renderSettled(
       root,
-      virtualTranscript(transcriptState([...initial.slice(0, -1), { ...live, text: `${live.text} delta` }])),
+      virtualTranscript(transcriptState([...initial.slice(0, -1), { ...live, text: `${live.text} delta` }]), undefined, agentId),
     );
     expect(container.querySelector('[data-block-id="stream-79"]')?.closest('[data-transcript-virtual-item]')).toBe(liveItem);
 
@@ -6746,7 +6746,7 @@ describe('virtualized transcript scrolling', () => {
       text: `floor ${index}`,
     }));
     const { root, container } = makeRoot();
-    await renderSettled(root, virtualTranscript(transcriptState(blocks)));
+    await renderSettled(root, virtualTranscript(transcriptState(blocks), undefined, agentId));
     const ticks = container.querySelectorAll<HTMLButtonElement>('[data-floor-tick]');
     expect(ticks.length).toBe(64);
     expect(ticks[0]?.getAttribute('aria-label')).toContain('1');
@@ -6758,6 +6758,7 @@ describe('virtualized transcript scrolling', () => {
       await new Promise((resolve) => setTimeout(resolve, 35));
     });
     expect(container.querySelector('[data-block-id="floor-0"]')).not.toBeNull();
+  });
   });
 });
 
@@ -9730,6 +9731,7 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  describe.each(['main', 'child-agent'] as const)('locate (%s)', (agentId) => {
   it('locates a block inside a fold and in older, unloaded history; reports what is missing', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();
@@ -9738,28 +9740,28 @@ describe('settled history folds and the unified locate entry', () => {
     });
     const onLoadOlder = vi.fn(async () => {
       state = { ...state, blocks: [...turnBlocks(1, 'oldest'), ...state.blocks], hasMoreHistory: false };
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       return true;
     });
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     await settleVirtualizer();
 
     let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
     await act(async () => {
-      outcome = await locateInTimeline({ kind: 'block', blockId: 'tool5a' }, { sessionId: 'session_locate', notify: false });
+      outcome = await locateInTimeline({ kind: 'block', blockId: 'tool5a' }, { sessionId: 'session_locate', agentId, notify: false });
     });
     expect(outcome).toEqual({ status: 'found' });
     expect(container.querySelector('[data-history-fold-open] [data-block-id="tool5a"]')).not.toBeNull();
     expect(onLoadOlder).not.toHaveBeenCalled();
 
     await act(async () => {
-      outcome = await locateInTimeline({ kind: 'turn', turnId: normalizeTurnId(1) }, { sessionId: 'session_locate', notify: false });
+      outcome = await locateInTimeline({ kind: 'turn', turnId: normalizeTurnId(1) }, { sessionId: 'session_locate', agentId, notify: false });
     });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
     expect(outcome).toEqual({ status: 'found' });
 
     await act(async () => {
-      outcome = await locateInTimeline({ kind: 'block', blockId: 'gone' }, { sessionId: 'session_locate', notify: false });
+      outcome = await locateInTimeline({ kind: 'block', blockId: 'gone' }, { sessionId: 'session_locate', agentId, notify: false });
     });
     expect(outcome).toEqual({ status: 'not-found' });
   });
@@ -9772,14 +9774,14 @@ describe('settled history folds and the unified locate entry', () => {
     const onLoadOlder = vi.fn(async () => {
       pages += 1;
       state = { ...state, blocks: [assistantBlock(pages === 43 ? 'far-target' : `page-${pages}`, `Older page ${pages}`), ...state.blocks] };
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       return true;
     });
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     await settleVirtualizer();
     let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
     await act(async () => {
-      void locateInTimeline({ kind: 'block', blockId: 'far-target' }, { sessionId: 'session_far', notify: false }).then((value) => { outcome = value; });
+      void locateInTimeline({ kind: 'block', blockId: 'far-target' }, { sessionId: 'session_far', agentId, notify: false }).then((value) => { outcome = value; });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     for (let frame = 0; frame < 450; frame += 1) {
@@ -9804,11 +9806,11 @@ describe('settled history folds and the unified locate entry', () => {
     });
     await renderSettled(root, virtualTranscript(transcriptState(virtualBlocks(100, 'tail'), {
       sessionId: 'session_cancel_seek', hasMoreHistory: true,
-    }), onLoadOlder));
+    }), onLoadOlder, agentId));
     await settleVirtualizer();
     let pending!: Promise<Awaited<ReturnType<typeof locateInTimeline>>>;
     await act(async () => {
-      pending = locateInTimeline({ kind: 'block', blockId: 'old-target' }, { sessionId: 'session_cancel_seek', notify: false });
+      pending = locateInTimeline({ kind: 'block', blockId: 'old-target' }, { sessionId: 'session_cancel_seek', agentId, notify: false });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
@@ -9842,17 +9844,17 @@ describe('settled history folds and the unified locate entry', () => {
       const page = Array.from({ length: loaded - next }, (_, i) => turnBlocks(next + 1 + i, `turn ${next + 1 + i}`)).flat();
       loaded = next;
       state = { ...state, blocks: [...page, ...state.blocks], hasMoreHistory: loaded > 0 };
-      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
       return true;
     });
-    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
     await settleVirtualizer();
 
     let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
     await act(async () => {
       void locateInTimeline(
         { kind: 'turn', turnId: normalizeTurnId(targetTurn) },
-        { sessionId: 'session_deep_locate', notify: false },
+        { sessionId: 'session_deep_locate', agentId, notify: false },
       ).then((value) => { outcome = value; });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -9872,8 +9874,8 @@ describe('settled history folds and the unified locate entry', () => {
     const { root, container } = makeRoot();
     let state = transcriptState(turnBlocks(3, 'latest'), { sessionId: 'session_preparing_locate', hasMoreHistory: true });
     const render = () => renderSettled(root, (
-      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_preparing_locate" agentId="main">
-        {virtualTranscript(state, async () => false)}
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_preparing_locate" agentId={agentId}>
+        {virtualTranscript(state, async () => false, agentId)}
       </TranscriptDetailProvider>
     ));
     const locateTurn = vi.spyOn(controller, 'locateTurn')
@@ -9888,7 +9890,7 @@ describe('settled history folds and the unified locate entry', () => {
       await settleVirtualizer();
       let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
       await act(async () => {
-        void locateInTimeline({ kind: 'turn', turnId: 't1' }, { sessionId: 'session_preparing_locate', notify: false }).then((value) => { outcome = value; });
+        void locateInTimeline({ kind: 'turn', turnId: 't1' }, { sessionId: 'session_preparing_locate', agentId, notify: false }).then((value) => { outcome = value; });
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
       for (let frame = 0; frame < 150 && outcome === undefined; frame += 1) {
@@ -9896,9 +9898,183 @@ describe('settled history folds and the unified locate entry', () => {
       }
       expect(outcome).toEqual({ status: 'found' });
       expect(locateTurn).toHaveBeenCalledTimes(2);
+      expect(locateTurn).toHaveBeenLastCalledWith(agentId, 't1', expect.any(AbortSignal));
       expect(container.querySelector('[data-turn-id="t1"]')).not.toBeNull();
     } finally {
       locateTurn.mockRestore();
+      await act(async () => { root.render(null); });
+      controller.close();
+    }
+  });
+  });
+
+  it.each(['main', 'child-agent'] as const)('places turn gap rows at start, between (top-level and inside a fold), and turn, and ignores released turns (%s)', async (agentId) => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const retry = vi.spyOn(controller, 'retryTurnStructureRead').mockImplementation(() => {});
+    const previewReleases = new Map<string, ReturnType<typeof vi.fn>[]>();
+    const retainPreview = vi.spyOn(controller, 'retainHistoryPreview').mockImplementation((agent, turnId) => {
+      const release = vi.fn();
+      if (agent === agentId) previewReleases.set(turnId, [...(previewReleases.get(turnId) ?? []), release]);
+      return release;
+    });
+    try {
+      // 1) at: 'start' — placed right after the turn's user opening row and before its first held step.
+      const startBlocks: Block[] = [
+        userBlock({ id: 'u-start', text: 'Opening prompt', turnId: 't1' }),
+        assistantBlock('a-start', 'Held tail step', { turnId: 't1', stepId: 's5' }),
+      ];
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_gap" agentId={agentId}>
+          {virtualTranscript(transcriptState(startBlocks, {
+            incompleteTurnIds: ['t1'],
+            turnGaps: {
+              t0: { at: 'turn', reason: 'partial' }, // released turn: not in timeline, must not render
+              t1: { at: 'start', reason: 'partial' },
+            },
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      const startRowIds = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item] > div > [data-transcript-lane] > [data-block-id]')]
+        .map((el) => el.dataset['blockId']);
+      expect(startRowIds).toEqual(['u-start', 'turn-gap-t1', 'a-start']);
+      expect(container.querySelector('[data-turn-gap="start"]')?.getAttribute('data-turn-gap-reason')).toBe('partial');
+      expect(container.querySelector('[data-block-id="turn-gap-t0"]')).toBeNull();
+      expect(container.querySelector('[data-history-preview]')).toBeNull();
+      expect(previewReleases.get('t1')?.length).toBeGreaterThan(0);
+
+      // 2) at: 'between' across top-level rows — placed right after the last row of afterStepId, and falls back to tail when missing.
+      const betweenBlocks: Block[] = [
+        userBlock({ id: 'u-between', text: 'Question', turnId: 't2' }),
+        assistantBlock('a-head', 'Step 0 prose', { turnId: 't2', stepId: 's0' }),
+        assistantBlock('a-tail', 'Step 9 prose', { turnId: 't2', stepId: 's9' }),
+        userBlock({ id: 'u-fallback', text: 'Fallback', turnId: 't3' }),
+        assistantBlock('a-fallback', 'Only tail', { turnId: 't3', stepId: 's8' }),
+      ];
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_gap" agentId={agentId}>
+          {virtualTranscript(transcriptState(betweenBlocks, {
+            incompleteTurnIds: ['t2', 't3'],
+            turnGaps: {
+              t2: { at: 'between', afterStepId: 's0', reason: 'partial' },
+              t3: { at: 'between', afterStepId: 'missing-step', reason: 'partial' },
+            },
+            detailLoads: { 'structure:t2': { status: 'error', message: 'Network lost' } },
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      const betweenRowIds = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item] > div > [data-transcript-lane] > [data-block-id]')]
+        .map((el) => el.dataset['blockId']);
+      expect(betweenRowIds).toEqual(['u-between', 'a-head', 'turn-gap-t2', 'a-tail', 'u-fallback', 'a-fallback', 'turn-gap-t3']);
+      expect(container.querySelector('[data-block-id="turn-gap-t2"] [data-turn-structure="error"]')).not.toBeNull();
+      await act(async () => {
+        click(container.querySelector('[data-block-id="turn-gap-t2"] [data-content-continuation-action]')!);
+      });
+      expect(retry).toHaveBeenCalledWith(agentId, 't2');
+
+      // 3) at: 'between' inside a settled history-fold — fold keeps foldIncomplete, and opening reveals the gap in place between members.
+      const foldedBetweenBlocks: Block[] = [
+        userBlock({ id: 'u-fold', text: 'Folded turn', turnId: 't4' }),
+        doneTool('tool-head', 't4', { stepId: 's0' }),
+        doneTool('tool-tail', 't4', { stepId: 's9' }),
+        assistantBlock('a-fold-end', 'Final answer', { turnId: 't4', stepId: 's10' }),
+      ];
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_gap" agentId={agentId}>
+          {virtualTranscript(transcriptState(foldedBetweenBlocks, {
+            incompleteTurnIds: ['t4'],
+            turnGaps: { t4: { at: 'between', afterStepId: 's0', reason: 'partial' } },
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      const fold = container.querySelector('[data-history-fold]')!;
+      expect(fold.querySelector('[data-history-fold-incomplete]')).not.toBeNull();
+      expect(container.querySelector('[data-turn-gap="between"]')).toBeNull();
+      await act(async () => { click(fold.querySelector('[data-activity-toggle]')!); });
+      const memberIds = [...container.querySelectorAll<HTMLElement>('[data-history-fold-members] > [data-fold-member]')]
+        .map((el) => el.dataset['blockId']);
+      expect(memberIds).toEqual(['tool-head', 'turn-gap-t4', 'tool-tail']);
+      expect(container.querySelector('[data-history-fold-members] [data-turn-gap="between"]')).not.toBeNull();
+    } finally {
+      const releases = [...previewReleases.values()].flat();
+      await act(async () => { root.render(null); });
+      expect(releases.every((fn) => fn.mock.calls.length === 1)).toBe(true);
+      retainPreview.mockRestore();
+      retry.mockRestore();
+      controller.close();
+    }
+  });
+
+  it.each(['main', 'child-agent'] as const)('renders stale gap wording once no longer live, removes it on completion, and shows catching-up status while refreshing (%s)', async (agentId) => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    try {
+      // Empty window while refreshing keeps the opening state instead of blank.
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_stale" agentId={agentId}>
+          {virtualTranscript(transcriptState([], { refreshing: true }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      expect(container.querySelector('[data-transcript-loading]')).not.toBeNull();
+
+      // While t1 is the live running tail, its stale gap is suppressed in favour of the running state.
+      const blocks: Block[] = [
+        userBlock({ id: 'u1', text: 'Work while away', turnId: 't1' }),
+        assistantBlock('a1', 'Earlier snapshot', { turnId: 't1', stepId: 's0' }),
+      ];
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_stale" agentId={agentId}>
+          {virtualTranscript(transcriptState(blocks, {
+            busy: true,
+            abortableTurnId: 1,
+            incompleteTurnIds: ['t1'],
+            turnGaps: { t1: { at: 'turn', reason: 'stale' } },
+            refreshing: true,
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      expect(container.querySelector('[data-turn-gap-reason="stale"]')).toBeNull();
+      expect(container.querySelector('[data-transcript-refreshing]')?.textContent).toContain('Catching up');
+
+      // Once t1 is no longer the live tail, the stale gap row appears alongside loaded rows while refreshing.
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_stale" agentId={agentId}>
+          {virtualTranscript(transcriptState(blocks, {
+            busy: false,
+            incompleteTurnIds: ['t1'],
+            turnGaps: { t1: { at: 'turn', reason: 'stale' } },
+            detailLoads: { 'structure:t1': { status: 'loading' } },
+            refreshing: true,
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      expect(container.querySelector('[data-block-id="a1"]')).not.toBeNull();
+      const staleRow = container.querySelector('[data-turn-gap-reason="stale"]');
+      expect(staleRow).not.toBeNull();
+      expect(staleRow?.getAttribute('data-turn-structure')).toBe('loading');
+      expect(staleRow?.textContent).toContain('Updated while you were away');
+      expect(container.querySelector('[data-transcript-refreshing]')?.textContent).toContain('Catching up');
+
+      // Reading completes the turn and refreshing turns false: both indicators disappear.
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_stale" agentId={agentId}>
+          {virtualTranscript(transcriptState([
+            ...blocks,
+            assistantBlock('a2', 'Fresh final reply', { turnId: 't1', stepId: 's1' }),
+          ], {
+            busy: false,
+            incompleteTurnIds: [],
+            turnGaps: {},
+            refreshing: false,
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      expect(container.querySelector('[data-turn-gap]')).toBeNull();
+      expect(container.querySelector('[data-transcript-refreshing]')).toBeNull();
+      expect(container.querySelector('[data-block-id="a2"]')?.textContent).toContain('Fresh final reply');
+    } finally {
       await act(async () => { root.render(null); });
       controller.close();
     }

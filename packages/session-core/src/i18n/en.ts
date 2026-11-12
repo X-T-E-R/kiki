@@ -1822,6 +1822,8 @@ export const en = {
   'transcript.loadingEarlier': 'Loading earlier messages…',
   'transcript.loadingEarlierElapsed': 'Loading earlier messages… {seconds}s',
   'transcript.stepsPending': 'More steps of this turn are not loaded yet',
+  'transcript.turnStale': 'Updated while you were away · catching up',
+  'transcript.catchingUp': 'Catching up…',
   'transcript.fold.incomplete': 'more not loaded yet',
   'transcript.olderFailed': 'Could not load earlier messages',
   'transcript.retryEarlier': 'Retry',

@@ -2263,8 +2263,6 @@ describe('SessionController transcript authority', () => {
     flushAll();
     const release = controller.retainHistoryPreview('main', 'older');
     try {
-      expect(controller.historyPreviewPending('main', 'older')).toBe(false);
-      expect(await controller.loadHistoryPreview('main', 'older')).toBe(false);
       expect(controller.contentRefsFor('main', ref.source)).toEqual([ref]);
       expect(controller.getState().blocks.find((block) => block.kind === 'user' && block.turnId === 'older')).toMatchObject({ text: older.prompt });
       expect(client.getAgentTranscript).toHaveBeenCalledExactlyOnceWith('session_test', 'main',
