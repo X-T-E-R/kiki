@@ -2,12 +2,12 @@
 
 The current shots predate the redesign. Re-render them once the new shell, settings, and composer have merged. After that, update the README, gallery, features pages, and launch drafts only where a filename changes.
 
-Runners (run from `apps/kiki-gui`). Each runner wipes its output directory, so never point one at `marketing/shots`:
+Runners (run from `apps/kiki-gui`). Each runner wipes its throwaway output directory, so never point one at `docs/public/shots`:
 
 - `node scripts/marketing-shots.mjs [--only=h01] [--collect]` renders h01, r01, r02, r04, and r05. Builders: `fixtures/marketing-builders.mjs` + `fixtures/marketing-scene.mjs`.
 - `node scripts/marketing-p2-shots.mjs [--only=d01] [--collect]` renders d01–d08 and board-task-detail. Builders: `fixtures/marketing-p2-builders.mjs` + `fixtures/marketing-p2-scene.mjs`.
 
-All of these are **fixture** scenes: the real UI rendering an example project. Keep the "rendered example" caption wherever they are used. The flagship demo is a **real** recording instead; see [../launch/demo-storyboard.md](../launch/demo-storyboard.md).
+All of these are **fixture** scenes: the real UI rendering an example project. Keep the "rendered example" caption wherever they are used. The flagship demo is a **real** recording instead; see [./launch/demo-storyboard.md](./launch/demo-storyboard.md).
 
 ## Re-render (existing scenarios)
 

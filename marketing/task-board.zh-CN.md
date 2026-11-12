@@ -4,13 +4,13 @@
 
 聊天记录是讨论工作的地方，却是安放工作的糟糕场所——往回滚得够远，每个决定都会溶解在对话里。**任务看板**是可选的官方插件 `kiki-task-board`：从目录里安装并启用，每个工作区就有了一块看板，需求以卡片形式跟踪，并关联到正在处理它们的会话。
 
-![工作区任务看板。](shots/r04-task-board.zh.light.png)
+![工作区任务看板。](../docs/public/shots/long-work/r04-task-board.zh.png)
 
 ## 任务关联会话
 
 每张卡片都能关联到正在处理它的会话，你不仅能看到*什么*还没做，还能看到*谁*在做，并一键跳进那个会话去纠偏。主智能体通过插件自己的 `BoardRead` 和 `BoardWrite` 工具读写看板，走正常的审批规则，所以卡片状态会跟着活往前走，而不是在对话滚过去之后就一直停在原地。
 
-![卡片详情：关联的执行会话离任务只有一键之遥。](shots/board-task-detail.zh.light.png)
+![卡片详情：关联的执行会话离任务只有一键之遥。](../docs/public/shots/long-work/board-task-detail.zh.png)
 
 ## 卡片比会话活得久
 

@@ -8,7 +8,7 @@
 
 nb-search 把联网组织成命名的**通道**——`tavily.search`、`exa.search`、`duckduckgo.search`、`github.repositories`、`context7.docs` 等等——每条通道有自己的供应商、成本和延迟特征。agent 按查询选择通道，也可以多通道并发，拿回带溯源信息的去重结果。抓取侧同理：提取链（如 `tavily.extract → jina.reader → direct.fetch`）在某个提取器失败或返回垃圾时自动回落。
 
-![设置中的搜索通道：免密可用通道、当前默认项，以及一个不可用通道和它完整的原因说明。](shots/d06-search-lanes.zh.light.png)
+![设置中的搜索通道：免密可用通道、当前默认项，以及一个不可用通道和它完整的原因说明。](../docs/public/shots/extend/d06-search-lanes.zh.png)
 
 ## 零配置开箱即用
 
@@ -23,6 +23,6 @@ nb-search 把联网组织成命名的**通道**——`tavily.search`、`exa.sear
 - **重试与故障转移**——一把 key 失败不等于查询失败，调度器直接换下一把。
 - **余额感知**——对开放了用量查询的供应商，按缓存节奏查询余额，让调度优先用余量充足的 key，又不会在每次调用前白白多付一次额度查询。
 
-![一条带可见回退的抓取链：每一步的状态都可检查。](shots/d07-fetch-chain.zh.light.png)
+![一条带可见回退的抓取链：每一步的状态都可检查。](../docs/public/shots/extend/d07-fetch-chain.zh.png)
 
 在**设置 → 搜索与抓取**里配置；`kiki web` 和 CLI 在你依赖它之前就会报出通道就绪状态。

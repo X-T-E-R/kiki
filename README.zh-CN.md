@@ -16,7 +16,7 @@
 - **离开电脑也接得上**：把微信或 QQ 绑到角色或会话上，在手机上回消息、插话到当前回合、回答审批；远端连接和 SSH 主机把同一份工作延伸到别的机器，空间则把工作与个人配置隔开。
 - **限流和提示词都看得见**：用量页写明是哪条并发规则挡着每一个排队请求，`kiki prompt-fields` 能把提示词覆写到单条工具描述，常规记忆修改与删除保留版本历史、可逐条撤销（显式 `forget` 则永久清除历史载荷）。
 
-![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](marketing/shots/wl-hero-workbench.zh.light.png)
+![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](docs/public/shots/index/wl-20261005-hero-workbench.zh.png)
 
 ## 从这里开始
 
@@ -85,7 +85,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 主智能体拆任务、派子智能体，每个都能绑不同的模型或不同的厂商，在同一个会话里同时跑。强推理模型做规划，便宜的模型跑日常；换个厂商审查，也不会和实现共享同一批盲区。Kimi 开箱即用；Anthropic、OpenAI 兼容服务、OpenAI Responses API、Gemini 和 Vertex AI 都能接，也可以用 GitHub Copilot 或 ChatGPT 账号登录。
 
-![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](marketing/shots/r05-multi-model-fleet.zh.light.png)
+![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](docs/public/shots/workbench/workbench-per-role-models.zh.png)
 
 智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存文件后，下一次派发就会用上新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始。
 
@@ -101,7 +101,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 **用量（Usage）** 页把一个日期区间拆成 token、费用和缓存命中率——从未返回用量的平台显示为未知，而不是一个真实的 0——并写明是哪条并发规则挡着每一个等待中的请求。外部同步只发不含内容的统计，提示词、回答、标题和路径一律不发，目的地可以是你自己的 webhook、VibeCafe 账号或一条你批准的脚本；只有你添加目的地、预览确切内容、同意并启用后才会发送。
 
-![用量页的「实时」页签：一条正在等待的请求写明挡住它的并发规则，下方规则列表一条启用、一条已停用。](marketing/shots/ux-usage-live.zh.light.png)
+![用量页的「实时」页签：一条正在等待的请求写明挡住它的并发规则，下方规则列表一条启用、一条已停用。](docs/public/shots/daily/ux-usage-live.zh.png)
 
 见[每天用的桌面](https://x-t-e-r.github.io/kiki/zh/features/daily)和 [`kiki usage-export`](https://x-t-e-r.github.io/kiki/zh/reference/command#kiki-usage-export)。
 
@@ -123,7 +123,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 角色不等于智能体配置（profile）。profile 是执行配置——工具、权限、模型、思考强度；角色是身份——它是谁、记得什么。改一个绑定不会动另一个。见[能一起干活的人](https://x-t-e-r.github.io/kiki/zh/features/people)。
 
-![一个房间，三个角色在讨论一次发布，每条发言都标着是谁说的。](marketing/shots/people-room.zh.light.png)
+![一个房间，三个角色在讨论一次发布，每条发言都标着是谁说的。](docs/public/shots/people/people-room.zh.png)
 
 ### 技能、插件与工具连接
 
