@@ -67,6 +67,11 @@ reports/
 
 # Agent scratch / throwaway files - do not commit
 .controller-ledger/
+/review/
+/analyses/
+.tmp-*.log
+/apps/kiki-gui/screenshots/batch3/
+/apps/kiki-gui/screenshots/w2-5/
 /apps/kiki-gui/.tmp-settings-tests.txt
 .tmp/
 /candidate.tmp/
