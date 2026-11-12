@@ -283,7 +283,7 @@ export function MediaPreviewProvider({
 
   const openAttachmentInWorkspace = useCallback((item: MediaRef) => {
     setNavigation(undefined);
-    setTabsState((state) => openPreviewTab(state, { kind: 'attachment', item, sessionId }));
+    setTabsState((state) => openPreviewTab(state, { kind: 'attachment', item, sessionId, origin: item.origin }));
     revealPreview();
   }, [sessionId, revealPreview]);
 

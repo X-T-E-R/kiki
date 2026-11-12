@@ -60,25 +60,32 @@ function blobRef(bytes) {
   return `blobref:main:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
+function sourceIdFor(media, path) {
+  return createHash('sha256').update(`${SID}\0main\0${media.id}\0${path}`).digest('hex');
+}
+
 export const MEDIA = {
-  image: { id: blobRef(COVER), title: 'cover.png', mime: 'image/png', bytes: COVER },
-  voice: { id: blobRef(VOICE), title: '口述备忘.wav', mime: 'audio/wav', bytes: VOICE },
+  image: { id: blobRef(COVER), title: 'cover.png', mime: 'image/png', bytes: COVER, hasSource: true },
+  voice: { id: blobRef(VOICE), title: '口述备忘.wav', mime: 'audio/wav', bytes: VOICE, hasSource: true },
   video: {
     id: blobRef(CLIP), title: 'take-720.mp4', mime: 'video/mp4', bytes: CLIP,
     // A video's preview is a poster frame in the real server; the fixture
     // carries one so the timeline shows a real picture for the clip.
     preview: COVER.toString('base64'), previewMime: 'image/png',
+    hasSource: true,
   },
-  notes: { id: blobRef(NOTES), title: '0.31-发布清单.md', mime: 'text/markdown', bytes: NOTES },
-  html: { id: blobRef(HTML_ENTRY), title: 'index.html', mime: 'text/html', bytes: HTML_ENTRY, path: 'C:/fixture/bots/lin-lan/roadshow/index.html' },
-  pdf: { id: blobRef(PDF_DOC), title: '0.31-架构评审.pdf', mime: 'application/pdf', bytes: PDF_DOC },
-  zip: { id: blobRef(ZIP_ARCHIVE), title: '0.31-产物归档.zip', mime: 'application/zip', bytes: ZIP_ARCHIVE },
+  notes: { id: blobRef(NOTES), title: '0.31-发布清单.md', mime: 'text/markdown', bytes: NOTES, hasSource: true },
+  html: { id: blobRef(HTML_ENTRY), title: 'index.html', mime: 'text/html', bytes: HTML_ENTRY, path: 'C:/fixture/bots/lin-lan/roadshow/index.html', hasSource: true },
+  pdf: { id: blobRef(PDF_DOC), title: '0.31-架构评审.pdf', mime: 'application/pdf', bytes: PDF_DOC, hasSource: true },
+  zip: { id: blobRef(ZIP_ARCHIVE), title: '0.31-产物归档.zip', mime: 'application/zip', bytes: ZIP_ARCHIVE, hasSource: false },
 };
 
 function attachment(media, kind) {
+  const path = media.path ?? (media.hasSource === false ? `f_upload_${media.title}` : `C:/fixture/bots/lin-lan/${media.title}`);
   return {
     blob_id: media.id,
-    path: media.path ?? `C:/fixture/bots/lin-lan/${media.title}`,
+    ...(media.hasSource === false ? undefined : { source_id: sourceIdFor(media, path) }),
+    path,
     title: media.title,
     mime_type: media.mime,
     size: media.bytes.byteLength,

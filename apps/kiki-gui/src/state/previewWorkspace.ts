@@ -18,6 +18,7 @@ export interface AttachmentTab {
   readonly kind: 'attachment';
   readonly item: MediaRef;
   readonly sessionId?: string;
+  readonly origin?: { readonly path: string; readonly trusted: true };
 }
 
 export interface WebTab {

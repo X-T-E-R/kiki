@@ -108,4 +108,40 @@ describe('previewWorkspace tab reducer', () => {
     expect(movePreviewTab(state, '/nope', 0)).toBe(state);
     expect(closeOtherPreviewTabs(state, '/nope')).toBe(state);
   });
+
+  it('keeps an attachment tab origin through open, re-open, and reorder with unchanged key', () => {
+    const sourceId = 'a'.repeat(64);
+    const origin = { path: '/workspace/notes.md', trusted: true as const };
+    const attachmentTab = {
+      kind: 'attachment' as const,
+      sessionId: 'sess-1',
+      origin,
+      item: {
+        kind: 'file' as const,
+        fileId: 'blobref:main:abc',
+        sourceId,
+        origin,
+        name: 'notes.md',
+        mime: 'text/markdown',
+      },
+    };
+    const expectedKey = `attachment:sess-1:blobref:main:abc:${sourceId}`;
+    expect(previewTabKey(attachmentTab)).toBe(expectedKey);
+
+    let state = openPreviewTab(EMPTY_PREVIEW_TABS, attachmentTab);
+    expect(state.active).toBe(expectedKey);
+    expect(state.tabs[0]).toEqual(attachmentTab);
+
+    state = openPreviewTab(state, '/workspace/other.ts');
+    expect(state.active).toBe('/workspace/other.ts');
+
+    state = openPreviewTab(state, attachmentTab);
+    expect(state.tabs).toHaveLength(2);
+    expect(state.active).toBe(expectedKey);
+    expect(state.tabs[0]?.kind === 'attachment' ? state.tabs[0].origin : undefined).toEqual(origin);
+
+    state = movePreviewTab(state, attachmentTab, 1);
+    expect(state.tabs.map(previewTabKey)).toEqual(['/workspace/other.ts', expectedKey]);
+    expect(state.tabs[1]?.kind === 'attachment' ? state.tabs[1].origin : undefined).toEqual(origin);
+  });
 });

@@ -33,6 +33,8 @@ export interface MediaRef {
   readonly fileId?: string;
   /** Host-persisted attachment source identity for disambiguating identical blobs sent from different directories. */
   readonly sourceId?: string;
+  /** Trusted original path recorded by the engine for a SendMessage attachment with source_id. */
+  readonly origin?: { readonly path: string; readonly trusted: true };
   /**
    * The transcript window omitted this attachment's source (too large or an
    * inline data URL); read it by reference when the user opens it.

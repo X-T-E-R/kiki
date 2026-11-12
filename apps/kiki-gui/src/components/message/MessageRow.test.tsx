@@ -20,6 +20,7 @@ import type { MessageAttachment, MessageBlock, MessageChannelDelivery } from '@k
 import { I18nProvider } from '../../i18n';
 import { MessageAttachmentView, MessageRow } from './MessageRow';
 import { deliveryNotes } from './messageDelivery';
+import { messageAttachmentSubtype } from './messageMedia';
 
 // The preview seam: opening an attachment is what a message row offers, and
 // the ref it hands over is what the assertion reads.
@@ -318,6 +319,177 @@ describe('attachment media kinds', () => {
     expect(card?.dataset['messageAttachmentReadable']).toBe('false');
     expect(card?.querySelector('[data-message-attachment-open]')).toBeNull();
     expect(card?.innerHTML).not.toContain('C:/Users/sender/secret/index.html');
+  });
+
+  it('carries a trusted origin only when sourceId is present across file, image, video, and audio kinds', () => {
+    const sourceId = 'b'.repeat(64);
+    const fileWithSource: MessageAttachment = {
+      blobId: 'blob-file-src',
+      sourceId,
+      path: '/workspace/docs/notes.md',
+      title: 'notes.md',
+      mimeType: 'text/markdown',
+      size: 100,
+      kind: 'file',
+    };
+    const imageWithSource: MessageAttachment = { ...image, blobId: 'blob-img-src', sourceId, path: '/workspace/assets/cover.png' };
+    const videoWithSource: MessageAttachment = { ...clip, blobId: 'blob-vid-src', sourceId, path: '/workspace/assets/take.mp4' };
+    const audioWithSource: MessageAttachment = { ...voice, blobId: 'blob-aud-src', sourceId, path: '/workspace/assets/note.wav' };
+
+    const fileWithoutSource: MessageAttachment = {
+      blobId: 'blob-file-upload',
+      path: 'f_upload_0001',
+      title: 'upload.pdf',
+      mimeType: 'application/pdf',
+      size: 200,
+      kind: 'file',
+    };
+    const imageWithoutSource: MessageAttachment = { ...image, blobId: 'blob-img-nosrc' };
+    const videoWithoutSource: MessageAttachment = { ...clip, blobId: 'blob-vid-nosrc' };
+    const audioWithoutSource: MessageAttachment = { ...voice, blobId: 'blob-aud-nosrc' };
+
+    previewProbe.openAttachment.mockClear();
+    const withSourceContainer = draw(message({
+      attachments: [fileWithSource, imageWithSource, videoWithSource, audioWithSource],
+    }));
+
+    const fileTitleEl = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"] span[title]');
+    expect(fileTitleEl?.getAttribute('title')).toBe('/workspace/docs/notes.md');
+
+    act(() => {
+      withSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-src"] [data-message-attachment-open]')?.click();
+    });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        fileId: 'blob-file-src',
+        sourceId,
+        path: undefined,
+        origin: { path: '/workspace/docs/notes.md', trusted: true },
+      }),
+    );
+
+    const imgBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button');
+    expect(imgBtn).not.toBeNull();
+    act(() => { imgBtn?.click(); });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'image',
+        fileId: 'blob-img-src',
+        sourceId,
+        path: undefined,
+        origin: { path: '/workspace/assets/cover.png', trusted: true },
+      }),
+      'main',
+    );
+
+    const vidBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button');
+    expect(vidBtn).not.toBeNull();
+    act(() => { vidBtn?.click(); });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'video',
+        fileId: 'blob-vid-src',
+        sourceId,
+        path: undefined,
+        origin: { path: '/workspace/assets/take.mp4', trusted: true },
+      }),
+    );
+
+    const audBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]');
+    expect(audBtn).not.toBeNull();
+    act(() => { audBtn?.click(); });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'audio',
+        fileId: 'blob-aud-src',
+        sourceId,
+        path: undefined,
+        origin: { path: '/workspace/assets/note.wav', trusted: true },
+      }),
+    );
+
+    previewProbe.openAttachment.mockClear();
+    const withoutSourceContainer = draw(message({
+      attachments: [fileWithoutSource, imageWithoutSource, videoWithoutSource, audioWithoutSource],
+    }));
+
+    const uploadCard = withoutSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-upload"]');
+    expect(uploadCard?.innerHTML).not.toContain('f_upload_0001');
+    expect(uploadCard?.querySelector<HTMLElement>('span[title]')?.getAttribute('title')).toBe('upload.pdf');
+
+    act(() => {
+      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-upload"] [data-message-attachment-open]')?.click();
+    });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'file', fileId: 'blob-file-upload', sourceId: undefined, origin: undefined }),
+    );
+
+    act(() => {
+      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button')?.click();
+    });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'image', fileId: 'blob-img-nosrc', sourceId: undefined, origin: undefined }),
+      'main',
+    );
+
+    act(() => {
+      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button')?.click();
+    });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'video', fileId: 'blob-vid-nosrc', sourceId: undefined, origin: undefined }),
+    );
+
+    act(() => {
+      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]')?.click();
+    });
+    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: 'audio', fileId: 'blob-aud-nosrc', sourceId: undefined, origin: undefined }),
+    );
+  });
+
+  it('gives legacy Office files (.doc, .xls, .ppt) honest badges distinct from OOXML', () => {
+    const docAtt: MessageAttachment = {
+      blobId: 'blob-doc',
+      path: '/workspace/old.doc',
+      title: 'old.doc',
+      mimeType: 'application/msword',
+      size: 4096,
+      kind: 'file',
+    };
+    const xlsAtt: MessageAttachment = {
+      blobId: 'blob-xls',
+      path: '/workspace/old.xls',
+      title: 'old.xls',
+      mimeType: 'application/vnd.ms-excel',
+      size: 4096,
+      kind: 'file',
+    };
+    const pptAtt: MessageAttachment = {
+      blobId: 'blob-ppt',
+      path: '/workspace/old.ppt',
+      title: 'old.ppt',
+      mimeType: 'application/vnd.ms-powerpoint',
+      size: 4096,
+      kind: 'file',
+    };
+    expect(messageAttachmentSubtype(docAtt)).toBe('doc');
+    expect(messageAttachmentSubtype(xlsAtt)).toBe('xls');
+    expect(messageAttachmentSubtype(pptAtt)).toBe('ppt');
+
+    const container = draw(message({ attachments: [docAtt, xlsAtt, pptAtt] }));
+    const docCard = container.querySelector('[data-message-attachment="blob-doc"]');
+    const xlsCard = container.querySelector('[data-message-attachment="blob-xls"]');
+    const pptCard = container.querySelector('[data-message-attachment="blob-ppt"]');
+    expect(docCard?.getAttribute('data-message-attachment-subtype')).toBe('doc');
+    expect(docCard?.textContent).toContain('DOC');
+    expect(docCard?.textContent).not.toContain('DOCX');
+    expect(xlsCard?.getAttribute('data-message-attachment-subtype')).toBe('xls');
+    expect(xlsCard?.textContent).toContain('XLS');
+    expect(xlsCard?.textContent).not.toContain('XLSX');
+    expect(pptCard?.getAttribute('data-message-attachment-subtype')).toBe('ppt');
+    expect(pptCard?.textContent).toContain('PPT');
+    expect(pptCard?.textContent).not.toContain('PPTX');
   });
 
   it('renders and opens web preview cards when a message URL contains malformed percent-encoded pathname sequences', () => {

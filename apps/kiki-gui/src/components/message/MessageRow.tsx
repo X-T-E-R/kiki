@@ -52,6 +52,7 @@ import {
   messageMediaKind,
   messageMediaRef,
   resolveSameSessionAttachmentPath,
+  trustedAttachmentOrigin,
   type MessageAttachmentSubtype,
   type MessageMediaKind,
   type MessageWebLink,
@@ -136,17 +137,35 @@ const SUBTYPE_STYLE: Readonly<Record<MessageAttachmentSubtype, SubtypeStyle>> = 
     labelKey: 'message.media.docx',
     badgeClass: 'border-hairline-strong bg-ink/[0.05] text-ink-soft',
   },
+  doc: {
+    badge: 'DOC',
+    icon: 'file',
+    labelKey: 'message.media.doc',
+    badgeClass: 'border-hairline bg-ink/[0.04] text-ink-faint',
+  },
   xlsx: {
     badge: 'XLSX',
     icon: 'board',
     labelKey: 'message.media.xlsx',
     badgeClass: 'border-sage-rule/50 bg-sage-card text-sage-ink',
   },
+  xls: {
+    badge: 'XLS',
+    icon: 'file',
+    labelKey: 'message.media.xls',
+    badgeClass: 'border-hairline bg-ink/[0.04] text-ink-faint',
+  },
   pptx: {
     badge: 'PPTX',
     icon: 'board',
     labelKey: 'message.media.pptx',
     badgeClass: 'border-amber-rule/50 bg-amber-card text-amber-ink',
+  },
+  ppt: {
+    badge: 'PPT',
+    icon: 'file',
+    labelKey: 'message.media.ppt',
+    badgeClass: 'border-hairline bg-ink/[0.04] text-ink-faint',
   },
   csv: {
     badge: 'CSV',
@@ -212,13 +231,17 @@ function AttachmentCard({
   const style = SUBTYPE_STYLE[subtype];
   const detail = attachmentDetail(attachment, subtype, readable, t);
   const openable = preview !== null && readable;
+  const origin = useMemo(
+    () => trustedAttachmentOrigin(attachment, { readable }),
+    [attachment, readable],
+  );
   const hostPath = useMemo(
     () => (subtype === 'html' ? resolveSameSessionAttachmentPath(attachment, { readable, remote, cwd: preview?.cwd }) : undefined),
     [attachment, readable, remote, subtype, preview?.cwd],
   );
   const openAttachment = () => {
     if (!openable) return;
-    const ref = messageMediaRef(attachment, kind, hostPath);
+    const ref = messageMediaRef(attachment, kind, hostPath, origin);
     if (preview.openAttachmentInWorkspace !== undefined) {
       preview.openAttachmentInWorkspace(ref);
     } else {
@@ -244,7 +267,7 @@ function AttachmentCard({
           <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide ${style.badgeClass}`}>
             {style.badge}
           </span>
-          <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={readable ? attachment.path : name}>
+          <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={origin !== undefined ? origin.path : name}>
             {name}
           </span>
         </span>
@@ -336,7 +359,10 @@ function WebLinkPreviewCard({ link }: { readonly link: MessageWebLink }) {
  * still picture.
  */
 function VisualAttachment({ attachment, kind }: { readonly attachment: MessageAttachment; readonly kind: 'image' | 'video' }) {
-  const item = useMemo(() => messageMediaRef(attachment, kind), [attachment, kind]);
+  const item = useMemo(
+    () => messageMediaRef(attachment, kind, undefined, trustedAttachmentOrigin(attachment)),
+    [attachment, kind],
+  );
   if (kind === 'image') return <MediaPart item={item} />;
   return (
     <span className="relative inline-flex">
@@ -358,7 +384,10 @@ function VisualAttachment({ attachment, kind }: { readonly attachment: MessageAt
 function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAttachment; readonly voice: boolean }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const item = useMemo<MediaRef>(() => messageMediaRef(attachment, 'audio'), [attachment]);
+  const item = useMemo<MediaRef>(
+    () => messageMediaRef(attachment, 'audio', undefined, trustedAttachmentOrigin(attachment)),
+    [attachment],
+  );
   const [slot, visible] = useVisibleOnce();
   const load = useSessionMedia(item, preview?.sessionId, visible, false);
   const caption = [t(voice ? 'message.media.voice' : 'message.media.audio'), attachmentDisplayName(attachment),

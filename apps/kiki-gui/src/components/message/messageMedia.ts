@@ -18,8 +18,11 @@ export type MessageAttachmentSubtype =
   | 'html'
   | 'pdf'
   | 'docx'
+  | 'doc'
   | 'xlsx'
+  | 'xls'
   | 'pptx'
+  | 'ppt'
   | 'csv'
   | 'markdown'
   | 'code'
@@ -41,9 +44,9 @@ const EXTENSION_KIND: Readonly<Record<string, MessageMediaKind>> = {
 const EXTENSION_SUBTYPE: Readonly<Record<string, MessageAttachmentSubtype>> = {
   html: 'html', htm: 'html', xhtml: 'html',
   pdf: 'pdf',
-  docx: 'docx', doc: 'docx',
-  xlsx: 'xlsx', xls: 'xlsx',
-  pptx: 'pptx', ppt: 'pptx',
+  docx: 'docx', doc: 'doc',
+  xlsx: 'xlsx', xls: 'xls',
+  pptx: 'pptx', ppt: 'ppt',
   csv: 'csv', tsv: 'csv',
   md: 'markdown', markdown: 'markdown', mdx: 'markdown',
   ts: 'code', tsx: 'code', js: 'code', jsx: 'code', mjs: 'code', cjs: 'code',
@@ -86,9 +89,12 @@ export function messageAttachmentSubtype(attachment: MessageAttachment): Message
   if (mime === 'application/pdf') return 'pdf';
   if (mime === 'text/csv' || mime === 'text/tab-separated-values') return 'csv';
   if (mime === 'text/markdown' || mime === 'text/x-markdown') return 'markdown';
-  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mime === 'application/msword') return 'docx';
-  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mime === 'application/vnd.ms-excel') return 'xlsx';
-  if (mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mime === 'application/vnd.ms-powerpoint') return 'pptx';
+  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  if (mime === 'application/msword') return 'doc';
+  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'xlsx';
+  if (mime === 'application/vnd.ms-excel') return 'xls';
+  if (mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pptx';
+  if (mime === 'application/vnd.ms-powerpoint') return 'ppt';
   if (mime === 'application/zip' || mime === 'application/gzip' || mime === 'application/x-tar' || mime === 'application/x-7z-compressed') return 'archive';
   if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml' || mime.endsWith('+json')) return 'code';
   return 'file';
@@ -139,21 +145,47 @@ export function resolveSameSessionAttachmentPath(
 }
 
 /**
+ * Resolves the trusted original host path recorded on a SendMessage receipt
+ * when it carried `source_id`. Attachments without `sourceId`, cross-session
+ * receipts, and opaque/empty paths carry no trusted original path.
+ */
+export function trustedAttachmentOrigin(
+  attachment: MessageAttachment,
+  options?: { readonly readable?: boolean },
+): { readonly path: string; readonly trusted: true } | undefined {
+  if (options?.readable === false) return undefined;
+  if (attachment.sourceId === undefined || attachment.sourceId.trim() === '') return undefined;
+  const raw = attachment.path.trim();
+  if (
+    raw === '' ||
+    raw === attachment.blobId ||
+    /^(?:blobref|kimi-file|https?|data|blob):/iu.test(raw)
+  ) {
+    return undefined;
+  }
+  return { path: raw, trusted: true };
+}
+
+/**
  * The canonical session-media reference for an attachment. Only the blob id is
  * carried by default: it is the bytes the send stored, and the receipt's `path`
  * is the sender's own machine, which another host cannot read and must not be
  * asked to. When the attachment belongs to the same local session, `hostPath`
- * may be attached so HTML previews resolve their sibling resource tree.
+ * may be attached so HTML previews resolve their sibling resource tree; when the
+ * receipt carries `sourceId`, `origin` preserves the engine-recorded real path
+ * without changing how bytes are fetched.
  */
 export function messageMediaRef(
   attachment: MessageAttachment,
   kind: MessageMediaKind,
   hostPath?: string,
+  origin?: { readonly path: string; readonly trusted: true },
 ): MediaRef {
   return {
     kind,
     fileId: attachment.blobId,
     sourceId: attachment.sourceId,
+    origin,
     path: hostPath,
     name: attachmentDisplayName(attachment),
     mime: attachment.mimeType,
