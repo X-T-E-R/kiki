@@ -270,7 +270,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
           return;
         }
         const body = regenerateMessageRequestSchema.parse(req.body);
-        const replay = await replayMessageOperation(agent, parsed.id, body);
+        const replay = await replayMessageOperation(agent, parsed.id, body, 'regenerate');
         if (replay !== undefined) {
           reply.send(okEnvelope(projectPromptHandle(replay), req.id));
           return;
