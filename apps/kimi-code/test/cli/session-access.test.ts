@@ -1,5 +1,10 @@
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Command } from 'commander';
+import { startServer, type RunningServer } from '@kiki/kap-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TEST_HOST_IDENTITY } from '../../../../packages/kap-server/test/helpers/hostIdentity';
 import { registerSessionAccessCommand } from '../../src/kiki/sessionAccess';
 
 const mocks = vi.hoisted(() => ({ ensureServer: vi.fn() }));
@@ -11,6 +16,7 @@ vi.mock('../../src/kiki/serve', async (importOriginal) => ({
 const SERVER_URL = 'http://127.0.0.1:12345';
 const OWNER_TOKEN = 'fixture-owner-token';
 const SECRET_TOKEN = 'session-access-secret-once';
+const nativeFetch = globalThis.fetch;
 let output = '';
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -84,7 +90,8 @@ describe('kiki session-access CLI', () => {
     expect(url).toBe(`${SERVER_URL}/api/session-access/tokens`);
     expect(request.method).toBe('POST');
     expect(new Headers(request.headers).get('authorization')).toBe(`Bearer ${OWNER_TOKEN}`);
-    expect(JSON.parse(String(request.body))).toEqual({
+    if (typeof request.body !== 'string') throw new Error('Expected a JSON request body');
+    expect(JSON.parse(request.body)).toEqual({
       session_id: 'session-id',
       scopes: ['read', 'prompt', 'abort'],
       client: { name: 'editor' },
@@ -135,4 +142,75 @@ describe('kiki session-access CLI', () => {
     await expect(run(['list'])).rejects.toThrow('Owner token required.');
     expect(output).toBe('');
   });
+
+  it('lists, issues and revokes tokens through the actual ensureServer and a running server', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-session-access-cli-'));
+    const home = join(root, 'home');
+    let server: RunningServer | undefined;
+    vi.stubGlobal('fetch', nativeFetch);
+    try {
+      await mkdir(home);
+      server = await startServer({ homeDir: home, host: '127.0.0.1', port: 0, logLevel: 'silent', hostIdentity: TEST_HOST_IDENTITY });
+      const actualServe = await vi.importActual<typeof import('../../src/kiki/serve')>('../../src/kiki/serve');
+      mocks.ensureServer.mockImplementation(actualServe.ensureServer);
+      const endpoint = `http://127.0.0.1:${server.port}`;
+
+      await run(['--home', home, 'list']);
+      expect(JSON.parse(output)).toMatchObject({ version: 1, enabled: true, tokens: [] });
+      const attachment = await mocks.ensureServer.mock.results[0]?.value;
+      expect(attachment).toMatchObject({ url: endpoint, token: server.localOwnerToken });
+
+      const created = await nativeFetch(`${endpoint}/api/sessions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${server.localOwnerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: root } }),
+      });
+      const createdEnvelope = await created.json() as { code: number; msg: string; data?: { id: string } };
+      expect(created.status, createdEnvelope.msg).toBe(200);
+      expect(createdEnvelope.code, createdEnvelope.msg).toBe(0);
+      const sessionId = createdEnvelope.data?.id;
+      if (typeof sessionId !== 'string') throw new Error('Expected the server to create a session.');
+
+      await run(['--home', home, 'issue', '--session', sessionId, '--scope', 'read,prompt,abort', '--name', 'cli-integration']);
+      const issued = JSON.parse(output) as { token: string; session_id: string; scopes: string[]; session_access: number };
+      expect(issued).toMatchObject({
+        token: expect.stringMatching(/^ksa_[A-Za-z0-9_-]{43}$/),
+        session_id: sessionId,
+        scopes: ['read', 'prompt', 'abort'],
+        session_access: 1,
+      });
+      expect(output.split(issued.token).length - 1).toBe(1);
+
+      await run(['--home', home, 'list']);
+      const listing = JSON.parse(output) as { tokens: Array<{ id: string; session_id: string; scopes: string[]; client: { name: string }; channel: string }> };
+      expect(listing.tokens).toHaveLength(1);
+      const listedToken = listing.tokens[0];
+      if (listedToken === undefined) throw new Error('Expected the token to appear in the list.');
+      expect(listedToken).toMatchObject({
+        id: expect.stringMatching(/^sat_/),
+        session_id: sessionId,
+        scopes: ['read', 'prompt', 'abort'],
+        client: { name: 'cli-integration' },
+        channel: 'owner',
+      });
+      expect(output).not.toContain(issued.token);
+      const tokenId = listedToken.id;
+
+      await run(['--home', home, 'revoke', tokenId]);
+      expect(JSON.parse(output)).toEqual({ revoked: 1 });
+      const denied = await nativeFetch(`${endpoint}/api/sessions/${sessionId}`, {
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const deniedEnvelope = await denied.json() as { code: number };
+      expect(denied.status).toBe(401);
+      expect(deniedEnvelope.code).toBe(40101);
+      expect(mocks.ensureServer).toHaveBeenCalledTimes(4);
+    } finally {
+      try {
+        if (server !== undefined) await server.close();
+      } finally {
+        await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    }
+  }, 60000);
 });

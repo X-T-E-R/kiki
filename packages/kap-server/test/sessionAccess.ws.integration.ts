@@ -14,7 +14,10 @@ interface Frame { type: string; id?: string; code?: number; session_id?: string;
 function connect(port: number, token: string, path = '/api/ws', origin?: string) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, [`kimi-code.bearer.${token}`], { origin });
   const frames: Frame[] = [];
-  socket.on('message', (data) => frames.push(JSON.parse(data.toString()) as Frame));
+  socket.on('message', (data) => {
+    const bytes = Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? Buffer.from(data) : data;
+    frames.push(JSON.parse(bytes.toString('utf8')) as Frame);
+  });
   const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
   const opened = new Promise<void>((resolve, reject) => { socket.once('open', () => resolve()); socket.once('error', reject); });
   const send = (type: string, payload: Record<string, unknown> = {}) => socket.send(JSON.stringify({ type, id: type, payload }));

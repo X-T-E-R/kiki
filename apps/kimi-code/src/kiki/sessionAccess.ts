@@ -17,14 +17,9 @@ async function sessionAccessRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const request: RequestInit = {
-    method,
-    headers: {
-      authorization: `Bearer ${connection.token}`,
-      'content-type': 'application/json',
-    },
-  };
-  if (body !== undefined) request.body = JSON.stringify(body);
+  const headers = new Headers({ authorization: `Bearer ${connection.token}` });
+  if (body !== undefined) headers.set('content-type', 'application/json');
+  const request: RequestInit = { method, headers, body: body === undefined ? undefined : JSON.stringify(body) };
   const response = await fetch(`${connection.url}${path}`, request);
   const envelope = await response.json() as SessionAccessEnvelope<T>;
   if (!response.ok || envelope.code !== 0) {

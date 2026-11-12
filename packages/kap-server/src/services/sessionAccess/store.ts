@@ -89,7 +89,7 @@ export class SessionAccessStore {
   }
 
   close(): void {
-    for (const listener of this.listeners) listener.dispose();
+    for (const listener of this.listeners) void listener.dispose();
     this.revokeAll();
   }
 

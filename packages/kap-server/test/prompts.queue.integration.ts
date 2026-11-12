@@ -193,7 +193,7 @@ describe('server-v2 /api prompts', () => {
       expect(events.filter((event) => event.type === 'turn.started')).toMatchObject([{ promptId: 'busy-first' }, { promptId: 'busy-second' }]);
     } finally {
       firstStep.resolve();
-      listener.dispose();
+      await listener.dispose();
     }
   });
 

@@ -239,7 +239,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   send(envelope: EventEnvelope, delivery: BroadcastDelivery = 'subscription'): void {
     const sessionId = envelope.session_id;
     if (this.sessionAccessId !== undefined && (sessionId !== this.sessionAccessId ||
-      envelope.type === 'event.plugin.topic' || /^event\.room\./.test(envelope.type) ||
+      envelope.type === 'event.plugin.topic' || envelope.type.startsWith('event.room.') ||
       (delivery === 'immediate' || isGlobalEvent(envelope.type)) && !/^(?:event\.session\.(?:work_changed|history_rewritten)|session\.meta\.updated|event\.(?:approval|question)\.[^.]+)$/.test(envelope.type))) return;
     if (delivery !== 'immediate' && sessionId !== undefined && this.replayHolds.has(sessionId)) {
       this.holdReplayFrame(envelope);
