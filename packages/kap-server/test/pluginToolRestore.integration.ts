@@ -369,7 +369,7 @@ it('keeps MCP request schemas, real execution and recovery consistent in the sam
     expect(registry.resolve(name)).toBeUndefined();
     expect(select.isLoadable(name)).toBe(false);
     expect(select.load([name]).unknown).toEqual([name]);
-    expect(select.shapeHistory(agent.accessor.get(IAgentContextMemoryService).get()).flatMap((message) => message.tools ?? [])).toEqual([]);
+    expect(select.shapeHistory(agent.accessor.get(IAgentContextMemoryService).get()).messages.flatMap((message) => message.tools ?? [])).toEqual([]);
     const beforeFailure = initializations;
     await send(server, base, id, 'keep working while the fixture is disconnected');
     expect(initializations).toBe(beforeFailure + 1);

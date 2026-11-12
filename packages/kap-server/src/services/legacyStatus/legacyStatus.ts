@@ -103,7 +103,7 @@ export function readContextBreakdown(
     return normalizeContextBreakdown(contextTokens, {
       systemTokens: tokenCounting.estimateText(profile.getSystemPrompt()),
       toolsTokens: tokenCounting.estimateTools(tools),
-      messagesTokens: tokenCounting.estimateMessages(toolSelect.shapeHistory(context.get())),
+      messagesTokens: tokenCounting.estimateMessages(toolSelect.shapeHistory(context.get()).messages),
     });
   } catch {
     return undefined;
