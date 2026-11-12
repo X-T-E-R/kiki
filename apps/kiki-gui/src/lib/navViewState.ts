@@ -1,5 +1,17 @@
 import { peekUiSnapshot, saveUiSnapshot } from './navHistory';
-import { previewTabKey, type PreviewTab, type PreviewTabsState } from '../state/previewWorkspace';
+import {
+  classifyResource,
+  type PreviewResource,
+  type PreviewResourceOrigin,
+  type PreviewResourceSource,
+  type PreviewResourceType,
+} from '../state/previewResource';
+import {
+  hostFileResource,
+  previewTabKey,
+  type PreviewTab,
+  type PreviewTabsState,
+} from '../state/previewWorkspace';
 
 export interface TimelineReadingSnapshot {
   readonly anchor: { readonly atEnd: boolean; readonly key?: string; readonly offset: number };
@@ -25,6 +37,59 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const VALID_RESOURCE_TYPES = new Set<PreviewResourceType>([
+  'text',
+  'markdown',
+  'html',
+  'image',
+  'video',
+  'audio',
+  'pdf',
+  'office',
+  'table',
+  'unsupported',
+]);
+
+function readPreviewResource(raw: unknown): PreviewResource | undefined {
+  if (!record(raw) || !record(raw['source'])) return undefined;
+  const rawSource = raw['source'];
+  let source: PreviewResourceSource;
+  if (rawSource['kind'] === 'host-file' && typeof rawSource['path'] === 'string') {
+    source = { kind: 'host-file', path: rawSource['path'] };
+  } else if (
+    rawSource['kind'] === 'session-copy' &&
+    typeof rawSource['sessionId'] === 'string' &&
+    typeof rawSource['fileId'] === 'string'
+  ) {
+    source = {
+      kind: 'session-copy',
+      sessionId: rawSource['sessionId'],
+      fileId: rawSource['fileId'],
+      sourceId: typeof rawSource['sourceId'] === 'string' ? rawSource['sourceId'] : undefined,
+    };
+  } else if (rawSource['kind'] === 'url' && typeof rawSource['url'] === 'string') {
+    source = { kind: 'url', url: rawSource['url'] };
+  } else {
+    return undefined;
+  }
+
+  let origin: PreviewResourceOrigin | undefined;
+  if (record(raw['origin']) && typeof raw['origin']['path'] === 'string' && typeof raw['origin']['trusted'] === 'boolean') {
+    origin = { path: raw['origin']['path'], trusted: raw['origin']['trusted'] };
+  }
+  const name = typeof raw['name'] === 'string' ? raw['name'] : undefined;
+  const mime = typeof raw['mime'] === 'string' ? raw['mime'] : undefined;
+  const rawType = raw['type'];
+  const type =
+    typeof rawType === 'string' && VALID_RESOURCE_TYPES.has(rawType as PreviewResourceType)
+      ? (rawType as PreviewResourceType)
+      : classifyResource({
+          name: name ?? (source.kind === 'host-file' ? source.path : undefined),
+          mime,
+        });
+  return { source, origin, type, name, mime };
+}
+
 /** Only reading identity and geometry cross reload; never transcript text or buffers. */
 export function readTimelineSnapshot(value: unknown): TimelineReadingSnapshot | undefined {
   if (!record(value) || !record(value['anchor']) || !Array.isArray(value['openFolds'])) return undefined;
@@ -45,24 +110,52 @@ export function readPreviewSnapshot(value: unknown): PreviewReadingSnapshot | un
   if (!Array.isArray(state['tabs'])) return undefined;
   const tabs: PreviewTab[] = [];
   const keys = new Set<string>();
+  const keyAliases = new Map<string, string>();
   for (const raw of state['tabs']) {
-    if (!record(raw)) return undefined;
-    let tab: PreviewTab;
-    if (raw['kind'] === 'file' && typeof raw['path'] === 'string') tab = { kind: 'file', path: raw['path'] };
-    else if (raw['kind'] === 'panel' && typeof raw['agentId'] === 'string') tab = { kind: 'panel', agentId: raw['agentId'], title: typeof raw['title'] === 'string' ? raw['title'] : undefined };
-    else if (raw['kind'] === 'skill' && typeof raw['name'] === 'string') tab = { kind: 'skill', name: raw['name'] };
-    else return undefined;
+    if (!record(raw)) continue;
+    let tab: PreviewTab | undefined;
+    let legacyKey: string | undefined;
+    if (raw['kind'] === 'resource') {
+      const resource = readPreviewResource(raw['resource']);
+      if (resource !== undefined) {
+        tab = {
+          kind: 'resource',
+          resource,
+          size: typeof raw['size'] === 'number' && Number.isFinite(raw['size']) ? raw['size'] : undefined,
+        };
+      }
+    } else if (raw['kind'] === 'file' && typeof raw['path'] === 'string') {
+      legacyKey = raw['path'];
+      tab = { kind: 'resource', resource: hostFileResource(raw['path']) };
+    } else if (raw['kind'] === 'web' && typeof raw['url'] === 'string') {
+      tab = { kind: 'web', url: raw['url'], title: typeof raw['title'] === 'string' ? raw['title'] : undefined };
+    } else if (raw['kind'] === 'panel' && typeof raw['agentId'] === 'string') {
+      tab = { kind: 'panel', agentId: raw['agentId'], title: typeof raw['title'] === 'string' ? raw['title'] : undefined };
+    } else if (raw['kind'] === 'skill' && typeof raw['name'] === 'string') {
+      tab = { kind: 'skill', name: raw['name'] };
+    }
+    if (tab === undefined) continue;
     const key = previewTabKey(tab);
+    if (legacyKey !== undefined) keyAliases.set(legacyKey, key);
     if (!keys.has(key)) { tabs.push(tab); keys.add(key); }
   }
+  const resolveSavedKey = (candidate: string): string | undefined => {
+    if (keys.has(candidate)) return candidate;
+    const aliased = keyAliases.get(candidate);
+    if (aliased !== undefined && keys.has(aliased)) return aliased;
+    const normalized = previewTabKey(candidate);
+    return keys.has(normalized) ? normalized : undefined;
+  };
   const positions = record(value['positions']) ? value['positions'] : {};
   const safePositions: Record<string, { top: number; left?: number }> = {};
-  for (const [key, position] of Object.entries(positions)) {
-    if (!keys.has(key) || !record(position) || typeof position['top'] !== 'number' || !Number.isFinite(position['top'])) continue;
-    safePositions[key] = { top: position['top'], left: typeof position['left'] === 'number' && Number.isFinite(position['left']) ? position['left'] : undefined };
+  for (const [rawKey, position] of Object.entries(positions)) {
+    const resolvedKey = resolveSavedKey(rawKey);
+    if (resolvedKey === undefined || !record(position) || typeof position['top'] !== 'number' || !Number.isFinite(position['top'])) continue;
+    safePositions[resolvedKey] = { top: position['top'], left: typeof position['left'] === 'number' && Number.isFinite(position['left']) ? position['left'] : undefined };
   }
+  const rawActive = typeof state['active'] === 'string' ? resolveSavedKey(state['active']) : undefined;
   return {
-    tabsState: { tabs, active: typeof state['active'] === 'string' && keys.has(state['active']) ? state['active'] : tabs[0] === undefined ? null : previewTabKey(tabs[0]) },
+    tabsState: { tabs, active: rawActive ?? (tabs[0] === undefined ? null : previewTabKey(tabs[0])) },
     panelOpen: value['panelOpen'] && tabs.length > 0,
     positions: safePositions,
   };

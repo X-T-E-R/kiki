@@ -123,9 +123,12 @@ export function buildAttachmentTabResource(
   const origin = tabOrigin ?? item.origin;
   const resolvedOrigin =
     origin !== undefined && origin.trusted
-      ? { path: resolveHostPath(origin.path, cwd), trusted: true as const }
+      ? { path: normalizeHostFilePath(origin.path, cwd), trusted: true as const }
       : undefined;
-  const type = classifyResource({ name, mime: item.mime });
+  const fallbackType: PreviewResource['type'] =
+    item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : item.kind === 'image' ? 'image' : 'unsupported';
+  const rawType = classifyResource({ name, mime: item.mime });
+  const type = rawType === 'unsupported' && fallbackType !== 'unsupported' ? fallbackType : rawType;
   if (item.fileId !== undefined) {
     return {
       source: {
@@ -141,7 +144,7 @@ export function buildAttachmentTabResource(
     };
   }
   if (item.path !== undefined) {
-    const resolved = resolveHostPath(item.path, cwd);
+    const resolved = normalizeHostFilePath(item.path, cwd);
     return {
       source: { kind: 'host-file', path: resolved },
       origin: resolvedOrigin ?? { path: resolved, trusted: true },

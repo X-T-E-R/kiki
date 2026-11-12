@@ -9,9 +9,11 @@ import { useI18n } from '#/i18n';
 import { copyTextToClipboard } from '#/lib/clipboard';
 import { useOptionalConnection } from '#/state/connection';
 import {
+  classifyResource,
   resourceActions,
   resourceMutability,
   type PreviewReadState,
+  type PreviewResource,
 } from '#/state/previewResource';
 import {
   previewTabKey,
@@ -23,8 +25,6 @@ import { saveMediaToDisk } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import {
-  buildAttachmentTabResource,
-  buildFileTabResource,
   downloadHostFile,
   HEADER_ACTION_CLASS,
   mentionTokenFor,
@@ -32,6 +32,20 @@ import {
   useFileOpeners,
   usePreviewEnvironment,
 } from './shared';
+
+function refineResourceWithReadState(
+  resource: PreviewResource,
+  readState: PreviewReadState | undefined,
+): PreviewResource {
+  if (readState?.losslessUtf8 === undefined || resource.source.kind !== 'host-file') {
+    return resource;
+  }
+  const head = readState.losslessUtf8 ? new Uint8Array([0x61]) : new Uint8Array([0xff]);
+  return {
+    ...resource,
+    type: classifyResource({ name: resource.name ?? basenameOf(resource.source.path), mime: resource.mime, head }),
+  };
+}
 
 export function TabContextMenu({
   menu,
@@ -69,17 +83,8 @@ export function TabContextMenu({
     { key: 'close-others', label: t('preview.closeOthers'), run: onCloseOthers },
     { key: 'close-all', label: t('preview.closeAll'), run: onCloseAll },
   ];
-  if (tab.kind === 'file' || tab.kind === 'attachment') {
-    const resource =
-      tab.kind === 'file'
-        ? buildFileTabResource(tab.path, cwd, readState?.losslessUtf8)
-        : buildAttachmentTabResource(
-            tab.item,
-            tab.sessionId ?? sessionId,
-            tab.origin,
-            cwd,
-            tab.item.kind === 'image' ? t('media.image') : t('media.attachment'),
-          );
+  if (tab.kind === 'resource') {
+    const resource = refineResourceWithReadState(tab.resource, readState);
     const effectiveReadState: PreviewReadState = readState ?? {
       status: 'ready',
       readableFromDevice: true,
@@ -89,9 +94,9 @@ export function TabContextMenu({
     const isCopy = resourceMutability(resource) === 'copy';
     const trustedPath =
       resource.origin !== undefined && resource.origin.trusted
-        ? resource.origin.path
+        ? resolveHostPath(resource.origin.path, cwd)
         : resource.source.kind === 'host-file'
-          ? resource.source.path
+          ? resolveHostPath(resource.source.path, cwd)
           : undefined;
     const actionEntries: MiniMenuEntry[] = [];
     for (const action of actions) {
@@ -102,8 +107,8 @@ export function TabContextMenu({
           run: () => { onOpenCurrentFile(trustedPath); },
         });
       } else if (action.id === 'download') {
-        if (tab.kind === 'file') {
-          const filePath = resolveHostPath(tab.path, cwd);
+        if (resource.source.kind === 'host-file') {
+          const filePath = resolveHostPath(resource.source.path, cwd);
           actionEntries.push({
             key: 'download',
             label: t('media.download'),
@@ -113,21 +118,21 @@ export function TabContextMenu({
           });
         } else {
           const name = resource.name ?? t('media.attachment');
-          const downloadName = safeImagePreviewName({ name: tab.item.name, path: tab.item.path }) ?? name;
+          const downloadName = safeImagePreviewName({ name: resource.name, path: trustedPath }) ?? name;
+          const copySource = resource.source;
           actionEntries.push({
             key: 'download',
             label: t('media.download'),
             run: async () => {
               await saveMediaToDisk(
                 {
-                  url: tab.item.url,
-                  path: tab.item.fileId !== undefined ? undefined : tab.item.path,
-                  fileId: tab.item.fileId,
+                  url: copySource.kind === 'url' ? copySource.url : undefined,
+                  fileId: copySource.kind === 'session-copy' ? copySource.fileId : undefined,
                 },
                 downloadName,
                 host,
                 client as Parameters<typeof saveMediaToDisk>[3],
-                tab.sessionId ?? sessionId,
+                copySource.kind === 'session-copy' ? (copySource.sessionId || sessionId) : sessionId,
               );
             },
           });
@@ -140,7 +145,7 @@ export function TabContextMenu({
         });
       } else if (action.id === 'copy-path' && trustedPath !== undefined) {
         const relativePath = relativeToCwd(trustedPath, cwd);
-        if (tab.kind === 'file' || relativePath !== trustedPath) {
+        if (!isCopy || relativePath !== trustedPath) {
           actionEntries.push({
             key: 'copy-relative',
             label: t('file.copyRelativePath'),
@@ -149,7 +154,7 @@ export function TabContextMenu({
         }
         actionEntries.push({
           key: 'copy-absolute',
-          label: tab.kind === 'file' ? t('file.copyAbsolutePath') : t('file.copyPath'),
+          label: isCopy ? t('file.copyPath') : t('file.copyAbsolutePath'),
           run: () => copyTextToClipboard(trustedPath),
         });
       } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
@@ -168,7 +173,7 @@ export function TabContextMenu({
         actionEntries.push({
           key: 'reload',
           label: t('preview.reloadFile'),
-          run: () => { onReloadTab(previewTabKey(tab)); },
+          run: () => { onReloadTab(previewTabKey(tab, cwd)); },
         });
       }
     }
@@ -180,7 +185,7 @@ export function TabContextMenu({
       { separator: true },
       ...(onReloadTab === undefined
         ? []
-        : [{ key: 'reload', label: t('preview.reloadFile'), run: () => { onReloadTab(previewTabKey(tab)); } }]),
+        : [{ key: 'reload', label: t('preview.reloadFile'), run: () => { onReloadTab(previewTabKey(tab, cwd)); } }]),
       { key: 'copy-url', label: t('preview.copyUrl'), run: () => copyTextToClipboard(tab.url) },
       { key: 'open-browser', label: t('message.openInBrowser'), run: () => { void openExternalUrl(host, tab.url, t('common.popupBlocked')); } },
     );

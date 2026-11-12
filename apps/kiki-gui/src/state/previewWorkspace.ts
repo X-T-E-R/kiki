@@ -1,24 +1,26 @@
 /**
  * Preview workspace tab state — the pure reducer behind the resident preview
- * panel. Tab identity is a host file path, a canonical session-media
- * attachment, an external web URL, a built-in skill name, or a panel
- * descriptor; ordering is user-controlled via drag reorder. Kept framework-free so tab semantics
- * (activate-on-reopen, neighbor activation on close, bounded reorder) are
- * unit-testable without a DOM.
+ * panel. Tab kinds are `resource` (host files and session copies), `web`
+ * (external URLs), `panel` (agent workspaces), and `skill` (built-in skills);
+ * ordering is user-controlled via drag reorder. Kept framework-free so tab
+ * semantics (activate-on-reopen, neighbor activation on close, bounded reorder)
+ * are unit-testable without a DOM.
  */
 
-import type { MediaRef } from '@kiki/session-core/composer/media';
+import { basenameOf, resolveHostPath } from '@kiki/session-core/composer/media';
 
-export interface FileTab {
-  readonly kind: 'file';
-  readonly path: string;
-}
+import {
+  classifyResource,
+  normalizeHostFilePath,
+  previewResourceKey,
+  type PreviewResource,
+} from './previewResource';
 
-export interface AttachmentTab {
-  readonly kind: 'attachment';
-  readonly item: MediaRef;
-  readonly sessionId?: string;
-  readonly origin?: { readonly path: string; readonly trusted: true };
+export interface ResourceTab {
+  readonly kind: 'resource';
+  readonly resource: PreviewResource;
+  /** Optional size hint for session copies before bytes are read. */
+  readonly size?: number;
 }
 
 export interface WebTab {
@@ -38,7 +40,7 @@ export interface SkillTab {
   readonly name: string;
 }
 
-export type PreviewTab = FileTab | AttachmentTab | WebTab | PanelTab | SkillTab;
+export type PreviewTab = ResourceTab | WebTab | PanelTab | SkillTab;
 
 export interface PreviewTabsState {
   /** Open tabs, in strip order. */
@@ -49,35 +51,82 @@ export interface PreviewTabsState {
 
 export const EMPTY_PREVIEW_TABS: PreviewTabsState = { tabs: [], active: null };
 
-export function previewTabKey(tab: PreviewTab | string): string {
-  if (typeof tab === 'string') return tab;
-  if (tab.kind === 'file') return tab.path;
-  if (tab.kind === 'attachment') {
-    const id = tab.item.fileId ?? tab.item.blobHash ?? tab.item.url ?? tab.item.name ?? '';
-    const sourceSuffix = tab.item.sourceId === undefined ? '' : `:${tab.item.sourceId}`;
-    return `attachment:${tab.sessionId ?? ''}:${id}${sourceSuffix}`;
+export function hostFileResource(rawPath: string, cwd?: string): PreviewResource {
+  const trimmed = rawPath.trim();
+  const path = /^file:\/\//iu.test(trimmed)
+    ? normalizeHostFilePath(trimmed, cwd)
+    : resolveHostPath(trimmed, cwd);
+  const name = basenameOf(path);
+  return {
+    source: { kind: 'host-file', path },
+    origin: { path, trusted: true },
+    type: classifyResource({ name }),
+    name,
+  };
+}
+
+export function previewTabKey(tab: PreviewTab | string, cwd?: string): string {
+  if (typeof tab === 'string') {
+    if (
+      (tab.startsWith('file:') && !/^file:\/\//iu.test(tab)) ||
+      tab.startsWith('attachment:') ||
+      tab.startsWith('url:') ||
+      tab.startsWith('web:') ||
+      tab.startsWith('panel:') ||
+      tab.startsWith('skill:')
+    ) {
+      return tab;
+    }
+    return previewResourceKey({ source: { kind: 'host-file', path: tab } }, cwd);
   }
+  if (tab.kind === 'resource') return previewResourceKey(tab.resource, cwd);
   if (tab.kind === 'web') return `web:${tab.url}`;
   return tab.kind === 'panel' ? `panel:${tab.agentId}` : `skill:builtin:${tab.name}`;
 }
 
-export function normalizeTabInput(input: string | PreviewTab): PreviewTab {
-  return typeof input === 'string' ? { kind: 'file', path: input } : input;
+export function normalizeTabInput(input: string | PreviewTab, cwd?: string): PreviewTab {
+  if (typeof input === 'string') {
+    return { kind: 'resource', resource: hostFileResource(input, cwd) };
+  }
+  if (input.kind === 'resource' && input.resource.source.kind === 'host-file' && cwd !== undefined) {
+    const resolvedPath = resolveHostPath(input.resource.source.path, cwd);
+    if (resolvedPath !== input.resource.source.path) {
+      const name = input.resource.name ?? basenameOf(resolvedPath);
+      return {
+        ...input,
+        resource: {
+          ...input.resource,
+          source: { kind: 'host-file', path: resolvedPath },
+          origin:
+            input.resource.origin !== undefined
+              ? { ...input.resource.origin, path: resolveHostPath(input.resource.origin.path, cwd) }
+              : { path: resolvedPath, trusted: true },
+          name,
+        },
+      };
+    }
+  }
+  return input;
 }
 
-/** Open a file or panel: an existing tab just activates; a new one appends + activates. */
+/** Open a resource, web URL, skill, or panel: an existing tab activates; a new one appends + activates. */
 export function openPreviewTab(
   state: PreviewTabsState,
   input: string | PreviewTab,
+  cwd?: string,
 ): PreviewTabsState {
-  const tab = normalizeTabInput(input);
-  const key = previewTabKey(tab);
-  const existingIndex = state.tabs.findIndex((t) => previewTabKey(t) === key);
+  const tab = normalizeTabInput(input, cwd);
+  const key = previewTabKey(tab, cwd);
+  const existingIndex = state.tabs.findIndex((t) => previewTabKey(t, cwd) === key);
   if (existingIndex !== -1) {
+    const existing = state.tabs[existingIndex];
     if (
-      (tab.kind === 'panel' && tab.title && state.tabs[existingIndex]?.kind === 'panel') ||
-      (tab.kind === 'web' && tab.title && state.tabs[existingIndex]?.kind === 'web') ||
-      (tab.kind === 'attachment' && state.tabs[existingIndex]?.kind === 'attachment')
+      (tab.kind === 'panel' && tab.title && existing?.kind === 'panel') ||
+      (tab.kind === 'web' && tab.title && existing?.kind === 'web') ||
+      (tab.kind === 'resource' &&
+        existing?.kind === 'resource' &&
+        tab.resource.source.kind === 'session-copy' &&
+        existing.resource.source.kind === 'session-copy')
     ) {
       const updated = [...state.tabs];
       updated[existingIndex] = tab;
@@ -92,9 +141,10 @@ export function openPreviewTab(
 export function activatePreviewTab(
   state: PreviewTabsState,
   keyOrTab: string | PreviewTab,
+  cwd?: string,
 ): PreviewTabsState {
-  const key = previewTabKey(keyOrTab);
-  return state.tabs.some((t) => previewTabKey(t) === key) ? { ...state, active: key } : state;
+  const key = previewTabKey(keyOrTab, cwd);
+  return state.tabs.some((t) => previewTabKey(t, cwd) === key) ? { ...state, active: key } : state;
 }
 
 /**
@@ -104,14 +154,15 @@ export function activatePreviewTab(
 export function closePreviewTab(
   state: PreviewTabsState,
   keyOrTab: string | PreviewTab,
+  cwd?: string,
 ): PreviewTabsState {
-  const key = previewTabKey(keyOrTab);
-  const index = state.tabs.findIndex((t) => previewTabKey(t) === key);
+  const key = previewTabKey(keyOrTab, cwd);
+  const index = state.tabs.findIndex((t) => previewTabKey(t, cwd) === key);
   if (index === -1) return state;
   const tabs = state.tabs.filter((_, i) => i !== index);
   if (state.active !== key) return { tabs, active: state.active };
   const nextTab = tabs[index] ?? tabs[index - 1] ?? null;
-  const active = nextTab ? previewTabKey(nextTab) : null;
+  const active = nextTab ? previewTabKey(nextTab, cwd) : null;
   return { tabs, active };
 }
 
@@ -119,9 +170,10 @@ export function closePreviewTab(
 export function closeOtherPreviewTabs(
   state: PreviewTabsState,
   keyOrTab: string | PreviewTab,
+  cwd?: string,
 ): PreviewTabsState {
-  const key = previewTabKey(keyOrTab);
-  const match = state.tabs.find((t) => previewTabKey(t) === key);
+  const key = previewTabKey(keyOrTab, cwd);
+  const match = state.tabs.find((t) => previewTabKey(t, cwd) === key);
   if (!match) return state;
   return { tabs: [match], active: key };
 }
@@ -138,9 +190,10 @@ export function movePreviewTab(
   state: PreviewTabsState,
   keyOrTab: string | PreviewTab,
   targetIndex: number,
+  cwd?: string,
 ): PreviewTabsState {
-  const key = previewTabKey(keyOrTab);
-  const from = state.tabs.findIndex((t) => previewTabKey(t) === key);
+  const key = previewTabKey(keyOrTab, cwd);
+  const from = state.tabs.findIndex((t) => previewTabKey(t, cwd) === key);
   if (from === -1) return state;
   const to = Math.max(0, Math.min(targetIndex, state.tabs.length - 1));
   if (to === from) return state;

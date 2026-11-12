@@ -1,44 +1,28 @@
 /**
- * PreviewWorkspace — the resident multi-tab preview panel. One tab per host
- * file path, built-in skill or agent panel; tabs close via the × or the context
- * menu (close / close others / close all), reorder by drag, and mark unsaved
- * buffers with a dot. Content routes by extension: images render at full
- * resolution (fit width or 100%, with the lightbox one click away),
- * markdown toggles rendered/source, code/text open in a CodeMirror view,
- * common video containers play in a plain HTML5 player, and unknown binaries
- * get the download fallback. Wherever the download anchor appears, the
- * desktop opener pair — "open with default app" and "reveal in file
- * manager" — appears beside it, gated on the same host capability as the tab
- * context menu's entries; a reveal icon also rides the binary tab's caption
- * strip. Text files are editable where a write
- * channel exists (desktop); everything degrades to read-only otherwise. A file
- * tab mounts the first time it is shown, then stays mounted while hidden so
- * editor buffers, reading position and playback survive later switches.
- * Collapsing the panel hides a tab that has already been shown: the mounted
- * editor controller keeps its draft and its pending autosave, so re-opening
- * the panel never costs unsaved edits. Only closing the tab unmounts it.
- *
- * Agent (panel) tabs render the same full AgentWorkspace as the agent route
- * page — identity header, timeline, actions and detail rail — chromed by
- * tab-local portal slots instead of the app-level shell slots. While wired,
- * each visible agent tab retains its own transcript view on the shared
- * controller; the lease drops to the summary baseline when the tab or the
- * whole panel hides, and is released when the tab closes. The tab context
- * menu's agent entry opens the same agent on its fullscreen route. The tab
- * renders no rail of its own: the app keeps ONE right rail, and SessionView
- * retargets the shared rail at the active panel tab's agent.
+ * PreviewWorkspace — the resident multi-tab preview panel. Tab kinds are
+ * `resource` (live host files and sent session copies), `web` (external URLs),
+ * `panel` (agent workspaces), and `skill` (built-in skills). Tabs close via ×
+ * or the context menu (close / close others / close all), reorder by drag, and
+ * mark unsaved buffers with a dot. Resource tabs pick their renderer from
+ * `resource.type` (`classifyResource`) so live files and session copies share
+ * the exact same rendering capabilities (Markdown, sandboxed HTML, PDF/Office,
+ * image, audio/video, text/code, and unsupported fallbacks).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { basenameOf, previewKindOf, resolveHostPath, type FileReference } from '@kiki/session-core/composer/media';
+import { basenameOf, resolveHostPath, type FileReference } from '@kiki/session-core/composer/media';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { usePhoneMode } from '#/lib/layoutHooks';
 import { cssZoomFactor, unzoomedViewport } from '#/lib/uiZoom';
 import { useOptionalConnection } from '#/state/connection';
-import type { PreviewReadState } from '#/state/previewResource';
+import {
+  normalizeHostFilePath,
+  type PreviewReadState,
+  type PreviewResource,
+} from '#/state/previewResource';
 import {
   normalizeTabInput,
   previewTabKey,
@@ -70,6 +54,13 @@ import { isHtmlPreviewPath, TextTabView } from './preview/TextTabView';
 import { PreviewWebView } from './preview/WebTabView';
 
 export { clampPreviewWidth, isHtmlPreviewPath, relativeToCwd };
+
+function comparableHostPath(rawPath: string, cwd: string | undefined): string {
+  const normalized = normalizeHostFilePath(rawPath, cwd);
+  return /^[A-Za-z]:\//u.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLowerCase()
+    : normalized;
+}
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -108,7 +99,7 @@ export interface PreviewWorkspaceProps {
   readonly scrollPositions?: Readonly<Record<string, { readonly top: number; readonly left?: number }>>;
   readonly onScrollPosition?: (key: string, position: { top: number; left?: number }) => void;
   /**
-   * Collapsed (not closed): a file tab that has already been shown stays
+   * Collapsed (not closed): a resource tab that has already been shown stays
    * mounted and hides itself. Unmounting here would dispose the host-file
    * editor controller, dropping the draft and canceling its pending autosave.
    * Defaults to false.
@@ -154,8 +145,6 @@ export function PreviewWorkspace({
   const { t } = useI18n();
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  // A phone already shows the workspace over the whole screen (index.css), so
-  // "full screen" has nothing to enlarge and there is no width to drag.
   const phoneMode = usePhoneMode();
   const [narrow, setNarrow] = useState(() =>
     typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches,
@@ -170,13 +159,25 @@ export function PreviewWorkspace({
   }, []);
 
   const normalizedTabs = useMemo(
-    () => tabs.map(normalizeTabInput),
-    [tabs],
+    () => tabs.map((tab) => normalizeTabInput(tab, cwd)),
+    [tabs, cwd],
   );
-  const openTabKeys = useMemo(() => new Set(normalizedTabs.map((tab) => previewTabKey(tab))), [normalizedTabs]);
+  const resolvedActive = useMemo(() => {
+    if (active === null || active === '') return null;
+    if (normalizedTabs.some((tab) => previewTabKey(tab, cwd) === active)) return active;
+    const canonical = previewTabKey(active, cwd);
+    return normalizedTabs.some((tab) => previewTabKey(tab, cwd) === canonical) ? canonical : active;
+  }, [active, cwd, normalizedTabs]);
+
+  const openTabKeys = useMemo(
+    () => new Set(normalizedTabs.map((tab) => previewTabKey(tab, cwd))),
+    [normalizedTabs, cwd],
+  );
   const [seenTabs, setSeenTabs] = useState<ReadonlySet<string>>(() => new Set());
   const nextSeen = new Set([...seenTabs].filter((key) => openTabKeys.has(key)));
-  if (!hidden && active !== null && active !== '' && openTabKeys.has(active)) nextSeen.add(active);
+  if (!hidden && resolvedActive !== null && resolvedActive !== '' && openTabKeys.has(resolvedActive)) {
+    nextSeen.add(resolvedActive);
+  }
   if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
 
   const [tabReadStates, setTabReadStates] = useState<Readonly<Record<string, PreviewReadState>>>({});
@@ -212,13 +213,14 @@ export function PreviewWorkspace({
         preview.openFile(targetPath);
         return;
       }
-      const identity = (value: string) =>
-        /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
-      const resolved = resolveHostPath(targetPath, cwd);
+      const targetComparable = comparableHostPath(targetPath, cwd);
       const existing = normalizedTabs.find(
-        (candidate) => candidate.kind === 'file' && identity(resolveHostPath(candidate.path, cwd)) === identity(resolved),
+        (candidate) =>
+          candidate.kind === 'resource' &&
+          candidate.resource.source.kind === 'host-file' &&
+          comparableHostPath(candidate.resource.source.path, cwd) === targetComparable,
       );
-      if (existing !== undefined) onActivate(previewTabKey(existing));
+      if (existing !== undefined) onActivate(previewTabKey(existing, cwd));
     },
     [cwd, normalizedTabs, onActivate, preview],
   );
@@ -272,16 +274,10 @@ export function PreviewWorkspace({
     return null;
   }
 
-  // Docked in the shell, fullscreen fills the conversation row (the main
-  // content area) and leaves the app sidebar in place; only the bare-provider
-  // overlay, which has no row to fill, takes the whole window.
   const containerClasses = isFullscreen && overlay
     ? 'fixed inset-0 z-40 flex h-full w-full flex-col bg-panel'
     : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''} ${isFullscreen ? 'preview-workspace--fullscreen' : ''}`;
 
-  // Inline `display:none` rather than the `hidden` class: the class rules on
-  // `.preview-workspace` set a display of their own, so only an inline style
-  // reliably wins regardless of stylesheet order.
   const hiddenStyle = hidden ? { display: 'none' as const } : undefined;
   const containerStyle = isFullscreen ? hiddenStyle : {
     width: narrow ? '100%' : width,
@@ -314,7 +310,7 @@ export function PreviewWorkspace({
       ) : null}
       <PreviewTabStrip
         tabs={normalizedTabs}
-        active={active}
+        active={resolvedActive}
         dirtyPaths={dirtyPaths}
         tabReadStates={tabReadStates}
         agentForest={agentForest}
@@ -331,8 +327,15 @@ export function PreviewWorkspace({
         onOpenContextMenu={(tab, x, y) => { setMenu({ tab, x, y }); }}
       />
       {normalizedTabs.map((tab) => {
-        const key = previewTabKey(tab);
-        const isTabActive = key === active;
+        const key = previewTabKey(tab, cwd);
+        const isTabActive = key === resolvedActive;
+        const legacyScrollKey =
+          tab.kind === 'resource' && tab.resource.source.kind === 'host-file'
+            ? tab.resource.source.path
+            : undefined;
+        const tabPosition =
+          scrollPositions?.[key] ??
+          (legacyScrollKey === undefined ? undefined : scrollPositions?.[legacyScrollKey]);
         if (tab.kind === 'panel') {
           const workspaceWired =
             controller !== null && controller !== undefined &&
@@ -376,26 +379,7 @@ export function PreviewWorkspace({
               tabKey={key}
               name={tab.name}
               visible={isTabActive && !hidden}
-              position={scrollPositions?.[key]}
-              onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
-            />
-          );
-        }
-        if (tab.kind === 'attachment') {
-          if (!seenTabs.has(key)) return null;
-          return (
-            <PreviewAttachmentView
-              key={key}
-              tabKey={key}
-              item={tab.item}
-              origin={tab.origin ?? tab.item.origin}
-              sessionId={tab.sessionId ?? sessionId}
-              workspaceRoot={cwd}
-              visible={isTabActive && !hidden}
-              onOpenImage={onOpenImage}
-              onOpenCurrentFile={openLiveFile}
-              onReadStateChange={(state) => { reportTabReadState(key, state); }}
-              position={scrollPositions?.[key]}
+              position={tabPosition}
               onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             />
           );
@@ -415,20 +399,33 @@ export function PreviewWorkspace({
         }
         if (!seenTabs.has(key)) return null;
         return (
-          <PreviewTabView
+          <PreviewResourceTabView
             key={key}
             tabKey={key}
-            path={tab.path}
+            resource={tab.resource}
+            size={tab.size}
             workspaceRoot={cwd}
             visible={isTabActive && !hidden}
-            navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
-            fileWriteEpoch={fileWriteEpochFor(fileWriteCounts, tab.path, cwd)}
+            navigation={
+              tab.resource.source.kind === 'host-file' &&
+              navigation !== undefined &&
+              isTabActive &&
+              comparableHostPath(navigation.path, cwd) === comparableHostPath(tab.resource.source.path, cwd)
+                ? navigation
+                : undefined
+            }
+            fileWriteEpoch={
+              tab.resource.source.kind === 'host-file'
+                ? fileWriteEpochFor(fileWriteCounts, tab.resource.source.path, cwd)
+                : 0
+            }
             externalReloadNonce={reloadNonces[key]}
             onCloseTab={() => { onClose(key); }}
             onOpenImage={onOpenImage}
+            onOpenCurrentFile={openLiveFile}
             reportDirty={reportDirty}
             onReadStateChange={(state) => { reportTabReadState(key, state); }}
-            position={scrollPositions?.[key]}
+            position={tabPosition}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             sessionId={sessionId}
           />
@@ -439,13 +436,13 @@ export function PreviewWorkspace({
           menu={menu}
           cwd={cwd}
           sessionId={sessionId}
-          readState={tabReadStates[previewTabKey(menu.tab)]}
+          readState={tabReadStates[previewTabKey(menu.tab, cwd)]}
           workspaceNavigation={workspaceNavigation}
           onOpenCurrentFile={openLiveFile}
           onReloadTab={bumpTabReload}
           onCloseMenu={() => { setMenu(null); }}
-          onCloseTab={() => { onClose(previewTabKey(menu.tab)); }}
-          onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab)); }}
+          onCloseTab={() => { onClose(previewTabKey(menu.tab, cwd)); }}
+          onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab, cwd)); }}
           onCloseAll={onCloseAll}
         />
       ) : null}
@@ -454,13 +451,7 @@ export function PreviewWorkspace({
 }
 
 /**
- * AgentTabWorkspace — one panel tab's embedded AgentWorkspace. The tab shell
- * owns the container concerns: local chrome slots (header/dock portal targets
- * inside the tabpanel) and the transcript view lease. The lease follows
- * actual visibility: 'delta' while the tab is active in a shown panel, 'off'
- * once the tab or the whole panel is hidden (a hidden tab asks for nothing;
- * a background agent is received only if something else holds a lease on
- * it), released when the tab unmounts.
+ * AgentTabWorkspace — one panel tab's embedded AgentWorkspace.
  */
 function AgentTabWorkspace({
   viewId,
@@ -499,10 +490,6 @@ function AgentTabWorkspace({
     [headerSlot, dockSlot],
   );
 
-  // Transcript view lease: one per tab, keyed by the stable tab key. Retain
-  // once per (controller, view, agent); visibility flips go through
-  // updateAgentView so the grade changes in one pass instead of swinging
-  // through an intermediate release/re-retain drop.
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   useEffect(() => {
@@ -542,9 +529,82 @@ function AgentTabWorkspace({
   );
 }
 
-function PreviewTabView({
-  tabKey: _tabKey,
+function PreviewResourceTabView({
+  tabKey,
+  resource,
+  size,
+  workspaceRoot,
+  visible,
+  navigation,
+  fileWriteEpoch = 0,
+  externalReloadNonce,
+  onCloseTab,
+  onOpenImage,
+  onOpenCurrentFile,
+  reportDirty,
+  onReadStateChange,
+  position,
+  onScrollPosition,
+  sessionId,
+}: {
+  readonly tabKey: string;
+  readonly resource: PreviewResource;
+  readonly size?: number;
+  readonly workspaceRoot?: string;
+  readonly visible: boolean;
+  readonly navigation?: FileReference;
+  readonly fileWriteEpoch?: number;
+  readonly externalReloadNonce?: number;
+  readonly onCloseTab?: () => void;
+  readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
+  readonly onOpenCurrentFile?: (path: string) => void;
+  readonly reportDirty: (path: string, dirty: boolean) => void;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
+  readonly position?: { readonly top: number; readonly left?: number };
+  readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
+  readonly sessionId?: string;
+}) {
+  if (resource.source.kind !== 'host-file') {
+    return (
+      <PreviewAttachmentView
+        tabKey={tabKey}
+        resource={resource}
+        size={size}
+        sessionId={sessionId}
+        workspaceRoot={workspaceRoot}
+        visible={visible}
+        externalReloadNonce={externalReloadNonce}
+        onOpenImage={onOpenImage}
+        onOpenCurrentFile={onOpenCurrentFile}
+        onReadStateChange={onReadStateChange}
+        position={position}
+        onScrollPosition={onScrollPosition}
+      />
+    );
+  }
+  return (
+    <HostFileResourceTabView
+      path={resource.source.path}
+      resourceType={resource.type}
+      workspaceRoot={workspaceRoot}
+      visible={visible}
+      navigation={navigation}
+      fileWriteEpoch={fileWriteEpoch}
+      externalReloadNonce={externalReloadNonce}
+      onCloseTab={onCloseTab}
+      onOpenImage={onOpenImage}
+      reportDirty={reportDirty}
+      onReadStateChange={onReadStateChange}
+      position={position}
+      onScrollPosition={onScrollPosition}
+      sessionId={sessionId}
+    />
+  );
+}
+
+function HostFileResourceTabView({
   path,
+  resourceType,
   workspaceRoot,
   visible,
   navigation,
@@ -558,9 +618,8 @@ function PreviewTabView({
   onScrollPosition,
   sessionId,
 }: {
-  readonly tabKey?: string;
   readonly path: string;
-  /** Session workspace cwd, used as a resource-resolution hint for HTML preview. */
+  readonly resourceType: PreviewResource['type'];
   readonly workspaceRoot?: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
@@ -570,19 +629,18 @@ function PreviewTabView({
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
-  /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
-  /** Which session's document renderer and asset route serve this file. */
   readonly sessionId?: string;
 }) {
   const filePath = resolveHostPath(path, workspaceRoot);
-  const kind = previewKindOf(filePath);
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const openers = useFileOpeners();
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
+  const hasKnownExtension = basenameOf(filePath).includes('.');
+
   return (
     <div
       ref={panelRef}
@@ -591,7 +649,7 @@ function PreviewTabView({
       className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
       data-preview-tabpanel={path}
     >
-      {kind === 'image' ? (
+      {resourceType === 'image' ? (
         <ImageTabView
           path={filePath}
           visible={visible}
@@ -601,14 +659,14 @@ function PreviewTabView({
           onCloseTab={onCloseTab}
           onReadStateChange={onReadStateChange}
         />
-      ) : kind === 'video' ? (
+      ) : resourceType === 'video' ? (
         <VideoTabView
           path={filePath}
           externalReloadNonce={externalReloadNonce}
           onCloseTab={onCloseTab}
           onReadStateChange={onReadStateChange}
         />
-      ) : kind === 'audio' ? (
+      ) : resourceType === 'audio' ? (
         <AudioTabView
           path={filePath}
           scopeId={connection?.scopeId}
@@ -616,7 +674,7 @@ function PreviewTabView({
           onCloseTab={onCloseTab}
           onReadStateChange={onReadStateChange}
         />
-      ) : kind === 'pdf' || kind === 'office' ? (
+      ) : resourceType === 'pdf' || resourceType === 'office' ? (
         <DocumentTabView
           source={{ kind: 'workspace', path: filePath }}
           sessionId={sessionId}
@@ -640,14 +698,14 @@ function PreviewTabView({
             if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath), t);
           }}
         />
-      ) : kind === 'binary' ? (
+      ) : resourceType === 'unsupported' && hasKnownExtension ? (
         <BinaryTabView path={filePath} />
       ) : (
         <TextTabView
           path={filePath}
           workspaceRoot={workspaceRoot}
           visible={visible}
-          markdown={kind === 'markdown'}
+          markdown={resourceType === 'markdown'}
           navigation={navigation}
           fileWriteEpoch={fileWriteEpoch}
           externalReloadNonce={externalReloadNonce}

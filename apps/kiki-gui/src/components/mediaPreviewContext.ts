@@ -5,6 +5,8 @@
  */
 
 import { createContext, createElement, useContext, type ReactNode } from 'react';
+import type { FileReference, MediaRef } from '@kiki/session-core/composer/media';
+import type { PreviewResource } from '../state/previewResource';
 import type { GalleryImage } from './mediaGallery';
 
 const GalleryOrderContext = createContext<{ agentId: string; order: number; blockId: string } | null>(null);
@@ -14,8 +16,6 @@ export function MediaGalleryOrder({ children, ...value }: { agentId: string; ord
 }
 
 export function useMediaGalleryOrder() { return useContext(GalleryOrderContext); }
-
-import type { FileReference, MediaRef } from '@kiki/session-core/composer/media';
 
 export interface MediaPreviewApi {
   /** Session owning canonical or staged media IDs. */
@@ -28,6 +28,8 @@ export interface MediaPreviewApi {
   readonly openGalleryImage?: (item: MediaRef, agentId?: string, initialSrc?: string, occurrenceId?: string) => void;
   /** Retain source descriptors, never a thumbnail's expiring blob URL. */
   readonly registerGalleryImage?: (image: GalleryImage) => void;
+  /** Open any unified PreviewResource (live host file or session copy) in the resident preview workspace. */
+  readonly openResource?: (resource: PreviewResource, navigation?: FileReference, size?: number) => void;
   /** Open a raw filesystem path or an already-resolved FileReference. Strings
    * are never URI-decoded or stripped of citation suffixes. Citation entrances
    * resolve text or hrefs to FileReference first; navigation never enters a
@@ -37,7 +39,7 @@ export interface MediaPreviewApi {
   readonly openAgentPanel: (agentId: string, title?: string) => void;
   /** Open a read-only built-in skill in the preview workspace. */
   readonly openBuiltinSkill: (name: string) => void;
-  /** Open an attachment backed by a canonical session media id. */
+  /** Open an attachment: images open in the gallery lightbox; all other kinds open as a resource tab. */
   readonly openAttachment: (item: MediaRef, galleryAgentId?: string) => void;
   /** Open a canonical attachment inside the resident preview workspace. */
   readonly openAttachmentInWorkspace?: (item: MediaRef) => void;
@@ -53,7 +55,7 @@ export interface MediaPreviewApi {
   readonly togglePreviewPanel: () => void;
   /**
    * Agent id of the panel tab the user is looking at right now (active tab in
-   * an expanded workspace); `undefined` when the focused surface is a file
+   * an expanded workspace); `undefined` when the focused surface is a resource
    * tab, a collapsed panel, or no tabs — the shared right rail then belongs
    * to the main session.
    */

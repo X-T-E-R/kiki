@@ -3,6 +3,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
@@ -53,6 +54,12 @@ vi.mock('../state/connection', async (importOriginal) => {
   };
 });
 
+vi.mock('./CodeEditor', () => ({
+  CodeEditor: ({ value, ariaLabel }: { value: string; ariaLabel?: string }) => (
+    <textarea data-testid="editor" aria-label={ariaLabel} value={value} readOnly />
+  ),
+}));
+
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
 let originalCreateObjectUrl: typeof URL.createObjectURL | undefined;
@@ -70,7 +77,11 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
 async function renderSettled(root: Root, node: ReactNode): Promise<void> {
   await act(async () => {
     flushSync(() => {
-      root.render(<I18nProvider>{node}</I18nProvider>);
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>{node}</I18nProvider>
+        </MemoryRouter>,
+      );
     });
     await Promise.resolve();
   });
@@ -262,15 +273,13 @@ describe('session media preview', () => {
     expect(document.body.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe('blob:kiki-session-media');
   });
 
-  it('opens and downloads a fileId attachment instead of rendering a dead chip', async () => {
+  it('opens and downloads a fileId attachment in a resource tab instead of rendering a dead chip or modal dialog', async () => {
     mocks.readSessionMediaBytes.mockResolvedValue({
       bytes: new Uint8Array([4, 5]),
       mime: 'text/plain',
       name: 'notes.txt',
     });
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    // The save streams through the host sink; this case only needs the file
-    // the reader asked for to arrive, which the native path covers at size.
     mocks.downloadSessionMedia.mockImplementation(async (_sessionId, _fileId, sink) => {
       await sink(new Uint8Array([4, 5]), { bytes: 2, totalBytes: 2 });
     });
@@ -290,15 +299,15 @@ describe('session media preview', () => {
       chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    const dialog = document.body.querySelector('[role="dialog"]');
-    expect(dialog?.querySelector('[data-attachment-preview]')).not.toBeNull();
-    expect(findDialogButton(dialog, 'Load full file')).toBeUndefined();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    const panel = container.querySelector('[data-preview-workspace] [data-attachment-preview]');
+    expect(panel).not.toBeNull();
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', 'file-1', expect.anything());
     expect(mocks.readSessionMediaPreviewBytes).not.toHaveBeenCalled();
-    expect(dialog?.querySelector('[data-attachment-preview] pre')?.textContent).toBe('\u0004\u0005');
+    expect(panel?.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value).toBe('\u0004\u0005');
 
-    const download = findDialogButton(dialog, 'Download');
-    expect(download).not.toBeUndefined();
+    const download = panel?.querySelector<HTMLButtonElement>('[data-download-file]');
+    expect(download).not.toBeNull();
     await act(async () => {
       download?.click();
     });
@@ -677,7 +686,7 @@ describe('session Range playback', () => {
   ])('uses a descriptor for $tag without reading the original bytes', async ({ item, tag, mime }) => {
     mocks.openMediaPlayback.mockResolvedValue(descriptor('stream', mime));
     await attachment(item);
-    expect(document.querySelector(`[role="dialog"] ${tag}`)?.getAttribute('src')).toBe('http://localhost:8080/media-preview/stream');
+    expect(document.querySelector(`[data-preview-workspace] ${tag}`)?.getAttribute('src')).toBe('http://localhost:8080/media-preview/stream');
     expect(mocks.openMediaPlayback).toHaveBeenCalledWith('session-a', item.fileId, expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15_000 }));
     expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
     expect(mocks.readSessionMediaPreviewBytes).not.toHaveBeenCalled();
@@ -737,8 +746,8 @@ describe('session Range playback', () => {
     await attachment(video);
     await act(async () => { document.querySelector('video')!.dispatchEvent(new Event('error')); });
     expect(mocks.closeMediaPlayback).toHaveBeenCalledExactlyOnceWith('broken', { timeoutMs: 10_000 });
-    expect(document.querySelector('[role="dialog"] video')).toBeNull();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[role="dialog"] [data-media-broken]')!.click(); });
+    expect(document.querySelector('[data-preview-workspace] video')).toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-preview-workspace] [data-media-broken]')!.click(); });
     expect(document.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/retry');
     expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
   });
@@ -771,9 +780,9 @@ describe('session Range playback', () => {
   it.each([new Error('network unavailable'), { code: 40409 }])('keeps mint failures visible instead of disguising them as unsupported', async (error) => {
     mocks.openMediaPlayback.mockRejectedValueOnce(error).mockResolvedValueOnce(descriptor('retry'));
     await attachment(video);
-    expect(document.querySelector('[role="dialog"] [data-media-broken]')).not.toBeNull();
+    expect(document.querySelector('[data-preview-workspace] [data-media-broken]')).not.toBeNull();
     expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[role="dialog"] [data-media-broken]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-preview-workspace] [data-media-broken]')!.click(); });
     expect(document.querySelector('video')?.src).toBe('http://localhost:8080/media-preview/retry');
   });
 

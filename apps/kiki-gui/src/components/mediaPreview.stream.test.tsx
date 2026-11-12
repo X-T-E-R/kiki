@@ -19,7 +19,6 @@ import { MediaLightbox } from './MediaLightbox';
 const fixture = vi.hoisted(() => ({ client: null as unknown, openSaveSink: vi.fn(), saveBlob: undefined as ((blob: Blob, name: string) => Promise<boolean>) | undefined }));
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: fixture.client, scopeId: 'fixture' }) }));
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'vscode', openSaveSink: fixture.openSaveSink, saveBlob: fixture.saveBlob }) }));
-vi.mock('./PreviewWorkspace', () => ({ PreviewWorkspace: () => null, PreviewCloseConfirm: () => null }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

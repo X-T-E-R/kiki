@@ -191,7 +191,10 @@ export function TextTabView({
     }
     const next = new HostFileEditorController({
       path,
-      readFile: (target, options) => client.previewHostFile(target, undefined, options),
+      readFile: (target, options) =>
+        options === undefined
+          ? client.previewHostFile(target)
+          : client.previewHostFile(target, undefined, options),
       writeFile: host.writeFileText,
       local: localKikiComputer,
     });

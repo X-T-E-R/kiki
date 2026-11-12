@@ -87,6 +87,7 @@ vi.mock('../state/connection', async (importOriginal) => {
     },
     documentPreview: (sessionId: string, request: unknown, signal?: AbortSignal) =>
       sessionMediaMock.documentPreview(sessionId, request, signal),
+    readDocumentPreviewAsset: () => Promise.resolve({ bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' }),
     baseUrl: 'http://127.0.0.1:5177',
     openHtmlPreview: htmlPreviewMock.open,
     closeHtmlPreview: htmlPreviewMock.close,
@@ -320,8 +321,8 @@ describe('PreviewWorkspace', () => {
       expect(scroller.scrollTop).toBe(187);
       expect(scroller.scrollLeft).toBe(23);
       await act(async () => { scroller.scrollTop = 241; scroller.dispatchEvent(new Event('scroll')); });
-      expect(report).toHaveBeenLastCalledWith('/work/src/server.ts', { top: 241, left: 23 });
-      await renderSettled(probe.root, <PreviewWorkspace {...props} scrollPositions={{ '/work/src/server.ts': { top: 187, left: 23 } }} />);
+      expect(report).toHaveBeenLastCalledWith('file:/work/src/server.ts', { top: 241, left: 23 });
+      await renderSettled(probe.root, <PreviewWorkspace {...props} scrollPositions={{ 'file:/work/src/server.ts': { top: 187, left: 23 } }} />);
       expect(scroller.scrollTop).toBe(241);
       expect(frames).toBeLessThan(30);
     } finally { raf.mockRestore(); cancel.mockRestore(); }
@@ -361,7 +362,7 @@ describe('PreviewWorkspace', () => {
       const forwardVisit = getCurrentVisit()!.visitId;
       await act(async () => { await router.navigate(-1); });
       await settle();
-      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['/work/docs/design.md']?.top).toBe(321);
+      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['file:/work/docs/design.md']?.top).toBe(321);
       expect(workspace().querySelector('.cm-scroller')).toBe(editor);
       expect(editor.scrollTop).toBe(187);
       expect(editor.scrollLeft).toBe(23);
@@ -371,7 +372,7 @@ describe('PreviewWorkspace', () => {
       await act(async () => { await router.navigate(1); });
       await settle();
       expect(getCurrentVisit()!.visitId).toBe(forwardVisit);
-      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['/work/docs/design.md']?.top).toBe(321);
+      expect(getReadingSnapshot<PreviewReadingSnapshot>(forwardVisit, previewSnapshotKey('example'))?.positions['file:/work/docs/design.md']?.top).toBe(321);
       expect(markdown.scrollTop).toBe(321);
     } finally { raf.mockRestore(); cancel.mockRestore(); clearNavHistory(); }
   });
@@ -384,8 +385,8 @@ describe('PreviewWorkspace', () => {
     const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => window.setTimeout(() => { callback(0); }, 1));
     const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { window.clearTimeout(id); });
     const report = vi.fn();
-    const key = kind === 'image' ? '/work/shots/screen.png' : 'skill:builtin:example';
-    const tab = kind === 'image' ? key : { kind: 'skill' as const, name: 'example' };
+    const key = kind === 'image' ? 'file:/work/shots/screen.png' : 'skill:builtin:example';
+    const tab = kind === 'image' ? '/work/shots/screen.png' : { kind: 'skill' as const, name: 'example' };
     try {
       await renderSettled(probe.root, <PreviewWorkspace tabs={[tab]} active={key} dirtyPaths={new Set()} width={400}
         onActivate={vi.fn()} onClose={vi.fn()} onCloseOthers={vi.fn()} onCloseAll={vi.fn()} onMove={vi.fn()}
@@ -2207,7 +2208,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     await act(async () => { tab.focus(); });
     expect(document.activeElement).toBe(tab);
     await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
-    expect(onActivate).toHaveBeenCalledWith('/work/src/server.ts');
+    expect(onActivate).toHaveBeenCalledWith('file:/work/src/server.ts');
     await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
     expect(onActivate).toHaveBeenCalledTimes(2);
   });
@@ -2261,7 +2262,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     expect(document.activeElement).toBe(tab);
   });
 
-  it('renders AttachmentTab for HTML (sandboxed origin) and unsupported binaries, and WebTab for external URLs without falling back to host paths on missing blobs', async () => {
+  it('renders ResourceTab for HTML (sandboxed origin) and unsupported binaries, and WebTab for external URLs without falling back to host paths on missing blobs (#33)', async () => {
     htmlPreviewMock.open.mockReset();
     htmlPreviewMock.open.mockResolvedValue({
       preview_id: 'prev-html-1',
@@ -2271,27 +2272,33 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     });
     const probe = makeRoot();
     const htmlTab = {
-      kind: 'attachment' as const,
-      sessionId: 'sess-1',
-      item: {
-        kind: 'file' as const,
-        fileId: 'blobref:main:html1',
-        sourceId: 'a'.repeat(64),
-        path: '/work/slides/index.html',
+      kind: 'resource' as const,
+      size: 1024,
+      resource: {
+        source: {
+          kind: 'session-copy' as const,
+          sessionId: 'sess-1',
+          fileId: 'blobref:main:html1',
+          sourceId: 'a'.repeat(64),
+        },
+        origin: { path: '/work/slides/index.html', trusted: true },
+        type: 'html' as const,
         name: 'index.html',
         mime: 'text/html',
-        size: 1024,
       },
     };
     const zipTab = {
-      kind: 'attachment' as const,
-      sessionId: 'sess-1',
-      item: {
-        kind: 'file' as const,
-        fileId: 'blobref:main:zip1',
+      kind: 'resource' as const,
+      size: 2048,
+      resource: {
+        source: {
+          kind: 'session-copy' as const,
+          sessionId: 'sess-1',
+          fileId: 'blobref:main:zip1',
+        },
+        type: 'unsupported' as const,
         name: 'bundle.zip',
         mime: 'application/zip',
-        size: 2048,
       },
     };
     const webTab = {
@@ -2303,7 +2310,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
       probe.root,
       <PreviewWorkspace
         tabs={[htmlTab, zipTab, webTab]}
-        active={`attachment:sess-1:blobref:main:html1:${'a'.repeat(64)}`}
+        active={`attachment:sess-1:${encodeURIComponent('blobref:main:html1')}:${'a'.repeat(64)}`}
         dirtyPaths={new Set()}
         width={420}
         cwd="/work"
@@ -2337,7 +2344,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
       probe.root,
       <PreviewWorkspace
         tabs={[htmlTab, zipTab, webTab]}
-        active="attachment:sess-1:blobref:main:zip1"
+        active={`attachment:sess-1:${encodeURIComponent('blobref:main:zip1')}`}
         dirtyPaths={new Set()}
         width={420}
         cwd="/work"
@@ -2997,5 +3004,138 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     vi.useRealTimers();
     delete FILES['/work/notebooks/demo.ipynb'];
     delete sessionMediaMock.bytesById['blobref:main:nb1'];
+  });
+
+  it('opens session-media chips, generated-media items, and non-image attachments in unified resource tabs with shared Markdown, PDF, and HTML renderers and no modal attachment dialog (#33)', async () => {
+    FILES['/work/slides/deck.html'] = '<!doctype html><html><body>Slide</body></html>\n';
+    sessionMediaMock.bytesById['blobref:main:md33'] = {
+      bytes: new TextEncoder().encode('# Unified Heading\n\nParagraph text.\n'),
+      mime: 'text/markdown',
+      name: 'design.md',
+    };
+    sessionMediaMock.documentPreview.mockImplementation(async (_sid: string, req: { source: { kind: string } }) => ({
+      kind: 'ready',
+      fidelity: 'page',
+      format: 'pdf',
+      renderer: 'raster',
+      source: req.source.kind === 'workspace'
+        ? { kind: 'workspace', path: '/work/docs/spec.pdf', size: 128 }
+        : { kind: 'session-media', name: 'spec.pdf', media_type: 'application/pdf', size: 128 },
+      navigation: { kind: 'page', page: 1, page_count: 2 },
+      assets: [{ asset_id: 'p1', url: 'https://example.test/page1.png', width: 600, height: 800 }],
+    }));
+    htmlPreviewMock.open.mockResolvedValue({
+      preview_id: 'prev-33',
+      url: 'http://prev-33.kiki-document.localhost:59999/html-preview/prev-33/deck.html',
+      sandbox: HTML_PREVIEW_SANDBOX,
+      expires_at: Date.now() + 60_000,
+    });
+
+    function UnifiedHarness() {
+      const preview = useMediaPreview()!;
+      return (
+        <div>
+          <MediaPartList
+            media={[
+              { kind: 'file', fileId: 'blobref:main:md33', name: 'design.md', mime: 'text/markdown' },
+            ]}
+          />
+          <button
+            type="button"
+            data-open-pdf-copy
+            onClick={() => {
+              preview.openAttachment({
+                kind: 'file',
+                fileId: 'blobref:main:pdf33',
+                name: 'spec.pdf',
+                mime: 'application/pdf',
+              });
+            }}
+          >
+            pdf copy
+          </button>
+          <button
+            type="button"
+            data-open-pdf-live
+            onClick={() => { preview.openFile('/work/docs/spec.pdf'); }}
+          >
+            pdf live
+          </button>
+          <button
+            type="button"
+            data-open-html-copy
+            onClick={() => {
+              preview.openAttachment({
+                kind: 'file',
+                fileId: 'blobref:main:html33',
+                name: 'deck.html',
+                mime: 'text/html',
+              });
+            }}
+          >
+            html copy
+          </button>
+          <button
+            type="button"
+            data-open-html-live
+            onClick={() => { preview.openFile('/work/slides/deck.html'); }}
+          >
+            html live
+          </button>
+        </div>
+      );
+    }
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-33">
+        <UnifiedHarness />
+        <OpenButton path="/work/docs/design.md" />
+      </MediaPreviewProvider>,
+    );
+
+    // 1. Clicking a session-media file chip opens a resource tab (Rendered Markdown) and never a modal dialog
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('button')!.click();
+    });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(probe.container.querySelector('[data-attachment-preview] h1')?.textContent).toBe('Unified Heading');
+
+    // Path-opened Markdown also renders Heading via Markdown
+    await openFile(probe.container, '/work/docs/design.md');
+    await settle();
+    expect(probe.container.querySelector('[data-preview-tabpanel="/work/docs/design.md"] h1')?.textContent).toBe('Design');
+
+    // 2. Both PDF attachment copy and live PDF path render via DocumentTabView [data-preview-document]
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-pdf-copy]')!.click();
+    });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(probe.container.querySelector('[data-attachment-preview] [data-preview-document]')).not.toBeNull();
+
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-pdf-live]')!.click();
+    });
+    await settle();
+    expect(probe.container.querySelector('[data-preview-tabpanel="/work/docs/spec.pdf"] [data-preview-document]')).not.toBeNull();
+
+    // 3. Both HTML attachment copy and live HTML path render via SandboxedHtmlPreview iframe[data-preview-html]
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-html-copy]')!.click();
+    });
+    await settle();
+    expect(probe.container.querySelector('[data-attachment-preview] iframe[data-preview-html]')).not.toBeNull();
+
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-html-live]')!.click();
+    });
+    await settle();
+    expect(probe.container.querySelector('[data-preview-tabpanel="/work/slides/deck.html"] iframe[data-preview-html]')).not.toBeNull();
+
+    delete FILES['/work/slides/deck.html'];
+    delete sessionMediaMock.bytesById['blobref:main:md33'];
   });
 });
