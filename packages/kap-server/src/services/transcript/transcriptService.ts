@@ -2069,7 +2069,8 @@ export class TranscriptService {
       return cached.snapshot;
     }
     if (cached !== undefined) this.deleteColdSnapshotCache(wirePath);
-    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, !tailFirst);
+    const mode = !tailFirst ? 'headers' : preserveWindow ? 'records' : 'first-screen';
+    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, mode);
     if (window === undefined) return undefined;
     const after = await stat(wirePath);
     signal?.throwIfAborted();
@@ -2113,7 +2114,7 @@ export class TranscriptService {
     }
     const opened = signal ?? new AbortController().signal;
     const proof = tailFirst ? await historyNavigationProof(location.wirePath, info.size, opened) : undefined;
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, !tailFirst);
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, tailFirst ? 'first-screen' : 'headers');
     if (proof !== undefined && !matchesNavigationProof(proof, await historyNavigationProof(location.wirePath, info.size, opened))) {
       this.forgetColdWindow(location.wirePath);
       throw new Error('history_source_changed');
@@ -2280,8 +2281,9 @@ export class TranscriptService {
   private async ensureColdWireWindow(sessionId: string, agentId: string, wirePath: string,
     info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
     fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
-    captureReplayState?: (state: TranscriptReplayState) => void, resolveHeaders = true,
+    captureReplayState?: (state: TranscriptReplayState) => void, mode: 'headers' | 'records' | 'first-screen' = 'headers',
   ): Promise<ColdWireWindow | undefined> {
+    const resolveHeaders = mode === 'headers';
     const existing = this.coldWireWindows.get(wirePath);
     if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
       if (resolveHeaders && !existing.entire && existing.end >= info.size && existing.headers === undefined) {
@@ -2295,7 +2297,9 @@ export class TranscriptService {
       return existing;
     }
     if (existing !== undefined) this.forgetColdWindow(wirePath);
-    const start = await this.tailRecordStart(wirePath, info.size, signal);
+    const start = mode === 'first-screen'
+      ? await this.firstScreenStart(wirePath, info.size, signal)
+      : await this.tailRecordStart(wirePath, info.size, signal);
     const read = await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
     const entire = start === 0 && read.complete;
     const snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
@@ -2307,7 +2311,7 @@ export class TranscriptService {
     this.rememberColdWindow(wirePath, window);
     let visible = window;
     let guard = 0;
-    while (visible.snapshot.items.length === 0 && visible.start > 0 && guard < 8) {
+    while (mode !== 'first-screen' && visible.snapshot.items.length === 0 && visible.start > 0 && guard < 8) {
       const before = visible.start;
       const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, undefined, resolveHeaders);
       if (extended === undefined || extended.start === before) break;
@@ -2324,7 +2328,7 @@ export class TranscriptService {
   ): Promise<ColdWireWindow | undefined> {
     const retained = this.coldWireWindows.get(wirePath);
     const window = retained?.fingerprint === fingerprint && retained.payloadEvicted === true ? retained :
-      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders);
+      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders ? 'headers' : 'records');
     if (window === undefined || window.start === 0) return window;
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
@@ -2528,6 +2532,25 @@ export class TranscriptService {
     return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: false };
   }
 
+  private async firstScreenStart(wirePath: string, end: number, signal: AbortSignal): Promise<number> {
+    const start = Math.max(0, end - FIRST_SCREEN_WINDOW_BYTES);
+    if (start === 0) return 0;
+    const opened = await openLogicalWire(wirePath, signal);
+    if (opened === undefined) return end;
+    try {
+      for (let position = start - 1; position < end;) {
+        signal.throwIfAborted();
+        const bytes = await opened.readAt(position, Math.min(64 * 1024, end - position));
+        this.coldReadBytes += bytes.byteLength;
+        if (bytes.byteLength === 0) break;
+        const newline = bytes.indexOf(0x0a);
+        if (newline >= 0) return position + newline + 1;
+        position += bytes.byteLength;
+      }
+      return end;
+    } finally { opened.close(); }
+  }
+
   private async tailRecordStart(wirePath: string, end: number, signal: AbortSignal, spanBytes = FIRST_SCREEN_WINDOW_BYTES): Promise<number> {
     if (end <= spanBytes) return 0;
     return (await this.alignRecordStart(wirePath, end - spanBytes, signal)).start!;
@@ -2626,7 +2649,7 @@ export class TranscriptService {
     const opened = signal ?? new AbortController().signal;
     const turnOf = (window: ColdWireWindow | undefined): TranscriptTurn | undefined =>
       window === undefined ? undefined : completeColdWindowTurn(window, turnId);
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, false);
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, 'records');
     const found = turnOf(window);
     if (found !== undefined || window === undefined || window.start === 0) return found;
     if (window.end - window.start > FIRST_SCREEN_WINDOW_BYTES) return undefined;

@@ -16,7 +16,10 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { openPinnedLogicalRead, type PinnedLogicalRead } from '#/persistence/coldSegmentLog';
 import { readPinnedRange } from '#/persistence/logicalWireFile';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
+import { runCpuStream } from '#/app/cpuWorker/stream';
 import type { ThreadTurn } from './threadCommunication';
+import { parseThreadTurnRecord } from './threadTurnRecord';
 
 export interface ThreadTurnSource {
   readonly generation: string;
@@ -115,7 +118,21 @@ export class ThreadTurnStore implements IThreadTurnStore {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IQueryStore private readonly query: IQueryStore,
     @ILogService private readonly log: ILogService,
+    @ICpuWorkerService private readonly cpu: ICpuWorkerService,
   ) {}
+
+  private async decode(line: Line, scope: string, signal?: AbortSignal): Promise<WireRecord | undefined> {
+    try {
+      if (line.bytes.byteLength <= 64 * 1024) return parseThreadTurnRecord(Buffer.from(line.bytes).toString('utf8'));
+      return await runCpuStream<WireRecord | undefined>(this.cpu.request.bind(this.cpu), { type: 'wire.threadTurnRecord' },
+        async function* () { yield line.bytes; }, signal);
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== 'SyntaxError') throw error;
+      if (line.unterminated && !signal?.aborted) return undefined;
+      signal?.throwIfAborted();
+      throw new AppendLogCorruptedError(scope, AGENT_WIRE_RECORD_KEY, line.start, error);
+    }
+  }
 
   read(scope: string, before: number, limit: number, source?: ThreadTurnSource, signal?: AbortSignal): Promise<ThreadTurnPage> {
     return this.exclusive(scope, signal, async () => {
@@ -152,7 +169,8 @@ export class ThreadTurnStore implements IThreadTurnStore {
           let consumed = 0;
           let yielded = 0;
           for await (const line of lines(pinned, next.offset, selected.watermark, signal)) {
-            const record = parse(line.bytes, scope, line.start);
+            const record = await this.decode(line, scope, signal);
+            if (record === undefined && line.unterminated) break;
             records++;
             consumed += line.end - line.start;
             if (record !== undefined) this.fold(collection, next, record, line, operations);
@@ -274,7 +292,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
       if (tail.replay !== undefined) {
         const replay = tail.replay;
         for await (const line of lines(pinned, replay.head.offset, replay.end, signal)) {
-          const record = parse(line.bytes, scope, line.start);
+          const record = await this.decode(line, scope, signal);
           if (record !== undefined) this.fold(collection, replay.head, record, line, operations);
           replay.head.offset = line.end;
           consumed += line.end - line.start;
@@ -296,7 +314,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
         tail.offset = line.start;
         consumed += line.end - line.start;
         records++;
-        const record = parse(line.bytes, scope, line.start);
+        const record = await this.decode(line, scope, signal);
         if (record?.type === 'turn.ended') {
           const id = number(record['turnId']);
           if (id !== undefined && ['completed', 'cancelled', 'failed', 'blocked'].includes(String(record['reason']))) {
@@ -440,7 +458,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
   private async record(pinned: PinnedLogicalRead, scope: string, start: number, end: number, expected: string, signal?: AbortSignal): Promise<WireRecord> {
     const bytes = await readPinnedRange(pinned, start, end - start, signal);
     if (bytes.byteLength !== end - start || digest(bytes) !== expected) changed();
-    return parse(bytes, scope, start) ?? changed();
+    return await this.decode({ bytes, start, end }, scope, signal) ?? changed();
   }
 
   private async text(scope: string, turn: TurnRow, field: 'input' | 'output', offset: number, limit: number, signal?: AbortSignal): Promise<string> {
@@ -490,16 +508,12 @@ export class ThreadTurnStore implements IThreadTurnStore {
   }
 }
 
-interface Line { readonly start: number; readonly end: number; readonly bytes: Uint8Array }
+interface Line { readonly start: number; readonly end: number; readonly bytes: Uint8Array; readonly unterminated?: boolean }
 
 async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: AbortSignal): AsyncIterable<Line> {
   let position = end;
   let lineEnd = end;
   let parts: Uint8Array[] = [];
-  const complete = (bytes: Uint8Array): boolean => {
-    if (lineEnd !== end || bytes.at(-1) === 10) return true;
-    try { JSON.parse(Buffer.from(bytes).toString('utf8')); return true; } catch { return false; }
-  };
   while (position > 0) {
     const start = Math.max(0, position - 64 * 1024);
     const chunk = await readPinnedRange(pinned, start, position - start, signal);
@@ -509,7 +523,7 @@ async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: Ab
       if (chunk[index] !== 10 || start + index + 1 === lineEnd) continue;
       const from = start + index + 1;
       const bytes = Buffer.concat([chunk.subarray(index + 1, to), ...parts.toReversed()]);
-      if (complete(bytes)) yield { start: from, end: lineEnd, bytes };
+      yield { start: from, end: lineEnd, bytes, unterminated: lineEnd === end && bytes.at(-1) !== 10 };
       lineEnd = from;
       parts = [];
       to = index + 1;
@@ -520,7 +534,7 @@ async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: Ab
   }
   if (parts.length > 0) {
     const bytes = Buffer.concat(parts.toReversed());
-    if (complete(bytes)) yield { start: 0, end: lineEnd, bytes };
+    yield { start: 0, end: lineEnd, bytes, unterminated: lineEnd === end && bytes.at(-1) !== 10 };
   }
 }
 
@@ -545,16 +559,7 @@ async function* lines(pinned: PinnedLogicalRead, start: number, end: number, sig
   }
   if (parts.length > 0) {
     const bytes = Buffer.concat(parts);
-    try { JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { return; }
-    yield { start: offset, end: offset + bytes.byteLength, bytes };
-  }
-}
-
-function parse(bytes: Uint8Array, scope: string, offset: number): WireRecord | undefined {
-  const text = Buffer.from(bytes).toString('utf8').trim();
-  if (text.length === 0) return undefined;
-  try { return JSON.parse(text) as WireRecord; } catch (error) {
-    throw new AppendLogCorruptedError(scope, AGENT_WIRE_RECORD_KEY, offset, error);
+    yield { start: offset, end: offset + bytes.byteLength, bytes, unterminated: true };
   }
 }
 

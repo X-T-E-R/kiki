@@ -526,6 +526,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | 读取已保存请求的完整内容，不恢复 Agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | 重试等待确认或失败的已保存请求 |
 
+提示词列表加上 `?observe=true` 时，只读观察当前主 Agent 正在处理和排队的提示词。未激活的已保存会话或尚未创建的主 Agent 返回 `{ active: null, queued: [] }`，不恢复或创建 Agent。此视图不列出已保存的请求；读取这些请求请使用 `admission=durable`。
+
 已保存的会话通过 `admission: "durable"` 和长度为 1–256 字符的稳定 `prompt_id` 显式选择保存。会话仍在恢复时保存是其中一种用途；门槛是会话已经保存，而不是恢复正在进行。其他 `admission` 值会在正文落盘前被拒绝。不存在的会话，以及仍在运行但尚未保存的临时会话，也会在落盘前被拒绝，并且不会产生受理回执。
 
 服务端随后保存完整请求和上传附件，并返回 `status: "queued", admission: "restoring"`。这一对值表示消息已持久化、等待恢复，不是 Agent 已经受理。成功的 HTTP 信封只确认这次保存。
@@ -700,7 +702,7 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/sessions/{session_id}/terminals` | 列出终端 |
+| `GET /api/sessions/{session_id}/terminals` | 列出运行中的终端；未激活的已保存会话返回空列表，不触发恢复 |
 | `POST /api/sessions/{session_id}/terminals` | 创建终端 |
 | `GET /api/sessions/{session_id}/terminals/{terminal_id}` | 读取终端（含回滚缓冲） |
 | `POST /api/sessions/{session_id}/terminals/{terminal_id}:close` | 关闭终端 |

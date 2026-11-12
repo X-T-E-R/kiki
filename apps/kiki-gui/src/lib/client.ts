@@ -1707,7 +1707,7 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.listMessages(sessionId, query));
   }
 
-  listPrompts(sessionId: string, query: { admission?: 'durable'; agent_id?: string; cursor?: string } = {}): Promise<PromptListResponse> {
+  listPrompts(sessionId: string, query: { admission?: 'durable'; agent_id?: string; cursor?: string; observe?: true } = {}): Promise<PromptListResponse> {
     return this.run(() => this.rest.sessions.listPrompts(sessionId, query));
   }
 

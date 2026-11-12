@@ -279,7 +279,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       listPrompts: (sessionId: string, query = {}) => transport.json<PromptListResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/prompts`,
-        { query: { admission: query.admission, agent_id: query.agent_id, cursor: query.cursor } },
+        { query: { admission: query.admission, agent_id: query.agent_id, cursor: query.cursor, observe: query.observe } },
       ),
       getPrompt: (sessionId: string, promptId: string, query = {}) => transport.json<PromptItem>(
         `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}`,

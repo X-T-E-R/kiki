@@ -694,6 +694,35 @@ describe('GUI shared client against an isolated KAP host', () => {
     }
   });
 
+  it('pages saved turns after an oversized last record leaves the cold first screen empty', async () => {
+    const id = await session();
+    const manager = host.core.accessor.get(ISessionManager);
+    await manager.close(id);
+    const indexed = (await host.core.accessor.get(ISessionIndex).get(id))!;
+    const logs = host.core.accessor.get(IAppendLogStore);
+    const scope = `sessions/${indexed.workspaceId}/${id}/agents/main`;
+    logs.append(scope, 'wire.jsonl', { type: 'turn.prompt', turnId: 0, promptId: 'saved',
+      input: [{ type: 'text', text: 'Earlier saved prompt' }], origin: { kind: 'user' }, time: 1 });
+    logs.append(scope, 'wire.jsonl', { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2 });
+    logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(12 << 20) });
+    await logs.flush(scope, 'wire.jsonl');
+    const controller = new SessionController(client.sessions, client.sessionView(id), id);
+    const acquire = vi.spyOn(manager, 'acquire');
+    const resume = vi.spyOn(manager, 'resume');
+    try {
+      await controller.open();
+      await vi.waitFor(() => {
+        controller.flushFrames();
+        expect(controller.getState()).toMatchObject({ loaded: true, transcriptReady: true, hasMoreHistory: true, blocks: [] });
+      }, { timeout: 5000 });
+      expect(await controller.loadOlderHistory('main')).toMatchObject({ changed: true });
+      expect(JSON.stringify(controller.getState().blocks)).toContain('Earlier saved prompt');
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.get(id)).toBeUndefined();
+    } finally { controller.close(); acquire.mockRestore(); resume.mockRestore(); }
+  }, 15_000);
+
   it.each([false, true])('preserves complete model-switch reads and explicit observe=%s over GUI HTTP after >8MiB', async (observe) => {
     const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
     const manager = host.core.accessor.get(ISessionManager);

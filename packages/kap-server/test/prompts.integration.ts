@@ -56,6 +56,7 @@ import {
   queuedPromptPreviews,
 } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
+import { ErrorCode } from '../src/protocol/error-codes';
 import { modelSwitchActionSchema } from '../src/protocol/rest-model-switch';
 import { bearerToken } from './helpers/auth';
 import {
@@ -905,6 +906,46 @@ describe('server-v2 /api prompts', () => {
         if (error === undefined) resolve();
         else reject(error);
       }));
+    }
+  });
+
+  it('observes prompt lists without creating main or restoring a cold session', async () => {
+    const id = await createSession(fixture.home as string, false);
+    const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server!) });
+    try {
+      expect(lifecycle.get('main')).toBeUndefined();
+      await expect(client.listPrompts(id, { observe: true })).resolves.toMatchObject({ active: null, queued: [] });
+      expect(lifecycle.get('main')).toBeUndefined();
+
+      await createMainAgent(id);
+      const existingMain = lifecycle.get('main');
+      expect(existingMain).toBeDefined();
+      await expect(client.listPrompts(id, { observe: true })).resolves.toMatchObject({ active: null, queued: [] });
+      expect(lifecycle.get('main')).toBe(existingMain);
+
+      const ordinaryId = await createSession(fixture.home as string, false);
+      const ordinarySession = getLiveSessionById(fixture.server!.core.accessor, ordinaryId)!;
+      expect(ordinarySession.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+      await expect(client.listPrompts(ordinaryId)).resolves.toMatchObject({ active: null, queued: [] });
+      expect(ordinarySession.accessor.get(IAgentLifecycleService).get('main')).toBeDefined();
+
+      await closeSessionById(fixture.server!.core.accessor, id);
+      const manager = fixture.server!.core.accessor.get(ISessionManager);
+      const acquire = vi.spyOn(manager, 'acquire');
+      try {
+        await expect(client.listPrompts(id, { observe: true })).resolves.toMatchObject({ active: null, queued: [] });
+        expect(acquire).not.toHaveBeenCalled();
+        expect(getLiveSessionById(fixture.server!.core.accessor, id)).toBeUndefined();
+        const missing = await call('GET', `/api/sessions/${id}-missing/prompts?observe=true`);
+        expect(missing.body.code).toBe(ErrorCode.SESSION_NOT_FOUND);
+        expect(acquire).not.toHaveBeenCalled();
+      } finally {
+        acquire.mockRestore();
+      }
+    } finally {
+      await client.klient.close();
     }
   });
 

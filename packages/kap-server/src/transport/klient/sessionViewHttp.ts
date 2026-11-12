@@ -1,4 +1,4 @@
-import { ISessionManager, type IDisposable, type Scope } from '@kiki/agent-core-v2';
+import { ISessionIndex, ISessionManager, type IDisposable, type Scope } from '@kiki/agent-core-v2';
 import {
   sessionViewSubscribeInputSchema,
   sessionViewTranscriptCatchUpInputSchema,
@@ -255,13 +255,15 @@ export class SessionViewHttpConnection {
       const readColdAgents = async () => {
         const service = this.browse?.service;
         if (service === undefined) throw new RPCError(50001, 'session view unavailable');
-        const roster = await timeSessionViewPhase('cold_roster', fields,
-          () => abortable(service.readColdRoster(fields.sessionId, cold.signal), cold.signal), timing);
-        cold.signal.throwIfAborted();
-        if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
-        const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));
+        const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*' && gradeFor(input.transcriptGrades, agentId) !== 'off'));
         if (gradeFor(input.transcriptGrades, '*') === 'delta' || gradeFor(input.transcriptGrades, '*') === 'block') {
+          const roster = await timeSessionViewPhase('cold_roster', fields,
+            () => abortable(service.readColdRoster(fields.sessionId, cold.signal), cold.signal), timing);
+          cold.signal.throwIfAborted();
+          if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
           for (const descriptor of roster) agents.add(descriptor.agentId);
+        } else if (agents.size === 0 && await this.browse!.core.accessor.get(ISessionIndex).get(fields.sessionId, undefined, cold.signal) === undefined) {
+          throw new RPCError(40401, `session not found: ${frame.sessionId}`);
         }
         const priority = (agentId: string): boolean => Object.hasOwn(input.transcriptGrades, agentId) &&
           (gradeFor(input.transcriptGrades, agentId) === 'block' || gradeFor(input.transcriptGrades, agentId) === 'delta');

@@ -130,7 +130,7 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
   }
 
   async listPendingAgents(sessionId: string): Promise<readonly string[]> {
-    const targets = await this.mailbox.listPendingTargets();
+    const targets = await this.mailbox.listPendingTargets({ scope: { hostId: MAILBOX_HOST_ID, workspaceId: sessionId } });
     const agents = new Set<string>();
     for (const target of targets) {
       if (target.hostId !== MAILBOX_HOST_ID || target.workspaceId !== sessionId) continue;

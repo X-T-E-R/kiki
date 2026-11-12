@@ -342,9 +342,15 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         this.cancelProducerOwner(assertCancelProducerPayload(payload), ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets, (payload, ctx) => {
         if (payload === null) return this.pendingTargetsOwner(ctx);
-        if (!Array.isArray(payload) || payload.length > 1000) throw new TypeError('Invalid pending target selection.');
-        const targets = payload.map((ref) => { const target = asThreadRef(ref); if (target === undefined) throw new TypeError('Invalid pending target.'); return target; });
-        return this.pendingTargetsOwner(ctx, targets);
+        if (Array.isArray(payload) && payload.length <= 1000) {
+          const targets = payload.map((ref) => { const target = asThreadRef(ref); if (target === undefined) throw new TypeError('Invalid pending target.'); return target; });
+          return this.pendingTargetsOwner(ctx, targets);
+        }
+        if (payload !== null && typeof payload === 'object' && 'hostId' in payload && 'workspaceId' in payload &&
+            typeof payload.hostId === 'string' && typeof payload.workspaceId === 'string') {
+          return this.pendingTargetsOwner(ctx, { hostId: payload.hostId, workspaceId: payload.workspaceId });
+        }
+        throw new TypeError('Invalid pending target selection.');
       }),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.appendActivity, (payload, ctx) => this.appendActivityOwner(assertActivityPayload(payload), ctx)),
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.readActivity, async (payload, ctx): Promise<ReadActivityRpcResult> => {
@@ -477,12 +483,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     ) as Promise<number>;
   }
 
-  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[] }): Promise<readonly ThreadRef[]> {
+  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[]; readonly scope?: Pick<ThreadRef, 'hostId' | 'workspaceId'> }): Promise<readonly ThreadRef[]> {
     return this.call(
       THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets,
-      options?.targets ?? null,
+      options?.targets ?? options?.scope ?? null,
       options,
-      this.startupCallTimeoutMs,
     ) as Promise<readonly ThreadRef[]>;
   }
 
@@ -572,15 +577,16 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     method: RuntimeMethodName,
     payload: unknown,
     options?: ThreadMailboxMutationOptions,
-    timeoutMs = (method === THREAD_MAILBOX_RUNTIME_METHODS.readMessages
-      ? this.initializedPeerReadCallEpoch
-      : this.initializedCallEpoch) === this.runtime.status().epoch
-      ? this.callTimeoutMs
-      : this.startupCallTimeoutMs,
+    timeoutOverride?: number,
   ): Promise<unknown> {
     if (this.closing) throw new Error('Thread mailbox store is closed.');
+    const initialized = (epoch: number): boolean => (method === THREAD_MAILBOX_RUNTIME_METHODS.readMessages
+      ? this.initializedPeerReadCallEpoch
+      : this.initializedCallEpoch) === epoch;
     const requestId = options?.requestId ?? randomUUID();
+    const timeoutMs = timeoutOverride ?? (initialized(this.runtime.status().epoch) ? this.callTimeoutMs : this.startupCallTimeoutMs);
     const totalTimeoutMs = timeoutMs * CALL_TOTAL_TIMEOUT_MULTIPLIER;
+    let attemptTimeoutMs = timeoutMs;
     const deadlineAt = Date.now() + totalTimeoutMs;
     let phase = 'ready';
     let attempts = 0;
@@ -591,7 +597,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       const status = this.runtime.status();
       const lastCode = lastRetryError instanceof HomeRuntimeError ? lastRetryError.code : 'none';
       return new HomeRuntimeError('runtime.timeout',
-        `thread mailbox call timed out after ${totalTimeoutMs}ms (method=${method}, phase=${phase}, role=${status.role}, ready=${status.ready}, epoch=${status.epoch}, lastRetry=${lastCode}, requestId=${requestId}, attemptTimeoutMs=${timeoutMs}, attempts=${attempts}, retries=${JSON.stringify(Object.fromEntries(retries))}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}, firstTimeout=${firstTimeoutError?.message ?? 'none'}, lastError=${lastRetryError instanceof Error ? lastRetryError.message : 'none'})`,
+        `thread mailbox call timed out after ${totalTimeoutMs}ms (method=${method}, phase=${phase}, role=${status.role}, ready=${status.ready}, epoch=${status.epoch}, lastRetry=${lastCode}, requestId=${requestId}, attemptTimeoutMs=${attemptTimeoutMs}, attempts=${attempts}, retries=${JSON.stringify(Object.fromEntries(retries))}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}, firstTimeout=${firstTimeoutError?.message ?? 'none'}, lastError=${lastRetryError instanceof Error ? lastRetryError.message : 'none'})`,
         { cause: lastRetryError });
     };
     const deadlineController = new AbortController();
@@ -622,9 +628,11 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           }
           phase = 'call';
           attempts++;
+          attemptTimeoutMs = timeoutOverride !== undefined || initialized(epoch)
+            ? Math.min(timeoutOverride ?? this.callTimeoutMs, remainingMs) : remainingMs;
           const result = await this.runtime.call(method, payload, {
             requestId,
-            timeoutMs: Math.min(timeoutMs, remainingMs),
+            timeoutMs: attemptTimeoutMs,
             signal,
           });
           this.initializedCallEpoch = epoch;
@@ -1055,21 +1063,24 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     }
   }
 
-  private async pendingTargetsOwner(ctx: RuntimeMethodContext, selected?: readonly ThreadRef[]): Promise<readonly ThreadRef[]> {
+  private async pendingTargetsOwner(ctx: RuntimeMethodContext, selected?: readonly ThreadRef[] | Pick<ThreadRef, 'hostId' | 'workspaceId'>): Promise<readonly ThreadRef[]> {
     const db = await this.readyOwner(ctx);
-    if (selected !== undefined) {
+    this.setOwnerPhase(ctx, 'pending_targets');
+    if (Array.isArray(selected)) {
       const pending: ThreadRef[] = [];
-      for (const target of selected) {
-        const partition = targetPartition(target);
-        const meta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
-        if (meta !== undefined && meta.pendingCount > 0) { assertThreadIdentity(meta.target, target, partition); pending.push(target); }
+      const entries = await db.partitionMget(SYSTEM_PARTITION, selected.map((target) => targetMetaKey(targetPartition(target))));
+      for (const [index, value] of entries.entries()) {
+        const target = selected[index]!;
+        const meta = asTargetMeta(value);
+        if (meta !== undefined && meta.pendingCount > 0) { assertThreadIdentity(meta.target, target, targetPartition(target)); pending.push(target); }
       }
       return pending;
     }
+    const scope = selected as Pick<ThreadRef, 'hostId' | 'workspaceId'> | undefined;
     const targets = new Map<string, ThreadRef>();
     let after: string | undefined;
     for (;;) {
-      const entries = await db.page('t/', after, 128, 'target_meta', ctx.signal);
+      const entries = await db.pendingTargets(after, scope, ctx.signal);
       for (const entry of entries) {
         const meta = asTargetMeta(entry.value);
         if (meta === undefined || meta.pendingCount === 0) continue;

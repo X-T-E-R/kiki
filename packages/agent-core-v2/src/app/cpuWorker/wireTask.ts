@@ -5,9 +5,22 @@ import { createWireContextProjection } from '#/agent/contextMemory/wireContextPr
 import { AppendLogCorruptedError } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
 
+export async function* decodeWireInput(input: MessagePort): AsyncIterable<string> {
+  const decoder = new TextDecoder();
+  try {
+    for (;;) {
+      const incoming = once(input, 'message');
+      input.postMessage({ pull: true }, []);
+      const [message] = await incoming as [{ bytes?: ArrayBuffer; end?: boolean }];
+      if (message.end) break;
+      yield decoder.decode(message.bytes, { stream: true });
+    }
+    yield decoder.decode();
+  } finally { input.close(); }
+}
+
 export async function projectWireInput(input: MessagePort, scope: string, key: string): Promise<ArrayBuffer> {
   const projection = createWireContextProjection();
-  const decoder = new TextDecoder();
   let pending = '';
   let lineNumber = 0;
   const parse = (raw: string, final: boolean): void => {
@@ -22,22 +35,15 @@ export async function projectWireInput(input: MessagePort, scope: string, key: s
     }
     projection.add(record);
   };
-  try {
-    for (;;) {
-      const incoming = once(input, 'message');
-      input.postMessage({ pull: true }, []);
-      const [message] = await incoming as [{ bytes?: ArrayBuffer; end?: boolean }];
-      if (message.end) break;
-      pending += decoder.decode(message.bytes, { stream: true });
-      let newline = pending.indexOf('\n');
-      while (newline !== -1) {
-        parse(pending.slice(0, newline), false);
-        pending = pending.slice(newline + 1);
-        newline = pending.indexOf('\n');
-      }
+  for await (const text of decodeWireInput(input)) {
+    pending += text;
+    let newline = pending.indexOf('\n');
+    while (newline !== -1) {
+      parse(pending.slice(0, newline), false);
+      pending = pending.slice(newline + 1);
+      newline = pending.indexOf('\n');
     }
-    pending += decoder.decode();
-    if (pending.length > 0) parse(pending, true);
-    return Uint8Array.from(serialize(projection.result())).buffer;
-  } finally { input.close(); }
+  }
+  if (pending.length > 0) parse(pending, true);
+  return Uint8Array.from(serialize(projection.result())).buffer;
 }

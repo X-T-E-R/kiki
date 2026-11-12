@@ -1,5 +1,7 @@
 import {
   ErrorCodes,
+  ISessionIndex,
+  ISessionManager,
   ISessionTerminalService,
   isError2,
   Error2,
@@ -83,10 +85,22 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        await withTerminal(core, session_id, async (service) => {
-          const items = await service.list();
+        const manager = core.accessor.get(ISessionManager);
+        if (manager.acquireLive === undefined) throw new Error('live session leases are unavailable');
+        const lease = await manager.acquireLive(session_id, 'list terminals');
+        if (lease === undefined) {
+          if (await core.accessor.get(ISessionIndex).get(session_id) === undefined) {
+            throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          }
+          reply.send(okEnvelope({ items: [] }, req.id));
+          return;
+        }
+        try {
+          const items = await lease.handle.accessor.get(ISessionTerminalService).list();
           reply.send(okEnvelope({ items }, req.id));
-        });
+        } finally {
+          await lease.dispose();
+        }
       } catch (err) {
         sendMappedError(reply, req.id, err);
       }

@@ -118,6 +118,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private generation: number | undefined;
   private statusReason: string | undefined;
   private degradedCount = 0;
+  private readModelRevision = 0;
   private nextPrepareRetryAt = 0;
   private recoveryRequired = false;
   private recoveryAttempts = 0;
@@ -615,6 +616,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private markDegraded(reason: string, error?: unknown): void {
+    this.readModelRevision += 1;
     this.state = 'degraded';
     this.statusReason = reason;
     this.degradedCount += 1;
@@ -694,6 +696,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     legacy: () => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
+    const readRevision = this.readModelRevision;
     signal?.throwIfAborted();
     if (!this.readModelEnabled()) return legacy();
     if (this.mirror.dirtyEpoch() !== undefined) {
@@ -709,23 +712,26 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST, signal, { priority: true });
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
-      if (isQueryStoreBusy(error)) return legacy();
+      if (isQueryStoreBusy(error) || readRevision !== this.readModelRevision) return legacy();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
     }
     if (manifest === undefined) {
+      if (readRevision !== this.readModelRevision) return legacy();
       this.markDegraded('published generation lost');
       this.kickPrepare();
       return legacy();
     }
+    if (readRevision !== this.readModelRevision) return legacy();
     this.generation = manifest.seq;
     try {
-      return await op(manifest.seq);
+      const result = await op(manifest.seq);
+      return readRevision === this.readModelRevision ? result : legacy();
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
       if (error instanceof AuthoritativeReadFailure) throw error.cause;
-      if (isQueryStoreBusy(error)) return legacy();
+      if (isQueryStoreBusy(error) || readRevision !== this.readModelRevision) return legacy();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
@@ -737,6 +743,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     legacy: () => Promise<T>,
     exclusive = false,
   ): Promise<T> {
+    const readRevision = this.readModelRevision;
     if (!this.readModelEnabled()) return legacy();
     if (this.recoveryRequired) {
       if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare(true);
@@ -750,18 +757,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     try {
       manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     } catch (error) {
-      if (isQueryStoreBusy(error)) throw new SessionIndexBuildingError();
+      if (isQueryStoreBusy(error) || readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       throw new SessionIndexBuildingError();
     }
     if (manifest === undefined) {
+      if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       if (this.state === 'ready') this.markDegraded('published generation lost');
       this.kickPrepare();
       throw new SessionIndexBuildingError();
     }
     const publishedManifest = manifest;
     const read = async (): Promise<T> => {
+      if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       if (this.mirror.dirtyEpoch() !== undefined) {
         void this.ensureDirtyCatchUp().catch(() => false);
         throw new SessionIndexBuildingError();
@@ -769,19 +778,23 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       let generation = publishedManifest.seq;
       if (exclusive) {
         const published = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
         if (published === undefined) {
           this.kickPrepare();
           throw new SessionIndexBuildingError();
         }
         generation = published.seq;
       }
+      if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
       this.generation = generation;
       this.markReady();
       try {
-        return await op(generation);
+        const result = await op(generation);
+        if (readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
+        return result;
       } catch (error) {
         if (error instanceof AuthoritativeReadFailure) throw error.cause;
-        if (isQueryStoreBusy(error)) throw new SessionIndexBuildingError();
+        if (isQueryStoreBusy(error) || readRevision !== this.readModelRevision) throw new SessionIndexBuildingError();
         this.markDegraded('read model read failed', error);
         this.kickPrepare();
         throw new SessionIndexBuildingError();

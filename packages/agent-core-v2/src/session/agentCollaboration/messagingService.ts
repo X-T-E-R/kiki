@@ -375,12 +375,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     await this.metadata.ready;
     if (this.metadata.createdByLoad?.() !== false) return;
     const pending = await this.store.listPendingAgents(this.session.sessionId);
-    const stale: string[] = [];
-    for (const agentId of pending) {
-      if (agentId === MAIN_AGENT_ID) continue;
-      const agents = (await this.metadata.read()).agents ?? {};
-      if (agents[agentId] === undefined) stale.push(agentId);
-    }
+    const agents = (await this.metadata.read()).agents;
+    const stale = pending.filter((agentId) => agentId !== MAIN_AGENT_ID && agents?.[agentId] === undefined);
     if (stale.length === 0) return;
     await this.store.discardPending({
       sessionId: this.session.sessionId,

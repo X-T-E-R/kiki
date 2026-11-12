@@ -264,6 +264,7 @@ export class SessionController {
   private readonly rosterTranscriptBindings = new Map<string, NonNullable<AgentTranscriptSnapshot['meta']['agent']>>();
   /** Agent id → roster reads spent chasing its row (see `requestRosterRows`). */
   private readonly requestedRosterAgents = new Map<string, number>();
+  private rosterAgentIds = new Set<string>();
   private rosterLeaseTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private rewriteHold: RewriteHold | undefined;
@@ -438,7 +439,10 @@ export class SessionController {
     if (next === this.state) return;
     const rosterChanged = next.snapshotSubagents !== this.state.snapshotSubagents;
     this.state = next;
-    if (rosterChanged) this.scheduleRosterLease();
+    if (rosterChanged) {
+      this.rosterAgentIds = new Set(next.snapshotSubagents.map(snapshotSubagentAgentId));
+      this.scheduleRosterLease();
+    }
     this.queueAutomaticRosterRead();
     if (immediate) this.notifyMain();
   }
@@ -1146,7 +1150,7 @@ export class SessionController {
 
   /** True when the roster already carries a row for this agent. */
   private hasRosterRow(agentId: string): boolean {
-    return this.state.snapshotSubagents.some((row) => snapshotSubagentAgentId(row) === agentId);
+    return this.rosterAgentIds.has(agentId);
   }
 
   /** Forget ids the read answered, so they stop counting against the read budget. */
