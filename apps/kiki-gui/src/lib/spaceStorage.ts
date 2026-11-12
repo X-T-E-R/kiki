@@ -199,10 +199,13 @@ export const GLOBAL_STORAGE_KEYS = [
   // This device's own id, sent once when a space that has never carried
   // preferences is told which client its earlier look came from.
   'kiki.deviceId',
-  // First-run progress of this installation (`components/OnboardingWizard.tsx`).
-  // Onboarding is a device fact, not a home's data: opening a subspace must not
-  // walk the app through its introduction again.
-  'kiki.onboarding.step',
+  // One-time first-run hints this device has already had (the tour line, the
+  // notification question; `@kiki/session-core/settings` onboarding.ts). They
+  // teach the app, not a home's data: opening a subspace must not repeat them.
+  'kiki.firstRun',
+  // The once-per-device "this is Auto mode" line on the first approval card
+  // (`components/Interactions.tsx`); same reason as `kiki.firstRun`.
+  'kiki.firstRun.autoExplained',
   // Which settings navigation layout (`lib/settingsIaPrototype.ts`) this device
   // shows. It selects UI over generic buckets, never a home's own ids.
   'kiki.settingsIaPrototype',
@@ -223,4 +226,12 @@ export const EXCLUDED_STORAGE_KEYS = [
   // the value cannot cross homes. It is listed here instead of space-scoped
   // because `spaceStorage` must not prefix it a second time.
   'kiki.output-layer.results.v1',
+  // The mobile app shell's connection markers (`lib/appShell.ts`). Like
+  // `kiki.connection` they belong to how this device reaches a server, not to
+  // a home or the app's preferences: `kiki.shell.managed` says the stored
+  // connection was put there by the shell, and `kiki.peer.token` is a legacy
+  // session-storage token the app now only deletes. Neither is space-scoped,
+  // and neither may travel in a settings export — the second is a credential.
+  'kiki.shell.managed',
+  'kiki.peer.token',
 ] as const;

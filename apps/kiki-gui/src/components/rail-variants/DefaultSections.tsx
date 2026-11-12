@@ -5,7 +5,7 @@
  * inspector parts (agent-panel/*).
  */
 
-import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -38,7 +38,9 @@ const noopSubscribe = (): (() => void) => () => {};
 
 /**
  * The focused agent's own view state from the session's controller registry
- * (the same source the agent panel reads), never the routed agent's.
+ * (the same source the agent panel reads), never the routed agent's. Profile,
+ * model and modes arrive at `turn`; listening alone asks for nothing, so the
+ * section holds that lease on the agent while it is mounted.
  */
 function useAgentState(sessionId: string, agentId: string): SessionViewState | undefined {
   const registry = useOptionalControllerRegistry();
@@ -53,15 +55,17 @@ function useAgentState(sessionId: string, agentId: string): SessionViewState | u
     return undefined;
   }, [registry, generation, sessionId]);
   const subscribe = useCallback(
-    (listener: () => void) => controller === undefined
-      ? noopSubscribe()
-      : agentId === MAIN_AGENT_ID ? controller.subscribe(listener) : controller.subscribeAgent(agentId, listener),
+    (listener: () => void) => controller === undefined ? noopSubscribe() : controller.subscribeAgent(agentId, listener),
     [controller, agentId],
   );
-  const read = useCallback(
-    () => controller === undefined ? undefined : agentId === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(agentId),
-    [controller, agentId],
-  );
+  const read = useCallback(() => controller?.getAgentState(agentId), [controller, agentId]);
+  const leaseId = useId();
+  useEffect(() => {
+    if (controller === undefined || typeof controller.retainAgentView !== 'function') return;
+    const viewId = `rail-agent:${agentId}:${leaseId}`;
+    controller.retainAgentView(viewId, agentId, 'turn');
+    return () => { controller.releaseAgentView(viewId); };
+  }, [controller, agentId, leaseId]);
   return useSyncExternalStore(subscribe, read, read);
 }
 

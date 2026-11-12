@@ -12,6 +12,7 @@ import {
   type ExecutorPromptDelivery, type ExecutorPromptDraft, type ExecutorPromptSection,
 } from './executorPromptDraft';
 import { Field } from './fields';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 const WILDCARD_KEY: Record<(typeof FIELD_WILDCARDS)[number], I18nKey> = {
   'system.*': 'st.executorPrompt.block.system',
@@ -168,7 +169,7 @@ function SectionControls({ section, editingOverride, supported, scopeLabel, disa
       <div className="flex min-w-0 items-center gap-1.5 pt-1">
         <input aria-label={t('st.executorPrompt.fieldId')} data-executor-prompt-field-id value={fieldId} disabled={disabled}
           placeholder="system.<id>" spellCheck={false} onChange={(event) => setFieldId(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addField(); } }}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); addField(); } }}
           aria-invalid={fieldId.trim() !== '' && !fieldValid}
           className={`${SMALL_INPUT} min-w-0 flex-1 font-mono ${fieldId.trim() !== '' && !fieldValid ? 'border-amber-ink/50' : ''}`} />
         <button type="button" disabled={disabled || !fieldValid} onClick={addField}

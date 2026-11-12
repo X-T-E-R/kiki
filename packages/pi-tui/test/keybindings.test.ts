@@ -14,10 +14,33 @@ describe("KeybindingsManager", () => {
 	it("binds modified and unmodified editor viewport navigation", () => {
 		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
 
-		assert.deepStrictEqual(keybindings.getKeys("tui.editor.cursorLineStart"), ["home", "ctrl+home", "ctrl+a"]);
-		assert.deepStrictEqual(keybindings.getKeys("tui.editor.cursorLineEnd"), ["end", "ctrl+end", "ctrl+e"]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.editor.cursorLineStart"), [
+			"home",
+			"ctrl+home",
+			"ctrl+a",
+			"super+left",
+		]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.editor.cursorLineEnd"), [
+			"end",
+			"ctrl+end",
+			"ctrl+e",
+			"super+right",
+		]);
 		assert.deepStrictEqual(keybindings.getKeys("tui.editor.pageUp"), ["pageUp", "ctrl+pageUp"]);
 		assert.deepStrictEqual(keybindings.getKeys("tui.editor.pageDown"), ["pageDown", "ctrl+pageDown"]);
+	});
+
+	// Kiki divergence: Cmd (super) aliases for line start / end / delete-to-start.
+	it("binds Kitty-protocol Cmd+Left/Right/Backspace to line start, line end and delete to line start", () => {
+		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+
+		assert.strictEqual(keybindings.matches("\x1b[1;9D", "tui.editor.cursorLineStart"), true);
+		assert.strictEqual(keybindings.matches("\x1b[1;9C", "tui.editor.cursorLineEnd"), true);
+		assert.strictEqual(keybindings.matches("\x1b[127;9u", "tui.editor.deleteToLineStart"), true);
+		assert.deepStrictEqual(keybindings.getKeys("tui.editor.deleteToLineStart"), ["ctrl+u", "super+backspace"]);
+		// The plain keys keep their character-level meaning.
+		assert.strictEqual(keybindings.matches("\x1b[D", "tui.editor.cursorLineStart"), false);
+		assert.strictEqual(keybindings.matches("\x7f", "tui.editor.deleteToLineStart"), false);
 	});
 
 	it("leaves dedicated prompt history navigation unbound by default", () => {

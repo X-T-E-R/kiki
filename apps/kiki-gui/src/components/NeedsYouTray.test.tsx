@@ -6,7 +6,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalBlock } from '@kiki/session-core/session';
+import { shortcutPreferencesSchema } from '@kiki/session-core/settings/shortcuts';
 import { I18nProvider } from '../i18n';
+import { applyShortcutPreferences, resetShortcutRuntime } from '../lib/shortcuts';
 import { NeedsYouTray } from './NeedsYouTray';
 
 const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -84,5 +86,88 @@ describe('NeedsYouTray card placement', () => {
     await act(async () => { previous!.click(); });
     expect(stepper().textContent).toContain('3 / 3');
     expect(current()).toBe('a3');
+  });
+});
+
+describe('NeedsYouTray approval chords', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    resetShortcutRuntime('windows');
+  });
+
+  async function renderTray(items: readonly ApprovalBlock[], onResolveApproval: (id: string, decision: string) => Promise<void>, root?: Root): Promise<Root> {
+    let target = root;
+    if (target === undefined) {
+      const container = document.createElement('div');
+      document.body.append(container);
+      target = createRoot(container);
+      roots.push(target);
+    }
+    const mounted = target;
+    await act(async () => {
+      mounted.render(
+        <I18nProvider>
+          <MemoryRouter>
+            <NeedsYouTray
+              items={items}
+              agentNames={new Map()}
+              onResolveApproval={onResolveApproval}
+              onAnswerQuestion={async () => {}}
+              onDismissQuestion={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    return mounted;
+  }
+
+  // Focus has fallen to <body>, as it does once a sent prompt hides the
+  // composer body: the chord is "outside a text field".
+  const press = (key: string) => {
+    act(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); });
+  };
+
+  it('ignores the chords for a moment after an approval comes to the front, then decides it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    resetShortcutRuntime('windows');
+    const onResolveApproval = vi.fn(async () => {});
+    const root = await renderTray([approval('a1', 'pnpm test')], onResolveApproval);
+
+    // A follow-up still being typed blind when the card arrives.
+    press('n');
+    press('y');
+    expect(onResolveApproval).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(700);
+    press('y');
+    expect(onResolveApproval).toHaveBeenCalledExactlyOnceWith('a1', 'approved');
+
+    // The next approval to come to the front is disarmed again: a double `y`
+    // does not also approve it.
+    await renderTray([approval('a2', 'pnpm lint')], onResolveApproval, root);
+    press('y');
+    expect(onResolveApproval).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(700);
+    press('n');
+    expect(onResolveApproval).toHaveBeenLastCalledWith('a2', 'rejected');
+  });
+
+  it('answers the remapped chords instead of a hardcoded y/n', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    resetShortcutRuntime('windows');
+    applyShortcutPreferences(shortcutPreferencesSchema.parse({
+      version: 1,
+      overrides: { windows: { approve: [{ key: 'a', modifier: 'none', shift: false }], reject: [] } },
+    }));
+    const onResolveApproval = vi.fn(async () => {});
+    await renderTray([approval('a1', 'pnpm test')], onResolveApproval);
+    vi.advanceTimersByTime(700);
+
+    press('y');
+    press('n');
+    expect(onResolveApproval).not.toHaveBeenCalled();
+    press('a');
+    expect(onResolveApproval).toHaveBeenCalledExactlyOnceWith('a1', 'approved');
   });
 });

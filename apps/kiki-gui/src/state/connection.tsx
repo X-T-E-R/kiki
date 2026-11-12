@@ -351,6 +351,12 @@ export class LiveControllerRegistry implements ControllerRegistry {
     entry.parked = { at: this.now(), bytes, unsubscribe };
     this.parked.set(entry, connectionScope);
     if (!isProtectedView(controller)) controller.suspend();
+    // A view kept live while parked is watched only for when its work settles
+    // (`isProtectedView`: main's run state, pending interactions and running
+    // tasks), all of which arrive at `turn`. Releasing the focus lease leaves
+    // main on the session's `turn` lease, so the parked view stops receiving
+    // and projecting every frame; `acquire` sets focus again before it is shown.
+    else if (typeof controller.setFocusedAgent === 'function') controller.setFocusedAgent(undefined);
     this.delete(controller);
     this.enforceLimits();
     return true;

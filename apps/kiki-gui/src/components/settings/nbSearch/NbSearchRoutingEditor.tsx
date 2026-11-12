@@ -35,6 +35,7 @@ import {
   type NbSearchAdvancedBinding,
   type NbSearchRoutingDraft,
 } from './advancedSupport';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 type RoutingMode = 'inherited' | 'custom' | 'cleared';
 type RoutingConfig = NbSearchRoutingDraft;
@@ -578,6 +579,7 @@ export function NbSearchRoutingEditor({
                       data-nb-search-routing-new-id
                       onChange={(event) => { setNewId(event.target.value); }}
                       onKeyDown={(event) => {
+                        if (isImeKeyEvent(event)) return;
                         if (event.key === 'Enter') { event.preventDefault(); commitNewRule(); }
                         if (event.key === 'Escape') { setAdding(false); }
                       }}
@@ -595,6 +597,7 @@ export function NbSearchRoutingEditor({
                       data-nb-search-routing-new-origin
                       onChange={(event) => { setNewOrigin(event.target.value); }}
                       onKeyDown={(event) => {
+                        if (isImeKeyEvent(event)) return;
                         if (event.key === 'Enter') { event.preventDefault(); commitNewRule(); }
                         if (event.key === 'Escape') { setAdding(false); }
                       }}

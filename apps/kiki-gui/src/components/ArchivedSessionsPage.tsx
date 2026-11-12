@@ -2,8 +2,11 @@
  * /archived — the archive, as a page of its own.
  *
  * Archived conversations are native sessions, so this runs on the ordinary
- * session list and the two deletion routes. Reading one lands on `/s/:id`,
- * which is the ordinary conversation view; nothing here restores.
+ * session list, the restore route and the two deletion routes. Reading one
+ * lands on `/s/:id`, the ordinary conversation view. A row's own verbs —
+ * restore, delete for good — sit behind its ⋯, so no bare × leaves the
+ * reader guessing which of the two it means. The way back is the page
+ * header's back arrow, like every other page.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -23,6 +26,7 @@ import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from './ui';
+import { MiniContextMenu } from './MiniContextMenu';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -218,6 +222,20 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     });
   }, [client, deleting, readOutcome, runDelete, t]);
 
+  // Restoring puts the conversation back in the sidebar list, so both lists
+  // are read again; a failure lands in the same recovery block a delete uses.
+  const restore = useCallback((session: Session) => {
+    if (deleting !== null) return;
+    setOutcome(NO_FAILURES);
+    void client.restoreSession(session.id)
+      .then(async () => {
+        await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined)]);
+      })
+      .catch((error: unknown) => {
+        if (active.current) setOutcome({ failed: [], error: errorText(locale, error) });
+      });
+  }, [client, deleting, locale, queryClient, refresh]);
+
   const busy = deleting !== null;
   const searching = term !== '';
   const loaded = sessions.length;
@@ -228,19 +246,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
   return (
     <>
-      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="reading">
-        <button
-          type="button"
-          data-archive-back
-          onClick={() => { void navigate('/settings/sessions'); }}
-          className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
-        >
-          <span className="inline-flex items-center gap-1.5">
-            <Icon name="arrowLeft" size={12} className="text-ink-faint" />
-            {t('archive.backSettings')}
-          </span>
-        </button>
-      </PageHeader>
+      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="reading" />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
         <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-4`}>
@@ -342,6 +348,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                   busy={busy}
                   deleting={deleting === session.id}
                   onOpen={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
+                  onRestore={() => { restore(session); }}
                   onDelete={() => { setConfirmOne(session); }}
                 />
               ))}
@@ -426,6 +433,7 @@ function ArchivedRow({
   busy,
   deleting,
   onOpen,
+  onRestore,
   onDelete,
 }: {
   readonly session: Session;
@@ -435,9 +443,12 @@ function ArchivedRow({
   readonly busy: boolean;
   readonly deleting: boolean;
   readonly onOpen: () => void;
+  readonly onRestore: () => void;
   readonly onDelete: () => void;
 }) {
   const { t } = useI18n();
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <li
       data-archive-item={session.id}
@@ -461,15 +472,42 @@ function ArchivedRow({
         </span>
       </button>
       <button
+        ref={moreRef}
         type="button"
-        data-archive-delete={session.id}
+        data-archive-more={session.id}
+        // Only the open row's trigger counts as inside its menu, so pressing
+        // it toggles the menu shut while another row's ⋯ still closes it.
+        data-archive-row-menu={menu !== null ? '' : undefined}
         disabled={busy}
-        onClick={onDelete}
-        aria-label={deleting ? t('archive.pending') : t('archive.delete')}
-        className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-danger/10 hover:text-danger focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40"
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        onClick={() => {
+          if (menu !== null) { setMenu(null); return; }
+          const rect = moreRef.current?.getBoundingClientRect();
+          setMenu({ x: rect?.left ?? 0, y: (rect?.bottom ?? 0) + 4 });
+        }}
+        aria-label={deleting ? t('archive.pending') : t('transcript.moreActions')}
+        title={deleting ? t('archive.pending') : t('transcript.moreActions')}
+        className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40"
       >
-        <Icon name={deleting ? 'clock' : 'close'} size={14} />
+        <Icon name={deleting ? 'clock' : 'more'} size={14} />
       </button>
+      {menu !== null ? (
+        <MiniContextMenu
+          x={menu.x}
+          y={menu.y}
+          ariaLabel={t('transcript.moreActions')}
+          overlayId="archive-row-menu"
+          dataAttribute="data-archive-row-menu"
+          itemDataAttribute="data-archive-action"
+          onClose={() => { setMenu(null); }}
+          entries={[
+            { key: 'restore', label: t('archive.restore'), run: onRestore },
+            { separator: true },
+            { key: 'delete', label: t('archive.delete'), danger: true, run: onDelete },
+          ]}
+        />
+      ) : null}
     </li>
   );
 }

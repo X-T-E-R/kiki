@@ -83,6 +83,12 @@ export function SubagentLimitsSettings() {
   </SectionCard>;
 }
 
+/**
+ * Developer & labs › Engine parameters → AgentList default return fields:
+ * which fields a compact AgentList call carries. A tool-output detail nobody
+ * sees while working, so it left Agents › Dispatch; each chip still saves
+ * the moment it flips.
+ */
 export function SubagentAgentListFieldsCard() {
   const { client } = useConnection();
   const { t } = useI18n();

@@ -59,6 +59,9 @@ interface FakeBoardController extends BoardTodoController {
   readonly emitForest: (next: AgentForest) => void;
   readonly emitAgent: (agentId: string, next: SessionViewState) => void;
   readonly activeAgentSubscriptions: () => number;
+  /** Agent → grade of each view lease currently held. */
+  readonly leases: () => Readonly<Record<string, string>>;
+  readonly focusCalls: () => readonly (string | undefined)[];
   readonly openCount: () => number;
   readonly closeCount: () => number;
 }
@@ -81,6 +84,8 @@ function makeFakeBoardController(sessionId: string): FakeBoardController {
   const agentListeners = new Map<string, Set<() => void>>();
   let opened = 0;
   let closed = 0;
+  const leases = new Map<string, { agentId: string; grade: string }>();
+  const focusCalls: (string | undefined)[] = [];
   const notify = (listeners: Set<() => void>) => { for (const listener of listeners) listener(); };
   return {
     sessionId,
@@ -100,6 +105,9 @@ function makeFakeBoardController(sessionId: string): FakeBoardController {
         if (listeners.size === 0) agentListeners.delete(agentId);
       };
     },
+    retainAgentView: (viewId, agentId, grade) => { leases.set(viewId, { agentId, grade }); },
+    releaseAgentView: (viewId) => { leases.delete(viewId); },
+    setFocusedAgent: (agentId) => { focusCalls.push(agentId); },
     open: async () => { opened += 1; },
     close: () => { closed += 1; },
     emitMain: (next) => { main = next; notify(mainListeners); },
@@ -109,6 +117,8 @@ function makeFakeBoardController(sessionId: string): FakeBoardController {
       notify(agentListeners.get(agentId) ?? new Set());
     },
     activeAgentSubscriptions: () => [...agentListeners.values()].reduce((count, listeners) => count + listeners.size, 0),
+    leases: () => Object.fromEntries([...leases.values()].map(({ agentId, grade }) => [agentId, grade])),
+    focusCalls: () => focusCalls,
     openCount: () => opened,
     closeCount: () => closed,
   };
@@ -326,6 +336,10 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(source.openCount()).toBe(1);
     expect(source.closeCount()).toBe(0);
     expect(source.activeAgentSubscriptions()).toBe(1);
+    // Todos arrive at turn: each subagent is leased at turn, and the owned
+    // controller drops the focus lease that would stream main frame by frame.
+    expect(source.leases()).toEqual({ child: 'turn' });
+    expect(source.focusCalls()).toEqual([undefined]);
     const workerNode: AgentTreeNode = {
       agentId: 'worker', parentAgentId: 'main', name: 'worker', label: 'Worker agent', status: 'running',
       busy: true, toolCallCount: 0, childIds: [],
@@ -336,6 +350,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     };
     await act(async () => source.emitForest({ roots: [childNode, workerNode], byId: { child: childNode, worker: workerNode } }));
     expect(source.activeAgentSubscriptions()).toBe(2);
+    expect(source.leases()).toEqual({ child: 'turn', worker: 'turn' });
     await act(async () => source.emitAgent('worker', { ...createViewState('session-a'), loaded: true, todos: [{ title: 'Worker todo', status: 'pending' }] }));
     expect(container.textContent).toContain('Worker todo');
     await act(async () => source.emitAgent('child', { ...source.getAgentState('child'), todos: [{ title: 'Child updated', status: 'done' }] }));
@@ -344,6 +359,7 @@ describe('board container and controlled forms (mock transport, no persistence c
     await act(async () => root.unmount());
     expect(source.closeCount()).toBe(1);
     expect(source.activeAgentSubscriptions()).toBe(0);
+    expect(source.leases()).toEqual({});
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
@@ -365,8 +381,12 @@ describe('board container and controlled forms (mock transport, no persistence c
     await act(async () => (document.body.querySelector('[data-board-associated-todos] > button') as HTMLButtonElement).click());
     expect(source.openCount()).toBe(0);
     expect(source.closeCount()).toBe(0);
+    // A borrowed controller keeps its page's focus; only the subagents are leased.
+    expect(source.focusCalls()).toEqual([]);
+    expect(source.leases()).toEqual({ child: 'turn' });
     await act(async () => root.unmount());
     expect(source.closeCount()).toBe(0);
+    expect(source.leases()).toEqual({});
   });
 
   it('loads only the active workspace by default and rescopes through the header switcher', async () => {

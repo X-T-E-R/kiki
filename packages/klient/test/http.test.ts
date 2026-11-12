@@ -451,6 +451,42 @@ describe('http transport', () => {
     }
   });
 
+  it('marks an ordered-view attach reconnected only after the socket reopened, until a ready answers it', async () => {
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 1, epoch: 'session-epoch' }, transcriptGrades: { '*': 'off', main: 'delta' },
+    }, () => undefined);
+    const attaches = () => server.frames.filter((frame) => frame['type'] === 'view_attach');
+    const ready = async (generation: number) => {
+      server.push({ type: 'view_signal', id: attaches().at(-1)!['id'], data: {
+        type: 'ready', currentSessionCursor: { seq: 1, epoch: 'session-epoch' }, reconnected: false, generation,
+      } });
+      await tick(10);
+    };
+    try {
+      await tick(10);
+      expect(attaches().at(-1)).toMatchObject({ data: { generation: 1, reconnected: false } });
+      await ready(1);
+      subscription.setTranscriptGrades({ '*': 'off', main: 'off', 'child-1': 'delta' });
+      expect(attaches()).toHaveLength(2);
+      expect(attaches().at(-1)).toMatchObject({ data: { generation: 1, reconnected: false } });
+      server.disconnect();
+      await tick(550);
+      expect(attaches().at(-1)).toMatchObject({ data: { generation: 2, reconnected: true } });
+      // The server never answers an attach a newer one overtook, so a grade
+      // change before the reconnect's ready still carries the reconnect.
+      subscription.setTranscriptGrades({ '*': 'off', main: 'delta' });
+      expect(attaches().at(-1)).toMatchObject({ data: { generation: 2, reconnected: true } });
+      await ready(2);
+      subscription.setTranscriptGrades({ '*': 'off', main: 'delta', 'child-1': 'block' });
+      expect(attaches().at(-1)).toMatchObject({ data: { generation: 2, reconnected: false } });
+    } finally {
+      subscription.close();
+      await klient.close();
+    }
+  });
+
   it('reattaches ordered views on the shared socket and ignores old generations', async () => {
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://127.0.0.1:58627', fetch: vi.fn() as unknown as typeof fetch, WebSocket: fakeWebSocket(server) });

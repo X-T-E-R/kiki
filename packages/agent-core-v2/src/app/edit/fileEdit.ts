@@ -1,17 +1,17 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
+import type { EditLineRange, EditOperation } from './editService';
+
 export interface FileEditInput {
   readonly path: string;
   readonly displayPath: string;
-  readonly old_string: string;
-  readonly new_string: string;
-  readonly replace_all: boolean;
+  readonly edits: readonly EditOperation[];
 }
 
 export type FileEditResult =
-  | { readonly ok: true; readonly count: number }
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: true; readonly replacements: number; readonly changedLines: readonly EditLineRange[] }
+  | { readonly ok: false; readonly error: string; readonly editIndex?: number };
 
 export interface IFileEditService {
   readonly _serviceBrand: undefined;

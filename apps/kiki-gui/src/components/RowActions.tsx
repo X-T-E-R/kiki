@@ -13,7 +13,9 @@
  * clicks and their selection. Copy / edit / regenerate — the three that are
  * used on a normal pass through a conversation — are flat 28px tiles;
  * copy-link and fork sit behind the trailing `⋯`. Below `sm` the tiles fold
- * into that same `⋯` menu so the strip never crowds a narrow lane.
+ * into that same `⋯` menu so the strip never crowds a narrow lane. On a
+ * coarse pointer the tiles are 40px and the `⋯` menu opens as an
+ * `ActionSheet` at the bottom of the screen instead of a popover.
  *
  * The inline user-message editor also lives here: it replaces the bubble in
  * place (anything-llm's EditMessageForm shape), prefills the original text,
@@ -24,11 +26,14 @@ import { createContext, useContext, useEffect, useRef, useState, type MouseEvent
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { useCoarsePointer } from '../lib/layoutHooks';
+import { pushToast } from '../lib/toasts';
 import { registerOverlay } from '../lib/uiBusy';
 import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { Icon } from './icons';
 import type { ComposerAttachment } from '@kiki/session-core/composer';
 import { Composer } from './Composer';
+import { ActionSheet } from './overlays/ActionSheet';
 import { PluginMessageActions, useRolePluginMessageActions } from './plugins/PluginMessageActions';
 import { useTranscriptTarget } from './transcriptDetail';
 
@@ -119,9 +124,9 @@ export interface MessageRowActionsProps {
   onFork?: () => void;
 }
 
-/** A row-action target: 14px glyph in a 28px box — no border, no pill. */
+/** A row-action target: 14px glyph in a 28px box (40px on touch) — no border, no pill. */
 const TILE =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
+  'flex h-7 w-7 pointer-coarse:h-10 pointer-coarse:w-10 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40';
 const MENU_ITEM =
   'flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40';
 
@@ -174,6 +179,8 @@ export function MessageRowActions({
   const menuContainerRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // Touch: the `⋯` menu is an action sheet, which owns its own dismissal.
+  const coarse = useCoarsePointer();
 
   const showCopy = copyText !== undefined && copyText !== '';
   const showLink = linkHref !== undefined && linkHref !== '';
@@ -189,7 +196,8 @@ export function MessageRowActions({
         setCopied(what);
         setTimeout(() => { setCopied(null); }, 1400);
       })
-      .catch(() => undefined);
+      // Both clipboard paths failed: say so, or the tap looks dead.
+      .catch(() => { pushToast({ tone: 'error', text: t('transcript.copyFailed') }); });
   };
 
   const toggleMenu = () => {
@@ -211,7 +219,7 @@ export function MessageRowActions({
   };
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen || coarse) return;
     const unregister = registerOverlay('row-actions-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -254,7 +262,112 @@ export function MessageRowActions({
       window.removeEventListener('scroll', onScrollOrResize, true);
       window.removeEventListener('resize', onScrollOrResize);
     };
-  }, [menuOpen]);
+  }, [menuOpen, coarse]);
+
+  // The `⋯` menu's rows: a popover on a fine pointer, an action sheet on touch.
+  const menuItems = (
+    <>
+      {/* Below `sm` the tiles fold in here (`sm:hidden`): a narrow lane keeps
+          the one `⋯` and every action stays a tap away. */}
+      {showCopy ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action-menu="copy"
+          title={t('transcript.copyTitle')}
+          aria-label={t('transcript.copyTitle')}
+          onClick={() => {
+            copy('text', copyText);
+            setMenuOpen(false);
+          }}
+          className={`${MENU_ITEM} sm:hidden`}
+        >
+          <span>{t('transcript.copy')}</span>
+          {copied === 'text' ? <Icon name="check" size={12} className="text-success" /> : null}
+        </button>
+      ) : null}
+      {showEdit ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action-menu="edit"
+          title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
+          aria-label={t('transcript.editTitle')}
+          disabled={disabled}
+          onClick={() => {
+            setMenuOpen(false);
+            onEdit();
+          }}
+          className={`${MENU_ITEM} sm:hidden`}
+        >
+          {t('transcript.edit')}
+        </button>
+      ) : null}
+      {showRegenerate ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action-menu="regenerate"
+          title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
+          aria-label={t('transcript.regenerateTitle')}
+          disabled={disabled}
+          onClick={() => {
+            setMenuOpen(false);
+            onRegenerate();
+          }}
+          className={`${MENU_ITEM} sm:hidden`}
+        >
+          {t('transcript.regenerate')}
+        </button>
+      ) : null}
+      {showLink ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action="link"
+          title={t('transcript.copyLinkTitle')}
+          aria-label={t('transcript.copyLinkTitle')}
+          onClick={() => {
+            copy('link', linkHref);
+            setMenuOpen(false);
+          }}
+          className={MENU_ITEM}
+        >
+          <span>{t('transcript.copyLink')}</span>
+          {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
+        </button>
+      ) : null}
+      {showFork ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action="fork"
+          title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
+          aria-label={t('transcript.forkTitle')}
+          disabled={disabled}
+          onClick={() => {
+            setMenuOpen(false);
+            onFork();
+          }}
+          className={MENU_ITEM}
+        >
+          {t('transcript.fork')}
+        </button>
+      ) : null}
+      {role !== undefined ? (
+        <PluginMessageActions
+          role={role}
+          messageId={messageId}
+          messageText={copyText}
+          sessionId={transcriptTarget?.sessionId}
+          disabled={disabled}
+          onSelect={() => {
+            setMenuOpen(false);
+          }}
+        />
+      ) : null}
+    </>
+  );
 
   // Revealed by the row's hover / focus-within, or by the tap toggle a touch
   // row publishes as `data-actions-open`. The pointer gate rides the same
@@ -275,13 +388,15 @@ export function MessageRowActions({
   // (a tile-width box would drop diagonal approaches mid-glide). `z-20` keeps
   // the open `⋯` above the row's own chrome (a rotated chevron on a collapsed
   // message paints like a positioned box and would otherwise show through the
-  // panel).
+  // panel). On touch the band stays 28px and the 40px tiles sit on its bottom
+  // edge, growing up into the row they belong to — they cover no more of the
+  // next row than the band already does.
   return (
     <span
       ref={menuContainerRef}
       data-row-actions
       data-row-actions-align={align}
-      className={`${visibility} absolute top-full right-0 left-0 z-20 flex h-7 items-center gap-0.5 ${
+      className={`${visibility} absolute top-full right-0 left-0 z-20 flex h-7 items-center pointer-coarse:items-end gap-0.5 ${
         align === 'right' ? 'justify-end' : 'justify-start'
       }`}
     >
@@ -340,116 +455,29 @@ export function MessageRowActions({
       >
         <Icon name="more" size={14} />
       </button>
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label={t('transcript.moreActions')}
-        className={`${
-          menuOpen ? 'flex anim-enter' : 'hidden'
-        } pointer-events-auto absolute ${align === 'right' ? 'right-0' : 'left-0'} ${
-          openUp ? 'bottom-full mb-1' : 'top-full mt-1'
-        } min-w-[124px] max-w-[calc(100vw-1rem)] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
-      >
-        {/* Below `sm` the tiles fold in here (`sm:hidden`): a narrow lane keeps
-            the one `⋯` and every action stays a tap away. */}
-        {showCopy ? (
-          <button
-            type="button"
-            role="menuitem"
-            data-row-action-menu="copy"
-            title={t('transcript.copyTitle')}
-            aria-label={t('transcript.copyTitle')}
-            onClick={() => {
-              copy('text', copyText);
-              setMenuOpen(false);
-            }}
-            className={`${MENU_ITEM} sm:hidden`}
-          >
-            <span>{t('transcript.copy')}</span>
-            {copied === 'text' ? <Icon name="check" size={12} className="text-success" /> : null}
-          </button>
-        ) : null}
-        {showEdit ? (
-          <button
-            type="button"
-            role="menuitem"
-            data-row-action-menu="edit"
-            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.editTitle')}
-            aria-label={t('transcript.editTitle')}
-            disabled={disabled}
-            onClick={() => {
-              setMenuOpen(false);
-              onEdit();
-            }}
-            className={`${MENU_ITEM} sm:hidden`}
-          >
-            {t('transcript.edit')}
-          </button>
-        ) : null}
-        {showRegenerate ? (
-          <button
-            type="button"
-            role="menuitem"
-            data-row-action-menu="regenerate"
-            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.regenerateTitle')}
-            aria-label={t('transcript.regenerateTitle')}
-            disabled={disabled}
-            onClick={() => {
-              setMenuOpen(false);
-              onRegenerate();
-            }}
-            className={`${MENU_ITEM} sm:hidden`}
-          >
-            {t('transcript.regenerate')}
-          </button>
-        ) : null}
-        {showLink ? (
-          <button
-            type="button"
-            role="menuitem"
-            data-row-action="link"
-            title={t('transcript.copyLinkTitle')}
-            aria-label={t('transcript.copyLinkTitle')}
-            onClick={() => {
-              copy('link', linkHref);
-              setMenuOpen(false);
-            }}
-            className={MENU_ITEM}
-          >
-            <span>{t('transcript.copyLink')}</span>
-            {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
-          </button>
-        ) : null}
-        {showFork ? (
-          <button
-            type="button"
-            role="menuitem"
-            data-row-action="fork"
-            title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
-            aria-label={t('transcript.forkTitle')}
-            disabled={disabled}
-            onClick={() => {
-              setMenuOpen(false);
-              onFork();
-            }}
-            className={MENU_ITEM}
-          >
-            {t('transcript.fork')}
-          </button>
-        ) : null}
-        {role !== undefined ? (
-          <PluginMessageActions
-            role={role}
-            messageId={messageId}
-            messageText={copyText}
-            sessionId={transcriptTarget?.sessionId}
-            disabled={disabled}
-            onSelect={() => {
-              setMenuOpen(false);
-            }}
-          />
-        ) : null}
-      </div>
+      {coarse ? (
+        menuOpen ? (
+          // No focus hand-back: the strip reveals itself on focus-within, so a
+          // `⋯` regaining focus would pin it open after the sheet closes.
+          <ActionSheet ariaLabel={t('transcript.moreActions')} overlayId="row-actions-menu" restoreFocus={false}
+            onClose={() => { setMenuOpen(false); }}>
+            {menuItems}
+          </ActionSheet>
+        ) : null
+      ) : (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={t('transcript.moreActions')}
+          className={`${
+            menuOpen ? 'flex anim-enter' : 'hidden'
+          } pointer-events-auto absolute ${align === 'right' ? 'right-0' : 'left-0'} ${
+            openUp ? 'bottom-full mb-1' : 'top-full mt-1'
+          } min-w-[124px] max-w-[calc(100vw-1rem)] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
+        >
+          {menuItems}
+        </div>
+      )}
     </span>
   );
 }

@@ -40,6 +40,24 @@ export function useNow(): number {
   return useSyncExternalStore(secondsSubscribe, secondsSnapshot, secondsSnapshot);
 }
 
+const idleSubscribe = (): (() => void) => () => {};
+const idleSnapshot = (): number => 0;
+
+/**
+ * Live milliseconds since `anchor`, ticking once a second. Only a caller with
+ * an anchor joins the clock, so a list can hand this to every row and pay a
+ * re-render per second for the running ones alone.
+ */
+export function useElapsedSince(anchor: number | undefined): number | undefined {
+  const ticking = anchor !== undefined;
+  const now = useSyncExternalStore(
+    ticking ? secondsSubscribe : idleSubscribe,
+    ticking ? secondsSnapshot : idleSnapshot,
+    ticking ? secondsSnapshot : idleSnapshot,
+  );
+  return anchor === undefined ? undefined : Math.max(0, now - anchor);
+}
+
 /**
  * Relative time that keeps aging ("just now" → "2m ago") instead of freezing
  * at the value computed on first render.

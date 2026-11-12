@@ -87,7 +87,7 @@ describe('AgentPermissionRulesService (wire-backed)', () => {
     configuredRules = [{ decision: 'deny', scope: 'user', pattern: 'Bash', reason: 'saved from settings' }];
     const context = { toolCall: { name: 'Bash' }, execution: {} } as ResolvedToolExecutionHookContext;
     expect(evaluateUserConfiguredRule(context, 'deny', svc)).toEqual({
-      kind: 'deny', message: 'Tool "Bash" was denied by permission rule. Reason: saved from settings',
+      kind: 'deny', message: 'Tool "Bash" was denied by permission rule "Bash". Reason: saved from settings',
     });
     configuredRules = [{ decision: 'ask', scope: 'user', pattern: 'Bash' }];
     expect(evaluateUserConfiguredRule(context, 'ask', svc)).toEqual({ kind: 'ask' });

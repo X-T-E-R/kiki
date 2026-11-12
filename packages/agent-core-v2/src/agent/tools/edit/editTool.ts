@@ -5,6 +5,7 @@ import {
 } from '#/tool/path-access';
 import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { IFileEditService } from '#/app/edit/fileEdit';
+import { linesLabel, type EditOperation } from '#/app/edit/editService';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
@@ -20,6 +21,51 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 
 import { EditInputSchema, IEditTool, type EditInput } from './edit';
 import editDescriptionTemplate from './edit.md?raw';
+
+const DISPLAY_EDIT_SEPARATOR = '\n…\n';
+
+interface EditPlan {
+  readonly edits: readonly EditOperation[];
+  readonly indexed: boolean;
+}
+
+function editPlan(args: EditInput): EditPlan | string {
+  const singleForm = args.old_string !== undefined || args.new_string !== undefined || args.replace_all === true;
+  if (args.edits !== undefined) {
+    if (singleForm) {
+      return 'Give either old_string and new_string (with optional replace_all) or edits, not both.';
+    }
+    const unchanged = args.edits.findIndex((edit) => edit.old_string === edit.new_string);
+    if (unchanged !== -1) {
+      return `edits[${String(unchanged)}] makes no change: its old_string and new_string are exactly the same.`;
+    }
+    return {
+      indexed: true,
+      edits: args.edits.map((edit) => ({
+        old_string: edit.old_string,
+        new_string: edit.new_string,
+        replace_all: edit.replace_all ?? false,
+      })),
+    };
+  }
+  if (args.old_string === undefined || args.new_string === undefined) {
+    return 'Edit needs old_string and new_string, or an edits list with at least one replacement.';
+  }
+  if (args.old_string === args.new_string) {
+    return 'No changes to make: old_string and new_string are exactly the same.';
+  }
+  return {
+    indexed: false,
+    edits: [{ old_string: args.old_string, new_string: args.new_string, replace_all: args.replace_all ?? false }],
+  };
+}
+
+function indexedFailure(index: number, path: string, error: string): string {
+  const earlier = index === 0
+    ? ''
+    : ` Line numbers in this message count lines after ${index === 1 ? 'edits[0] was' : `edits[0]–edits[${String(index - 1)}] were`} applied in memory.`;
+  return `edits[${String(index)}] failed, so ${path} was not changed. ${error}${earlier}`;
+}
 
 export class EditTool implements IEditTool {
   declare readonly _serviceBrand: undefined;
@@ -41,6 +87,8 @@ export class EditTool implements IEditTool {
   }
 
   async resolveExecution(args: EditInput): Promise<ToolExecution> {
+    const plan = editPlan(args);
+    if (typeof plan === 'string') return { isError: true, output: plan };
     const target = resolveSshToolTarget(args.host, args.path);
     args = { ...args, path: target.path ?? args.path };
     const inspected = await prepareToolRuntime(this.runtime, target.host);
@@ -69,8 +117,8 @@ export class EditTool implements IEditTool {
         kind: 'file_io',
         operation: 'edit',
         path,
-        before: args.old_string,
-        after: args.new_string,
+        before: plan.edits.map((edit) => edit.old_string).join(DISPLAY_EDIT_SEPARATOR),
+        after: plan.edits.map((edit) => edit.new_string).join(DISPLAY_EDIT_SEPARATOR),
       },
       approvalRule: toolApprovalRule(this.name, path, inspected, target.host),
       matchesRule: (ruleArgs) =>
@@ -95,7 +143,7 @@ export class EditTool implements IEditTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return tagSshResult(await this.execution(args, path, lease.runtime.fs!), inspected);
+          return tagSshResult(await this.execution(args.path, plan, path, lease.runtime.fs!), inspected);
         } finally {
           lease.dispose();
         }
@@ -104,29 +152,29 @@ export class EditTool implements IEditTool {
   }
 
   private async execution(
-    args: EditInput,
+    displayPath: string,
+    plan: EditPlan,
     safePath: string,
     fs: IHostFileSystem,
   ): Promise<ExecutableToolResult> {
-    if (args.old_string === args.new_string) {
+    const result = await this.editor.edit({ path: safePath, displayPath, edits: plan.edits }, fs);
+    if (!result.ok) {
       return {
         isError: true,
-        output: 'No changes to make: old_string and new_string are exactly the same.',
+        output: plan.indexed && result.editIndex !== undefined
+          ? indexedFailure(result.editIndex, displayPath, result.error)
+          : result.error,
       };
     }
-
-    const result = await this.editor.edit({
-      path: safePath,
-      displayPath: args.path,
-      old_string: args.old_string,
-      new_string: args.new_string,
-      replace_all: args.replace_all ?? false,
-    }, fs);
-    if (!result.ok) {
-      return { isError: true, output: result.error };
+    const where = result.changedLines.length === 0 ? '' : ` (${linesLabel(result.changedLines)})`;
+    const word = result.replacements === 1 ? 'occurrence' : 'occurrences';
+    if (!plan.indexed) {
+      return { output: `Replaced ${String(result.replacements)} ${word} in ${displayPath}${where}.` };
     }
-    const word = result.count === 1 ? 'occurrence' : 'occurrences';
-    return { output: `Replaced ${String(result.count)} ${word} in ${args.path}` };
+    const editWord = plan.edits.length === 1 ? 'edit' : 'edits';
+    return {
+      output: `Applied ${String(plan.edits.length)} ${editWord} to ${displayPath}, replacing ${String(result.replacements)} ${word}${where}.`,
+    };
   }
 }
 

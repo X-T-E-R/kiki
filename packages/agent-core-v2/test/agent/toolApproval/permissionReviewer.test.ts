@@ -138,6 +138,11 @@ describe('permission reviewer', () => {
       contents: { content: { bytes: Buffer.byteLength(secret), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } },
     });
     expect(buildReviewerInput(memory, workspace, edit, 'sensitive-file', {})).toContain('replacement');
+    const edits = { ...edit, args: { path: file, edits: [{ old_string: 'a', new_string: 'bb' }, { old_string: 'c', new_string: secret }] } } as ResolvedToolExecutionHookContext;
+    const editsInput = buildReviewerInput(memory, workspace, edits, 'sensitive-file', {})!;
+    expect(JSON.parse(editsInput).action.contents).toMatchObject({ edits: 2,
+      old: { bytes: Buffer.byteLength('a\nc') }, replacement: { bytes: Buffer.byteLength(`bb\n${secret}`) } });
+    expect(editsInput).not.toContain('abc123');
     const model = dependencies({ backend: 'model', model: 'reviewer', allowThreshold: 0.9, denyThreshold: 0.9 },
       { output: JSON.stringify({ outcome: 'allow', confidence: 0.98 }) });
     expect(await reviewPermission(model, write, 'sensitive-file', {})).toMatchObject({ backend: 'model' });
@@ -150,6 +155,9 @@ describe('permission reviewer', () => {
     }) as unknown as typeof fetch;
     const jev = dependencies({ backend: 'jev', categories: ['policy_compliance'], allowThreshold: 0.9, denyThreshold: 0.9 }, { fetcher, apiKey: 'test-key' });
     expect(await reviewPermission(jev, edit, 'sensitive-file', {})).toMatchObject({ backend: 'jev' });
+    const editsModel = dependencies({ backend: 'model', model: 'reviewer', allowThreshold: 0.9, denyThreshold: 0.9 },
+      { output: JSON.stringify({ outcome: 'allow', confidence: 0.98 }) });
+    expect(await reviewPermission(editsModel, edits, 'sensitive-file', {})).toMatchObject({ backend: 'model' });
     expect(modelPayload).not.toContain(secret);
     expect(modelPayload).not.toContain('abc123');
     expect(fetcher).toHaveBeenCalledOnce();

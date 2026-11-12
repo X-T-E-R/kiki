@@ -749,7 +749,9 @@ describe('CapabilitiesPage workspace skills', () => {
     expect(container.textContent).toContain('选择一个项目文件夹');
     expect(container.querySelector('[data-capability-empty] a')?.getAttribute('href')).toBe('/new');
     expect(container.textContent).not.toContain('已注册');
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-capabilities-refresh]')!.click(); });
+    // Refresh is a rare action: it sits behind the header's ⋯.
+    await act(async () => { container.querySelector<HTMLButtonElement>('header [data-capabilities-more]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-capabilities-more-menu] [data-menu-item="refresh"]')!.click(); });
     await settleUntil('[data-skill-row="ws_alpha-review"]');
     expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(2);
   });

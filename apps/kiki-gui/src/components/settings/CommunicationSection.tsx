@@ -95,8 +95,10 @@ function useServerChoice<T>(
 }
 
 /**
- * Sessions → Agent messaging: the two channels agents use to talk outside
- * their own reply. One card, two switches, each saved the moment it flips.
+ * Agents › Dispatch → Agent messaging: the two channels agents use to talk
+ * outside their own reply. One card, two switches, each saved the moment it
+ * flips. The handoff notices that used to sit under them are engine wording a
+ * person never sees, so they moved to Engine parameters (`HandoffNoticesCard`).
  */
 export function AgentMessagingCard() {
   const { t } = useI18n();
@@ -105,11 +107,6 @@ export function AgentMessagingCard() {
   const threadDefault = useServerChoice((_draft, config) => optionalCapabilityState(config, 'thread')?.default_on === true,
     (on) => ({ optional_capabilities: { defaults: { thread: on } } }));
   const notify = useServerChoice((draft) => draft.agentsNotifyParent, agentNotifyParentPatch);
-  // [agents.delegation]: an absent slot means the notice is on.
-  const delegateSub = useServerChoice((_draft, config) => config.agents?.delegation?.sub !== false,
-    (sub): KikiConfigPatch => ({ agents: { delegation: { sub } } }));
-  const delegateIndependent = useServerChoice((_draft, config) => config.agents?.delegation?.independent !== false,
-    (independent): KikiConfigPatch => ({ agents: { delegation: { independent } } }));
   const loading = thread.value === null || notify.value === null;
 
   return (
@@ -139,6 +136,37 @@ export function AgentMessagingCard() {
               </SettingField>
               <FeedbackLine feedback={notify.error} />
             </div>
+          </SettingsBox>
+          <SavedTick show={thread.saved || notify.saved} />
+        </>
+      )}
+    </SectionCard>
+  );
+}
+
+/**
+ * Developer & labs › Engine parameters → Handoff notices: the line the engine
+ * adds to a dispatched subagent's brief (its last message is the whole
+ * result) and to an agent a host started (no parent is waiting). Nobody reads
+ * them while working, so they left the messaging card; each switch still
+ * saves the moment it flips, with the same `[agents.delegation]` patch.
+ */
+export function HandoffNoticesCard() {
+  const { t } = useI18n();
+  // [agents.delegation]: an absent slot means the notice is on.
+  const delegateSub = useServerChoice((_draft, config) => config.agents?.delegation?.sub !== false,
+    (sub): KikiConfigPatch => ({ agents: { delegation: { sub } } }));
+  const delegateIndependent = useServerChoice((_draft, config) => config.agents?.delegation?.independent !== false,
+    (independent): KikiConfigPatch => ({ agents: { delegation: { independent } } }));
+  const loading = delegateSub.value === null || delegateIndependent.value === null;
+
+  return (
+    <SectionCard id="st-card-handoff-notices" title={t('st.dev.engineParams.handoffTitle')}>
+      {loading ? (
+        delegateSub.configQuery.isError ? <InlineError error={delegateSub.configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
+      ) : (
+        <>
+          <SettingsBox>
             <div data-agent-messaging="delegation-sub">
               <SettingField label={t('st.sessions.delegationSub')} help={t('st.sessions.delegationSubHint')}>
                 <Toggle layout="bare" label={t('st.sessions.delegationSub')} checked={delegateSub.value === true}
@@ -154,7 +182,7 @@ export function AgentMessagingCard() {
               <FeedbackLine feedback={delegateIndependent.error} />
             </div>
           </SettingsBox>
-          <SavedTick show={thread.saved || notify.saved || delegateSub.saved || delegateIndependent.saved} />
+          <SavedTick show={delegateSub.saved || delegateIndependent.saved} />
         </>
       )}
     </SectionCard>

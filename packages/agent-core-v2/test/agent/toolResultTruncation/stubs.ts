@@ -8,7 +8,6 @@ export function stubToolResultTruncationService(): ToolResultTruncationServiceSt
   return {
     _serviceBrand: undefined,
     truncateForModel: async ({ result }) => result,
-    isSpillFilePath: () => false,
   };
 }
 

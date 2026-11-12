@@ -93,10 +93,15 @@ export function buildReviewerInput(
     .map((text, index, all) => sliceUtf16(text, 0, index === all.length - 1 ? 600 : 200));
   const args = context.args as Record<string, unknown> | null;
   const accesses = context.execution.accesses?.filter((item) => item.kind === 'file') ?? [];
+  const replacements = context.toolCall.name === 'Edit' ? editReplacements(args) : undefined;
   const contents = context.toolCall.name === 'Write' && typeof args?.['content'] === 'string'
     ? { content: contentSummary(args['content']) }
-    : context.toolCall.name === 'Edit' && typeof args?.['old_string'] === 'string' && typeof args?.['new_string'] === 'string'
-      ? { old: contentSummary(args['old_string']), replacement: contentSummary(args['new_string']) }
+    : replacements !== undefined
+      ? {
+          old: contentSummary(replacements.map((edit) => edit.old).join('\n')),
+          replacement: contentSummary(replacements.map((edit) => edit.replacement).join('\n')),
+          edits: Array.isArray(args?.['edits']) ? replacements.length : undefined,
+        }
       : undefined;
   const action = context.toolCall.name === 'Bash' && typeof args?.['command'] === 'string'
     ? { tool: 'Bash', command: redact(sliceUtf16(args['command'], 0, 1600)) }
@@ -141,7 +146,7 @@ export async function reviewPermission(
   }
   const args = context.args as Record<string, unknown> | null;
   if (context.toolCall.name === 'Write' && typeof args?.['content'] !== 'string') return undefined;
-  if (context.toolCall.name === 'Edit' && (typeof args?.['old_string'] !== 'string' || typeof args?.['new_string'] !== 'string')) return undefined;
+  if (context.toolCall.name === 'Edit' && editReplacements(args) === undefined) return undefined;
   if ((context.toolCall.name === 'Write' || context.toolCall.name === 'Edit') && policyName === 'sensitive-file-access-ask') return undefined;
   const input = buildReviewerInput(dependencies.memory, dependencies.workspace, context, policyName, policyReason);
   if (input === undefined) return undefined;
@@ -282,6 +287,22 @@ async function reviewWithJev(
   return confidence >= config.allowThreshold
     ? { outcome: 'allow', confidence, reason: 'All reviewer checks passed', backend: 'jev' }
     : { outcome: 'ask', confidence, reason: 'Reviewer checks inconclusive', backend: 'jev' };
+}
+
+function editReplacements(args: Record<string, unknown> | null): { old: string; replacement: string }[] | undefined {
+  const edits = args?.['edits'];
+  if (Array.isArray(edits)) {
+    const pairs = edits.map((edit: unknown) => {
+      const entry = edit as Record<string, unknown> | null;
+      return typeof entry?.['old_string'] === 'string' && typeof entry['new_string'] === 'string'
+        ? { old: entry['old_string'], replacement: entry['new_string'] }
+        : undefined;
+    });
+    return pairs.length > 0 && pairs.every((pair) => pair !== undefined) ? pairs : undefined;
+  }
+  return typeof args?.['old_string'] === 'string' && typeof args['new_string'] === 'string'
+    ? [{ old: args['old_string'], replacement: args['new_string'] }]
+    : undefined;
 }
 
 function contentSummary(text: string): { bytes: number; sha256: string } {

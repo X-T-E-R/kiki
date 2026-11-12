@@ -119,7 +119,7 @@ describe('SettingsNav grouped tree', () => {
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
-    expect(leaves(1)).toEqual(['ai', 'recipes', 'agents']);
+    expect(leaves(1)).toEqual(['ai', 'agents']);
     expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory']);
     // Hooks are automation: they sit with the agent's capabilities, not rules.
     expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
@@ -141,7 +141,7 @@ describe('SettingsNav grouped tree', () => {
     // .row-interactive[aria-current]), not an accent fill.
     expect(active[0]!.classList.contains('row-interactive')).toBe(true);
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
-    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
+    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models')!;
     await click(models);
     expect(visited).toEqual(['ai']);
   });
@@ -167,7 +167,7 @@ describe('SettingsNav grouped tree', () => {
     const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
     await typeInto(input, '供应商');
     const option = [...container.querySelectorAll('[role="option"]')]
-      .find((element) => element.textContent!.toLowerCase().includes('providers'))!;
+      .find((element) => element.textContent!.endsWith('Models'))!;
     await click(option);
     expect(hits.length).toBe(1);
   });
@@ -182,48 +182,54 @@ describe('SettingsNav grouped tree', () => {
     expect(container.querySelector('[data-settings-nav-leaf="search"]')?.getAttribute('aria-current')).toBe('page');
   });
 
-  it('updates nav error indicators after a background failure, recovery and removal without navigation', async () => {
+  it('says what needs attention in words: a word on the leaf, and on the phone index one row per problem that opens it', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const container = await render(
-      <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+    queryClient.setQueryData(['providers'], { items: [
+      { id: 'alt', type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: false, status: 'unconfigured' },
+      { id: 'fixture', type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'connected' },
+      // A decision service without a key is not something a conversation runs into.
+      { id: 'judge', type: 'system_one', service: 'decision', has_api_key: false, status: 'unconfigured' },
+    ] });
+    queryClient.setQueryData(['plugins'], {
+      plugins: [
+        { id: 'broken-plugin', displayName: 'Broken', state: 'error', hasErrors: true, enabled: true },
+        { id: 'fine-plugin', displayName: 'Fine', state: 'ok', hasErrors: false, enabled: true },
+      ],
+    });
+    const visited: string[] = [];
+    const index = await render(
+      <SettingsNav active={null} searchFocusToken={null} onNavigate={(target) => { visited.push(target); }} onSearchHit={noop} showAttention />,
       queryClient,
     );
-    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
-    const fail = async () => {
-      await queryClient.fetchQuery({ queryKey: ['config'], queryFn: async () => { throw new Error('connection unavailable'); } }).catch(() => undefined);
-    };
-    await act(fail);
-    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
-    await act(async () => { queryClient.setQueryData(['config'], { raw: {} }); });
-    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
-    await act(fail);
-    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
-    await act(async () => { queryClient.removeQueries({ queryKey: ['config'] }); });
-    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
-    expect(container.querySelector('[aria-current="page"]')?.getAttribute('data-settings-nav-leaf')).toBe('general');
+    expect(index.querySelector('[data-settings-nav-attention="ai"]')?.textContent).toBe('Needs attention');
+    expect(index.querySelector('[data-settings-nav-attention="extensions"]')).not.toBeNull();
+    expect(index.querySelector('[data-settings-nav-attention="general"]')).toBeNull();
+    const rows = [...index.querySelectorAll('[data-settings-attention-row]')];
+    expect(rows.map((row) => row.textContent)).toEqual(['Models · alt: Needs a key', 'Extensions & tools · Broken: Error']);
+    await click(rows[0]!);
+    await click(rows[1]!);
+    expect(visited).toEqual(['ai?tab=providers#st-card-providers', 'plugins?plugin=broken-plugin']);
+
+    // The desktop rail marks the leaves only.
+    const rail = await render(<SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />, queryClient);
+    expect(rail.querySelector('[data-settings-nav-attention="ai"]')).not.toBeNull();
+    expect(rail.querySelector('[data-settings-attention]')).toBeNull();
   });
 
-  it('marks a nav leaf with data-settings-nav-error when its cached query or installed plugin has an error', async () => {
+  it('shows nothing about attention while the reads are unknown or failed', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(['plugins', 'local'], {
-      plugins: [{ id: 'broken-plugin', displayName: 'Broken', state: 'error', enabled: true }],
-    });
-    const container = document.createElement('div');
-    document.body.append(container);
-    containers.push(container);
-    const root = createRoot(container);
-    roots.push(root);
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <I18nProvider>
-            <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />
-          </I18nProvider>
-        </QueryClientProvider>,
-      );
-    });
-    expect(container.querySelector('[data-settings-nav-error="extensions"]')).not.toBeNull();
-    expect(container.querySelector('[data-settings-nav-error="general"]')).toBeNull();
+    const container = await render(
+      <SettingsNav active={null} searchFocusToken={null} onNavigate={noop} onSearchHit={noop} showAttention />,
+      queryClient,
+    );
+    expect(container.querySelector('[data-settings-attention]')).toBeNull();
+    const fail = (queryKey: readonly unknown[]) => queryClient.fetchQuery({ queryKey, queryFn: async () => { throw new Error('connection unavailable'); } }).catch(() => undefined);
+    await act(async () => { await Promise.all([fail(['providers']), fail(['plugins']), fail(['config'])]); });
+    // A failed read is not a problem with any object: no group, no leaf word, no dot.
+    expect(container.querySelector('[data-settings-attention]')).toBeNull();
+    expect(container.querySelector('[data-settings-nav-attention]')).toBeNull();
+    expect(container.querySelector('[data-settings-nav-error]')).toBeNull();
+    expect(container.querySelectorAll('[data-settings-nav-leaf]').length).toBeGreaterThan(10);
   });
 });
 

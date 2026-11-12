@@ -1,4 +1,4 @@
-import { normalize } from 'pathe';
+import { normalize, resolve } from 'pathe';
 
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
 import {
@@ -73,6 +73,13 @@ const SENSITIVE_GLOBS_TO_EXCLUDE = [
 
 const CONTENT_LINE_RE = /^(.*?)([:-])(\d+)\2/;
 
+interface RgSearchPlan {
+  readonly target: string;
+  readonly cwd?: string;
+  readonly pathClass: PathClass;
+  readonly escapeLiteral: boolean;
+}
+
 export class GrepTool implements IGrepTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Grep' as const;
@@ -129,12 +136,12 @@ export class GrepTool implements IGrepTool {
         preparation.dispose();
       }
     }
-    const searchPaths = [path ?? workspace.workspaceDir];
+    const searchRoot = path ?? workspace.workspaceDir;
     const searchPath = args.path ?? workspace.workspaceDir;
     return {
-      accesses: ToolAccesses.searchTree(searchPaths[0]!, implicitExternal),
+      accesses: ToolAccesses.searchTree(searchRoot, implicitExternal),
       description: `Searching for '${args.pattern}' in ${searchPath}`,
-      display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
+      display: { kind: 'file_io', operation: 'grep', path: searchRoot },
       approvalRule: toolApprovalRule(this.name, args.pattern, inspected, target.host),
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.pattern),
       execute: async ({ signal, toolCallId }) => {
@@ -155,7 +162,7 @@ export class GrepTool implements IGrepTool {
               return { isError: true, output: error instanceof Error ? error.message : String(error) };
             }
           }
-          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths, toolCallId), inspected);
+          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchRoot, toolCallId), inspected);
         } finally {
           lease.dispose();
         }
@@ -170,7 +177,7 @@ export class GrepTool implements IGrepTool {
     workspace: WorkspaceConfig,
     args: GrepInput,
     signal: AbortSignal,
-    searchPaths: string[],
+    searchRoot: string,
     toolCallId: string,
   ): Promise<ExecutableToolResult> {
     if (signal.aborted) {
@@ -178,6 +185,13 @@ export class GrepTool implements IGrepTool {
     }
 
     const pathClass = env.pathClass;
+    const searchesDirectory = args.path === undefined || await isDirectoryPath(fs, searchRoot);
+    const plan: RgSearchPlan = {
+      target: searchesDirectory ? '.' : searchRoot,
+      cwd: searchesDirectory ? searchRoot : undefined,
+      pathClass,
+      escapeLiteral: processService instanceof SshHostProcessService && pathClass === 'win32',
+    };
     let rgPath: string;
     try {
       rgPath = await this.withGrepPhase(toolCallId, 'rg_resolve', async () => {
@@ -214,16 +228,18 @@ export class GrepTool implements IGrepTool {
         async () => {
           const firstRun = await runRgOnce(
             processService,
-            buildRgArgs(rgPath, args, searchPaths),
+            buildRgArgs(rgPath, args, plan),
             signal,
+            { cwd: plan.cwd },
           );
           if (firstRun.kind === 'aborted') return firstRun;
           if (!shouldRetryRipgrepEagain(firstRun)) return firstRun;
           retryCount += 1;
           return runRgOnce(
             processService,
-            buildRgArgs(rgPath, args, searchPaths, true),
+            buildRgArgs(rgPath, args, plan, true),
             signal,
+            { cwd: plan.cwd },
           );
         },
         () => ({ retry_count: retryCount }),
@@ -265,7 +281,11 @@ export class GrepTool implements IGrepTool {
           return { isError: true, output: 'Grep aborted' };
         }
 
-        const rawLines = parseRipgrepOutput(stdoutText, mode);
+        const parsedLines = parseRipgrepOutput(stdoutText, mode);
+        const searchCwd = plan.cwd;
+        const rawLines = searchCwd === undefined
+          ? parsedLines
+          : parsedLines.map((line) => rebaseParsedLine(line, mode, searchCwd, pathClass));
 
         const filteredSensitive = new Set<string>();
         const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);
@@ -500,10 +520,38 @@ async function mapWithConcurrency<T, U>(
   return results;
 }
 
+async function isDirectoryPath(fs: IHostFileSystem, path: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path)).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+function escapeRegexLiteral(text: string): string {
+  return text.replaceAll(/[\\^$.|?*+()[\]{}]/g, String.raw`\$&`);
+}
+
+function globUnderRoot(glob: string, root: string, pathClass: PathClass): string {
+  const negated = glob.startsWith('!');
+  const body = negated ? glob.slice(1) : glob;
+  const relative = relativizeIfUnder(body, root, pathClass);
+  if (relative === normalize(body) || relative === '.') return glob;
+  return negated ? `!${relative}` : relative;
+}
+
+function rebaseParsedLine(line: ParsedGrepLine, mode: GrepMode, base: string, pathClass: PathClass): ParsedGrepLine {
+  if (line.kind === 'record') return { ...line, filePath: resolve(base, line.filePath) };
+  if (line.kind === 'separator') return line;
+  const filePath = rawFilePath(line, mode, pathClass);
+  if (filePath === undefined) return line;
+  return { kind: 'legacy', text: resolve(base, filePath) + line.text.slice(filePath.length) };
+}
+
 function buildRgArgs(
   rgPath: string,
   args: GrepInput,
-  searchPaths: readonly string[],
+  plan: RgSearchPlan,
   singleThreaded = false,
 ): string[] {
   const cmd: string[] = [rgPath];
@@ -538,15 +586,19 @@ function buildRgArgs(
       if (args['-B'] !== undefined) cmd.push('-B', String(args['-B']));
     }
   }
-  if (args.glob !== undefined) cmd.push('--glob', args.glob);
+  if (args.glob !== undefined) {
+    cmd.push('--glob', plan.cwd === undefined ? args.glob : globUnderRoot(args.glob, plan.cwd, plan.pathClass));
+  }
   if (args.type !== undefined) cmd.push('--type', args.type);
   if (args.multiline) cmd.push('-U', '--multiline-dotall');
   if (args.include_ignored) cmd.push('--no-ignore');
+  if (args.literal === true && !plan.escapeLiteral) cmd.push('-F');
   for (const glob of SENSITIVE_GLOBS_TO_EXCLUDE) {
     cmd.push('--glob', `!${glob}`);
   }
 
-  cmd.push('--', args.pattern, ...searchPaths);
+  const pattern = args.literal === true && plan.escapeLiteral ? escapeRegexLiteral(args.pattern) : args.pattern;
+  cmd.push('--', pattern, plan.target);
   return cmd;
 }
 

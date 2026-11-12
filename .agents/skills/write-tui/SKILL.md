@@ -52,8 +52,11 @@ There is no legacy `KimiTUI` runtime path or experimental selector.
 
 - Printable characters must be decoded with `printableChar()` before comparison; function/control keys use `matchesKey()` and `Key.*`.
 - Preserve editor-native history, empty Up/Down, paste buffering, and text paste behavior unless a real coordinator action consumes the callback.
-- Ctrl-C interrupts active work before exit confirmation; Ctrl-D exits only through the confirmed shutdown path.
-- Ctrl-O toggles tool output, Ctrl-T toggles overflowing todos, Ctrl+- invokes the real undo contract, and Shift-Tab toggles plan mode.
+- Ctrl-C clears a non-empty draft first and never arms exit in that press; on an empty draft it interrupts active work, or when idle arms exit, and a second Ctrl-C within 1.5 s exits. Ctrl-D on an empty draft arms the same double-press exit, busy or not; on a draft it deletes a character. Ctrl-C/Ctrl-D must not call `onNonEscapeInput` (it disarms the pending press).
+- Esc with the input focused, first match wins: completion menu → close; empty shell mode → leave; history browsing → restore the pre-browse draft; turn running and draft empty → interrupt; turn running with a draft → arm ("Press Esc again to interrupt"), a second Esc within 1.5 s interrupts and keeps the draft, any other key disarms; idle → nothing.
+- In the session picker, Ctrl-C/Ctrl-D close the picker when a session is open; only the startup picker exits.
+- Ctrl-O toggles tool output, Ctrl-T toggles overflowing todos, Ctrl+- is editor-native undo (`/undo` withdraws the last turn), and Shift-Tab toggles plan mode. Interrupt, tool output and todos also have slash commands (`/stop`, `/expand`, `/todos`) for keyboards without Esc or Ctrl.
+- Approvals and questions never replace a dialog the user opened; they wait until it closes. They mount with an arming window (`INTERACTION_ARM_AFTER_MS`) so keystrokes meant for the draft cannot answer them.
 - A bound callback must either perform its advertised operation or display an explicit disabled result.
 
 ## Theme and dialog mechanics

@@ -81,8 +81,22 @@ export function inheritProfileFileSources(
   };
 }
 
+function profileFilePath(candidate: string, runtime: Runtime, view: RuntimeWorkspaceView): string {
+  return view.resolve(resolvePathAccessPath(candidate, {
+    env: runtime.environment,
+    workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
+    operation: 'read',
+  }), view.workDir, true);
+}
+
+export async function resolveDispatchProfilePath(path: string, runtime: Runtime, roots: RuntimeWorkspaceRoots): Promise<string> {
+  if (runtime.fs === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Profile file loading requires filesystem access in the caller runtime.');
+  const view = new RuntimeWorkspaceView(runtime, roots);
+  return profileFilePath(await runtime.fs.realpath(profileFilePath(path, runtime, view)), runtime, view);
+}
+
 export async function loadDispatchProfileFile(
-  path: string,
+  admittedPath: string,
   runtime: Runtime,
   roots: RuntimeWorkspaceRoots,
   catalog: ISessionAgentProfileCatalog,
@@ -91,13 +105,12 @@ export async function loadDispatchProfileFile(
 ): Promise<{ readonly profileName: string; readonly snapshot: AgentProfileCatalogSnapshot }> {
   if (runtime.fs === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Profile file loading requires filesystem access in the caller runtime.');
   const view = new RuntimeWorkspaceView(runtime, roots);
-  const guardedPath = (candidate: string): string => view.resolve(resolvePathAccessPath(candidate, {
-    env: runtime.environment,
-    workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
-    operation: 'read',
-  }), view.workDir, true);
-  const lexical = guardedPath(path);
-  const realpath = guardedPath(await runtime.fs.realpath(lexical));
+  const guardedPath = (candidate: string): string => profileFilePath(candidate, runtime, view);
+  const realpath = await resolveDispatchProfilePath(admittedPath, runtime, roots);
+  if ((runtime.environment.pathClass === 'win32' ? realpath.toLowerCase() : realpath) !==
+    (runtime.environment.pathClass === 'win32' ? admittedPath.toLowerCase() : admittedPath)) {
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Profile file target changed after path admission. Retry with its current target.');
+  }
   const fs = agentProfilesHostFs(runtime.fs);
   const guardedFs = { ...fs, readFile: (candidate: string) => fs.readFile(guardedPath(candidate)) };
   const definition = parseAgentFileText({

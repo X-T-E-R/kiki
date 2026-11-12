@@ -60,7 +60,14 @@ describe('DefaultToolApprovePermissionPolicyService', () => {
     ['GetGoal', {}],
     ['SetGoalBudget', { tokenBudget: 1000 }],
     ['UpdateGoal', { status: 'complete' }],
-  ] as const)('approves %s', (toolName, args) => {
+    ['Goal', { action: 'get' }],
+    ['Goal', { action: 'create', objective: 'ship it' }],
+    ['Goal', { action: 'update', status: 'complete' }],
+    ['Cron', { action: 'list' }],
+    ['HistoryList', {}],
+    ['HistorySearch', { query: 'deploy' }],
+    ['HistoryRead', { turn: 3 }],
+  ] as const)('approves %s %j', (toolName, args) => {
     expect(policy.evaluate(policyContext(toolName, args))).toEqual({ kind: 'approve' });
   });
 
@@ -71,7 +78,10 @@ describe('DefaultToolApprovePermissionPolicyService', () => {
     ['Custom', { value: 1 }],
     ['CronCreate', { cron: '*/5 * * * *', prompt: 'ping' }],
     ['CronDelete', { id: 'job_1' }],
-  ] as const)('does not approve %s', (toolName, args) => {
+    ['Goal', { action: 'set_budget', value: 1000, unit: 'tokens' }],
+    ['Cron', { action: 'create', cron: '*/5 * * * *', prompt: 'ping' }],
+    ['Cron', { action: 'delete', id: 'job_1' }],
+  ] as const)('does not approve %s %j', (toolName, args) => {
     expect(
       policy.evaluate(policyContext(toolName, args)),
     ).toBeUndefined();

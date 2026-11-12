@@ -29,7 +29,6 @@ import {
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import {
-  isWithinDirectory,
   resolveRealPathAccess,
   resolveRealPathAccessPath,
   withDefinitionReadRoots,
@@ -287,10 +286,9 @@ export class GlobTool implements IGlobTool {
     const partial = bufferTruncated || timedOut || traversalWarning !== undefined;
 
     const pathClass = env.pathClass;
-    const shouldRelativize = !(processService instanceof SshHostProcessService) &&
-      isWithinDirectory(searchRoot, workspace.workspaceDir, pathClass);
+    const shouldRelativize = !(processService instanceof SshHostProcessService);
     const candidates = limited.map((p) =>
-      shouldRelativize ? relativizeIfUnder(p, searchRoot, pathClass) : p,
+      shouldRelativize ? relativizeIfUnder(p, workspace.workspaceDir, pathClass) : p,
     );
 
     const warnings: string[] = [];

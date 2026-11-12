@@ -14,6 +14,7 @@ import { Icon } from '../../icons';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { SettingsSegmented } from '../SettingsPrimitives';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 const MAX_MARKERS = 64;
 const MAX_CONTENT_CHARS = 10_000_000;
@@ -156,6 +157,7 @@ export function NbSearchQualityEditor({
                     setAdding(false);
                   }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter') {
                       event.preventDefault();
                       addMarker(markersText);

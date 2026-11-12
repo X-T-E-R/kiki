@@ -19,16 +19,20 @@ The following keys are always available in the input box:
 | Shortcut | Function |
 | --- | --- |
 | `Enter` | Submit the current input |
-| `Shift-Enter` / `Ctrl-J` | Insert a newline in the input |
+| `Shift-Enter` / `Ctrl-J` | Insert a newline in the input (or end the line with `\` and press `Enter`) |
 | `↑` / `↓` | Browse input history |
-| `Esc` | Close a popup / cancel completion / interrupt streaming output or context compaction |
-| `Ctrl-C` | Interrupt the current streaming output, or clear the input box |
-| `Ctrl-D` | Exit Kiki when the input box is empty |
+| `Esc` | Close the completion menu, leave an empty shell mode, or leave history browsing; while a turn is running, interrupt it (see below) |
+| `Ctrl-C` | Clear a draft; with the input box empty, interrupt the running turn, or press twice to exit when idle |
+| `Ctrl-D` | Press twice to exit when the input box is empty; otherwise delete the character after the cursor |
 | `Ctrl-T` | Expand or collapse the todo list when it is truncated |
 
-During streaming, `Ctrl-C` clears a nonempty draft first. With the input box empty, it interrupts the active turn without a second confirmation.
+`Esc` while a turn is running: with an empty input box, it interrupts the turn. With a draft in the input box, the first press only shows "Press Esc again to interrupt" in the footer, and a second `Esc` within 1.5 seconds interrupts and leaves the draft in place; any other key cancels. While idle, `Esc` does nothing to the draft. Leaving history browsing with `Esc` puts back the draft you had before pressing `↑`.
 
-**Exiting the program** (pressing `Ctrl-C` with an empty input box, or pressing `Ctrl-D`) uses a double-press confirmation mechanism: after the first press, a prompt appears in the status bar; a second press of the same key actually exits. Pressing any other key in between clears the confirmation state.
+`Ctrl-C` always clears a nonempty draft first (`Ctrl--` brings it back) and never interrupts or exits in the same press.
+
+**Exiting**: with the input box empty, press `Ctrl-C` twice or `Ctrl-D` twice within 1.5 seconds, or type `/exit`. After the first press the footer shows "Press Ctrl+C again to exit"; any other key cancels. Exiting does not stop a running turn: the session stays on the shared daemon and `kiki -r` resumes it (a session started with `--ephemeral` is deleted on exit). In the session picker, `Ctrl-C` closes the picker; it exits only from the picker shown at startup, before any session is open.
+
+Without `Esc` or `Ctrl` keys (for example on a phone keyboard), use `/stop` to interrupt the running turn, `/expand` to toggle tool output, and `/todos` to toggle a truncated todo list.
 
 ## Mode Switching
 
@@ -68,14 +72,12 @@ While streaming output is active, the input box can still receive input and supp
 
 | Shortcut | Function |
 | --- | --- |
-| `Esc` | Interrupt the current streaming output |
+| `Esc` | Interrupt the running turn; with a draft in the input box, press it twice |
 | `Ctrl-C` | Clear a nonempty draft first; interrupt the active turn when the input is empty |
-| `Ctrl-S` | Steer the running turn: send the queued messages and the current draft into it now instead of waiting for the turn to end |
-| `Ctrl-B` | Move the running turn to the background, leaving you free to queue the next instruction |
 
-`Ctrl-S` steers in queue order. Shell commands (`! …`) and inline Skill invocations are never steered in — they stay queued and run after the current turn, and everything queued behind such an item waits with them.
+The line above the input box shows how long the turn has been running and how to interrupt it. While the turn waits for your approval or answer, it says so instead.
 
-Both shortcuts are unavailable in the daemon TUI (`kiki web`), which reports them as disabled.
+Steering a running turn and moving it to the background are available in the desktop app; the TUI queues what you type and sends it when the turn ends.
 
 ## Tool Output
 
@@ -99,6 +101,8 @@ When the Agent initiates a tool call that requires confirmation, the TUI display
 | `Ctrl-O` | Toggle the collapsed state of other tool output |
 
 Options that require feedback (such as "Reject" or "Revise") switch to a feedback input state after confirmation: type the feedback text and press `Enter` to submit; press `Esc` to exit feedback input and return to the candidate list.
+
+The panel appears on its own, often while you are typing. Until no key has been pressed for half a second it ignores `Enter` and the number keys, so the rest of what you were typing cannot answer it. If a picker or `/help` is open when a request arrives, the request waits until you close that dialog, and the line above the input box says that an approval is waiting.
 
 ## Popup Mode
 

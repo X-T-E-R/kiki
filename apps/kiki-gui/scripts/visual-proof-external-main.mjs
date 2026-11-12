@@ -80,7 +80,7 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.locator('[data-session-actions] > button').first().click();
     await page.waitForTimeout(250);
     const menuText = await page.locator('[role="menu"]').first().innerText().catch(() => '');
-    if (/分叉|Fork/.test(menuText)) throw new Error('codex session menu still offers fork');
+    if (/复刻|分叉|Fork/.test(menuText)) throw new Error('codex session menu still offers fork');
     await shot(name('codex-menu'));
     await page.keyboard.press('Escape');
   }

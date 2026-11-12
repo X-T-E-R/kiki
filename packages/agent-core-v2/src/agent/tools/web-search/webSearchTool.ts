@@ -52,7 +52,7 @@ export class WebSearchTool implements IWebSearchTool {
     try {
       const result = await this.nbSearch.search(args, { requestId: toolCallId, signal });
       signal.throwIfAborted();
-      const compact = args.action === 'run' && typeof args.query === 'string' && Object.keys(args).every((key) => ['action', 'query', 'lane'].includes(key));
+      const compact = args.action === 'run' && typeof args.query === 'string';
       return compact && result.action === 'run' && result.execution === 'sync' ? renderSearchResult(result) : renderNativeEnvelope(result);
     } catch (error) {
       signal.throwIfAborted();

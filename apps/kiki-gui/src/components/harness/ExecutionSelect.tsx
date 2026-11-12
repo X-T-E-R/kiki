@@ -41,6 +41,7 @@ import {
   useComposerPanelAnchor,
   usePopover,
 } from '../ComposerControls';
+import { isCoarsePointer } from '../../lib/layoutHooks';
 import type { SearchableSelectOption } from '../SearchableSelect';
 import { Icon } from '../icons';
 
@@ -97,6 +98,8 @@ export interface ExecutionSelectProps {
   readonly onRequireSwitchConfirmation?: (toModel: string) => void;
   /** Why the bound model sits outside the profile's menu; shown as a dot with the reason in the tooltip. */
   readonly domainNote?: string;
+  /** Called after a pick is committed and the menu closed (never on Escape / cancel). */
+  readonly onPicked?: () => void;
 }
 
 export function ExecutionSelect({
@@ -124,6 +127,7 @@ export function ExecutionSelect({
   onRefreshExecutorModels,
   onRequireSwitchConfirmation,
   domainNote,
+  onPicked,
 }: ExecutionSelectProps) {
   const { t } = useI18n();
   const now = useNow();
@@ -142,6 +146,13 @@ export function ExecutionSelect({
     setOpen(false);
     if (refocus) triggerRef.current?.focus();
   }, []);
+  // A committed pick closes onto the trigger, then lets the owner move on (the
+  // composer returns to its editor). A pick that still awaits a confirmation
+  // is not committed and stays on the trigger.
+  const closePicked = useCallback(() => {
+    close(true);
+    onPicked?.();
+  }, [close, onPicked]);
   const popoverKeyDown = usePopover(open, close, rootRef, 'composer-execution-select');
 
   useComposerPanelAnchor(rootRef, open);
@@ -169,6 +180,9 @@ export function ExecutionSelect({
     if (!open) {
       setModelSearch('');
     } else {
+      // Not on touch: focusing the field raises the keyboard over the list
+      // the user opened this panel to read.
+      if (isCoarsePointer()) return;
       setTimeout(() => {
         searchInputRef.current?.focus();
       }, 0);
@@ -188,6 +202,17 @@ export function ExecutionSelect({
     staleTime: 60_000,
     retry: false,
   });
+
+  // The model catalog the composer reads, observed without a request of its
+  // own: a catalog that answered empty means no model is connected, which is
+  // what the chip says instead of "Default model". A catalog still loading or
+  // failed says nothing of the kind.
+  const catalogQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => optConnection!.client.listModels(),
+    enabled: false,
+  });
+  const noModelConnected = catalogQuery.isSuccess && catalogQuery.data.items.length === 0;
 
   const effectiveExecutorResponse = (executorResponse !== undefined)
     ? executorResponse
@@ -325,7 +350,7 @@ export function ExecutionSelect({
   const handleSelectDefault = useCallback(() => {
     if (isNative && onChangeModel !== undefined) {
       void onChangeModel(undefined);
-      close(true);
+      closePicked();
       return;
     }
     onChange({
@@ -334,8 +359,8 @@ export function ExecutionSelect({
       external_connection_name: undefined,
       overrides: choice.overrides !== undefined ? { model: null, thinking: null } : undefined,
     });
-    close(true);
-  }, [isNative, onChangeModel, onChangeEffort, onChange, choice, close]);
+    closePicked();
+  }, [isNative, onChangeModel, onChangeEffort, onChange, choice, closePicked]);
 
   const handleSelectNativeModel = useCallback((modelId: string) => {
     if (onRequireSwitchConfirmation) {
@@ -345,7 +370,7 @@ export function ExecutionSelect({
     }
     if (onChangeModel !== undefined) {
       void onChangeModel(modelId);
-      close(true);
+      closePicked();
       return;
     }
     const m = (models ?? []).find((item) => item.id === modelId);
@@ -360,8 +385,8 @@ export function ExecutionSelect({
         thinking: nextEffort ?? undefined,
       },
     });
-    close(true);
-  }, [onRequireSwitchConfirmation, models, currentEffort, onChangeModel, onChangeEffort, onChange, choice, close]);
+    closePicked();
+  }, [onRequireSwitchConfirmation, models, currentEffort, onChangeModel, onChangeEffort, onChange, choice, close, closePicked]);
 
   const handleSelectExternalModel = useCallback((modelVal: string) => {
     if (onRequireSwitchConfirmation) {
@@ -385,8 +410,8 @@ export function ExecutionSelect({
         ? { ...rest, model: modelVal }
         : { ...rest, model: modelVal, thinking },
     });
-    close(true);
-  }, [onRequireSwitchConfirmation, choice, executorCapabilities, onChange, close]);
+    closePicked();
+  }, [onRequireSwitchConfirmation, choice, executorCapabilities, onChange, close, closePicked]);
 
   const handleSelectEffort = useCallback((effortVal: string | undefined) => {
     if (!isNative) setPickedEffort(effortVal ?? null);
@@ -401,7 +426,7 @@ export function ExecutionSelect({
       return choice.external_connection_name ?? t('st.section.connectionServices');
     }
     if (isNative) {
-      const fallbackModel = t('composer.execution.defaultModelOption');
+      const fallbackModel = noModelConnected ? t('new.modelChip.none') : t('composer.execution.defaultModelOption');
       const resolvedModel = currentModel
         ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? currentModel)
         : (effectiveModel ?? modelShortLabel ?? fallbackModel);
@@ -414,7 +439,7 @@ export function ExecutionSelect({
       return parts.join(' · ');
     }
     return t('composer.engineModelFollow');
-  }, [choice, isNative, currentModel, models, effectiveModel, modelShortLabel, activeEffort, t]);
+  }, [choice, isNative, currentModel, models, effectiveModel, modelShortLabel, activeEffort, noModelConnected, t]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape' && open) {
@@ -457,8 +482,12 @@ export function ExecutionSelect({
           size={14}
           className={STATUS_SEGMENT_ICON_CLASS}
         />
-        <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">
-          {/* The profile chip on the left already says the switch applies on
+        <span className="min-w-0 truncate @max-[16rem]/toolbar:sr-only">
+          {/* On a phone-width toolbar the agent chip to the left collapses to
+              its icon, and this chip carries the same icon: its label stays
+              (truncated) so the two can be told apart and the reader still
+              sees which model answers.
+              The profile chip on the left already says the switch applies on
               the next message. The model chip keeps the pending accent, title,
               and cancel, and names only the model and effort. */}
           {triggerLabel}
@@ -489,7 +518,7 @@ export function ExecutionSelect({
           data-execution-panel
           role="dialog"
           aria-label={t('composer.execution.panelLabel')}
-          className={`anim-enter absolute left-0 z-50 w-[min(340px,calc(100vw-2rem))] flex max-h-[min(var(--cp-max-h,none),28rem)] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+          className={`anim-enter absolute left-0 z-50 w-[min(340px,calc(100vw-2rem))] max-sm:left-[var(--cp-left,0px)] max-sm:max-w-[var(--cp-max-w,calc(100vw-2rem))] flex max-h-[min(var(--cp-max-h,none),28rem)] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
           style={{ backgroundColor: 'var(--color-paper)' }}
         >
           {!isNative && onRefreshExecutorModels ? (
@@ -704,7 +733,7 @@ export function ExecutionSelect({
                           external_connection_name: conn.name,
                           overrides: undefined,
                         });
-                        close(true);
+                        closePicked();
                       }}
                       className={`${MENU_ROW_CLASS} items-start ${selected ? MENU_ROW_SELECTED_CLASS : ''}`}
                     >

@@ -2,7 +2,7 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import type { ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { IAgentToolSelectService, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { CALL_TOOL_NAME, IAgentToolSelectService, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 
 import {
   ISelectToolsTool,
@@ -11,11 +11,12 @@ import {
 } from './select-tools';
 
 const DESCRIPTION =
-  'When you need an MCP, plugin, or deferred builtin tool listed in <tools_added>, ' +
-  'call SelectTools with its exact name before using it. Fold <tools_added>/<tools_removed> ' +
-  'announcements in order to find the current names. The selected schema arrives in the ' +
-  'next model step; then call the real tool by name, or use CallTool if it is listed. ' +
-  'Ordinary tools already listed in tools[] do not need selection.';
+  'Load MCP, plugin, or deferred builtin tools listed in <tools_added> by their exact names before using them. ' +
+  'Fold the <tools_added> and <tools_removed> announcements in order to find the current names. ' +
+  'A loaded tool\'s schema arrives with the next model step. If CallTool is in your tool list, run loaded tools through it ' +
+  'with their name and arguments, because they are not added to the tool list; otherwise call them by their own name. ' +
+  'Calling an announced tool before loading it does not run it; that error loads the tool and returns its parameter schema. ' +
+  'Tools already in your tool list need no loading.';
 
 export class SelectToolsTool implements ISelectToolsTool {
   declare readonly _serviceBrand: undefined;
@@ -43,7 +44,12 @@ export class SelectToolsTool implements ISelectToolsTool {
         const { toLoad, alreadyAvailable, unknown } = this.toolSelect.load(args.names);
 
         const lines: string[] = [];
-        if (toLoad.length > 0) lines.push(`Loaded: ${toLoad.join(', ')}`);
+        if (toLoad.length > 0) {
+          const how = this.toolSelect.usesCallTool()
+            ? `run each through ${CALL_TOOL_NAME} as {"name": "<tool>", "arguments": {...}}`
+            : 'call each by its name';
+          lines.push(`Loaded: ${toLoad.join(', ')}. Their schemas arrive with your next step; then ${how}.`);
+        }
         if (alreadyAvailable.length > 0) {
           lines.push(`Already available: ${alreadyAvailable.join(', ')}`);
         }

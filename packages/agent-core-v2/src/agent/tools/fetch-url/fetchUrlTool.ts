@@ -46,7 +46,8 @@ export class FetchURLTool implements IFetchURLTool {
       const guard = (path: string): string => {
         if (inspected === undefined || inspected.workspace.supportsExternalPaths !== true || inspected.fs === undefined) throw new Error('Scoped donor file inputs require a host-path filesystem runtime.');
         const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspace));
-        return view.resolve(resolvePathAccessPath(inspected.path.relative(view.workDir, path), { env: inspected.environment, workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs }, operation: 'read' }), view.workDir, true);
+        const workspace = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
+        return view.resolve(resolvePathAccessPath(path, { env: inspected.environment, workspace, operation: 'read' }), view.workDir, true);
       };
       const path = file === undefined ? undefined : guard(file);
       if (path !== undefined && guard(await inspected!.fs!.realpath(path)) !== path) throw new Error('Scoped fetch file changed or is a symbolic link. Use its admitted canonical path.');
@@ -85,7 +86,7 @@ export class FetchURLTool implements IFetchURLTool {
         ? await this.nbSearch.fetch(args, { requestId: toolCallId, signal })
         : await this.nbSearch.fetch(args, { requestId: toolCallId, signal }, admittedFile, identity);
       signal.throwIfAborted();
-      const compact = 'source' in args && args.source.kind === 'url' && Object.keys(args).every((key) => ['action', 'source'].includes(key));
+      const compact = 'source' in args && args.source.kind === 'url';
       return compact && result.action === 'run' && result.execution === 'sync' ? renderFetchResult(result) : renderNativeEnvelope(result);
     } catch (error) {
       signal.throwIfAborted();

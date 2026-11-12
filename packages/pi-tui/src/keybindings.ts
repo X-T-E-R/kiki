@@ -95,12 +95,15 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: ["alt+right", "ctrl+right", "alt+f"],
 		description: "Move cursor word right",
 	},
+	// Kiki divergence: the super (Cmd) aliases. Terminals that forward Cmd under
+	// the Kitty keyboard protocol send Cmd+←/→/Backspace as super+…; bind them
+	// to the macOS text-field meanings next to the ^A / ^E / ^U bindings.
 	"tui.editor.cursorLineStart": {
-		defaultKeys: ["home", "ctrl+home", "ctrl+a"],
+		defaultKeys: ["home", "ctrl+home", "ctrl+a", "super+left"],
 		description: "Move to line start",
 	},
 	"tui.editor.cursorLineEnd": {
-		defaultKeys: ["end", "ctrl+end", "ctrl+e"],
+		defaultKeys: ["end", "ctrl+end", "ctrl+e", "super+right"],
 		description: "Move to line end",
 	},
 	"tui.editor.jumpForward": {
@@ -130,7 +133,7 @@ export const TUI_KEYBINDINGS = {
 		description: "Delete word forward",
 	},
 	"tui.editor.deleteToLineStart": {
-		defaultKeys: "ctrl+u",
+		defaultKeys: ["ctrl+u", "super+backspace"],
 		description: "Delete to line start",
 	},
 	"tui.editor.deleteToLineEnd": {

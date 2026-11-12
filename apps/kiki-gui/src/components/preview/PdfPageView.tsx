@@ -25,11 +25,19 @@ import { cMapUrl, standardFontDataUrl, workerSrc } from 'virtual:kiki-pdf-assets
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 
-let modulePromise: Promise<typeof import('pdfjs-dist')> | undefined;
+type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
 
-/** Loads PDF.js once per app run, on the first PDF the user opens. */
-function loadPdfJs(): Promise<typeof import('pdfjs-dist')> {
-  modulePromise ??= import('pdfjs-dist').then((mod) => {
+let modulePromise: Promise<PdfJs> | undefined;
+
+/**
+ * Loads PDF.js once per app run, on the first PDF the user opens. The legacy
+ * build, not the default one: the default calls `Promise.withResolvers` and
+ * other recent APIs unpolyfilled, which WebKit only ships from Safari 17.4,
+ * while the macOS app supports macOS 13.5 and phone WebViews can be older.
+ * The worker served by `vite/pdfAssets.ts` is the matching legacy one.
+ */
+function loadPdfJs(): Promise<PdfJs> {
+  modulePromise ??= import('pdfjs-dist/legacy/build/pdf.mjs').then((mod) => {
     mod.GlobalWorkerOptions.workerSrc = workerSrc;
     return mod;
   });

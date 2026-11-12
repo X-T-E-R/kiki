@@ -2,7 +2,7 @@
 
 import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MemoryRouter, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
 
@@ -16,6 +16,7 @@ import {
   type DiscoveryNavigationPort,
   type DiscoveryState,
 } from '@kiki/session-core/discovery';
+import { writeSettings } from '@kiki/session-core/settings';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DirtyGuardContext, useDirtyGuardState, type DirtyGuardValue } from './dirtyGuard';
 import { DiscoveryProvider, DiscoveryTourTag } from './discovery';
@@ -173,6 +174,56 @@ describe('session header overflow menu', () => {
   });
 });
 
+describe('session header overflow menu on a phone', () => {
+  const media = window as unknown as { matchMedia?: unknown };
+  let originalMatchMedia: unknown;
+
+  beforeEach(() => {
+    originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(pointer: coarse) and (max-width: 639px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+  });
+
+  afterEach(() => {
+    if (originalMatchMedia === undefined) delete media.matchMedia;
+    else media.matchMedia = originalMatchMedia;
+    writeSettings({ showTerminalOnPhone: false });
+  });
+
+  function openMenu(overrides: Partial<React.ComponentProps<typeof SessionActionsMenu>> = {}) {
+    const menu = actionsMenu(overrides);
+    click(menu.container.querySelector('button[aria-haspopup="menu"]'));
+    return menu;
+  }
+
+  it('offers no terminal until this device turns it on', () => {
+    expect(openMenu().container.querySelector('[data-terminal-toggle]')).toBeNull();
+
+    writeSettings({ showTerminalOnPhone: true });
+    expect(openMenu().container.querySelector('[data-terminal-toggle]')).not.toBeNull();
+  });
+
+  it('leaves a tablet (touch, but wide) with the terminal as before', () => {
+    media.matchMedia = (query: string) => ({
+      matches: query === '(pointer: coarse)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    expect(openMenu().container.querySelector('[data-terminal-toggle]')).not.toBeNull();
+  });
+
+  it('keeps the row for a terminal that is already open, so it can still be closed', () => {
+    const { props, container } = openMenu({ terminalOpen: true });
+    click(container.querySelector('[data-terminal-toggle]'));
+    expect(props.onToggleTerminal).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('session title', () => {
   function title(overrides: Partial<React.ComponentProps<typeof SessionTitle>> = {}) {
     const onEditingChange = vi.fn();
@@ -255,6 +306,19 @@ describe('session title', () => {
     key(input, 'Enter');
     expect(props.onRename).toHaveBeenCalledWith('Ship the batch');
     expect(props.onEditingChange).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the typed draft when the title changes mid-edit', () => {
+    const { props, container } = title({ editing: true });
+    const input = container.querySelector<HTMLInputElement>('[data-session-rename-input]')!;
+    setValue(input, 'Ship the');
+    // The fresh session's auto-title lands while the user is typing.
+    act(() => {
+      mounted.at(-1)!.root.render(<I18nProvider><SessionTitle {...props} title="Auto title" /></I18nProvider>);
+    });
+    expect(input.value).toBe('Ship the');
+    key(input, 'Enter');
+    expect(props.onRename).toHaveBeenCalledWith('Ship the');
   });
 
   it('reverts on Escape without renaming', () => {

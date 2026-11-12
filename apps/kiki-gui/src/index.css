@@ -117,6 +117,9 @@
  * is also what drives Streamdown's `dark:` classes onto shiki's github-dark
  * slot (`--shiki-dark*`), which is why the code plugin loads two themes. */
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+/* Phone mode — touch and narrow together; same condition as PHONE_QUERY in
+   lib/layoutHooks.ts. `pointer-coarse:` stays the variant for touch alone. */
+@custom-variant phone (@media (pointer: coarse) and (max-width: 639px));
 
 :root,
 [data-theme='light'] {
@@ -178,6 +181,18 @@ body,
   height: 100%;
 }
 
+/* The app is one fixed frame of inner scrollers; the document itself never
+ * scrolls. A vertical drag that starts on chrome (a header, the composer
+ * seat) or on a scroller too short to overflow must not chain to the
+ * document: on Android that is pull-to-refresh (a reload mid-stream), on
+ * iOS and macOS the whole frame rubber-bands. Vertical only — a horizontal
+ * overscroll is the trackpad's history swipe. */
+html,
+body {
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Phone keyboard + dynamic toolbars: `interactive-widget=resizes-content`
  * (see index.html) lets Chromium shrink the layout viewport itself; elsewhere
  * (iOS Safari) the layout viewport never shrinks for the software keyboard,
@@ -189,6 +204,24 @@ body,
   body,
   #root {
     height: var(--kiki-visual-height, 100%);
+  }
+  /* iOS zooms the page when a field under 16px takes focus and leaves it
+   * zoomed. Unlayered on purpose: it has to win over the `text-[..]`
+   * utilities each field carries, which live in Tailwind's utilities layer. */
+  :where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']), textarea, select) {
+    font-size: 16px;
+  }
+}
+
+/* Touch has no hover, so a press is the only feedback a control can give:
+ * rows take the hover wash while held, buttons dim. The browser's own tap
+ * rectangle is switched off above in favour of these. In the base layer so a
+ * control that sets its own opacity (a hidden reveal, a muted glyph) keeps it. */
+@layer base {
+  @media (hover: none) {
+    :where(button, [role='button'], [role='menuitem'], [role='option'], [role='tab'], summary):not(:disabled):active {
+      opacity: 0.7;
+    }
   }
 }
 
@@ -721,6 +754,12 @@ body[data-pane-resizing='true'] {
     background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
   }
 }
+@media (hover: none) {
+  .row-interactive:not([aria-current]):active {
+    background-color: color-mix(in srgb, var(--color-ink) 8%, transparent);
+    opacity: 1;
+  }
+}
 .row-interactive[data-agent-peek]:not([aria-current]) {
   background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
@@ -1028,6 +1067,7 @@ body[data-pane-resizing='true'] {
     z-index: 30;
     height: var(--kiki-visual-height, 100%);
     max-width: 94vw;
+    padding-top: var(--kiki-safe-top-inset);
     padding-bottom: var(--kiki-safe-bottom-inset);
     box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
   }
@@ -1854,32 +1894,83 @@ input[data-add-search]:focus-visible {
 .thinking-row[data-streaming='true'] {
   overflow: hidden;
 }
+/* The band is a 300px gradient at the start of a full-width layer, and the
+ * layer is what moves. Sliding it with `transform` keeps the sweep on the
+ * compositor; animating `left` re-ran layout and paint on the main thread
+ * every frame for as long as the model was thinking — the same thread the
+ * streamed tokens are rendered on. */
 .thinking-row[data-streaming='true']::after {
   content: '';
   position: absolute;
-  inset-block: 0;
-  left: 0;
-  width: 300px;
+  inset: 0;
   pointer-events: none;
   background: linear-gradient(
     90deg,
     transparent 0%,
     color-mix(in srgb, var(--color-accent-soft) 70%, transparent) 55%,
     transparent 100%
-  );
+  ) no-repeat 0 0 / 300px 100%;
   animation: kiki-thinking-sweep 2.6s ease-out infinite;
 }
 @keyframes kiki-thinking-sweep {
   0% {
-    left: -300px;
+    transform: translateX(-300px);
   }
   90%,
   100% {
-    left: 100%;
+    transform: translateX(100%);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .thinking-row[data-streaming='true']::after {
     animation: none;
   }
+}
+
+/* ---- Touch action sheet (components/overlays/ActionSheet.tsx) ----
+ * A menu on a coarse pointer: a bottom sheet over a scrim, in the queue
+ * sheet's vocabulary (.composer-header-panel on a phone) — 12px top corners,
+ * the sheet ring plus an upward shadow, padded above the home indicator. The
+ * layer follows the visual viewport, so a phone keyboard lifts the sheet
+ * instead of covering it. It enters with the shared rise; reduced motion
+ * collapses that through the motion tokens. */
+.kiki-action-sheet-layer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--kiki-visual-height, 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+}
+.kiki-action-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background-color: rgb(var(--kiki-shadow-ink) / 0.22);
+}
+.kiki-action-sheet {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 32rem;
+  max-height: calc(var(--kiki-visual-height, 100dvh) - var(--kiki-safe-top-inset) - 3rem);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + var(--kiki-safe-bottom-inset)) max(8px, env(safe-area-inset-left, 0px));
+  border-radius: 12px 12px 0 0;
+  background-color: var(--color-panel);
+  box-shadow: var(--kiki-sheet-shadow), 0 -12px 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+  animation: kiki-rise var(--kiki-motion-base) var(--kiki-ease-out) both;
+}
+/* Thumb-sized rows: at least 48px at 15px text. Unlayered and keyed on the
+ * role, so it also resizes rows a contributor renders into the sheet with its
+ * own desktop-sized utilities (plugin message actions). */
+.kiki-action-sheet [role='menuitem'] {
+  min-height: 48px;
+  padding: 12px 16px;
+  font-size: 15px;
+  line-height: 1.35;
+  border-radius: 10px;
 }

@@ -1,9 +1,7 @@
 import type { Block } from '@kiki/session-core/session';
 
-import {
-  ACTIVITY_WAIT_THRESHOLD_MS,
-  STATUS_NOTICE_TTL_MS,
-} from '#/tui/constant/rendering';
+import type { ActivityLineParts } from '#/tui/components/chrome/activity-line';
+import { STATUS_NOTICE_TTL_MS } from '#/tui/constant/rendering';
 
 export interface BusyActivityMessageInput {
   readonly runningTasks: number;
@@ -11,6 +9,8 @@ export interface BusyActivityMessageInput {
   readonly hasResponded: boolean;
   readonly lastResponseAt: number | undefined;
   readonly now: number;
+  /** The input box holds a draft, so Esc needs a second press to interrupt. */
+  readonly hasDraft: boolean;
 }
 
 export type StatusNoticeCategory = 'transient' | 'sticky' | 'error';
@@ -20,6 +20,8 @@ export interface ShowStatusOptions {
   readonly transient?: boolean;
   readonly ttlMs?: number;
   readonly source?: string;
+  /** Render the notice as a structured activity line instead of plain text. */
+  readonly activity?: ActivityLineParts;
 }
 
 export interface StatusNotice {
@@ -305,31 +307,48 @@ export class TurnActivityTracker {
 }
 
 /**
- * Format busy activity line across Window 1 (waited Ns) and Window 2 (last response Ns ago).
+ * The busy status line: elapsed time from the first second, background
+ * tasks, time since the last agent output once the agent has responded, and
+ * how to interrupt (a draft in the input box makes Esc ask twice).
  */
-export function formatBusyActivityMessage(input: BusyActivityMessageInput): string {
-  const segments: string[] = ['Working'];
+export function formatBusyActivityLine(input: BusyActivityMessageInput): ActivityLineParts {
+  const elapsed =
+    input.turnStartedAt !== undefined && input.now >= input.turnStartedAt
+      ? formatElapsedDuration(input.now - input.turnStartedAt)
+      : undefined;
+  const details: string[] = [];
   if (input.runningTasks > 0) {
-    segments.push(`${String(input.runningTasks)} tasks running`);
+    details.push(`${String(input.runningTasks)} ${input.runningTasks === 1 ? 'task' : 'tasks'} running`);
   }
-
-  if (input.hasResponded) {
-    // Window 2: Agent has responded this turn.
-    if (input.lastResponseAt !== undefined) {
-      const agoMs = Math.max(0, input.now - input.lastResponseAt);
-      segments.push(`last response ${formatElapsedDuration(agoMs)} ago`);
-    }
-    // If lastResponseAt is undefined (e.g. untimed subagent or cold-open mid-turn),
-    // stay pure Working... without fake ago and without waited.
-  } else if (
-    input.turnStartedAt !== undefined &&
-    input.now >= input.turnStartedAt &&
-    input.now - input.turnStartedAt >= ACTIVITY_WAIT_THRESHOLD_MS
-  ) {
-    // Window 1: Waiting for first response, threshold reached and turnStartedAt trusted.
-    const waitedMs = Math.max(0, input.now - input.turnStartedAt);
-    segments.push(`waited ${formatElapsedDuration(waitedMs)}`);
+  // Untimed output (a subagent, a cold open mid-turn) shows no fake "ago".
+  if (input.hasResponded && input.lastResponseAt !== undefined) {
+    const agoMs = Math.max(0, input.now - input.lastResponseAt);
+    details.push(`last response ${formatElapsedDuration(agoMs)} ago`);
   }
+  return {
+    lead: elapsed === undefined ? 'Working…' : `Working ${elapsed}`,
+    tone: 'text',
+    details,
+    hint: input.hasDraft ? 'Esc twice to interrupt' : 'Esc to interrupt',
+  };
+}
 
-  return segments.length === 1 ? 'Working…' : segments.join(' · ');
+/** The status line while a turn is blocked on the user's approval or answer. */
+export function formatWaitingActivityLine(
+  kind: 'approval' | 'question',
+  deferred: boolean,
+): ActivityLineParts {
+  return {
+    lead: kind === 'approval' ? 'Waiting for your approval' : 'Waiting for your answer',
+    tone: 'warning',
+    details: [],
+    // The request is held back while the user's own dialog is open (see
+    // DaemonTUI.syncInteractionBlocks); closing that dialog shows it.
+    hint: deferred ? 'Esc to close this dialog and review' : undefined,
+  };
+}
+
+/** Plain-text form of an activity line, kept as the status notice message. */
+export function activityLineText(parts: ActivityLineParts): string {
+  return [parts.lead, ...parts.details, ...(parts.hint === undefined ? [] : [parts.hint])].join(' · ');
 }

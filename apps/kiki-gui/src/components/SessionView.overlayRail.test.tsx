@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
+import { resetLayoutPreferencesForTests } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import { readTimelineView, writeTimelineView } from './message/messageViewMode';
@@ -178,6 +179,10 @@ async function resizeTo(width: 'narrow' | 'wide'): Promise<void> {
 async function mountAt(width: 'narrow' | 'wide', railOpenByDefault = true) {
   narrow = width === 'narrow';
   localStorage.setItem('kiki.settings', JSON.stringify({ railOpenByDefault }));
+  // The docked rail's open/closed choice now persists; each mount here starts
+  // from no saved choice, so the Settings default decides.
+  localStorage.removeItem('kiki.layout');
+  resetLayoutPreferencesForTests();
   opened.length = 0;
   const host = document.createElement('div');
   document.body.append(host);

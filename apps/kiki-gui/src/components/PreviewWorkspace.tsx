@@ -39,6 +39,7 @@ import { openExternalUrl, useHost, type HostAdapter } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
+import { usePhoneMode } from '../lib/layoutHooks';
 import { pushToast, runToastAction } from '../lib/toasts';
 import { cssZoomFactor, unzoomedViewport } from '../lib/uiZoom';
 import { errorToText } from '@kiki/session-core/util';
@@ -187,6 +188,9 @@ export function PreviewWorkspace({
   const { t } = useI18n();
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // A phone already shows the workspace over the whole screen (index.css), so
+  // "full screen" has nothing to enlarge and there is no width to drag.
+  const phoneMode = usePhoneMode();
   const [narrow, setNarrow] = useState(() =>
     typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches,
   );
@@ -285,7 +289,7 @@ export function PreviewWorkspace({
       className={containerClasses}
       style={containerStyle}
     >
-      {!isFullscreen ? (
+      {!isFullscreen && !phoneMode ? (
         <div
           className="preview-workspace__resizer"
           aria-hidden
@@ -395,16 +399,20 @@ export function PreviewWorkspace({
           className="hidden h-7 shrink-0 items-center rounded-md px-2 text-[12px] text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:flex min-[85rem]:hidden">
           {t('rail.mode.cockpit')}
         </button> : null}
-        <button
-          type="button"
-          onClick={() => { setIsFullscreen(!isFullscreen); }}
-          title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-          aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-          data-preview-fullscreen-toggle
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
-        >
-          <Icon name={isFullscreen ? 'collapse' : 'expand'} />
-        </button>
+        {/* The exit stays while full screen was entered before the window
+            became a phone (a rotated device), so it can still be left. */}
+        {!phoneMode || isFullscreen ? (
+          <button
+            type="button"
+            onClick={() => { setIsFullscreen(!isFullscreen); }}
+            title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+            aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+            data-preview-fullscreen-toggle
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
+          >
+            <Icon name={isFullscreen ? 'collapse' : 'expand'} />
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onCollapse}
@@ -523,8 +531,9 @@ export function PreviewWorkspace({
  * owns the container concerns: local chrome slots (header/dock portal targets
  * inside the tabpanel) and the transcript view lease. The lease follows
  * actual visibility: 'delta' while the tab is active in a shown panel, 'off'
- * once the tab or the whole panel is hidden (the wildcard 'turn' summary
- * baseline keeps flowing for background tabs), released when the tab unmounts.
+ * once the tab or the whole panel is hidden (a hidden tab asks for nothing;
+ * a background agent is received only if something else holds a lease on
+ * it), released when the tab unmounts.
  */
 function AgentTabWorkspace({
   viewId,
@@ -704,7 +713,7 @@ function PreviewFileTab({
             onMention();
           }}
           className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-ink ${
-            active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+            active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
           }`}
         >
           @
@@ -718,7 +727,7 @@ function PreviewFileTab({
           onClose();
         }}
         className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
         }`}
       >
         <Icon name="close" size={12} />
@@ -793,7 +802,7 @@ function PreviewSkillTab({
         aria-label={`${t('common.close')} ${name} SKILL.md`}
         onClick={(event) => { event.stopPropagation(); onClose(); }}
         className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
         }`}
       >
         <Icon name="close" size={12} />
@@ -867,7 +876,7 @@ function PreviewAttachmentTab({
         aria-label={`${t('common.close')} ${name}`}
         onClick={(event) => { event.stopPropagation(); onClose(); }}
         className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
         }`}
       >
         <Icon name="close" size={12} />
@@ -954,7 +963,7 @@ function PreviewWebTab({
         aria-label={`${t('common.close')} ${label}`}
         onClick={(event) => { event.stopPropagation(); onClose(); }}
         className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
         }`}
       >
         <Icon name="close" size={12} />
@@ -1043,7 +1052,7 @@ function PreviewPanelTab({
           onClose();
         }}
         className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-[13px] leading-none transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-5 ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint'
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
         }`}
       >
         <Icon name="close" size={12} />

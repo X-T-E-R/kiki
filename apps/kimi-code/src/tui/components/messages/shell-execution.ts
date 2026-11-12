@@ -3,6 +3,7 @@ import { Container, Text } from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
+import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 
 import type { ResultRenderer } from './tool-renderers/types';
 import { PREVIEW_LINES } from './tool-renderers/types';
@@ -25,6 +26,8 @@ export interface ShellExecutionOptions {
 }
 
 export class ShellExecutionComponent extends Container {
+  private renderCache: { width: number; childLines: string[][]; lines: string[] } | undefined;
+
   constructor(options: ShellExecutionOptions) {
     super();
 
@@ -41,6 +44,25 @@ export class ShellExecutionComponent extends Container {
         options.expandHint ?? true,
       );
     }
+  }
+
+  // Returns the previous array while every child returns its previous array,
+  // so the tool card around this one can reuse its own output too.
+  override render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const childLines = this.children.map((child) => child.render(safeWidth));
+    const cache = this.renderCache;
+    if (
+      isRenderCacheEnabled() &&
+      cache?.width === safeWidth &&
+      cache.childLines.length === childLines.length &&
+      childLines.every((lines, index) => lines === cache.childLines[index])
+    ) {
+      return cache.lines;
+    }
+    const lines = childLines.flat();
+    if (isRenderCacheEnabled()) this.renderCache = { width: safeWidth, childLines, lines };
+    return lines;
   }
 
   private addCommandPreview(command: string, previewLines: number | undefined): void {

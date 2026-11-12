@@ -867,9 +867,8 @@ describe('agentsMdReminder duplicate calls', () => {
     await step(h);
 
     expect(results).toHaveLength(2);
-    for (const item of results) {
-      expect(outputText(item.result)).toBe('file contents');
-    }
+    expect(results.map((item) => outputText(item.result).endsWith('file contents'))).toEqual([true, true]);
+    expect(results.filter((item) => outputText(item.result) === 'file contents')).toHaveLength(1);
     expect(h.reminders).toHaveLength(1);
     expect(reminderText(h)).toContain(subAgentsMd);
     const shown = h.telemetryEvents.filter((e) => e.event === 'agents_md_reminder_shown');

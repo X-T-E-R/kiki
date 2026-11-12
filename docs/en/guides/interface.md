@@ -66,7 +66,7 @@ In a subagent's input box the stop button is disabled while the stop request is 
 
 ## Approvals
 
-An approval appears in the timeline before a protected operation runs, with the option to allow it once or for the session. Auto mode (the default) runs routine tool calls without asking and still asks for sensitive files and external links. Manual mode asks before shell commands and writes outside the workspace, while `Write` / `Edit` inside a trusted directory run without a per-file prompt. YOLO mode skips the sensitive-file prompt unless a deny rule covers it. Pressing `Esc` stops a tool call before it executes.
+An approval appears in the timeline before a protected operation runs, with the option to allow it once or for the session. Auto mode (the default) runs routine tool calls without asking and still asks for sensitive files and external links. Manual mode asks before shell commands and writes outside the workspace, while `Write` / `Edit` inside a trusted directory run without a per-file prompt. YOLO mode skips the sensitive-file prompt unless a deny rule covers it. Pressing `Esc` stops the running turn, and a tool call stopped this way does not execute. `Esc` only does this while the keyboard focus is outside the input box and other text fields; inside one, it belongs to that field, so use the stop button instead.
 
 ## Right rail
 

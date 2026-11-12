@@ -56,6 +56,15 @@ function timeoutCapS(isBackground: boolean): number {
   return isBackground ? MAX_BACKGROUND_TIMEOUT_S : MAX_TIMEOUT_S;
 }
 
+function timeoutClampNote(args: BashInput): string | undefined {
+  if (args.timeout === undefined) return undefined;
+  const isBackground = args.run_in_background === true;
+  if (isBackground && args.disable_timeout === true) return undefined;
+  const cap = timeoutCapS(isBackground);
+  if (args.timeout <= cap) return undefined;
+  return `<system>timeout ${String(args.timeout)} is above the ${String(cap)}-second limit for a ${isBackground ? 'background' : 'foreground'} command, so ${String(cap)} seconds was used.</system>`;
+}
+
 function normalizeTimeoutMs(timeout: number | undefined, isBackground: boolean): number {
   const defaultSeconds = isBackground ? DEFAULT_BACKGROUND_TIMEOUT_S : DEFAULT_TIMEOUT_S;
   const value = timeout ?? defaultSeconds;
@@ -164,13 +173,17 @@ export class BashTool implements IBashTool {
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
       execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
         const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);
-        const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints !== false;
+        const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints === true;
         const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
           ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
         const withHint = hint !== undefined && typeof result.output === 'string'
           ? { ...result, output: `${result.output}\n${hint}` }
           : result;
-        return tagSshResult(withHint, runtime);
+        const clampNote = timeoutClampNote(args);
+        const noted = clampNote === undefined
+          ? withHint
+          : { ...withHint, note: withHint.note === undefined ? clampNote : `${withHint.note}\n${clampNote}` };
+        return tagSshResult(noted, runtime);
       },
     };
   }
@@ -212,7 +225,7 @@ export class BashTool implements IBashTool {
 
     const startsInBackground = args.run_in_background === true;
     const foregroundTimeoutMs = normalizeTimeoutMs(args.timeout, false);
-    const description = startsInBackground ? args.description!.trim() : foregroundDescription(args);
+    const description = taskDescription(args);
     const timeoutMs = startsInBackground
       ? args.disable_timeout
         ? undefined
@@ -336,12 +349,6 @@ export class BashTool implements IBashTool {
           'Background execution is not available for this agent because TaskOutput and TaskStop are not enabled.',
       };
     }
-    if (!args.description?.trim()) {
-      return {
-        isError: true,
-        output: 'description is required when run_in_background is true.',
-      };
-    }
     return undefined;
   }
 
@@ -461,7 +468,7 @@ function formatTimeoutLabel(timeoutMs: number): string {
   return timeoutMs % 1000 === 0 ? `${String(timeoutMs / 1000)}s` : `${String(timeoutMs)}ms`;
 }
 
-function foregroundDescription(args: BashInput): string {
+function taskDescription(args: BashInput): string {
   const explicit = args.description?.trim();
   if (explicit !== undefined && explicit.length > 0) return explicit;
   const preview = args.command.length > 60 ? `${sliceUtf16(args.command, 0, 60)}…` : args.command;

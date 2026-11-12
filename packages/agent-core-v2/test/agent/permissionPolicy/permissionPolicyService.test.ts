@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -503,7 +503,7 @@ describe('AgentPermissionPolicyService chain', () => {
       policyName: 'user-configured-deny',
       result: {
         kind: 'deny',
-        message: 'Tool "Bash" was denied by permission rule. Reason: blocked by test',
+        message: 'Tool "Bash" was denied by permission rule "Bash". Reason: blocked by test',
       },
     });
   });
@@ -623,6 +623,102 @@ describe('AgentPermissionPolicyService chain', () => {
     }
   });
 
+  it('keeps a tool-wide session approval from covering sensitive files and links out of the workspace', async () => {
+    sessionApprovalRulePatterns.push('SendMessage', 'Grep(TODO)');
+    const plain = { toolName: 'SendMessage', args: { text: 'hi' }, accesses: [...ToolAccesses.readFile('/workspace/notes.md'), ...ToolAccesses.all()] };
+    await expect(evaluate(plain)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    const secret = { ...plain, accesses: [...ToolAccesses.readFile('/workspace/.env'), ...ToolAccesses.all()] };
+    await expect(evaluate(secret)).resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+    const linked = { ...plain, accesses: [...ToolAccesses.readFile('/outside/notes.md', true), ...ToolAccesses.all()] };
+    await expect(evaluate(linked)).resolves.toMatchObject({ policyName: 'external-link-access-ask', result: { kind: 'ask' } });
+    await expect(evaluate({ toolName: 'Grep', args: { pattern: 'TODO', path: '/workspace/.env' } }))
+      .resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+
+    sessionApprovalRulePatterns.push(JSON.stringify(['SendMessage', 'read:/workspace/.env']));
+    await expect(evaluate(secret)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(evaluate({ ...secret, accesses: [...ToolAccesses.readFile('/workspace/.env.local'), ...ToolAccesses.all()] }))
+      .resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+    mode = 'yolo';
+    await expect(evaluate(linked)).resolves.toMatchObject({ policyName: 'yolo-mode-approve', result: { kind: 'approve' } });
+  });
+
+  it('requires the same complete set of protected message attachments', async () => {
+    sessionApprovalRulePatterns.push('SendMessage');
+    const ordinary = ToolAccesses.readFile('/workspace/notes.md');
+    const config = ToolAccesses.readFile('/workspace/.git/config');
+    const hook = ToolAccesses.readFile('/workspace/.git/hooks/sample');
+    const other = ToolAccesses.readFile('/workspace/.git/config.worktree');
+    const call = (accesses: ToolAccessList) => evaluate({ toolName: 'SendMessage', args: {}, accesses });
+    const ask = { policyName: 'git-control-path-access-ask', result: { kind: 'ask' } };
+    await expect(call([...ordinary, ...config, ...hook])).resolves.toMatchObject(ask);
+    sessionApprovalRulePatterns.push(JSON.stringify(['SendMessage', 'read:/workspace/.git/config', 'read:/workspace/.git/hooks/sample']));
+    await expect(call([...hook, ...ordinary, ...config])).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(call([...ordinary, ...config, ...other])).resolves.toMatchObject(ask);
+    await expect(call([...ordinary, ...config])).resolves.toMatchObject(ask);
+  });
+
+  it.each(['Grep', 'Glob'])('scopes a %s approval to the protected search root', async (toolName) => {
+    sessionApprovalRulePatterns.push(`${toolName}(sample)`);
+    const search = (path: string) => evaluate({ toolName, args: { pattern: 'sample', path } });
+    await expect(search('/workspace')).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(search('/workspace/.git')).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    sessionApprovalRulePatterns.push(JSON.stringify([`${toolName}(sample)`, 'search:/workspace/.git']));
+    await expect(search('/workspace/.git')).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    for (const root of ['hooks', 'modules', 'objects']) {
+      await expect(search(`/workspace/.git/${root}`)).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    }
+  });
+
+  it('binds writes in a linked worktree to each resolved control target', async () => {
+    mode = 'auto';
+    const findWorkTree = vi.fn(async () => ({ root: '/workspace', dotGitPath: '/workspace/.git', controlDirPath: '/repository/control/worktree' }));
+    ix.stub(IGitService, { findWorkTree });
+    sessionApprovalRulePatterns.push('BrowserCapture', JSON.stringify(['BrowserCapture', 'write:/workspace/.git/capture.json']));
+    const write = (second: string) => evaluate({ toolName: 'BrowserCapture', args: {}, accesses: [
+      ...ToolAccesses.writeFile('/workspace/.git/capture.json'),
+      ...ToolAccesses.writeFile(`/repository/control/worktree/${second}`),
+    ] });
+    await expect(write('capture.json')).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    sessionApprovalRulePatterns.push(JSON.stringify(['BrowserCapture', 'write:/repository/control/worktree/capture.json', 'write:/workspace/.git/capture.json']));
+    await expect(write('capture.json')).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(write('other.json')).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    await expect(evaluate({ toolName: 'Read', args: { path: '/repository/control/worktree/HEAD' } })).resolves.toMatchObject({ result: { kind: 'approve' } });
+  });
+
+  it.each([
+    ['Read', 'read'], ['ReadMediaFile', 'read'], ['Write', 'write'], ['Edit', 'readwrite'],
+    ['BrowserDownload', 'write'], ['plugin__fixture__copy', 'readwrite'],
+  ] as const)('binds %s Git control access to its resolved path and operation', async (toolName, operation) => {
+    const path = '/workspace/.git/hooks/sample';
+    const input = { toolName, args: { path }, accesses: [{ kind: 'file' as const, operation, path }] };
+    const context = policyContext(input);
+    sessionApprovalRulePatterns.push(context.execution.approvalRule);
+    await expect(service().evaluate(context)).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    sessionApprovalRulePatterns.push(JSON.stringify([context.execution.approvalRule, `${operation}:${path}`]));
+    await expect(evaluate(input)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(evaluate({ ...input, accesses: [{ kind: 'file', operation, path: '/workspace/.git/hooks/other' }] })).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+  });
+
+  it('keeps Bash approvals exact when file targets are declared', async () => {
+    const args = { command: 'printf sample' };
+    const ordinary = policyContext({ toolName: 'Bash', args });
+    sessionApprovalRulePatterns.push(ordinary.execution.sessionApprovalRule!);
+    const input = { toolName: 'Bash', args, accesses: ToolAccesses.writeFile('/workspace/.git/sample') };
+    await expect(evaluate(input)).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    sessionApprovalRulePatterns.push(JSON.stringify([ordinary.execution.sessionApprovalRule, 'write:/workspace/.git/sample']));
+    await expect(evaluate(input)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(evaluate({ ...input, args: { command: 'printf other' } })).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+  });
+
+  it('matches the same Windows Git control path across case and separators', async () => {
+    const runtime = ix.get(IAgentRuntimeService).inspect();
+    ix.stub(IAgentRuntimeService, { inspect: () => ({ ...runtime, environment: { ...runtime.environment, pathClass: 'win32' } }) });
+    sessionApprovalRulePatterns.push(JSON.stringify(['BrowserCapture', 'write:d:/repo/.git/output.json']));
+    const write = (path: string) => evaluate({ toolName: 'BrowserCapture', args: {}, accesses: ToolAccesses.writeFile(path) });
+    await expect(write('D:\\Repo\\.GIT\\Output.json')).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(write('d:/repo/.git/other.json')).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+  });
+
   it.each(['HEAD', 'refs/heads/main', 'objects/pack/example.idx'])('allows ordinary git metadata reads: %s', async (target) => {
     await expect(evaluate({ toolName: 'Read', args: { path: `/workspace/.git/${target}` } })).resolves.toMatchObject({ result: { kind: 'approve' } });
   });
@@ -656,10 +752,10 @@ describe('AgentPermissionPolicyService chain', () => {
   });
 
   it.each([
-    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
-    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
-  ])('applies session approval before $policyName, but asks again on a nonmatching call', async ({ path, policyName }) => {
-    sessionApprovalRulePatterns.push(`Write(${path})`);
+    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask', approved: JSON.stringify(['Write(/workspace/.env)', 'write:/workspace/.env']) },
+    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask', approved: JSON.stringify(['Write(/workspace/.git/config)', 'write:/workspace/.git/config']) },
+  ])('applies session approval before $policyName, but asks again on a nonmatching call', async ({ path, policyName, approved }) => {
+    sessionApprovalRulePatterns.push(approved);
     await expect(evaluate({ toolName: 'Write', args: { path, content: 'x' } })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
     });
@@ -678,11 +774,15 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('honors matching session approval for external symlink access', async () => {
-    sessionApprovalRulePatterns.push('Read(/workspace/alias.txt)');
+  it('honors a session approval for the same external symlink target only', async () => {
+    sessionApprovalRulePatterns.push(JSON.stringify(['Read(/workspace/alias.txt)', 'read:/outside/notes.txt']));
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/alias.txt' },
       accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/alias.txt' },
+      accesses: ToolAccesses.readFile('/outside/moved.txt', true) })).resolves.toMatchObject({
+      policyName: 'external-link-access-ask', result: { kind: 'ask' },
     });
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/other.txt' },
       accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({
@@ -988,7 +1088,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
   beforeEach(async () => {
     disposables = new DisposableStore();
     mode = 'manual';
-    pathClass = 'posix';
+    pathClass = process.platform === 'win32' ? 'win32' : 'posix';
     workspaceDir = await mkdtemp(join(tmpdir(), 'kimi-permission-git-'));
     cleanupDirs = [workspaceDir];
     await mkdir(join(workspaceDir, '.git'), { recursive: true });
@@ -1021,7 +1121,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
               onDidChangeStatus: () => ({ dispose: () => {} }),
               dispose: () => {},
               environment: { pathClass, homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
-              fs: { realpath: async (path: string) => path } as never,
+              fs: hostFs,
               path: {
                 separator: '/',
                 delimiter: ':',
@@ -1174,6 +1274,22 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
     })).resolves.toMatchObject({
       policyName: 'git-control-path-access-ask', result: { kind: 'ask' },
     });
+  });
+
+  it.each([false, true])('binds a linked worktree control directory with an aliased marker: %s', async (aliased) => {
+    const controlDir = await mkdtemp(join(tmpdir(), 'kiki-worktree-control-'));
+    cleanupDirs.push(controlDir);
+    const markerTarget = aliased ? join(workspaceDir, 'control-link') : controlDir;
+    if (aliased) await symlink(controlDir, markerTarget, process.platform === 'win32' ? 'junction' : 'dir');
+    await rm(join(workspaceDir, '.git'), { recursive: true });
+    await writeFile(join(workspaceDir, '.git'), `gitdir: ${markerTarget}\n`);
+    const patterns = ['SendMessage'];
+    ix.stub(IAgentPermissionRulesService, permissionRulesStub({ sessionApprovalRulePatterns: () => patterns }));
+    const config = join(await realpath(controlDir), 'config.worktree').replaceAll('\\', '/');
+    const input = { toolName: 'SendMessage', args: {}, accesses: ToolAccesses.readFile(config) };
+    await expect(evaluate(input)).resolves.toMatchObject({ policyName: 'git-control-path-access-ask', result: { kind: 'ask' } });
+    patterns.push(JSON.stringify(['SendMessage', `read:${pathClass === 'win32' ? config.toLowerCase() : config}`]));
+    await expect(evaluate(input)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
   });
 
   it('does not use git-cwd approval in auto mode', async () => {

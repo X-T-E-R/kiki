@@ -5,14 +5,20 @@
  * mount so the position clamps inside the viewport on both axes (right-click
  * near an edge). Items are data — each surface composes its own list, so
  * desktop-only entries simply stay out of the browser build's array.
+ *
+ * On a coarse pointer the same entries render as an `ActionSheet` instead: a
+ * menu at the pointer lands under the finger and its rows are too small to
+ * hit. Desktop keeps the positioned menu.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useCoarsePointer } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
 import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
+import { ActionSheet } from './overlays/ActionSheet';
 import { unzoomedPoint, unzoomedViewport } from '../lib/uiZoom';
 
 export type MiniMenuEntry =
@@ -26,18 +32,7 @@ export type MiniMenuEntry =
     }
   | { readonly separator: true };
 
-export function MiniContextMenu({
-  x,
-  y,
-  entries,
-  onClose,
-  ariaLabel,
-  overlayId,
-  dataAttribute,
-  itemDataAttribute = 'data-menu-item',
-  modalOwnerId,
-  autofocus = true,
-}: {
+interface MiniContextMenuProps {
   readonly x: number;
   readonly y: number;
   readonly entries: readonly MiniMenuEntry[];
@@ -53,7 +48,58 @@ export function MiniContextMenu({
    * composer's clipboard menu pins a textarea selection that a focus move
    * would drop, and its actions re-pin before they run. */
   readonly autofocus?: boolean;
-}) {
+}
+
+export function MiniContextMenu(props: MiniContextMenuProps) {
+  const coarse = useCoarsePointer();
+  if (!coarse) return <PointerMenu {...props} />;
+  const { entries, onClose, ariaLabel, overlayId, dataAttribute, itemDataAttribute = 'data-menu-item', modalOwnerId, autofocus = true } = props;
+  return (
+    <ActionSheet ariaLabel={ariaLabel} overlayId={overlayId} onClose={onClose} dataAttribute={dataAttribute}
+      modalOwnerId={modalOwnerId} autofocus={autofocus}>
+      {menuItems(entries, onClose, itemDataAttribute)}
+    </ActionSheet>
+  );
+}
+
+/** The entries as menu rows; the action sheet resizes them for touch. */
+function menuItems(entries: readonly MiniMenuEntry[], onClose: () => void, itemDataAttribute: string) {
+  return entries.map((entry, index) =>
+    'separator' in entry ? (
+      <div key={`sep-${index}`} className="mx-1 my-1 border-t border-hairline" />
+    ) : (
+      <button
+        key={entry.key}
+        type="button"
+        role="menuitem"
+        {...{ [itemDataAttribute]: entry.key }}
+        disabled={entry.disabled}
+        className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper focus-visible:bg-paper disabled:pointer-events-none disabled:opacity-45 ${
+          entry.danger === true ? 'text-ink hover:text-danger' : 'text-ink'
+        }`}
+        onClick={() => {
+          onClose();
+          runToastAction(entry.label, entry.run);
+        }}
+      >
+        {entry.label}
+      </button>
+    ),
+  );
+}
+
+function PointerMenu({
+  x,
+  y,
+  entries,
+  onClose,
+  ariaLabel,
+  overlayId,
+  dataAttribute,
+  itemDataAttribute = 'data-menu-item',
+  modalOwnerId,
+  autofocus = true,
+}: MiniContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   // Whatever held focus when the menu opened — the link/chip/button for a
   // keyboard trigger, or just where the caret was for a right-click. Escape
@@ -161,28 +207,7 @@ export function MiniContextMenu({
       // own depth, and lands on the page-level layer outside one.
       style={{ left: position.left, top: position.top, zIndex: floatingSurfaceZIndex(null) }}
     >
-      {entries.map((entry, index) =>
-        'separator' in entry ? (
-          <div key={`sep-${index}`} className="mx-1 my-1 border-t border-hairline" />
-        ) : (
-          <button
-            key={entry.key}
-            type="button"
-            role="menuitem"
-            {...{ [itemDataAttribute]: entry.key }}
-            disabled={entry.disabled}
-            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper focus-visible:bg-paper disabled:pointer-events-none disabled:opacity-45 ${
-              entry.danger === true ? 'text-ink hover:text-danger' : 'text-ink'
-            }`}
-            onClick={() => {
-              onClose();
-              runToastAction(entry.label, entry.run);
-            }}
-          >
-            {entry.label}
-          </button>
-        ),
-      )}
+      {menuItems(entries, onClose, itemDataAttribute)}
     </div>,
     document.body,
   );

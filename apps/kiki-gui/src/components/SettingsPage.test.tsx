@@ -25,6 +25,7 @@ import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from './d
 import { SectionCard, SettingsCardMountContext } from './settings/SectionCard';
 import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { clearNavHistory, getUiSnapshot, recordNavigation, saveUiSnapshot } from '../lib/navHistory';
+import { configureSpaceStorage } from '../lib/spaceStorage';
 import { commitText, pickOption } from './settings/testControls';
 
 const WORKSPACES = {
@@ -197,7 +198,7 @@ const client = {
   },
 };
 
-const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
+const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn(), localClient: undefined as unknown }));
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => ({
     client,
@@ -216,6 +217,7 @@ vi.mock('../state/connection', () => ({
     activateLocal: vi.fn(),
     disconnect: vi.fn(),
     applyConnection: connectionMock.applyConnection,
+    localClient: connectionMock.localClient,
   }),
 }));
 
@@ -242,6 +244,8 @@ beforeEach(() => {
   connectionMock.token = '';
   connectionMock.url = 'http://127.0.0.1:8080';
   connectionMock.applyConnection.mockClear();
+  connectionMock.localClient = undefined;
+  configureSpaceStorage(null);
   klient.global.mcp.list.mockReset();
   klient.global.mcp.add.mockReset();
   klient.global.mcp.update.mockReset();
@@ -428,6 +432,24 @@ describe('SettingsPage panel scopes', () => {
     // General only changes this app, so it has nothing to say about the server.
     const general = await renderSettings('/settings/general');
     expect(general.querySelector('[data-settings-remote-line]')).toBeNull();
+  });
+
+  it('names a paired space by its pairing record, never by its internal key', async () => {
+    const pairing = '9d5b4bd0-8f2b-4a1f-9f37-52c1b48a1a01';
+    connectionMock.localClient = {
+      baseUrl: 'http://127.0.0.1:8080',
+      klient: { rest: { connections: { list: async () => [{ id: pairing, label: 'Workstation B' }] } } },
+    };
+    configureSpaceStorage({ homeId: `remote:${pairing}` });
+    try {
+      const container = await renderSettings('/settings/permissions');
+      await flush();
+      expect(container.querySelector('[data-settings-space-band]')?.textContent).toBe('Current: Workstation B');
+      expect(container.textContent).not.toContain('remote:');
+      expect(container.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    } finally {
+      configureSpaceStorage(null);
+    }
   });
 
   it('keeps the remote-server and unsaved lines on a single plugin page', async () => {
@@ -1055,7 +1077,9 @@ describe('SettingsPage batch-3 leaves', () => {
   it('redirects the retired runtime leaf to the tasks page', async () => {
     const container = await renderSettings('/settings/runtime');
     expect(container.querySelector('#st-card-runtime')).toBeNull();
-    expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
+    // Sessions keeps the everyday half of the task policy; the rest is an engine parameter.
+    expect(container.querySelector('#st-card-background-work')).not.toBeNull();
+    expect(container.querySelector('#st-card-task-policy')).toBeNull();
     expect(container.querySelector('#st-card-cron')).toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
   });
@@ -1150,21 +1174,31 @@ describe('SettingsPage batch-3 leaves', () => {
 
   it('mounts the split runtime content on its new leaves', async () => {
     const tasks = await renderSettings('/settings/tasks');
-    expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Maximum running tasks');
+    expect(tasks.querySelector('#st-card-background-work')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-background-work')!.textContent).toContain('Bash task timeout');
     expect(tasks.querySelector('#st-card-cron')).toBeNull();
 
-    const sessions = await renderSettings('/settings/communication');
-    const messaging = sessions.querySelector('#st-card-agent-messaging')!;
+    // Thread messages and progress notes are agent-to-agent, on Agents › Dispatch.
+    const communication = await renderSettings('/settings/communication');
+    const messaging = communication.querySelector('#st-card-agent-messaging')!;
     expect(messaging).not.toBeNull();
     expect(messaging.textContent).toContain('Allow threads');
     expect(messaging.textContent).toContain('Subagents can notify their parent');
-    expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
+    expect(messaging.textContent).not.toContain('Handoff notice');
+    expect(communication.querySelector('#st-card-token-counting')).toBeNull();
 
-    const runtimeTab = await renderSettings('/settings/sessions?tab=runtime');
-    expect(runtimeTab.querySelector('#st-card-resource-limits')).not.toBeNull();
-    expect(runtimeTab.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
-    expect(runtimeTab.querySelector('#st-card-session-residency')).not.toBeNull();
+    // Engine internals sit together under Developer & labs › Engine parameters.
+    const engine = await renderSettings('/settings/developer?tab=engine');
+    await flush();
+    expect(engine.querySelector('[data-developer-tab="engine"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(engine.querySelector('#st-card-resource-limits')).not.toBeNull();
+    expect(engine.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
+    expect(engine.querySelector('#st-card-session-residency')).not.toBeNull();
+    expect(engine.querySelector('#st-card-task-policy')!.textContent).toContain('Maximum running tasks');
+    expect(engine.querySelector('#st-card-handoff-notices')!.textContent).toContain('Handoff notice for subagents');
+    expect(engine.querySelector('#st-card-subagent-agent-list-fields')).not.toBeNull();
+    expect(engine.querySelector('#st-card-agent-runtime')!.textContent).toContain('Identity display name');
+    expect(engine.querySelector('#st-card-agent-runtime')!.textContent).toContain('Extra agent directories');
 
     const defaultsTab = await renderSettings('/settings/ai?tab=defaults');
     expect(defaultsTab.querySelector('#st-card-token-counting')).not.toBeNull();
@@ -1185,16 +1219,25 @@ describe('SettingsPage batch-3 leaves', () => {
 
     const agents = await renderSettings('/settings/agents');
     await flush();
-    expect(agents.querySelector('#st-card-agent-runtime')).not.toBeNull();
-    expect(agents.querySelector('#st-card-agent-runtime')!.textContent).toContain('Identity display name');
-    expect(agents.querySelector('#st-card-agent-runtime')!.textContent).toContain('Extra agent directories');
+    expect(agents.querySelector('#st-card-agent-runtime')).toBeNull();
+  });
+
+  it('follows an old anchor of a moved card to Engine parameters and finds the card there', async () => {
+    const moved = await renderSettings('/settings/sessions?tab=runtime#st-card-session-residency');
+    await flush();
+    expect(moved.querySelector('[data-developer-tab="engine"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(moved.querySelector('#st-card-session-residency')).not.toBeNull();
+    const fields = await renderSettings('/settings/agents?tab=dispatch#st-card-subagent-agent-list-fields');
+    await flush();
+    expect(fields.querySelector('[data-developer-tab="engine"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(fields.querySelector('#st-card-subagent-agent-list-fields')).not.toBeNull();
   });
 
   it('saves the task policy card with the narrow task-domain patch', async () => {
     client.getConfig.mockResolvedValueOnce({ task: { maxRunningTasks: 4 } });
     client.patchConfig.mockResolvedValueOnce({ task: { maxRunningTasks: 6 } });
     client.patchConfig.mockClear();
-    const container = await renderSettings('/settings/tasks');
+    const container = await renderSettings('/settings/developer?tab=engine');
     const card = container.querySelector('#st-card-task-policy')!;
     const input = card.querySelector('input')!;
     expect(input.value).toBe('4');
@@ -1215,9 +1258,9 @@ describe('SettingsPage batch-3 leaves', () => {
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-agent-board')).toBeNull();
-    // /settings/tasks redirects to the Background work tab of /settings/sessions.
-    expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(tasks.querySelector('[data-sessions-tab="runtime"]')?.getAttribute('aria-selected')).toBe('true');
+    // /settings/tasks redirects to /settings/sessions, one page with no tabs.
+    expect(tasks.querySelector('#st-card-background-work')).not.toBeNull();
+    expect(tasks.querySelector('[data-sessions-tab]')).toBeNull();
     const behavior = await renderSettings('/settings/sessions?tab=behavior');
     expect(behavior.querySelector('#st-card-defaults')).not.toBeNull();
     expect(behavior.querySelector('#st-card-questions')).not.toBeNull();
@@ -1303,7 +1346,7 @@ describe('SettingsPage batch-3 leaves', () => {
 
   it('redirects the retired experimental URL to the labs index on developer', async () => {
     const container = await renderSettings('/settings/experimental', { guarded: true });
-    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer#st-card-labs');
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer?tab=overview#st-card-labs');
     expect(container.querySelector('#st-card-labs')).not.toBeNull();
     expect(container.querySelector('#st-card-advanced')).not.toBeNull();
     expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, system diagnostics, and experimental feature index.');
@@ -1383,7 +1426,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/agents');
     await flush();
     expect(container.querySelector('#st-card-main-agents [data-team-view]')).not.toBeNull();
-    expect(container.querySelector('#st-card-main-agents [data-team-table]')).not.toBeNull();
+    expect(container.querySelector('#st-card-main-agents [data-team-list]')).not.toBeNull();
     // The editor is a sheet opened from a row, not a side-by-side detail pane.
     expect(container.querySelector('[data-profile-editor]')).toBeNull();
     expect(container.querySelector('#st-card-subagent-profiles')).toBeNull();
@@ -1422,7 +1465,7 @@ describe('SettingsPage batch-3 leaves', () => {
     // The list is the leaf's subject; the market is reached by one link, and no
     // configuration form opens in place.
     expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities?view=market');
     expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
     // The browser runtime card is a browser fact, not a plugin one.
     expect(container.querySelector('#st-card-webbridge')).toBeNull();
@@ -1940,45 +1983,110 @@ describe('SettingsPage search locating', () => {
   });
 });
 
-describe('SettingsPage mobile drawer', () => {
-  it('owns Escape while open: the drawer closes, the event is consumed before the app-level settings Escape, and focus returns to the trigger', async () => {
-    const container = await renderSettings('/settings/general');
-    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
-    trigger.focus();
+describe('SettingsPage moved settings', () => {
+  it('lands old Recipe and request-identity addresses on their new pages', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const recipes = await renderSettings('/settings/recipes', { guarded: true });
+    expect(recipes.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=recipes');
+    expect(recipes.querySelector('[data-settings-page-title]')?.textContent).toBe('Models');
+    expect(recipes.querySelector('[data-ai-tab="recipes"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(recipes.querySelector('#st-card-recipes-library')).not.toBeNull();
+    expect(recipes.querySelector('[data-settings-nav-leaf="recipes"]')).toBeNull();
 
-    await click(trigger);
-    const drawer = document.querySelector<HTMLElement>('[data-settings-nav-drawer]');
-    expect(drawer).not.toBeNull();
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    expect(trigger.getAttribute('aria-controls')).toBe('settings-nav-drawer');
-    // Focus moved into the drawer, onto the leaf that names the open page.
-    expect(drawer!.contains(document.activeElement)).toBe(true);
-    expect((document.activeElement as HTMLElement | null)?.getAttribute('data-settings-nav-leaf')).toBe('general');
-    expect(drawer!.querySelector('[data-settings-nav-leaf="permissions"]')).not.toBeNull();
+    // One Recipe's own address keeps the package it names.
+    const one = await renderSettings('/settings/recipes?recipe=inst-clear-work', { guarded: true });
+    expect(one.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?recipe=inst-clear-work&tab=recipes');
 
-    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-    await act(async () => { window.dispatchEvent(escape); });
-    // The app-level "Escape leaves settings" handler (App.tsx) skips exactly
-    // when defaultPrevented is set — assert the contract, not App's absence.
-    expect(escape.defaultPrevented).toBe(true);
-    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(document.activeElement).toBe(trigger);
-    // Still on the same settings page: nothing navigated away.
-    expect(container.querySelector('[data-settings-page-title]')).not.toBeNull();
+    const identity = await renderSettings('/settings/ai?tab=identity', { guarded: true });
+    expect(identity.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer?tab=identity');
+    expect(identity.querySelector('[data-developer-tab="identity"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(identity.querySelector('#st-card-request-identity')).not.toBeNull();
+    expect(identity.querySelector('[data-ai-tab="identity"]')).toBeNull();
   });
 
-  it('returns focus to the trigger when the drawer closes through its close control', async () => {
-    const container = await renderSettings('/settings/general');
-    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
-    trigger.focus();
-    await click(trigger);
-    const close = document.querySelector<HTMLElement>('[data-settings-nav-drawer] button[aria-label]')!;
-    await click(close);
-    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+  it('follows an old card anchor to its new page and locates the card', async () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const container = await renderSettings('/settings/ai#st-card-request-identity', { guarded: true });
+      for (let attempt = 0; attempt < 3; attempt++) await flush();
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer?tab=identity#st-card-request-identity');
+      expect(container.querySelector('#st-card-request-identity')?.className).toContain('settings-card-flash');
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+
+  it('finds a setting that moved and opens it on its new page', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const container = await renderSettings('/settings/general', { guarded: true });
+      const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
+      await setInput(search, 'User-Agent');
+      const option = [...search.parentElement!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+        .find((candidate) => candidate.textContent?.startsWith('Default request identity'));
+      expect(option?.textContent).toContain('Developer & labs');
+      await click(option!);
+      for (let attempt = 0; attempt < 3; attempt++) await flush();
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer?tab=identity#st-card-request-identity');
+      expect(container.querySelector('#st-card-request-identity')?.className).toContain('settings-card-flash');
+    } finally {
+      scrollIntoView.mockRestore();
+    }
+  });
+});
+
+describe('SettingsPage narrow list → section', () => {
+  // jsdom applies no media queries, so the two presentations of bare
+  // `/settings` are asserted through the breakpoint classes that switch them.
+  it('is the section list below lg and still General beside the rail at lg; a leaf opens its section', async () => {
+    const container = await renderSettings('/settings', { guarded: true });
+    const list = container.querySelector<HTMLElement>('[data-settings-index]')!;
+    expect(list.className).toContain('lg:hidden');
+    expect(list.querySelector('[data-settings-nav-leaf][aria-current]')).toBeNull();
+    const pane = container.querySelector<HTMLElement>('[data-settings-scroll]')!;
+    expect(pane.parentElement?.className).toContain('hidden lg:flex');
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('General');
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings');
+
+    await click(list.querySelector('[data-settings-nav-leaf="permissions"]')!);
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/permissions');
+    expect(container.querySelector('[data-settings-index]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-settings-scroll]')?.parentElement?.className).not.toContain('hidden');
+  });
+
+  it('keeps search one tap away on a narrow section page: the header magnifier swaps the title for the field', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings('/settings/permissions', { guarded: true });
+    // No search row under the header; the rail's field is the only one until asked.
+    expect(container.querySelectorAll('[data-settings-search]')).toHaveLength(1);
+    expect(container.querySelector('[data-settings-header-search]')).toBeNull();
+    await click(container.querySelector('[data-settings-search-open]')!);
+    const header = container.querySelector('header [data-settings-search]') as HTMLInputElement;
+    expect(header).not.toBeNull();
+    expect(container.querySelector('h1')?.className).toContain('max-lg:hidden');
+    await setInput(header, 'settings transfer');
+    await click(header.parentElement!.querySelector('[role="option"]')!);
+    for (let attempt = 0; attempt < 3; attempt++) await flush();
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/general#st-card-settings-transfer');
+    expect(container.querySelector('[data-settings-header-search]')).toBeNull();
+  });
+
+  it('opens a search hit from the list on its own section, and a card link on bare /settings is not the list', async () => {
+    const container = await renderSettings('/settings', { guarded: true });
+    const search = container.querySelector<HTMLInputElement>('[data-settings-index] [data-settings-search]')!;
+    await setInput(search, 'settings transfer');
+    const option = Array.from(search.parentElement?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [])
+      .find((candidate) => candidate.textContent?.includes('General'));
+    await click(option!);
+    for (let attempt = 0; attempt < 3; attempt++) await flush();
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/general#st-card-settings-transfer');
+    expect(container.querySelector('[data-settings-index]')).toBeNull();
+
+    const linked = await renderSettings('/settings#st-card-settings-transfer');
+    expect(linked.querySelector('[data-settings-index]')).toBeNull();
+    expect(linked.querySelector('#st-card-settings-transfer')).not.toBeNull();
   });
 });
 

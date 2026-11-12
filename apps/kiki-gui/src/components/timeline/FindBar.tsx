@@ -17,6 +17,7 @@ import type { ContentRef } from '@kiki/transcript';
 
 import { useI18n } from '../../i18n';
 import type { KikiClient, SearchMessageHit } from '../../lib/client';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import {
   buildFindPattern,
   collectMatches,
@@ -357,6 +358,9 @@ export function FindBar({
   };
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    // The Enter that commits an IME candidate is not "next match", and its
+    // Escape cancels the candidate, not the find bar.
+    if (isImeKeyEvent(event)) return;
     if (event.key === 'Enter' || event.key === 'F3') {
       event.preventDefault();
       step(event.shiftKey ? -1 : 1);

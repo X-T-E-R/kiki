@@ -84,6 +84,28 @@ describe('ConnectScreen browser form', () => {
     expect(html).toContain('handoff failed');
   });
 
+  it('does not offer to find Kiki on this device when the page was served from another machine', () => {
+    // A phone opening the computer's address: a browser's detection asks the
+    // machine that served the page, which is not the one in the person's hand.
+    vi.stubGlobal('location', { hostname: '192.168.1.20' });
+    try {
+      const html = renderScreen({ desktopBoot: null, desktopFailure: null });
+      expect(html).not.toContain('data-connect-detect');
+      expect(html).not.toContain('Find Kiki on this computer');
+      expect(html).toContain('Connect to Kiki on a computer.');
+      expect(html).toContain('connect-server-url');
+    } finally {
+      vi.stubGlobal('location', undefined);
+    }
+    // Served from loopback, the same check still finds the Kiki beside it.
+    vi.stubGlobal('location', { hostname: '127.0.0.1' });
+    try {
+      expect(renderScreen({ desktopBoot: null, desktopFailure: null })).toContain('data-connect-detect');
+    } finally {
+      vi.stubGlobal('location', undefined);
+    }
+  });
+
   it('links back to the mobile launcher when rendered inside the phone app shell', () => {
     vi.stubGlobal('navigator', { language: 'en-US', userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android' });
     try {

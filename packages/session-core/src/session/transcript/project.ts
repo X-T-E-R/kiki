@@ -16,6 +16,10 @@ import type {
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
 import { adoptContentPreviewField, carryContentHydration, contentPathValue, mergeContentPreview, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { placeTranscriptItems } from '@kiki/transcript';
+import { resolveItemCopies, resolveTurnCopies, turnGapOf } from './window';
+
+export { recoverTranscriptTurn } from './window';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -71,6 +75,7 @@ import {
   type ReminderCategory,
   type ReminderCategoryKind,
   type TurnExecutionInfo,
+  type TurnGap,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
@@ -2706,20 +2711,42 @@ export function stabilizeProjectedBlocks(
   next: readonly Block[],
 ): readonly Block[] {
   if (previous.length === 0 || next.length === 0) return next;
-  let previousById: ReadonlyMap<string, Block> | undefined;
+  return reuseEqualById(previous, next);
+}
+
+/**
+ * Structural sharing by `id`: every entry equal to the previous entry with the
+ * same id is that previous object, and the previous array itself comes back
+ * when every entry was reused. Two empty lists also keep the previous array.
+ */
+function reuseEqualById<T extends { readonly id: string }>(
+  previous: readonly T[],
+  next: readonly T[],
+): readonly T[] {
+  let previousById: ReadonlyMap<string, T> | undefined;
   let allStable = previous.length === next.length;
-  const stable = next.map((block, index) => {
+  const stable = next.map((entry, index) => {
     let candidate = previous[index];
-    if (candidate?.id !== block.id) {
+    if (candidate?.id !== entry.id) {
       allStable = false;
       previousById ??= new Map(previous.map((item) => [item.id, item]));
-      candidate = previousById.get(block.id);
+      candidate = previousById.get(entry.id);
     }
-    if (candidate !== undefined && transcriptValueEquals(candidate, block)) return candidate;
+    if (candidate !== undefined && transcriptValueEquals(candidate, entry)) return candidate;
     allStable = false;
-    return block;
+    return entry;
   });
   return allStable ? previous : stable;
+}
+
+/**
+ * The previous value when the projection rebuilt an equal one. Every publish
+ * re-derives these fields from the snapshot, and the GUI uses several of them
+ * as memo and context dependencies; a fresh but equal value would re-run all
+ * of those on every streamed frame.
+ */
+function keepEqual<T>(previous: T, next: T): T {
+  return transcriptValueEquals(previous, next) ? previous : next;
 }
 
 /**
@@ -4016,7 +4043,12 @@ export function projectAgentTranscriptView(
   previous: SessionViewState,
   agentId: string,
   snapshot: AgentState | AgentTranscriptSnapshot,
-  options: { readonly retainPendingPrompts?: boolean; readonly cold?: boolean } = {},
+  options: {
+    readonly retainPendingPrompts?: boolean;
+    readonly cold?: boolean;
+    /** Where each held turn is incomplete; by default a turn the source window cut (`stepsPartial`) is, at an unknown place. */
+    readonly gapOf?: (turn: TranscriptTurn) => TurnGap | undefined;
+  } = {},
 ): SessionViewState {
   const source = agentStateToProjectionSource(agentId, snapshot);
   const projected = agentTranscriptToBlocks(source, previous.blocks);
@@ -4122,6 +4154,14 @@ export function projectAgentTranscriptView(
   }
   const goal = snapshot.meta.goal;
   const turnTail = lastTurn === undefined ? undefined : turnTailFromItem(lastTurn);
+  const gapOf = options.gapOf ?? ((turn: TranscriptTurn) => turnGapOf(turn, false, undefined));
+  const turnGaps: Record<string, TurnGap> = {};
+  for (const item of snapshot.items) {
+    if (item.kind !== 'turn') continue;
+    const gap = gapOf(item);
+    if (gap !== undefined) turnGaps[item.turnId] = gap;
+  }
+  const incompleteTurnIds = Object.keys(turnGaps);
   return {
     ...previous,
     version: previous.version + 1,
@@ -4135,10 +4175,10 @@ export function projectAgentTranscriptView(
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
     maxContextTokens: meta?.maxContextTokens,
-    usage: projectUsageStatus(meta?.usage),
+    usage: keepEqual(previous.usage, projectUsageStatus(meta?.usage)),
     permissionMode: mapTranscriptPermission(meta?.permission) ?? previous.permissionMode,
     planMode: snapshot.meta.modes?.plan !== undefined,
-    queuedPromptIds,
+    queuedPromptIds: keepEqual(previous.queuedPromptIds, queuedPromptIds),
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
     activePromptId: options.cold === true ? undefined : running?.promptId,
@@ -4147,14 +4187,20 @@ export function projectAgentTranscriptView(
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
     abortableTurnId: options.cold === true ? undefined : runningTurn?.ordinal,
     pendingInteraction,
-    todos: (agentTodo ?? todos.find((todo) => todo.todoId === 'external-plan'))?.items ?? [],
+    todos: keepEqual(previous.todos, (agentTodo ?? todos.find((todo) => todo.todoId === 'external-plan'))?.items ?? []),
     todoNotes: agentTodo?.notes,
     todoNotesMeta: agentTodo?.notesMeta,
     todoNotesStatus: agentTodo?.notesStatus,
-    tasks: tasks.map(transcriptTaskToSessionTask),
-    goal: goal === undefined ? null : projectGoalSnapshot(goal),
-    hasMoreHistory: snapshot.hasMoreOlder === true || firstTurn?.stepsPartial !== true &&
+    // Each task is mapped to a fresh `Task` on every publish; unchanged ones
+    // keep their previous object (and the list its identity), the way blocks do.
+    tasks: reuseEqualById(previous.tasks, tasks.map(transcriptTaskToSessionTask)),
+    goal: keepEqual(previous.goal, goal === undefined ? null : projectGoalSnapshot(goal)),
+    // An incomplete oldest turn is not the beginning of history even when no
+    // older turn exists: loading older history reads its structure.
+    hasMoreHistory: snapshot.hasMoreOlder === true || (firstTurn !== undefined && turnGaps[firstTurn.turnId] !== undefined) ||
       firstTurn?.contentRefs?.some((ref) => ref.direction === 'backward') === true,
+    incompleteTurnIds: keepEqual(previous.incompleteTurnIds, incompleteTurnIds),
+    turnGaps: keepEqual(previous.turnGaps ?? {}, turnGaps),
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
     // A running last turn has no tail yet; never carry the previous turn's.
@@ -4163,7 +4209,7 @@ export function projectAgentTranscriptView(
       : turnTail ?? previous.turnTail,
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
-    failedTurnIds: snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : [])),
+    failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),
     turnRetry: turnRetryFromItem(lastTurn),
   };
 }
@@ -4217,12 +4263,6 @@ export function applyTranscriptShell(
   };
 }
 
-function transcriptItemId(item: TranscriptItem): string {
-  if (item.kind === 'turn') return `turn:${item.turnId}`;
-  if (item.kind === 'marker') return `marker:${item.markerId}`;
-  return `taskref:${item.refId}`;
-}
-
 export function completeTranscriptTurnStructure(current: TranscriptTurn, canonical: TranscriptTurn): TranscriptTurn {
   const retainLive = current.state === 'running' || canonical.state === 'running';
   const orphan = current.origin.kind === 'other' && current.message === undefined && current.promptId === undefined && current.startedAt === undefined;
@@ -4264,181 +4304,22 @@ export function completeTranscriptTurnStructure(current: TranscriptTurn, canonic
     ] });
 }
 
-export function recoverTranscriptTurn(current: TranscriptTurn, opening: TranscriptTurn): TranscriptTurn {
-  const steps = new Map(opening.steps.map(step => [step.stepId, step]));
-  for (const step of current.steps) {
-    const prefix = steps.get(step.stepId);
-    steps.set(step.stepId, prefix === undefined ? step : { ...prefix, ...step, ordinal: prefix.ordinal,
-      frames: [...new Map([...prefix.frames, ...step.frames].map(frame => [frame.frameId, frame])).values()] });
-  }
-  const roots = opening.contentRefs?.filter(ref => ref.path.length === 1 && ref.path[0] === 'steps') ?? [];
-  const reindexed = opening.steps.some((step, index) => current.steps[index]?.stepId !== step.stepId);
-  const refs = reindexed ? [
-    ...roots.map(ref => ({ ...ref, direction: 'forward' as const, offset: 0 })),
-    ...(opening.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps' || ref.path.length > 1),
-  ] : [...(current.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
-    ...(opening.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps')];
-  return carryContentHydration(current, { ...current, origin: opening.origin, prompt: opening.prompt,
-    promptId: opening.promptId, message: opening.message, delivery: opening.delivery, presentation: opening.presentation,
-    attachmentIds: opening.attachmentIds, startedAt: opening.startedAt,
-    stepsPartial: current.stepsPartial === true || opening.stepsPartial === true ? true : undefined,
-    steps: opening.steps.length === 0 ? current.steps : [...steps.values()].toSorted((a, b) => a.ordinal - b.ordinal), contentRefs: refs });
-}
-
-function earlierTaskRefAt(currentAt: string | undefined, incomingAt: string | undefined): string | undefined {
-  if (incomingAt === undefined) return currentAt;
-  if (currentAt === undefined) return incomingAt;
-  const incomingMs = timestampMs(incomingAt);
-  const currentMs = timestampMs(currentAt);
-  if (incomingMs !== undefined && (currentMs === undefined || incomingMs < currentMs)) return incomingAt;
-  return currentAt;
-}
-
+/**
+ * Lay an older history page under a snapshot, by the server's ordering: turns
+ * by ordinal, other items before the next turn their own source put them
+ * before. Kept for callers outside the controller, which now places pages in
+ * its single per-agent window; with no read marks to compare, the copy already
+ * held is kept, except that an opening-less turn is joined with the opening
+ * the page brings and a task reference keeps its earlier time.
+ */
 export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
   older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
 ): AgentTranscriptSnapshot {
-  const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
-  const maxTurnOrdinalBefore: (number | undefined)[] = [];
-  let runningMaxTurnOrdinal: number | undefined;
-  for (let index = 0; index <= current.items.length; index += 1) {
-    maxTurnOrdinalBefore.push(runningMaxTurnOrdinal);
-    const item = current.items[index];
-    if (item?.kind === 'turn' && (runningMaxTurnOrdinal === undefined || item.ordinal > runningMaxTurnOrdinal)) {
-      runningMaxTurnOrdinal = item.ordinal;
-    }
-  }
-  const olderItems: TranscriptItem[] = [];
-  const seen = new Set<string>();
-  for (const item of older.items) {
-    const key = transcriptItemId(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    olderItems.push(item);
-  }
-  const nextTurnBoundAfter: ( { readonly ordinal: number; readonly position?: number } | undefined )[] = [];
-  let runningNextTurnBound: { readonly ordinal: number; readonly position?: number } | undefined;
-  for (let index = olderItems.length - 1; index >= 0; index -= 1) {
-    nextTurnBoundAfter[index] = runningNextTurnBound;
-    const item = olderItems[index]!;
-    if (item.kind === 'turn') {
-      const turnPosition = positions.get(transcriptItemId(item));
-      const ordinal = runningNextTurnBound === undefined ? item.ordinal : Math.min(item.ordinal, runningNextTurnBound.ordinal);
-      const position = turnPosition !== undefined
-        ? (runningNextTurnBound?.position === undefined ? turnPosition : Math.min(turnPosition, runningNextTurnBound.position))
-        : runningNextTurnBound?.position;
-      runningNextTurnBound = { ordinal, position };
-    }
-  }
-  const insertions = new Map<number, TranscriptItem[]>();
-  const recovered = new Map<number, TranscriptItem>();
-  const relocated = new Set<number>();
-  let pending: TranscriptItem[] = [];
-  let previousPosition: number | undefined;
-  let maxOlderTurnOrdinal: number | undefined;
-  const appendInsertion = (position: number, entries: readonly TranscriptItem[]) => {
-    if (entries.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...entries]);
-  };
-  const flushPending = (upperBound?: number) => {
-    if (pending.length === 0) return;
-    let sliceStart = 0;
-    let currentTurn = pending.find((entry): entry is TranscriptTurn => entry.kind === 'turn');
-    let afterPrevious = previousPosition === undefined ? undefined : previousPosition + 1;
-    let canRetreatBeforeLeadingNonTurns = previousPosition === undefined;
-    const placeChunk = (chunk: readonly TranscriptItem[], firstTurn: TranscriptTurn | undefined) => {
-      const laterTurn = firstTurn === undefined ? -1
-        : current.items.findIndex((entry) => entry.kind === 'turn' && entry.ordinal > firstTurn.ordinal);
-      let position = afterPrevious !== undefined && (laterTurn < 0 || afterPrevious <= laterTurn)
-        ? afterPrevious
-        : laterTurn >= 0
-          ? laterTurn
-          : firstTurn !== undefined && current.items.some((entry) => entry.kind === 'turn')
-            ? current.items.length
-            : 0;
-      if (upperBound !== undefined && position > upperBound) position = upperBound;
-      if (canRetreatBeforeLeadingNonTurns && firstTurn !== undefined) {
-        const first = chunk[0]!;
-        const at = timestampMs(first.kind === 'turn' ? first.startedAt : first.at) ?? timestampMs(firstTurn.startedAt);
-        while (position > 0) {
-          const preceding = current.items[position - 1]!;
-          if (preceding.kind === 'turn') break;
-          const precedingAt = timestampMs(preceding.at);
-          if (at === undefined || precedingAt === undefined || precedingAt < at) break;
-          position -= 1;
-        }
-      }
-      appendInsertion(position, chunk);
-      afterPrevious = position;
-      canRetreatBeforeLeadingNonTurns = false;
-    };
-    for (let idx = 0; idx < pending.length; idx += 1) {
-      const entry = pending[idx]!;
-      if (entry.kind === 'turn' && currentTurn !== undefined && entry !== currentTurn) {
-        const lowerOrdinal = currentTurn.ordinal;
-        const splitForCurrentTurn = current.items.some(
-          (existing) => existing.kind === 'turn' && existing.ordinal > lowerOrdinal && existing.ordinal < entry.ordinal,
-        );
-        if (splitForCurrentTurn) {
-          placeChunk(pending.slice(sliceStart, idx), currentTurn);
-          sliceStart = idx;
-          currentTurn = entry;
-          afterPrevious = undefined;
-        } else {
-          currentTurn = entry;
-        }
-      }
-    }
-    placeChunk(pending.slice(sliceStart), currentTurn);
-    pending = [];
-  };
-  for (let index = 0; index < olderItems.length; index += 1) {
-    const item = olderItems[index]!;
-    const key = transcriptItemId(item);
-    if (item.kind === 'turn' && (maxOlderTurnOrdinal === undefined || item.ordinal > maxOlderTurnOrdinal)) {
-      maxOlderTurnOrdinal = item.ordinal;
-    }
-    const position = positions.get(key);
-    const maxTurnBeforePosition = position === undefined ? undefined : maxTurnOrdinalBefore[position];
-    const nextTurnBound = nextTurnBoundAfter[index];
-    const violatesNonTurnOrder = position !== undefined && item.kind !== 'turn' && (
-      (maxOlderTurnOrdinal !== undefined && maxTurnBeforePosition !== undefined && maxTurnBeforePosition > maxOlderTurnOrdinal) ||
-      (nextTurnBound !== undefined && maxTurnBeforePosition !== undefined && maxTurnBeforePosition >= nextTurnBound.ordinal) ||
-      (nextTurnBound?.position !== undefined && position > nextTurnBound.position) ||
-      (previousPosition !== undefined && position < previousPosition)
-    );
-    if (position === undefined || violatesNonTurnOrder) {
-      if (position !== undefined && item.kind !== 'turn') {
-        const existing = current.items[position];
-        relocated.add(position);
-        pending.push(
-          item.kind === 'taskref' && existing?.kind === 'taskref'
-            ? { ...existing, at: earlierTaskRefAt(existing.at, item.at) }
-            : item,
-        );
-      } else {
-        pending.push(item);
-      }
-    } else {
-      const existing = current.items[position];
-      if (item.kind === 'turn' && existing?.kind === 'turn' && existing.origin.kind === 'other' &&
-          existing.message === undefined && existing.promptId === undefined && existing.startedAt === undefined && item.startedAt !== undefined) {
-        recovered.set(position, recoverTranscriptTurn(existing, item));
-      } else if (item.kind === 'taskref' && existing?.kind === 'taskref') {
-        const nextAt = earlierTaskRefAt(existing.at, item.at);
-        if (nextAt !== existing.at) {
-          recovered.set(position, { ...existing, at: nextAt });
-        }
-      }
-      flushPending(position);
-      previousPosition = position;
-    }
-  }
-  flushPending();
-  const items = current.items.flatMap((item, index) => [
-    ...insertions.get(index) ?? [],
-    ...(relocated.has(index) ? [] : [recovered.get(index) ?? item]),
-  ]);
-  items.push(...insertions.get(current.items.length) ?? []);
+  const items = placeTranscriptItems(current.items, older.items, (resident, incoming) =>
+    resident.kind === 'turn' && incoming.kind === 'turn'
+      ? resolveTurnCopies(resident, incoming, false).turn
+      : resolveItemCopies(resident, incoming, false));
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(
     (attachment) => !existingAttachments.has(attachment.attachmentId),

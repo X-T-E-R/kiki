@@ -16,7 +16,7 @@ import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionQuestionService } from '#/session/question/question';
 import { SessionQuestionService } from '#/session/question/questionService';
-import { IQuestionFrequencyGuard, QuestionFrequencyGuard, QUESTION_FREQUENCY_REMINDER } from '#/agent/tools/ask-user-question/questionFrequencyGuard';
+import { IQuestionFrequencyGuard, QuestionFrequencyGuard, questionFrequencyReminder } from '#/agent/tools/ask-user-question/questionFrequencyGuard';
 import { IAskUserQuestionTool, type AskUserQuestionInput } from '#/agent/tools/ask-user-question/ask-user-question';
 import { AskUserQuestionTool } from '#/agent/tools/ask-user-question/askUserQuestionTool';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -26,6 +26,7 @@ import type { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/que
 import type { InteractionConfig } from '#/agent/tools/ask-user-question/configSection';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 
+const QUESTION_FREQUENCY_REMINDER = questionFrequencyReminder({ kind: 'round', max: 1 }, 'Choose the release target');
 const input: AskUserQuestionInput = { questions: [{ question: 'Choose the release target', header: 'Release', options: [{ label: 'Staging', description: 'Test rollout' }, { label: 'Production', description: 'Public rollout' }], multi_select: false }] };
 const hosts: TestInstantiationService[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.dispose(); vi.useRealTimers(); });
@@ -81,6 +82,14 @@ describe('AskUserQuestion frequency guard on actual interaction acceptance', () 
     expect(f.registerTask).not.toHaveBeenCalled(); expect(f.interaction.listPending()).toHaveLength(0);
     expect((await admitted(f)).isError).toBe(false);
     expect((await f.call()).isError).toBe(true);
+  });
+  it('writes the refusal in the language of the refused question', async () => {
+    const f = fixture(); f.round();
+    expect((await admitted(f)).isError).toBe(false);
+    const chinese = { questions: [{ ...input.questions[0]!, question: '选择发布目标', header: '发布' }] };
+    const refused = await f.call(chinese);
+    expect(refused.output).toBe(questionFrequencyReminder({ kind: 'round', max: 1 }, '选择发布目标'));
+    expect(refused.output).not.toBe(QUESTION_FREQUENCY_REMINDER);
   });
   it('counts a 1–4 question batch as one accepted invocation', async () => {
     const f = fixture(); f.round();

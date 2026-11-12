@@ -32,11 +32,7 @@ import { IEventService } from '#/app/event/event';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { AgentSkillService } from '#/agent/skill/skillService';
-import {
-  MAX_SKILL_QUERY_DEPTH,
-  NestedSkillTooDeepError,
-  SkillToolInputSchema,
-} from '#/agent/tools/skill/skill';
+import { SkillToolInputSchema } from '#/agent/tools/skill/skill';
 import { SkillTool } from '#/agent/tools/skill/skillTool';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -303,7 +299,6 @@ describe('SkillTool', () => {
 
   function makeTool(
     ix: TestInstantiationService,
-    depth?: number,
     text = '# Explicit $ARGUMENTS',
     fs: Partial<IHostFileSystem> = {},
     plugins?: IPluginService,
@@ -331,7 +326,7 @@ describe('SkillTool', () => {
       plugins,
       usage,
     );
-    return depth === undefined ? tool : tool.withInitialQueryDepth(depth);
+    return tool;
   }
 
   it('applies the workspace usage gate to name and explicit-path skill activation', async () => {
@@ -343,7 +338,7 @@ describe('SkillTool', () => {
       enabled: () => true,
       allows: async () => false,
     } as unknown as IPluginUsageService;
-    const tool = makeTool(ix, undefined, '# Explicit $ARGUMENTS', {}, plugins, usage);
+    const tool = makeTool(ix, '# Explicit $ARGUMENTS', {}, plugins, usage);
 
     const byName = await executeTool(tool, toolContext({ skill: 'commit' }));
     const byPath = await executeTool(tool, toolContext({ path: 'skills/review.md' }));
@@ -372,7 +367,7 @@ describe('SkillTool', () => {
   });
 
   it('loads an explicit file with args, provenance and resource root without replacing the catalog', async () => {
-    const tool = makeTool(ix, undefined, '---\nname: commit\narguments: [target]\n---\nReview $target');
+    const tool = makeTool(ix, '---\nname: commit\narguments: [target]\n---\nReview $target');
     const result = await executeTool(tool, toolContext({ path: 'skills/review.md', args: 'staged' }));
     expect(result.isError).not.toBe(true);
     expect(result.delivery).toMatchObject({ kind: 'steer', message: {
@@ -386,7 +381,7 @@ describe('SkillTool', () => {
 
   it('enforces user-only and inline restrictions for explicit paths', async () => {
     for (const metadata of ['disable-model-invocation: true', 'type: flow']) {
-      const result = await executeTool(makeTool(ix, undefined, `---\nname: private\n${metadata}\n---\nSecret`), toolContext({ path: 'private.md' }));
+      const result = await executeTool(makeTool(ix, `---\nname: private\n${metadata}\n---\nSecret`), toolContext({ path: 'private.md' }));
       expect(result.isError).toBe(true);
       expect(result.delivery).toBeUndefined();
     }
@@ -398,7 +393,7 @@ describe('SkillTool', () => {
       source: 'project', text: 'Discuss options.',
     }));
     for (const input of [{ skill: 'brainstorm' }, { path: '.kiki/commands/brainstorm.md' }]) {
-      const result = await executeTool(makeTool(ix, undefined, 'Discuss options.'), toolContext(input));
+      const result = await executeTool(makeTool(ix, 'Discuss options.'), toolContext(input));
       expect(result.isError).toBe(true);
       expect(result.delivery).toBeUndefined();
       expect(result.output).toContain('only be triggered by the user');
@@ -419,7 +414,7 @@ describe('SkillTool', () => {
     expect(discovered.skills).toHaveLength(1);
     expect(discovered.skills[0]!.metadata.promptCommand).toBe(true);
     for (const skill of discovered.skills) skills.register(skill);
-    const tool = makeTool(ix, undefined, '', fs);
+    const tool = makeTool(ix, '', fs);
     for (const path of [target, '/workspace/alias.md']) {
       const result = await executeTool(tool, toolContext({ path }));
       expect(result.isError).toBe(true);
@@ -449,7 +444,7 @@ describe('SkillTool', () => {
     expect(discovered.skills).toHaveLength(2);
     for (const skill of discovered.skills) skills.register(skill);
     vanished = true;
-    const tool = makeTool(ix, undefined, '', fs);
+    const tool = makeTool(ix, '', fs);
     const ordinary = await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
     expect(ordinary.isError).not.toBe(true);
     expect(ordinary.delivery).toBeDefined();
@@ -466,7 +461,7 @@ describe('SkillTool', () => {
     skills.register(parseSkillText({ skillMdPath: commandPath, skillDirName: 'private', source: 'project', text: '# Private' }));
     const failure = new Error2(code, 'Cannot resolve command identity');
     const readText = vi.fn(async () => '# Independent');
-    const tool = makeTool(ix, undefined, '', {
+    const tool = makeTool(ix, '', {
       realpath: async (path) => { if (path === commandPath) throw failure; return path; },
       readText,
     });
@@ -486,7 +481,7 @@ describe('SkillTool', () => {
       return path;
     });
     const result = await executeTool(
-      makeTool(ix, undefined, '# Independent', { realpath }),
+      makeTool(ix, '# Independent', { realpath }),
       toolContext({ path: '/workspace/independent.md' }),
     );
     expect(result.isError).not.toBe(true);
@@ -499,7 +494,7 @@ describe('SkillTool', () => {
 
   it('declares a sensitive canonical symlink target before reading skill content', async () => {
     const readText = vi.fn(async () => '# forbidden');
-    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/.env', readText });
+    const tool = makeTool(ix, '', { realpath: async () => '/workspace/.env', readText });
     const resolved = await tool.resolveExecution({ path: 'safe.md' });
     expect(resolved).toMatchObject({ accesses: [{ path: '/workspace/.env' }] });
     expect(readText).not.toHaveBeenCalled();
@@ -509,7 +504,7 @@ describe('SkillTool', () => {
     ['commands/review.md', '/workspace/ordinary.md'],
     ['ordinary.md', '/workspace/commands/review.md'],
   ])('keeps user-only command policy across a symlink from %s', async (path, target) => {
-    const tool = makeTool(ix, undefined, '# user-only command', { realpath: async () => target });
+    const tool = makeTool(ix, '# user-only command', { realpath: async () => target });
     const result = await executeTool(tool, toolContext({ path }));
     expect(result.isError).toBe(true);
     expect(result.delivery).toBeUndefined();
@@ -518,7 +513,7 @@ describe('SkillTool', () => {
 
   it('uses the canonical path for admission and provenance without reading during preparation', async () => {
     const readText = vi.fn(async () => '# approved file');
-    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/actual.md', readText });
+    const tool = makeTool(ix, '', { realpath: async () => '/workspace/actual.md', readText });
     const execution = await tool.resolveExecution({ path: 'link.md' });
     expect(execution).toMatchObject({ display: { kind: 'skill_call', skill_name: '/workspace/actual.md' } });
     expect(readText).not.toHaveBeenCalled();
@@ -594,37 +589,6 @@ describe('SkillTool', () => {
       type: 'text',
       text: expect.stringContaining('ARGUMENTS: src/app.ts'),
     });
-  });
-
-  it('honors initialQueryDepth as an alias for queryDepth', async () => {
-    const nested = await executeTool(
-      makeTool(ix, 2),
-      toolContext({ skill: 'commit' }),
-    );
-    const root = await executeTool(
-      makeTool(ix, 0),
-      toolContext({ skill: 'commit' }),
-    );
-
-    expect(prompted).toHaveLength(0);
-    expect(nested.delivery?.message.origin).toMatchObject({
-      kind: 'skill_activation',
-      trigger: 'nested-skill',
-    });
-    expect(root.delivery?.message.origin).toMatchObject({
-      kind: 'skill_activation',
-      trigger: 'model-tool',
-    });
-  });
-
-  it('throws a structured recursion error when nested skill invocation is too deep', async () => {
-    await expect(
-      executeTool(
-        makeTool(ix, MAX_SKILL_QUERY_DEPTH),
-        toolContext({ skill: 'commit' }),
-      ),
-    ).rejects.toBeInstanceOf(NestedSkillTooDeepError);
-    expect(prompted).toHaveLength(0);
   });
 });
 

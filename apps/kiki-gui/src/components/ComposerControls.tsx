@@ -47,6 +47,8 @@ import {
 } from './capabilities/sessionMcp';
 import type { McpPickAction } from './capabilities/useMcpPicker';
 import { useFsSearchFeed, type FsSearchFeedSearch } from '../lib/fsSearchFeed';
+import { isCoarsePointer } from '../lib/layoutHooks';
+import { isImeKeyEvent } from '../lib/shortcuts';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { Toggle } from './controls';
@@ -76,7 +78,7 @@ export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-medium text-ink shadow-[va
 export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
 
 export const MENU_ROW_CLASS =
-  'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none pointer-coarse:min-h-10 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
 
 /** All deferred queue timings, plus the two non-idle picks when `agent_idle` is already the plain row. */
 export const DEFERRED_SEND_TIMING_PICKS = ['agent_idle', 'subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
@@ -1077,10 +1079,13 @@ export function AddMenu({
     if (!open) return;
     const root = rootRef.current;
     if (root === null) return;
+    // The search field is a keyboard affordance. On touch, focusing it raises
+    // the software keyboard over the menu on every open; the rows are what a
+    // thumb is after, and the field still takes focus when tapped.
     const field =
       view === 'mode'
         ? root.querySelector<HTMLElement>('[data-goal-objective]')
-        : root.querySelector<HTMLElement>('[data-add-search]');
+        : isCoarsePointer() ? null : root.querySelector<HTMLElement>('[data-add-search]');
     (field ?? root.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [data-menu-row]:not([data-add-back])') ?? root.querySelector<HTMLElement>('[data-menu-row]'))?.focus();
   }, [open, view]);
 
@@ -1088,7 +1093,11 @@ export function AddMenu({
     rootRef.current?.querySelector<HTMLElement>('[data-menu-row]:not([data-add-back]):not(:disabled):not([aria-disabled="true"])') ?? null;
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!open) return;
+    // Keys an IME is using (Enter commits a candidate, Escape cancels it,
+    // arrows walk the candidates) are not menu keys. `isComposing` alone
+    // misses Safari's committing Enter, which arrives after compositionend
+    // with only keyCode 229.
+    if (!open || isImeKeyEvent(event)) return;
     const target = event.target as HTMLElement;
     const inSearch = target.dataset['addSearch'] !== undefined;
     if (event.key === 'Escape') {
@@ -1116,7 +1125,7 @@ export function AddMenu({
         back();
         return;
       }
-      if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+      if (event.key === 'Enter') {
         event.preventDefault();
         firstRow()?.click();
         return;
@@ -1332,7 +1341,7 @@ export function AddMenu({
         >
           <MenuIcon d="M9.5 6.5 6.2 9.8a2.3 2.3 0 0 1-3.3-3.3l3.9-3.9a1.5 1.5 0 0 1 2.2 2.2L5.3 8.5a.7.7 0 0 1-1-1l3.2-3.2" />
           <span className="flex-1">{t('composer.addMenu.attach')}</span>
-          <span className="text-[12px] text-ink-faint">{t('composer.addMenu.attachHint')}</span>
+          <span className="text-[12px] text-ink-faint pointer-coarse:hidden">{t('composer.addMenu.attachHint')}</span>
         </button>
         {skills !== undefined
           ? drillRow('skills', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.skills'),

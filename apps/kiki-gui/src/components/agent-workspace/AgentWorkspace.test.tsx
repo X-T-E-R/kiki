@@ -60,6 +60,7 @@ const harness = vi.hoisted(() => ({
   promoteAgent: vi.fn(),
   promoteAvailable: false,
   mountRealRail: false,
+  transcriptRenders: 0,
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
   host: { kind: 'browser' } as {
     kind: string;
@@ -161,13 +162,20 @@ vi.mock('../RightRail', async (importOriginal) => {
 });
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
-vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) =>
-  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
-    data-timeline-queued={showQueuedPrompts === true ? 'shown' : 'hidden'}
-    data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}>
-    {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
-      <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
-  </div> }));
+// `memo` like the real component, so a render count shows whether the props
+// the workspace passes keep their identity.
+vi.mock('../Transcript', async () => {
+  const { memo } = await import('react');
+  return { Transcript: memo(({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) => {
+    harness.transcriptRenders += 1;
+    return <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
+      data-timeline-queued={showQueuedPrompts === true ? 'shown' : 'hidden'}
+      data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}>
+      {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
+        <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
+    </div>;
+  }) };
+});
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
@@ -2038,6 +2046,19 @@ it('releases per-agent transcript observation while an embedded tab is hidden', 
   expect(subscribeAgent).toHaveBeenCalledTimes(2);
 });
 
+it('does not re-render the child timeline while its composer is typed into', async () => {
+  const child = { ...createViewState('session'), loaded: true, blocks: [{ id: 'u1', kind: 'user', text: 'start' }] as never };
+  await renderWorkspace({ controller: controllerStub({ forest: testForest(), agentStates: { child } }) });
+  await settle();
+  const rendered = harness.transcriptRenders;
+  expect(rendered).toBeGreaterThan(0);
+  await typeText(composerInput(dock), 'a');
+  await typeText(composerInput(dock), 'ab');
+  await settle();
+  expect(composerInput(dock).value).toBe('ab');
+  expect(harness.transcriptRenders).toBe(rendered);
+});
+
 it('mounts the owned media preview provider with the shared api ref by default', async () => {
   const previewRef = createRef<MediaPreviewApi>();
   const onToggleRail = vi.fn();
@@ -2684,10 +2705,32 @@ it('retains delta view on mount and releases on unmount for deep-linked child ag
     { retainAgentView, releaseAgentView, updateAgentView },
   );
   await renderWorkspace({ controller, transcriptVisible: true });
-  expect(retainAgentView).toHaveBeenCalledWith('workspace:session:child', 'child', 'delta');
+  expect(retainAgentView).toHaveBeenCalledWith(expect.stringMatching(/^workspace:session:child:/), 'child', 'delta');
+  const viewId = retainAgentView.mock.calls[0]?.[0] as string;
+
+  await renderWorkspace({ controller, transcriptVisible: false });
+  expect(updateAgentView).toHaveBeenLastCalledWith(viewId, 'off');
+  expect(retainAgentView).toHaveBeenCalledTimes(1);
+  expect(releaseAgentView).not.toHaveBeenCalled();
 
   await act(async () => { root.unmount(); });
-  expect(releaseAgentView).toHaveBeenCalledWith('workspace:session:child');
+  expect(releaseAgentView).toHaveBeenCalledWith(viewId);
+});
+
+it('holds a nested parent at turn for its task list while the workspace is visible', async () => {
+  const retainAgentView = vi.fn();
+  const releaseAgentView = vi.fn();
+  const forest = nestedForest();
+  const controller = Object.assign(
+    controllerStub({ forest, agentStates: {} }),
+    { retainAgentView, releaseAgentView, updateAgentView: vi.fn() },
+  );
+  await renderWorkspace({ controller, forest, target: { sessionId: 'session', agentId: 'agent-b' } });
+  expect(retainAgentView).toHaveBeenCalledWith(expect.stringMatching(/:parent$/), 'agent-a', 'turn');
+  const parentViewId = retainAgentView.mock.calls.find(([, agentId]) => agentId === 'agent-a')?.[0] as string;
+
+  await renderWorkspace({ controller, forest, target: { sessionId: 'session', agentId: 'agent-b' }, transcriptVisible: false });
+  expect(releaseAgentView).toHaveBeenCalledWith(parentViewId);
 });
 
 it('opens a persisted body when the recent forest omits its agent, but keeps the body as the continuation evidence', async () => {

@@ -3,11 +3,12 @@ import { LabsSection } from './LabsSection';
 import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
- * Developer & labs: the cron readout (env-driven, never a form), the raw JSON
- * escape hatch, the experimental-features index, and developer-owned flags.
- * Everything with a user-facing home lives there instead: residency and
- * resource ceilings on Sessions › Background work, retry and token counting
- * on Models › Defaults, and advisor tuning inside the Memory advisor card.
+ * Developer & labs, first tab: the cron readout (env-driven, never a form),
+ * the raw JSON escape hatch, the experimental-features index, and
+ * developer-owned flags. Engine internals moved off the everyday pages
+ * (residency, resource ceilings, task caps, handoff notices, title moments)
+ * are the Engine parameters tab; retry and token counting stay on Models ›
+ * Defaults, and advisor tuning inside the Memory advisor card.
  */
 export function DeveloperSection() {
   return (

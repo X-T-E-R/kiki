@@ -14,21 +14,19 @@ export const MAX_BYTES: number = 100 * 1024;
  */
 export const TRANSCODE_MAX_BYTES: number = 10 * 1024 * 1024;
 
-const PositiveLineOffsetSchema = z.number().int().min(1);
-const TailLineOffsetSchema = z.number().int().min(-MAX_LINES).max(-1);
-
 export const ReadInputSchema = z.object({
   host: z.string().optional(),
   path: z
     .string()
     .describe(
-      'Path to a text file. Relative paths resolve against the working directory; a path outside the working directory must be absolute. Directories are not supported; use `ls` via Bash for a known directory, or Glob for pattern search.',
+      'Path to a text file, or to a directory to list its entries. Relative paths resolve against the working directory.',
     ),
   line_offset: z
-    .union([PositiveLineOffsetSchema, TailLineOffsetSchema])
+    .number()
+    .int()
     .optional()
     .describe(
-      `The line number to start reading from. Omit to start at line 1. Negative values read from the end of the file; the absolute value cannot exceed ${String(MAX_LINES)}.`,
+      `The line number to start reading from, counting from 1; 0 is read as 1. Omit to start at line 1. A negative value starts that many lines before the end of the file; values below -${String(MAX_LINES)} are read as -${String(MAX_LINES)}.`,
     ),
   n_lines: z
     .number()

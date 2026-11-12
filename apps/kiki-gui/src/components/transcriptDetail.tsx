@@ -13,7 +13,7 @@
  * and error state is the controller's own, never a second local one.
  */
 
-import { createContext, useCallback, useContext, useEffect, useRef, useMemo, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import type { SessionController } from '@kiki/session-core/session';
 
 import {
@@ -30,6 +30,12 @@ interface TranscriptDetailApi {
   readonly loads: Readonly<Record<string, TranscriptDetailStatus>>;
   /** Bounded fields of the agent this timeline renders, in wire order. */
   readonly contentRefs: readonly ContentRef[];
+  /**
+   * The controller's content revision (`getContentRevision`). Nothing reads
+   * it; it is here so the context value changes whenever an input of the
+   * controller's synchronous content reads changes for any agent.
+   */
+  readonly contentRevision: number;
   /** The session and agent whose canonical bodies these refs address. */
   readonly session: { readonly sessionId: string; readonly agentId: string } | undefined;
   /** Reads one segment of one ref into that same agent's canonical body. */
@@ -43,6 +49,8 @@ export type TranscriptEntityKind = TranscriptDetailListResponse['kind'];
 const TranscriptDetailContext = createContext<TranscriptDetailApi | null>(null);
 
 const NO_REFS: readonly ContentRef[] = [];
+const NO_CONTENT_SUBSCRIPTION = () => () => {};
+const NO_CONTENT_REVISION = () => 0;
 
 export function TranscriptDetailProvider({
   controller,
@@ -74,9 +82,20 @@ export function TranscriptDetailProvider({
     () => sessionId === undefined || agentId === undefined ? undefined : { sessionId, agentId },
     [sessionId, agentId],
   );
+  // Rows below read controller state synchronously during render: another
+  // agent's refs and load states, tool-detail frames, body sizes
+  // (`contentRefsFor`, `getAgentState`, `isContentRange`, `getToolCallDetail`).
+  // None of that is in this provider's props, and `contentRefs` keeps its
+  // identity across publishes that change no ref, so the controller's content
+  // revision is what makes the value change when those reads would answer
+  // differently — and only then, not on every streamed frame.
+  const contentRevision = useSyncExternalStore(
+    controller?.subscribeContent ?? NO_CONTENT_SUBSCRIPTION,
+    controller?.getContentRevision ?? NO_CONTENT_REVISION,
+  );
   const value = useMemo(
-    () => ({ controller, load, loads, contentRefs: contentRefs ?? NO_REFS, session, loadContent, loadEntities }),
-    [controller, load, loads, contentRefs, session, loadContent, loadEntities],
+    () => ({ controller, load, loads, contentRefs: contentRefs ?? NO_REFS, contentRevision, session, loadContent, loadEntities }),
+    [controller, load, loads, contentRefs, contentRevision, session, loadContent, loadEntities],
   );
   return <TranscriptDetailContext.Provider value={value}>{children}</TranscriptDetailContext.Provider>;
 }

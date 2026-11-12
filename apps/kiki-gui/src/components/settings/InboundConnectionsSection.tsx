@@ -18,7 +18,7 @@ import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { connectionsApi, fingerprint, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
+import { connectionsApi, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
@@ -26,8 +26,6 @@ import { Icon } from '../icons';
 import { PRIMARY_BUTTON } from '../ui';
 import { RowFrame } from './RowFrame';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails } from './fields';
-import { CopyField } from './remote/parts';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { InviteSourceDialog } from './remote/InviteSourceDialog';
 import { connectionFailureText } from './remote/parts';
@@ -38,7 +36,7 @@ const GRANT_STATUS_TONE: Readonly<Record<ConnectionGrant['status'], { dot: strin
   revoked: { dot: 'bg-hairline-strong', text: 'text-ink-faint' },
 };
 
-/** One peer Kiki: a row whose ⋯ holds its revoke, and whose raw ids fold away. */
+/** One peer Kiki: a row whose ⋯ holds its revoke. */
 function InboundGrantRow({ grant, onRevoke }: {
   readonly grant: ConnectionGrant;
   readonly onRevoke: () => void;
@@ -112,19 +110,11 @@ function InboundGrantRow({ grant, onRevoke }: {
         </>
       )}
     >
-      {/* The raw home/host ids are reference, not identity: folded, sans, copyable. */}
-      <AdvancedDetails summary={t('st.inbound.details')} data-inbound-grant-details>
-        <div className="grid gap-x-4 gap-y-2 pt-1 sm:grid-cols-2">
-          <CopyField id={`inbound-home-${grant.id}`} dataAttr={`inbound-home-${grant.id}`}
-            label={t('st.inbound.homeId')}
-            value={fingerprint(grant.source.homeId, 12, 8)}
-            copyLabel={t('st.inbound.copyId')} copiedLabel={t('st.inbound.copiedId')} />
-          <CopyField id={`inbound-host-${grant.id}`} dataAttr={`inbound-host-${grant.id}`}
-            label={t('st.inbound.hostId')}
-            value={fingerprint(grant.source.hostId, 12, 8)}
-            copyLabel={t('st.inbound.copyId')} copiedLabel={t('st.inbound.copiedId')} />
-        </div>
-      </AdvancedDetails>
+      {/* No home or host id here: an internal identifier is not something a
+          person can check a peer by, and the name above is what they gave it. */}
+      <p className="text-[12px] text-ink-faint" data-inbound-grant-details>
+        {t('st.inbound.addedAt', { time: relativeTime(new Date(grant.createdAt).toISOString(), locale) })}
+      </p>
     </RowFrame>
   );
 }

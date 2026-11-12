@@ -1,7 +1,10 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { translate, translatePlural } from '@kiki/session-core/i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 
+import { PathText, splitPath } from './PathText';
 import { describeTool, type SemanticContext, type ToolSemantics } from './toolSemantics';
 
 const context: SemanticContext = {
@@ -336,5 +339,29 @@ describe('room sends', () => {
     expect(failed.state?.text).toBe('Sending…');
     const sparse = sent({ content: 'hi' }, native({ messageId: 'm' }));
     expect(sparse.state?.text).toBe('Sending…');
+  });
+});
+
+describe('PathText', () => {
+  it('splits a path into its directory and its whole file name', () => {
+    expect(splitPath('C:/fixture/workshop/bench.md')).toEqual({ dir: 'C:/fixture/workshop/', name: 'bench.md' });
+    expect(splitPath('src\\lib\\paths.ts')).toEqual({ dir: 'src\\lib\\', name: 'paths.ts' });
+    expect(splitPath('/bench.md')).toEqual({ dir: '/', name: 'bench.md' });
+    expect(splitPath('bench.md')).toEqual({ dir: '', name: 'bench.md' });
+    expect(splitPath('src/components/')).toEqual({ dir: 'src/', name: 'components/' });
+  });
+
+  it('renders a long path with the file name whole and only the directory able to give way', () => {
+    const path = '/Users/example/projects/kiki/apps/kiki-gui/src/components/workshop/bench-notes.test.md';
+    const html = renderToStaticMarkup(createElement(PathText, { path }));
+    expect(html).toContain(`title="${path}"`);
+    // The directory is the part that shrinks and is cut on its left...
+    expect(/<span data-path-dir[^>]*><bdi dir="ltr">([^<]*)<\/bdi><\/span>/.exec(html)?.[1])
+      .toBe('/Users/example/projects/kiki/apps/kiki-gui/src/components/workshop/');
+    // ...while the file name is one part that keeps its width, and only its
+    // middle may give way when the name alone does not fit.
+    const name = /<span data-path-name[^>]*><span[^>]*>([^<]*)<\/span><span[^>]*>([^<]*)<\/span><\/span>/.exec(html);
+    expect(`${name?.[1] ?? ''}${name?.[2] ?? ''}`).toBe('bench-notes.test.md');
+    expect(name?.[2]).toBe('s.test.md');
   });
 });

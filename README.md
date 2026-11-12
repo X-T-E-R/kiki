@@ -1,30 +1,28 @@
 # Kiki
 
-**Your agents, your call.**
+**One task, several models, each doing its part.**
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
 [Documentation](https://x-t-e-r.github.io/kiki/en/) · [All features](https://x-t-e-r.github.io/kiki/en/features/) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [中文](README.zh-CN.md)
 
-Hand Kiki a folder and a task: map an unfamiliar codebase, work through a stack of PDFs and spreadsheets, finish a draft, or ship a change. It reads what is there, plans, and works in place. When a job divides, it hands parts to subagents you can put on different models, and goals, a queue, and memory keep the work moving across turns.
+Kiki is an open-source, local agent workbench. The lead session splits the work: a strong model plans, cheaper models do the routine parts, and a different vendor reviews. Which model does which part, and how far each may go, is yours to decide. Your agents, your call.
 
-Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT).
+- **You choose the models.** Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI all fit in one session, and you can sign in with GitHub Copilot or ChatGPT.
+- **Fitted to each model.** Claude Code is tuned for Claude and Codex for GPT. Kiki tunes itself to each model you connect through a [Recipe](https://x-t-e-r.github.io/kiki/en/customization/recipes): prompts plus model settings, installed once and bound to that model. The author has published [five](https://github.com/X-T-E-R/kiki-recipes), for GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, and Gemini 3.8 Flash. One model has to be pushed to think a level deeper before it acts; another needs a sample to anchor on first. Adapt one, or write your own for the model you use most.
+- **It runs on your machine.** Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. The desktop app, the terminal (`kiki`), the browser (`kiki web`), and your phone all show the same work.
+- **Every step is in view.** Who is doing what, what it cost, and which concurrency rule is holding a request are all one click away. Prompts can be changed down to a single tool description, and permissions range from asking at every step to full access.
 
-Coming from Claude Code, OpenAI Codex CLI, or Cursor? Four things work differently here:
+It is open source (MIT).
 
-- **Several models in one dispatch tree**: a strong model plans, cheaper models run routine work, and a review on another vendor does not share the implementation's blind spots. Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI all fit in one session, and you can sign in with GitHub Copilot or ChatGPT.
-- **One live session, three surfaces**: the desktop app, the terminal UI (`kiki`), and the browser UI (`kiki web`) attach to the same local daemon, so the session you start in one is the one you open in another.
-- **Reachable away from the desk**: pair WeChat or QQ to a persona or session to reply, steer the current turn, and answer approvals from your phone. Remote connections and SSH hosts extend the same work to other machines; Spaces keep work and personal setups apart.
-- **Limits and prompts in plain view**: the Usage page names the concurrency rule holding each queued request, `kiki prompt-fields` overrides prompt text down to a single tool description, and ordinary memory edits and deletes keep their revision history so you can undo them (while explicit `forget` clears historical payloads permanently).
-
-![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](docs/public/shots/index/wl-20261005-hero-workbench.en.png)
+![One session, several models: each agent in the dispatch tree bound to a different model.](docs/public/shots/workbench/workbench-per-role-models.en.png)
 
 ## Start here
 
 ### On the desktop
 
 1. Download a build for your platform (see [Desktop builds](#desktop-builds) below) and open Kiki.
-2. The welcome shows what Kiki can help you do, asks how much it may do on its own, and offers a few places to look around. Each one is the same short guided tour, and **Discover Kiki** in the sidebar brings it back any time.
-3. On a new conversation, pick a folder and describe a task, or click a starter — starters only fill the draft and never send on their own. If no model is connected yet, Kiki asks when you send: sign in with an account, or use an API key or a local server.
+2. On first launch Kiki asks you to connect a model: sign in with an account, enter an API key, or let it check for a sign-in already on this computer. A key is verified before Kiki reports it as connected. To see how Kiki works first, start the one-minute tour, which calls no model; **Discover Kiki** in the sidebar brings it back any time.
+3. On a new conversation, pick a folder and describe a task, or click a starter — starters only fill the draft and never send on their own.
 
 ### In the terminal
 
@@ -85,7 +83,7 @@ See [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launc
 
 The lead agent splits your task and dispatches subagents, and each one can run a different model — or a different vendor — in the same session. A strong reasoning model can plan while cheaper models do the routine work, and a review by a different vendor is not anchored to the same blind spots as the implementation. Kimi works out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added, and you can sign in with a GitHub Copilot or ChatGPT account.
 
-![One session, several models: each agent in the dispatch tree bound to a different model.](docs/public/shots/workbench/workbench-per-role-models.en.png)
+![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](docs/public/shots/index/wl-20261005-hero-workbench.en.png)
 
 Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it, while a session already running keeps the snapshot it started with until you rebuild its context. You can create a profile by copying an existing one, starting from a shipped template, or starting blank.
 

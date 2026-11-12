@@ -4,8 +4,8 @@ title: Kiki (kiki-agent) — Multi-Model AI Agent Workbench
 titleTemplate: false
 hero:
   name: Kiki
-  text: Hand over a folder and a task.
-  tagline: An open-source multi-model AI agent workbench on your machine. Map a codebase, cross-check PDFs and spreadsheets, or finish a draft — the lead session dispatches subagents on the models you choose, while sessions stay in one local store shared by desktop, terminal, and browser.
+  text: One task, several models, each doing its part.
+  tagline: An open-source, local agent workbench. The lead session splits the work — a strong model plans, cheaper models do the routine parts, and a different vendor reviews. Which model does which part is your call. Your agents, your call.
   actions:
     - theme: brand
       text: Get Started
@@ -17,12 +17,15 @@ hero:
       text: Release Notes
       link: ./release-notes/changelog
 features:
-  - title: "Start with a folder and an outcome"
-    details: "Point Kiki at a codebase, a folder of PDFs and spreadsheets, or a draft. It reads what is there, plans, and works in place — and a session you start in the desktop app, `kiki` in the terminal, or `kiki web` in the browser is the same session everywhere."
-    link: ./getting-started/first-launch
   - title: "One lead session, several models"
     details: "When a job divides, the main agent dispatches isolated subagents — a fast model to explore, another to write or implement, a third vendor to review. Open any subagent's own transcript, while background tasks notify the lead when they finish."
     link: ./features/workbench
+  - title: "Fitted to each model"
+    details: "Other tools are tuned for their own vendor's model. Kiki tunes itself to each model you connect through a Recipe: prompts plus model settings, installed once and bound to that model. The author has published five, for GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, and Gemini 3.8 Flash; adapt one or write your own."
+    link: ./customization/recipes
+  - title: "On your machine, the same work in every window"
+    details: "Work files stay in the folder you choose, and sessions, history, and configuration stay on this computer. A session you start in the desktop app, `kiki` in the terminal, or `kiki web` in the browser is the same session everywhere."
+    link: ./getting-started/first-launch
   - title: "Reusable roles in plain Markdown"
     details: "Each agent profile is one Markdown file you own: frontmatter sets its model, thinking effort, allowed tools, and which child agents it may dispatch; the body is its system prompt. Start from built-in roles like `explore`, `implementer`, and `reviewer`, or write your own."
     link: ./features/agent-workflows

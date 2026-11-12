@@ -32,6 +32,7 @@ import {
   type ListSortSpec,
 } from './list';
 import { WorkspaceSettingsPage } from './workspaces/WorkspaceSettingsPage';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 
 /**
  * The workspace list, or one workspace's own page.
@@ -490,6 +491,7 @@ function WorkspaceRenameEditor({ workspace, onDone, onCancel }: {
         maxLength={100}
         onChange={(event) => { setName(event.target.value); }}
         onKeyDown={(event) => {
+          if (isImeKeyEvent(event)) return;
           if (event.key === 'Enter') submit();
           if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
         }}

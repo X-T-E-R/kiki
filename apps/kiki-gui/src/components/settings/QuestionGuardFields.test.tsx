@@ -171,7 +171,7 @@ describe('the global card', () => {
     const container = await render(<SessionsSection />);
     const pressed = [...container.querySelectorAll('[data-question-behavior] button')]
       .find((button) => button.getAttribute('aria-pressed') === 'true');
-    expect(pressed?.textContent).toBe('Block');
+    expect(pressed?.textContent).toBe('Wait for you');
   });
 
   it('saves the whole guard under interaction when it is switched on', async () => {

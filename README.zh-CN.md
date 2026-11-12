@@ -1,30 +1,28 @@
 # Kiki
 
-**你的智能体，你说了算。**
+**一件事，几家模型分工做。**
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/zh/) <br>
 [文档](https://x-t-e-r.github.io/kiki/zh/) · [功能一览](https://x-t-e-r.github.io/kiki/zh/features/) · [截图巡览](marketing/gallery.zh-CN.md) · [问题反馈](https://github.com/X-T-E-R/kiki/issues) · [致谢](ACKNOWLEDGEMENTS.zh-CN.md) · [English](README.md)
 
-把一个文件夹和一件事交给 Kiki：摸清陌生代码库、核对一摞 PDF 与表格、写完一份初稿，或者推进一处改动。它会先读里面有什么、做计划，就在原地动手。活能拆开时，它会把子任务分给可绑定不同模型的子智能体，再用目标、消息队列和记忆让工作跨轮次持续推进。
+Kiki 是开源的本地智能体工作台。主会话把活拆开：规划交给强模型，日常的活交给便宜的模型，审查换一家厂商。每个帮手用哪个模型、能做到哪一步，都由你定——你的智能体，你说了算。
 
-工作文件留在你选定的文件夹里，会话、历史和配置留在你本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。项目基于 MIT 协议开源。
+- **模型由你配。** Kimi、Anthropic、OpenAI 与 Codex、Gemini、Vertex AI 能在同一个会话里一起用，也可以用 GitHub Copilot 或 ChatGPT 账号登录。
+- **每个模型都有自己的专武。** Claude Code 是照着 Claude 调的，Codex 是照着 GPT 调的；Kiki 用[配方（Recipe）](https://x-t-e-r.github.io/kiki/zh/customization/recipes)给接进来的每个模型单独调：一套提示词加模型设置，装一次，绑在模型上。作者自己发布了[五套](https://github.com/X-T-E-R/kiki-recipes)，分别给 GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon 和 Gemini 3.8 Flash——有的要逼它多想一层再动手，有的要先给它一份样板。照着改，或者给你常用的模型自己写一套。
+- **跑在你的机器上。** 工作文件留在你选定的文件夹里，会话、历史和配置留在本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。桌面应用、终端（`kiki`）、浏览器（`kiki web`）和手机看到的是同一场工作。
+- **每一步都看得见。** 谁在做什么、花了多少、被哪条并发规则挡着，都能点开；提示词能改到单条工具描述，权限从每步询问到完全放行由你选。
 
-已经在用 Claude Code、OpenAI Codex CLI 或 Cursor？这里有四处不一样：
+项目基于 MIT 协议开源。
 
-- **一棵派发树里混用多种模型**：强模型做规划，便宜的模型跑日常，换个厂商做审查，不和实现共享同一批盲区。Kimi、Anthropic、OpenAI 与 Codex、Gemini、Vertex AI 能在同一个会话里一起用，也可以用 GitHub Copilot 或 ChatGPT 账号登录。
-- **同一个会话，三个入口**：桌面应用、终端界面（`kiki`）和浏览器界面（`kiki web`）连的是同一个本地守护进程，在一处开的会话，换个入口打开还是它。
-- **离开电脑也接得上**：把微信或 QQ 绑到角色或会话上，在手机上回消息、插话到当前回合、回答审批；远端连接和 SSH 主机把同一份工作延伸到别的机器，空间则把工作与个人配置隔开。
-- **限流和提示词都看得见**：用量页写明是哪条并发规则挡着每一个排队请求，`kiki prompt-fields` 能把提示词覆写到单条工具描述，常规记忆修改与删除保留版本历史、可逐条撤销（显式 `forget` 则永久清除历史载荷）。
-
-![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](docs/public/shots/index/wl-20261005-hero-workbench.zh.png)
+![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](docs/public/shots/workbench/workbench-per-role-models.zh.png)
 
 ## 从这里开始
 
 ### 用桌面版
 
 1. 按你的平台下载桌面版（见下方[桌面版构建](#桌面版构建)），打开 Kiki。
-2. 欢迎页先告诉你 Kiki 能帮你做什么，再问它可以自己做多少，最后给几个可以先逛逛的去处。每一处都是同一份简短导览，侧栏的 **发现 Kiki** 随时能再打开它。
-3. 在新会话里选一个文件夹、写下要做的事，或点一条起步建议——起步建议只会填进草稿，不会自己发送。还没连接模型时，Kiki 会在你按发送时提示：使用账号登录，或填写 API 密钥或本地服务。
+2. 第一次打开时，Kiki 请你先连接一个模型：用账号登录、填写 API 密钥，或者让它检查这台电脑上已有的登录。密钥会先验证，通过了才算连上。想先看看它怎么干活，可以开一分钟导览，导览不调用模型；侧栏的 **发现 Kiki** 随时能再打开它。
+3. 在新会话里选一个文件夹、写下要做的事，或点一条起步建议——起步建议只会填进草稿，不会自己发送。
 
 ### 用终端
 
@@ -85,7 +83,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 主智能体拆任务、派子智能体，每个都能绑不同的模型或不同的厂商，在同一个会话里同时跑。强推理模型做规划，便宜的模型跑日常；换个厂商审查，也不会和实现共享同一批盲区。Kimi 开箱即用；Anthropic、OpenAI 兼容服务、OpenAI Responses API、Gemini 和 Vertex AI 都能接，也可以用 GitHub Copilot 或 ChatGPT 账号登录。
 
-![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](docs/public/shots/workbench/workbench-per-role-models.zh.png)
+![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](docs/public/shots/index/wl-20261005-hero-workbench.zh.png)
 
 智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存文件后，下一次派发就会用上新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始。
 

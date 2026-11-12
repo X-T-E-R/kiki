@@ -10,6 +10,60 @@ import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 
 export type ListDensity = 'comfortable' | 'compact';
 
+/** Above this many rows a list windows its body; below it every row stays mounted. */
+export const VIRTUALIZE_AFTER = 60;
+
+/**
+ * The list-tools threshold (settings conventions §3, design rule 2). A list
+ * shorter than this is read at a glance, so it gets no search, no row-density
+ * switch and no filter chips: three rows under a search box and five chips is
+ * furniture, not help. Pages do not pick their own number; this is the one.
+ */
+export const LIST_TOOLS_MIN_ITEMS = 8;
+
+/** Which list tools a list earns; `listToolsFor` decides, the toolbar obeys. */
+export interface ListTools {
+  /** The search field (with its count) and the row-density switch. */
+  readonly search: boolean;
+  /** The filter chips. */
+  readonly filters: boolean;
+  /** The chips worth drawing: those that divide the list (some rows, not all). */
+  readonly filterIds: readonly string[];
+  /** The sort switch. */
+  readonly sort: boolean;
+}
+
+/**
+ * Search once a list reaches `LIST_TOOLS_MIN_ITEMS`; filter chips only then and
+ * only when a chip actually divides the list (at least two kinds, or a problem
+ * chip that some rows match and others do not) — a chip that matches every row
+ * or none narrows nothing; sort only when the page says order changes what the
+ * reader concludes. Judged on the whole list, never on what a query left, so
+ * the tools do not vanish while someone is typing.
+ */
+export function listToolsFor<T>(
+  items: readonly T[],
+  filters: readonly ListFilterSpec<T>[],
+  sorts: readonly ListSortSpec<T>[],
+  orderMatters: boolean,
+): ListTools {
+  const long = items.length >= LIST_TOOLS_MIN_ITEMS;
+  // "Accounts 0" beside "API 8" is not a choice, and neither is "API 8" when
+  // every row is an API: only a chip that splits the list is drawn.
+  const filterIds = long
+    ? filters.filter((spec) => {
+      const matched = items.filter(spec.test).length;
+      return matched > 0 && matched < items.length;
+    }).map((spec) => spec.id)
+    : [];
+  return {
+    search: long,
+    filters: filterIds.length > 0,
+    filterIds,
+    sort: orderMatters && sorts.length > 1,
+  };
+}
+
 /** A chip that narrows the list. `all` is implicit and always first. */
 export interface ListFilterSpec<T> {
   readonly id: string;
@@ -121,10 +175,18 @@ export interface ListViewOptions<T> {
   readonly textOf: (item: T) => readonly (string | undefined)[];
   readonly filters?: readonly ListFilterSpec<T>[];
   readonly sorts?: readonly ListSortSpec<T>[];
+  /**
+   * The page says the order of this list changes what the reader concludes
+   * (newest failure first, say), so the sort switch is offered. Without it
+   * the list keeps the first sort's order and shows no switch.
+   */
+  readonly orderMatters?: boolean;
   readonly defaultDensity?: ListDensity;
 }
 
 export interface ListView<T> {
+  /** The tools this list has earned; the toolbar draws only these. */
+  readonly tools: ListTools;
   readonly query: string;
   readonly setQuery: (query: string) => void;
   readonly filter: string;
@@ -145,18 +207,32 @@ export interface ListView<T> {
   readonly selected: ReadonlySet<string>;
   readonly toggleSelected: (key: string) => void;
   readonly setSelected: (keys: ReadonlySet<string>) => void;
+  /**
+   * Selection mode, entered only from an explicit "Select" action (the
+   * toolbar's `selectLabel` button). Rows show their check boxes only while it
+   * is on; leaving it drops the selection.
+   */
+  readonly selecting: boolean;
+  readonly setSelecting: (on: boolean) => void;
 }
 
 /** View state for one settings list; see the module comment. */
 export function useListView<T>({
-  listId, items, keyOf, textOf, filters = [], sorts = [], defaultDensity = 'comfortable',
+  listId, items, keyOf, textOf, filters = [], sorts = [], orderMatters = false, defaultDensity = 'comfortable',
 }: ListViewOptions<T>): ListView<T> {
   const stored = useSyncExternalStore(subscribe, () => readAll()[listId], () => undefined);
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [rawQuery, setQuery] = useState('');
+  const [rawFilter, setFilter] = useState('all');
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
-  const sort = sorts.some((spec) => spec.id === stored?.sort) ? stored!.sort! : (sorts[0]?.id ?? '');
-  const density = stored?.density ?? defaultDensity;
+  const [selecting, setSelectingState] = useState(false);
+  const tools = useMemo(() => listToolsFor(items, filters, sorts, orderMatters), [items, filters, sorts, orderMatters]);
+  // A tool the list has not earned has no effect either: a query typed before
+  // the list shrank, a chip picked back then or a sort remembered from a longer
+  // list must not keep narrowing or reordering rows with no control in sight.
+  const query = tools.search ? rawQuery : '';
+  const filter = tools.filterIds.includes(rawFilter) ? rawFilter : 'all';
+  const sort = tools.sort && sorts.some((spec) => spec.id === stored?.sort) ? stored!.sort! : (sorts[0]?.id ?? '');
+  const density = tools.search ? stored?.density ?? defaultDensity : defaultDensity;
   const folded = useMemo(() => new Set(stored?.folded ?? []), [stored?.folded]);
 
   const matched = useMemo(() => items.filter((item) => matchesQuery(textOf(item), query)), [items, textOf, query]);
@@ -186,9 +262,10 @@ export function useListView<T>({
   }, [folded, listId]);
 
   return {
+    tools,
     query,
     setQuery,
-    filter: filters.some((spec) => spec.id === filter) ? filter : 'all',
+    filter,
     setFilter,
     sort,
     setSort: (id) => { writeOne(listId, { sort: id }); },
@@ -210,5 +287,10 @@ export function useListView<T>({
       });
     },
     setSelected,
+    selecting,
+    setSelecting: (on) => {
+      setSelectingState(on);
+      if (!on) setSelected(new Set());
+    },
   };
 }

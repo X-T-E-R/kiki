@@ -50,7 +50,8 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { CronTaskEditor } from './CronTaskEditor';
 import { PAGE_WIDTH, PageHeader, useWorkspaceScope } from './PageChrome';
 import { useNow } from './RelativeTime';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { SECONDARY_BUTTON } from './ui';
+import { usePhoneMode } from '../lib/layoutHooks';
 import { WorkspaceScopeControl } from './WorkspaceScopeControl';
 
 export const CRON_TASKS_QUERY_KEY = ['cron-tasks'] as const;
@@ -131,22 +132,6 @@ const CHIP_BASE =
  */
 export function cronDeliveryMode(task: CronTask): CronDeliveryMode {
   return task.delivery_mode ?? 'idle';
-}
-
-function StatusChip({ task }: { readonly task: CronTask }) {
-  const { t } = useI18n();
-  if (task.paused) {
-    return (
-      <span data-cron-status="paused" className={`${CHIP_BASE} bg-panel text-ink-faint`}>
-        {t('cron.status.paused')}
-      </span>
-    );
-  }
-  return (
-    <span data-cron-status="running" className={`${CHIP_BASE} bg-success/10 text-success`}>
-      {t('cron.status.running')}
-    </span>
-  );
 }
 
 /** A label, a field: the two-line shape every value row in the panel uses. */
@@ -300,8 +285,119 @@ function CronTaskRow({
   onDelete,
 }: CronTaskRowProps) {
   const { t } = useI18n();
+  const phone = usePhoneMode();
   const sessionId = task.session_id;
   const shownTitle = useThreadTitle(sessionTitle ?? '');
+  // The section heading already says Enabled or Paused, so the row does not
+  // repeat it; how the plan repeats and how it lands is one fact, not two chips.
+  const cadence = `${task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')} · ${t(`cron.delivery.${cronDeliveryMode(task)}`)}`;
+  const pauseButton = (
+    <button
+      type="button"
+      data-cron-action="pause"
+      disabled={pending}
+      onClick={() => { onPauseResume(task, !task.paused); }}
+      className={`${SECONDARY_BUTTON} shrink-0`}
+    >
+      {task.paused ? t('cron.action.resume') : t('cron.action.pause')}
+    </button>
+  );
+  const scheduleButton = (
+    <button
+      type="button"
+      data-cron-action="expand"
+      aria-expanded={expanded}
+      aria-label={t(expanded ? 'cron.action.collapseAria' : 'cron.action.expandAria', { schedule })}
+      onClick={onToggleDetail}
+      className="inline-flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+    >
+      <Chevron open={expanded} />
+      <span data-cron-schedule className="min-w-0 text-[14px] font-medium text-ink">
+        {schedule}
+      </span>
+    </button>
+  );
+  const staleChip = task.stale ? (
+    <span data-cron-status="stale" className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
+      {t('cron.status.stale')}
+    </span>
+  ) : null;
+  const cadenceFact = (
+    <span data-cron-delivery={cronDeliveryMode(task)} className="shrink-0 text-[12px] text-ink-faint">
+      {cadence}
+    </span>
+  );
+  const target = (
+    <>
+      <span data-cron-workspace className="inline-flex max-w-44 items-center gap-1 truncate" title={task.workspace_id}>
+        <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-hairline-strong" />
+        <span className={`truncate ${workspaceName === undefined ? 'font-mono' : ''}`}>{workspaceName ?? task.workspace_id}</span>
+      </span>
+      {sessionId !== null ? (
+        sessionTitle !== undefined ? (
+          <button
+            type="button"
+            data-cron-session={sessionId}
+            onClick={() => { onOpenSession(sessionId); }}
+            className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+            title={shownTitle}
+          >
+            {shownTitle}
+          </button>
+        ) : (
+          <span className="max-w-48 truncate font-mono" title={sessionId}>
+            {sessionId}
+          </span>
+        )
+      ) : null}
+    </>
+  );
+  const detail = expanded ? (
+    <CronDetail
+      task={task}
+      sessionTitle={sessionTitle}
+      workspaceName={workspaceName}
+      pending={pending}
+      onEdit={onEdit}
+      onRun={onRun}
+      onDelete={onDelete}
+      onOpenSession={onOpenSession}
+    />
+  ) : null;
+
+  // A phone row is three lines — when it fires next, which rule for what,
+  // and the prompt cut to one line — with pause/resume small at the end of
+  // the first line, instead of a 400px card that says four things.
+  if (phone) {
+    return (
+      <li data-cron-task={task.id} aria-busy={pending} className={`px-4 py-3 transition-opacity ${pending ? 'opacity-60' : ''}`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate">
+            {task.next_fire_at !== null ? (
+              <>
+                <span className="text-[11px] text-ink-faint">{t('cron.nextFire')} </span>
+                <span className="font-display text-[16px] font-semibold text-ink"><NextFire at={task.next_fire_at} /></span>
+              </>
+            ) : (
+              <span className="text-[12px] text-ink-faint">{t('cron.lastFire')}: <LastFire at={task.last_fired_at} /></span>
+            )}
+          </span>
+          {pauseButton}
+        </div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-faint">
+          {scheduleButton}
+          {cadenceFact}
+          {staleChip}
+          {target}
+        </div>
+        <p className="mt-1 truncate text-[13px] text-ink-soft">
+          {task.prompt_preview.replace('…(truncated)', '…')}
+        </p>
+        {detail}
+      </li>
+    );
+  }
+
   return (
     <li
       data-cron-task={task.id}
@@ -318,47 +414,20 @@ function CronTaskRow({
                 <NextFire at={task.next_fire_at} />
               </span>
             </>
-          ) : (
-            <StatusChip task={task} />
-          )}
+          ) : null}
           <span className="text-[11.5px] text-ink-faint lg:mt-1">
             {t('cron.lastFire')}: <LastFire at={task.last_fired_at} />
           </span>
         </div>
 
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {/* The schedule, in the reader's language; clicking it opens the
                 row, the row's one click target. Pause/resume stays the only
                 control that changes state from the collapsed row. */}
-            <button
-              type="button"
-              data-cron-action="expand"
-              aria-expanded={expanded}
-              aria-label={t(expanded ? 'cron.action.collapseAria' : 'cron.action.expandAria', { schedule })}
-              onClick={onToggleDetail}
-              className="inline-flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-            >
-              <Chevron open={expanded} />
-              <span data-cron-schedule className="min-w-0 text-[14px] font-medium text-ink">
-                {schedule}
-              </span>
-            </button>
-            {task.next_fire_at !== null ? <StatusChip task={task} /> : null}
-            <span className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
-              {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
-            </span>
-            <span
-              data-cron-delivery={cronDeliveryMode(task)}
-              className={`${CHIP_BASE} border-hairline bg-paper text-ink-soft`}
-            >
-              {t(`cron.delivery.${cronDeliveryMode(task)}`)}
-            </span>
-            {task.stale ? (
-              <span data-cron-status="stale" className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
-                {t('cron.status.stale')}
-              </span>
-            ) : null}
+            {scheduleButton}
+            {cadenceFact}
+            {staleChip}
           </div>
           {/* A rule the localizer cannot name reads as a custom schedule with
               the raw expression as the fact under it, never as the bold title. */}
@@ -369,55 +438,15 @@ function CronTaskRow({
             {task.prompt_preview.replace('…(truncated)', '…')}
           </p>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-faint">
-            <span data-cron-workspace className="inline-flex max-w-44 items-center gap-1 truncate" title={task.workspace_id}>
-              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-hairline-strong" />
-              <span className={`truncate ${workspaceName === undefined ? 'font-mono' : ''}`}>{workspaceName ?? task.workspace_id}</span>
-            </span>
-            {sessionId !== null ? (
-              sessionTitle !== undefined ? (
-                <button
-                  type="button"
-                  data-cron-session={sessionId}
-                  onClick={() => { onOpenSession(sessionId); }}
-                  className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
-                  title={shownTitle}
-                >
-                  {shownTitle}
-                </button>
-              ) : (
-                <span className="max-w-48 truncate font-mono" title={sessionId}>
-                  {sessionId}
-                </span>
-              )
-            ) : null}
+            {target}
           </div>
-
-          {expanded ? (
-            <CronDetail
-              task={task}
-              sessionTitle={sessionTitle}
-              workspaceName={workspaceName}
-              pending={pending}
-              onEdit={onEdit}
-              onRun={onRun}
-              onDelete={onDelete}
-              onOpenSession={onOpenSession}
-            />
-          ) : null}
+          {detail}
         </div>
 
         {/* The collapsed row's one state control; every other verb lives in
             the opened detail. */}
         <div className="flex flex-wrap items-start justify-start gap-1.5 lg:justify-end">
-          <button
-            type="button"
-            data-cron-action="pause"
-            disabled={pending}
-            onClick={() => { onPauseResume(task, !task.paused); }}
-            className={task.paused ? PRIMARY_BUTTON : SECONDARY_BUTTON}
-          >
-            {task.paused ? t('cron.action.resume') : t('cron.action.pause')}
-          </button>
+          {pauseButton}
         </div>
       </div>
     </li>

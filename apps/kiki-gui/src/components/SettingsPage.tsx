@@ -4,17 +4,23 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
+  AI_SETTINGS_TABS,
   BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
   CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB,
+  DEVELOPER_SETTINGS_DEFAULT_TAB,
+  DEVELOPER_SETTINGS_TABS,
   SESSIONS_SETTINGS_DEFAULT_TAB,
   EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
+  aiTabLabelKey,
+  developerTabLabelKey,
   experimentalTabForSection,
+  normalizeAiTab,
+  normalizeDeveloperTab,
   pluginSettingsIdFromQuery,
   recipeSettingsIdFromQuery,
   resolveSettingsRoute,
-  settingsGroupForSection,
   settingsSectionIsDeviceOnly,
   settingsSectionSupportsSpace,
   workspaceSettingsIdFromQuery,
@@ -34,6 +40,8 @@ import { AiSection } from './settings/AiSection';
 import { ProvidersSection } from './settings/ProvidersSection';
 import { RecipesSection } from './settings/RecipesSection';
 import { DefaultsTab } from './settings/ModelsSection';
+import { DefaultModelBar } from './settings/DefaultModelBar';
+import { EngineParametersSection } from './settings/EngineParametersSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
@@ -53,16 +61,18 @@ import { PluginsSection } from './settings/PluginsSection';
 import { BrowserControlSection } from './settings/BrowserControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SettingsTabs } from './settings/SettingsPrimitives';
 import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { SessionsSection } from './settings/SessionsSection';
 import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
-import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
+import { SettingsNav, SettingsSearch } from './settings/SettingsNav';
 import { useOptionalInstalledPlugins } from './capabilities/usePlugins';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
-import { currentSpace } from '../lib/spaces';
+import { currentSpace, useSpaces } from '../lib/spaces';
+import { connectionIdOfSpaceKey, useRemoteConnections } from '../lib/remoteConnections';
 import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
@@ -94,8 +104,12 @@ const OBJECT_LIST_CARD_HASH: Readonly<Partial<Record<SectionId, string>>> = {
   plugins: '#st-card-plugins',
   extensions: '#st-card-plugins',
   workspaces: '#st-card-workspaces',
-  recipes: '#st-card-recipes-library',
+  // The Recipe library is the Models page's Recipes tab.
+  ai: '#st-card-recipes-library',
 };
+
+/** Below `lg` the rail is hidden, so search lives behind the header's magnifier. */
+const WIDE_SETTINGS_QUERY = '(min-width: 1024px)';
 
 /**
  * Address of the connected server, only when it is somewhere else. The
@@ -169,90 +183,29 @@ function SectionIntro({ section, workspaceName, remoteAddress, dirty, hidePurpos
  * §6.4: inside an independent space every settings page opens with one thin
  * line in the space's color, so an edit is never made in the wrong space.
  * The main space shows nothing new.
+ *
+ * The name comes only from the space list or the pairing record, both read
+ * from this window's own home. A space whose name is not known (yet) is
+ * called "another space", never by its internal key (`remote:<uuid>`, a
+ * home id).
  */
 function SpaceBand() {
   const { t } = useI18n();
+  const { localClient } = useConnection();
   const space = currentSpace();
+  const pairingId = space === null ? null : connectionIdOfSpaceKey(space.homeId);
+  const pairings = useRemoteConnections(pairingId === null ? null : localClient ?? null);
+  const spaces = useSpaces(space !== null && pairingId === null && space.name === undefined ? localClient ?? null : null);
   if (space === null) return null;
-  const name = space.name ?? space.homeId;
+  const name = pairingId !== null
+    ? pairings.data?.find((record) => record.id === pairingId)?.label
+    : space.name ?? spaces.data?.find((item) => item.id === space.homeId)?.name;
   return (
     <p data-settings-space-band className="mb-5 flex items-center gap-2 border-l-2 py-0.5 pl-3 text-[12px] text-ink-soft"
       style={{ borderColor: space.color ?? 'var(--color-hairline-strong)' }}>
       <SpaceDot color={space.color} size={7} />
-      <span className="min-w-0 truncate">{t('st.spaces.band', { name })}</span>
+      <span className="min-w-0 truncate">{name === undefined || name === '' ? t('st.spaces.bandUnnamed') : t('st.spaces.band', { name })}</span>
     </p>
-  );
-}
-
-/**
- * Narrow-viewport navigation: the old flat <select> could not express the
- * group hierarchy, so the current location is a button that opens a drawer
- * holding the same grouped tree the desktop rail shows.
- *
- * The drawer owns Escape while it is open the same way Dialog does: a
- * capture-phase window listener that prevents and stops the event, so the
- * app-level "Escape leaves settings" handler (App.tsx) never sees it. Focus
- * moves to the active leaf on open and returns to the trigger on close.
- */
-function MobileSettingsDrawer({
-  active,
-  activeTab,
-  open,
-  onClose,
-  onNavigate,
-}: {
-  active: SectionId;
-  activeTab?: string | null;
-  open: boolean;
-  onClose: () => void;
-  onNavigate: (section: SectionId) => void;
-}) {
-  const { t } = useI18n();
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      closeRef.current();
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    const drawer = document.querySelector('[data-settings-nav-drawer]');
-    const activeLeaf = drawer?.querySelector<HTMLElement>('[data-settings-nav-leaf][aria-current="page"]');
-    (activeLeaf ?? drawer?.querySelector<HTMLElement>('button'))?.focus();
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true);
-      previous?.focus();
-    };
-  }, [open]);
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label={t('st.nav.browse')} id="settings-nav-drawer" data-settings-nav-drawer>
-      <button
-        type="button"
-        aria-label={t('common.close')}
-        onClick={() => { closeRef.current(); }}
-        className="absolute inset-0 bg-shell/20"
-      />
-      <div className="absolute inset-y-0 left-0 flex w-[280px] flex-col overflow-y-auto overscroll-y-contain bg-canvas p-3 shadow-[var(--kiki-sheet-shadow)]">
-        <div className="flex items-center justify-between px-2 pb-1">
-          <span className="font-display text-[15px] font-semibold text-ink">{t('st.title')}</span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t('common.close')}
-            className="flex h-11 w-11 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
-          >
-            <Icon name="close" size={16} />
-          </button>
-        </div>
-        <SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} onAfterNavigate={onClose} />
-      </div>
-    </div>
   );
 }
 
@@ -267,16 +220,22 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const inSpace = spaceSettingsTargetIsSpace(spaceSettingsTargetOf(client, meta));
   const [cardRequest, setCardRequest] = useState<{ cardId: string; section: string; locationKey: string; nonce: number } | null>(null);
   const [flashCard, setFlashCard] = useState<{ cardId: string; nonce: number } | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // `/settings/<section>#st-card-…` focuses one card, so callers elsewhere in
   // the app (the /new readiness card) can point at the exact control instead
   // of dropping the user at the top of a long section.
   const { hash, search, state, key } = useLocation();
 
-  const resolution = resolveSettingsRoute(section, hash);
+  const resolution = resolveSettingsRoute(section, hash, search);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
+  // Bare `/settings` (no section, no card to land on). Wide, it is the
+  // General page beside the rail, as it always was; below lg it is the list of
+  // sections itself, and a section is the page you tap into and back out of.
+  // The switch is CSS (`lg:`), so neither width renders the other's layout for
+  // a frame while a media query settles.
+  const settingsIndex = (section === undefined || section === '')
+    && resolution.status === 'ok' && resolution.cardId === undefined;
   const pageScope = active === null ? 'server'
     : settingsSectionSupportsSpace(active) && inSpace ? 'space'
     : settingsSectionIsDeviceOnly(active) ? 'app'
@@ -340,6 +299,21 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // key changes on every press, so Ctrl+, from inside settings refocuses too.
   const searchFocusToken =
     (state as { focusSearch?: boolean } | null)?.focusSearch === true ? key : null;
+
+  // Below lg a section page has no search row: the header's magnifier swaps
+  // the title for the field (design §2.1.1). The value is the field's focus
+  // token while it is open — set by the magnifier tap or by Ctrl+F, both the
+  // reader's own action — and null while the title shows. Any move to another
+  // page or visit closes it.
+  const [headerSearchToken, setHeaderSearchToken] = useState<string | null>(null);
+  useEffect(() => { setHeaderSearchToken(null); }, [active, key]);
+  useEffect(() => {
+    if (searchFocusToken === null || settingsIndex || active === null) return;
+    const wide = typeof window.matchMedia === 'function' && window.matchMedia(WIDE_SETTINGS_QUERY).matches;
+    if (!wide) setHeaderSearchToken(searchFocusToken);
+    // Only a new Ctrl+F asks; the page's own changes do not reopen the field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchFocusToken]);
   useEffect(() => {
     const cardId = hash.replace(/^#/, '');
     if (!cardId.startsWith('st-card-')) return;
@@ -415,21 +389,23 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     void navigate(`/settings/${target}`);
   }, [navigate]);
 
-  const onSearchHit = (entry: SettingsSearchEntry) => {
-    setDrawerOpen(false);
-    if (entry.section === active && (entry.tab === undefined || entry.tab === currentTab)) {
-      setCardRequest({ cardId: entry.cardId, section: entry.section, locationKey: key, nonce: Date.now() });
-      return;
-    }
-    // Carry the target through the existing deep-link route, not local state on
-    // the source page: the router may commit later, or the dirty guard may cancel.
-    // Only the committed destination asks its mounted card to locate itself.
+  // Carry the target through the existing deep-link route, not local state on
+  // the source page: the router may commit later, or the dirty guard may cancel.
+  // Only the committed destination asks its mounted card to locate itself.
+  const openSearchHit = (entry: SettingsSearchEntry) => {
     setCardRequest(null);
     const target = entry.tab === undefined ? entry.section : `${entry.section}?tab=${entry.tab}`;
     guardedNavigate(`${target}#${entry.cardId}`);
   };
 
-  const activeGroup = active === null ? undefined : settingsGroupForSection(active);
+  const onSearchHit = (entry: SettingsSearchEntry) => {
+    if (entry.section === active && (entry.tab === undefined || entry.tab === currentTab)) {
+      setCardRequest({ cardId: entry.cardId, section: entry.section, locationKey: key, nonce: Date.now() });
+      return;
+    }
+    openSearchHit(entry);
+  };
+
   const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
   // One installed plugin's own settings page, or the installed list. Only the
   // list's own card hash means the list (see `OBJECT_LIST_CARD_HASH`); the
@@ -447,15 +423,26 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     ? workspaceSettingsIdFromQuery(search)
     : null;
 
-  // One Recipe's own page, or the library list. The query selects the package,
-  // exactly as `?plugin=` selects a plugin's own settings page.
-  const activeRecipeId = active === 'recipes' && !onListCard
+  const rawTab = new URLSearchParams(search).get('tab');
+  // An old address (`/settings/recipes`, `/settings/identity`) names its tab
+  // only through the resolver until the redirect above rewrites the query; the
+  // pages this file draws tabs for read it from there so the first frame is
+  // already the right tab.
+  const pageTab = rawTab ?? (resolution.status === 'ok' ? resolution.tab : undefined);
+  const aiTab = active === 'ai' ? normalizeAiTab(pageTab) ?? AI_SETTINGS_DEFAULT_TAB : null;
+  const developerTab = normalizeDeveloperTab(pageTab) ?? DEVELOPER_SETTINGS_DEFAULT_TAB;
+
+  // One Recipe's own page, or the library list (the Models page's Recipes
+  // tab). The query selects the package, exactly as `?plugin=` selects a
+  // plugin's own settings page.
+  const activeRecipeId = aiTab === 'recipes' && !onListCard
     ? recipeSettingsIdFromQuery(search)
     : null;
   const recipeInitialEdit = activeRecipeId !== null
     && new URLSearchParams(search).get('view') === 'edit';
 
-  const currentTab = new URLSearchParams(search).get('tab')
+  const currentTab = active === 'developer' ? developerTab
+    : rawTab
     ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB
       : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
       : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
@@ -464,7 +451,16 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
       : active === 'connection-services' ? CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB
       : active === 'search' ? 'overview'
       : null);
-  const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';
+
+  // A tab switch on a page whose strip this page draws: guarded like a section
+  // switch, keeping the rest of the query (server/token deep-link params) but
+  // dropping the keys that only mean something on the tab being left.
+  const selectTab = (target: SectionId, tab: string, dropKeys: readonly string[] = []) => {
+    const params = new URLSearchParams(search);
+    for (const dropKey of dropKeys) params.delete(dropKey);
+    params.set('tab', tab);
+    void navigate(`/settings/${target}?${params.toString()}`);
+  };
 
   // Import history is a built-in session surface, not a plugin sub-view. It
   // answers `/settings/sessions/import` directly; the legacy plugin address is
@@ -475,11 +471,22 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'appearance' ? <AppearanceSection />
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
+    // Models › Recipes. Until the Models page draws its own Recipes tab, this
+    // page draws that tab in the Models page's shape (default-model bar, the
+    // strip, the library); once `AiSection` renders `tab === 'recipes'` itself,
+    // this branch goes and `<AiSection />` answers every tab.
+    : active === 'ai' && aiTab === 'recipes' ? (
+        <div className="space-y-4">
+          <DefaultModelBar tab="recipes" />
+          <SettingsTabs tabs={AI_SETTINGS_TABS} current="recipes" ariaLabel={t('st.section.ai')} dataAttr="data-ai-tab"
+            labelOf={(tab) => t(aiTabLabelKey(tab))}
+            onSelect={(tab) => { selectTab('ai', tab, ['recipe', 'view']); }} />
+          {/* One Recipe's own page, or the library. The query selects the
+              package for every address except the list's own card hash. */}
+          <RecipesSection recipeId={activeRecipeId} initialEdit={recipeInitialEdit} />
+        </div>
+      )
     : active === 'ai' ? <AiSection />
-    // One Recipe's own page, or the library. The query selects the package for
-    // every address except the list's own card hash, exactly as `?plugin=`
-    // selects a plugin's own settings page.
-    : active === 'recipes' ? <RecipesSection recipeId={activeRecipeId} initialEdit={recipeInitialEdit} />
     : active === 'providers' ? <ProvidersSection />
     : active === 'models' ? <DefaultsTab />
     : active === 'connection-services' ? <ConnectionServicesSection />
@@ -504,7 +511,18 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'spaces' ? <SpacesSection />
     : active === 'workspaces' ? <WorkspacesSection key={activeWorkspaceId ?? 'catalog'} workspaceId={activeWorkspaceId} />
     : active === 'ssh' ? <SshSection />
-    : active === 'developer' ? <DeveloperSection />
+    // Developer & labs: the page itself, Engine parameters (the engine
+    // internals moved off the everyday pages) and Request identity.
+    : active === 'developer' ? (
+        <div className="space-y-4">
+          <SettingsTabs tabs={DEVELOPER_SETTINGS_TABS} current={developerTab} ariaLabel={t('st.section.developer')} dataAttr="data-developer-tab"
+            labelOf={(tab) => t(developerTabLabelKey(tab))}
+            onSelect={(tab) => { selectTab('developer', tab); }} />
+          {developerTab === 'engine' ? <EngineParametersSection />
+            : developerTab === 'identity' ? <IdentitySection />
+            : <DeveloperSection />}
+        </div>
+      )
     : active === 'labs' ? <LabsSection />
     : active === 'extensions' ? <ExtensionsSection pluginId={activePluginId} />
     : active === 'environment-tools' ? (
@@ -540,7 +558,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     <SettingsFlashContext.Provider value={flashCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
       <WorkspaceDetailNameContext.Provider value={setWorkspaceDetailName}>
-      <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
+      <header className="relative flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
         <button
           type="button"
           onClick={onToggleSidebar}
@@ -552,51 +570,60 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           <Icon name="menu" size={16} />
         </button>
         <NavBackButton />
-        {/* The page title is the leaf; "Settings" is the breadcrumb above it. */}
-        <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-          <span className={activeLabel === undefined ? '' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
-          {activeLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-page-title className="truncate">{activeLabel}</span></> : null}
+        {/* Below lg, an open search takes the title's place; at lg the rail
+            holds search, so the title always shows there. */}
+        {headerSearchToken !== null ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1 lg:hidden" data-settings-header-search>
+            <SettingsSearch
+              className="min-w-0 flex-1"
+              focusToken={headerSearchToken}
+              onSearchHit={(entry) => { setHeaderSearchToken(null); onSearchHit(entry); }}
+              onDismiss={() => { setHeaderSearchToken(null); }}
+              navTree={SETTINGS_NAV_TREE}
+              floatingResults
+            />
+            <button
+              type="button"
+              data-settings-search-close
+              aria-label={t('common.close')}
+              onClick={() => { setHeaderSearchToken(null); }}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        ) : null}
+        {/* The page title is the leaf; "Settings" is the breadcrumb above it.
+            The narrow section list is no leaf, so there it is just "Settings". */}
+        <h1 className={`${headerSearchToken !== null ? 'max-lg:hidden ' : ''}flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink`}>
+          <span className={activeLabel === undefined ? '' : settingsIndex ? 'lg:font-normal lg:text-ink-faint' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
+          {activeLabel !== undefined ? <><span aria-hidden className={`font-normal text-ink-faint${settingsIndex ? ' hidden lg:inline' : ''}`}>/</span><span data-settings-page-title className={`truncate${settingsIndex ? ' hidden lg:inline' : ''}`}>{activeLabel}</span></> : null}
           {pluginLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-plugin-title className="truncate font-normal text-ink-faint">{pluginLabel}</span></> : null}
         </h1>
+        {active !== null && !settingsIndex && headerSearchToken === null ? (
+          <button
+            type="button"
+            data-settings-search-open
+            aria-label={t('st.search.aria')}
+            onClick={() => { setHeaderSearchToken(String(Date.now())); }}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink lg:hidden"
+          >
+            <Icon name="search" size={16} />
+          </button>
+        ) : null}
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
         <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          {active !== null ? (
-            <div className="border-b border-hairline px-4 py-2 lg:hidden">
-              <SettingsSearch
-                focusToken={searchFocusToken}
-                onSearchHit={onSearchHit}
-                navTree={SETTINGS_NAV_TREE}
-                idle={
-                  <button
-                    type="button"
-                    data-settings-nav-trigger
-                    aria-haspopup="dialog"
-                    aria-expanded={drawerOpen}
-                    aria-controls="settings-nav-drawer"
-                    onClick={() => { setDrawerOpen(true); }}
-                    className="mt-2 flex h-11 w-full items-center justify-between gap-2 rounded-md px-2 text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.04]"
-                  >
-                    <span className="min-w-0 truncate">
-                      {activeGroup !== undefined ? (
-                        <span className="text-ink-faint">{t(activeGroup.labelKey)}<span aria-hidden> / </span></span>
-                      ) : null}
-                      <span>{activeLabel ?? active}</span>
-                    </span>
-                    <Icon name="chevron" size={12} className="rotate-90 text-ink-faint" />
-                  </button>
-                }
-              />
-              <MobileSettingsDrawer
-                active={active}
-                activeTab={currentTab}
-                open={drawerOpen}
-                onClose={() => { setDrawerOpen(false); }}
-                onNavigate={guardedNavigate}
-              />
-            </div>
-          ) : null}
+        {settingsIndex ? (
+          // The narrow list marks no leaf as current (nothing is open yet), and
+          // a search hit always opens its section: the General pane under the
+          // list is display:none here, so locating a card in place would land
+          // on a page nobody can see.
+          <div data-settings-index className="flex min-w-0 flex-1 lg:hidden">
+            <SettingsNav active={null} activeTab={null} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={openSearchHit} showAttention />
+          </div>
+        ) : null}
+        <div className={`${settingsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col`}>
           {active === null ? (
             <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto">
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
@@ -606,22 +633,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               {/* An open in-page detail (overlays/DetailSplit) takes a wider
                   column: rail + editor need the room a reading column does not. */}
               <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">
-                {fromOnboarding ? (
-                  <div
-                    className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-card)] border border-accent/30 bg-accent/10 px-4 py-3 text-[13px] text-ink"
-                    data-settings-onboarding-return
-                  >
-                    <span>{t('onboarding.returnBanner.text')}</span>
-                    <button
-                      type="button"
-                      className="btn-primary px-3 py-1.5 text-[12px] font-medium"
-                      data-settings-onboarding-return-action
-                      onClick={() => { void navigate('/new'); }}
-                    >
-                      {t('onboarding.returnBanner.action')}
-                    </button>
-                  </div>
-                ) : null}
                 <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
                 <SettingsPageScopeContext.Provider value={pageScope}>

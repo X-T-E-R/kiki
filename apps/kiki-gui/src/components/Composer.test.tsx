@@ -911,7 +911,7 @@ describe('Composer execution control', () => {
     expect(trigger.disabled).toBe(false);
   });
 
-  it('keeps the execution label accessible while collapsing it to the icon at narrow toolbar widths', async () => {
+  it('keeps the execution label accessible while collapsing it to the icon only when the toolbar is too narrow for a label', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',
       onChangeAgentProfile: () => {},
@@ -922,7 +922,7 @@ describe('Composer execution control', () => {
     const trigger = await waitForTrigger(container);
     const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
     expect(label?.textContent).toContain('fixture/kiki-pro');
-    expect(label?.className).toContain('@max-[24rem]/toolbar:sr-only');
+    expect(label?.className).toContain('@max-[16rem]/toolbar:sr-only');
     expect(trigger.title).not.toBe('');
   });
 

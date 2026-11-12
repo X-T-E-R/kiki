@@ -121,7 +121,7 @@ export function MediaScriptSourceDialog({
       onClose={onClose}
       ariaLabel={t('cap.media.script.title')}
       overlayId="media-script-source"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[min(92vh,760px)] overflow-y-auto`}
+      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[min(92dvh,760px)] overflow-y-auto`}
       overlayData={{ 'data-media-script-dialog': '' }}
     >
       <h2 className="font-display text-[18px] leading-6 text-ink">{t('cap.media.script.title')}</h2>

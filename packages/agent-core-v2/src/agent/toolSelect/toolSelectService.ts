@@ -43,6 +43,7 @@ export const toolSelectPendingLoadedKey = defineState<Set<string>>(
 
 export class AgentToolSelectService extends Service implements IAgentToolSelectService {
   declare readonly _serviceBrand: undefined;
+  private readonly awaitingSchema = new Set<string>();
 
   constructor(
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
@@ -66,6 +67,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     this._register(
       eventBus.subscribe(CompactionCompleted, () => {
         this.pendingLoaded.clear();
+        this.awaitingSchema.clear();
       }),
     );
     this._register(
@@ -200,6 +202,22 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     return { ...call, name, arguments: JSON.stringify(args) };
   }
 
+  usesCallTool(): boolean {
+    return this.shapeTools(this.toolRegistry.list()).some((entry) => entry.name === CALL_TOOL_NAME);
+  }
+
+  describeCallToolTarget(name: string): string {
+    const unavailable = this.describeUnavailableTool(name) ?? this.describeMissingTool(name);
+    if (unavailable !== undefined) return unavailable;
+    if (this.residentToolNames().has(name) && this.toolRegistry.resolve(name) !== undefined) {
+      return `Tool "${name}" is an ordinary tool, not a loaded one. Call it directly by its name instead of through ${CALL_TOOL_NAME}.`;
+    }
+    return (
+      `Tool "${name}" cannot be run through ${CALL_TOOL_NAME}: it is not among the tools that can be loaded now. ` +
+      `Fold the <tools_added> and <tools_removed> announcements to find a current name, then load it with ${SELECT_TOOLS_TOOL_NAME}.`
+    );
+  }
+
   drainPendingToolSchemas(): readonly Tool[] | undefined {
     if (!this.enabled() || this.pendingLoaded.size === 0) return undefined;
     const names = [...this.pendingLoaded].toSorted((a, b) => a.localeCompare(b));
@@ -208,6 +226,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
       const tool = this.schemaOf(name);
       if (tool === undefined) continue;
       this.pendingLoaded.delete(name);
+      this.awaitingSchema.delete(name);
       tools.push(tool);
     }
     return tools.length === 0 ? undefined : tools;
@@ -254,8 +273,13 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
 
   private describeUnavailableTool(name: string): string | undefined {
     if (this.isInactiveLoadedTool(name)) return inactiveLoadedToolOutput(name);
-    if (!this.shouldIntercept(name)) return undefined;
-    return notLoadedToolOutput(name);
+    const awaiting = this.awaitingSchema.has(name) && this.pendingLoaded.has(name);
+    if (!awaiting && !this.shouldIntercept(name)) return undefined;
+    const schema = this.schemaOf(name);
+    if (schema === undefined) return undefined;
+    this.pendingLoaded.add(name);
+    this.awaitingSchema.add(name);
+    return notLoadedToolOutput(name, schema.parameters, this.usesCallTool());
   }
 
   private describeMissingTool(name: string): string | undefined {
@@ -369,10 +393,14 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 }
 
-function notLoadedToolOutput(name: string): string {
+function notLoadedToolOutput(name: string, parameters: Record<string, unknown> | undefined, viaCallTool: boolean): string {
+  const how = viaCallTool
+    ? `through ${CALL_TOOL_NAME} as {"name": "${name}", "arguments": {...}}`
+    : 'by its name';
   return (
-    `Tool "${name}" is available but not loaded. ` +
-    `Call ${SELECT_TOOLS_TOOL_NAME} with ["${name}"] first, then call the tool.`
+    `Tool "${name}" had not been loaded, so this call was not run. It is loaded now. ` +
+    `Call it again ${how}, with arguments that match its parameter schema:\n` +
+    JSON.stringify(parameters ?? {})
   );
 }
 

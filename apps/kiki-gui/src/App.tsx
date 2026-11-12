@@ -20,7 +20,7 @@
  * `document.title` follows the active route; toasts mount at the root.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -38,39 +38,28 @@ import {
 
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
-import { CronPage } from './components/GlobalCronPanel';
 import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
 import { DiscoveryPage, DiscoveryProvider, DiscoveryTourTag } from './components/discovery';
 import { NewSessionPage } from './components/NewSessionPage';
-import {
-  OnboardingWizard,
-  shouldOfferOnboarding,
-  subscribeOnboardingOpenRequests,
-} from './components/OnboardingWizard';
+import { NotifyAskBanner } from './components/firstRun/NotifyAskBanner';
 import { ActivityPage, useSessionSeen } from './components/ActivityPage';
 import { AppConnectionBanner } from './components/AppConnectionBanner';
-import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { PINNED_SESSIONS_QUERY_KEY, useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
-import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { ConversationShell } from './components/ConversationShell';
-import { MemoryPage } from './components/MemoryPage';
+import { lazyPage, PageLoadBoundary } from './components/LazyPage';
+import { PageHeader } from './components/PageChrome';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView, type SidebarBadge } from './components/SessionView';
-import { PersonasPage } from './components/persona/PersonasPage';
 import { PersonaDailyRoute } from './components/persona/PersonaDailyRoute';
-import { RoomPage } from './components/room/RoomPage';
-import { SettingsPage } from './components/SettingsPage';
 import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
 import { readSpaceViewRoute } from './lib/spaceViewState';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
 import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
 import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
-import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
-import { UsagePage } from './components/UsagePage';
 import { WorkPage } from './components/WorkPage';
 import { WorkSetupSheet } from './components/WorkSetupSheet';
 import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
@@ -92,17 +81,16 @@ import {
   type SessionListData,
 } from '@kiki/session-core/sessions';
 import {
-  isOnboardingCompleted,
   readLastSessionId,
   writeDesktopPrefs,
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
-import { useLayoutPreferences, useMediaQuery, useVisualViewportHeightVar } from './lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
 import { useLayerHistory } from './lib/layerHistory';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
-import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction, shortcutRecordingActive } from './lib/shortcuts';
+import { browserOwnsShortcut, isEditableTarget, isImeKeyEvent, matchesShortcutAction, shortcutRecordingActive } from './lib/shortcuts';
 import { applyUiZoomAction, desktopZoomShortcut } from './lib/uiZoom';
 import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
@@ -129,6 +117,32 @@ import { NavHistoryBridge } from './components/NavBackButton';
 import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
 import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
+
+// Pages a conversation never shows are downloaded on first visit, so a phone
+// opening a chat does not fetch and parse them before its first frame
+// (components/LazyPage). The conversation path — sidebar, /new, /s/:id, the
+// persona daily route, Work — stays in the first-paint graph. Activity and
+// Discover stay as well: the sidebar and this shell import other exports of
+// those modules, so a lazy import could not move them.
+const SettingsPage = lazyPage(() => import('./components/SettingsPage').then((m) => m.SettingsPage));
+const UsagePage = lazyPage(() => import('./components/UsagePage').then((m) => m.UsagePage));
+const MemoryPage = lazyPage(() => import('./components/MemoryPage').then((m) => m.MemoryPage));
+const CapabilitiesPage = lazyPage(() => import('./components/capabilities/CapabilitiesPage').then((m) => m.CapabilitiesPage));
+const PersonasPage = lazyPage(() => import('./components/persona/PersonasPage').then((m) => m.PersonasPage));
+const CronPage = lazyPage(() => import('./components/GlobalCronPanel').then((m) => m.CronPage));
+const ArchivedSessionsPage = lazyPage(() => import('./components/ArchivedSessionsPage').then((m) => m.ArchivedSessionsPage));
+const RoomPage = lazyPage(() => import('./components/room/RoomPage').then((m) => m.RoomPage));
+const TasksPage = lazyPage(() => import('./components/TasksPage').then((m) => m.TasksPage));
+
+// The sidebar's entries for those pages, by their nav hook attribute.
+const NAV_ENTRY_PAGES: readonly (readonly [string, { preload(): void }])[] = [
+  ['[data-nav-settings]', SettingsPage],
+  ['[data-nav-usage]', UsagePage],
+  ['[data-nav-memory]', MemoryPage],
+  ['[data-nav-capabilities]', CapabilitiesPage],
+  ['[data-nav-personas]', PersonasPage],
+  ['[data-nav-cron]', CronPage],
+];
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
 
@@ -272,7 +286,6 @@ function NormalApp() {
   const newSessionPath = workspaceFilter === undefined ? '/new' : `/new?workspace=${encodeURIComponent(workspaceFilter)}`;
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
   // Work setup is one sheet, reached from the mode menu on any page and from
   // the Work surface itself, so a user who is mid-conversation can add the
   // missing piece without losing where they were.
@@ -281,40 +294,6 @@ function NormalApp() {
   // One catalog read per client, shared by the Work surface and the setup
   // sheet so a completed setup refreshes both without a second fetch.
   const workModeCatalog = useWorkModes(client, workPresetsEnabled(meta));
-  // Decided exactly once per app run, the moment both probes have answered:
-  // a "configured" answer latches too, so a later catalog hiccup can never
-  // pop the wizard over an established session.
-  const onboardingDecided = useRef(false);
-  const onboardingAuthQuery = useQuery({
-    queryKey: ['auth'],
-    queryFn: () => client.getAuth(),
-    staleTime: 10_000,
-    retry: false,
-  });
-  const onboardingModelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: () => client.listModels(),
-    staleTime: 60_000,
-    retry: false,
-  });
-  useEffect(() => {
-    if (onboardingDecided.current) return;
-    if (onboardingAuthQuery.data === undefined || onboardingModelsQuery.data === undefined) return;
-    onboardingDecided.current = true;
-    if (
-      shouldOfferOnboarding({
-        completed: isOnboardingCompleted(),
-        auth: onboardingAuthQuery.data,
-        models: onboardingModelsQuery.data.items,
-      })
-    ) {
-      setOnboardingOpen(true);
-    }
-  }, [onboardingAuthQuery.data, onboardingModelsQuery.data]);
-  useEffect(
-    () => subscribeOnboardingOpenRequests(() => { setOnboardingOpen(true); }),
-    [],
-  );
   const performNavigation = useCallback((target: To | number, options?: NavigateOptions) => {
     if (typeof target === 'number') return rawNavigate(target);
     return rawNavigate(target, options);
@@ -334,8 +313,21 @@ function NormalApp() {
   });
   const pendingNavigationRef = useRef(pendingNavigation);
   pendingNavigationRef.current = pendingNavigation;
+  // A plugin's "bring up this session" hands focus between desktop windows.
+  // On a phone it would only change the page with nobody touching it, so
+  // neither watch below runs in phone mode. Nothing waits on this client: the
+  // server keeps just the latest request, for ten seconds, and reading it
+  // acknowledges nothing (only the desktop shell acks, natively).
+  const phoneMode = usePhoneMode();
 
   useEffect(() => {
+    if (phoneMode) {
+      // Leaving phone mode starts from a fresh cursor, so a request made while
+      // the watch was off is recorded on the first read, never replayed.
+      focusWatch.current.client = null;
+      focusWatch.current.local = null;
+      return;
+    }
     let closed = false;
     let timer: ReturnType<typeof setTimeout>;
     const noteConsumed = (identity: PluginFocusIdentity) => {
@@ -442,9 +434,10 @@ function NormalApp() {
     };
     void read();
     return () => { closed = true; clearTimeout(timer); };
-  }, [client, localClient, connectionSource, host, navigate]);
+  }, [client, localClient, connectionSource, host, navigate, phoneMode]);
 
   useEffect(() => {
+    if (phoneMode) return;
     let closed = false;
     let initialized = false;
     let seen = 0;
@@ -468,7 +461,7 @@ function NormalApp() {
     };
     void read();
     return () => { closed = true; clearTimeout(timer); };
-  }, [client, host, navigate]);
+  }, [client, host, navigate, phoneMode]);
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
@@ -752,6 +745,27 @@ function NormalApp() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, []);
 
+  // Pointing a mouse or pen at, or focusing, the sidebar entry of a page that
+  // is downloaded on first visit starts that download, so the click that
+  // follows usually finds the page ready. Touch is left out: a finger landing
+  // on an entry may still turn into a scroll, and a phone should not spend
+  // data on that; the tap itself starts the download.
+  useEffect(() => {
+    const onIntent = (event: Event) => {
+      if ('pointerType' in event && event.pointerType === 'touch') return;
+      if (!(event.target instanceof Element)) return;
+      for (const [selector, page] of NAV_ENTRY_PAGES) {
+        if (event.target.closest(selector) !== null) page.preload();
+      }
+    };
+    document.addEventListener('pointerover', onIntent, true);
+    document.addEventListener('focusin', onIntent, true);
+    return () => {
+      document.removeEventListener('pointerover', onIntent, true);
+      document.removeEventListener('focusin', onIntent, true);
+    };
+  }, []);
+
   // Esc on the settings route returns to the last non-settings page. Editable
   // targets, open dialogs, and the mobile sidebar consume their own Escape
   // first (dialogs stop propagation / the flags below short-circuit us).
@@ -805,7 +819,9 @@ function NormalApp() {
     if (!sidebarOpen) return;
     const unregister = registerOverlay('app-sidebar');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      // An Escape that cancels an IME candidate in the drawer's search field
+      // belongs to the IME, not to the drawer.
+      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
       if (anyOverlayOpen(['app-sidebar'])) return;
       event.preventDefault();
       setSidebarOpen(false);
@@ -816,6 +832,25 @@ function NormalApp() {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [sidebarOpen]);
+
+  // A file released over chrome that takes no files (the sidebar, a settings
+  // page) is the browser's to handle, and its handling is to open the file in
+  // place of the app. Refuse the drag here unless something inside accepted it
+  // first; a native file field keeps its own drop.
+  useEffect(() => {
+    const refuseStrayFileDrop = (event: DragEvent) => {
+      if (event.defaultPrevented || event.dataTransfer === null || !event.dataTransfer.types.includes('Files')) return;
+      if (event.target instanceof HTMLInputElement && event.target.type === 'file') return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'none';
+    };
+    window.addEventListener('dragover', refuseStrayFileDrop);
+    window.addEventListener('drop', refuseStrayFileDrop);
+    return () => {
+      window.removeEventListener('dragover', refuseStrayFileDrop);
+      window.removeEventListener('drop', refuseStrayFileDrop);
+    };
+  }, []);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const isSessionReachable = Boolean(
@@ -865,8 +900,18 @@ function NormalApp() {
           <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
         ) : null}
         <RestartBanner />
+        <NotifyAskBanner />
         <div className="app-sheet">
         <SpaceViewMemory />
+        <PageLoadBoundary
+          resetKey={location.pathname}
+          header={<PageHeader title={t('app.pageLoadFailed')} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          reloadLabel={t('app.reload')}
+        >
+        {/* Router navigations are transitions, so opening a lazy page keeps
+            the current page on screen until its chunk arrives. This blank
+            sheet shows only when the window starts at such a page. */}
+        <Suspense fallback={<div className="min-h-0 flex-1" aria-busy="true" />}>
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route
@@ -977,6 +1022,8 @@ function NormalApp() {
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>
+        </Suspense>
+        </PageLoadBoundary>
         </div>
       </div>
 
@@ -1016,9 +1063,6 @@ function NormalApp() {
         />
       ) : null}
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
-        {onboardingOpen ? (
-          <OnboardingWizard onClose={() => { setOnboardingOpen(false); }} />
-        ) : null}
         {workSetup !== null && client !== null ? (
           <WorkSetupSheet
             mode={workSetup}

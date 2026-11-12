@@ -259,9 +259,10 @@ function useSessionTaskRead(sessionId: string, enabled: boolean): { readonly rea
  * of the two it is showing — a resident-only view is never presented as the
  * tree, and a summary that arrives partial is never presented as complete.
  *
- * Deliberately not a subscription: `subscribeAgent` raises an agent's
- * transcript grade, so listening to all sixty-five agents would fetch the
- * whole session's message bodies to draw a few rows of task metadata.
+ * Deliberately holds no lease on the agents: a `turn` lease on each of
+ * sixty-five agents would fetch every agent's transcript to draw a few rows of
+ * task metadata. It reads whatever the controller already holds for them, and
+ * main's tasks, which the session keeps at `turn`.
  */
 function useSessionTaskProjection(input: {
   readonly sessionId: string;
@@ -293,9 +294,7 @@ function useSessionTaskProjection(input: {
     const ownerStates: Record<string, readonly Task[] | undefined> = {};
     const coverage: Record<string, { returned: number; total: number; hasMore: boolean } | undefined> = {};
     for (const id of Object.keys(forest.byId)) {
-      const state = controller === undefined
-        ? undefined
-        : id === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(id);
+      const state = controller?.getAgentState(id);
       if (state === undefined) continue;
       ownerStates[id] = state.tasks;
       const entity = state.globalCoverage?.tasks;

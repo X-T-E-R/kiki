@@ -5,7 +5,15 @@ import { type AgentTool } from '#/tool/toolContract';
 
 export const GrepInputSchema = z.object({
   host: z.string().optional(),
-  pattern: z.string().describe('Regular expression to search for.'),
+  pattern: z
+    .string()
+    .describe('Regular expression to search for, or plain text when `literal` is true.'),
+  literal: z
+    .boolean()
+    .optional()
+    .describe(
+      'Treat `pattern` as plain text instead of a regular expression, so characters such as `(`, `[`, `.` and `*` need no escaping. Defaults to false.',
+    ),
   path: z
     .string()
     .optional()
@@ -16,7 +24,7 @@ export const GrepInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional glob filter for which files to search, e.g. `*.ts`. Matched against each file's full absolute path, so a path-anchored pattern like `src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a directory, use `path` instead.",
+      'Glob filter for the files to search, relative to the search directory, for example `*.ts` or `src/**/*.ts`. A pattern without `/` matches file names at any depth.',
     ),
   type: z
     .string()

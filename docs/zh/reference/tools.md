@@ -2,7 +2,11 @@
 
 内置工具是 Kiki 随核心引擎提供的工具集，无需安装 MCP server 即可使用。Agent 在每次对话中会根据任务需要自动选择并调用这些工具；用户可以通过权限审批界面查看每次工具调用的细节。
 
-与 MCP 工具相比，内置工具由运行时直接管理，生命周期与会话绑定，无需外部进程。两者都遵循统一的审批机制：**只读类工具**（如 `Read`、`Grep`、`Glob`）默认自动放行，**执行类工具**（如 `Bash`）默认需要用户审批。文件写入遵循工作区信任模型：在已信任的工作目录内，落在该目录下的 `Write` / `Edit` 不再逐项询问；实际目标在工作区外的写入需要审批。敏感性按符号链接解析后的实际目标判断：manual 与 Auto 模式请求审批，YOLO 模式免询问放行，但显式 deny 规则仍优先。Plan 模式下的退出审批不受影响。
+与 MCP 工具相比，内置工具由运行时直接管理，生命周期与会话绑定，无需外部进程。两者都遵循统一的审批机制：**只读类工具**（如 `Read`、`Grep`、`Glob`）默认自动放行，**执行类工具**（如 `Bash`）默认需要用户审批。文件写入遵循工作区信任模型：在已信任的工作目录内，落在该目录下的 `Write` / `Edit` 不再逐项询问；实际目标在工作区外的写入需要审批。敏感性按符号链接解析后的实际目标判断：manual 与 Auto 模式请求审批，YOLO 模式免询问放行，但显式 deny 规则仍优先。在 YOLO 模式以外，涉及敏感文件、受保护的 Git 控制路径（如 `.git/config` 和 `.git/hooks/`）或指向工作区外的链接时，**本会话批准**只适用于审批规则、解析后的目标和操作均相同的调用。新增或更换受保护的目标时，Kiki 会重新请求审批。Plan 模式下的退出审批不受影响。
+
+调用中包含工具 schema 任何位置都未声明的参数时，Kiki 会去掉该参数，用其余参数执行调用，并在结果中加上 `Note: ignored unknown argument(s): <参数名>.`；审批提示、hook 和调用记录只显示其余参数。若该参数像是拼错了调用中未提供的已声明参数（例如把 `replace_all` 写成 `replace_al`），仍会拒绝并提示正确的参数名。允许额外属性的 schema 会原样收到这些参数。
+
+同一步内参数完全相同的只读调用只执行一次，其余副本返回该结果并带标注；可能产生改动的相同调用各自执行。超过 50,000 字符的工具输出会保存到文件，结果显示开头 6,000 和结尾 18,000 字符及文件路径。
 
 结果提示 `Tool output formatting failed after execution` 时，先用 `Read` 或 `Grep` 查看其中的 `output_path`，再决定是否重新执行工具。工具已经执行过，保存的文本和附带的媒体仍可读取。结果会说明保存的是完整文本，还是保留上限以内的开头部分。
 
@@ -16,24 +20,24 @@
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
-| `Read` | 自动放行 | 读取文本文件内容 |
+| `Read` | 自动放行 | 读取文本文件内容或列出目录 |
 | `Write` | 受信任工作区内自动放行；工作区外拦截或需审批 | 创建或覆盖文件 |
-| `Edit` | 受信任工作区内自动放行；工作区外拦截或需审批 | 精确字符串替换 |
+| `Edit` | 受信任工作区内自动放行；工作区外拦截或需审批 | 精确字符串替换，单次调用可做一处或多处 |
 | `Grep` | 自动放行 | 搜索文件内容 |
 | `Glob` | 自动放行 | 按 glob 模式查找文件 |
 | `ReadMediaFile` | 自动放行 | 读取图片或视频文件 |
 
-**`Read`** 接受文件路径（`path`）以及可选的 `line_offset`（起始行号，支持负数从末尾倒数）和 `n_lines`（读取行数上限）。单次最多返回 1000 行或 100 KB，超出部分会附带截断提示。支持 UTF-8 和 UTF-16 文本，UTF-16 会转换后展示。结果附有行号和原始行尾信息；纯 CRLF 文件在 `Read` 中显示为 LF，`Edit` 按该视图替换时仍保留 CRLF；混合行尾需要精确匹配展示出的 `\r` 字符。如果文件是图片或视频，工具会提示改用 `ReadMediaFile`。显式绝对路径可读取工作区外文件，但敏感目标仍需按权限模式处理。已登记的用户 Skill / Agent 定义根（包括符号链接安装）默认可读；普通工作区中指向外部目标的链接仍需审批。当前 Space 的 `<home>`（默认 `~/.kiki`）中，只有 `agents`、`skills`、`commands`、`docs` 是定义或文档读取根；继承的 Agent 根和已登记的 Skill 根也可读取，通用 `~/.agents` 根仍属于 OS 用户目录。其余文件须指定明确路径，并遵守敏感文件规则。本地 home 路径不会套用到 SSH 运行环境。
+**`Read`** 接受路径（`path`）以及可选的 `line_offset`（从 1 开始的起始行号；`0` 按第 1 行处理；负数表示从末尾往前数这么多行开始读，小于 `-1000` 的值按 `-1000` 处理，结果中会说明）和 `n_lines`（读取行数上限）。单次最多返回 1000 行或 100 KB，这一页会完整交给模型，不会被通用的 50,000 字符预览替换。末尾状态行给出读取范围、已知时的总行数、文件字节数，以及还有后续内容时用于续读的 `line_offset`。支持 UTF-8 和 UTF-16 文本，UTF-16 会转换后展示。结果附有行号和原始行尾信息；纯 CRLF 文件在 `Read` 中显示为 LF，`Edit` 按该视图替换时仍保留 CRLF；混合行尾需要精确匹配展示出的 `\r` 字符。路径是目录时返回一层列表，子目录以 `/` 结尾，敏感文件不列出。如果文件是图片或视频，且当前 Agent 可用 `ReadMediaFile`，报错会点名该工具。工作区内的路径不存在时，报错会列出同一目录下名字相近的条目。工作区外的文件可以用绝对路径，也可以用 `../notes.txt` 这类相对路径指定；两者解析到同一目标、遵循同样的审批规则，敏感目标仍需按权限模式处理。已登记的用户 Skill / Agent 定义根（包括符号链接安装）默认可读；普通工作区中指向外部目标的链接仍需审批。当前 Space 的 `<home>`（默认 `~/.kiki`）中，只有 `agents`、`skills`、`commands`、`docs` 是定义或文档读取根；继承的 Agent 根和已登记的 Skill 根也可读取，通用 `~/.agents` 根仍属于 OS 用户目录。其余文件按工作区外的普通路径处理，并遵守敏感文件规则。本地 home 路径不会套用到 SSH 运行环境。
 
 通过 SSH 读取 UTF-8 行窗口时，`Read` 流式读取所需行。尾部读取在远端计数不可用时，可能扫描文件以统计行数。解码检查只覆盖实际解码的窗口，包括必要的预读行。若尾部读取提示文件已变化，请重试，以取得一致的行号。
 
-**`Write`** 接受 `path`、`content` 和可选的 `mode`（`overwrite` 或 `append`，默认覆盖）。缺失的父目录会自动创建；`append` 模式将内容追加到文件末尾，不自动添加换行。
+**`Write`** 接受 `path`、`content` 和可选的 `mode`（`overwrite` 或 `append`，默认覆盖）。缺失的父目录会自动创建；`append` 模式将内容追加到文件末尾，不自动添加换行。覆盖一个已存在的文件之前，Agent 必须读过该文件（全部或部分均可），且读取后文件在磁盘上没有变化，否则会被拒绝；同一批调用中排在前面的同一文件的 `Read` 也算读过。新建文件和 `append` 模式不需要先读。
 
-**`Edit`** 接受 `path`、`old_string`（要替换的精确文本）和 `new_string`（替换后的文本）。默认只替换唯一一处匹配，若文件中存在多处相同内容会报错并提示使用 `replace_all: true`。`old_string` 与 `new_string` 不能相同。`Write` 与 `Edit` 在审批前解析符号链接：链接位于 Skill 目录不等于已获准写入其目标。审批后若目标发生变化，请重新检查目标并重试调用。
+**`Edit`** 接受 `path`、`old_string`（要替换的精确文本）和 `new_string`（替换后的文本），也可以改用 `edits`：一组 `{old_string, new_string, replace_all?}`，按顺序应用，每一项作用于上一项的结果；只有全部成功才写入文件，失败时报错会指明是哪一项（如 `edits[1]`）。默认每处替换必须恰好匹配一处；匹配多处时，报错会列出各处行号，并提示补充上下文行或使用 `replace_all: true`。找不到 `old_string` 时，报错会说明可能的原因：带上了 `Read` 的行号前缀、只有空白不同（并给出文件中的实际文本），或 `old_string` 第一行在文件中出现的位置（或并未出现）。成功结果会给出改动的行号。`old_string` 与 `new_string` 不能相同。`Edit` 不要求先 `Read`：Agent 没读过该文件，或读取后文件在磁盘上被改过时，只要 `old_string` 与当前内容精确匹配，修改仍会执行，结果中会附上说明。`Write` 与 `Edit` 在审批前解析符号链接：链接位于 Skill 目录不等于已获准写入其目标。审批后若目标发生变化，请重新检查目标并重试调用。
 
-**`Grep`** 使用 ripgrep 搜索文件内容，在 Windows SSH 主机上则使用 PowerShell。它支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。Windows SSH 使用 .NET 正则表达式；表达式无效或文件类型不受支持时会报错，类型不可用时可改用 `glob`。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
+**`Grep`** 使用 ripgrep 搜索文件内容，在 Windows SSH 主机上则使用 PowerShell。它支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`，相对搜索目录匹配，因此 `src/**/*.ts` 可以生效）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。设置 `literal: true` 可把 `pattern` 当作普通文本而不是正则表达式搜索。返回的路径在工作目录内时相对工作目录，否则为绝对路径（SSH 主机上总是绝对路径），可直接交给 `Read`。Windows SSH 使用 .NET 正则表达式；表达式无效或文件类型不受支持时会报错，类型不可用时可改用 `glob`。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
 
-**`Glob`** 按 glob 模式（`pattern`）在指定目录（`path`，默认工作目录）中匹配文件，结果按修改时间倒序排列，默认返回 100 条。默认尊重 `.gitignore`、`.ignore` 和 `.rgignore`；设置 `include_ignored=true` 可包含构建产物等被忽略的文件，但敏感文件仍会被过滤。支持 `*.{ts,tsx}` 这类花括号模式，也允许宽泛通配符模式。
+**`Glob`** 按 glob 模式（`pattern`）在指定目录（`path`，默认工作目录）中匹配文件，结果按修改时间倒序排列，默认返回 100 条。默认尊重 `.gitignore`、`.ignore` 和 `.rgignore`；设置 `include_ignored=true` 可包含构建产物等被忽略的文件，但敏感文件仍会被过滤。支持 `*.{ts,tsx}` 这类花括号模式，也允许宽泛通配符模式。返回的路径在工作目录内时相对工作目录（`path` 指向子目录时也是如此），否则为绝对路径（SSH 主机上总是绝对路径），可直接交给 `Read`。结果只包含文件；要列出目录的条目，对该目录调用 `Read`。
 
 使用 `offset`（默认 0）和 `head_limit`（默认 100）对匹配路径分页；有更多结果时，工具会给出下一页的 offset。设置 `head_limit: 0` 可取消条数限制，但字符上限仍然有效：达到上限时，页面会在完整路径处结束，并给出下一页的 offset。较大的页面会保存到文件，Agent 可用 `Read` 读取。每次调用都会重新搜索当前文件系统，因此文件变化可能导致跨页结果移动。超时、目录无法读取或输出采集上限仍可能造成搜索不完整；结果会提示这些情况，增加 offset 无法恢复尚未收集的路径。
 
@@ -49,12 +53,14 @@
 
 - `command`（必填）：要执行的 Shell 命令
 - `cwd`：工作目录。本地运行时中，Agent 当前有效权限模式为 YOLO 时，可显式指定工作区外的绝对路径；放行不会越过 Agent 权限上限或真实远程/容器隔离。manual/auto 模式及相对路径越界仍受原有工作区边界约束。
-- `timeout`：超时时间（毫秒）；前台默认 60 秒、最长 5 分钟
-- `run_in_background`：是否以后台任务运行；后台默认 10 分钟超时（print 模式 `kiki -p` 下默认无超时）
-- `description`：后台任务描述，`run_in_background=true` 时必填
+- `timeout`：超时时间（秒）；前台默认 60 秒、最长 300 秒（5 分钟）。超过上限的值会降到上限，结果中会说明
+- `run_in_background`：是否以后台任务运行；后台默认 10 分钟超时，最长 24 小时（print 模式 `kiki -p` 下默认无超时）
+- `description`：后台任务在任务列表中的标签；省略时使用命令开头
 - `disable_timeout`：后台任务是否取消超时限制
 
-如果命令只是在读文件、搜索文件或写文本文件，`Bash` 仍照常执行，但结果末尾可能附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。每类提示在一个会话中最多出现三次；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = false` 可关闭提示，不改变执行与审批行为。
+同一个模型步骤中的多个 `Bash` 调用按顺序逐个执行。只由带字面参数的简单只读命令组成的调用，例如 `ls`、`cat`、`rg`、`grep`、不带 `-exec` 或 `-delete` 的 `find`、`git log`、`git show`、`git rev-parse`，可以与其他读取操作并行。`git status` 和 `git diff` 可能改写 Git 索引，因此仍按顺序执行。
+
+命令只是在读文件、搜索文件或写文本文件时，`Bash` 可以在结果末尾附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。该提示默认关闭；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = true` 可开启，开启后每类提示在一个会话中最多出现三次，不改变执行与审批行为。
 
 前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。本地 Windows 命令默认使用 Git Bash。启用原生 SSH 后，传入 `host` 可在 SSH 主机上执行；Windows SSH 命令使用 PowerShell 语法和原生 Windows 路径，无需在远端安装 Git Bash。首次连接后，结果和已加入主机的公告会标明远端平台与 Shell。
 
@@ -64,13 +70,13 @@
 
 ## 动态工具
 
-MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 `SelectTools` 选择公告中的名称；模型会在下一步收到该工具的 schema。已列在工具列表中的普通工具可直接调用。Kimi provider 在消息内携带所选工具的 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，只要还有延迟工具可用，就在顶层工具列表提供稳定的 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
+MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 `SelectTools` 选择公告中的名称；模型会在下一步收到该工具的 schema。在加载前直接或经 `CallTool` 调用已公告的工具不会执行：返回的错误附带该工具的参数 schema，同时完成加载，并说明下一次怎样调用。已列在工具列表中的普通工具可直接调用。Kimi provider 在消息内携带所选工具的 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，只要还有延迟工具可用，就在顶层工具列表提供稳定的 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
 
 如果当前没有延迟的 MCP 或插件工具，工具列表不会出现 `SelectTools` 或 `CallTool`。仍有延迟工具可用时，MCP server 重连或插件装卸只改变增量公告，不改变顶层工具列表。profile 目录变化时，仅当当前 Agent 实际可派遣的 profile 新增、移除或发生变化，才会在下一条用户消息时公告。用户主动修改工具组、MCP server 或记忆配置，则从下一条用户消息开始应用，顶层工具列表可能变化。
 
 ## 历史工具
 
-`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。已知 `session_id` 可以省略 `workspace_id`，工具会用会话索引里的工作区，工作区外的读取仍走访问审批。显式传入的工作区如果不包含该会话，会返回指向索引目标的恢复调用，并且这次不会读取它。未知会话不会被换成当前会话。`scope: "workspace"` 会搜索工作区，不接受 `session_id`。
+`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。已知 `session_id` 可以省略 `workspace_id`，工具会用会话索引里的工作区，工作区外的读取仍走访问审批。显式传入的工作区如果不包含该会话，会返回指向索引目标的恢复调用，并且这次不会读取它。未知会话不会被换成当前会话。`scope: "workspace"` 会搜索工作区，不接受 `session_id`。在当前工作区内读取无需审批；读取其他工作区时，YOLO 模式以外会请求访问审批。
 
 **从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent 的用户与 Assistant 正文；此前默认在整个工作区进行词元 AND 检索。设置 `include_tool_output: true` 可纳入工具结果，`role: "tool"` 则只搜索工具结果。勾选工具输出也不搜索思考块、工具名称或工具输入；`role: "record"` 显式选择已保存的外部材料。改变内容范围须去掉旧 cursor 重新查询，`HistoryRead` 仍可读取原始来源块。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
 
@@ -107,6 +113,8 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 ## 消息投递
 
 `SendMessage` 向线程已启用的绑定输出、房间或另一个 Bot 投递一条完整的用户可见消息，或按顺序投递 `messages` 批次。单条消息使用顶层 `text` / `attachments` / `reply_to` 字段，批量发送使用 `messages`，两种形式不能混用；省略 `channel` / `channels` 会发送到所有已绑定且启用的输出，也可以指定明确的输出信道 ID。附件可以不带正文；发送图片、音频、语音或视频时明确设置 `kind`，遇到不确定的投递先检查信道收据，再决定如何恢复。
+
+无论在单条消息还是任一 `messages` 项中，以 `path` 给出的附件都按读取该文件的 `Read` 处理：相对路径基于工作目录解析，链接解析到其实际目标。审批请求会列出附件路径。手动模式下，`SendMessage` 默认请求审批；敏感文件、受保护的 Git 控制文件，或经链接指向工作区外的文件，在 Auto 模式下同样会请求审批。本会话批准只适用于解析后的受保护附件路径集合相同的调用。YOLO 模式下，除非命中 deny 规则，任何可读文件都会直接发送。以 `file_id` 给出的附件引用会话中已存储的媒体，不需要额外检查。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -187,7 +195,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 
 #### `FetchURL` 的 file 来源
 
-`source.kind: "file"` 需要在 `[nb_search.fetch.file_scopes]` 中先配置域，给出该域内的相对路径，并由 Kiki 完成文件系统/路径准入。准入在调用时一次性绑定规范路径与文件对象标识；执行时 worker 从同一标识读取，因此对文件原地修改可见。原子替换或文件对象变更会被拒绝——请重新发起一次工具调用以获得新的审批，而不是重试旧 job。无法提供可用文件标识的文件系统会报错；已配置的域并不授予任意主机文件访问，也不会绕过敏感文件保护。
+`source.kind: "file"` 需要在 `[nb_search.fetch.file_scopes]` 中先配置域，给出该域内的相对路径，并由 Kiki 完成文件系统/路径准入。准入在调用时一次性绑定规范路径与文件对象标识；执行时 worker 从同一标识读取，因此对文件原地修改可见。原子替换或文件对象变更会被拒绝——请重新发起一次工具调用以获得新的审批，而不是重试旧 job。无法提供可用文件标识的文件系统会报错；已配置的域并不授予任意主机文件访问，也不会绕过敏感文件保护。域可以位于工作区之外：其中的文件按读取同一路径的 `Read` 准入，敏感文件在 YOLO 模式以外会请求审批，其他文件直接执行、不弹审批。域内的符号链接会被拒绝，因为执行时必须读取准入时的那个文件本身。
 
 ```json
 { "action": "run", "source": { "kind": "file", "scope": "<你配置的 file 域>", "path": "design/notes.md" } }
@@ -216,9 +224,9 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `EnterPlanMode` | 自动放行 | 进入 Plan 模式 |
-| `ExitPlanMode` | 自动放行（需用户确认计划） | 退出 Plan 模式并提交计划 |
+| `ExitPlanMode` | 自动放行（仅在手动模式且 Plan gate 为 `gated` 时由用户审阅） | 退出 Plan 模式并提交计划 |
 
-Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
+Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截。`TaskStop` 仍然可用，Agent 可以停止自己启动的后台工作，例如不再需要的研究子 Agent。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
 
 新的 `AgentRun` 调用可以使用原生执行器创建研究子 Agent。这些子 Agent 只能使用其 profile 和既有策略允许的内置 `Read`、`ReadMediaFile`、`Glob`、`Grep`、`WebSearch`、`FetchURL`，不能运行 `Bash`、调用 MCP 或用户自定义工具，也不能继续派遣任务。此类调用不支持外部执行器。退出 Plan 模式或恢复会话后，研究子 Agent 仍保留只读限制；需要写入权限来实施时，应在退出 Plan 模式后创建新的子 Agent。
 
@@ -226,7 +234,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 **`EnterPlanMode`** 不接受任何参数，进入成功后返回工作流指引及计划文件路径。
 
-**`ExitPlanMode`** 读取当前计划文件内容，将计划呈现给用户审批后退出 Plan 模式。可选参数 `options` 允许 Agent 提供 1–3 个备选方案（每项含 `label` 与 `description`，`label` 最长 80 字符），供用户在审批时选择；`label` 不能重复，也不能使用 `Approve`、`Reject`、`Reject and Exit`、`Revise` 等保留词。
+**`ExitPlanMode`** 读取当前计划文件内容并退出 Plan 模式。Plan gate 为默认的 `free` 时，以及在 Auto 或 Review 模式下，它会立即退出，结果会告诉 Agent 用户尚未审阅该计划。在手动模式下把 Plan gate 设为 `gated` 时，计划会先呈现给用户审批；YOLO 模式下该审批自动通过。可选参数 `options` 允许 Agent 提供 1–3 个备选方案（每项含 `label` 与 `description`，`label` 最长 80 字符），供用户在审批时选择；`label` 不能重复，也不能使用 `Approve`、`Reject`、`Reject and Exit`、`Revise` 等保留词，违反时调用会在展示审阅前被拒绝并说明原因。选择 `Reject` 或 `Reject and Exit` 会结束 Agent 当前轮次；选择 `Revise` 或填写反馈时，反馈会交回 Agent，Agent 继续完善计划。
 
 ## 状态管理
 
@@ -333,10 +341,10 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `route` | 用 profile route 代替具名 profile |
 | `model_alias` | 具体模型，或传 `"auto"` 选择一次。默认与恢复行为见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
 | `effort` | 该子 Agent 的思考强度 |
-| `resume` | 已有空闲直属子 Agent 的名称或 ID；拒绝新建目标及工作区字段 |
+| `resume` | 已有空闲直属子 Agent 的名称或 ID；拒绝新建目标字段，不应用 `workDir`、`additionalDirs` 和 `executor_launch`（结果中会说明） |
 | `context_mode` | 仅用于 resume：`direct` 保留上下文，`compact` 先用当前模型生成摘要，`fresh` 从保存的任务状态重建窗口而不调用旧模型；同时确认显式换模 |
-| `allow_model_change` | 旧换模确认参数，要求有 `resume` 和 `model_alias`；与 `context_mode` 互斥 |
-| `new_window` | 旧全新上下文继续参数，要求有 `resume`；与 `context_mode` 互斥 |
+| `allow_model_change` | 旧换模确认参数。为 `true` 时要求有 `resume` 和 `model_alias`，且不能与 `context_mode` 同时使用；为 `false` 时被忽略 |
+| `new_window` | 旧全新上下文继续参数。为 `true` 时要求有 `resume`，且不能与 `context_mode` 同时使用；为 `false` 时被忽略 |
 | `tools` | 替换本次绑定已解析出的工具选择。只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限 |
 | `disallowed_tools` | 增加一层调用级 deny。传 `[]` 只清掉这一层，不会清除 profile、祖先或 route 的 deny |
 
@@ -346,9 +354,9 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 
-**恢复。** `resume` 按名称或 agent id 继续已有空闲直属子 Agent，拒绝 `name`、`profile`、`profile_file`、`route`、`workDir` 和 `additionalDirs`。省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 用于下次空闲运行。显式 `context_mode` 选择 `direct`、`compact` 或 `fresh`；同时传入的 `model_alias` 选到不同规范模型时，该模式也确认这次换模。不选择上下文模式时，普通 resume 保持 direct。同一个子 Agent ID、任务笔记、Todo、历史与工作区仍然可用。`compact` 和 `fresh` 要求原生 Kiki 执行；外部 executor 会报错，不会重建 thread。
+**恢复。** `resume` 按名称或 agent id 继续已有空闲直属子 Agent，拒绝 `name`、`profile`、`profile_file` 和 `route`。与该子 Agent 自身相同的 `name` 或 `profile` 会被忽略，而不是拒绝。`workDir`、`additionalDirs` 和 `executor_launch` 不会生效：恢复的子 Agent 保留创建时的工作目录、额外目录和 executor 启动设置，结果会注明哪些参数没有应用。省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 用于下次空闲运行。显式 `context_mode` 选择 `direct`、`compact` 或 `fresh`；同时传入的 `model_alias` 选到不同规范模型时，该模式也确认这次换模。不选择上下文模式时，普通 resume 保持 direct。同一个子 Agent ID、任务笔记、Todo、历史与工作区仍然可用。`compact` 和 `fresh` 要求原生 Kiki 执行；外部 executor 会报错，不会重建 thread。
 
-`context_mode` 不能与任一旧参数混用，即使旧参数为 false。未设置 `context_mode` 时，旧参数 `new_window: true` 选择 fresh，优先于 `allow_model_change`；否则 `allow_model_change: true` 确认 direct 换模，`new_window: false` 不否决该确认。`model_alias: "inherit"` 仍无效。示例与提交失败后的恢复见[继续方式与恢复](../customization/agents-and-subagents.md#具名子-agent)。
+不要在设置 `context_mode` 的同时把任一旧参数设为 `true`；旧参数为 `false` 时不起作用，会被忽略。未设置 `context_mode` 时，旧参数 `new_window: true` 选择 fresh，优先于 `allow_model_change`；否则 `allow_model_change: true` 确认 direct 换模，`new_window: false` 不否决该确认。`model_alias: "inherit"` 仍无效。示例与提交失败后的恢复见[继续方式与恢复](../customization/agents-and-subagents.md#具名子-agent)。
 
 **超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents-and-subagents.md)。
 
@@ -364,13 +372,13 @@ Native Agent 最终保存失败时，GUI 会显示失败状态和保存错误，
 
 **`AgentSend`** 把非空的 `message` 发给直属子 Agent。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行在消息进入上下文之前结束的情况，会沿用原来的模型、profile、工具和上下文继续。外部子 Agent 已保存的消息按到达顺序进入这同一个绑定，一封接一封，不需要另一次 resume。调度容量已满时，这次继续会等到一个正在运行的子 Agent 结束，不会超出上限再开一跑。如果没有运行会释放容量，或者外部 resume 打不开原来的会话，这条消息仍留在原来的 `message_id` 下。发送方随后会收到原因、error code、目标和这个 id。用 AgentRun 继续同一个子 Agent：`resume` 设为该 agent id，`prompt` 设为空字符串，`description` 设为简短标签。不要再次调用 AgentSend，不要在 `prompt` 里重复这条已保存的消息，也不要设置 `new_window`。这次失败不会另开一个新的远端会话。这次继续是普通的子任务，完成时父 Agent 照常收到通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 确认消息已进入收件方持久保存的上下文或轮次输入；子 Agent 可能仍在处理它。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。这次更新独立于收件方的下一步执行。若发送者已卸载，Kiki 会保留回执，在该发送者下次加载时补记。回执在页面重载和历史回放后仍然有效，不会重复消息或启动新一轮运行。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态，并为模型附一句对该状态的说明。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 确认消息已进入收件方持久保存的上下文或轮次输入；子 Agent 可能仍在处理它。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。这次更新独立于收件方的下一步执行。若发送者已卸载，Kiki 会保留回执，在该发送者下次加载时补记。回执在页面重载和历史回放后仍然有效，不会重复消息或启动新一轮运行。
 
 重启后，已进入轮次的消息会补齐投递确认，不再追加正文或启动新一轮运行。磁盘满、暂态存储故障或邮箱传输故障导致回执或投递确认保存失败时，只要 Agent 仍处于加载状态，Kiki 就会每 30 秒重试这次保存。应恢复存储可写或等待 runtime 恢复；原消息会一直保留。邮箱传输遇到暂态故障时，会在同一安全执行边界内最多进行八次有界、可取消的恢复尝试，逐步延长的退避等待合计约两分钟，另加调用耗时。恢复保留请求身份与投递回执，不重放外部动作。恢复仍失败时，诊断会说明消息已保留及如何恢复同一 Agent；永久错误和取消不重试。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
-**`Skill`** 按已注册的 `skill` 名称或显式 Markdown `path` 加载指令，两者互斥，可附带 `args`。路径可以是绝对路径或工作区相对路径，遵循文件读取权限和运行时隔离。路径加载不会覆盖已注册 Skill、安装插件或执行脚本。相对资源仍以文件所在目录为根；加载块记录来源路径与参数，可区分同名文件。省略类型以及 `prompt`、`inline` 类型均受支持；模型不能调用 `flow` 类型或 `disableModelInvocation: true` 的 Skill，路径入口也不例外。嵌套调用深度上限 3 层。Skill 体系细节见 [Agent Skills](../customization/skills.md)。
+**`Skill`** 按已注册的 `skill` 名称或显式 Markdown `path` 加载指令，两者互斥，可附带 `args`。路径可以是绝对路径或工作区相对路径，遵循文件读取权限和运行时隔离。路径加载不会覆盖已注册 Skill、安装插件或执行脚本。相对资源仍以文件所在目录为根；加载块记录来源路径与参数，可区分同名文件。省略类型以及 `prompt`、`inline` 类型均受支持；模型不能调用 `flow` 类型或 `disableModelInvocation: true` 的 Skill，路径入口也不例外。Skill 体系细节见 [Agent Skills](../customization/skills.md)。
 
 ## 后台任务
 
@@ -393,11 +401,11 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 **`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。停止 Agent 任务会级联终止其各级子孙 subagent：每一层先停止自己子 Agent 的任务与执行（先深后浅），再中止该 Agent 本身，同时保留它们的可恢复 scope 与邮箱消息，供之后 resume。结果会报告停止后仍在运行的直属子 Agent（一个都不剩时不提示，最多 5 个名称）。进程或子孙任务清理失败时，任务保留可恢复的 `running` 状态，不写结束时间或终态回执；诊断会保留清理错误及可用详情。对同一任务重试 `TaskStop`，确认清理完成后再启动替代工作。
 
-**`TaskWait`** 用于显式同步等待，把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，有限正整数，单位秒，范围 1–86400），以及可选的 `task_id`、`sync_wait` 和 `sync_reason`。这个上限只约束本次等待，不延长任务运行时限或调用者的生命周期；任务结束、新输入或取消都可能提前结束等待。超时不是错误：结果会列出仍在运行的任务，不会停止它们。此时应重新判断同轮同步需求，不要自动重复等待。已通过 `TaskWait` 汇报结果的任务不会再推送自动完成通知。
+**`TaskWait`** 用于显式同步等待，把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，有限正整数，单位秒，范围 1–86400），以及可选的 `task_id`。仍传入 `sync_wait` 或 `sync_reason` 的旧调用会被接受，这两个字段会被忽略。这个上限只约束本次等待，不延长任务运行时限或调用者的生命周期；任务结束、新输入或取消都可能提前结束等待。超时不是错误：结果会列出仍在运行的任务，不会停止它们。此时应重新判断同轮同步需求，不要自动重复等待。已通过 `TaskWait` 汇报结果的任务不会再推送自动完成通知。
 
-非 active goal mode 下，main agent 等待运行中的 Agent 任务会立即收到可恢复错误，除非同时提供三个条件：`sync_wait: true`（默认 false）、明确的 `task_id`，以及非空且具体的 `sync_reason`，说明为什么必须在同一轮次获取结果。常规报告收集不是有效理由：应处理独立工作，或简要说明待完成状态后结束轮次，再按通知继续。拒绝等待不会停止任务，也不会消费其完成通知。subagent 等待自己的任务、main agent 等待进程任务，以及引擎已确认有 active goal 的 main agent，都不需要这些例外字段。已终止的任务会立即返回现有结果；同步例外不会增加任务所有权或可见范围。
+传入 `task_id` 时，等待的就是该任务，无论它是 Shell 命令、子 Agent 还是其他后台任务；已结束的任务会立即返回其结果。等待不会增加任务所有权或可见范围：其他 Agent 的任务会报告找不到。
 
-不传 `task_id` 时，调用时刻运行中的任意一个后台任务结束即返回；当前没有运行中的后台任务时立即返回。非 active goal mode 下，main agent 的 wait-any（等待任一任务）快照只要包含运行中的 Agent 任务，就会被拒绝，不会静默过滤该任务。应指定明确的进程任务 ID，或对明确的 Agent 任务 ID 使用同步例外；`sync_wait` 不会豁免 wait-any 调用。
+不传 `task_id` 时，调用时刻运行中的任意一个后台任务结束即返回；当前没有运行中的后台任务时立即返回。非 active goal mode 下的 main agent 进行这种等待时，会把子 Agent 任务排除在外，因为它们的结果会通过自动通知送达：等待只覆盖其他运行中的任务，结果会列出未等待的子 Agent 任务。这些任务继续运行，完成后仍会推送自动通知。subagent，以及引擎已确认有 active goal 的 main agent，会等待任意运行中的任务，包括子 Agent 任务。main agent 若要等待某个子 Agent 任务，请传入它的 `task_id`。
 
 ## 定时任务
 
@@ -453,7 +461,7 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 ## 目标
 
-主 Agent 的 `Goal` 工具通过 `action: "create"`、`"get"` 或 `"update"` 指定操作；旧名称 `CreateGoal`、`GetGoal` 和 `UpdateGoal` 仍可供已有 profile 和审批规则使用，但不再作为独立工具公告。`create` 需要可验证的 `objective`，可附 `completionCriterion`；`replace: true` 仅在用户要求替换时放弃现有目标。`get` 查询状态。`update` 将状态设为 `active`、`complete` 或 `blocked`；完成前须核实目标，非终局阻碍须连续三个目标轮次阻止推进。
+主 Agent 的 `Goal` 工具通过 `action: "create"`、`"get"` 或 `"update"` 指定操作；旧名称 `CreateGoal`、`GetGoal` 和 `UpdateGoal` 仍可供已有 profile 和审批规则使用，但不再作为独立工具公告。`create` 需要可验证的 `objective`，可附 `completionCriterion`；`replace: true` 仅在用户要求替换时放弃现有目标。`get` 查询状态。`update` 将状态设为 `active`、`complete` 或 `blocked`；完成前须核实目标，非终局阻碍须连续三个目标轮次阻止推进。`get` 和 `update` 无需审批。除 Auto 模式外，`create` 会先把新目标展示给你审核，你还可以选择它运行时的权限模式；拒绝则不会创建目标。YOLO 模式不询问直接通过该审核。
 
 目标默认没有硬预算。只有用户能在 GUI 目标编辑器中设置或清除预算，聊天指令不会配置预算。旧 `SetGoalBudget` 和 `action: "set_budget"` 调用会返回不可用错误，不改变预算。用户侧操作和示例见 [目标](../guides/goals.md#在-web-界面中管理目标)。
 

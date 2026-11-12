@@ -99,12 +99,14 @@ export function projectBrowserToolSchema(tool: MCPToolDefinition): Record<string
 
 export function validateBrowserValues(args: Readonly<Record<string, unknown>>): void {
   for (const key of Object.keys(args)) if (BROWSER_OWNED_FIELDS.has(key)) throw new BrowserError('browser.invalid', `Browser identity field "${key}" is managed by Kiki`);
-  const inspect = (value: unknown): void => {
-    if (typeof value === 'string' && value.startsWith('--')) throw new BrowserError('browser.invalid', 'This donor does not escape positional values beginning with --; use an explicit eval script for that page content');
-    if (Array.isArray(value)) value.forEach(inspect);
-    else if (value !== null && typeof value === 'object') Object.values(value).forEach(inspect);
+  const inspect = (value: unknown, path: string): void => {
+    if (typeof value === 'string' && value.startsWith('--')) {
+      throw new BrowserError('browser.invalid', `Argument "${path}" begins with "--", and this browser donor does not escape positional values beginning with --; use an explicit eval script for that page content`);
+    }
+    if (Array.isArray(value)) value.forEach((item, index) => inspect(item, `${path}[${String(index)}]`));
+    else if (value !== null && typeof value === 'object') for (const [key, child] of Object.entries(value)) inspect(child, `${path}.${key}`);
   };
-  for (const [key, value] of Object.entries(args)) if (key !== 'script') inspect(value);
+  for (const [key, value] of Object.entries(args)) if (key !== 'script') inspect(value, key);
 }
 
 export class AgentBrowserService extends Disposable implements IAgentBrowserService {
@@ -457,7 +459,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
           if (tab === undefined) throw new BrowserError('browser.target', 'Select or open a tab with BrowserTabs before reading or operating');
           const status = await this.control.status(browser);
           const bound = selection?.tab === tab ? selection : { tab, generation: status.generation };
-          if (containsElementRef(args) && !bound.observed) throw new BrowserError('browser.target', 'Read a snapshot in this browser/tab/frame before using its element references');
+          const elementRef = bound.observed ? undefined : elementRefArgument(args);
+          if (elementRef !== undefined) {
+            throw new BrowserError('browser.target', `Argument "${elementRef.path}" has the value "${elementRef.value}", which is read as an element reference, and no snapshot has been read in this browser/tab/frame. Read a snapshot first; after that, element references and literal values of this form are both accepted`);
+          }
           const prepared = await this.prepareFiles(tool.name, args);
           return { approvalRule: name, accesses: prepared.accesses, execute: async (ctx) => {
             try {
@@ -571,10 +576,21 @@ function schemaProperties(schema: unknown): Record<string, unknown> | undefined 
   return properties !== null && typeof properties === 'object' && !Array.isArray(properties) ? properties as Record<string, unknown> : undefined;
 }
 
-function containsElementRef(args: Readonly<Record<string, unknown>>): boolean {
-  const contains = (value: unknown): boolean => typeof value === 'string' ? /^@?e\d+$/.test(value)
-    : value !== null && typeof value === 'object' ? Object.values(value).some(contains) : false;
-  return contains(args);
+function elementRefArgument(args: Readonly<Record<string, unknown>>): { readonly path: string; readonly value: string } | undefined {
+  const find = (value: unknown, path: string): { readonly path: string; readonly value: string } | undefined => {
+    if (typeof value === 'string') return /^@?e\d+$/.test(value) ? { path, value } : undefined;
+    if (value === null || typeof value !== 'object') return undefined;
+    for (const [key, child] of Object.entries(value)) {
+      const found = find(child, Array.isArray(value) ? `${path}[${key}]` : `${path}.${key}`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  for (const [key, value] of Object.entries(args)) {
+    const found = find(value, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 registerScopedService(LifecycleScope.Agent, IAgentBrowserService, AgentBrowserService, ScopeActivation.OnDemand, 'browser');
 

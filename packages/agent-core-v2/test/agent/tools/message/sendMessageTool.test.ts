@@ -41,7 +41,10 @@ import { ChatProviderError, markProviderEventError } from '#/kosong/contract/err
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
-import { appServices, createTestAgent, externalHookServices, homeDirServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
+import { IAgentPermissionPolicyService } from '#/agent/permissionPolicy/permissionPolicy';
+import { appServices, createTestAgent, externalHookServices, homeDirServices, permissionModeServices, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
 import { makeHookRunner, nodeCommand } from '../../../features/externalHooks/runner-stub';
 
 let ctx: TestAgentContext;
@@ -332,6 +335,68 @@ describe('SendMessage completion guidance', () => {
     if (!('execute' in dirPathExec)) throw new Error('Expected an executable tool.');
     await expect(dirPathExec.execute({ turnId: 0, toolCallId: 'dir-path', signal: new AbortController().signal }))
       .rejects.toThrow('Attachment is not a file:');
+  });
+
+  it('declares every path attachment as a file read so manual mode asks for secrets and links while yolo sends any path', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'send-message-admit-'));
+    const outsideDir = await mkdtemp(join(tmpdir(), 'send-message-admit-outside-'));
+    dirs.push(cwd, outsideDir);
+    await writeFile(join(cwd, 'notes.txt'), 'notes');
+    await writeFile(join(cwd, '.env'), 'TOKEN=example');
+    await writeFile(join(outsideDir, 'report.txt'), 'report');
+    await mkdir(join(cwd, '.git'));
+    await writeFile(join(cwd, '.git', 'config'), '[core]\n');
+    const directoryLink = process.platform === 'win32' ? 'junction' : 'dir';
+    await symlink(outsideDir, join(cwd, 'linked'), directoryLink);
+    await symlink(join(cwd, '.git'), join(cwd, 'repo-info'), directoryLink);
+    const realCwd = await realpath(cwd);
+    const realOutside = await realpath(outsideDir);
+    ctx = createTestAgent({ cwd }, permissionModeServices('manual'));
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    await ctx.get(ISessionMediaStore).materialize({
+      fileId: 'f_admit', name: 'a.txt', mimeType: 'text/plain', size: 1, stream: () => Readable.from([Buffer.from('a')]),
+    });
+    const decide = async (input: Parameters<ISendMessageTool['resolveExecution']>[0]) => {
+      const execution = await ctx.get(ISendMessageTool).resolveExecution(input);
+      if (!('execute' in execution)) throw new Error('Expected an executable tool.');
+      const toolCall = { type: 'function' as const, id: 'admit', name: 'SendMessage', arguments: JSON.stringify(input) };
+      const evaluation = await ctx.get(IAgentPermissionPolicyService).evaluate({
+        turnId: 0, signal: new AbortController().signal, toolCall, toolCalls: [toolCall], args: input, execution,
+      });
+      return { execution, policy: evaluation?.policyName, kind: evaluation?.result.kind };
+    };
+
+    const plain = await decide({ text: 'no attachment', attachments: [{ file_id: 'f_admit' }] });
+    expect(plain.execution.accesses).toBeUndefined();
+    expect(plain.policy).toBe('fallback-ask');
+
+    const workspaceFile = await decide({ attachments: [{ path: 'notes.txt' }] });
+    expect(workspaceFile.execution.accesses).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', operation: 'read', path: join(realCwd, 'notes.txt').replaceAll('\\', '/') })]));
+    expect(workspaceFile.execution.description).toContain(join(realCwd, 'notes.txt').replaceAll('\\', '/'));
+    expect(workspaceFile).toMatchObject({ policy: 'fallback-ask', kind: 'ask' });
+
+    expect(await decide({ attachments: [{ path: join(outsideDir, 'report.txt') }] })).toMatchObject({ policy: 'fallback-ask', kind: 'ask' });
+    expect(await decide({ attachments: [{ path: '.env' }] })).toMatchObject({ policy: 'sensitive-file-access-ask', kind: 'ask' });
+    expect(await decide({ attachments: [{ path: 'linked/report.txt' }] })).toMatchObject({ policy: 'external-link-access-ask', kind: 'ask' });
+
+    const batch = await decide({ messages: [{ text: 'first', attachments: [{ path: 'notes.txt' }] }, { text: 'second', attachments: [{ file_id: 'f_admit' }, { path: '.env' }] }] });
+    expect(batch.execution.accesses?.filter((access) => access.kind === 'file').map((access) => access.kind === 'file' ? access.path : '')).toEqual(['notes.txt', '.env'].map((name) => join(realCwd, name).replaceAll('\\', '/')));
+    expect(batch).toMatchObject({ policy: 'sensitive-file-access-ask', kind: 'ask' });
+
+    ctx.get(IAgentPermissionRulesService).recordApprovalResult({
+      turnId: 0, toolCallId: 'ordinary-send', toolName: 'SendMessage', action: 'Sending a message',
+      sessionApprovalRule: 'SendMessage', result: { decision: 'approved', scope: 'session' },
+    });
+    const repositoryFile = await decide({ attachments: [{ path: 'notes.txt' }, { path: 'repo-info/config' }] });
+    expect(repositoryFile.execution.accesses).toContainEqual(expect.objectContaining({
+      kind: 'file', operation: 'read', path: join(realCwd, '.git', 'config').replaceAll('\\', '/'), implicitExternal: false,
+    }));
+    expect(repositoryFile).toMatchObject({ policy: 'git-control-path-access-ask', kind: 'ask' });
+
+    ctx.get(IAgentPermissionModeService).setMode('yolo');
+    expect(await decide({ attachments: [{ path: '.env' }, { path: 'linked/report.txt' }, { path: join(realOutside, 'report.txt') }] })).toMatchObject({ policy: 'yolo-mode-approve', kind: 'approve' });
   });
 
   it('sends an ordered batch through one SendMessage execution and preserves media channel facts', async () => {
@@ -1529,7 +1594,7 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
         }),
       ],
     });
-    const attachment = sentInputs[0]?.attachments?.[0]!;
+    const attachment = sentInputs[0]!.attachments![0]!;
     expect(attachment.path).toBe('synthesized.ogg');
     const blobHash = attachment.blobId.split(':').at(-1)!;
     const storedBytes = await ctx.get(IBlobStore).get(ctx.get(IAgentScopeContext).scope('blobs'), blobHash);

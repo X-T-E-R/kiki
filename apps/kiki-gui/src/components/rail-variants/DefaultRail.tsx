@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
 import type { SessionController, SessionViewState, TodoItem } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
@@ -23,16 +23,20 @@ function useAgentState(sessionId: string, agentId: string): { controller: Sessio
     return undefined;
   }, [registry, generation, sessionId]);
   const subscribe = useCallback(
-    (listener: () => void) => controller === undefined
-      ? noopSubscribe()
-      : agentId === MAIN_AGENT_ID ? controller.subscribe(listener) : controller.subscribeAgent(agentId, listener),
+    (listener: () => void) => controller === undefined ? noopSubscribe() : controller.subscribeAgent(agentId, listener),
     [controller, agentId],
   );
-  const read = useCallback(
-    () => controller === undefined ? undefined : agentId === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(agentId),
-    [controller, agentId],
-  );
+  const read = useCallback(() => controller?.getAgentState(agentId), [controller, agentId]);
   const agentState = useSyncExternalStore(subscribe, read, read);
+  // The checklist arrives at `turn`; listening alone asks for nothing, so the
+  // rail holds that lease on the agent for as long as it shows its todos.
+  const leaseId = useId();
+  useEffect(() => {
+    if (controller === undefined || typeof controller.retainAgentView !== 'function') return;
+    const viewId = `rail-todos:${agentId}:${leaseId}`;
+    controller.retainAgentView(viewId, agentId, 'turn');
+    return () => { controller.releaseAgentView(viewId); };
+  }, [controller, agentId, leaseId]);
   return { controller, agentState };
 }
 

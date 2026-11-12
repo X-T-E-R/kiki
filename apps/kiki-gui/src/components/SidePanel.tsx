@@ -70,7 +70,7 @@ export function SidePanel({
       overlayData={data}
       dismissible={dismissible ?? true}
       overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/20"
-      panelClassName={`kiki-side-panel flex h-full w-full max-w-full flex-col overflow-hidden bg-panel shadow-[var(--kiki-sheet-shadow),-16px_0_48px_-20px_rgb(var(--kiki-shadow-ink)/0.35)] outline-none sm:rounded-l-[var(--kiki-sheet-radius)] ${WIDTHS[width]}`}
+      panelClassName={`kiki-side-panel flex h-full w-full max-w-full flex-col overflow-hidden bg-panel pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)] shadow-[var(--kiki-sheet-shadow),-16px_0_48px_-20px_rgb(var(--kiki-shadow-ink)/0.35)] outline-none sm:rounded-l-[var(--kiki-sheet-radius)] ${WIDTHS[width]}`}
     >
       <header className="flex shrink-0 items-start gap-3 border-b border-hairline px-5 pt-4 pb-3">
         {back !== undefined ? (

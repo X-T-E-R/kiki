@@ -23,15 +23,16 @@ import {
   AgentTranscript,
   GRADE_RANK,
   gradeFor,
-  itemId,
-  releaseFramePayload,
+  placeTranscriptItems,
   rebindTurnContentRefs,
+  turnOrdinal,
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
   type TranscriptCursor,
   type TranscriptEvent,
   type TranscriptGrade,
   type TranscriptGradeSpec,
+  type TranscriptItem,
   type TranscriptOperation,
   type TranscriptRead,
   type TranscriptTodo,
@@ -46,7 +47,7 @@ import {
   ApiError,
   DEFAULT_TRANSCRIPT_GRADES,
   isUnconfirmedTransportError,
-  transcriptGradesForFocus,
+  transcriptGradesForLeases,
   type AgentTranscriptResponse,
   type SessionCursor,
   type SessionTransport,
@@ -59,7 +60,6 @@ import {
   createViewState,
   markApprovalResolved,
   markQuestionOutcome,
-  prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
   SessionAgentForestQuery,
@@ -75,12 +75,13 @@ import {
   type QuestionOutcome,
   type TranscriptDetailKind,
 } from './transcript';
-import { emptyOlderSnapshot } from './transcript/selectors';
-import { collectTranscriptContentRefs, patchTranscriptContent, patchAgentTranscriptContent, replaceAgentContentEntity, replaceSnapshotContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
-import { adoptContentPreviewField, applyContentSegment, carryContentHydration, contentPathValue, mergeContentPreview, restoreContentPreview, sameContentRef, type ContentRef, type ContentSegment, type ContentSource, type ContentWindow } from '@kiki/transcript';
+import { adoptSessionShell, createSessionShell, withSessionShell, type SessionShell } from './sessionShell';
+import { collectTranscriptContentRefs, patchAgentTranscriptContent, replaceAgentContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
+import { adoptContentPreviewField, applyContentSegment, carryContentHydration, contentPathValue, mergeContentPreview, restoreContentPreview, sameContentRef, transcriptValueEquals, type ContentRef, type ContentSegment, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
-import { completeTranscriptTurnStructure, interactionToBlock, recoverTranscriptTurn } from './transcript/project';
+import { completeTranscriptTurnStructure, interactionToBlock } from './transcript/project';
+import { readMarkWins, refreshTurn, resolveItemCopies, resolveTurnCopies, turnGapOf, windowItemKey, type ReadMark } from './transcript/window';
 import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import type { QueuedPromptMeta } from './transcript/types';
 import type { AgentForest } from './agentTree';
@@ -105,6 +106,14 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const TOOL_DETAIL_PREPARING_RETRY_MS = 80;
 const OLDER_PAGE_TURNS = 40;
+/**
+ * Window bound while the reader follows the tail: trimmed once more turns than
+ * this are held — 20 above the kept size, so a turn-by-turn stream trims once
+ * per 20 turns rather than on every new one.
+ */
+const WINDOW_TRIM_ABOVE_TURNS = 60;
+/** Turns a trim keeps: two of the server's 20-turn reset windows, enough to scroll back a little without a read. */
+const WINDOW_KEEP_TURNS = 40;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 /**
@@ -173,6 +182,149 @@ interface RewriteHold {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Everything the controller holds for one agent's timeline. Main is an
+ * ordinary entry: what differs for main is the session it belongs to, which
+ * lives in the controller's `SessionShell`, not in this record.
+ */
+interface AgentTimeline {
+  readonly agentId: string;
+  /**
+   * The agent's window: one store holding every item the client has, whatever
+   * read brought it (a reset, live ops, an older page, a one-turn structure
+   * read, a content read), placed by the server's ordering. Created on the
+   * agent's first data or read and never dropped; old turns leave it only by
+   * `trimWindow`, after which they count as older history not loaded.
+   */
+  store: AgentTranscript | undefined;
+  /**
+   * The read mark of every held item (by `windowItemKey`): the transcript
+   * cursor of the reset, op batch or page that last decided its content. Two
+   * copies of an item are resolved by these marks (`readMarkWins`).
+   */
+  marks: Map<string, ReadMark>;
+  /**
+   * Turns held complete that have since been updated only below the grade the
+   * window was built at (`windowGrade`), or held across a reset that showed
+   * they must have changed: published as incomplete until a read at the full
+   * grade replaces them.
+   */
+  stale: Set<string>;
+  /** Turns this client assembled from a head and a tail it read separately (see `ResolvedTurn.join`). */
+  joins: Map<string, string | null>;
+  /** The grade the held content was built at: what a complete, non-stale turn of this window carries. */
+  windowGrade: TranscriptGrade | undefined;
+  /** Epoch of the held content. A reset in another epoch cannot be compared with it, so it replaces the window. */
+  windowEpoch: string | undefined;
+  /** A raised grade was sent and its baseline has not landed: the window shows what it holds meanwhile. */
+  refreshing: boolean;
+  /** Mounted timeline rows per turn (`retainHistoryPreview`): where readers are. */
+  viewLeases: Map<string, number>;
+  /** Older-history reads (pages, locates) in flight. */
+  paging: number;
+  /**
+   * Set when an older read places history in the window the reader has not
+   * yet been seen reading: the ordinal of the window's oldest turn before that
+   * read. Until a row of an older turn is mounted (`readerVisitedOld`) the
+   * window is not trimmed, so a locate, a reading-position restore or a find
+   * look-back that pages in several steps never loses what its previous step
+   * loaded.
+   */
+  pagedPin: number | undefined;
+  /** Since `pagedPin` was set, a row of a turn it pinned was mounted. */
+  readerVisitedOld: boolean;
+  /**
+   * What the agent tree needs from trimmed turns: each one's spawning tool
+   * frames (agent references) and start times, nothing else, so a child
+   * spawned in a trimmed turn keeps its parent and spawn time.
+   */
+  relations: readonly TranscriptTurn[];
+  /** The window snapshot with `relations` laid under it, kept while neither changed (see `publishForest`). */
+  forestInput: { readonly relations: readonly TranscriptTurn[]; readonly window: AgentTranscriptSnapshot; readonly snapshot: AgentTranscriptSnapshot } | undefined;
+  /** Resume watermark of the applied transcript. */
+  cursor: TranscriptCursor | undefined;
+  /** The cursor as of the latest publication (`getAgentTranscriptCursor`). */
+  publishedCursor: TranscriptCursor | undefined;
+  /** Where the next older page continues: the server's continuation, else the oldest loaded turn. */
+  olderCursor: string | undefined;
+  olderTurn: string | undefined;
+  /**
+   * Grade of the applied baseline. The requested grade is not kept here: it
+   * is `gradeFor(transcriptGrades, agentId)`, whose wildcard also covers
+   * agents without a record.
+   */
+  appliedGrade: TranscriptGrade | undefined;
+  /** Bumps on every applied reset so a resync can tell a baseline that landed during its snapshot from the one it is about to drop. */
+  baselineSerial: number | undefined;
+  /** Bumps whenever the agent's in-flight reads become obsolete: reset, resync, grade change, suspend. */
+  generation: number;
+  /** Provenance of the latest history read and of the latest todo entity read. */
+  historyRead: TranscriptRead | undefined;
+  todoRead: TranscriptRead | undefined;
+  globalCoverage: AgentTranscriptSnapshot['globalCoverage'];
+  /** The view the agent's next publication shows, before "send now" echoes. Main's leaves the session fields to the shell. */
+  view: SessionViewState | undefined;
+  /** What `getAgentState` returns: the view with echoes laid over it; main's also carries the shell. */
+  published: SessionViewState | undefined;
+  /** `subscribeAgent` listeners; every publication of this agent notifies them. */
+  listeners: Set<Listener>;
+  /** "Send now" echoes between the keypress and their delivered frame, laid over each publication (transcript/steer.ts). */
+  steers: readonly PendingSteer[];
+}
+
+type StoredTimeline = AgentTimeline & { store: AgentTranscript };
+
+/** What a reset leaves of the held window (see `resetWindow`). */
+interface ResetWindow {
+  readonly held: { readonly items: readonly TranscriptItem[]; readonly hasMoreOlder: boolean };
+  /** The held window can be compared with the reset: same epoch, and it holds something. */
+  readonly continuity: boolean;
+  /** The reset carries the agent's whole history. */
+  readonly full: boolean;
+  /** A turn-grade reset over a window built above `turn`. */
+  readonly lowered: boolean;
+  /** The reset's items, each the copy the window keeps for it. */
+  readonly incoming: readonly TranscriptItem[];
+  readonly resetKeys: ReadonlySet<string>;
+  /** Items of the reset whose held copy was read later and is kept. */
+  readonly heldWins: ReadonlySet<string>;
+  /** Held items the window keeps beside the reset's: the older history before its range. */
+  readonly kept: readonly TranscriptItem[];
+  /** Turns the reset leaves stale. */
+  readonly staleTurns: ReadonlySet<string>;
+}
+
+/**
+ * What the agent tree needs from turns leaving the window: each turn's tool
+ * frames that spawned agents, with the step and turn start times, nothing else.
+ */
+function relationStubs(items: readonly TranscriptItem[]): TranscriptTurn[] {
+  const stubs: TranscriptTurn[] = [];
+  for (const item of items) {
+    if (item.kind !== 'turn') continue;
+    const steps = item.steps.flatMap((step) => {
+      const frames = step.frames.filter((frame) => frame.kind === 'tool' && (frame.agentRefs?.length ?? 0) > 0);
+      return frames.length === 0 ? [] : [{ ...step, frames }];
+    });
+    if (steps.length > 0) stubs.push({ kind: 'turn', turnId: item.turnId, ordinal: item.ordinal, state: item.state, origin: item.origin, startedAt: item.startedAt, steps });
+  }
+  return stubs;
+}
+
+/** The window item an op decides the content of, if any (see `windowItemKey`). */
+function opItemKey(op: TranscriptOperation): string | undefined {
+  switch (op.op) {
+    case 'turn.upsert': return `turn:${op.turn.turnId}`;
+    case 'step.upsert':
+    case 'frame.upsert':
+    case 'frame.remove': return `turn:${op.turnId}`;
+    case 'append': return op.target.type === 'frame' ? `turn:${op.target.turnId}` : undefined;
+    case 'marker.upsert': return `marker:${op.item.markerId}`;
+    case 'taskref.upsert': return `taskref:${op.item.refId}`;
+    default: return undefined;
+  }
+}
+
 const browserScheduler: PublicationScheduler = {
   schedule(callback) {
     const { requestAnimationFrame } = browserGlobal;
@@ -214,6 +366,95 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+const PREPARING_RETRY_MAX_MS = 1000;
+
+/**
+ * Resolves after `ms`, or as soon as `signal` aborts, so a cancelled read does
+ * not sit out a retry wait. Callers check the signal (or their own
+ * obsolescence) right after, exactly as they did after a plain timeout.
+ */
+function waitUnlessAborted(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) { resolve(); return; }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+/**
+ * Cadence for re-sending a read the server is still preparing: an empty
+ * `preparing`/`partial` history page, or 40923 on a one-turn read. The demand
+ * is kept — no cap and no silent give-up; only the reader cancelling ends it —
+ * but repeats back off: 80 ms, doubling up to 1 s, and back to 80 ms once a
+ * response makes progress (a non-empty page or an advanced continuation; for
+ * a one-turn read, an answer that differs from the one before it).
+ */
+class PreparingBackoff {
+  private attempt = 0;
+
+  progressed(): void {
+    this.attempt = 0;
+  }
+
+  wait(signal?: AbortSignal): Promise<void> {
+    const ms = Math.min(PREPARING_RETRY_MAX_MS, TOOL_DETAIL_PREPARING_RETRY_MS * 2 ** this.attempt);
+    if (ms < PREPARING_RETRY_MAX_MS) this.attempt += 1;
+    return waitUnlessAborted(ms, signal);
+  }
+}
+
+/**
+ * The previous refs array when the next one lists the same refs in the same
+ * order. `contentRefs` is recollected on every transcript publish and the GUI
+ * hands it to a React context, so a fresh but equal array re-rendered every
+ * row that reads bounded content on every streamed frame. Refs compare by
+ * their serialized form — the text a `content:<ref JSON>` load key is built
+ * from — so a reused array never changes a key a reader derives from it
+ * (`sameContentRef` treats an omitted `direction` as `'forward'`, which
+ * serializes differently).
+ */
+function stableContentRefs(previous: readonly ContentRef[] | undefined, next: readonly ContentRef[]): readonly ContentRef[] {
+  if (previous === undefined || previous.length !== next.length) return next;
+  for (let index = 0; index < next.length; index += 1) {
+    const ref = next[index]!;
+    const prior = previous[index]!;
+    if (ref !== prior && JSON.stringify(ref) !== JSON.stringify(prior)) return next;
+  }
+  return previous;
+}
+
+/**
+ * A `Map` that counts its writes. The controller's synchronous content reads
+ * (`contentRefsFor`, `isContentRange`, `getToolCallDetail`) consult some maps
+ * directly instead of published state, so a write to one of them is a content
+ * change that `publishContentRevision` must report even when no published
+ * state changed.
+ */
+class CountingMap<K, V> extends Map<K, V> {
+  writes = 0;
+
+  override set(key: K, value: V): this {
+    this.writes += 1;
+    return super.set(key, value);
+  }
+
+  override delete(key: K): boolean {
+    const deleted = super.delete(key);
+    if (deleted) this.writes += 1;
+    return deleted;
+  }
+
+  override clear(): void {
+    if (this.size > 0) this.writes += 1;
+    super.clear();
+  }
+}
+
 /**
  * Why a "send now" did not reach the running turn. `submit` and `refused`
  * leave nothing behind on the server, so the text belongs back in the
@@ -241,8 +482,18 @@ export class SessionController {
   private openGeneration = 0;
   private bootstrapOpening: { readonly attachment: number; readonly resolve: () => void } | undefined;
   readonly sessionId: string;
-  private state: SessionViewState;
-  private publishedState: SessionViewState;
+  /** What belongs to the session rather than to one agent (see `SessionShell`). */
+  private shell: SessionShell = createSessionShell();
+  /**
+   * Every agent's timeline, main included. Main's is created with the
+   * controller and never removed; another agent's on its first data, view
+   * write or subscription.
+   */
+  private readonly timelines = new Map<string, AgentTimeline>();
+  private readonly main: AgentTimeline;
+  /** The shell laid over main's view, kept while both are the same objects (see `sessionView`). */
+  private composedSession: { readonly shell: SessionShell; readonly view: SessionViewState; readonly state: SessionViewState } | undefined;
+  /** `subscribe` listeners: the session view, which every publication of main or of the shell changes. */
   private readonly listeners = new Set<Listener>();
   private readonly interruptedPromptListeners = new Set<(content: readonly MessageContent[]) => void>();
   private readonly scheduler: PublicationScheduler;
@@ -274,54 +525,48 @@ export class SessionController {
   private lastRestoredPromptId: string | undefined;
 
   private readonly snapshotControllers = new Set<AbortController>();
-  private readonly agentStates = new Map<string, SessionViewState>();
-  private readonly publishedAgentStates = new Map<string, SessionViewState>();
-  private readonly agentListeners = new Map<string, Set<Listener>>();
+  /** Agents whose working view awaits publication together (see `publish`). */
   private readonly dirtyAgents = new Set<string>();
-  private readonly agentTranscripts = new Map<string, AgentTranscript>();
-  private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
-  private readonly transcriptCursors = new Map<string, TranscriptCursor>();
-  private readonly historyReads = new Map<string, TranscriptRead>();
-  private readonly todoReads = new Map<string, TranscriptRead>();
-  private readonly appliedTranscriptGrades = new Map<string, TranscriptGrade>();
-  /** Bumps on every applied reset so a resync can tell a baseline that landed during its snapshot from the one it is about to drop. */
-  private readonly transcriptBaselineSerial = new Map<string, number>();
+  /**
+   * The timelines that hold a store, in the order their stores were created.
+   * Stores are never dropped, and every per-store loop (forest building,
+   * reconnect catch-up, grade changes) keeps this order.
+   */
+  private readonly storeTimelines = new Set<StoredTimeline>();
+  /** Source of `AgentTimeline.baselineSerial`. */
   private transcriptBaselineClock = 0;
-  private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
   private readonly toolCountSpans = new Map<string, ToolCountSpan[]>();
   private readonly pendingTranscriptBatches = new Map<string, PendingTranscriptBatch>();
   private readonly pendingTranscriptAgents = new Set<string>();
   private readonly forestDirtyAgents = new Set<string>();
-  private readonly historyGeneration = new Map<string, number>();
   private readonly olderLoads = new OlderLoadCoordinator((agentId) => {
-    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-    if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+    const current = this.viewOf(agentId);
+    if (current.loadingOlder) this.publishView(agentId, setLoadingOlder(current, false));
   });
   private readonly emptyAgentState: SessionViewState;
-  /** "Send now" echoes per agent, laid over each published view (transcript/steer.ts). */
-  private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
   private readonly unprojectedQueueReceipts = new Map<string, PromptSubmitResult>();
   private publishedForest: AgentForest | undefined;
   private readonly forestQuery = new SessionAgentForestQuery();
-  private readonly composedSnapshots = new Map<string, {
-    live: AgentTranscriptSnapshot;
-    older: AgentTranscriptSnapshot;
-    snapshot: AgentTranscriptSnapshot;
-  }>();
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
-  private focusedAgentId: string | undefined;
+  /**
+   * The agent the focus lease (`setFocusedAgent`) holds at `delta`, if any.
+   * A controller starts focused on main, so a consumer that never moves focus
+   * keeps receiving main's timeline frame by frame.
+   */
+  private focusedAgentId: string | undefined = MAIN_AGENT_ID;
+  /** View leases by view id (`retainAgentView`): with the focus lease, the only demand there is. */
   private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
   private readonly catchupByAgent = new Map<string, Promise<void>>();
   private readonly catchupControllers = new Map<string, AbortController>();
-  private readonly globalCoverage = new Map<string, AgentTranscriptSnapshot['globalCoverage']>();
   private readonly detailReads = new Map<string, Promise<boolean>>();
-  private readonly olderPageCursors = new Map<string, string>();
-  private readonly olderPageTurns = new Map<string, string>();
-  private readonly historyPreviewPages = new Map<string, { agentId: string; beforeItem?: string; beforeTurn?: string; unloaded: boolean }>();
-  private readonly historyPreviewReaders = new Map<string, number>();
-  private readonly historyPreviewReads = new Map<string, { agentId: string; controller: AbortController; promise: Promise<boolean> }>();
-  private readonly historyPreviewBytes: number;
+  /**
+   * Serialized size of each transcript value the body budget counts, measured
+   * once per object. Store entities are copy-on-write, so an unchanged object
+   * never needs measuring again; releasing a reader does not serialize the
+   * whole window to learn its size.
+   */
+  private readonly measuredBytes = new WeakMap<object, number>();
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
@@ -331,8 +576,11 @@ export class SessionController {
   private readonly contentRanges = new Map<string, string>();
   private contentRangeBytes = 0;
   private readonly rangeControllers = new Map<AbortController, string>();
-  private readonly contentBodies = new Map<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
-  private readonly toolDetails = new Map<string, Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>();
+  private readonly contentBodies = new CountingMap<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
+  private readonly toolDetails = new CountingMap<string, Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>();
+  private contentRevision = 0;
+  private contentInputs: readonly unknown[] = [];
+  private readonly contentListeners = new Set<Listener>();
   private readonly toolDetailEpochs = new Map<string, number>();
   private readonly toolDetailReads = new Map<string, { promise: Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>; controller: AbortController; readers: number }>();
   private readonly entityPageCursors = new Map<string, string | null>();
@@ -353,7 +601,7 @@ export class SessionController {
     client: SessionTransport,
     private readonly view: SessionViewFacade,
     sessionId: string,
-    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number; historyPreviewBytes?: number; ephemeral?: boolean; persistenceHint?: 'temporary' | 'saved' | 'unknown' } = {},
+    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number; ephemeral?: boolean; persistenceHint?: 'temporary' | 'saved' | 'unknown' } = {},
   ) {
     this.client = client;
     this.sessionId = sessionId;
@@ -363,9 +611,9 @@ export class SessionController {
     this.usesBrowserScheduler = options.scheduler === undefined;
     this.visibilityDocument = this.usesBrowserScheduler ? browserVisibilityDocument() : undefined;
     this.rewriteResetTimeoutMs = options.rewriteResetTimeoutMs ?? REWRITE_RESET_TIMEOUT_MS;
-    this.historyPreviewBytes = options.historyPreviewBytes ?? 64 * 1024 * 1024;
-    this.state = createViewState(sessionId);
-    this.publishedState = this.state;
+    this.main = this.timeline(MAIN_AGENT_ID);
+    this.main.view = createViewState(sessionId);
+    this.main.published = this.sessionView();
     this.emptyAgentState = createViewState(sessionId);
     this.visibilityDocument?.addEventListener?.('visibilitychange', this.onVisibilityChange);
   }
@@ -384,11 +632,32 @@ export class SessionController {
     }
   };
 
-  getState = (): SessionViewState => this.publishedState;
+  /** The session view: the session shell laid over main's published view. */
+  getState = (): SessionViewState => this.main.published!;
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  /**
+   * Revision of everything the synchronous content reads consult, for every
+   * agent: `contentRefsFor`, `isContentRange`, `getToolCallDetail`, each
+   * agent's published `detailLoads`, and the main view's
+   * `transcriptResetVersion`. It changes only when one of those inputs did —
+   * never for a publish that only streamed text — so a reader that runs those
+   * reads during render can refresh on it instead of on every publish.
+   */
+  getContentRevision = (): number => this.contentRevision;
+
+  /**
+   * Observe `getContentRevision`. Like `subscribeAgent` this adds no demand:
+   * rendering a row that reads another agent's content does not make the
+   * client fetch that agent.
+   */
+  subscribeContent = (listener: Listener): (() => void) => {
+    this.contentListeners.add(listener);
+    return () => this.contentListeners.delete(listener);
   };
 
   subscribeInterruptedPrompt = (listener: (content: readonly MessageContent[]) => void): (() => void) => {
@@ -396,55 +665,192 @@ export class SessionController {
     return () => this.interruptedPromptListeners.delete(listener);
   };
 
-  getAgentState = (agentId: string): SessionViewState =>
-    this.publishedAgentStates.get(agentId) ?? this.agentStates.get(agentId) ?? this.emptyAgentState;
+  /** Any agent's published view; for main this is `getState()`. */
+  getAgentState = (agentId: string): SessionViewState => {
+    const timeline = this.timelines.get(agentId);
+    return timeline?.published ?? timeline?.view ?? this.emptyAgentState;
+  };
 
   /** Per-agent cursor at the latest transcript publication, not the session event cursor. */
   getAgentTranscriptCursor = (agentId: string): TranscriptCursor | undefined =>
-    this.publishedTranscriptCursors.get(agentId);
+    this.timelines.get(agentId)?.publishedCursor;
 
-  /** Observe summary state, explicitly admitting cold history at turn grade without taking timeline focus. */
+  /**
+   * Listen to one agent's publications; for main, the same ones `subscribe`
+   * hears. Listening adds no demand: the agent is published at whatever grade
+   * the leases on it produce (`retainAgentView`, `setFocusedAgent`), and with
+   * none it is not received at all. A panel that needs an agent's data takes
+   * a lease for the grade it needs.
+   */
   subscribeAgent = (agentId: string, listener: Listener): (() => void) => {
-    const listeners = this.agentListeners.get(agentId) ?? new Set<Listener>();
+    const timeline = this.timeline(agentId);
+    const listeners = timeline.listeners;
     listeners.add(listener);
-    this.agentListeners.set(agentId, listeners);
-    this.refreshTranscriptGrades();
     return () => {
       listeners.delete(listener);
-      if (listeners.size === 0) {
-        this.agentListeners.delete(agentId);
-        this.refreshTranscriptGrades();
-      }
+      // A later subscription starts a fresh set, so a repeated release of
+      // this one can never remove a listener added after it.
+      if (listeners.size === 0 && timeline.listeners === listeners) timeline.listeners = new Set();
     };
   };
 
-  private notifyMain(): void {
-    this.retireSettledSteers(MAIN_AGENT_ID, this.state);
-    this.publishedState = withPendingSteers(this.state, this.getPendingSteers(MAIN_AGENT_ID));
-    for (const listener of this.listeners) listener();
-  }
-
-  private publishAgents(): void {
-    for (const agentId of this.dirtyAgents) {
-      const state = this.agentStates.get(agentId);
-      if (state === undefined) continue;
-      this.retireSettledSteers(agentId, state);
-      this.publishedAgentStates.set(agentId, withPendingSteers(state, this.getPendingSteers(agentId)));
-      for (const listener of this.agentListeners.get(agentId) ?? []) listener();
+  /** The agent's timeline record, created on first use. */
+  private timeline(agentId: string): AgentTimeline {
+    let timeline = this.timelines.get(agentId);
+    if (timeline === undefined) {
+      timeline = {
+        agentId, store: undefined, marks: new Map(), stale: new Set(), joins: new Map(), windowGrade: undefined,
+        windowEpoch: undefined, refreshing: false, viewLeases: new Map(), paging: 0, pagedPin: undefined,
+        readerVisitedOld: false, relations: [], forestInput: undefined,
+        cursor: undefined, publishedCursor: undefined, olderCursor: undefined, olderTurn: undefined,
+        appliedGrade: undefined, baselineSerial: undefined, generation: 0, historyRead: undefined,
+        todoRead: undefined, globalCoverage: undefined,
+        view: undefined, published: undefined, listeners: new Set(), steers: [],
+      };
+      this.timelines.set(agentId, timeline);
     }
-    this.dirtyAgents.clear();
+    return timeline;
   }
 
-  private setState(next: SessionViewState, immediate = true): void {
-    if (next === this.state) return;
-    const rosterChanged = next.snapshotSubagents !== this.state.snapshotSubagents;
-    this.state = next;
+  /**
+   * The working view an agent's next publication starts from. Main's leaves
+   * the session fields to the shell; an agent without a view reads as empty.
+   */
+  private viewOf(agentId: string): SessionViewState {
+    return this.timelines.get(agentId)?.view ?? this.emptyAgentState;
+  }
+
+  /** Read generation of an agent's history reads; a read started under an older one is obsolete. */
+  private generationOf(agentId: string): number {
+    return this.timelines.get(agentId)?.generation ?? 0;
+  }
+
+  /** The shell laid over main's working view: the session view before "send now" echoes. */
+  private sessionView(): SessionViewState {
+    const view = this.viewOf(MAIN_AGENT_ID);
+    const composed = this.composedSession;
+    if (composed?.shell === this.shell && composed.view === view) return composed.state;
+    const state = withSessionShell(view, this.shell);
+    this.composedSession = { shell: this.shell, view, state };
+    return state;
+  }
+
+  /**
+   * Replace an agent's working view without publishing it. Main's view also
+   * holds the load state of the session snapshot's content, so writing it
+   * may unblock the automatic roster read.
+   */
+  private writeView(agentId: string, view: SessionViewState): void {
+    this.timeline(agentId).view = view;
+    if (agentId === MAIN_AGENT_ID) this.queueAutomaticRosterRead();
+  }
+
+  /** Write and publish an agent's view; an unchanged view is not published again. */
+  private publishView(agentId: string, view: SessionViewState): void {
+    if (view === this.viewOf(agentId)) return;
+    this.writeView(agentId, view);
+    this.publish(agentId);
+  }
+
+  /**
+   * Publish an agent's working view. Main's goes out at once; another
+   * agent's joins the batch `resync` fills and flushes it, as before.
+   */
+  private publish(agentId: string): void {
+    if (agentId === MAIN_AGENT_ID) {
+      this.publishTimeline(MAIN_AGENT_ID);
+      this.publishContentRevision();
+      return;
+    }
+    this.dirtyAgents.add(agentId);
+    this.publishDirtyAgents();
+  }
+
+  private publishDirtyAgents(): void {
+    for (const agentId of this.dirtyAgents) this.publishTimeline(agentId);
+    this.dirtyAgents.clear();
+    this.publishContentRevision();
+  }
+
+  /**
+   * The one publication routine, the same for every agent: retire settled
+   * "send now" echoes, lay the rest over the view and notify the agent's
+   * subscribers. Main's publication is also the session's: its view gets the
+   * shell laid over it first, and `subscribe` listeners hear it too.
+   */
+  private publishTimeline(agentId: string): void {
+    const timeline = this.timelines.get(agentId);
+    const view = timeline?.view;
+    if (timeline === undefined || view === undefined) return;
+    this.retireSettledSteers(agentId, view);
+    timeline.published = withPendingSteers(agentId === MAIN_AGENT_ID ? this.sessionView() : view, timeline.steers);
+    if (agentId === MAIN_AGENT_ID) for (const listener of this.listeners) listener();
+    for (const listener of timeline.listeners) listener();
+  }
+
+  /**
+   * Replace the shell. A roster change re-arms the roster lease, and any
+   * shell change may unblock the automatic roster read. Publishing the shell
+   * is publishing main, whose published view carries it.
+   */
+  private setShell(next: SessionShell, publish = true): void {
+    if (next === this.shell) return;
+    const rosterChanged = next.snapshotSubagents !== this.shell.snapshotSubagents;
+    this.shell = next;
     if (rosterChanged) {
       this.rosterAgentIds = new Set(next.snapshotSubagents.map(snapshotSubagentAgentId));
       this.scheduleRosterLease();
     }
     this.queueAutomaticRosterRead();
-    if (immediate) this.notifyMain();
+    if (publish) this.publish(MAIN_AGENT_ID);
+  }
+
+  /** Publish the shell one version on, so `getState()` changes for a session-level change no field records (the forest). */
+  private publishShell(): void {
+    this.setShell({ ...this.shell, version: this.shell.version + 1 });
+  }
+
+  /**
+   * Write back a whole session view that a helper spanning both records
+   * computed from `sessionView()` — applying a session snapshot or a session
+   * record: its session fields go to the shell, everything else to main's view.
+   */
+  private setSessionView(next: SessionViewState, publish = true): void {
+    if (next === this.sessionView()) return;
+    const shell = adoptSessionShell(this.shell, next);
+    const rosterChanged = shell.snapshotSubagents !== this.shell.snapshotSubagents;
+    this.shell = shell;
+    this.main.view = { ...next, version: this.viewOf(MAIN_AGENT_ID).version + 1 };
+    if (rosterChanged) {
+      this.rosterAgentIds = new Set(shell.snapshotSubagents.map(snapshotSubagentAgentId));
+      this.scheduleRosterLease();
+    }
+    this.queueAutomaticRosterRead();
+    if (publish) this.publish(MAIN_AGENT_ID);
+  }
+
+  /**
+   * Runs at every publication. Compares, by identity, every input of the
+   * reads `getContentRevision` covers and bumps the revision when any of
+   * them changed since the last publication. Store edits reach this through
+   * each agent's stabilized `contentRefs`; the maps the reads consult directly
+   * count their own writes.
+   */
+  private publishContentRevision(): void {
+    const main = this.main.published!;
+    const inputs: unknown[] = [
+      this.latestSnapshot, this.toolDetails.writes, this.contentBodies.writes,
+      main.contentRefs, main.detailLoads, main.transcriptResetVersion,
+    ];
+    for (const { agentId, published } of this.timelines.values()) {
+      if (agentId === MAIN_AGENT_ID || published === undefined) continue;
+      inputs.push(agentId, published.contentRefs, published.detailLoads);
+    }
+    const previous = this.contentInputs;
+    this.contentInputs = inputs;
+    if (inputs.length === previous.length && inputs.every((input, index) => input === previous[index])) return;
+    this.contentRevision += 1;
+    for (const listener of this.contentListeners) listener();
   }
 
   private clearRosterLeaseTimer(): void {
@@ -457,7 +863,7 @@ export class SessionController {
     this.clearRosterLeaseTimer();
     if (this.closed) return;
     let nearest = Infinity;
-    for (const row of this.state.snapshotSubagents) {
+    for (const row of this.shell.snapshotSubagents) {
       if (row.refreshing !== true) continue;
       const until = Date.parse(row.refreshing_until ?? '');
       nearest = Math.min(nearest, Number.isFinite(until) ? until : 0);
@@ -468,7 +874,7 @@ export class SessionController {
       if (this.closed) return;
       const now = Date.now();
       let changed = false;
-      const next = this.state.snapshotSubagents.map((row) => {
+      const next = this.shell.snapshotSubagents.map((row) => {
         if (row.refreshing !== true || Date.parse(row.refreshing_until ?? '') > now) return row;
         changed = true;
         const terminal = row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled';
@@ -479,9 +885,9 @@ export class SessionController {
         this.scheduleRosterLease();
         return;
       }
-      this.setState({ ...this.state, version: this.state.version + 1, snapshotSubagents: next }, false);
+      this.setShell({ ...this.shell, version: this.shell.version + 1, snapshotSubagents: next }, false);
       this.publishForest();
-      this.notifyMain();
+      this.publish(MAIN_AGENT_ID);
     }, Math.min(2_147_483_647, Math.max(0, nearest - Date.now())));
   }
 
@@ -524,7 +930,7 @@ export class SessionController {
       const agents = [...this.pendingTranscriptAgents];
       this.pendingTranscriptAgents.clear();
       for (const agentId of agents) {
-        const store = this.agentTranscripts.get(agentId);
+        const store = this.timelines.get(agentId)?.store;
         if (store !== undefined) this.publishProjectedAgent(agentId, store);
       }
     }
@@ -537,10 +943,13 @@ export class SessionController {
     try {
       let snapshot = await this.view.snapshot({ signal: controller.signal });
       if (!rosterOnly && !this.closed && !controller.signal.aborted && attachment === this.viewAttachment &&
-        (!this.state.loaded || this.resyncInFlight || (snapshot.epoch === this.state.cursor.epoch && snapshot.as_of_seq >= this.state.cursor.seq))) {
+        (!this.shell.loaded || this.resyncInFlight || (snapshot.epoch === this.shell.cursor.epoch && snapshot.as_of_seq >= this.shell.cursor.seq))) {
         if (this.latestSnapshot?.epoch === snapshot.epoch) snapshot = mergeContentPreview(this.latestSnapshot, snapshot);
         this.latestSnapshot = snapshot;
-        this.state = { ...this.state, contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(snapshot.contentRefs ?? [])] };
+        // The session snapshot's content refs ride on main's view (see
+        // `publishProjectedAgent`); the next publication carries them.
+        const main = this.viewOf(MAIN_AGENT_ID);
+        this.main.view = { ...main, contentRefs: stableContentRefs(main.contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(snapshot.contentRefs ?? [])]) };
       }
       return snapshot;
     } finally {
@@ -560,7 +969,7 @@ export class SessionController {
           this.attachView({ seq: 0 }, true);
         } catch (error) {
           this.finishBootstrapOpening();
-          this.setState({ ...setLoadError(this.state, errorMessage(error, 'Could not load session')), loaded: this.state.loaded });
+          this.setShell({ ...setLoadError(this.shell, errorMessage(error, 'Could not load session')), loaded: this.shell.loaded });
         }
       });
       return;
@@ -570,14 +979,14 @@ export class SessionController {
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || this.isSuspended || generation !== this.openGeneration || attachment !== this.viewAttachment) return;
-      this.setState(this.applyTranscriptShellSnapshot(snapshot));
+      this.setSessionView(this.applyTranscriptShellSnapshot(snapshot));
       this.transcriptGrades = this.requestedTranscriptGrades();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       void this.refreshDurableIngress();
     } catch (error) {
       if (this.closed || this.isSuspended || generation !== this.openGeneration || attachment !== this.viewAttachment) return;
       if (isAbortError(error)) return;
-      this.setState({ ...setLoadError(this.state, errorMessage(error, 'Could not load session')), loaded: this.state.loaded });
+      this.setShell({ ...setLoadError(this.shell, errorMessage(error, 'Could not load session')), loaded: this.shell.loaded });
     }
   }
 
@@ -593,7 +1002,9 @@ export class SessionController {
     const previous = this.viewHandle;
     this.viewHandle = undefined;
     previous?.close();
-    const qualifiedCursors = [...this.transcriptCursors].filter(([agentId]) => this.hasTranscriptBaseline(agentId));
+    const qualifiedCursors = [...this.timelines.values()].flatMap(({ agentId, cursor }) =>
+      cursor !== undefined && this.hasTranscriptBaseline(agentId) ? [[agentId, cursor] as const] : []);
+    this.lowerBaselinesTo(this.transcriptGrades);
     const input = {
       sessionCursor,
       transcriptGrades: this.transcriptGrades,
@@ -604,17 +1015,17 @@ export class SessionController {
     };
     this.viewHandle = bootstrap && this.view.bootstrap !== undefined
       ? this.view.bootstrap(input, onSignal) : this.view.subscribe(input, onSignal);
-    if (bootstrap && this.bootstrapOpening === undefined) this.viewHandle.updateSessionCursor(this.state.cursor);
+    if (bootstrap && this.bootstrapOpening === undefined) this.viewHandle.updateSessionCursor(this.shell.cursor);
   }
 
   nudge(): void {
     this.viewHandle?.nudge();
     if (this.closed || this.isSuspended) return;
-    if (this.state.loadError !== undefined) {
+    if (this.shell.loadError !== undefined) {
       void this.retryOpen();
       return;
     }
-    if (this.state.resyncFailed && this.state.resyncError?.retryable !== false) {
+    if (this.shell.resyncFailed && this.shell.resyncError?.retryable !== false) {
       void this.resync();
     }
   }
@@ -649,10 +1060,12 @@ export class SessionController {
     this.pendingTranscriptBatches.clear();
     this.catchupReplay.clear();
     this.flushFrames();
-    for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
+    for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
+    for (const timeline of this.timelines.values()) timeline.refreshing = false;
     this.olderLoads.cancelAll();
-    if (this.state.loadingOlder || this.state.olderError !== undefined) {
-      this.setState({ ...this.state, loadingOlder: false, olderError: undefined }, false);
+    const main = this.viewOf(MAIN_AGENT_ID);
+    if (main.loadingOlder || main.olderError !== undefined) {
+      this.writeView(MAIN_AGENT_ID, { ...main, loadingOlder: false, olderError: undefined });
     }
     this.viewAttachment += 1;
     this.viewHandle?.close();
@@ -669,10 +1082,10 @@ export class SessionController {
     if (this.closed || !this.isSuspended) return Promise.resolve();
     this.isSuspended = false;
     this.scheduleDurableSteerRead();
-    if (!this.state.loaded) return this.open();
-    if (this.state.resyncFailed) return this.resync();
+    if (!this.shell.loaded) return this.open();
+    if (this.shell.resyncFailed) return this.resync();
     this.transcriptGrades = this.requestedTranscriptGrades();
-    this.attachView(this.state.cursor);
+    this.attachView(this.shell.cursor);
     void this.pumpContentReads();
     return this.refreshShell();
   }
@@ -682,36 +1095,45 @@ export class SessionController {
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
-      if (this.state.cursor.epoch !== undefined && snapshot.epoch !== this.state.cursor.epoch) {
+      if (this.shell.cursor.epoch !== undefined && snapshot.epoch !== this.shell.cursor.epoch) {
         void this.resync();
         return;
       }
-      this.setState(this.applyTranscriptShellSnapshot(snapshot), false);
+      this.setSessionView(this.applyTranscriptShellSnapshot(snapshot), false);
       this.publishForest();
-      this.notifyMain();
+      this.publish(MAIN_AGENT_ID);
     } catch (error) {
       if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
       if (isAbortError(error)) return;
       const message = errorMessage(error, 'Could not load session');
-      this.setState({ ...setLoadError(this.state, message), loaded: this.state.loaded });
+      this.setShell({ ...setLoadError(this.shell, message), loaded: this.shell.loaded });
     }
   }
 
   /**
-   * Rough resident size of the retained view (canonical stores plus loaded
-   * older pages), used by the view cache to bound what it keeps.
+   * Rough resident size of the retained view (every agent's window), used by
+   * the view cache to bound what it keeps.
    */
   residentBytes(): number {
     let bytes = 0;
-    for (const store of this.agentTranscripts.values()) bytes += store.residentReport().estimatedBytes;
-    for (const older of this.olderPages.values()) bytes += estimateJsonBytes(older);
+    for (const { store } of this.storeTimelines) bytes += store.residentReport().estimatedBytes;
+    return bytes;
+  }
+
+  private bytesOf(value: unknown): number {
+    if (value === null || typeof value !== 'object') return estimateJsonBytes(value);
+    let bytes = this.measuredBytes.get(value);
+    if (bytes === undefined) {
+      bytes = estimateJsonBytes(value);
+      this.measuredBytes.set(value, bytes);
+    }
     return bytes;
   }
 
   async retryOpen(): Promise<void> {
     if (this.closed) return;
-    this.setState(setLoadError(this.state, undefined));
-    if (this.state.loaded && this.viewHandle !== undefined) await this.refreshShell();
+    this.setShell(setLoadError(this.shell, undefined));
+    if (this.shell.loaded && this.viewHandle !== undefined) await this.refreshShell();
     else await this.open();
   }
 
@@ -732,20 +1154,21 @@ export class SessionController {
     this.clearHiddenFrameTimer();
     this.pendingTranscriptBatches.clear();
     this.pendingTranscriptAgents.clear();
-    this.composedSnapshots.clear();
-    for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
-    this.historyGeneration.clear();
-    this.historyPreviewReads.clear();
-    this.historyPreviewReaders.clear();
-    this.historyPreviewPages.clear();
+    for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
+    for (const timeline of this.timelines.values()) {
+      timeline.generation = 0;
+      timeline.viewLeases.clear();
+      timeline.refreshing = false;
+    }
     this.contentReaders.clear();
     this.contentBodies.clear();
     this.toolDetails.clear();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.olderLoads.cancelAll();
     this.queuedTimingWrites.clear();
-    if (this.state.loadingOlder || this.state.olderError !== undefined) {
-      this.state = { ...this.state, loadingOlder: false, olderError: undefined };
+    const main = this.viewOf(MAIN_AGENT_ID);
+    if (main.loadingOlder || main.olderError !== undefined) {
+      this.main.view = { ...main, loadingOlder: false, olderError: undefined };
     }
     this.viewAttachment += 1;
     this.viewHandle?.close();
@@ -766,7 +1189,7 @@ export class SessionController {
     const pendingMain = this.pendingTranscriptBatches.get(MAIN_AGENT_ID);
     const hold: RewriteHold = {
       token,
-      mainEpoch: (pendingMain?.cursor ?? this.transcriptCursors.get(MAIN_AGENT_ID))?.epoch,
+      mainEpoch: (pendingMain?.cursor ?? this.timelines.get(MAIN_AGENT_ID)?.cursor)?.epoch,
       generation: Number.isInteger(generation) ? generation : undefined,
       subscribeToken: undefined,
       deferredBatches: [],
@@ -829,15 +1252,18 @@ export class SessionController {
         if (!this.completesRewriteHold(hold, event.cursor)) return;
         this.clearRewriteHold(hold.token);
       }
-      const appliedCursor = this.transcriptCursors.get(event.agent_id);
-      const appliedGrade = this.appliedTranscriptGrades.get(event.agent_id);
+      const appliedCursor = this.timelines.get(event.agent_id)?.cursor;
+      const appliedGrade = this.timelines.get(event.agent_id)?.appliedGrade;
       const pending = this.pendingTranscriptBatches.get(event.agent_id);
       const seenThrough = Math.max(appliedCursor?.seq ?? -1, pending?.throughSeq ?? -1);
       if (hold === undefined && !this.catchupByAgent.has(event.agent_id) &&
           appliedCursor?.epoch !== undefined && event.cursor.epoch === appliedCursor.epoch &&
           (event.cursor.seq < seenThrough ||
             (event.cursor.seq === seenThrough && appliedGrade !== undefined &&
-              GRADE_RANK[event.grade] <= GRADE_RANK[appliedGrade]))) return;
+              GRADE_RANK[event.grade] <= GRADE_RANK[appliedGrade]))) {
+        this.settleRefresh(event.agent_id);
+        return;
+      }
       this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor, event.grade, event.read);
       return;
     }
@@ -860,30 +1286,38 @@ export class SessionController {
    * Transcript ops use a per-agent seq and must not overwrite this.
    */
   private advanceSessionCursor(cursor: SessionCursor): void {
-    const current = this.state.cursor;
+    const current = this.shell.cursor;
     if (cursor.seq < current.seq) return;
     if (cursor.seq === current.seq && cursor.epoch === current.epoch) return;
-    const session = this.state.session !== undefined && cursor.seq > this.state.session.last_seq
-      ? { ...this.state.session, last_seq: cursor.seq }
-      : this.state.session;
-    this.setState({
-      ...this.state,
-      version: this.state.version + 1,
+    const session = this.shell.session !== undefined && cursor.seq > this.shell.session.last_seq
+      ? { ...this.shell.session, last_seq: cursor.seq }
+      : this.shell.session;
+    this.setShell({
+      ...this.shell,
+      version: this.shell.version + 1,
       session,
       cursor: { seq: cursor.seq, epoch: cursor.epoch },
     });
     this.viewHandle?.updateSessionCursor(cursor);
   }
 
+  /**
+   * Move the focus lease: a `delta` lease on the agent whose timeline is in
+   * front, released from the agent that had it. It is one lease like any
+   * other, so it lowers no other agent: main keeps the session's `turn` lease
+   * while another agent has focus. A controller starts focused on main;
+   * `undefined` releases the focus lease without taking another.
+   */
   setFocusedAgent(agentId: string | undefined): void {
-    if (this.closed) return;
+    if (this.closed || agentId === this.focusedAgentId) return;
     this.focusedAgentId = agentId;
     this.refreshTranscriptGrades();
   }
 
   /**
-   * Retain a view-instance demand; reusing its ID replaces that demand, not another view's.
-   * Grades merge above the legacy focus/summary baseline; off adds no demand.
+   * Retain a view-instance demand; reusing its ID replaces that demand, not
+   * another view's. An agent's requested grade is the highest of the leases on
+   * it (see `transcriptGradesForLeases`); an `off` lease adds no demand.
    */
   retainAgentView(viewId: string, agentId: string, grade: TranscriptGrade): void {
     if (this.closed) return;
@@ -909,39 +1343,62 @@ export class SessionController {
     this.refreshTranscriptGrades();
   }
 
+  /** The grades the leases ask for: the focus lease and every view lease, nothing else. */
   private requestedTranscriptGrades(): TranscriptGradeSpec {
-    const grades = { ...transcriptGradesForFocus(this.focusedAgentId) };
-    for (const agentId of this.agentListeners.keys()) {
-      if (!Object.hasOwn(grades, agentId)) grades[agentId] = 'turn';
+    const focus = this.focusedAgentId;
+    return transcriptGradesForLeases(focus === undefined
+      ? this.agentViews.values()
+      : [{ agentId: focus, grade: 'delta' }, ...this.agentViews.values()]);
+  }
+
+  /**
+   * Once the server is sent a grade below an agent's baseline, it filters that
+   * agent's ops at the lower grade, so from then on the baseline — and the
+   * cursor those ops advance — is only as good as the lower grade. Record it,
+   * or a later raise would treat the old baseline as current: the raised
+   * reset at the same cursor would be dropped as a duplicate, a reconnect
+   * would resume the higher grade from a cursor earned below it, and turn
+   * heads that arrived without their steps would be kept as loaded history.
+   * `off` lowers nothing: nothing arrives at `off`, so the baseline and its
+   * cursor stay what they were.
+   */
+  private lowerBaselinesTo(grades: TranscriptGradeSpec): void {
+    for (const timeline of this.timelines.values()) {
+      const applied = timeline.appliedGrade;
+      const grade = gradeFor(grades, timeline.agentId);
+      if (applied !== undefined && grade !== 'off' && GRADE_RANK[grade] < GRADE_RANK[applied]) timeline.appliedGrade = grade;
     }
-    for (const { agentId, grade } of this.agentViews.values()) {
-      if (grade === 'off' && !Object.hasOwn(grades, agentId)) grades[agentId] = 'off';
-    }
-    for (const { agentId, grade } of this.agentViews.values()) {
-      if (grade === 'off') continue;
-      const current = gradeFor(grades, agentId);
-      grades[agentId] = GRADE_RANK[grade] > GRADE_RANK[current] ? grade : current;
-    }
-    return grades;
   }
 
   private scheduledTranscriptGrades: { handle: SessionViewSubscription; previous: TranscriptGradeSpec } | undefined;
 
+  /**
+   * Recompute the requested grades after a lease changed. The server hears at
+   * most one grade change per microtask, and none when the leases taken and
+   * released within it leave the grades where they were (each change
+   * re-attaches the whole view).
+   */
   private refreshTranscriptGrades(): void {
     if (this.closed) return;
     const nextGrades = this.requestedTranscriptGrades();
     const previous = this.transcriptGrades;
     if (Object.keys(previous).length === Object.keys(nextGrades).length &&
         Object.entries(nextGrades).every(([id, grade]) => previous[id] === grade)) return;
-    for (const id of this.agentTranscripts.keys()) {
+    for (const { agentId: id } of this.storeTimelines) {
       if (gradeFor(this.transcriptGrades, id) !== gradeFor(nextGrades, id)) {
         this.bumpHistoryGeneration(id);
         this.catchupReplay.delete(id);
       }
     }
     this.transcriptGrades = nextGrades;
-    for (const [agentId, store] of this.agentTranscripts) {
-      if (gradeFor(previous, agentId) !== gradeFor(nextGrades, agentId)) this.publishProjectedAgent(agentId, store);
+    for (const timeline of this.storeTimelines) {
+      const before = GRADE_RANK[gradeFor(previous, timeline.agentId)];
+      const after = GRADE_RANK[gradeFor(nextGrades, timeline.agentId)];
+      if (before === after) continue;
+      // A raise re-seeds the agent: until its baseline (or the attachment's
+      // `ready`) lands, the window shows what it holds.
+      timeline.refreshing = after > before && after > GRADE_RANK.off && timeline.appliedGrade !== undefined;
+      this.publishProjectedAgent(timeline.agentId, timeline.store);
     }
     const handle = this.viewHandle;
     if (handle === undefined || this.scheduledTranscriptGrades?.handle === handle) return;
@@ -953,13 +1410,39 @@ export class SessionController {
       if (this.closed || this.isSuspended || this.viewHandle !== handle) return;
       if (Object.keys(scheduled.previous).length === Object.keys(this.transcriptGrades).length &&
         Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) return;
+      this.lowerBaselinesTo(this.transcriptGrades);
       handle.setTranscriptGrades(this.transcriptGrades);
     });
   }
 
+  /** The raised baseline an agent was waiting for has landed (or will not come): stop showing it as refreshing. */
+  private settleRefresh(agentId: string): void {
+    const timeline = this.timelines.get(agentId);
+    if (timeline === undefined || !timeline.refreshing) return;
+    timeline.refreshing = false;
+    const view = timeline.view;
+    if (view !== undefined && view.refreshing === true) this.publishView(agentId, { ...view, version: view.version + 1, refreshing: false });
+    if (this.contentReaders.size > 0) void this.pumpContentReads();
+  }
+
   private hasTranscriptBaseline(agentId: string): boolean {
-    const applied = this.appliedTranscriptGrades.get(agentId);
+    const applied = this.timelines.get(agentId)?.appliedGrade;
     return applied !== undefined && GRADE_RANK[applied] >= GRADE_RANK[gradeFor(this.transcriptGrades, agentId)];
+  }
+
+  /**
+   * Whether the agent's timeline can be shown (`transcriptReady`): it has a
+   * baseline at the requested grade, or it is waiting for a raised one over a
+   * window built at that grade before the grade was lowered. The window then
+   * shows what it holds, the turns updated while lowered marked stale, and
+   * `refreshing` says the baseline is on its way. A window that was never
+   * built at the requested grade (turn headers only) is not shown as loaded.
+   */
+  private transcriptPresentable(agentId: string): boolean {
+    if (this.hasTranscriptBaseline(agentId)) return true;
+    const timeline = this.timelines.get(agentId);
+    return timeline?.appliedGrade !== undefined && timeline.windowGrade !== undefined &&
+      GRADE_RANK[timeline.windowGrade] >= GRADE_RANK[gradeFor(this.transcriptGrades, agentId)];
   }
 
   handleSignal(signal: SessionViewSignal): void {
@@ -977,14 +1460,14 @@ export class SessionController {
           return;
         }
         this.latestSnapshot = snapshot;
-        this.setState(this.applyTranscriptShellSnapshot(snapshot), false);
-        this.viewHandle?.updateSessionCursor(this.state.cursor);
+        this.setSessionView(this.applyTranscriptShellSnapshot(snapshot), false);
+        this.viewHandle?.updateSessionCursor(this.shell.cursor);
         this.finishBootstrapOpening();
-        const main = this.agentTranscripts.get(MAIN_AGENT_ID);
+        const main = this.timelines.get(MAIN_AGENT_ID)?.store;
         if (main !== undefined && this.hasTranscriptBaseline(MAIN_AGENT_ID)) this.publishProjectedAgent(MAIN_AGENT_ID, main);
         this.retireRequestedRosterAgents();
         this.publishForest();
-        this.notifyMain();
+        this.publish(MAIN_AGENT_ID);
         const queued = this.rosterRefreshQueuedCursor;
         this.rosterRefreshQueuedCursor = undefined;
         if (queued !== undefined && this.requestedRosterAgents.size > 0) void this.refreshRoster(queued);
@@ -992,21 +1475,23 @@ export class SessionController {
         return;
       }
       case 'ready':
+        // The attachment is seeded: whatever a raise was waiting for has come.
+        for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
         if (this.resyncInFlight) return;
-        if (this.state.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.state.cursor.epoch) {
+        if (this.shell.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.shell.cursor.epoch) {
           this.handleSubscribeRejected(signal.generation);
           return;
         }
         this.advanceSessionCursor(signal.currentSessionCursor);
         if (signal.reconnected) {
           this.handleReconnectAck();
-          if (this.state.snapshotSubagents.length > 0) void this.refreshRoster(signal.currentSessionCursor);
+          if (this.shell.snapshotSubagents.length > 0) void this.refreshRoster(signal.currentSessionCursor);
         }
         return;
       case 'sessionCursorAdvanced':
         this.advanceSessionCursor(signal.cursor);
-        if (signal.title !== undefined && this.state.session !== undefined) {
-          this.setState(setSessionRecord(this.state, { ...this.state.session, title: signal.title }));
+        if (signal.title !== undefined && this.shell.session !== undefined) {
+          this.setSessionView(setSessionRecord(this.sessionView(), { ...this.shell.session, title: signal.title }));
         }
         // A roster row this view already holds is re-read for the waking /
         // disposal flags the server stamps on it. An agent it has no row for
@@ -1020,19 +1505,19 @@ export class SessionController {
         return;
       case 'historyRewritten':
         this.advanceSessionCursor(signal.cursor);
-        if (this.state.resyncError?.retryable !== false) void this.resync({ rewrite: true });
+        if (this.shell.resyncError?.retryable !== false) void this.resync({ rewrite: true });
         return;
       case 'transcript':
         this.handleTranscript(signal.event, signal.generation);
         return;
       case 'protocolError': {
-        if (this.state.resyncError?.retryable === false) return;
+        if (this.shell.resyncError?.retryable === false) return;
         if (this.bootstrapOpening !== undefined) {
           this.finishBootstrapOpening();
-          this.setState(setLoadError(this.state, signal.detail), false);
+          this.setShell(setLoadError(this.shell, signal.detail), false);
         }
-        this.setState({
-          ...setResyncFailed(setResyncing(this.state, false), true, this.state.resyncAttempt + 1),
+        this.setShell({
+          ...setResyncFailed(setResyncing(this.shell, false), true, this.shell.resyncAttempt + 1),
           resyncError: { message: signal.detail, code: API_CODES.INVALID_RESPONSE, retryable: signal.recoverable },
         });
         if (signal.recoverable) void this.resync();
@@ -1048,7 +1533,7 @@ export class SessionController {
         return;
       }
       case 'resyncRequired':
-        if (this.state.resyncError?.retryable === false) return;
+        if (this.shell.resyncError?.retryable === false) return;
         if (this.rewriteHold !== undefined) this.handleSubscribeRejected(signal.generation);
         else void this.resync({ rewrite: signal.reason === 'history_rewritten' });
         return;
@@ -1056,13 +1541,13 @@ export class SessionController {
   }
 
   private queueAutomaticRosterRead(): void {
-    if (this.closed || this.isSuspended || !this.state.loaded || this.state.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
+    if (this.closed || this.isSuspended || !this.shell.loaded || this.shell.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
     const ref = this.latestSnapshot?.contentRefs?.find((entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents');
-    if (ref === undefined || this.view.transcript.content === undefined || this.state.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
+    if (ref === undefined || this.view.transcript.content === undefined || this.viewOf(MAIN_AGENT_ID).detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
     this.rosterReadQueued = true;
     queueMicrotask(() => {
       this.rosterReadQueued = false;
-      if (this.closed || this.isSuspended || this.state.resyncing || this.olderLoads.hasActive()) return;
+      if (this.closed || this.isSuspended || this.shell.resyncing || this.olderLoads.hasActive()) return;
       this.rosterReadInFlight = true;
       void this.loadContentSegment(MAIN_AGENT_ID, ref).then((advanced) => {
         this.rosterReadInFlight = false;
@@ -1075,19 +1560,24 @@ export class SessionController {
     const incoming = snapshot.subagents ?? [];
     const rows = new Map(incoming.map((row) => [snapshotSubagentAgentId(row), row]));
     const partial = snapshot.contentRefs?.some((ref) => ref.path[0] === 'subagents' && ref.kind === 'array') === true;
-    const stable = this.state.snapshotSubagents.flatMap((old) => {
+    const stable = this.shell.snapshotSubagents.flatMap((old) => {
       const id = snapshotSubagentAgentId(old);
       const next = rows.get(id);
       rows.delete(id);
       return next === undefined ? partial ? [old] : [] : [next];
     });
     const merged = [...stable, ...rows.values()];
-    if (merged.length > this.state.snapshotSubagents.length) this.rosterRevisionRefreshes = 0;
+    if (merged.length > this.shell.snapshotSubagents.length) this.rosterRevisionRefreshes = 0;
     return merged;
   }
 
+  /**
+   * The session view with a session snapshot applied, for `setSessionView`:
+   * the snapshot describes the session (record, cursor, roster) and main's
+   * runtime state (in-flight turn, binding), so it spans both records.
+   */
   private applyTranscriptShellSnapshot(snapshot: SessionSnapshotResponse): SessionViewState {
-    return { ...applyTranscriptShell(this.sessionId, snapshot, this.state), snapshotSubagents: this.mergeRosterRows(snapshot) };
+    return { ...applyTranscriptShell(this.sessionId, snapshot, this.sessionView()), snapshotSubagents: this.mergeRosterRows(snapshot) };
   }
 
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
@@ -1102,13 +1592,13 @@ export class SessionController {
     this.rosterRefreshInFlight = true;
     const attachment = this.viewAttachment;
     const generation = this.connectionGeneration;
-    const bindings = new Map([...this.agentTranscripts].map(([id, store]) => [id, store.getMeta().agent]));
+    const bindings = new Map([...this.storeTimelines].map(({ agentId, store }) => [agentId, store.getMeta().agent]));
     try {
       const snapshot = await this.readSnapshot(true);
       const queued = this.rosterRefreshQueuedCursor;
       if (
         this.closed || this.isSuspended || this.resyncInFlight || attachment !== this.viewAttachment ||
-        generation !== this.connectionGeneration || snapshot.epoch !== cursor.epoch || snapshot.epoch !== this.state.cursor.epoch ||
+        generation !== this.connectionGeneration || snapshot.epoch !== cursor.epoch || snapshot.epoch !== this.shell.cursor.epoch ||
         snapshot.as_of_seq < cursor.seq || (queued !== undefined && queued.epoch === cursor.epoch && snapshot.as_of_seq < queued.seq) ||
         snapshot.subagents === undefined
       ) return;
@@ -1121,23 +1611,22 @@ export class SessionController {
           contentRefs: [...(previous.contentRefs ?? []).filter((ref) => ref.path[0] !== 'subagents'),
             ...(roster.contentRefs ?? []).filter((ref) => ref.path[0] === 'subagents')],
         }) : roster;
-      this.setState({
-        ...this.state,
-        version: this.state.version + 1,
+      this.setSessionView({
+        ...this.sessionView(),
         snapshotSubagents: this.mergeRosterRows(roster),
         agentCounts: snapshot.agent_counts,
-        contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(this.latestSnapshot.contentRefs ?? [])],
+        contentRefs: stableContentRefs(this.viewOf(MAIN_AGENT_ID).contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(this.latestSnapshot.contentRefs ?? [])]),
       }, false);
       for (const row of roster.subagents ?? []) {
         const id = snapshotSubagentAgentId(row);
-        const binding = this.agentTranscripts.get(id)?.getMeta().agent;
+        const binding = this.timelines.get(id)?.store?.getMeta().agent;
         if (gradeFor(this.transcriptGrades, id) === 'off' && binding !== undefined && binding === bindings.get(id)) {
           this.rosterTranscriptBindings.set(id, binding);
         }
       }
       this.retireRequestedRosterAgents();
       this.publishForest();
-      this.notifyMain();
+      this.publish(MAIN_AGENT_ID);
     } catch {
       // Best-effort: task ops and reconnect snapshots still recover the row.
     } finally {
@@ -1186,11 +1675,11 @@ export class SessionController {
       this.requestedRosterAgents.set(agentId, attempts + 1);
       wanted = true;
     }
-    if (wanted) void this.refreshRoster(cursor ?? this.state.cursor);
+    if (wanted) void this.refreshRoster(cursor ?? this.shell.cursor);
   }
 
   handleSubscribeRejected(generation?: number): void {
-    if (this.closed || this.state.resyncError?.retryable === false) return;
+    if (this.closed || this.shell.resyncError?.retryable === false) return;
     const hold = this.rewriteHold;
     if (hold === undefined) {
       void this.resync();
@@ -1205,19 +1694,31 @@ export class SessionController {
    * Remember the drop; the next post-reconnect subscribe ack resyncs. */
   private droppedWithLiveWork = false;
 
+  /**
+   * Any agent this view receives counts, not only main: a drop while only a
+   * subagent streams leaves the same holes. An agent at `off` receives
+   * nothing, and its view may still say "running" from before it was
+   * lowered, so it does not count.
+   */
   handleWsDrop(): void {
     if (this.closed) return;
-    const streaming = this.state.blocks.some(
-      (block) => (block.kind === 'assistant' || block.kind === 'thinking') && block.streaming,
-    );
-    if (this.state.busy || streaming) this.droppedWithLiveWork = true;
+    for (const { agentId, view } of this.timelines.values()) {
+      if (view === undefined || gradeFor(this.transcriptGrades, agentId) === 'off') continue;
+      const streaming = view.blocks.some(
+        (block) => (block.kind === 'assistant' || block.kind === 'thinking') && block.streaming,
+      );
+      if (view.busy || streaming) {
+        this.droppedWithLiveWork = true;
+        return;
+      }
+    }
   }
 
   handleReconnectAck(): void {
-    if (this.closed || !this.droppedWithLiveWork || this.state.resyncError?.retryable === false) return;
+    if (this.closed || !this.droppedWithLiveWork || this.shell.resyncError?.retryable === false) return;
     this.droppedWithLiveWork = false;
     void this.refreshDurableIngress();
-    const agents = [...this.agentTranscripts.keys()];
+    const agents = [...this.storeTimelines].map(({ agentId }) => agentId);
     if (agents.length === 0) {
       void this.resync();
       return;
@@ -1239,7 +1740,7 @@ export class SessionController {
   private waitForResyncIdle(signal?: AbortSignal): Promise<'ready' | 'failed' | 'cancelled'> {
     const status = (): 'ready' | 'failed' | 'cancelled' => this.closed || this.isSuspended || signal?.aborted
       ? 'cancelled'
-      : this.state.resyncFailed ? 'failed' : 'ready';
+      : this.shell.resyncFailed ? 'failed' : 'ready';
     if (signal?.aborted || this.closed || this.isSuspended || !this.resyncInFlight) return Promise.resolve(status());
     return new Promise((resolve) => {
       let settled = false;
@@ -1271,35 +1772,43 @@ export class SessionController {
     }
     this.resyncInFlight = true;
     this.resyncGeneration += 1;
-    for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
+    for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
     if (rewrite) this.rewriteResyncQueued = false;
     this.clearResyncTimer();
-    this.setState(setResyncing(this.state, true));
+    this.setShell(setResyncing(this.shell, true));
     const attachment = this.viewAttachment;
-    const baselineAtStart = new Map(this.transcriptBaselineSerial);
-    const cursorsAtStart = rewrite ? new Map(this.transcriptCursors) : undefined;
+    const baselineAtStart = new Map([...this.timelines.values()].map(({ agentId, baselineSerial }) => [agentId, baselineSerial]));
+    const cursorsAtStart = rewrite ? new Map([...this.timelines.values()].map(({ agentId, cursor }) => [agentId, cursor])) : undefined;
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || attachment !== this.viewAttachment) return;
-      for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
+      for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
       this.catchupReplay.clear();
-      const retainedReady = new Set([...this.agentTranscripts.keys()].filter((agentId) => {
-        const epoch = this.transcriptCursors.get(agentId)?.epoch;
-        return this.transcriptBaselineSerial.get(agentId) !== baselineAtStart.get(agentId) && this.hasTranscriptBaseline(agentId) &&
+      const retainedReady = new Set([...this.storeTimelines].map(({ agentId }) => agentId).filter((agentId) => {
+        const epoch = this.timelines.get(agentId)?.cursor?.epoch;
+        return this.timelines.get(agentId)?.baselineSerial !== baselineAtStart.get(agentId) && this.hasTranscriptBaseline(agentId) &&
           (!rewrite || epoch !== undefined && epoch !== cursorsAtStart?.get(agentId)?.epoch);
       }));
       for (const agentId of this.pendingTranscriptBatches.keys()) if (!retainedReady.has(agentId)) this.pendingTranscriptBatches.delete(agentId);
       for (const agentId of this.pendingTranscriptAgents) if (!retainedReady.has(agentId)) this.pendingTranscriptAgents.delete(agentId);
-      for (const [agentId, state] of this.agentStates) {
+      // Other agents' readiness is published as one batch after main's, which
+      // goes out with the shell below. Each agent's older-history load state
+      // is cleared as main's is: the resync cancelled those reads.
+      for (const timeline of this.timelines.values()) {
+        const { agentId, view } = timeline;
+        if (agentId === MAIN_AGENT_ID || view === undefined) continue;
         const transcriptReady = retainedReady.has(agentId);
-        if (state.transcriptReady === transcriptReady) continue;
-        this.agentStates.set(agentId, { ...state, version: state.version + 1, transcriptReady });
+        if (view.transcriptReady === transcriptReady && !view.loadingOlder && view.olderError === undefined) continue;
+        timeline.view = { ...view, version: view.version + 1, transcriptReady, loadingOlder: false, olderError: undefined };
         this.dirtyAgents.add(agentId);
       }
       const transcriptReady = retainedReady.has(MAIN_AGENT_ID);
-      for (const agentId of this.transcriptCursors.keys()) if (!retainedReady.has(agentId)) this.transcriptCursors.delete(agentId);
-      for (const agentId of this.appliedTranscriptGrades.keys()) if (!retainedReady.has(agentId)) this.appliedTranscriptGrades.delete(agentId);
-      this.setState(
+      for (const timeline of this.timelines.values()) {
+        if (retainedReady.has(timeline.agentId)) continue;
+        timeline.cursor = undefined;
+        timeline.appliedGrade = undefined;
+      }
+      this.setSessionView(
         setResyncing(
           {
             ...this.applyTranscriptShellSnapshot(snapshot),
@@ -1310,19 +1819,19 @@ export class SessionController {
           false,
         ),
       );
-      this.publishAgents();
+      this.publishDirtyAgents();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       if (rewriteHoldToken !== undefined) this.armRewriteSubscription(rewriteHoldToken);
     } catch (error) {
       if (rewriteHoldToken !== undefined) this.clearRewriteHold(rewriteHoldToken);
-      if (!this.closed && !this.isSuspended && (attachment === this.viewAttachment || this.state.resyncError?.retryable !== false)) {
-        const attempt = this.state.resyncAttempt + 1;
+      if (!this.closed && !this.isSuspended && (attachment === this.viewAttachment || this.shell.resyncError?.retryable !== false)) {
+        const attempt = this.shell.resyncAttempt + 1;
         const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
         const retryable = code === undefined || code === -1 || code === API_CODES.TIMEOUT ||
           code === API_CODES.SESSION_INDEX_BUILDING || code === 408 || code === 429 ||
           (code >= 500 && code < 600) || code >= 50000;
-        this.setState({
-          ...setResyncFailed(setResyncing(this.state, false), true, attempt),
+        this.setShell({
+          ...setResyncFailed(setResyncing(this.shell, false), true, attempt),
           resyncError: {
             message: errorMessage(error, 'Could not restore session'),
             code,
@@ -1358,7 +1867,7 @@ export class SessionController {
 
   private scheduleResyncRetry(): void {
     if (this.closed || this.isSuspended || this.resyncTimer !== null) return;
-    const step = Math.min(this.state.resyncAttempt, RESYNC_BACKOFF_MS.length) - 1;
+    const step = Math.min(this.shell.resyncAttempt, RESYNC_BACKOFF_MS.length) - 1;
     const delay = RESYNC_BACKOFF_MS[Math.max(0, step)] ?? 4000;
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null;
@@ -1383,20 +1892,20 @@ export class SessionController {
   private usesDurableSubmission(): boolean {
     if (this.persistenceHint === 'temporary' || this.persistenceHint === 'unknown') return false;
     if (this.persistenceHint === 'saved') return true;
-    return this.ephemeralHint !== true && this.state.session?.ephemeral !== true;
+    return this.ephemeralHint !== true && this.shell.session?.ephemeral !== true;
   }
 
   private hasKnownSavedSession(): boolean {
     if (this.persistenceHint !== undefined) return this.persistenceHint === 'saved';
-    return this.ephemeralHint === false || this.state.session?.ephemeral === false;
+    return this.ephemeralHint === false || this.shell.session?.ephemeral === false;
   }
 
   handleSessionRecord = (record: Session): void => {
     if (record.id !== this.sessionId || this.closed) return;
-    const current = this.state.session;
+    const current = this.shell.session;
     if (current === undefined || record.updated_at >= current.updated_at) {
       if (record.ephemeral !== undefined) this.setEphemeralHint(record.ephemeral);
-      this.setState(setSessionRecord(this.state, record));
+      this.setSessionView(setSessionRecord(this.sessionView(), record));
     }
   };
 
@@ -1415,7 +1924,7 @@ export class SessionController {
       if (phase !== pending.phase) this.setPendingSteer(agentId, { ...pending, phase });
       if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id);
     }
-    const previous = this.state.durableIngress ?? [];
+    const previous = this.shell.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
       const next = records[index];
       return next !== undefined && item.prompt_id === next.prompt_id && item.status === next.status &&
@@ -1428,7 +1937,7 @@ export class SessionController {
         item.restore_progress?.elapsed_ms === next.restore_progress?.elapsed_ms &&
         item.restore_progress?.queue_position === next.restore_progress?.queue_position;
     })) return;
-    this.setState({ ...this.state, version: this.state.version + 1, durableIngress: [...records] });
+    this.setShell({ ...this.shell, version: this.shell.version + 1, durableIngress: [...records] });
   }
 
   private observeDurableSteer(agentId: string, promptId: string): void {
@@ -1518,7 +2027,7 @@ export class SessionController {
   }
 
   getDurableIngress(): readonly PromptItem[] {
-    return this.state.durableIngress ?? [];
+    return this.shell.durableIngress ?? [];
   }
 
   async resumeDurableIngress(promptId: string, body: PromptSubmission, agentId = MAIN_AGENT_ID): Promise<PromptItem> {
@@ -1539,9 +2048,10 @@ export class SessionController {
       ]);
     }
     if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return result;
-    if (!this.state.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
+    const main = this.viewOf(MAIN_AGENT_ID);
+    if (!main.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
       const projection = projectMessageContent(result.content);
-      this.setState(appendLocalUserMessage(this.state, {
+      this.publishView(MAIN_AGENT_ID, appendLocalUserMessage(main, {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
         text: projection.text,
@@ -1585,174 +2095,74 @@ export class SessionController {
     return () => { lease.release(); };
   }
 
-  historyPreviewPending(agentId: string, turnId: string): boolean {
-    return this.historyPreviewPages.get(`${agentId}/${turnId}`)?.unloaded === true;
+  /**
+   * Older pages are no longer trimmed to preview headers: a held turn is
+   * either whole or carries its gap in the published `turnGaps`. Kept for
+   * readers written against the preview cache; nothing is ever pending.
+   */
+  historyPreviewPending(_agentId: string, _turnId: string): boolean {
+    return false;
   }
 
+  /**
+   * A mounted timeline row of this turn. The window keeps every turn from the
+   * oldest one a row is mounted for, and while rows are mounted the reader
+   * follows the tail only if one of them belongs to the newest turn (see
+   * `trimWindow`). Release when the row unmounts or the timeline hides.
+   */
   retainHistoryPreview(agentId: string, turnId: string): () => void {
-    const key = `${agentId}/${turnId}`;
-    this.historyPreviewReaders.set(key, (this.historyPreviewReaders.get(key) ?? 0) + 1);
-    void this.loadHistoryPreview(agentId, turnId);
+    const timeline = this.timeline(agentId);
+    const leases = timeline.viewLeases;
+    leases.set(turnId, (leases.get(turnId) ?? 0) + 1);
+    if (timeline.pagedPin !== undefined && !timeline.readerVisitedOld) {
+      const ordinal = timeline.store?.getTurn(turnId)?.ordinal;
+      if (ordinal !== undefined && ordinal < timeline.pagedPin) timeline.readerVisitedOld = true;
+    }
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const remaining = (this.historyPreviewReaders.get(key) ?? 1) - 1;
-      if (remaining > 0) this.historyPreviewReaders.set(key, remaining);
-      else this.historyPreviewReaders.delete(key);
-      const page = this.historyPreviewPages.get(key);
-      if (page !== undefined) {
-        const requestKey = JSON.stringify([agentId, page.beforeItem, page.beforeTurn]);
-        const retained = [...this.historyPreviewPages].some(([candidateKey, candidate]) => candidate.agentId === agentId &&
-          candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn && this.historyPreviewReaders.has(candidateKey));
-        if (!retained) this.historyPreviewReads.get(requestKey)?.controller.abort();
-      }
-      if (this.trimHistoryPreviews(agentId)) this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId));
+      const remaining = (leases.get(turnId) ?? 1) - 1;
+      if (remaining > 0) leases.set(turnId, remaining);
+      else leases.delete(turnId);
     };
   }
 
-  private trimHistoryPreviews(agentId: string): boolean {
-    const older = this.olderPages.get(agentId);
-    if (older === undefined) return false;
-    let bytes = estimateJsonBytes(older);
-    if (bytes <= this.historyPreviewBytes) return false;
-    let changed = false;
-    const liveIds = new Set(this.ensureAgentTranscript(agentId).snapshot().items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []));
-    const items = older.items.map((item) => {
-      if (bytes <= this.historyPreviewBytes || item.kind !== 'turn' || liveIds.has(item.turnId)) return item;
-      const key = `${agentId}/${item.turnId}`;
-      const page = this.historyPreviewPages.get(key);
-      const reading = [...this.contentReaders.values()].some((reader) => reader.agentId === agentId &&
-        (reader.source.kind === 'turn' && reader.source.id === item.turnId || reader.source.kind === 'frame' && reader.source.turnId === item.turnId));
-      if (page === undefined || page.unloaded || this.historyPreviewReaders.has(key) || reading ||
-          item.contentRefs?.some((ref) => ref.path[0] === 'steps' && (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'))) return item;
-      const header = { ...item, prompt: item.prompt?.slice(0, 256), contentRefs: undefined,
-        steps: item.steps.map((step) => ({ ...step, frames: step.frames.map((frame) => {
-          const identity = releaseFramePayload(frame);
-          if (frame.kind === 'text' || frame.kind === 'thinking') return { ...identity, text: frame.text.slice(0, 256) };
-          if (frame.kind === 'notice') return { ...identity, message: frame.message.slice(0, 256) };
-          return identity;
-        }) })) };
-      bytes -= Math.max(0, estimateJsonBytes(item) - estimateJsonBytes(header));
-      page.unloaded = true;
-      for (const [bodyKey, entry] of this.contentBodies) if (entry.agentId === agentId &&
-        (entry.source.kind === 'turn' && entry.source.id === item.turnId || entry.source.kind === 'frame' && entry.source.turnId === item.turnId)) this.contentBodies.delete(bodyKey);
-      changed = true;
-      return header;
-    });
-    if (changed) this.olderPages.set(agentId, { ...older, items });
-    return changed;
+  /** See `historyPreviewPending`: there is no trimmed preview to restore. */
+  async loadHistoryPreview(_agentId: string, _turnId: string): Promise<boolean> {
+    return false;
   }
-
-
 
   private cancelHistoryRead(agentId: string): void {
     this.olderLoads.cancel(agentId);
-    for (const [key, read] of this.historyPreviewReads) if (JSON.parse(key)[0] === agentId) {
-      this.historyPreviewReads.delete(key); read.controller.abort();
-    }
-    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-    if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
-  }
-
-
-  async loadHistoryPreview(agentId: string, turnId: string): Promise<boolean> {
-    const key = `${agentId}/${turnId}`;
-    const page = this.historyPreviewPages.get(key);
-    if (this.closed || this.isSuspended || page === undefined || !page.unloaded) return false;
-    const requestKey = JSON.stringify([agentId, page.beforeItem, page.beforeTurn]);
-    const existing = this.historyPreviewReads.get(requestKey);
-    if (existing !== undefined) return existing.promise;
-    const controller = new AbortController();
-    this.snapshotControllers.add(controller);
-    const generation = this.historyGeneration.get(agentId) ?? 0;
-    this.setDetailLoad(agentId, `history:${turnId}`, { status: 'loading' });
-    const promise = (async () => {
-      try {
-        const obsolete = () => this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation;
-        const read = async () => {
-          let continuation: string | undefined;
-          for (;;) {
-            controller.signal.throwIfAborted();
-            const result = await this.view.transcript.page({ agentId,
-              beforeItem: continuation ?? page.beforeItem, beforeTurn: continuation === undefined ? page.beforeTurn : undefined,
-              pageSize: OLDER_PAGE_TURNS }, { signal: controller.signal });
-            if (result.items.length > 0 || !result.has_more || result.read?.stale !== undefined ||
-                result.read?.readiness !== 'preparing' && result.read?.reason !== 'budget') return result;
-            continuation = result.next_cursor ?? continuation;
-            await new Promise<void>(resolve => { setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS); });
-          }
-        };
-        let result = await this.readPreparedContent(read, controller.signal);
-        if (obsolete()) return false;
-        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
-        if (result.read?.stale !== undefined) {
-          const group = [...this.historyPreviewPages.entries()].filter(([, candidate]) => candidate.agentId === agentId &&
-            candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn);
-          const groupKeys = new Set(group.map(([candidateKey]) => candidateKey));
-          const items = this.composeAgentSnapshot(agentId).items;
-          const end = items.findLastIndex((item) => item.kind === 'turn' && groupKeys.has(`${agentId}/${item.turnId}`));
-          const next = items.slice(end + 1).find((item) => item.kind === 'turn');
-          for (const [, candidate] of group) {
-            candidate.beforeItem = undefined;
-            candidate.beforeTurn = next?.kind === 'turn' ? next.turnId : candidate.beforeTurn;
-          }
-          const flight = this.historyPreviewReads.get(requestKey);
-          if (flight !== undefined) this.historyPreviewReads.set(JSON.stringify([agentId, page.beforeItem, page.beforeTurn]), flight);
-          this.historyReads.set(agentId, result.read);
-          this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId), { historyCoverageKind: 'unknown' });
-          if (result.read.stale.retry === 'resync') { void this.resync(); return false; }
-          result = await this.readAuthoritativeTranscriptContinuation(read, 'History preview continuation is still stale', controller.signal);
-          if (obsolete()) return false;
-          if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
-        }
-        const older = this.olderPages.get(agentId);
-        if (older === undefined) return false;
-        if (result.read !== undefined) this.historyReads.set(agentId, result.read);
-        const restored = new Map(result.items.flatMap((item) => item.kind === 'turn' ? [[item.turnId, item] as const] : []));
-        if (!restored.has(turnId)) throw new Error('History preview is no longer available at its cursor');
-        this.olderPages.set(agentId, { ...older, items: older.items.map((item) => {
-          if (item.kind !== 'turn') return item;
-          const target = this.historyPreviewPages.get(`${agentId}/${item.turnId}`);
-          const replacement = restored.get(item.turnId);
-          if (target?.unloaded !== true || replacement === undefined) return item;
-          target.unloaded = false;
-          this.setDetailLoad(agentId, `history:${item.turnId}`, undefined);
-          return replacement;
-        }) });
-        this.trimHistoryPreviews(agentId);
-        this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId));
-        return true;
-      } catch (error) {
-        if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation) for (const [candidateKey, candidate] of this.historyPreviewPages) {
-          if (candidate.agentId === agentId && candidate.unloaded && candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn)
-            this.setDetailLoad(agentId, `history:${candidateKey.slice(agentId.length + 1)}`, controller.signal.aborted ? undefined : { status: 'error', message: errorMessage(error, 'Could not load history preview') });
-        }
-        return false;
-      } finally {
-        this.snapshotControllers.delete(controller);
-        for (const [flightKey, flight] of this.historyPreviewReads) if (flight.controller === controller) this.historyPreviewReads.delete(flightKey);
-      }
-    })();
-    this.historyPreviewReads.set(requestKey, { agentId, controller, promise });
-    return promise;
+    const current = this.viewOf(agentId);
+    if (current.loadingOlder) this.publishView(agentId, setLoadingOlder(current, false));
   }
 
   async loadOlderMessages(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<boolean> {
     return (await this.loadOlderHistory(agentId, signal)).changed;
   }
 
+  /**
+   * Older history waited for a resync that then failed. The session banner
+   * reports the resync; the place the reader asked for history must show the
+   * failure too, with its retry, instead of ending silently.
+   */
+  private olderLoadFailedByResync(agentId: string): OlderLoadResult {
+    const current = this.viewOf(agentId);
+    this.publishView(agentId, setOlderError(current, this.shell.resyncError?.message ?? 'Could not restore session'));
+    return { kind: 'failed', changed: false };
+  }
+
   loadOlderHistory(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<OlderLoadResult> {
     if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
+    const backoff = new PreparingBackoff();
     const start = (): Promise<OlderLoadResult> => {
       const resyncGeneration = this.resyncGeneration;
       return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal).then((result) => {
-        if (result.kind !== 'cancelled' || signal?.aborted || this.closed || this.isSuspended || resyncGeneration === this.resyncGeneration) return result;
-        return this.waitForResyncIdle(signal).then((resyncStatus) => {
-          if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
-          if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
-          return start();
-        });
+        if ((result.kind !== 'cancelled' && result.kind !== 'preparing') || signal?.aborted || this.closed || this.isSuspended ||
+          resyncGeneration === this.resyncGeneration) return result;
+        return this.resumeOlderLoadAfterResync(agentId, backoff, start, signal);
       }).finally(() => {
         this.queueAutomaticRosterRead();
       });
@@ -1760,22 +2170,38 @@ export class SessionController {
     if (!this.resyncInFlight) return start();
     return this.waitForResyncIdle(signal).then((resyncStatus) => {
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
-      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+      if (resyncStatus === 'failed') return this.olderLoadFailedByResync(agentId);
       return start();
     });
+  }
+
+  /**
+   * An older read ended because of a resync: one interrupted it, or a stale
+   * answer asked for one (a stale page returns `preparing`; a stale opening
+   * recovery is cancelled by the resync it started). The reader's demand
+   * stands, so wait for the resync and read again. Repeats back off like any
+   * preparing read, so a source that keeps answering stale cannot drive
+   * resyncs back to back; one unrelated resync costs a single 80 ms wait.
+   */
+  private async resumeOlderLoadAfterResync(agentId: string, backoff: PreparingBackoff,
+    start: () => Promise<OlderLoadResult>, signal?: AbortSignal): Promise<OlderLoadResult> {
+    const resyncStatus = await this.waitForResyncIdle(signal);
+    if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+    if (resyncStatus === 'failed') return this.olderLoadFailedByResync(agentId);
+    await backoff.wait(signal);
+    if (signal?.aborted === true || this.closed || this.isSuspended) return { kind: 'cancelled', changed: false };
+    return start();
   }
 
   locateTurn(agentId: string = MAIN_AGENT_ID, turnId: string, signal?: AbortSignal): Promise<OlderLoadResult> {
     if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
+    const backoff = new PreparingBackoff();
     const start = (): Promise<OlderLoadResult> => {
       const resyncGeneration = this.resyncGeneration;
       return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal, turnId), signal).then((result) => {
-        if (result.kind !== 'cancelled' || signal?.aborted || this.closed || this.isSuspended || resyncGeneration === this.resyncGeneration) return result;
-        return this.waitForResyncIdle(signal).then((resyncStatus) => {
-          if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
-          if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
-          return start();
-        });
+        if ((result.kind !== 'cancelled' && result.kind !== 'preparing') || signal?.aborted || this.closed || this.isSuspended ||
+          resyncGeneration === this.resyncGeneration) return result;
+        return this.resumeOlderLoadAfterResync(agentId, backoff, start, signal);
       }).finally(() => {
         this.queueAutomaticRosterRead();
       });
@@ -1783,24 +2209,35 @@ export class SessionController {
     if (!this.resyncInFlight) return start();
     return this.waitForResyncIdle(signal).then((resyncStatus) => {
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
-      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+      if (resyncStatus === 'failed') return this.olderLoadFailedByResync(agentId);
       return start();
     });
   }
 
+  /** An older read (a page run or a locate); the window is not trimmed while one runs (`trimWindow`). */
   private async loadOlderTranscript(agentId: string, signal: AbortSignal, targetTurnId?: string): Promise<OlderLoadResult> {
+    const timeline = this.timeline(agentId);
+    timeline.paging += 1;
+    try {
+      return await this.readOlderTranscript(agentId, signal, targetTurnId);
+    } finally {
+      timeline.paging -= 1;
+    }
+  }
+
+  private async readOlderTranscript(agentId: string, signal: AbortSignal, targetTurnId?: string): Promise<OlderLoadResult> {
     if (this.resyncInFlight) {
       const resyncStatus = await this.waitForResyncIdle(signal);
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
-      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+      if (resyncStatus === 'failed') return this.olderLoadFailedByResync(agentId);
     }
     if (!this.flushPendingTranscriptBatch(agentId)) return { kind: 'cancelled', changed: false };
     const store = this.ensureAgentTranscript(agentId);
-    const generation = this.historyGeneration.get(agentId) ?? 0;
-    const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
-      (this.historyGeneration.get(agentId) ?? 0) !== generation;
+    const generation = this.generationOf(agentId);
+    const obsolete = () => this.closed || signal.aborted || this.timelines.get(agentId)?.store !== store ||
+      this.generationOf(agentId) !== generation;
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
-    let currentSnapshot = this.composeAgentSnapshot(agentId);
+    let currentSnapshot = this.windowSnapshot(agentId);
     const hasCompleteTargetTurn = (snapshot: AgentTranscriptSnapshot): boolean => {
       if (targetTurnId === undefined) return false;
       const found = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === targetTurnId);
@@ -1814,7 +2251,7 @@ export class SessionController {
     }
     const firstTurn = currentSnapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn');
     const olderStructure = (() => {
-      if (targetTurnId !== undefined || firstTurn === undefined || firstTurn.stepsPartial === true) return undefined;
+      if (targetTurnId !== undefined || firstTurn === undefined || this.turnHasGap(agentId, firstTurn.turnId)) return undefined;
       const refs = (firstTurn.contentRefs ?? []).filter((ref) => ref.direction === 'backward');
       const firstStep = firstTurn.steps[0]?.ordinal;
       const firstFrames = refs.find((ref) => ref.path.length === 3 && ref.path[1] === firstStep);
@@ -1822,50 +2259,61 @@ export class SessionController {
     })();
     if (olderStructure !== undefined) {
       const retention = this.beginContentRead(agentId, olderStructure.source, [String(olderStructure.path[0])], false);
-      const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-      this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
+      const loadingView = this.viewOf(agentId);
+      this.publishView(agentId, setLoadingOlder(loadingView, true));
       const cancel = () => { this.cancelContentSegment(agentId, olderStructure); };
       signal.addEventListener('abort', cancel, { once: true });
       try {
         const changed = !signal.aborted && await this.loadContentSegment(agentId, olderStructure);
         if (obsolete()) return { kind: 'cancelled', changed: false };
-        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+        const current = this.viewOf(agentId);
         if (changed) {
-          this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+          this.publishView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
           return { kind: 'advanced', changed: true };
         }
         const detail = current.detailLoads[`content:${JSON.stringify(olderStructure)}`];
-        this.publishAgentView(agentId, setOlderError(current, detail?.status === 'error' ? detail.message : 'Could not load earlier content'));
+        this.publishView(agentId, setOlderError(current, detail?.status === 'error' ? detail.message : 'Could not load earlier content'));
         return { kind: 'failed', changed: false };
       } finally {
         signal.removeEventListener('abort', cancel);
         retention.release();
         if (!obsolete()) {
-          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-          if (current.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+          const current = this.viewOf(agentId);
+          if (current.loadingOlder) this.publishView(agentId, setLoadingOlder(current, false));
         }
       }
     }
-    let beforeItem = this.olderPageCursors.get(agentId);
+    let beforeItem = this.timelines.get(agentId)?.olderCursor;
     let beforeTurn = beforeItem === undefined
-      ? this.olderPageTurns.get(agentId) ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
-    if (!currentSnapshot.hasMoreOlder) return { kind: 'exhausted', changed: false };
+      ? this.timelines.get(agentId)?.olderTurn ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
+    if (!currentSnapshot.hasMoreOlder) {
+      // Nothing older exists, but an incomplete oldest turn still has steps to
+      // load (the published `hasMoreHistory` says so): read its structure
+      // rather than report the beginning of history without asking anything.
+      // A locate takes this step too, so "more history" always means a load
+      // makes progress and a missing target ends as not found, not as a stall.
+      if (firstTurn !== undefined && this.turnHasGap(agentId, firstTurn.turnId)) {
+        return this.loadOldestTurnStructure(agentId, firstTurn.turnId, signal, obsolete);
+      }
+      return { kind: 'exhausted', changed: false };
+    }
     if (beforeItem === undefined && beforeTurn === undefined) {
-      const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-      this.publishAgentView(agentId, setOlderError(current, 'History window has no continuation cursor'));
+      const current = this.viewOf(agentId);
+      this.publishView(agentId, setOlderError(current, 'History window has no continuation cursor'));
       return { kind: 'failed', changed: false };
     }
-    const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-    this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
+    const loadingView = this.viewOf(agentId);
+    this.publishView(agentId, setLoadingOlder(loadingView, true));
     try {
       const rememberContinuationCursor = (nextCursor: string | undefined): void => {
         if (nextCursor === undefined) return;
         beforeItem = nextCursor;
         beforeTurn = undefined;
-        this.olderPageCursors.set(agentId, nextCursor);
-        this.olderPageTurns.delete(agentId);
+        this.timeline(agentId).olderCursor = nextCursor;
+        this.timeline(agentId).olderTurn = undefined;
       };
       let batchChanged = false;
+      const backoff = new PreparingBackoff();
       const nextCursorOrphan = (cursor: string | undefined): string | undefined => {
         if (cursor === undefined || cursor.startsWith('~') || cursor.includes(':')) return undefined;
         try {
@@ -1881,11 +2329,14 @@ export class SessionController {
       };
       for (;;) {
         const read = () => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: OLDER_PAGE_TURNS }, { signal });
+        // A page without a watermark reflects at least the state the window
+        // was at when it was asked for.
+        const requestMark = this.timelines.get(agentId)?.cursor;
         let page = await this.readPreparedContent(read, signal);
         if (obsolete()) return { kind: 'cancelled', changed: false };
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
         if (page.read?.stale !== undefined) {
-          this.historyReads.set(agentId, page.read);
+          this.timeline(agentId).historyRead = page.read;
           this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
           beforeItem = undefined;
           const oldest = currentSnapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn');
@@ -1919,7 +2370,6 @@ export class SessionController {
         const emptyContinuation = page.has_more && page.items.length === 0;
         const readIsPreparing = emptyContinuation && pageReadiness === 'preparing';
         const readIsPartial = emptyContinuation && pageReadiness === 'partial';
-        const recoveredTurns: TranscriptTurn[] = [];
         let recoveredOpening = false;
         const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
         const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
@@ -1930,16 +2380,17 @@ export class SessionController {
           const wasOrphan = current?.origin.kind === 'other' && current.message === undefined && current.promptId === undefined && current.startedAt === undefined;
           if (!wasOrphan && (addedItems || (page.next_cursor === undefined ? page.has_more : page.next_cursor === beforeItem))) continue;
           recoveredOpening = true;
-          if (!wasOrphan || live === undefined) continue;
-          recoveredTurns.push(recoverTranscriptTurn(current, item));
         }
         if (page.has_more && !readIsPreparing && !readIsPartial && !addedItems && !recoveredOpening &&
             (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
           throw new Error('History page did not advance its cursor');
         }
-        if (page.read !== undefined) this.historyReads.set(agentId, page.read);
+        if (page.read !== undefined) this.timeline(agentId).historyRead = page.read;
         if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
         if (readIsPreparing || readIsPartial) {
+          // The server hands back the continuation it is still preparing; only
+          // a different one means this slice moved the read forward.
+          if (page.next_cursor !== undefined && page.next_cursor !== beforeItem) backoff.progressed();
           rememberContinuationCursor(page.next_cursor);
           this.publishProjectedAgent(agentId, store, {
             loadingOlder: true,
@@ -1947,33 +2398,19 @@ export class SessionController {
             olderError: undefined,
             historyCoverageKind: 'unknown',
           });
-          await new Promise<void>((resolve) => setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS));
+          await backoff.wait(signal);
           if (obsolete()) return { kind: 'cancelled', changed: false };
           continue;
         }
-        const older: AgentTranscriptSnapshot = {
-          items: page.items as AgentTranscriptSnapshot['items'],
-          tasks: currentSnapshot.tasks,
-          interactions: currentSnapshot.interactions,
-          attachments: page.attachments ?? [],
-          todos: currentSnapshot.todos,
-          prompts: currentSnapshot.prompts,
-          meta: currentSnapshot.meta,
-          hasMoreOlder: page.has_more,
-        };
-        for (const recovered of recoveredTurns) replaceAgentContentEntity(store, { kind: 'turn', id: recovered.turnId }, recovered);
-        const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
-        this.olderPages.set(agentId, { ...merged, hasMoreOlder: page.has_more });
-        for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))
-          this.historyPreviewPages.set(`${agentId}/${item.turnId}`, { agentId, beforeItem, beforeTurn, unloaded: false });
-        this.trimHistoryPreviews(agentId);
-        if (page.next_cursor !== undefined) this.olderPageCursors.set(agentId, page.next_cursor);
-        else this.olderPageCursors.delete(agentId);
-        if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
-        else this.olderPageTurns.delete(agentId);
+        backoff.progressed();
+        this.placeOlderPage(agentId, store, page, page.read?.watermark?.transcript ?? page.cursor ?? requestMark);
+        if (page.next_cursor !== undefined) this.timeline(agentId).olderCursor = page.next_cursor;
+        else this.timeline(agentId).olderCursor = undefined;
+        if (nextTurn !== undefined) this.timeline(agentId).olderTurn = nextTurn;
+        else this.timeline(agentId).olderTurn = undefined;
         this.forestDirtyAgents.add(agentId);
-        if (older.items.length > 0 || page.next_cursor !== beforeItem) batchChanged = true;
-        currentSnapshot = this.composeAgentSnapshot(agentId);
+        if (page.items.length > 0 || page.next_cursor !== beforeItem) batchChanged = true;
+        currentSnapshot = this.windowSnapshot(agentId);
         const pendingOrphan = targetTurnId === undefined ? nextCursorOrphan(page.next_cursor) : undefined;
         const shouldContinueBatch = page.has_more && page.next_cursor !== undefined && page.next_cursor !== beforeItem && (
           (recoveredOpening && !addedItems) ||
@@ -2002,20 +2439,52 @@ export class SessionController {
           historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
             : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
         });
-        const changed = batchChanged || older.items.length > 0 || page.next_cursor !== beforeItem;
+        const changed = batchChanged || page.items.length > 0 || page.next_cursor !== beforeItem;
         if (!page.has_more) return { kind: 'exhausted', changed };
         return { kind: 'advanced', changed: true };
       }
     } catch (error) {
       if (obsolete()) return { kind: 'cancelled', changed: false };
       const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
-      const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+      const current = this.viewOf(agentId);
       if (code === 40923) {
-        this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+        this.publishView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
         return { kind: 'preparing', changed: false };
       }
-      this.publishAgentView(agentId, setOlderError(current, errorMessage(error, 'Could not load earlier messages')));
+      this.publishView(agentId, setOlderError(current, errorMessage(error, 'Could not load earlier messages')));
       return { kind: 'failed', changed: false };
+    }
+  }
+
+  /**
+   * Older-history demand on an incomplete oldest turn with nothing older
+   * behind it. Holds the same structure reader a visible or expanded row of
+   * that turn would (one lease key, so the turn is not read twice) and settles
+   * when the structure is complete, its read fails, or the demand goes away.
+   */
+  private async loadOldestTurnStructure(agentId: string, turnId: string, signal: AbortSignal, obsolete: () => boolean): Promise<OlderLoadResult> {
+    const source = { kind: 'turn' as const, id: turnId };
+    const view = () => this.viewOf(agentId);
+    const priorFailure = view().detailLoads[`structure:${turnId}`];
+    const lease = this.beginContentRead(agentId, source, ['steps']);
+    this.publishView(agentId, setLoadingOlder(view(), true));
+    try {
+      for (;;) {
+        await waitUnlessAborted(10, signal);
+        if (obsolete()) return { kind: 'cancelled', changed: false };
+        if (!this.turnHasGap(agentId, turnId)) {
+          this.publishView(agentId, { ...setLoadingOlder(view(), false), olderError: undefined });
+          return { kind: 'advanced', changed: true };
+        }
+        const load = view().detailLoads[`structure:${turnId}`];
+        if (load?.status === 'error' && load !== priorFailure) {
+          this.publishView(agentId, setOlderError(view(), load.message));
+          return { kind: 'failed', changed: false };
+        }
+      }
+    } finally {
+      lease.release();
+      if (!obsolete() && view().loadingOlder) this.publishView(agentId, setLoadingOlder(view(), false));
     }
   }
 
@@ -2034,56 +2503,61 @@ export class SessionController {
     const retainedBodies = [...this.contentBodies.entries()].filter(([, entry]) => entry.agentId === agentId);
     this.bumpHistoryGeneration(agentId);
     for (const key of this.entityPageCursors.keys()) if (key.startsWith(`${agentId}/`)) this.entityPageCursors.delete(key);
-    this.todoReads.delete(agentId);
+    this.timeline(agentId).todoRead = undefined;
     for (const kind of ['task', 'attachment', 'prompt', 'interaction', 'todo'] as const) {
       const key = `entities:${kind}`;
       const requestKey = `${agentId}/${key}`;
       this.detailReads.delete(requestKey);
       this.setDetailLoad(agentId, key, undefined);
     }
-    const previousCursor = this.transcriptCursors.get(agentId);
-    if (coverage.kind === 'full' || (previousCursor !== undefined && previousCursor.epoch !== cursor.epoch)) {
-      this.olderPages.delete(agentId);
-      this.olderPageCursors.delete(agentId);
-      for (const [key, page] of this.historyPreviewPages) if (page.agentId === agentId) this.historyPreviewPages.delete(key);
-    } else {
-      const retained = this.composeAgentSnapshot(agentId);
-      if (retained.items.length > 0) this.olderPages.set(agentId, {
-        ...retained,
-        hasMoreOlder: coverage.kind === 'unknown' && snapshot.items.length === 0
-          ? retained.hasMoreOlder || coverage.hasMoreOlder || snapshot.hasMoreOlder === true
-          : snapshot.hasMoreOlder ?? coverage.hasMoreOlder,
+    const timeline = this.timeline(agentId);
+    const previousKind = this.viewOf(agentId).historyCoverageKind;
+    const window = this.resetWindow(timeline, store, snapshot, coverage, cursor, grade);
+    store.apply([{ op: 'reset', agentId, snapshot: { ...snapshot, items: window.incoming }, coverage, grade: grade === 'off' ? undefined : grade, read }]);
+    const current = store.getItems();
+    // A covered reset decided its range in the store; an unknown-coverage one
+    // left held copies in place, so its own resolved copies are taken.
+    const stored = new Map(current.map((item) => [windowItemKey(item), item] as const));
+    const resetItems = coverage.kind !== 'unknown' ? current.filter((item) => window.resetKeys.has(windowItemKey(item)))
+      : window.incoming.map((item) => {
+        const held = stored.get(windowItemKey(item));
+        return held !== undefined && (held === item || transcriptValueEquals(held, item)) ? held : item;
       });
+    const final = window.kept.length === 0 ? resetItems : placeTranscriptItems(resetItems, window.kept, (resident) => resident);
+    const keptEdge = window.kept.length > 0;
+    const unsure = coverage.kind === 'unknown' && (coverage.hasMoreOlder || snapshot.hasMoreOlder === true);
+    const hasMoreOlder = keptEdge ? window.held.hasMoreOlder || unsure
+      : coverage.kind === 'unknown' && snapshot.items.length === 0
+        ? window.held.hasMoreOlder || coverage.hasMoreOlder || snapshot.hasMoreOlder === true
+        : snapshot.hasMoreOlder ?? coverage.hasMoreOlder;
+    if (final.length !== current.length || final.some((item, index) => item !== current[index])) store.replaceItems(final, hasMoreOlder);
+    else store.setHasMoreOlder(hasMoreOlder);
+    if (!keptEdge) {
+      timeline.olderCursor = snapshot.olderCursor;
+      timeline.olderTurn = snapshot.items.find((item) => item.kind === 'turn')?.turnId;
     }
-    if (snapshot.olderCursor !== undefined) this.olderPageCursors.set(agentId, snapshot.olderCursor);
-    else this.olderPageCursors.delete(agentId);
-    const oldestTurn = snapshot.items.find((item) => item.kind === 'turn')?.turnId;
-    if (oldestTurn !== undefined) this.olderPageTurns.set(agentId, oldestTurn);
-    else this.olderPageTurns.delete(agentId);
-    store.apply([{ op: 'reset', agentId, snapshot, coverage, grade: grade === 'off' ? undefined : grade, read }]);
+    this.settleWindowAfterReset(timeline, store, window, cursor, grade);
     for (const target of this.contentReaders.values()) if (target.agentId === agentId) target.blocked = false;
     for (const [key, entry] of retainedBodies) {
       const entity = this.contentEntity(agentId, entry.source);
       if (entity === undefined) this.contentBodies.delete(key);
-      else this.contentBodies.set(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: estimateJsonBytes(entity) });
+      else this.contentBodies.set(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: this.bytesOf(entity) });
     }
-    this.transcriptCursors.set(agentId, cursor);
-    if (read !== undefined) this.historyReads.set(agentId, read);
-    else this.historyReads.delete(agentId);
-    this.appliedTranscriptGrades.set(agentId, grade);
-    this.transcriptBaselineSerial.set(agentId, ++this.transcriptBaselineClock);
+    this.timeline(agentId).cursor = cursor;
+    if (read !== undefined) this.timeline(agentId).historyRead = read;
+    else this.timeline(agentId).historyRead = undefined;
+    this.timeline(agentId).appliedGrade = grade;
+    this.timeline(agentId).baselineSerial = ++this.transcriptBaselineClock;
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
-    this.globalCoverage.set(agentId, snapshot.globalCoverage);
+    this.timeline(agentId).globalCoverage = snapshot.globalCoverage;
     this.publishProjectedAgent(agentId, store, {
       loadingOlder: false,
       olderError: undefined,
       retainPendingPrompts: true,
       transcriptReset: coverage.kind === 'full',
-      historyCoverageKind: coverage.kind === 'full' ? 'full'
-        : coverage.kind === 'unknown' ||
-          (agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId))?.historyCoverageKind === 'unknown'
-          ? 'unknown' : 'tail',
+      historyCoverageKind: coverage.kind === 'full' || keptEdge && !hasMoreOlder && previousKind === 'full' && coverage.kind !== 'unknown' ? 'full'
+        : coverage.kind === 'unknown' || previousKind === 'unknown' ? 'unknown' : 'tail',
     });
     // Queued / running prompts are actionable (edit, reorder, steer); a
     // windowed reset that dropped their content must not hide them.
@@ -2106,14 +2580,14 @@ export class SessionController {
     if (this.closed || read === undefined) return false;
     const inFlight = this.detailReads.get(`${agentId}/${key}`);
     if (inFlight !== undefined) return inFlight;
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
         const detail = await this.readPreparedContent(() => read({ agentId, kind, id }, { signal: controller.signal }), controller.signal);
-        if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        if (this.closed || this.generationOf(agentId) !== generation) return false;
         const applied = this.applyTranscriptDetail(agentId, detail);
         this.setDetailLoad(agentId, key, undefined);
         return applied;
@@ -2177,7 +2651,7 @@ export class SessionController {
   async lookupToolCall(agentId: string, toolCallId: string, signal?: AbortSignal): Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']> {
     signal?.throwIfAborted();
     const key = `${agentId}/${toolCallId}`;
-    const local = this.agentTranscripts.get(agentId)?.getToolCall(toolCallId);
+    const local = this.timelines.get(agentId)?.store?.getToolCall(toolCallId);
     if (local !== undefined) {
       const lookup = { status: 'found' as const, ...local };
       this.toolDetails.set(key, lookup);
@@ -2186,7 +2660,7 @@ export class SessionController {
     if (this.toolDetails.get(key)?.status === 'found') this.invalidateToolDetail(key);
     let flight = this.toolDetailReads.get(key);
     if (flight === undefined) {
-      const generation = this.historyGeneration.get(agentId) ?? 0;
+      const generation = this.generationOf(agentId);
       const epoch = this.toolDetailEpochs.get(key) ?? 0;
       const read = this.view.transcript.detail?.bind(this.view.transcript);
       if (this.closed || read === undefined) throw new Error('Tool details are unavailable on this connection');
@@ -2195,9 +2669,9 @@ export class SessionController {
       const promise = (async () => {
         const detail = await this.readPreparedContent(() => read.call(this.view.transcript, { agentId, kind: 'tool', id: toolCallId }, { signal: controller.signal }), controller.signal);
         controller.signal.throwIfAborted();
-        if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation) throw new Error('Tool detail scope changed');
+        if (this.closed || this.generationOf(agentId) !== generation) throw new Error('Tool detail scope changed');
         if (detail.kind !== 'tool' || detail.agent_id !== agentId || detail.session_id !== this.sessionId) throw new Error('Tool detail target mismatch');
-        const resident = this.agentTranscripts.get(agentId)?.getToolCall(toolCallId);
+        const resident = this.timelines.get(agentId)?.store?.getToolCall(toolCallId);
         if (resident !== undefined) {
           const lookup = { status: 'found' as const, ...resident };
           this.toolDetails.set(key, lookup);
@@ -2231,8 +2705,13 @@ export class SessionController {
     return this.contentEntity(agentId, source)?.contentRefs ?? [];
   }
 
+  /**
+   * Non-reactive read of whether one held turn is incomplete. The published
+   * `incompleteTurnIds` / `turnGaps` carry the same fact and notify when it
+   * changes; prefer them. Kept while existing callers move over.
+   */
   turnStructurePending(agentId: string, turnId: string): boolean {
-    return (this.contentEntity(agentId, { kind: 'turn', id: turnId }) as TranscriptTurn | undefined)?.stepsPartial === true;
+    return this.turnHasGap(agentId, turnId);
   }
 
   private contentEntity(agentId: string, source: ContentSource): ContentWindow | undefined {
@@ -2240,15 +2719,12 @@ export class SessionController {
     if (source.kind === 'frame') {
       for (const [key, lookup] of this.toolDetails) if (key.startsWith(`${agentId}/`) && lookup.status === 'found' && lookup.frame.frameId === source.id && lookup.turnId === source.turnId && lookup.stepId === source.stepId) return lookup.frame;
     }
-    const store = this.agentTranscripts.get(agentId);
-    const entity = store === undefined ? undefined : transcriptContentEntity(store, source);
-    if (entity !== undefined) return entity;
-    const older = this.olderPages.get(agentId);
-    return older === undefined ? undefined : snapshotContentEntity(older, source);
+    const store = this.timelines.get(agentId)?.store;
+    return store === undefined ? undefined : transcriptContentEntity(store, source);
   }
 
   stepCanonicalIndex(agentId: string, turnId: string, stepId: string): number | undefined {
-    const turn = this.composeAgentSnapshot(agentId).items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+    const turn = this.windowSnapshot(agentId).items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
     const index = turn?.steps.findIndex((step) => step.stepId === stepId) ?? -1;
     if (index < 0) return undefined;
     return index;
@@ -2261,7 +2737,7 @@ export class SessionController {
     if (cached !== undefined) { this.contentRanges.delete(key); this.contentRanges.set(key, cached); return cached; }
     const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) throw new Error('Content reader unavailable');
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     const controller = new AbortController();
     const cancel = () => { controller.abort(); };
     signal?.addEventListener('abort', cancel, { once: true });
@@ -2270,7 +2746,7 @@ export class SessionController {
     try {
       const segment = await this.readPreparedContent(() => read.call(this.view.transcript, { agentId, ref: { ...ref, offset }, range: true }, { signal: controller.signal }), controller.signal);
       controller.signal.throwIfAborted();
-      if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation || segment.ref.revision !== ref.revision || typeof segment.value !== 'string') throw new Error('Content range changed');
+      if (this.closed || this.generationOf(agentId) !== generation || segment.ref.revision !== ref.revision || typeof segment.value !== 'string') throw new Error('Content range changed');
       let start = offset - segment.ref.offset;
       let end = Math.min(segment.value.length, offset + CONTENT_RANGE_CHARS - segment.ref.offset);
       if (start > 0 && /[\uD800-\uDBFF]/u.test(segment.value[start - 1]!)) start += 1;
@@ -2324,10 +2800,10 @@ export class SessionController {
     signal?.addEventListener('abort', cancel, { once: true });
     this.snapshotControllers.add(controller);
     this.rangeControllers.set(controller, agentId);
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     const check = () => {
       controller.signal.throwIfAborted();
-      if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation) throw new Error('Copy scope changed');
+      if (this.closed || this.generationOf(agentId) !== generation) throw new Error('Copy scope changed');
     };
     try {
       for (;;) {
@@ -2373,15 +2849,15 @@ export class SessionController {
 
   incompleteTurnOrdinals(agentId: string): ReadonlySet<number> {
     const turns = new Set<number>();
-    for (const item of this.composeAgentSnapshot(agentId).items) if (item.kind === 'turn' && (item.stepsPartial === true || item.contentRefs?.length || item.steps.some((step) => step.frames.some((frame) => frame.contentRefs?.length)))) turns.add(item.ordinal);
+    for (const item of this.windowSnapshot(agentId).items) if (item.kind === 'turn' && (this.turnHasGap(agentId, item.turnId) || item.contentRefs?.length || item.steps.some((step) => step.frames.some((frame) => frame.contentRefs?.length)))) turns.add(item.ordinal);
     return turns;
   }
 
   async completeTurnContent(agentId: string, ordinal: number, signal?: AbortSignal, includeToolOutput = false): Promise<void> {
-    let turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    let turn = this.windowSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') throw new Error('Search target is not loaded');
     await this.completeContentRead(agentId, { kind: 'turn', id: turn.turnId }, ['steps', 'prompt'], signal);
-    turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    turn = this.windowSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') return;
     for (const step of turn.steps) for (const frame of step.frames) {
       if (frame.kind !== 'text' && !(frame.kind === 'tool' && includeToolOutput)) continue;
@@ -2392,7 +2868,7 @@ export class SessionController {
 
   async findTurnContentRange(agentId: string, ordinal: number, pattern: RegExp, signal?: AbortSignal, includeToolOutput = false): Promise<{ ref: ContentRef; offset: number; toolCallId?: string } | undefined> {
     await this.completeTurnContent(agentId, ordinal, signal, includeToolOutput);
-    const turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    const turn = this.windowSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') throw new Error('Search target changed');
     const fields = [
       ...(turn.contentRefs ?? []).map((ref) => ({ ref, toolCallId: undefined as string | undefined })),
@@ -2432,9 +2908,9 @@ export class SessionController {
       for (;;) {
         signal?.throwIfAborted();
         if (this.closed) throw new Error('Content reader unavailable');
-        if (source.kind === 'turn' && roots.includes('steps') && (this.contentEntity(agentId, source) as TranscriptTurn | undefined)?.stepsPartial === true) {
+        if (source.kind === 'turn' && roots.includes('steps') && this.turnHasGap(agentId, source.id)) {
           await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
-          const view = agentId === MAIN_AGENT_ID ? this.state : this.getAgentState(agentId);
+          const view = this.viewOf(agentId);
           const load = view.detailLoads[`structure:${source.id}`];
           if (load?.status === 'error') throw new Error(load.message);
           continue;
@@ -2469,7 +2945,7 @@ export class SessionController {
     const entry = this.contentBodies.get(key);
     if (entry === undefined) return;
     const changed = JSON.stringify(entry.base.contentRefs ?? []) !== JSON.stringify(preview.contentRefs ?? []);
-    this.contentBodies.set(key, { ...entry, base: source.kind === 'turn' || source.kind === 'meta' ? { ...entry.base, ...preview } : preview, bytes: changed ? estimateJsonBytes(this.contentEntity(agentId, source)) : entry.bytes });
+    this.contentBodies.set(key, { ...entry, base: source.kind === 'turn' || source.kind === 'meta' ? { ...entry.base, ...preview } : preview, bytes: changed ? this.bytesOf(this.contentEntity(agentId, source)) : entry.bytes });
   }
 
   private accountContentBody(agentId: string, source: ContentSource, base?: ContentWindow): void {
@@ -2479,7 +2955,7 @@ export class SessionController {
     const entity = this.contentEntity(agentId, source);
     if (entity === undefined) return;
     this.contentBodies.delete(key);
-    this.contentBodies.set(key, { agentId, source, base: previous?.base ?? base ?? entity, bytes: estimateJsonBytes(entity) });
+    this.contentBodies.set(key, { agentId, source, base: previous?.base ?? base ?? entity, bytes: this.bytesOf(entity) });
     let total = [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0);
     for (const [candidateKey, candidate] of this.contentBodies) {
       if (total <= CONTENT_BODY_CACHE_BYTES) break;
@@ -2492,10 +2968,8 @@ export class SessionController {
         const preview = adoptContentPreviewField(restored, candidate.base, ['steps']);
         restored = carryContentHydration(preview, { ...preview, stepsPartial: true });
       }
-      const store = this.agentTranscripts.get(candidate.agentId);
+      const store = this.timelines.get(candidate.agentId)?.store;
       if (restored !== undefined && store !== undefined && transcriptContentEntity(store, candidate.source) !== undefined) replaceAgentContentEntity(store, candidate.source, restored);
-      const older = this.olderPages.get(candidate.agentId);
-      if (restored !== undefined && older !== undefined) this.olderPages.set(candidate.agentId, replaceSnapshotContentEntity(older, candidate.source, restored));
       for (const [toolKey, lookup] of this.toolDetails) if (toolKey.startsWith(`${candidate.agentId}/`) && lookup.status === 'found' && lookup.frame.frameId === candidate.source.id) this.toolDetails.delete(toolKey);
       this.contentBodies.delete(candidateKey);
       total -= candidate.bytes;
@@ -2576,8 +3050,15 @@ export class SessionController {
         if (this.contentPumpReads.size >= 4) break;
         if (target.readers === 0 || target.blocked || target.retryTimer !== undefined || this.contentPumpReads.has(key)) continue;
         const entity = this.contentEntity(target.agentId, target.source);
+        // A stale turn waits while a raised baseline is on its way: the
+        // baseline replaces the newest turns anyway, and whatever it leaves
+        // stale is read once it lands.
+        const timeline = this.timelines.get(target.agentId);
         const partial = target.source.kind === 'turn' && target.includeOlder && target.roots.includes('steps') &&
-          (entity as TranscriptTurn | undefined)?.stepsPartial === true;
+          ((entity as TranscriptTurn | undefined)?.stepsPartial === true ||
+            entity !== undefined && timeline?.stale.has(target.source.id) === true && !timeline.refreshing);
+        if (target.source.kind === 'turn' && target.includeOlder && target.roots.includes('steps') && !partial &&
+          entity !== undefined && timeline?.stale.has(target.source.id) === true) continue;
         const ref = partial ? undefined : entity?.contentRefs?.find((candidate) => {
           if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
             target.paths !== undefined && !target.paths.some(path => path.every((part, index) => candidate.path[index] === part)) ||
@@ -2616,8 +3097,8 @@ export class SessionController {
             target.blocked = partial || this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref!));
             if (target.blocked && ref !== undefined) {
               const detailKey = `content:${JSON.stringify(ref)}`;
-              const view = target.agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(target.agentId);
-              if (view?.detailLoads[detailKey]?.status !== 'error') this.setDetailLoad(target.agentId, detailKey, { status: 'error', message: 'Content did not advance. Retry to continue.' });
+              const view = this.viewOf(target.agentId);
+              if (view.detailLoads[detailKey]?.status !== 'error') this.setDetailLoad(target.agentId, detailKey, { status: 'error', message: 'Content did not advance. Retry to continue.' });
             }
           }
         }).finally(() => {
@@ -2642,6 +3123,7 @@ export class SessionController {
 
   private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     let failures = 0;
+    const backoff = new PreparingBackoff();
     for (;;) {
       signal?.throwIfAborted();
       try { return await readInHistoryLane(this.client, read, signal); }
@@ -2651,21 +3133,21 @@ export class SessionController {
         const preparing = code === 40923;
         const transient = code === -1 || error instanceof TypeError;
         if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
-        const delay = preparing ? TOOL_DETAIL_PREPARING_RETRY_MS : RESYNC_BACKOFF_MS[failures++];
-        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        if (preparing) await backoff.wait(signal);
+        else await waitUnlessAborted(RESYNC_BACKOFF_MS[failures++]!, signal);
       }
     }
   }
 
   private async loadPartialTurnStructure(agentId: string, turnId: string, controller: AbortController): Promise<'applied' | 'retry' | 'blocked'> {
     const source = { kind: 'turn' as const, id: turnId };
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     const key = `structure:${turnId}`;
     this.snapshotControllers.add(controller);
     this.setDetailLoad(agentId, key, { status: 'loading' });
     try {
       let preview = await this.readTurnContentPreview(agentId, turnId, controller.signal);
-      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
+      if (this.closed || controller.signal.aborted || this.generationOf(agentId) !== generation) return 'blocked';
       if (preview?.stepsPartial === true) return 'retry';
       if (preview === undefined) {
         if (this.resyncInFlight) return 'retry';
@@ -2681,16 +3163,43 @@ export class SessionController {
         controller.signal.throwIfAborted();
         preview = applyContentSegment(preview, segment);
       }
-      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
+      // An aborted or superseded read leaves the key alone: retiring it already
+      // cleared it, and a replacement flight may own it now.
+      if (this.closed || controller.signal.aborted || this.generationOf(agentId) !== generation) return 'blocked';
       const current = this.contentEntity(agentId, source) as TranscriptTurn | undefined;
-      if (current === undefined) return 'blocked';
-      const adopted = completeTranscriptTurnStructure(current, rebindTurnContentRefs(preview));
-      if (!this.replaceTimelineContentEntity(agentId, source, adopted)) return 'blocked';
+      // This flight still owns the key here; a turn removed meanwhile, or one
+      // nothing could be installed on, must not stay "loading" forever.
+      if (current === undefined) {
+        this.setDetailLoad(agentId, key, undefined);
+        return 'blocked';
+      }
+      const canonical = rebindTurnContentRefs(preview);
+      const timeline = this.timeline(agentId);
+      // A stale turn's held header is out of date too: the canonical one
+      // replaces it, the held structure only lends its read bodies.
+      const base = !timeline.stale.has(turnId) ? current : (() => {
+        const { steps: _steps, contentRefs, stepsPartial: _partial, ...header } = canonical;
+        return carryContentHydration(current, { ...current, ...header, contentRefs: [
+          ...(current.contentRefs ?? []).filter((ref) => ref.path[0] === 'steps'),
+          ...(contentRefs ?? []).filter((ref) => ref.path[0] !== 'steps'),
+        ] });
+      })();
+      const adopted = completeTranscriptTurnStructure(base, canonical);
+      // The canonical structure replaces whatever the window held of the turn.
+      const wasStale = timeline.stale.delete(turnId);
+      const join = timeline.joins.get(turnId);
+      timeline.joins.delete(turnId);
+      if (!this.replaceTimelineContentEntity(agentId, source, adopted)) {
+        if (wasStale) timeline.stale.add(turnId);
+        if (join !== undefined) timeline.joins.set(turnId, join);
+        this.setDetailLoad(agentId, key, undefined);
+        return 'blocked';
+      }
       this.accountContentBody(agentId, source, current);
       this.setDetailLoad(agentId, key, undefined);
       return 'applied';
     } catch (error) {
-      if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return 'blocked';
+      if (this.closed || controller.signal.aborted || this.generationOf(agentId) !== generation) return 'blocked';
       const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
       if (code === 40922 || code === 40923 || code === API_CODES.SESSION_BUSY || code === API_CODES.SESSION_INDEX_BUILDING) {
         return 'retry';
@@ -2734,7 +3243,7 @@ export class SessionController {
 
   private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false): Promise<TranscriptTurn | undefined> {
     const anchor = () => {
-      const items = this.composeAgentSnapshot(agentId).items;
+      const items = this.windowSnapshot(agentId).items;
       const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
       if (index < 0) return undefined;
       return {
@@ -2747,6 +3256,13 @@ export class SessionController {
     let beforeItem: string | undefined;
     let staleRetries = 0;
     const cursors = new Set<string>();
+    const backoff = new PreparingBackoff();
+    // The last answer this read waited on. Progress is an answer that differs
+    // from it: a moved continuation, or a partial turn that changed. The same
+    // partial turn at the same continuation is the server still preparing,
+    // not progress, and must keep backing off instead of polling at the
+    // fastest cadence.
+    let waitedOn: { readonly continuation: string | undefined; readonly turn: TranscriptTurn | undefined } | undefined;
     for (;;) {
       const page = await this.readPreparedContent(() => this.view.transcript.page(
         { agentId, beforeTurn: beforeItem === undefined ? current?.nextTurn?.turnId : undefined, beforeItem, pageSize: 1 },
@@ -2754,7 +3270,7 @@ export class SessionController {
       ), signal);
       if (this.closed || signal.aborted || page.agent_id !== agentId) return undefined;
       if (page.read?.stale !== undefined) {
-        this.historyReads.set(agentId, page.read);
+        this.timeline(agentId).historyRead = page.read;
         this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId), { historyCoverageKind: 'unknown' });
         if (page.read.stale.retry === 'resync') {
           void this.resync();
@@ -2772,8 +3288,12 @@ export class SessionController {
       if (preview !== undefined && (openingOnly ? preview.startedAt !== undefined : preview.stepsPartial !== true)) return preview;
       const budgeted = page.items.length === 0 && page.has_more && (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
       if (budgeted || (preview !== undefined && !openingOnly)) {
-        if (budgeted) beforeItem = page.next_cursor ?? beforeItem;
-        await new Promise<void>((resolve) => { setTimeout(resolve, TOOL_DETAIL_PREPARING_RETRY_MS); });
+        const next = budgeted ? page.next_cursor ?? beforeItem : beforeItem;
+        const answer = { continuation: budgeted ? next : page.next_cursor, turn: preview };
+        if (waitedOn === undefined || !transcriptValueEquals(waitedOn, answer)) backoff.progressed();
+        waitedOn = answer;
+        beforeItem = next;
+        await backoff.wait(signal);
         signal.throwIfAborted();
         continue;
       }
@@ -2812,15 +3332,8 @@ export class SessionController {
   }
 
   private replaceTimelineContentEntity(agentId: string, source: ContentSource, adopted: ContentWindow): boolean {
-    const store = this.agentTranscripts.get(agentId);
-    let installed = store !== undefined && transcriptContentEntity(store, source) !== undefined && replaceAgentContentEntity(store, source, adopted);
-    if (!installed) {
-      const older = this.olderPages.get(agentId);
-      if (older !== undefined && snapshotContentEntity(older, source) !== undefined) {
-        this.olderPages.set(agentId, replaceSnapshotContentEntity(older, source, adopted));
-        installed = true;
-      }
-    }
+    const store = this.timelines.get(agentId)?.store;
+    const installed = store !== undefined && transcriptContentEntity(store, source) !== undefined && replaceAgentContentEntity(store, source, adopted);
     if (!installed) return false;
     this.forestDirtyAgents.add(agentId);
     this.pendingTranscriptAgents.add(agentId);
@@ -2838,22 +3351,10 @@ export class SessionController {
     });
     const store = this.ensureAgentTranscript(agentId);
     const live = store.getTurn(turnId);
-    if (live !== undefined) {
-      const { steps: _steps, ...rest } = live;
-      const header = carryContentHydration(live, { ...rest, contentRefs: contentRefsOf(live) });
-      return store.apply([{ op: 'turn.upsert', turn: header }]).accepted.length > 0;
-    }
-    const older = this.olderPages.get(agentId);
-    if (older === undefined) return false;
-    let changed = false;
-    const items = older.items.map((item) => {
-      if (item.kind !== 'turn' || item.turnId !== turnId) return item;
-      changed = true;
-      return carryContentHydration(item, { ...item, contentRefs: contentRefsOf(item) });
-    });
-    if (!changed) return false;
-    this.olderPages.set(agentId, { ...older, items });
-    return true;
+    if (live === undefined) return false;
+    const { steps: _steps, ...rest } = live;
+    const header = carryContentHydration(live, { ...rest, contentRefs: contentRefsOf(live) });
+    return store.apply([{ op: 'turn.upsert', turn: header }]).accepted.length > 0;
   }
 
   async loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
@@ -2870,7 +3371,7 @@ export class SessionController {
     const rosterBaseline = rootRosterRead ? this.latestSnapshot : undefined;
     if (rootRosterRead && !this.rosterReadInFlight) this.rosterRevisionRefreshes = 0;
     if (!rosterRead) this.contentControllers.set(requestKey, controller);
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
@@ -2878,7 +3379,7 @@ export class SessionController {
         const refs = baseline?.contentRefs ?? [];
         if (!refs.some((current) => sameContentRef(current, ref))) return false;
         const segment = await this.readPreparedContent(() => read({ agentId, ref }, { signal: controller.signal }), controller.signal);
-        if (this.closed || controller.signal.aborted || (!rosterRead && (this.historyGeneration.get(agentId) ?? 0) !== generation)) return false;
+        if (this.closed || controller.signal.aborted || (!rosterRead && this.generationOf(agentId) !== generation)) return false;
         if (segment.next !== undefined && (ref.direction === 'backward' ? segment.next.offset >= ref.offset : segment.next.offset <= ref.offset) ||
           segment.contentRefs.some((candidate) => sameContentRef(candidate, ref)))
           throw new Error('Content segment did not advance its reference');
@@ -2888,9 +3389,9 @@ export class SessionController {
           const patched = applyContentSegment(current, segment);
           if (patched === current) return false;
           this.latestSnapshot = patched;
-          const contentRefs = [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])];
-          this.setState(rosterRead
-            ? { ...this.state, version: this.state.version + 1, snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
+          const contentRefs = stableContentRefs(this.viewOf(MAIN_AGENT_ID).contentRefs, [...collectTranscriptContentRefs(this.windowSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])]);
+          this.setSessionView(rosterRead
+            ? { ...this.sessionView(), snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
             : { ...this.applyTranscriptShellSnapshot(patched), contentRefs });
           this.publishForest();
         } else {
@@ -2900,17 +3401,15 @@ export class SessionController {
             for (const [lookupKey, lookup] of this.toolDetails) {
               if (!lookupKey.startsWith(`${agentId}/`) || lookup.status !== 'found' || lookup.frame.frameId !== ref.source.id || lookup.turnId !== ref.source.turnId || lookup.stepId !== ref.source.stepId) continue;
               const frame = applyContentSegment(lookup.frame, segment);
-              if (frame !== lookup.frame) { this.toolDetails.set(lookupKey, { ...lookup, frame }); applied = true; this.setState({ ...this.state }); }
+              if (frame !== lookup.frame) {
+                this.toolDetails.set(lookupKey, { ...lookup, frame });
+                // The owning agent's publication below reports the change
+                // through the content revision (`toolDetails` counts writes).
+                applied = true;
+              }
             }
           }
           applied = patchAgentTranscriptContent(store, segment) || applied;
-          if (!applied) {
-            const older = this.olderPages.get(agentId);
-            if (older !== undefined) {
-              const patched = patchTranscriptContent(older, segment);
-              if (patched !== older) { this.olderPages.set(agentId, patched); applied = true; }
-            }
-          }
           if (!applied) return false;
           this.forestDirtyAgents.add(agentId);
           this.pendingTranscriptAgents.add(agentId);
@@ -2925,7 +3424,7 @@ export class SessionController {
           !this.closed && !controller.signal.aborted && this.latestSnapshot === rosterBaseline &&
           this.rosterRevisionRefreshes < MAX_ROSTER_REVISION_REFRESHES) {
           this.rosterRevisionRefreshes += 1;
-          await this.refreshRoster(this.state.cursor);
+          await this.refreshRoster(this.shell.cursor);
           if (!this.closed && !controller.signal.aborted && this.latestSnapshot !== rosterBaseline) {
             this.setDetailLoad(agentId, key, undefined);
             return true;
@@ -2952,8 +3451,8 @@ export class SessionController {
                 const continued = await continuedPromise;
                 if (this.closed || controller.signal.aborted) return false;
                 if (continued) return true;
-                const view = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-                const freshDetail = view?.detailLoads[`content:${JSON.stringify(fresh)}`];
+                const view = this.viewOf(agentId);
+                const freshDetail = view.detailLoads[`content:${JSON.stringify(fresh)}`];
                 if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, {
                   status: 'error',
                   message: freshDetail?.status === 'error' ? freshDetail.message : errorMessage(error, 'Could not load the next content segment'),
@@ -2976,9 +3475,9 @@ export class SessionController {
       } finally {
         this.snapshotControllers.delete(controller);
         if (this.contentControllers.get(requestKey) === controller) this.contentControllers.delete(requestKey);
-        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-        if (!this.closed && !controller.signal.aborted && (rosterRead || (this.historyGeneration.get(agentId) ?? 0) === generation) &&
-          current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
+        const current = this.viewOf(agentId);
+        if (!this.closed && !controller.signal.aborted && (rosterRead || this.generationOf(agentId) === generation) &&
+          current.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
       }
     })().finally(() => { if (this.detailReads.get(requestKey) === run) this.detailReads.delete(requestKey); });
     this.detailReads.set(requestKey, run);
@@ -3002,28 +3501,28 @@ export class SessionController {
         todo.notesStatus !== undefined || todo.contentRefs?.some((ref) => ref.path[0] !== 'items') === true ||
         todo.notesMeta === undefined || todo.notesMeta.rev <= (current.notesMeta?.rev ?? -1)) return false;
     const watermark = read.watermark?.transcript;
-    const cursor = this.transcriptCursors.get(agentId);
-    const observed = this.todoReads.get(agentId)?.watermark?.transcript;
+    const cursor = this.timelines.get(agentId)?.cursor;
+    const observed = this.timelines.get(agentId)?.todoRead?.watermark?.transcript;
     return watermark !== undefined && cursor !== undefined && watermark.epoch !== undefined && watermark.epoch === cursor.epoch &&
       watermark.seq >= cursor.seq && (observed === undefined || observed.epoch === watermark.epoch && watermark.seq >= observed.seq);
   }
 
   private observeCanonicalTodoRead(agentId: string, previous: TranscriptTodo | undefined, ops: readonly TranscriptOperation[], cursor: TranscriptCursor): void {
-    const appliedCursor = this.transcriptCursors.get(agentId);
+    const appliedCursor = this.timelines.get(agentId)?.cursor;
     for (const op of ops) {
       if (op.op !== 'todo.upsert' || op.todo.todoId !== 'todo') continue;
       const next = op.todo;
       const advancesNotes = next.notesMeta !== undefined && next.notesMeta.rev > (previous?.notesMeta?.rev ?? -1);
       previous = next;
-      const watermark = this.todoReads.get(agentId)?.watermark?.transcript ?? appliedCursor;
+      const watermark = this.timelines.get(agentId)?.todoRead?.watermark?.transcript ?? appliedCursor;
       const advancesRead = watermark !== undefined && watermark.epoch !== undefined && watermark.epoch === cursor.epoch &&
         cursor.seq > watermark.seq && (appliedCursor === undefined || appliedCursor.epoch === cursor.epoch && cursor.seq > appliedCursor.seq);
       if (!advancesNotes || !advancesRead) continue;
       const complete = next.notes !== undefined && next.notesStatus === undefined &&
         next.contentRefs?.some((ref) => ref.path[0] !== 'items') !== true;
-      this.todoReads.set(agentId, { source: cursor.epoch?.startsWith('cold:') === true ? 'cold' : 'live',
+      this.timeline(agentId).todoRead = { source: cursor.epoch?.startsWith('cold:') === true ? 'cold' : 'live',
         readiness: complete ? 'ready' : 'partial', reason: complete ? undefined : 'source_unverified',
-        watermark: { transcript: cursor } });
+        watermark: { transcript: cursor } };
     }
   }
 
@@ -3034,7 +3533,7 @@ export class SessionController {
     if (this.closed || read === undefined || this.entityPageCursors.get(requestKey) === null) return false;
     const pending = this.detailReads.get(requestKey);
     if (pending !== undefined) return pending;
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const generation = this.generationOf(agentId);
     let cursor = this.entityPageCursors.get(requestKey) ?? undefined;
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
@@ -3042,14 +3541,14 @@ export class SessionController {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
         let page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
-        if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || this.generationOf(agentId) !== generation) return false;
         if (page.read?.stale !== undefined) {
           this.entityPageCursors.delete(requestKey);
           cursor = undefined;
           if (page.read.stale.retry === 'resync') { void this.resync(); return false; }
           page = await this.readAuthoritativeTranscriptContinuation(() => read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal }),
             'Transcript entity continuation is still stale', controller.signal);
-          if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+          if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || this.generationOf(agentId) !== generation) return false;
         }
         const partial = page.read !== undefined && page.read.readiness !== 'ready';
         if (page.has_more && !(partial && page.items.length === 0) && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) {
@@ -3067,26 +3566,26 @@ export class SessionController {
         }
         const applied = store.apply(ops);
         if (applied.accepted.some((op) => op.op === 'todo.upsert' && op.todo.todoId === 'todo')) {
-          if (page.read === undefined) this.todoReads.delete(agentId);
-          else this.todoReads.set(agentId, page.read);
+          if (page.read === undefined) this.timeline(agentId).todoRead = undefined;
+          else this.timeline(agentId).todoRead = page.read;
         }
         this.entityPageCursors.set(requestKey, page.has_more ? page.next_cursor ?? null : null);
         const snapshot = store.snapshot();
         const field = { task: 'tasks', attachment: 'attachments', prompt: 'prompts', interaction: 'interactions', todo: 'todos' }[kind] as 'tasks' | 'attachments' | 'prompts' | 'interactions' | 'todos';
         const count = snapshot[field].length;
         const full = (returned: number) => ({ returned, total: returned, hasMore: false });
-        const previous: NonNullable<AgentTranscriptSnapshot['globalCoverage']> = this.globalCoverage.get(agentId) ?? { version: 1, tasks: full(snapshot.tasks.length), attachments: full(snapshot.attachments.length), prompts: full(snapshot.prompts.length) };
-        this.globalCoverage.set(agentId, { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more } });
+        const previous: NonNullable<AgentTranscriptSnapshot['globalCoverage']> = this.timelines.get(agentId)?.globalCoverage ?? { version: 1, tasks: full(snapshot.tasks.length), attachments: full(snapshot.attachments.length), prompts: full(snapshot.prompts.length) };
+        this.timeline(agentId).globalCoverage = { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more } };
         this.forestDirtyAgents.add(agentId);
         this.publishProjectedAgent(agentId, store);
         return page.items.length > 0;
       } catch (error) {
-        if (!this.closed && !controller.signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
+        if (!this.closed && !controller.signal.aborted && this.generationOf(agentId) === generation) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
-        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-        if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
+        const current = this.viewOf(agentId);
+        if (!this.closed && this.generationOf(agentId) === generation && current.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
       }
     })();
     this.detailReads.set(requestKey, run);
@@ -3098,7 +3597,7 @@ export class SessionController {
 
   /** Fold a detail read into a still-truncated entity or a missing referenced attachment. */
   private applyTranscriptDetail(agentId: string, detail: SessionViewTranscriptDetail): boolean {
-    const store = this.agentTranscripts.get(agentId);
+    const store = this.timelines.get(agentId)?.store;
     if (store === undefined || detail.agent_id !== agentId || detail.kind === 'tool') return false;
     let op: TranscriptOperation | undefined;
     if (detail.kind === 'task') {
@@ -3106,7 +3605,7 @@ export class SessionController {
       if (current?.detailRef !== undefined) op = { op: 'task.upsert', task: detail.task as typeof current };
     } else if (detail.kind === 'attachment') {
       const current = store.getAttachment(detail.attachment.attachmentId);
-      const referenced = this.composeAgentSnapshot(agentId).items.some((item) => item.kind === 'turn' &&
+      const referenced = this.windowSnapshot(agentId).items.some((item) => item.kind === 'turn' &&
         (item.attachmentIds?.includes(detail.attachment.attachmentId) || item.steps.some((step) => step.frames.some((frame) =>
           'attachmentIds' in frame && frame.attachmentIds?.includes(detail.attachment.attachmentId)))));
       if (current?.detailRef !== undefined || (current === undefined && referenced)) op = { op: 'attachment.upsert', attachment: detail.attachment };
@@ -3128,13 +3627,13 @@ export class SessionController {
     key: string,
     status: SessionViewState['detailLoads'][string] | undefined,
   ): void {
-    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+    const current = this.viewOf(agentId);
     const previous = current.detailLoads[key];
     if (previous === status) return;
     const detailLoads = { ...current.detailLoads };
     if (status === undefined) delete detailLoads[key];
     else detailLoads[key] = status;
-    this.publishAgentView(agentId, { ...current, version: current.version + 1, detailLoads });
+    this.publishView(agentId, { ...current, version: current.version + 1, detailLoads });
   }
 
   private applyTranscriptOps(
@@ -3144,9 +3643,9 @@ export class SessionController {
     throughSeq: number,
   ): void {
     const pending = this.pendingTranscriptBatches.get(agentId);
-    const last = pending?.cursor ?? this.transcriptCursors.get(agentId);
+    const last = pending?.cursor ?? this.timelines.get(agentId)?.cursor;
     if (last?.epoch !== undefined && cursor.epoch !== undefined && cursor.epoch !== last.epoch) {
-      if (this.state.resyncError?.retryable !== false) void this.resync();
+      if (this.shell.resyncError?.retryable !== false) void this.resync();
       return;
     }
     const seenThrough = pending === undefined ? last?.seq : Math.max(pending.cursor.seq, pending.throughSeq);
@@ -3181,7 +3680,7 @@ export class SessionController {
         ? { seq: batch.throughSeq, epoch: batch.cursor.epoch }
         : batch.cursor;
     const store = this.ensureAgentTranscript(agentId);
-    const priorCursor = this.transcriptCursors.get(agentId);
+    const priorCursor = this.timelines.get(agentId)?.cursor;
     const changedTasks = new Set(batch.ops.flatMap((op) => op.op === 'task.upsert' &&
       op.task.kind === 'subagent' && store.getTask(op.task.taskId)?.state !== op.task.state ? [op.task.taskId] : []));
     const previousTodo = store.getTodo('todo');
@@ -3202,7 +3701,8 @@ export class SessionController {
     }
     this.observeCanonicalTodoRead(agentId, previousTodo, result.accepted, batch.cursor);
     this.recordToolCountSpan(agentId, priorCursor, resumeCursor, result.toolCallCountDelta);
-    this.transcriptCursors.set(agentId, resumeCursor);
+    this.noteAppliedOps(this.timeline(agentId), result.accepted, resumeCursor, this.timelines.get(agentId)?.appliedGrade ?? gradeFor(this.transcriptGrades, agentId));
+    this.timeline(agentId).cursor = resumeCursor;
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
     const adoptedCount = this.adoptToolCountObservation(agentId);
     if (result.accepted.length > 0 || adoptedCount) {
@@ -3227,9 +3727,9 @@ export class SessionController {
       // A spawn names an agent the viewer has no roster row for; the row (role
       // profile and model) rides the session snapshot, not this op stream.
       this.requestRosterRows(subagentAgentsInOps(result.accepted), undefined, true);
-      if (this.state.agentCounts !== undefined && result.accepted.some((op) =>
+      if (this.shell.agentCounts !== undefined && result.accepted.some((op) =>
         op.op === 'task.upsert' && changedTasks.has(op.task.taskId) && op.task.agentId !== undefined,
-      )) void this.refreshRoster(this.state.cursor);
+      )) void this.refreshRoster(this.shell.cursor);
       this.pendingTranscriptAgents.add(agentId);
     }
     return true;
@@ -3250,19 +3750,19 @@ export class SessionController {
   }
 
   private async runCatchUpAgent(agentId: string): Promise<void> {
-    if (this.closed || this.resyncInFlight || this.rewriteHold !== undefined || this.state.resyncError?.retryable === false) return;
-    const generation = this.historyGeneration.get(agentId) ?? 0;
+    if (this.closed || this.resyncInFlight || this.rewriteHold !== undefined || this.shell.resyncError?.retryable === false) return;
+    const generation = this.generationOf(agentId);
     const controller = new AbortController();
     this.catchupControllers.set(agentId, controller);
     const isCurrent = (): boolean => !this.closed && !this.isSuspended && !controller.signal.aborted &&
-      (this.historyGeneration.get(agentId) ?? 0) === generation;
+      this.generationOf(agentId) === generation;
     try {
       if (!this.hasTranscriptBaseline(agentId)) {
         this.catchupReplay.delete(agentId);
         await this.resync();
         return;
       }
-      const last = this.transcriptCursors.get(agentId) ?? { seq: 0 };
+      const last = this.timelines.get(agentId)?.cursor ?? { seq: 0 };
       const grade = gradeFor(this.transcriptGrades, agentId);
       let result = await this.view.transcript.catchUp({ agentId, since: last, grade: grade === 'off' ? 'turn' : grade }, { signal: controller.signal });
       const pages = [result];
@@ -3305,15 +3805,17 @@ export class SessionController {
       let changed = recovered.accepted.length > 0;
       if (opsAffectForest(recovered.accepted)) this.forestDirtyAgents.add(agentId);
       let cursor: TranscriptCursor = { seq: result.through_seq, epoch: result.epoch };
-      const live = this.transcriptCursors.get(agentId);
+      const live = this.timelines.get(agentId)?.cursor;
       if (live !== undefined && live.epoch === result.epoch && live.seq > cursor.seq) {
         cursor = live;
       }
       const pending = this.catchupReplay.get(agentId);
       this.catchupReplay.delete(agentId);
+      let retried: readonly TranscriptOperation[] = [];
       if (pending !== undefined) {
         const previousTodo = store.getTodo('todo');
         const retry = this.applyAgentTranscriptOps(agentId, store, pending.ops);
+        retried = retry.accepted;
         if (retry.gap !== undefined) {
           await this.resync();
           return;
@@ -3324,7 +3826,8 @@ export class SessionController {
         if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);
       }
       this.toolCountSpans.delete(agentId);
-      this.transcriptCursors.set(agentId, cursor);
+      this.noteAppliedOps(this.timeline(agentId), [...recovered.accepted, ...retried], cursor, grade === 'off' ? 'turn' : grade);
+      this.timeline(agentId).cursor = cursor;
       this.viewHandle?.updateTranscriptCursor(agentId, cursor);
       const adoptedCount = this.adoptToolCountObservation(agentId);
       if (changed || adoptedCount) {
@@ -3344,17 +3847,7 @@ export class SessionController {
     const removed = new Set<string>();
     for (const op of ops) if (op.op === 'items.remove') for (const id of op.ids) removed.add(id);
     const planned: { key: string; turnId: string }[] = [];
-    const removedRetained = new Set<string>();
     if (removed.size > 0) {
-      const older = this.olderPages.get(agentId);
-      for (const item of older?.items ?? []) if (removed.has(itemId(item))) removedRetained.add(itemId(item));
-      if (older !== undefined && removedRetained.size > 0) {
-        const retained = new AgentTranscript(agentId);
-        retained.apply([{ op: 'reset', agentId, snapshot: older }]);
-        planned.push(...this.residentToolDetailsOnTurns(agentId, retained, removedRetained));
-        retained.apply([{ op: 'items.remove', ids: [...removedRetained] }]);
-        this.olderPages.set(agentId, retained.snapshot());
-      }
       planned.push(...this.residentToolDetailsOnTurns(agentId, store, removed));
       for (const op of ops) {
         if (op.op === 'frame.upsert' && op.frame.kind === 'tool' && removed.has(op.turnId)) planned.push({ key: `${agentId}/${op.frame.toolCallId}`, turnId: op.turnId });
@@ -3365,24 +3858,22 @@ export class SessionController {
       }
     }
     const result = store.apply(ops);
-    const retainedRemovals = ops.filter((op) => op.op === 'items.remove' && op.ids.some((id) => removedRetained.has(id)) && !result.accepted.includes(op));
-    const acceptedOps = retainedRemovals.length === 0 ? result.accepted : [...result.accepted, ...retainedRemovals];
     if (removed.size > 0) {
       const accepted = new Set<string>();
-      for (const op of acceptedOps) if (op.op === 'items.remove') for (const id of op.ids) accepted.add(id);
+      for (const op of result.accepted) if (op.op === 'items.remove') for (const id of op.ids) accepted.add(id);
       const keys = new Set<string>();
       for (const entry of planned) if (accepted.has(entry.turnId)) keys.add(entry.key);
       for (const key of keys) this.invalidateToolDetail(key);
       if (accepted.size > 0) {
-        for (const id of accepted) this.historyPreviewPages.delete(`${agentId}/${id}`);
+        this.forgetWindowItems(agentId, accepted);
         for (const [key, entry] of this.contentBodies) if (entry.agentId === agentId &&
           (entry.source.kind === 'turn' && accepted.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && accepted.has(entry.source.turnId))) this.contentBodies.delete(key);
-        this.olderPageCursors.delete(agentId);
-        if (accepted.has(this.olderPageTurns.get(agentId) ?? '')) this.olderPageTurns.delete(agentId);
+        this.timeline(agentId).olderCursor = undefined;
+        if (accepted.has(this.timelines.get(agentId)?.olderTurn ?? '')) this.timeline(agentId).olderTurn = undefined;
         this.cancelHistoryRead(agentId);
       }
     }
-    return retainedRemovals.length === 0 ? result : { ...result, accepted: acceptedOps };
+    return result;
   }
 
   private residentToolDetailsOnTurns(agentId: string, store: AgentTranscript, turnIds: ReadonlySet<string>): { key: string; turnId: string }[] {
@@ -3407,7 +3898,7 @@ export class SessionController {
   }
 
   private bumpHistoryGeneration(agentId: string): void {
-    this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
+    this.timeline(agentId).generation += 1;
     for (const [key, target] of this.contentReaders) if (target.agentId === agentId) {
       this.retireContentRead(key);
       target.ref = undefined;
@@ -3419,10 +3910,6 @@ export class SessionController {
       this.setDetailLoad(agentId, requestKey.slice(agentId.length + 1), undefined);
     }
     void this.pumpContentReads();
-    for (const [key, flight] of this.historyPreviewReads) if (flight.agentId === agentId) {
-      this.historyPreviewReads.delete(key);
-      flight.controller.abort();
-    }
     for (const [key, flight] of this.toolDetailReads) if (key.startsWith(`${agentId}/`)) { this.toolDetailReads.delete(key); flight.controller.abort(); }
     for (const key of this.toolDetails.keys()) if (key.startsWith(`${agentId}/`)) this.toolDetails.delete(key);
     for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
@@ -3446,8 +3933,8 @@ export class SessionController {
   private adoptToolCountObservation(agentId: string): boolean {
     const observation = this.toolCountObservations.get(agentId);
     if (observation === undefined) return false;
-    const store = this.agentTranscripts.get(agentId);
-    const current = this.transcriptCursors.get(agentId);
+    const store = this.timelines.get(agentId)?.store;
+    const current = this.timelines.get(agentId)?.cursor;
     if (store === undefined || current === undefined || current.epoch === undefined || current.epoch !== observation.cursor.epoch) {
       this.toolCountObservations.delete(agentId);
       return false;
@@ -3476,7 +3963,7 @@ export class SessionController {
   }
 
   private recordToolCountSpan(agentId: string, from: TranscriptCursor | undefined, through: TranscriptCursor, delta: number | undefined): void {
-    if (this.agentTranscripts.get(agentId)?.snapshot().toolCallCount !== undefined) {
+    if (this.timelines.get(agentId)?.store?.snapshot().toolCallCount !== undefined) {
       this.toolCountSpans.delete(agentId);
       return;
     }
@@ -3489,29 +3976,274 @@ export class SessionController {
   }
 
   private ensureAgentTranscript(agentId: string): AgentTranscript {
-    const existing = this.agentTranscripts.get(agentId);
-    if (existing !== undefined) return existing;
-    const created = new AgentTranscript(agentId);
-    this.agentTranscripts.set(agentId, created);
-    return created;
+    const timeline = this.timeline(agentId);
+    if (timeline.store !== undefined) return timeline.store;
+    const store = new AgentTranscript(agentId);
+    timeline.store = store;
+    this.storeTimelines.add(timeline as StoredTimeline);
+    return store;
   }
 
-  private composeAgentSnapshot(agentId: string): AgentTranscriptSnapshot {
-    const live = this.ensureAgentTranscript(agentId).snapshot();
-    const older = this.olderPages.get(agentId);
-    if (older === undefined) {
-      this.composedSnapshots.delete(agentId);
-      return live;
+  /** The agent's window as one snapshot (the store's, unchanged objects reused). */
+  private windowSnapshot(agentId: string): AgentTranscriptSnapshot {
+    return this.ensureAgentTranscript(agentId).snapshot();
+  }
+
+  /**
+   * Decide what a reset leaves of the held window. The reset defines the
+   * items of its own range; the window keeps what it holds before that range
+   * when the two are contiguous (a held turn reaches the reset's oldest one,
+   * or the turn just before it) and comparable (same epoch, not built at a
+   * lower grade than the reset's). A disjoint window — more happened while
+   * the client was not receiving than the reset carries — could only be kept
+   * as a window with a hole, so it is dropped and counts as older history not
+   * loaded. Inside the range a held copy read later than the reset (a page
+   * that raced ahead of the stream) is kept, and a turn-grade reset, which
+   * carries no steps, keeps the held steps under its new header.
+   */
+  private resetWindow(timeline: AgentTimeline, store: AgentTranscript, snapshot: AgentTranscriptSnapshot,
+    coverage: TranscriptCoverage, cursor: TranscriptCursor, grade: TranscriptGrade): ResetWindow {
+    const heldItems = store.getItems();
+    const held = { items: heldItems, hasMoreOlder: store.hasMoreOlder };
+    const continuity = heldItems.length > 0 && (timeline.windowEpoch === undefined || timeline.windowEpoch === cursor.epoch);
+    const windowGrade = timeline.windowGrade;
+    const lowered = continuity && grade === 'turn' && windowGrade !== undefined && GRADE_RANK[windowGrade] > GRADE_RANK.turn;
+    const raisedAbove = continuity && windowGrade !== undefined && GRADE_RANK[grade] > GRADE_RANK[windowGrade] &&
+      GRADE_RANK[windowGrade] <= GRADE_RANK.turn;
+    const heldByKey = new Map(continuity ? heldItems.map((item) => [windowItemKey(item), item] as const) : []);
+    const heldWins = new Set<string>();
+    const staleTurns = new Set<string>();
+    const incoming = snapshot.items.map((item): TranscriptItem => {
+      const key = windowItemKey(item);
+      const heldItem = heldByKey.get(key);
+      if (heldItem === undefined) {
+        if (lowered && item.kind === 'turn') staleTurns.add(item.turnId);
+        return item;
+      }
+      if (!readMarkWins(cursor, timeline.marks.get(key))) {
+        heldWins.add(key);
+        return heldItem;
+      }
+      // An unknown-coverage reset merges into the store without replacing
+      // what it holds, so the copy kept here must already carry the bodies
+      // read for unchanged content (a covered reset's own merge does that).
+      if (item.kind !== 'turn' || heldItem.kind !== 'turn') {
+        return coverage.kind === 'unknown' && item.kind === 'marker' && heldItem.kind === 'marker' ? mergeContentPreview(heldItem, item) : item;
+      }
+      let next: TranscriptTurn = coverage.kind === 'unknown' ? refreshTurn(heldItem, item) : item;
+      if (grade === 'turn' && heldItem.steps.length > 0) {
+        const { steps: _steps, ...header } = item;
+        next = carryContentHydration(heldItem, { ...header, steps: heldItem.steps, stepsPartial: heldItem.stepsPartial,
+          contentRefs: [
+            ...(heldItem.contentRefs ?? []).filter((ref) => ref.path[0] === 'steps'),
+            ...(item.contentRefs ?? []).filter((ref) => ref.path[0] !== 'steps'),
+          ] });
+      }
+      if (lowered && !transcriptValueEquals(heldItem, next)) staleTurns.add(item.turnId);
+      return next;
+    });
+    const resetKeys = new Set(incoming.map(windowItemKey));
+    const firstTurn = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn');
+    const fromTurnId = coverage.kind === 'tail' ? coverage.fromTurnId : undefined;
+    const fromOrdinal = fromTurnId === undefined ? firstTurn?.ordinal
+      : snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === fromTurnId)?.ordinal ?? turnOrdinal(fromTurnId);
+    const from = fromOrdinal !== undefined && Number.isFinite(fromOrdinal) ? fromOrdinal : firstTurn?.ordinal;
+    let kept: TranscriptItem[] = [];
+    if (continuity && coverage.kind !== 'full' && !raisedAbove &&
+        (from === undefined || heldItems.some((item) => item.kind === 'turn' && item.ordinal >= from - 1))) {
+      const boundary = from === undefined ? -1 : heldItems.findIndex((item) => item.kind === 'turn' && item.ordinal >= from);
+      const end = boundary < 0 ? heldItems.length : boundary;
+      kept = heldItems.filter((item, index) => !resetKeys.has(windowItemKey(item)) && (index < end || coverage.kind === 'unknown'));
+      // A held turn older than the reset's oldest can no longer be running:
+      // another turn started after it.
+      for (const item of kept) if (item.kind === 'turn' && item.state === 'running' && from !== undefined && item.ordinal < from) staleTurns.add(item.turnId);
     }
-    const cached = this.composedSnapshots.get(agentId);
-    if (cached?.older === older && cached.live.items === live.items && cached.live.tasks === live.tasks &&
-        cached.live.interactions === live.interactions && cached.live.attachments === live.attachments &&
-        cached.live.todos === live.todos && cached.live.prompts === live.prompts && cached.live.meta === live.meta &&
-        cached.live.toolCallCount === live.toolCallCount && cached.live.toolCallCountKnown === live.toolCallCountKnown &&
-        cached.live.hasMoreOlder === live.hasMoreOlder) return cached.snapshot;
-    const snapshot = prependOlderTranscriptSnapshot(live, older);
-    this.composedSnapshots.set(agentId, { live, older, snapshot });
-    return snapshot;
+    return { held, continuity, full: coverage.kind === 'full', lowered, incoming, resetKeys, heldWins, kept, staleTurns };
+  }
+
+  /** Bring the window's read marks and gap bookkeeping in line with what a reset left. */
+  private settleWindowAfterReset(timeline: AgentTimeline, store: AgentTranscript, window: ResetWindow, cursor: TranscriptCursor, grade: TranscriptGrade): void {
+    const items = store.getItems();
+    const marks = new Map<string, ReadMark>();
+    const present = new Set<string>();
+    for (const item of items) {
+      const key = windowItemKey(item);
+      present.add(key);
+      const previous = timeline.marks.get(key);
+      if (window.resetKeys.has(key) && !window.heldWins.has(key)) marks.set(key, cursor);
+      else if (previous !== undefined) marks.set(key, previous);
+    }
+    timeline.marks = marks;
+    const replaced = (turnId: string): boolean => window.resetKeys.has(`turn:${turnId}`) && !window.heldWins.has(`turn:${turnId}`);
+    const stale = new Set<string>();
+    if (window.continuity) for (const turnId of timeline.stale) if (present.has(`turn:${turnId}`) && !replaced(turnId)) stale.add(turnId);
+    for (const turnId of window.staleTurns) if (present.has(`turn:${turnId}`)) stale.add(turnId);
+    timeline.stale = stale;
+    const joins = new Map<string, string | null>();
+    if (window.continuity) for (const [turnId, join] of timeline.joins) if (present.has(`turn:${turnId}`) && !replaced(turnId)) joins.set(turnId, join);
+    timeline.joins = joins;
+    if (!window.lowered) timeline.windowGrade = grade === 'off' ? timeline.windowGrade : grade;
+    timeline.windowEpoch = cursor.epoch;
+    if (window.kept.length === 0) {
+      timeline.pagedPin = undefined;
+      timeline.readerVisitedOld = false;
+    }
+    // Held turns the reset leaves out still exist (same epoch, a window that
+    // does not reach back to them): they keep telling the agent tree which
+    // children they spawned. A whole-history reset or a new epoch says it all.
+    if (!window.continuity || window.full) timeline.relations = [];
+    else timeline.relations = [...timeline.relations, ...relationStubs(window.held.items.filter((item) => !present.has(windowItemKey(item))))];
+    timeline.relations = timeline.relations.filter((turn) => !present.has(`turn:${turn.turnId}`));
+    timeline.refreshing = false;
+  }
+
+  /**
+   * Place an older page in the agent's window, by the server's ordering.
+   * Where the window holds the same item, the copy read later wins
+   * (`readMarkWins`; a page without a watermark counts as read at the cursor
+   * the window had when it was asked for). Pages are read at the full grade,
+   * so a turn a page decides is no longer stale. The window's older edge
+   * becomes the page's, and the window is pinned until the reader has been
+   * seen reading the paged history (`pagedPin`).
+   */
+  private placeOlderPage(agentId: string, store: AgentTranscript, page: AgentTranscriptResponse, mark: ReadMark | undefined): void {
+    const timeline = this.timeline(agentId);
+    const held = new Set(store.getItems().map(windowItemKey));
+    const oldestHeld = store.getItems().find((item): item is TranscriptTurn => item.kind === 'turn')?.ordinal;
+    const decided = new Set<string>();
+    const items = placeTranscriptItems(store.getItems(), page.items as readonly TranscriptItem[], (resident, incoming) => {
+      const key = windowItemKey(incoming);
+      const fresher = readMarkWins(mark, timeline.marks.get(key));
+      if (resident.kind !== 'turn' || incoming.kind !== 'turn') {
+        if (fresher) decided.add(key);
+        return resolveItemCopies(resident, incoming, fresher);
+      }
+      const resolved = resolveTurnCopies(resident, incoming, fresher);
+      if (resolved.join !== undefined) timeline.joins.set(incoming.turnId, resolved.join);
+      if (resolved.fromIncoming) decided.add(key);
+      return resolved.turn;
+    });
+    for (const item of page.items as readonly TranscriptItem[]) {
+      const key = windowItemKey(item);
+      if (held.has(key) && !decided.has(key)) continue;
+      if (mark === undefined) timeline.marks.delete(key);
+      else timeline.marks.set(key, mark);
+      if (item.kind === 'turn' && held.has(key)) {
+        timeline.stale.delete(item.turnId);
+        timeline.joins.delete(item.turnId);
+      }
+    }
+    store.replaceItems(items, page.has_more);
+    const attachments = (page.attachments ?? []).filter((attachment) => store.getAttachment(attachment.attachmentId) === undefined);
+    if (attachments.length > 0) store.apply(attachments.map((attachment) => ({ op: 'attachment.upsert', attachment }) as const));
+    timeline.relations = timeline.relations.filter((turn) => store.getTurn(turn.turnId) === undefined);
+    if (timeline.windowEpoch === undefined && mark?.epoch !== undefined) timeline.windowEpoch = mark.epoch;
+    if (timeline.pagedPin === undefined) {
+      timeline.pagedPin = oldestHeld ?? Number.POSITIVE_INFINITY;
+      timeline.readerVisitedOld = false;
+    }
+  }
+
+  /** Forget the bookkeeping of items that left the window (removed by the server). */
+  private forgetWindowItems(agentId: string, ids: Iterable<string>): void {
+    const timeline = this.timelines.get(agentId);
+    if (timeline === undefined) return;
+    const removed = new Set(ids);
+    for (const id of removed) {
+      for (const kind of ['turn', 'marker', 'taskref']) timeline.marks.delete(`${kind}:${id}`);
+      timeline.stale.delete(id);
+      timeline.joins.delete(id);
+    }
+    if (timeline.relations.some((turn) => removed.has(turn.turnId))) timeline.relations = timeline.relations.filter((turn) => !removed.has(turn.turnId));
+  }
+
+  /**
+   * Record which held items a batch of applied ops decided, at the cursor it
+   * brought the window to. Ops received below the grade the window was built
+   * at (`turn` carries headers, no steps) leave every turn they touch stale.
+   */
+  private noteAppliedOps(timeline: AgentTimeline, ops: readonly TranscriptOperation[], cursor: TranscriptCursor, grade: TranscriptGrade | undefined): void {
+    const lowered = grade === 'turn' && timeline.windowGrade !== undefined && GRADE_RANK[timeline.windowGrade] > GRADE_RANK.turn;
+    for (const op of ops) {
+      const key = opItemKey(op);
+      if (key === undefined) continue;
+      timeline.marks.set(key, cursor);
+      if (lowered && key.startsWith('turn:')) timeline.stale.add(key.slice(5));
+    }
+    if (timeline.windowEpoch === undefined) timeline.windowEpoch = cursor.epoch;
+  }
+
+  /** Whether the agent's window holds this turn only in part (a published gap). */
+  private turnHasGap(agentId: string, turnId: string): boolean {
+    const timeline = this.timelines.get(agentId);
+    const turn = timeline?.store?.getTurn(turnId);
+    return turn !== undefined && turnGapOf(turn, timeline!.stale.has(turnId), timeline!.joins.get(turnId)) !== undefined;
+  }
+
+  /**
+   * Keep the window bounded while its reader follows the tail. Once more than
+   * `WINDOW_TRIM_ABOVE_TURNS` turns are held, the oldest are released down to
+   * the newest `WINDOW_KEEP_TURNS`, and become older history not loaded: the
+   * next older read pages them in again from the new oldest turn. The reader
+   * follows the tail when a timeline row of one of the two newest turns is
+   * mounted and none of a turn older than the kept ones; nothing is released
+   * while no row is mounted at all (a view that never reports rows — the
+   * terminal UI — keeps everything, as before), while older history is being
+   * read or was paged in and not yet visited (`pagedPin`), or while a content
+   * or structure read holds an older turn. A running turn is never released.
+   */
+  private trimWindow(agentId: string, timeline: AgentTimeline, store: AgentTranscript): boolean {
+    const items = store.getItems();
+    const turns: TranscriptTurn[] = [];
+    for (const item of items) if (item.kind === 'turn') turns.push(item);
+    if (turns.length <= WINDOW_TRIM_ABOVE_TURNS || timeline.paging > 0 || timeline.viewLeases.size === 0) return false;
+    let cut = turns.length - WINDOW_KEEP_TURNS;
+    const position = new Map(turns.map((turn, index) => [turn.turnId, index]));
+    let atTail = false;
+    for (const turnId of timeline.viewLeases.keys()) {
+      const index = position.get(turnId);
+      if (index === undefined) continue;
+      if (index < cut) return false;
+      if (index >= turns.length - 2) atTail = true;
+    }
+    if (!atTail) return false;
+    if (timeline.pagedPin !== undefined) {
+      if (!timeline.readerVisitedOld) return false;
+      timeline.pagedPin = undefined;
+      timeline.readerVisitedOld = false;
+    }
+    const older = (turnId: string | undefined): boolean => turnId !== undefined && (position.get(turnId) ?? Number.POSITIVE_INFINITY) < cut;
+    for (const target of this.contentReaders.values()) {
+      if (target.agentId !== agentId || target.readers === 0) continue;
+      if (older(target.source.kind === 'turn' ? target.source.id : target.source.kind === 'frame' ? target.source.turnId : undefined)) return false;
+    }
+    const prefix = `${agentId}/content:`;
+    for (const key of this.contentControllers.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const source = (JSON.parse(key.slice(prefix.length)) as ContentRef).source;
+      if (older(source.kind === 'turn' ? source.id : source.kind === 'frame' ? source.turnId : undefined)) return false;
+    }
+    const running = turns.findIndex((turn, index) => index < cut && turn.state === 'running');
+    if (running >= 0) cut = running;
+    if (cut <= 0) return false;
+    const released = store.releaseBefore(turns[cut]!.turnId);
+    if (released.length === 0) return false;
+    const ids = released.map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId);
+    this.forgetWindowItems(agentId, ids);
+    const relations = relationStubs(released);
+    if (relations.length > 0) timeline.relations = [...timeline.relations, ...relations];
+    const gone = new Set(ids);
+    const view = timeline.view;
+    if (view !== undefined && Object.keys(view.detailLoads).some((key) => key.startsWith('structure:') && gone.has(key.slice('structure:'.length)))) {
+      timeline.view = { ...view, detailLoads: Object.fromEntries(Object.entries(view.detailLoads)
+        .filter(([key]) => !key.startsWith('structure:') || !gone.has(key.slice('structure:'.length)))) };
+    }
+    for (const [key, entry] of this.contentBodies) if (entry.agentId === agentId &&
+      (entry.source.kind === 'turn' && gone.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && gone.has(entry.source.turnId))) this.contentBodies.delete(key);
+    timeline.olderCursor = undefined;
+    timeline.olderTurn = turns[cut]!.turnId;
+    this.forestDirtyAgents.add(agentId);
+    return true;
   }
 
   private publishProjectedAgent(
@@ -3522,17 +4254,22 @@ export class SessionController {
       readonly transcriptReset?: boolean;
     },
   ): void {
-    const snapshot = this.composeAgentSnapshot(agentId);
-    const previousBase =
-      agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+    const timeline = this.timeline(agentId);
+    const trimmed = this.trimWindow(agentId, timeline, this.ensureAgentTranscript(agentId));
+    const snapshot = this.windowSnapshot(agentId);
+    // Every agent's projection reads the session roster, for subagent cards.
+    const previousBase = this.viewOf(agentId);
     const previous =
-      previousBase.snapshotSubagents === this.state.snapshotSubagents
+      previousBase.snapshotSubagents === this.shell.snapshotSubagents
         ? previousBase
-        : { ...previousBase, snapshotSubagents: this.state.snapshotSubagents };
+        : { ...previousBase, snapshotSubagents: this.shell.snapshotSubagents };
     let next = projectAgentTranscriptView(previous, agentId, snapshot, {
       retainPendingPrompts: options?.retainPendingPrompts,
-      cold: this.transcriptCursors.get(agentId)?.epoch?.startsWith('cold:') === true,
+      cold: timeline.cursor?.epoch?.startsWith('cold:') === true,
+      gapOf: (turn) => turnGapOf(turn, timeline.stale.has(turn.turnId), timeline.joins.get(turn.turnId)),
     });
+    // A trim makes history older than the window not loaded again.
+    if (trimmed && next.historyCoverageKind === 'full') next = { ...next, historyCoverageKind: 'tail' };
     if (agentId === MAIN_AGENT_ID) {
       for (const prompt of snapshot.prompts) this.unprojectedQueueReceipts.delete(prompt.promptId);
       for (const receipt of this.unprojectedQueueReceipts.values()) {
@@ -3562,47 +4299,55 @@ export class SessionController {
             olderError: Object.hasOwn(options, 'olderError') ? options.olderError : next.olderError,
             historyCoverageKind: options.historyCoverageKind ?? next.historyCoverageKind,
           };
-    const globalCoverage = this.globalCoverage.get(agentId);
-    const contentRefs = [...collectTranscriptContentRefs(snapshot), ...(agentId === MAIN_AGENT_ID ? this.latestSnapshot?.contentRefs ?? [] : [])];
-    const withCoverage = { ...projected, globalCoverage, contentRefs, historyRead: this.historyReads.get(agentId), todoRead: this.todoReads.get(agentId), transcriptReady: this.hasTranscriptBaseline(agentId) };
+    // Main's view also carries the session snapshot's content refs (the
+    // roster's), whose reads are keyed on main.
+    const contentRefs = stableContentRefs(previous.contentRefs, [...collectTranscriptContentRefs(snapshot), ...(agentId === MAIN_AGENT_ID ? this.latestSnapshot?.contentRefs ?? [] : [])]);
+    const transcriptReady = this.transcriptPresentable(agentId);
+    const withCoverage = { ...projected, globalCoverage: timeline.globalCoverage, contentRefs, historyRead: timeline.historyRead, todoRead: timeline.todoRead,
+      transcriptReady, refreshing: transcriptReady && timeline.refreshing };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;
-    const cursor = this.transcriptCursors.get(agentId);
-    if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
+    if (timeline.cursor !== undefined) timeline.publishedCursor = timeline.cursor;
     this.adoptAcceptedSteers(agentId, withCoverage);
-    this.publishAgentView(agentId, withCoverage);
+    // A projection of main's timeline also means the session has loaded: the
+    // first reset may arrive before the session snapshot does.
+    if (agentId === MAIN_AGENT_ID && (!this.shell.loaded || this.shell.loadError !== undefined)) {
+      this.setShell({ ...this.shell, version: this.shell.version + 1, loaded: true, loadError: undefined }, false);
+    }
+    this.publishView(agentId, withCoverage);
     if (this.contentReaders.size > 0) void this.pumpContentReads();
-    if (forestChanged && agentId !== MAIN_AGENT_ID) {
-      this.setState({ ...this.state, version: this.state.version + 1 });
-    }
-  }
-
-  private publishAgentView(agentId: string, next: SessionViewState): void {
-    if (agentId === MAIN_AGENT_ID) {
-      this.setState(next);
-    } else {
-      this.agentStates.set(agentId, next);
-      this.dirtyAgents.add(agentId);
-      this.publishAgents();
-    }
+    // The forest is session-level: a change another agent's projection made
+    // is published with the shell, which `subscribe` listeners hear (main's
+    // own publication just carried it).
+    if (forestChanged && agentId !== MAIN_AGENT_ID) this.publishShell();
   }
 
   forestPublishCount = 0;
 
   private publishForest(): boolean {
     const snapshots = new Map<string, AgentTranscriptSnapshot>();
-    for (const [agentId] of this.agentTranscripts) {
-      snapshots.set(agentId, this.composeAgentSnapshot(agentId));
+    for (const timeline of this.storeTimelines) {
+      const window = timeline.store.snapshot();
+      if (timeline.relations.length === 0) {
+        snapshots.set(timeline.agentId, window);
+        continue;
+      }
+      // Trimmed turns still say which children this agent spawned, and when.
+      const cached = timeline.forestInput;
+      if (cached?.relations !== timeline.relations || cached.window !== window) {
+        timeline.forestInput = { relations: timeline.relations, window, snapshot: { ...window, items: [...timeline.relations, ...window.items] } };
+      }
+      snapshots.set(timeline.agentId, timeline.forestInput!.snapshot);
     }
     const previous = this.publishedForest;
-    const coldAgents = new Set([...this.transcriptCursors].filter(([, cursor]) => cursor.epoch?.startsWith('cold:') === true).map(([agentId]) => agentId));
+    const coldAgents = new Set([...this.timelines.values()].filter(({ cursor }) => cursor?.epoch?.startsWith('cold:') === true).map(({ agentId }) => agentId));
     const rosterCurrentAgents = new Set<string>();
     for (const [agentId, binding] of this.rosterTranscriptBindings) {
-      if (binding === this.agentTranscripts.get(agentId)?.getMeta().agent) rosterCurrentAgents.add(agentId);
+      if (binding === this.timelines.get(agentId)?.store?.getMeta().agent) rosterCurrentAgents.add(agentId);
       else this.rosterTranscriptBindings.delete(agentId);
     }
-    this.publishedForest = this.forestQuery.read(snapshots, this.state.snapshotSubagents, coldAgents, rosterCurrentAgents);
+    this.publishedForest = this.forestQuery.read(snapshots, this.shell.snapshotSubagents, coldAgents, rosterCurrentAgents);
     this.forestPublishCount += 1;
     return previous !== this.publishedForest;
   }
@@ -3688,19 +4433,19 @@ export class SessionController {
     }
     if (result.admission !== undefined) {
       this.setDurableIngress([
-        ...(this.state.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
+        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
         result,
       ]);
     }
     const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
-    const canonical = this.agentTranscripts.get(MAIN_AGENT_ID)?.getPrompt(result.prompt_id);
+    const canonical = this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(result.prompt_id);
     if (coreAdmitted && result.status === 'queued' && canonical === undefined) {
       this.unprojectedQueueReceipts.set(result.prompt_id, result);
     }
     if (!coreAdmitted || admissionRejected || canonical !== undefined) return result;
     const projection = projectMessageContent(result.content);
-    this.setState(
-      appendLocalUserMessage(this.state, {
+    this.publishView(MAIN_AGENT_ID,
+      appendLocalUserMessage(this.viewOf(MAIN_AGENT_ID), {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
         text: projection.text === '' ? input.text : projection.text,
@@ -3721,7 +4466,7 @@ export class SessionController {
    * past it (another client edited/forked first).
    */
   private expectedCursor(): SessionCursor {
-    return { seq: this.state.cursor.seq, epoch: this.state.cursor.epoch };
+    return { seq: this.shell.cursor.seq, epoch: this.shell.cursor.epoch };
   }
 
   /**
@@ -3802,7 +4547,7 @@ export class SessionController {
       operation = undefined;
     }
     if (operation?.flight !== undefined) return operation.flight;
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     if (operation === undefined) {
       operation = { fingerprint, body: { ...input, operation_id: newSteerPromptId(), expected_cursor: this.expectedCursor() } };
       this.messageRewrites.set(key, operation);
@@ -3851,8 +4596,8 @@ export class SessionController {
   }
 
   private unansweredPromptContent(promptId: string, afterAbort = false): readonly MessageContent[] | undefined {
-    const store = this.agentTranscripts.get(MAIN_AGENT_ID);
-    if (store === undefined || this.appliedTranscriptGrades.get(MAIN_AGENT_ID) !== 'delta') return undefined;
+    const store = this.timelines.get(MAIN_AGENT_ID)?.store;
+    if (store === undefined || this.timelines.get(MAIN_AGENT_ID)?.appliedGrade !== 'delta') return undefined;
     const snapshot = store.snapshot();
     const prompt = snapshot.prompts.find((item) => item.promptId === promptId);
     if (prompt === undefined || prompt.steeredAt !== undefined ||
@@ -3874,8 +4619,9 @@ export class SessionController {
   }
 
   private async abortActiveAndRestore(): Promise<void> {
-    if (!this.state.busy) return;
-    const promptId = this.state.abortablePromptId;
+    const main = this.viewOf(MAIN_AGENT_ID);
+    if (!main.busy) return;
+    const promptId = main.abortablePromptId;
     if (promptId !== undefined) {
       const content = this.unansweredPromptContent(promptId);
       const result = await this.client.abortPrompt(this.sessionId, promptId);
@@ -3887,7 +4633,7 @@ export class SessionController {
       }
       return;
     }
-    const turnId = this.state.abortableTurnId;
+    const turnId = main.abortableTurnId;
     if (turnId !== undefined) await this.client.abortTurn(this.sessionId, turnId);
   }
 
@@ -3902,11 +4648,12 @@ export class SessionController {
       return;
     }
     this.unprojectedQueueReceipts.delete(promptId);
-    const queuedPromptMeta = { ...this.state.queuedPromptMeta };
+    const main = this.viewOf(MAIN_AGENT_ID);
+    const queuedPromptMeta = { ...main.queuedPromptMeta };
     delete queuedPromptMeta[promptId];
-    this.setState({ ...this.state, version: this.state.version + 1,
-      queuedPromptIds: this.state.queuedPromptIds.filter((id) => id !== promptId), queuedPromptMeta,
-      blocks: this.state.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
+    this.publishView(MAIN_AGENT_ID, { ...main, version: main.version + 1,
+      queuedPromptIds: main.queuedPromptIds.filter((id) => id !== promptId), queuedPromptMeta,
+      blocks: main.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
     });
     await this.refreshPrompts();
     if (!result.aborted) await this.resync();
@@ -3922,7 +4669,7 @@ export class SessionController {
         if (ref === undefined) break;
         if (!await this.loadContentSegment(MAIN_AGENT_ID, ref)) throw new Error('Could not read the complete queued prompt');
       }
-      const prompt = this.agentTranscripts.get(MAIN_AGENT_ID)?.getPrompt(promptId);
+      const prompt = this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(promptId);
       if (prompt?.status !== 'queued' && prompt?.status !== 'blocked') return undefined;
       const parsed = messageContentSchema.array().safeParse(prompt.content);
       if (!parsed.success) throw new Error('Could not read the original queued prompt attachments');
@@ -3931,15 +4678,15 @@ export class SessionController {
   }
 
   async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[], presentation?: import('@kiki/transcript').TextPresentation): Promise<void> {
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     const result = await this.client.replacePrompt(this.sessionId, promptId, {
       content: [...(text.trim() === '' ? [] : [{ type: 'text' as const, text, presentation }]), ...(retainedAttachments ?? [])],
       replace_attachments: retainedAttachments === undefined ? undefined : true,
     });
     if (this.unprojectedQueueReceipts.has(promptId)) this.unprojectedQueueReceipts.set(promptId, result);
     const projection = projectMessageContent(result.content);
-    this.setState(
-      appendLocalUserMessage(this.state, {
+    this.publishView(MAIN_AGENT_ID,
+      appendLocalUserMessage(this.viewOf(MAIN_AGENT_ID), {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
         text: projection.text,
@@ -3953,7 +4700,7 @@ export class SessionController {
   }
 
   async moveQueued(promptId: string, targetIndex: number): Promise<void> {
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     const result = await this.client.movePrompt(this.sessionId, promptId, {
       target_index: targetIndex,
     });
@@ -3962,7 +4709,8 @@ export class SessionController {
     // never become message rows here — they render through the model-switch
     // event pair — but their slots anchor each message's queuePosition so the
     // strip can interleave both kinds faithfully.
-    const queuedPromptMeta: Record<string, QueuedPromptMeta> = { ...this.state.queuedPromptMeta };
+    const main = this.viewOf(MAIN_AGENT_ID);
+    const queuedPromptMeta: Record<string, QueuedPromptMeta> = { ...main.queuedPromptMeta };
     result.queued_prompt_ids.forEach((id, index) => {
       if (isModelSwitchQueueId(id)) return;
       const receipt = this.unprojectedQueueReceipts.get(id);
@@ -3977,9 +4725,9 @@ export class SessionController {
         queuePosition: index,
       };
     });
-    this.setState({
-      ...this.state,
-      version: this.state.version + 1,
+    this.publishView(MAIN_AGENT_ID, {
+      ...main,
+      version: main.version + 1,
       queuedPromptIds: result.queued_prompt_ids.filter((id) => !isModelSwitchQueueId(id)),
       queuedPromptMeta,
     });
@@ -3992,8 +4740,8 @@ export class SessionController {
    * local replies likewise cannot replace a newer timing or queue-order write.
    */
   async setQueuedTiming(promptId: string, appendTiming: DeferredAppendTiming): Promise<void> {
-    assertSessionWritable(this.state);
-    const existing = this.state.queuedPromptMeta[promptId];
+    assertSessionWritable(this.shell);
+    const existing = this.viewOf(MAIN_AGENT_ID).queuedPromptMeta[promptId];
     const existingAppendTiming = existing?.appendTiming ?? 'agent_idle';
     const existingRevision = existing?.revision;
     const write = ++this.queuedTimingWriteSequence;
@@ -4009,10 +4757,11 @@ export class SessionController {
       if (this.queuedTimingWrites.get(promptId) === write) this.queuedTimingWrites.delete(promptId);
       throw error;
     }
-    const current = this.state.queuedPromptMeta[promptId];
+    const main = this.viewOf(MAIN_AGENT_ID);
+    const current = main.queuedPromptMeta[promptId];
     if (this.queuedTimingWrites.get(promptId) !== write) return;
     if (
-      !this.state.queuedPromptIds.includes(promptId) ||
+      !main.queuedPromptIds.includes(promptId) ||
       (current?.appendTiming ?? 'agent_idle') !== existingAppendTiming ||
       current?.revision !== existingRevision
     ) {
@@ -4020,11 +4769,11 @@ export class SessionController {
       return;
     }
     this.queuedTimingWrites.delete(promptId);
-    this.setState({
-      ...this.state,
-      version: this.state.version + 1,
+    this.publishView(MAIN_AGENT_ID, {
+      ...main,
+      version: main.version + 1,
       queuedPromptMeta: {
-        ...this.state.queuedPromptMeta,
+        ...main.queuedPromptMeta,
         [promptId]: {
           ...current,
           appendTiming: result.append_timing ?? appendTiming,
@@ -4044,16 +4793,16 @@ export class SessionController {
    */
   async holdQueued(promptId: string, held: boolean): Promise<boolean> {
     if (this.client.holdPrompt === undefined) return false;
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     await this.client.holdPrompt(this.sessionId, promptId, { held });
     return true;
   }
 
   /** Send a parked prompt at the next safe boundary; report its actual disposition. */
   async steerQueued(promptId: string): Promise<{ readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'unconfirmed' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     if (this.findPendingSteer(MAIN_AGENT_ID, promptId)?.phase === 'waiting') return { outcome: 'accepted' };
-    const queued = this.state.blocks.find((block) =>
+    const queued = this.viewOf(MAIN_AGENT_ID).blocks.find((block) =>
       block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
     if (queued?.kind === 'user') {
       this.setPendingSteer(MAIN_AGENT_ID, {
@@ -4104,7 +4853,7 @@ export class SessionController {
 
   /** "Send now" echoes still between the keypress and their delivered frame, per agent. */
   getPendingSteers(agentId: string = MAIN_AGENT_ID): readonly PendingSteer[] {
-    return this.pendingSteers.get(agentId) ?? [];
+    return this.timelines.get(agentId)?.steers ?? [];
   }
 
   /**
@@ -4143,7 +4892,7 @@ export class SessionController {
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
   }): Promise<{ readonly promptId: string; readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
-    assertSessionWritable(this.state);
+    assertSessionWritable(this.shell);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
@@ -4202,7 +4951,7 @@ export class SessionController {
     }
     if (admission !== undefined) {
       this.setDurableIngress([
-        ...(this.state.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
+        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
         result,
       ], agentId);
     }
@@ -4288,7 +5037,7 @@ export class SessionController {
   }
 
   private settledSteerOutcome(agentId: string, promptId: string): 'steered' | 'started' | 'failed' | 'cancelled' | undefined {
-    const canonical = this.agentTranscripts.get(agentId)?.getPrompt(promptId);
+    const canonical = this.timelines.get(agentId)?.store?.getPrompt(promptId);
     if (canonical === undefined || canonical.status === 'queued') return undefined;
     if (canonical.status === 'aborted') return 'cancelled';
     if (canonical.status === 'failed' || canonical.status === 'blocked') return 'failed';
@@ -4306,31 +5055,30 @@ export class SessionController {
   }
 
   private findPendingSteer(agentId: string, promptId: string): PendingSteer | undefined {
-    return this.pendingSteers.get(agentId)?.find((steer) => steer.promptId === promptId);
+    return this.timelines.get(agentId)?.steers.find((steer) => steer.promptId === promptId);
   }
 
   private setPendingSteer(agentId: string, steer: PendingSteer): void {
-    const current = this.pendingSteers.get(agentId) ?? [];
+    const timeline = this.timeline(agentId);
+    const current = timeline.steers;
     const index = current.findIndex((entry) => entry.promptId === steer.promptId);
-    this.pendingSteers.set(agentId, index < 0
+    timeline.steers = index < 0
       ? [...current, steer]
-      : current.map((entry, at) => (at === index ? steer : entry)));
+      : current.map((entry, at) => (at === index ? steer : entry));
     this.republishSteers(agentId);
   }
 
   private clearPendingSteer(agentId: string, promptId: string): void {
-    const current = this.pendingSteers.get(agentId);
-    if (current === undefined || !current.some((steer) => steer.promptId === promptId)) return;
-    const next = current.filter((steer) => steer.promptId !== promptId);
-    if (next.length === 0) this.pendingSteers.delete(agentId);
-    else this.pendingSteers.set(agentId, next);
+    const timeline = this.timelines.get(agentId);
+    if (timeline === undefined || !timeline.steers.some((steer) => steer.promptId === promptId)) return;
+    timeline.steers = timeline.steers.filter((steer) => steer.promptId !== promptId);
     this.republishSteers(agentId);
   }
 
   private adoptAcceptedSteers(agentId: string, next: SessionViewState): void {
-    const store = this.agentTranscripts.get(agentId);
+    const store = this.timelines.get(agentId)?.store;
     if (store === undefined) return;
-    let steers = this.pendingSteers.get(agentId) ?? [];
+    let steers = this.timelines.get(agentId)?.steers ?? [];
     for (const id of next.queuedPromptIds) {
       const prompt = store.getPrompt(id);
       if (!prompt?.steerAccepted || prompt.status !== 'queued') continue;
@@ -4344,41 +5092,35 @@ export class SessionController {
       steers = [...steers, { promptId: prompt.promptId, userMessageId: row.userMessageId, text: row.text,
         presentation: row.presentation, media: row.media, createdAt: row.createdAt, phase: 'waiting' }];
     }
-    if (steers.length > 0) this.pendingSteers.set(agentId, steers);
+    if (steers.length > 0) this.timeline(agentId).steers = steers;
   }
 
   /** Drop echoes once the projection owns delivery or refusal. */
   private retireSettledSteers(agentId: string, next: SessionViewState): void {
-    const current = this.pendingSteers.get(agentId);
-    if (current === undefined) return;
-    const store = this.agentTranscripts.get(agentId);
+    const timeline = this.timelines.get(agentId);
+    const current = timeline?.steers ?? [];
+    if (timeline === undefined || current.length === 0) return;
+    const store = this.timelines.get(agentId)?.store;
     const live = current.filter(steer => {
       const prompt = store?.getPrompt(steer.promptId);
       return prompt?.status !== 'blocked' && !(prompt?.status === 'aborted' && prompt.abortedBeforeStart) && !isSteerSettled(next.blocks, steer);
     });
     if (live.length === current.length) return;
-    if (live.length === 0) this.pendingSteers.delete(agentId);
-    else this.pendingSteers.set(agentId, live);
+    timeline.steers = live;
   }
 
   /** Re-publish an agent's view with its current echoes (no transcript change). */
   private republishSteers(agentId: string): void {
     if (this.closed) return;
-    if (agentId === MAIN_AGENT_ID) {
-      this.setState({ ...this.state, version: this.state.version + 1 });
-      return;
-    }
-    const base = this.agentStates.get(agentId) ?? this.emptyAgentState;
-    this.agentStates.set(agentId, { ...base, version: base.version + 1 });
-    this.dirtyAgents.add(agentId);
-    this.publishAgents();
+    const view = this.viewOf(agentId);
+    this.publishView(agentId, { ...view, version: view.version + 1 });
   }
 
   /** Clear the whole queue: the wire has no bulk-remove route, so abort each
    * parked prompt; one reconcile at the end repaints the strip. Failed ids stay
    * queued so the user can retry. */
   async clearQueue(): Promise<{ total: number; failed: number }> {
-    const ids = this.state.queuedPromptIds;
+    const ids = this.viewOf(MAIN_AGENT_ID).queuedPromptIds;
     if (ids.length === 0) return { total: 0, failed: 0 };
     const results = await Promise.allSettled(
       ids.map((promptId) => this.abortPrompt(promptId)),
@@ -4407,24 +5149,31 @@ export class SessionController {
         ...(review?.feedback === undefined ? {} : { feedback: review.feedback }),
         ...(review?.selectedLabel === undefined ? {} : { selected_label: review.selectedLabel }),
       });
-      this.setState(markApprovalResolved(this.state, approvalId, { decision, resolvedAt }));
+      this.markApprovalInViews(approvalId, { decision, resolvedAt });
     } catch (error) {
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_ALREADY_RESOLVED) {
-        this.setState(markApprovalResolved(this.state, approvalId, { decision: 'resolved_elsewhere', resolvedAt }));
+        this.markApprovalInViews(approvalId, { decision: 'resolved_elsewhere', resolvedAt });
         return;
       }
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_EXPIRED) {
-        this.setState(markApprovalResolved(this.state, approvalId, { decision: 'expired', resolvedAt }));
+        this.markApprovalInViews(approvalId, { decision: 'expired', resolvedAt });
         return;
       }
       throw error;
     }
   }
 
+  /** Mark an approval resolved in every view that shows it: the owning agent's, whichever that is. */
+  private markApprovalInViews(approvalId: string, resolution: Parameters<typeof markApprovalResolved>[2]): void {
+    for (const { agentId, view } of this.timelines.values()) {
+      if (view !== undefined) this.publishView(agentId, markApprovalResolved(view, approvalId, resolution));
+    }
+  }
+
   private readonly questionOutcomes = new Map<string, QuestionOutcome>();
 
   private questionBlock(questionId: string) {
-    const block = [this.state, ...this.agentStates.values()].flatMap((view) => view.blocks)
+    const block = [...this.timelines.values()].flatMap((timeline) => timeline.view?.blocks ?? [])
       .find((entry) => entry.kind === 'question' && entry.request.question_id === questionId);
     if (block?.kind !== 'question') return undefined;
     if (block.request.session_id !== '' && block.request.session_id !== this.sessionId) {
@@ -4435,10 +5184,10 @@ export class SessionController {
 
   private setQuestionOutcome(questionId: string, outcome: QuestionOutcome): void {
     this.questionOutcomes.set(questionId, outcome);
-    this.setState(markQuestionOutcome(this.state, questionId, outcome));
-    for (const [agentId, view] of this.agentStates) {
+    for (const { agentId, view } of this.timelines.values()) {
+      if (view === undefined) continue;
       const updated = markQuestionOutcome(view, questionId, outcome);
-      if (updated !== view) this.publishAgentView(agentId, updated);
+      if (updated !== view) this.publishView(agentId, updated);
     }
   }
 

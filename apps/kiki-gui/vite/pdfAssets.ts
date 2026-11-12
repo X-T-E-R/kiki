@@ -6,7 +6,11 @@ import type { Plugin } from 'vite';
 const require = createRequire(import.meta.url);
 const root = dirname(require.resolve('pdfjs-dist/package.json'));
 const prefixes = ['cmaps/', 'standard_fonts/'];
-const standalone = ['build/pdf.worker.min.mjs', 'LICENSE'];
+// The legacy worker pairs with the legacy main build `PdfPageView` imports:
+// both carry the core-js polyfills (`Promise.withResolvers`, …) that the
+// modern build calls bare, which WebKit only has from Safari 17.4.
+const worker = 'legacy/build/pdf.worker.min.mjs';
+const standalone = [worker, 'LICENSE'];
 
 export function pdfAssetsPlugin(): Plugin {
   let base = '/';
@@ -20,7 +24,7 @@ export function pdfAssetsPlugin(): Plugin {
     }
     return files;
   }
-  const outputName = (file: string) => `pdfjs/${file === 'build/pdf.worker.min.mjs' ? 'pdf.worker.min.mjs' : file}`;
+  const outputName = (file: string) => `pdfjs/${file === worker ? 'pdf.worker.min.mjs' : file}`;
   return {
     name: 'kiki-local-pdf-assets',
     configResolved(config) { base = config.base; building = config.command === 'build'; },
@@ -38,7 +42,7 @@ export function pdfAssetsPlugin(): Plugin {
         const path = req.url?.split('?')[0];
         if (path === undefined || !path.startsWith(base + 'pdfjs/')) { next(); return; }
         const name = path.slice((base + 'pdfjs/').length);
-        const file = name === 'pdf.worker.min.mjs' ? 'build/pdf.worker.min.mjs' : name;
+        const file = name === 'pdf.worker.min.mjs' ? worker : name;
         const resolved = join(root, file);
         const rel = relative(root, resolved);
         if (rel.startsWith(`..${sep}`) || rel === '..' || (!standalone.includes(file) && !prefixes.some(prefix => file.startsWith(prefix)))) { res.statusCode = 404; res.end(); return; }

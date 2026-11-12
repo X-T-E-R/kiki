@@ -5,13 +5,15 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { runtimeConfigDraftFromConfig, taskRuntimePatch } from '@kiki/session-core/settings';
 import { I18nProvider } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
-import { AgentMessagingCard } from './CommunicationSection';
+import { HandoffNoticesCard } from './CommunicationSection';
+import { EngineParametersSection } from './EngineParametersSection';
 import { LoopLimitsCard } from './LoopLimitsCard';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
-import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
+import { BackgroundWorkCard, CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
 import { TasksSection } from './TasksSection';
 import { WorktreePolicy } from './WorktreePolicy';
 import { commitText, pickValue, selectText } from './testControls';
@@ -84,7 +86,7 @@ async function type(element: HTMLInputElement | HTMLTextAreaElement, value: stri
 
 describe('config gap cards', () => {
   it('saves each delegation notice switch as its own agents.delegation merge', async () => {
-    const container = await render(<AgentMessagingCard />);
+    const container = await render(<HandoffNoticesCard />);
     const sub = container.querySelector<HTMLInputElement>('[data-agent-messaging="delegation-sub"] input[type="checkbox"]')!;
     const independent = container.querySelector<HTMLInputElement>('[data-agent-messaging="delegation-independent"] input[type="checkbox"]')!;
     expect(sub.checked).toBe(true);
@@ -125,10 +127,10 @@ describe('config gap cards', () => {
     const card = container.querySelector('#st-card-task-policy')!;
     const hints = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
       .find((input) => input.closest('label')?.textContent?.includes('Suggest file tools'))!;
-    expect(hints.checked).toBe(true);
+    expect(hints.checked).toBe(false);
     await click(hints);
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
-    expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { bash_file_tool_hints: false } });
+    expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { bash_file_tool_hints: true } });
   });
 
   it('keeps everyday task limits on the card, moves the CLI run and kill grace under Advanced', async () => {
@@ -137,9 +139,7 @@ describe('config gap cards', () => {
     const advanced = card.querySelector('[data-task-policy-advanced]')!;
     const fieldFor = (label: string) => [...card.querySelectorAll('label')]
       .find((node) => node.textContent === label)!.control as HTMLInputElement;
-    for (const label of ['Maximum running tasks', 'Bash task timeout']) {
-      expect(advanced.contains(fieldFor(label))).toBe(false);
-    }
+    expect(advanced.contains(fieldFor('Maximum running tasks'))).toBe(false);
     for (const label of ['Wait ceiling (s)', 'Maximum steered turns', 'Kill grace period (ms)']) {
       expect(advanced.contains(fieldFor(label))).toBe(true);
     }
@@ -147,7 +147,6 @@ describe('config gap cards', () => {
     // no sentence has to say so. Each number's own default, its 0, and its
     // floor live behind that field's `i`.
     expect(fieldFor('Maximum running tasks').placeholder).toBe('No limit');
-    expect(fieldFor('Bash task timeout').placeholder).toBe('600');
     expect(card.textContent).not.toContain('Empty allows any number of background tasks at once');
     // A switch already shows whether it is on: "on by default" restated under
     // it told a reader nothing they could not see. What each switch *does*
@@ -155,8 +154,6 @@ describe('config gap cards', () => {
     for (const suffix of ['On by default.', 'Off by default.']) {
       expect(card.textContent).not.toContain(suffix);
     }
-    expect(card.textContent).toContain('keeps running as a background task.');
-    expect(card.textContent).toContain('leaves running background tasks alone instead of stopping them.');
     expect(card.textContent).toContain('add a short hint pointing to Read, Grep or Edit.');
     const openHelp = async (label: string): Promise<string> => {
       const node = [...card.querySelectorAll('label')].find((entry) => entry.textContent === label)!;
@@ -168,7 +165,6 @@ describe('config gap cards', () => {
       return id === null ? '' : document.querySelector(`#${id}`)?.textContent ?? '';
     };
     expect(await openHelp('Maximum running tasks')).toContain('At least 1.');
-    expect(await openHelp('Bash task timeout')).toContain('600 s');
     expect(await openHelp('Wait ceiling (s)')).toContain('2147483 s');
     expect(await openHelp('Maximum steered turns')).toContain('100000');
     expect(await openHelp('Kill grace period (ms)')).toContain('5000 ms');
@@ -193,17 +189,33 @@ describe('config gap cards', () => {
     expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { print_background_mode: 'drain' } });
   });
 
-  it('reads the auto-background switch as the engine default and writes an explicit value', async () => {
-    const container = await render(<TaskPolicyCard />);
-    const card = container.querySelector('#st-card-task-policy')!;
+  it('keeps the timeout, auto-background and keep-alive on Sessions › Background work, each saved at once', async () => {
+    const container = await render(<BackgroundWorkCard />);
+    const card = container.querySelector('#st-card-background-work')!;
     const toggle = (label: string) => [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
       .find((input) => input.closest('label')?.textContent?.includes(label))!;
+    const timeout = [...card.querySelectorAll('label')].find((node) => node.textContent === 'Bash task timeout')!.control as HTMLInputElement;
+    // An empty number shows the value it resolves to as its placeholder.
+    expect(timeout.placeholder).toBe('600');
+    expect(card.textContent).toContain('keeps running as a background task.');
+    expect(card.textContent).toContain('leaves running background tasks alone instead of stopping them.');
     // The engine auto-backgrounds a timed-out command unless told not to.
     expect(toggle('Auto-background Bash on timeout').checked).toBe(true);
     expect(toggle('Keep tasks alive on exit').checked).toBe(false);
+    expect([...card.querySelectorAll('button')].some((button) => button.textContent === 'Save')).toBe(false);
     await click(toggle('Auto-background Bash on timeout'));
-    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
-    expect(patchConfig.mock.calls[0]![0]).toMatchObject({ task: { bash_auto_background_on_timeout: false } });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // The write is the task patch the old draft card sent for the same change:
+    // the whole task table as stored, with only this value moved.
+    expect(patchConfig.mock.calls[0]![0]).toEqual(taskRuntimePatch({
+      ...runtimeConfigDraftFromConfig(CONFIG).task, bashAutoBackgroundOnTimeout: false,
+    }));
+    await commitText(timeout, '45');
+    expect(patchConfig).toHaveBeenLastCalledWith(taskRuntimePatch({
+      ...runtimeConfigDraftFromConfig(CONFIG).task, bashTaskTimeoutS: '45',
+    }));
+    await commitText(timeout, 'soon');
+    expect(patchConfig).toHaveBeenCalledTimes(2);
   });
 
   it('clears a saved CLI limit instead of writing the engine default', async () => {
@@ -235,6 +247,20 @@ describe('config gap cards', () => {
     // The draft is still the user's, not the last stored value.
     expect(maxRunning.value).toBe('6');
     expect(save.hasAttribute('disabled')).toBe(false);
+  });
+
+  it('mounts every card that left Sessions and Agents on Engine parameters, saving as before', async () => {
+    const container = await render(<EngineParametersSection />);
+    for (const id of [
+      'st-card-task-policy', 'st-card-session-residency', 'st-card-resource-limits', 'st-card-session-title-engine',
+      'st-card-handoff-notices', 'st-card-subagent-agent-list-fields', 'st-card-agent-runtime',
+    ]) {
+      expect(container.querySelector(`#${id}`), id).not.toBeNull();
+    }
+    expect(container.querySelector('[data-engine-parameters]')?.textContent).toContain('You only need to change these when troubleshooting.');
+    // A moved number writes exactly what it wrote on its old page.
+    await commitText(container.querySelector<HTMLInputElement>('[data-residency-idle-ttl-ms]')!, '120');
+    expect(patchConfig).toHaveBeenLastCalledWith({ session_residency: { idle_ttl_ms: 120_000 } });
   });
 
   it('keeps background limits on Tasks without duplicating developer cron diagnostics', async () => {

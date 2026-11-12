@@ -32,7 +32,7 @@ import type {
   RequestIdentityPolicyWire,
   Session,
 } from '@kiki/protocol';
-import type { AgentRunSource, GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
+import { GRADE_RANK, gradeFor, type AgentRunSource, type GoalMeta, type TranscriptGrade, type TranscriptGradeSpec } from '@kiki/transcript';
 
 export type ApiErrorSource = 'server' | 'transport';
 
@@ -125,14 +125,37 @@ export function isDefiniteSessionAbsenceMessage(message: string): boolean {
   return false;
 }
 
+/**
+ * What a session view requests before any lease: every agent off except main,
+ * at `turn`. The session holds that `turn` lease on main for as long as it is
+ * open, so main's turn-level state (run state, tasks, subagent cards, pending
+ * interactions) stays current whichever timeline is on screen, without
+ * main's per-frame deltas.
+ */
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
   '*': 'off',
-  main: 'delta',
+  main: 'turn',
 };
 
-export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
-  if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
-  return { '*': 'off', main: 'off', [focusedAgentId]: 'delta' };
+/** One holder's demand on one agent's timeline (see `SessionController.retainAgentView`). */
+export interface TranscriptLease {
+  readonly agentId: string;
+  readonly grade: TranscriptGrade;
+}
+
+/**
+ * The grades a session view requests for the leases held on it: each agent at
+ * the highest grade of the leases on that agent, over `DEFAULT_TRANSCRIPT_GRADES`.
+ * Nothing else counts — not how many listeners an agent has, and not the
+ * leases on other agents. An `off` lease adds nothing, not even a key, so
+ * taking one changes nothing the server is sent.
+ */
+export function transcriptGradesForLeases(leases: Iterable<TranscriptLease>): TranscriptGradeSpec {
+  const grades: Record<string, TranscriptGrade | undefined> = { ...DEFAULT_TRANSCRIPT_GRADES };
+  for (const { agentId, grade } of leases) {
+    if (GRADE_RANK[grade] > GRADE_RANK[gradeFor(grades, agentId)]) grades[agentId] = grade;
+  }
+  return grades;
 }
 
 export interface SearchMessageHit {

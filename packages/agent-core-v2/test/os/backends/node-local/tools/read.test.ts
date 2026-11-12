@@ -14,7 +14,8 @@ import {
   TRANSCODE_MAX_BYTES,
 } from '#/agent/tools/os/read/read';
 import { ReadTool } from '#/agent/tools/os/read/readTool';
-import { stubToolResultTruncationService } from '../../../../agent/toolResultTruncation/stubs';
+import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { RuntimeRegistry } from '#/runtime/runtimeRegistry';
@@ -41,6 +42,15 @@ async function* generateLines(content: string): AsyncGenerator<string> {
 
 function readNote(status: string): string {
   return `<system>${status}</system>`;
+}
+
+function mediaTools(available: boolean): { policy: IAgentToolPolicyService; registry: IAgentToolRegistryService } {
+  return {
+    policy: { isToolActive: () => true } as unknown as IAgentToolPolicyService,
+    registry: {
+      resolve: (name: string) => (available && name === 'ReadMediaFile' ? {} : undefined),
+    } as unknown as IAgentToolRegistryService,
+  };
 }
 
 function toolContentString(result: ExecutableToolResult): string {
@@ -72,6 +82,7 @@ function createReadTool(
   skillCatalog: ISessionSkillCatalog = {
     catalog: { getSkillRoots: () => [] },
   } as unknown as ISessionSkillCatalog,
+  media = mediaTools(false),
 ): ReadTool {
   const runtime = Object.assign(
     new FakeRuntime(
@@ -87,7 +98,7 @@ function createReadTool(
     inspect: () => runtime,
     acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }),
   };
-  return new ReadTool(resolver, workspace, skillCatalog, stubToolResultTruncationService());
+  return new ReadTool(resolver, workspace, skillCatalog, media.policy, media.registry);
 }
 
 function createSpiedFs(content: string) {
@@ -140,8 +151,20 @@ function createSpiedMapFs(files: Record<string, FakeFile>) {
       size: file.size ?? file.bytes.length,
     };
   });
-  const fs = { cwd: '/', readBytes, readLines, readText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
-  return { fs, readBytes, readLines, readText, stat };
+  const readdir = vi.fn(async (path: string) => {
+    if (lookup(path)?.isDirectory !== true) {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }
+    return Object.entries(files)
+      .filter(([candidate]) => candidate.slice(0, candidate.lastIndexOf('/')) === path)
+      .map(([candidate, file]) => ({
+        name: candidate.slice(candidate.lastIndexOf('/') + 1),
+        isFile: file.isFile ?? true,
+        isDirectory: file.isDirectory ?? false,
+      }));
+  });
+  const fs = { cwd: '/', readBytes, readLines, readText, stat, readdir, realpath: async (path: string) => path } as unknown as IHostFileSystem;
+  return { fs, readBytes, readLines, readText, stat, readdir };
 }
 
 function toolWithContent(content: string, workspace = PERMISSIVE_WORKSPACE) {
@@ -190,12 +213,10 @@ describe('ReadTool', () => {
     expect(
       ReadInputSchema.safeParse({ path: '/tmp/test.txt', line_offset: 1, n_lines: 2 }).success,
     ).toBe(true);
-    expect(ReadInputSchema.safeParse({ path: '/tmp/test.txt', line_offset: 0 }).success).toBe(
-      false,
-    );
+    expect(ReadInputSchema.safeParse({ path: '/tmp/test.txt', line_offset: 0 }).success).toBe(true);
     expect(
       ReadInputSchema.safeParse({ path: '/tmp/test.txt', line_offset: -(MAX_LINES + 1) }).success,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('matches permission args with glob path semantics', async () => {
@@ -231,9 +252,59 @@ describe('ReadTool', () => {
       output: '1\talpha\n2\tbeta',
       readRange: { startLine: 1, endLine: 2, totalLines: 2, truncated: false },
       note: readNote(
-        '2 lines read starting at line 1. Total lines in file: 2. End of file.',
+        '2 lines read starting at line 1. Total lines in file: 2. File size: 11 bytes. End of file.',
       ),
+      runtimeId: 'local',
+      spillExempt: true,
     });
+  });
+
+  it('delivers a whole page without the generic result spill and reports exactly that range', async () => {
+    const line = `const value = "${'x'.repeat(56)}";`;
+    const content = Array.from({ length: MAX_LINES }, () => line).join('\n');
+    const tool = toolWithContent(content);
+
+    const result = await execute(tool, { path: '/tmp/page.ts' });
+    const output = toolContentString(result);
+
+    expect(output.length).toBeGreaterThan(50_000);
+    expect(output.split('\n')).toHaveLength(MAX_LINES);
+    expect(output.split('\n').at(-1)).toBe(`${String(MAX_LINES)}\t${line}`);
+    expect(result.spillExempt).toBe(true);
+    expect(result.note).toContain(`${String(MAX_LINES)} lines read starting at line 1.`);
+  });
+
+  it('leaves failed reads subject to the generic result limits', async () => {
+    const { fs } = createSpiedMapFs({});
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+
+    const result = await execute(tool, { path: '/workspace/missing.txt' });
+
+    expect(result.isError).toBe(true);
+    expect(result.spillExempt).toBeUndefined();
+  });
+
+  it('reads from line 1 when line_offset is 0', async () => {
+    const tool = toolWithContent('a\nb\nc');
+
+    const result = await execute(tool, { path: '/tmp/a.txt', line_offset: 0, n_lines: 2 });
+
+    expect(result.output).toBe('1\ta\n2\tb');
+    expect(result.note).toContain('2 lines read starting at line 1.');
+  });
+
+  it('reads a tail below the page limit as the largest tail and says so', async () => {
+    const content = Array.from({ length: MAX_LINES + 50 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+    const tool = toolWithContent(content);
+
+    const result = await execute(tool, { path: '/tmp/a.txt', line_offset: -(MAX_LINES * 5) });
+
+    expect(result.isError).toBeFalsy();
+    expect(toolContentString(result).split('\n')[0]).toBe(`51\tline 51`);
+    expect(result.note).toContain(`${String(MAX_LINES)} lines read starting at line 51.`);
+    expect(result.note).toContain(
+      `line_offset -${String(MAX_LINES * 5)} is below -${String(MAX_LINES)} and was read as -${String(MAX_LINES)}`,
+    );
   });
 
   it('stats the resolved target so symlinked files stay readable', async () => {
@@ -254,7 +325,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe(['1\talpha', '2\tbeta'].join('\n'));
     expect(result.note).toBe(
       readNote(
-        '2 lines read starting at line 1. Total lines in file: 2. End of file.',
+        '2 lines read starting at line 1. Total lines in file: 2. File size: 13 bytes. End of file.',
       ),
     );
   });
@@ -267,7 +338,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe(['1\talpha\\r', '2\tbeta', '3\tgamma\\rdone'].join('\n'));
     expect(result.note).toBe(
       readNote(
-        '3 lines read starting at line 1. Total lines in file: 3. End of file. Mixed or lone carriage-return line endings are shown as \\r. Use exact \\r\\n or \\r escapes in Edit.old_string for those lines.',
+        '3 lines read starting at line 1. Total lines in file: 3. File size: 22 bytes. End of file. Mixed or lone carriage-return line endings are shown as \\r. Use exact \\r\\n or \\r escapes in Edit.old_string for those lines.',
       ),
     );
   });
@@ -281,8 +352,10 @@ describe('ReadTool', () => {
       output: '2\tb\n3\tc',
       readRange: { startLine: 2, endLine: 3, totalLines: undefined, truncated: false },
       note: readNote(
-        '2 lines read starting at line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
+        '2 lines read starting at line 2. Total lines in file: at least 4. File size: 9 bytes. More lines are available. Continue with line_offset=4.',
       ),
+      runtimeId: 'local',
+      spillExempt: true,
     });
   });
 
@@ -294,7 +367,9 @@ describe('ReadTool', () => {
     expect(result).toEqual({
       output: '',
       readRange: { startLine: 0, endLine: -1, totalLines: 2, truncated: false },
-      note: readNote('No lines read. Total lines in file: 2. End of file.'),
+      note: readNote('No lines read. Total lines in file: 2. File size: 3 bytes. End of file.'),
+      runtimeId: 'local',
+      spillExempt: true,
     });
   });
 
@@ -307,8 +382,10 @@ describe('ReadTool', () => {
       output: '3\tc\n4\td\n5\te',
       readRange: { startLine: 3, endLine: 5, totalLines: 5, truncated: false },
       note: readNote(
-        '3 lines read starting at line 3. Total lines in file: 5. End of file.',
+        '3 lines read starting at line 3. Total lines in file: 5. File size: 9 bytes. End of file.',
       ),
+      runtimeId: 'local',
+      spillExempt: true,
     });
   });
 
@@ -319,19 +396,32 @@ describe('ReadTool', () => {
 
     expect(result.output).toBe('1\ta\n2\tb');
     expect(result.note).toBe(
-      readNote('2 lines read starting at line 1. Total lines in file: 5.'),
+      readNote('2 lines read starting at line 1. Total lines in file: 5. File size: 9 bytes.'),
     );
   });
 
-  it('rejects relative traversal before reading', async () => {
-    const { fs, readText } = createSpiedFs('secret');
+  it('treats a relative path outside the workspace exactly like its absolute form', async () => {
+    const { fs, readBytes } = createSpiedFs('outside');
+    fs.realpath = vi.fn(async (path: string) => path === '/workspace/project/alias.txt' ? '/elsewhere/notes.txt' : path);
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace/project'));
 
-    const result = await execute(tool, { path: '../../outside.txt' });
+    for (const [relative, absolute] of [
+      ['../../outside.txt', '/outside.txt'],
+      ['../secrets/.env', '/workspace/secrets/.env'],
+      ['../project/alias.txt', '/workspace/project/alias.txt'],
+    ] as const) {
+      const fromRelative = await tool.resolveExecution({ path: relative });
+      const fromAbsolute = await tool.resolveExecution({ path: absolute });
+      expect(fromRelative.isError ?? false).toBe(false);
+      expect((fromRelative as { accesses?: unknown }).accesses).toEqual((fromAbsolute as { accesses?: unknown }).accesses);
+      expect(fromRelative).toMatchObject({ approvalRule: (fromAbsolute as { approvalRule?: string }).approvalRule });
+    }
+    expect(await tool.resolveExecution({ path: '../project/alias.txt' }))
+      .toMatchObject({ accesses: [{ path: '/elsewhere/notes.txt', implicitExternal: true }] });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    const result = await execute(tool, { path: '../../outside.txt' });
+    expect(result.output).toBe('1\toutside');
+    expect(readBytes).toHaveBeenCalledWith('/outside.txt', MEDIA_SNIFF_BYTES);
   });
 
   it('allows relative traversal into a skill root the session catalog provides', async () => {
@@ -378,7 +468,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe('1\texternal');
     expect(result.note).toBe(
       readNote(
-        '1 line read starting at line 1. Total lines in file: 1. End of file.',
+        '1 line read starting at line 1. Total lines in file: 1. File size: 8 bytes. End of file.',
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', MEDIA_SNIFF_BYTES);
@@ -418,10 +508,42 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       isError: true,
-      output: '"/workspace/missing.txt" does not exist.',
+      output: '"/workspace/missing.txt" does not exist. Its directory "/workspace" does not exist either.',
+      runtimeId: 'local',
     });
     expect(readBytes).not.toHaveBeenCalled();
     expect(readLines).not.toHaveBeenCalled();
+  });
+
+  it('names similarly named entries of the same directory when a file is missing', async () => {
+    const { fs } = createSpiedMapFs({
+      '/workspace/src': { bytes: Buffer.alloc(0), isFile: false, isDirectory: true },
+      '/workspace/src/config.ts': { bytes: Buffer.from('x') },
+      '/workspace/src/Config.test.ts': { bytes: Buffer.from('x') },
+      '/workspace/src/unrelated.md': { bytes: Buffer.from('x') },
+      '/workspace/src/.env': { bytes: Buffer.from('SECRET=1') },
+    });
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+
+    const result = await execute(tool, { path: 'src/config.js' });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toBe(
+      '"src/config.js" does not exist. Similar names in the same directory: src/config.ts, src/Config.test.ts.',
+    );
+  });
+
+  it('does not list a directory outside the workspace to suggest names for a missing file', async () => {
+    const { fs, readdir } = createSpiedMapFs({
+      '/outside': { bytes: Buffer.alloc(0), isFile: false, isDirectory: true },
+      '/outside/config.ts': { bytes: Buffer.from('x') },
+    });
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+
+    const result = await execute(tool, { path: '/outside/config.js' });
+
+    expect(result.output).toBe('"/outside/config.js" does not exist.');
+    expect(readdir).not.toHaveBeenCalled();
   });
 
 
@@ -453,20 +575,40 @@ describe('ReadTool', () => {
     expect(consumed).toBe(4);
   });
 
-  it('returns a friendly error for directories before sniffing bytes', async () => {
+  it('lists one level of a directory, marking subdirectories and leaving out secret files', async () => {
     const { fs, readBytes, readLines } = createSpiedMapFs({
       '/workspace/src': { bytes: Buffer.alloc(0), isFile: false, isDirectory: true },
+      '/workspace/src/b.ts': { bytes: Buffer.from('x') },
+      '/workspace/src/a.ts': { bytes: Buffer.from('x') },
+      '/workspace/src/lib': { bytes: Buffer.alloc(0), isFile: false, isDirectory: true },
+      '/workspace/src/lib/deep.ts': { bytes: Buffer.from('x') },
+      '/workspace/src/.env': { bytes: Buffer.from('SECRET=1') },
     });
     const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
 
-    const result = await execute(tool, { path: '/workspace/src' });
+    const result = await execute(tool, { path: 'src' });
 
-    expect(result).toEqual({
-      isError: true,
-      output: '"/workspace/src" is not a file.',
-    });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toBe(['a.ts', 'b.ts', 'lib/'].join('\n'));
+    expect(result.note).toContain('"src" is a directory; its 3 entries are listed');
+    expect(result.note).toContain('1 sensitive file(s) are not listed.');
     expect(readBytes).not.toHaveBeenCalled();
     expect(readLines).not.toHaveBeenCalled();
+  });
+
+  it('declares a directory target for the same path admission as a file read', async () => {
+    const { fs, readdir } = createSpiedMapFs({
+      '/outside/dir': { bytes: Buffer.alloc(0), isFile: false, isDirectory: true },
+    });
+    fs.realpath = vi.fn(async (path: string) => (path === '/workspace/alias' ? '/outside/dir' : path));
+    const tool = createReadTool(fs, createTestEnv(), stubWorkspaceContext('/workspace'));
+
+    const resolved = await tool.resolveExecution({ path: 'alias' });
+
+    expect(resolved).toMatchObject({
+      accesses: [{ path: '/outside/dir', operation: 'read', implicitExternal: true }],
+    });
+    expect(readdir).not.toHaveBeenCalled();
   });
 
   it('expands leading tilde paths using the kaos home directory', async () => {
@@ -478,7 +620,7 @@ describe('ReadTool', () => {
     expect(result.output).toBe('1\thome note');
     expect(result.note).toBe(
       readNote(
-        '1 line read starting at line 1. Total lines in file: 1. End of file.',
+        '1 line read starting at line 1. Total lines in file: 1. File size: 9 bytes. End of file.',
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', MEDIA_SNIFF_BYTES);
@@ -504,8 +646,21 @@ describe('ReadTool', () => {
     const output = toolContentString(result);
 
     expect(result.isError).toBe(true);
-    expect(output).toBe('"/tmp/sample.png" is an image file. Only text files can be read.');
+    expect(output).toBe('"/tmp/sample.png" is an image file, and Read only returns text.');
     expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('names ReadMediaFile for an image when that tool is available', async () => {
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { fs } = createSpiedMapFs({ '/tmp/sample.png': { bytes: pngHeader } });
+    const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE, undefined, mediaTools(true));
+
+    const result = await execute(tool, { path: '/tmp/sample.png' });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toBe(
+      '"/tmp/sample.png" is an image file, and Read only returns text. Use ReadMediaFile to view it.',
+    );
   });
 
   it('rejects an image-extension file whose bytes are not an image as not readable', async () => {
@@ -557,7 +712,7 @@ describe('ReadTool', () => {
     const output = toolContentString(result);
 
     expect(result.isError).toBe(true);
-    expect(output).toBe('"/tmp/sample.mp4" is a video file. Only text files can be read.');
+    expect(output).toBe('"/tmp/sample.mp4" is a video file, and Read only returns text.');
     expect(readText).not.toHaveBeenCalled();
   });
 
@@ -917,7 +1072,7 @@ describe('ReadTool', () => {
     expect(result.isError).toBeFalsy();
     expect(result.output).toBe('');
     expect(result.note).toBe(
-      readNote('No lines read. Total lines in file: 0. End of file.'),
+      readNote('No lines read. Total lines in file: 0. File size: 0 bytes. End of file.'),
     );
   });
 
@@ -947,14 +1102,15 @@ describe('ReadTool', () => {
     }
   });
 
-  it('schema validation accepts -1 and -MAX_LINES but rejects -(MAX_LINES + 1)', () => {
+  it('schema validation accepts any integer line_offset', () => {
     expect(ReadInputSchema.safeParse({ path: '/tmp/a.txt', line_offset: -1 }).success).toBe(true);
     expect(ReadInputSchema.safeParse({ path: '/tmp/a.txt', line_offset: -MAX_LINES }).success).toBe(
       true,
     );
     expect(
       ReadInputSchema.safeParse({ path: '/tmp/a.txt', line_offset: -(MAX_LINES + 1) }).success,
-    ).toBe(false);
+    ).toBe(true);
+    expect(ReadInputSchema.safeParse({ path: '/tmp/a.txt', line_offset: 1.5 }).success).toBe(false);
   });
 
   it('reads non-sensitive dotfiles like .gitignore successfully', async () => {
@@ -1035,11 +1191,13 @@ describe('ReadTool', () => {
       inspect: () => registry.inspect(binding),
       acquire: (required = []) => registry.acquire(binding, required),
     };
+    const media = mediaTools(false);
     const tool = new ReadTool(
       runtime,
       stubWorkspaceContext('/workspace'),
       { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog,
-      stubToolResultTruncationService(),
+      media.policy,
+      media.registry,
     );
     const execution = await tool.resolveExecution({ path: '/workspace/a.txt' });
     expect('execute' in execution).toBe(true);

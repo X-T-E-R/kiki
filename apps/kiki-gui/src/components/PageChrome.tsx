@@ -5,9 +5,13 @@
  * inspector and the sidebar nav can deep-link a pre-filtered page; no param
  * means "All workspaces". The scope control itself lives in
  * `WorkspaceScopeControl.tsx`.
+ *
+ * A header holds the title and at most one action on a phone; the rest go
+ * behind `PageMoreMenu` (a bottom sheet on touch, a small menu otherwise), so
+ * the title is never squeezed to two characters by a row of buttons.
  */
 
-import type { ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import type { Workspace } from '@kiki/protocol';
@@ -15,6 +19,7 @@ import type { Workspace } from '@kiki/protocol';
 import { useI18n } from '../i18n';
 import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { NavBackButton } from './NavBackButton';
 
 export const PAGE_WIDTH = {
@@ -76,6 +81,61 @@ export function PageHeader({
         {content}
       </div>
     </header>
+  );
+}
+
+/**
+ * The page header's `⋯`: the actions that left the header row. The entries
+ * are the shared menu's (`MiniContextMenu`), which turns into an
+ * `ActionSheet` on a coarse pointer, so a phone gets a bottom sheet with
+ * thumb-sized rows and a desktop keeps a small menu under the button.
+ * Renders nothing when there is nothing to put in it.
+ */
+export function PageMoreMenu({ entries, menuId }: {
+  readonly entries: readonly MiniMenuEntry[];
+  /** Hook attribute stem: the button gets `data-<menuId>`, the menu `data-<menuId>-menu`. */
+  readonly menuId: string;
+}) {
+  const { t } = useI18n();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  if (entries.length === 0) return null;
+  const menuAttribute = `data-${menuId}-menu`;
+  // The button carries the menu's own attribute, so a press on it while the
+  // menu is open is "inside" and toggles it shut instead of closing and
+  // reopening it in the same gesture.
+  const buttonProps = { [`data-${menuId}`]: true, [menuAttribute]: true } as Record<string, boolean>;
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        {...buttonProps}
+        aria-label={t('transcript.moreActions')}
+        title={t('transcript.moreActions')}
+        aria-haspopup="menu"
+        aria-expanded={anchor !== null}
+        onClick={() => {
+          if (anchor !== null) { setAnchor(null); return; }
+          const rect = buttonRef.current?.getBoundingClientRect();
+          setAnchor({ x: rect?.left ?? 0, y: (rect?.bottom ?? 0) + 4 });
+        }}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+      >
+        <Icon name="more" size={16} />
+      </button>
+      {anchor !== null ? (
+        <MiniContextMenu
+          x={anchor.x}
+          y={anchor.y}
+          entries={entries}
+          onClose={() => { setAnchor(null); }}
+          ariaLabel={t('transcript.moreActions')}
+          overlayId={`${menuId}-menu`}
+          dataAttribute={menuAttribute}
+        />
+      ) : null}
+    </>
   );
 }
 

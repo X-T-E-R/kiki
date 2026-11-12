@@ -1,9 +1,11 @@
 import { Container, visibleWidth } from '@kiki/pi-tui';
 import type { Block } from '@kiki/session-core/session/transcript/types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { adaptQuestionResponse } from '#/tui/interactions/question-adapter';
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
+import type { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { createBlockComponent, DaemonTranscriptRenderer } from '#/tui/daemon/transcript-renderer';
 
 function strip(text: string): string {
@@ -448,6 +450,59 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('✓ explore');
     expect(output).toContain('$ final');
     expect(output).toContain('Approval approved · run command');
+  });
+
+  it('leaves unchanged blocks and their rendered lines untouched while another block streams', () => {
+    const container = new GutterContainer(1, 1);
+    const renderer = new DaemonTranscriptRenderer(container);
+    const settled: Block[] = [
+      { kind: 'user', id: 'user-1', text: 'Fix it', createdAt: '2026-01-01T00:00:00.000Z', promptStatus: 'queued' },
+      {
+        kind: 'tool',
+        id: 'tool-1',
+        toolCallId: 'tool-1',
+        name: 'Bash',
+        argsText: '',
+        args: { command: 'ls' },
+        display: undefined,
+        description: undefined,
+        status: 'done',
+        output: 'a\nb\nc\nd',
+        isError: false,
+        durationMs: 3,
+        progressText: undefined,
+      },
+      { kind: 'assistant', id: 'assistant-1', text: '## Done\n\n- one', streaming: false, createdAt: undefined },
+      {
+        kind: 'message',
+        id: 'message-1',
+        origin: 'send_message',
+        status: 'sent',
+        text: 'note',
+        attachments: [],
+        deliveredTo: ['user'],
+      },
+    ];
+    const live: Block = { kind: 'assistant', id: 'live', text: 'Str', streaming: true, createdAt: undefined };
+    const blocks = [...settled, live];
+    renderer.sync(blocks);
+    container.render(82);
+    const children = [...container.children];
+    const childFrames = children.map((child) => child.render(80));
+    // ToolCallComponent's own cache never hits (its leading Spacer returns a
+    // fresh array per render), so check that it is not rebuilt instead.
+    const tool = children[1] as ToolCallComponent;
+    const toolUpdates = [vi.spyOn(tool, 'updateToolCall'), vi.spyOn(tool, 'setResult')];
+
+    renderer.sync(blocks);
+    renderer.sync([...settled, { ...live, text: 'Streaming more' }]);
+
+    expect(container.children).toHaveLength(children.length);
+    for (const [index, child] of children.entries()) expect(container.children[index]).toBe(child);
+    const output = strip(container.render(82).join('\n'));
+    for (const index of [0, 2, 3]) expect(children[index]!.render(80)).toBe(childFrames[index]);
+    for (const update of toolUpdates) expect(update).not.toHaveBeenCalled();
+    expect(output).toContain('Streaming more');
   });
 
   it('renders a preserved shell command separately from its output', () => {

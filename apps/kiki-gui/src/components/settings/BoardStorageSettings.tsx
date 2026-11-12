@@ -10,6 +10,7 @@ import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { AdvancedDetails } from './fields';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 
 export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const { client } = useConnection();
@@ -122,7 +123,7 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
         disabled={saving}
         onChange={(event) => { setDirty(true); setStorage({ mode: 'fixed', path: event.target.value }); }}
         onBlur={(event) => { setPathTarget(event.target.value); }}
-        onKeyDown={(event) => { if (event.key === 'Enter') setPathTarget(event.currentTarget.value); }}
+        onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) setPathTarget(event.currentTarget.value); }}
       />
       <Hint>{t('st.boardStorage.pathHint')}</Hint>
     </label> : null}

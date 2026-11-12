@@ -35,6 +35,12 @@ export interface IAgentToolSelectService {
 
   resolveBridgeCall(call: ToolCall): ToolCall;
 
+  /** Whether loaded tools must be run through `CallTool` rather than called by their own name. */
+  usesCallTool(): boolean;
+
+  /** Explains why `CallTool` could not route `name`, loading it first when it was loadable but not yet loaded. */
+  describeCallToolTarget(name: string): string;
+
   drainPendingToolSchemas(): readonly Tool[] | undefined;
 
   loadableToolsAnnouncement(): string | undefined;

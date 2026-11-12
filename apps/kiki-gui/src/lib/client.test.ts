@@ -23,7 +23,6 @@ import {
 } from '../components/MemoryToolRow';
 import { memoryApplicability } from '../components/memory/memoryReceipt';
 import { refreshSessionAttention } from '../state/connection';
-import { saveOnboardingReplyParagraph } from './onboardingReplyStyle';
 
 /** JSON body a stubbed transport was handed; these tests always post serialized strings. */
 function sentJson(init: RequestInit | undefined): unknown {
@@ -84,31 +83,6 @@ describe('KikiClient workspace catalog', () => {
         { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { name: 'Renamed' } },
         { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { pinned: false } },
       ]);
-    } finally { await client.klient.close(); }
-  });
-});
-
-describe('KikiClient onboarding prompt preservation', () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it('round-trips the canonical reply paragraph over HTTP without touching memory or other prompt branches', async () => {
-    const prompt = { variables: { custom: 'keep' }, overrides: { files: ['prompts/shared.toml'], fields: { 'system.reply_style': '${reply_style_guide}\n\nCUSTOM', 'system.environment': 'keep' }, main: { files: ['prompts/main.toml'] }, independent: 'off' as const } };
-    const requests: Array<{ url: string; method: string }> = [];
-    const paragraph = '${reply_style_guide}\n\nBe concise.';
-    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
-      requests.push({ url: String(url), method: init?.method ?? 'GET' });
-      expect(String(url)).toBe('http://example.test/api/config');
-      if (init?.method === 'POST') {
-        expect(JSON.parse(init.body as string)).toEqual({ prompt: { ...prompt, overrides: { ...prompt.overrides, fields: { ...prompt.overrides.fields, 'system.reply_style': paragraph } } }, replace_domains: ['prompt'] });
-        return Response.json({ code: 0, msg: 'success', data: { prompt: { ...prompt, overrides: { ...prompt.overrides, fields: { ...prompt.overrides.fields, 'system.reply_style': paragraph } } } } });
-      }
-      return Response.json({ code: 0, msg: 'success', data: { prompt } });
-    }));
-    const client = new KikiClient({ baseUrl: 'http://example.test' });
-    try {
-      const result = await saveOnboardingReplyParagraph(client, paragraph, () => true);
-      expect(result?.prompt?.overrides?.fields?.['system.reply_style']).toBe(paragraph);
-      expect(result?.prompt?.overrides?.main).toEqual(prompt.overrides.main);
-      expect(requests).toEqual([{ url: 'http://example.test/api/config', method: 'GET' }, { url: 'http://example.test/api/config', method: 'POST' }]);
     } finally { await client.klient.close(); }
   });
 });

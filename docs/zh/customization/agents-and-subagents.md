@@ -13,7 +13,7 @@ subagent 收到任务描述后在自己的上下文里工作，最后把结论�
 - **`general`** —— 默认 subagent，可以读写文件、执行命令、搜索代码，不继续派发子 Agent。
 - **`explore`** —— 只读，用于探索代码库、搜索和总结。
 
-另有两个按需创建、并非预装的角色：`implementer` 负责一项工程任务直到验证与交付，`reviewer` 作为只读叶子独立审查决策或已完成的工作。在对话中提出即可（GUI 首次启动后的 `/kiki-ops` 会在你眼前这件事正好缺一个角色时才提），`kiki-profile` skill 会把完整模板写到 `$KIKI_HOME/agents/<角色>.md`（默认 `~/.kiki/agents/`），已存在的文件不会被覆盖。两个模板都写有 `model_alias: inherit`，因此角色跟随父 Agent 当时使用的模型；模板不设置 `thinking_effort`，以后可在设置里固定模型。
+另有两个按需创建、并非预装的角色：`implementer` 负责一项工程任务直到验证与交付，`reviewer` 作为只读叶子独立审查决策或已完成的工作。在对话中提出即可（用 `/kiki-ops` 上手时，它只在你眼前这件事正好缺一个角色时才提），`kiki-profile` skill 会把完整模板写到 `$KIKI_HOME/agents/<角色>.md`（默认 `~/.kiki/agents/`），已存在的文件不会被覆盖。两个模板都写有 `model_alias: inherit`，因此角色跟随父 Agent 当时使用的模型；模板不设置 `thinking_effort`，以后可在设置里固定模型。
 
 顶层配置 [`skip_builtin_profile_installation`](../configuration/config-files.md#顶层字段) 会跳过向 `agents/builtin/` 安装指定的内置模板，已有的副本不受影响。要从 subagent 的发现与派发列表中隐藏已安装的 profile，用 `disabled_named_profiles`；main `agent` 绑定始终可用。
 
@@ -51,7 +51,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 投影这些目标不会放宽显式 `allowed_subagents`；要允许调用，必须加入准确的 `engine:<executor-id>` 名称。模型和 effort 的硬约束仍然生效。如果无法核验厂商默认模型或 effort 是否满足 `allowed_models`、`deny_models` 或 `allowed_efforts` 规则，请显式选择一个获准的 vendor model 或 effort，不要依赖该默认值。
 
-子 Agent 默认在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录。新子 Agent 也可以用 typed `workDir` 和 `additionalDirs` 指定已经准入的独立 writer 目录；这些目录会经所选 runtime 映射，并成为该子 Agent 工具与外部执行器实际使用的根目录。只在 `prompt` 中提到路径不会把它加入工作区。`resume` 不接受 `workDir` 或 `additionalDirs`，会冻结首次派发时的根目录。需要由整个会话拥有独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
+子 Agent 默认在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录。新子 Agent 也可以用 typed `workDir` 和 `additionalDirs` 指定已经准入的独立 writer 目录；这些目录会经所选 runtime 映射，并成为该子 Agent 工具与外部执行器实际使用的根目录。只在 `prompt` 中提到路径不会把它加入工作区。`resume` 不应用 `workDir` 或 `additionalDirs`：子 Agent 保留首次派发时冻结的根目录，`AgentRun` 结果会注明这些参数没有应用。需要由整个会话拥有独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
 
 继承工作区提供的是上下文，不会新建目录沙箱，也不额外添加输入根目录或覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
@@ -67,7 +67,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 例如，`AgentRun({ resume: "saved_child", context_mode: "compact", prompt: "继续剩余检查。", description: "继续剩余检查" })` 会先压缩，再沿用原模型继续；加上获准的 `model_alias`，则在摘要之后换到该模型。
 
-旧参数继续有效：`allow_model_change: true` 确认换模并保留上下文，`new_window: true` 选择全新上下文并同时确认换模。两个旧参数都为 true 时，`new_window: true` 优先；`new_window: false` 不否决 `allow_model_change: true`。`allow_model_change` 要求同时有 `resume` 和 `model_alias`，`new_window` 要求有 `resume`。两者任一都不能与 `context_mode` 混用，即使值为 false 也会拒绝。
+旧参数继续有效：`allow_model_change: true` 确认换模并保留上下文，`new_window: true` 选择全新上下文并同时确认换模。两个旧参数都为 true 时，`new_window: true` 优先；`new_window: false` 不否决 `allow_model_change: true`。`allow_model_change: true` 要求同时有 `resume` 和 `model_alias`，`new_window: true` 要求有 `resume`。不要在设置 `context_mode` 的同时把任一旧参数设为 `true`；旧参数为 `false` 时会被忽略。
 
 摘要在提交前失败或被取消时，旧绑定和上下文保持不变。切换提交后的保存若失败，应先恢复原操作再启动新工作，已提交的摘要会被复用。原生子 Agent 仍有恢复后暂停的旧队列时，显式 `resume` 会单独运行本次请求，旧队列继续暂停，不会自动重放。
 

@@ -146,6 +146,7 @@ import {
 import { API_CODES, ApiError, isDefiniteSessionAbsenceMessage } from '@kiki/session-core/transport';
 
 import { recordConnectionEvent } from '../state/connectionDiagnostics';
+import { anySignal } from './abortSignal';
 import type { UsageResponseWire } from './usageV2';
 
 export { API_CODES, ApiError, isUnconfirmedTransportError } from '@kiki/session-core/transport';
@@ -3273,7 +3274,7 @@ export class KikiClient {
     if (connection.token !== undefined) headers['authorization'] = `Bearer ${connection.token}`;
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     const deadline = options.timeoutMs === 0 ? undefined : AbortSignal.timeout(options.timeoutMs ?? 30_000);
-    const signal = AbortSignal.any([connection.signal.signal, ...[options.signal, deadline].filter((entry): entry is AbortSignal => entry !== undefined)]);
+    const signal = anySignal([connection.signal.signal, ...[options.signal, deadline].filter((entry): entry is AbortSignal => entry !== undefined)]);
     let response: Response;
     try {
       response = await (this.transport?.fetch ?? fetch)(url, {
@@ -3323,7 +3324,7 @@ export class KikiClient {
   async readDocumentPreviewAsset(assetUrl: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
     const path = documentPreviewAssetPath(assetUrl);
     const connection = this.connection;
-    const requestSignal = signal === undefined ? connection.signal.signal : AbortSignal.any([signal, connection.signal.signal]);
+    const requestSignal = signal === undefined ? connection.signal.signal : anySignal([signal, connection.signal.signal]);
     const root = connection.baseUrl.replace(/\/+$/u, '');
     const url = root === ''
       ? new URL(path, globalThis.location?.origin ?? 'http://localhost')

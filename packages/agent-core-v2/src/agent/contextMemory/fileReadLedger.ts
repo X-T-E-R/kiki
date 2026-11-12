@@ -67,10 +67,16 @@ function successful(result: ContextMessage | undefined): result is ContextMessag
   return result !== undefined && !result.isError && !textOf(result).startsWith('<system>ERROR:');
 }
 
+function isDirectoryListing(text: string, note: string | undefined): boolean {
+  const statement = /(?:^|\n)<system>([^\r\n]*)<\/system>\s*$/.exec(note ?? text)?.[1] ?? text;
+  return /(?:^|\n)"[^\r\n]*" is (?:a directory[;\s]|an empty directory\.)/.test(statement);
+}
+
 function readEntry(call: ToolCall, result: ContextMessage, source?: ContextMessageSource): FileReadEntry | undefined {
   const target = targetOf(call, result);
   if (target === undefined) return undefined;
   const text = sshHeader(textOf(result)).body;
+  if (isDirectoryListing(text, result.note)) return undefined;
   const note = /(?:^|\n)<system>((?:\d+ lines? read starting at line \d+\.|No lines read\.)[^\r\n]*)<\/system>\s*$/.exec(result.note ?? text);
   const body = result.note === undefined && note !== null ? text.slice(0, note.index) : text;
   const count = note === null ? undefined : /^(\d+) lines? read starting at line (\d+)\./.exec(note[1]!);
@@ -121,7 +127,8 @@ export function collectFileReads(history: readonly ContextMessage[], compactCoun
     const key = keyOf(target);
     const previous = files.get(key);
     if (call.name === 'Read' && index < compactCount) {
-      const entry = readEntry(call, message, source)!;
+      const entry = readEntry(call, message, source);
+      if (entry === undefined) continue;
       files.delete(key);
       files.set(key, { ...entry, ranges: mergeRanges([...(previous?.ranges ?? []), ...entry.ranges]),
         staleRanges: previous?.staleRanges ?? [], edited: previous?.edited,

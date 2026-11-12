@@ -194,10 +194,10 @@ describe('SessionController transcript detail', () => {
     deliver(resetEvent(agentId, emptySnapshot({ items: [orphan], olderCursor: 'opening' }), 2, true));
     try {
       expect(await controller.loadOlderMessages(agentId)).toBe(true);
-      const turn = controller['composeAgentSnapshot'](agentId).items.find(item => item.kind === 'turn');
+      const turn = controller['windowSnapshot'](agentId).items.find(item => item.kind === 'turn');
       expect(turn?.kind === 'turn' ? turn.steps.map(step => [step.stepId, step.ordinal]) : []).toEqual(canonical.steps.map(step => [step.stepId, step.ordinal]));
       await controller.completeContentRead(agentId, source, ['steps']);
-      const completed = controller['composeAgentSnapshot'](agentId).items.find(item => item.kind === 'turn');
+      const completed = controller['windowSnapshot'](agentId).items.find(item => item.kind === 'turn');
       expect(completed?.kind === 'turn' ? completed.steps : []).toEqual(canonical.steps);
       const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
       expect(Object.values(state.detailLoads)).not.toContainEqual(expect.objectContaining({ status: 'error' }));
@@ -356,12 +356,13 @@ describe('SessionController transcript detail', () => {
     try {
       await new Promise(resolve => setTimeout(resolve, 15));
       expect(view.transcript.page).not.toHaveBeenCalled();
-      expect(state().hasMoreHistory).toBe(false);
+      // The only turn is incomplete, so this is not the beginning of history.
+      expect(state()).toMatchObject({ hasMoreHistory: true, incompleteTurnIds: ['t0'] });
       expect(state().blocks.filter(block => block.kind === 'assistant')).toHaveLength(1);
       const expanded = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
       await vi.waitFor(() => expect(state().blocks.filter(block => block.kind === 'assistant')).toHaveLength(3));
       expect(view.transcript.page).toHaveBeenCalledWith({ agentId, beforeTurn: undefined, beforeItem: undefined, pageSize: 1 }, { signal: expect.any(AbortSignal) });
-      expect(controller['composeAgentSnapshot'](agentId).items[0]).not.toHaveProperty('stepsPartial', true);
+      expect(controller['windowSnapshot'](agentId).items[0]).not.toHaveProperty('stepsPartial', true);
       expanded.release();
       expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['saved body 0', 'saved body 1', 'saved body 2']);
     } finally { controller.close(); }
@@ -451,6 +452,160 @@ describe('SessionController transcript detail', () => {
       expect(content).toHaveBeenCalledTimes(2);
       expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
     } finally { lease.release(); controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('does not report the beginning of %s history at an incomplete oldest turn and reads its structure from the top edge', async (agentId) => {
+    const steps = Array.from({ length: 40 }, (_, ordinal) => ({ kind: 'step' as const, stepId: `t0.${ordinal}`, turnId: 't0', ordinal, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: `f-t0-${ordinal}`, role: 'assistant' as const, text: `step ${ordinal}` }] }));
+    const opening: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'prompt 0',
+      startedAt: FIXED_AT, endedAt: FIXED_AT, steps };
+    // A bounded tail of the wire: the last steps of one long turn, whose own
+    // opening record lies outside the window.
+    const orphanTail: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'other' }, stepsPartial: true, steps: steps.slice(-3) };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const base = { session_id: 'session_test', agent_id: agentId, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce({ ...base, items: [{ ...opening, stepsPartial: true, steps: steps.slice(0, 2) }], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } })
+      .mockResolvedValueOnce({ ...base, items: [opening], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('workspace', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [orphanTail], olderCursor: 'turn:t0' }), 2, true));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const held = () => (controller['windowSnapshot'](agentId).items[0] as TranscriptTurn).steps.map((step) => step.ordinal);
+    try {
+      expect(state().incompleteTurnIds).toEqual(['t0']);
+      const incomplete = state().incompleteTurnIds;
+      // Scrolling up recovers the opening; nothing older exists.
+      expect(await controller.loadOlderHistory(agentId)).toEqual({ kind: 'exhausted', changed: true });
+      expect(held()).toEqual([0, 1, 37, 38, 39]);
+      expect(state()).toMatchObject({ hasMoreHistory: true, incompleteTurnIds: ['t0'] });
+      expect(state().incompleteTurnIds).toBe(incomplete);
+      // Scrolling up again reads the missing middle instead of stopping.
+      expect(await controller.loadOlderHistory(agentId)).toEqual({ kind: 'advanced', changed: true });
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toMatchObject({ agentId, pageSize: 1 });
+      expect(held()).toEqual(steps.map((step) => step.ordinal));
+      expect(state()).toMatchObject({ hasMoreHistory: false, incompleteTurnIds: [], loadingOlder: false, olderError: undefined });
+      expect(state().detailLoads['structure:t0']).toBeUndefined();
+      expect(await controller.loadOlderHistory(agentId)).toEqual({ kind: 'exhausted', changed: false });
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('locates past an incomplete oldest %s turn by reading its structure, then reports the end', async (agentId) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt', startedAt: FIXED_AT,
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: [{ kind: 'text', frameId: 'f0', role: 'assistant', text: 'whole body' }] }] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    vi.mocked(view.transcript.page).mockResolvedValue({ session_id: 'session_test', agent_id: agentId, items: [turn], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('workspace', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true, steps: [] }] }), 2));
+    const state = () => controller.getAgentState(agentId);
+    try {
+      expect(state().hasMoreHistory).toBe(true);
+      expect(await controller.locateTurn(agentId, 't9')).toEqual({ kind: 'advanced', changed: true });
+      expect(state()).toMatchObject({ hasMoreHistory: false, incompleteTurnIds: [] });
+      expect(await controller.locateTurn(agentId, 't9')).toEqual({ kind: 'exhausted', changed: false });
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('does not leave a structure read loading when its turn is removed before the read lands', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved prompt', steps: [] };
+    const later: TranscriptTurn = { ...turn, turnId: 't1', ordinal: 1, prompt: 'Later prompt' };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    type Page = Awaited<ReturnType<SessionViewFacade['transcript']['page']>>;
+    let resolvePage!: (page: Page) => void;
+    vi.mocked(view.transcript.page).mockImplementation(() => new Promise((resolve) => { resolvePage = resolve; }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ ...turn, stepsPartial: true }, later] }), 2));
+    const lease = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+    try {
+      await vi.waitFor(() => expect(view.transcript.page).toHaveBeenCalledTimes(1));
+      expect(controller.getState().detailLoads['structure:t0']).toEqual({ status: 'loading' });
+      deliver(opsEvent('main', [{ op: 'items.remove', ids: ['t0'] }], 3));
+      controller.flushFrames();
+      resolvePage({ session_id: 'session_test', agent_id: 'main', items: [turn], has_more: false, coverage: { kind: 'full', hasMoreOlder: false },
+        tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+      await vi.waitFor(() => expect(controller.getState().detailLoads['structure:t0']).toBeUndefined());
+    } finally { lease.release(); controller.close(); }
+  });
+
+  it('backs off a one-turn structure read while it answers 40923 and stops waiting once the reader lets go', async () => {
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    vi.mocked(view.transcript.page).mockRejectedValue(new RPCError(40923, 'history_canonical_preparing'));
+    await controller.open();
+    const calls = () => vi.mocked(view.transcript.page).mock.calls.length;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+        prompt: 'Saved prompt', stepsPartial: true, steps: [] }] }), 2));
+      const lease = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls()).toBe(1);
+      for (const ms of [80, 160, 320, 640, 1000, 1000]) {
+        const before = calls();
+        await vi.advanceTimersByTimeAsync(ms - 1);
+        expect(calls()).toBe(before);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls()).toBe(before + 1);
+      }
+      expect(controller.getState().detailLoads['structure:t0']).toEqual({ status: 'loading' });
+      const sent = calls();
+      lease.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(calls()).toBe(sent);
+      expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      controller.close();
+    }
+  });
+
+  it('backs off a one-turn structure read that keeps answering the same partial turn and resets once the answer changes', async () => {
+    const partial: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      prompt: 'Saved prompt', stepsPartial: true, steps: [] };
+    const { controller, deliver, view } = harness(undefined, vi.fn());
+    const page = (turn: TranscriptTurn) => ({ session_id: 'session_test', agent_id: 'main', items: [turn], has_more: false,
+      coverage: { kind: 'unknown' as const, hasMoreOlder: true as const }, read: { source: 'cold' as const, readiness: 'partial' as const, reason: 'source_unverified' as const },
+      tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
+    const grown: TranscriptTurn = { ...partial, steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed',
+      frames: [{ kind: 'text', frameId: 'f0', role: 'assistant', text: 'first step' }] }] };
+    let answer = partial;
+    vi.mocked(view.transcript.page).mockImplementation(async () => page(answer));
+    await controller.open();
+    const calls = () => vi.mocked(view.transcript.page).mock.calls.length;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [partial] }), 2));
+      const lease = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls()).toBe(1);
+      const expectNextCallAfter = async (ms: number) => {
+        const before = calls();
+        await vi.advanceTimersByTimeAsync(ms - 1);
+        expect(calls()).toBe(before);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls()).toBe(before + 1);
+      };
+      // The same partial turn again and again is the server still preparing.
+      for (const ms of [80, 160, 320, 640, 1000, 1000]) await expectNextCallAfter(ms);
+      // A different partial turn is progress: the cadence starts over.
+      answer = grown;
+      await expectNextCallAfter(1000);
+      await expectNextCallAfter(80);
+      await expectNextCallAfter(160);
+      lease.release();
+      await vi.advanceTimersByTimeAsync(0);
+      const sent = calls();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(calls()).toBe(sent);
+    } finally {
+      vi.useRealTimers();
+      controller.close();
+    }
   });
 
   it('recovers an orphan partial turn opening during structure expansion and finishes older paging at source start without cursor error', async () => {
@@ -550,12 +705,12 @@ describe('SessionController transcript detail', () => {
     try {
       const frame = last.frames.at(-1)!;
       await controller.completeContentRead('main', { kind: 'frame', id: frame.frameId, turnId: 't0', stepId: last.stepId }, ['text']);
-      const loaded = controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+      const loaded = controller['windowSnapshot']('main').items[0] as TranscriptTurn;
       expect(loaded.steps[0]!.frames.at(-1)).toMatchObject({ text: (turn.steps.at(-1)!.frames.at(-1)! as { text: string }).text, contentRefs: [] });
       const lease = controller.beginContentRead('main', source, ['steps']);
-      try { await vi.waitFor(() => expect(controller['composeAgentSnapshot']('main').items[0]).not.toHaveProperty('stepsPartial', true)); }
+      try { await vi.waitFor(() => expect(controller['windowSnapshot']('main').items[0]).not.toHaveProperty('stepsPartial', true)); }
       finally { lease.release(); }
-      const complete = controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+      const complete = controller['windowSnapshot']('main').items[0] as TranscriptTurn;
       expect(complete.steps.map(step => [step.stepId, step.ordinal, step.frames.map(frame => frame.frameId)])).toEqual(turn.steps.map(step => [step.stepId, step.ordinal, step.frames.map(frame => frame.frameId)]));
       expect(complete.steps.at(-1)!.frames.at(-1)).toMatchObject({ text: (turn.steps.at(-1)!.frames.at(-1)! as { text: string }).text, contentRefs: [] });
       expect(content.mock.calls.some(([input]) => input.ref.path[0] === 'steps')).toBe(true);
@@ -619,7 +774,7 @@ describe('SessionController transcript detail', () => {
       coverage: { kind: 'full', hasMoreOlder: false }, tasks: [], attachments: [], interactions: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [] });
     await controller.open();
     deliver(resetEvent('main', emptySnapshot({ items: [partial], tasks }), 2));
-    const current = () => controller['composeAgentSnapshot']('main').items[0] as TranscriptTurn;
+    const current = () => controller['windowSnapshot']('main').items[0] as TranscriptTurn;
     try {
       const first = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
       await vi.waitFor(() => expect(current().steps).toHaveLength(12));
@@ -648,7 +803,7 @@ describe('SessionController transcript detail', () => {
     await controller.open();
     if (agentId !== 'main') controller.retainAgentView('reset-partial-child', agentId, 'delta');
     const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
-    const current = () => controller['composeAgentSnapshot'](agentId).items[0] as TranscriptTurn;
+    const current = () => controller['windowSnapshot'](agentId).items[0] as TranscriptTurn;
     deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...turn, stepsPartial: true }] }), 2));
     const lease = controller.beginContentRead(agentId, { kind: 'turn', id: 't0' }, ['steps']);
     try {
@@ -701,7 +856,7 @@ describe('SessionController transcript detail', () => {
       await new Promise(resolve => setTimeout(resolve, 15));
       expect(view.transcript.page).toHaveBeenCalledTimes(1);
       expect(controller['contentPumpReads'].size).toBe(0);
-      expect(controller['composeAgentSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
+      expect(controller['windowSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
       expect(controller.getState().detailLoads['structure:t0']).toBeUndefined();
     } finally { lease.release(); controller.close(); }
   });
@@ -723,7 +878,7 @@ describe('SessionController transcript detail', () => {
       const second = controller.beginContentRead('main', { kind: 'turn', id: 't0' }, ['steps']);
       pending[0]!.resolve(response);
       await vi.waitFor(() => expect(pending).toHaveLength(2));
-      expect(controller['composeAgentSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
+      expect(controller['windowSnapshot']('main').items[0]).toHaveProperty('stepsPartial', true);
       pending[1]!.resolve(response);
       await vi.waitFor(() => expect(controller.getState().detailLoads['structure:t0']).toBeUndefined());
       second.release();
@@ -771,6 +926,46 @@ describe('SessionController transcript detail', () => {
     } finally { viewport(); controller.close(); }
   });
 
+  it('keeps contentRefs and the content revision across publishes that change no ref, and reports another agent\'s content change', async () => {
+    const source = { kind: 'frame' as const, id: 'f-tool', turnId: 't1', stepId: 's1' };
+    const ref: ContentRef = { source, revision: 'r1', path: ['output'], kind: 'text', offset: 3, total: 9 };
+    const tool = { kind: 'tool', frameId: 'f-tool', toolCallId: 'call-1', name: 'Read', state: 'done', input: {}, output: 'abc', contentRefs: [ref] } as TranscriptFrame;
+    const text = (value: string): TranscriptFrame => ({ kind: 'text', frameId: 'f-text', role: 'assistant', text: value });
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' },
+      steps: [{ kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'running', frames: [tool, text('Hel')] }] };
+    const childRef: ContentRef = { source: { kind: 'task', id: 'task-shell' }, revision: 'r1', path: ['outputTail'], kind: 'text', offset: 3, total: 9 };
+    const content = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => ({ ref: requested, value: 'defghi', contentRefs: [] }));
+    const { controller, publish } = harness(undefined, content);
+    await controller.open();
+    controller.retainAgentView('content-revision-child', 'child', 'delta');
+    publish(resetEvent('main', emptySnapshot({ items: [turn] }), 2));
+    publish(resetEvent('child', emptySnapshot({ tasks: [{ ...shellTask('abc', false), contentRefs: [childRef] }] }), 2));
+    const refs = controller.getState().contentRefs;
+    const revision = controller.getContentRevision();
+    const notified = vi.fn();
+    const unsubscribe = controller.subscribeContent(notified);
+    const upsert = (frame: TranscriptFrame, seq: number) => publish(opsEvent('main', [{ op: 'frame.upsert', turnId: 't1', stepId: 's1', frame }], seq));
+    try {
+      expect(refs).toEqual([ref]);
+      upsert(text('Hello'), 3);
+      expect(controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello')).toBe(true);
+      // A streamed frame, and a ref the server re-sent as a fresh but equal
+      // object, publish the same array and leave the revision alone.
+      upsert({ ...tool, contentRefs: [{ ...ref }] }, 4);
+      expect(controller.getState().contentRefs).toBe(refs);
+      expect(controller.getContentRevision()).toBe(revision);
+      expect(notified).not.toHaveBeenCalled();
+      // Another agent's read changes nothing main publishes; only the revision says so.
+      expect(await controller.loadContentSegment('child', childRef)).toBe(true);
+      expect(controller.contentRefsFor('child', childRef.source)).toEqual([]);
+      expect(controller.getState().contentRefs).toBe(refs);
+      expect(controller.getContentRevision()).toBeGreaterThan(revision);
+      expect(notified).toHaveBeenCalled();
+      upsert({ ...tool, output: 'abcdef', contentRefs: [{ ...ref, offset: 6 }] } as TranscriptFrame, 5);
+      expect(controller.getState().contentRefs).not.toBe(refs);
+      expect(controller.getState().contentRefs).toEqual([{ ...ref, offset: 6 }]);
+    } finally { unsubscribe(); controller.close(); }
+  });
 
   it('fills the oldest inline step frames before paging into older steps, in canonical source order', async () => {
     const source = { kind: 'turn' as const, id: 'long-frames' };
@@ -1798,6 +1993,30 @@ describe('automatic target reading', () => {
     expect(view.transcript.page).not.toHaveBeenCalled();
     expect(content).toHaveBeenCalledTimes(1);
     controller.close();
+  });
+
+  it('reports a tool-detail segment through the agent that owns it and the content revision, not through main', async () => {
+    const frame = { kind: 'tool' as const, frameId: 'hidden-frame', toolCallId: 'known-call', name: 'AgentRun', state: 'done' as const, output: 'abc' };
+    const ref = { source: { kind: 'frame' as const, id: frame.frameId, turnId: 'hidden-turn', stepId: 'hidden-step' }, revision: 'r', path: ['output'], kind: 'text' as const, offset: 3, total: 6 };
+    const detail = vi.fn(async () => ({ session_id: 'session_test', agent_id: 'caller-child', kind: 'tool', lookup: { status: 'found', turnId: 'hidden-turn', stepId: 'hidden-step', frame: { ...frame, contentRefs: [ref] } } }) as SessionViewTranscriptDetail);
+    const content = vi.fn(async () => ({ ref, value: 'def', contentRefs: [] }));
+    const { controller, deliver } = harness(detail, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot(), 2));
+    deliver(resetEvent('caller-child', emptySnapshot(), 2));
+    await controller.lookupToolCall('caller-child', 'known-call');
+    const mainHeard = vi.fn();
+    const ownerHeard = vi.fn();
+    const offMain = controller.subscribe(mainHeard);
+    const offOwner = controller.subscribeAgent('caller-child', ownerHeard);
+    const revision = controller.getContentRevision();
+    try {
+      await expect(controller.loadContentSegment('caller-child', ref)).resolves.toBe(true);
+      expect(controller.getToolCallDetail('caller-child', 'known-call')).toMatchObject({ status: 'found', frame: { output: 'abcdef' } });
+      expect(controller.getContentRevision()).toBeGreaterThan(revision);
+      expect(ownerHeard).toHaveBeenCalled();
+      expect(mainHeard).not.toHaveBeenCalled();
+    } finally { offMain(); offOwner(); controller.close(); }
   });
 
   it('does not append an oversized text; random visible ranges use a bounded reusable cache', async () => {

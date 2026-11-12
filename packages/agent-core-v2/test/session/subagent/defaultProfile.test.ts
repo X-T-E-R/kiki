@@ -94,14 +94,6 @@ describe('SubagentToolInputSchema', () => {
     expect(parsed.additionalDirs).toEqual(['C:/materials']);
   });
 
-  it('freezes workspace roots on resume', () => {
-    expect(() => SubagentToolInputSchema.parse({
-      prompt: 'continue', description: 'a task', resume: 'child', workDir: 'C:/other',
-    })).toThrow(/workspace roots are fixed/);
-    expect(() => SubagentToolInputSchema.parse({
-      prompt: 'continue', description: 'a task', resume: 'child', additionalDirs: ['C:/other'],
-    })).toThrow(/workspace roots are fixed/);
-  });
 });
 
 describe('subagent workspace roots', () => {

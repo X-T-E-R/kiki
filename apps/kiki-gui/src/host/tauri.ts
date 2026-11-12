@@ -17,10 +17,11 @@ import type {
   HostSelectedFile,
   LocalConnection,
 } from './host';
-import type { DesktopNativePrefs } from '@kiki/session-core/settings';
+import { readSettings, type DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { notificationIntent, notificationScope } from '../lib/notificationNavigation';
+import { NotificationPermissionNotAsked, type SystemNotificationPermission } from './notificationPermission';
 
 let remoteWorkspaceActive = false;
 
@@ -38,13 +39,30 @@ const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
   webp: 'image/webp',
 };
 
+/**
+ * The system's answer so far. The plugin answers `null` while the system has
+ * not been asked yet (desktop builds always report granted; mobile ones can be
+ * unasked).
+ */
+export async function tauriNotificationPermission(): Promise<SystemNotificationPermission> {
+  const granted: boolean | null = await isPermissionGranted();
+  return granted === true ? 'granted' : granted === false ? 'denied' : 'default';
+}
+
+/** Ask the system; resolves to whether notifications are now allowed. */
+export async function requestTauriPermission(): Promise<boolean> {
+  return (await requestPermission()) === 'granted';
+}
+
+/**
+ * Whether a notification may be shown. Asking is left to the person's own
+ * click (the app's one-time question, or Settings), so an unasked system sends
+ * nothing and says why.
+ */
 async function ensureNotificationPermission(): Promise<boolean> {
-  let granted = await isPermissionGranted();
-  if (!granted) {
-    const permission = await requestPermission();
-    granted = permission === 'granted';
-  }
-  return granted;
+  const permission = await tauriNotificationPermission();
+  if (permission === 'default') throw new NotificationPermissionNotAsked(requestTauriPermission);
+  return permission === 'granted';
 }
 
 /** Subscribe before draining the boot queue; acknowledge only the delivered click. */
@@ -401,9 +419,10 @@ export const tauriHost: TauriHostAdapter = {
   // window has no mode of its own" rather than failing the boot.
   async windowMode() {
     try {
-      const mode = await invoke<{ preset_id?: unknown; window_id?: unknown }>('desktop_window_mode');
-      if (typeof mode.preset_id !== 'string' || typeof mode.window_id !== 'string') return null;
-      return { presetId: mode.preset_id, windowId: mode.window_id } satisfies DesktopWindowMode;
+      // Native serializes WindowModeDescriptor in camelCase.
+      const mode = await invoke<{ presetId?: unknown; windowId?: unknown }>('desktop_window_mode');
+      if (typeof mode.presetId !== 'string' || typeof mode.windowId !== 'string') return null;
+      return { presetId: mode.presetId, windowId: mode.windowId } satisfies DesktopWindowMode;
     } catch {
       return null;
     }
@@ -432,8 +451,12 @@ export const tauriHost: TauriHostAdapter = {
     await invoke('restart_space', { homeId });
   },
   async setTheme(resolved) {
+    // The native theme also decides what `prefers-color-scheme` reports to
+    // this page (macOS sets it app-wide; Windows passes it to WebView2).
+    // Pinning it under the `system` preference would freeze that query and
+    // stop the app following the OS, so `system` hands it back with null.
     try {
-      await getCurrentWindow().setTheme(resolved);
+      await getCurrentWindow().setTheme(readSettings().theme === 'system' ? null : resolved);
     } catch {
       return;
     }

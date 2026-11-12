@@ -27,7 +27,7 @@ See [Built-in skins](/en/customization/skins#built-in-skins) for the full table.
 
 **Settings → Appearance** applies a skin immediately. Choose a built-in one, one from your themes folder, one contributed by an enabled plugin, or the colors of an installed appearance pack. On top of whatever you picked, override **accent, fonts, radius, and density** — each change applies as you make it, and **Restore defaults** undoes all of them at once.
 
-**Export as skin file** writes what you currently see to a `.json` skin file you can keep or share. The first-run **Language and look** page has the same light / dark choice, the built-in palettes, and an optional background picture.
+**Export as skin file** writes what you currently see to a `.json` skin file you can keep or share. First run does not ask about appearance; until you choose here, the GUI follows your system's light or dark setting.
 
 Skins are GUI; the terminal has its own **themes** in the same `~/.kiki/themes/` directory, told apart by content (a file with `"kind": "kiki-skin"` is a skin, anything else is a TUI theme). The two loaders ignore each other's files, so you can keep both side by side. See [Custom Themes](/en/customization/themes) and [GUI Skins](/en/customization/skins).
 

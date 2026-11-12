@@ -104,18 +104,17 @@ function outputText(result: ExecutableToolResult | undefined): string {
   return output;
 }
 
+function toolCallOf(id: string, name: string, args: unknown): ToolCall {
+  return { type: 'function', id, name, arguments: JSON.stringify(args) } as ToolCall;
+}
+
 async function runBeforeExecute(
   captured: CapturedHooks,
-  input: { name: string; args?: unknown; accesses?: ToolAccesses; batch?: ToolCall[] },
+  input: { name: string; args?: unknown; accesses?: ToolAccesses; batch?: ToolCall[]; toolCall?: ToolCall },
 ): Promise<ExecutableToolResult | undefined> {
   const pending: (() => Promise<BeforeExecuteDecision | undefined>)[] = [];
   let veto: ExecutableToolResult | undefined;
-  const toolCall = {
-    type: 'function',
-    id: 'call_1',
-    name: input.name,
-    arguments: JSON.stringify(input.args ?? {}),
-  } as ToolCall;
+  const toolCall = input.toolCall ?? toolCallOf('call_1', input.name, input.args ?? {});
   const event = {
     turnId: 0,
     signal: new AbortController().signal,
@@ -142,12 +141,12 @@ async function runBeforeExecute(
 
 async function runDidExecute(
   captured: CapturedHooks,
-  input: { name: string; accesses?: ToolAccesses; isError?: boolean },
-): Promise<void> {
+  input: { name: string; accesses?: ToolAccesses; isError?: boolean; toolCall?: ToolCall },
+): Promise<ExecutableToolResult> {
   const ctx = {
     turnId: 0,
     signal: new AbortController().signal,
-    toolCall: { id: 'call_1', name: input.name },
+    toolCall: input.toolCall ?? { id: 'call_1', name: input.name },
     toolCalls: [],
     args: {},
     outcome: 'executed',
@@ -155,6 +154,7 @@ async function runDidExecute(
     result: input.isError === true ? { output: 'failed', isError: true } : { output: 'ok' },
   } as unknown as ToolDidExecuteContext;
   for (const handler of captured.did) await handler(ctx, async () => {});
+  return ctx.result;
 }
 
 describe('StaleGuardService', () => {
@@ -241,18 +241,65 @@ describe('StaleGuardService', () => {
     expect(records).toEqual([]);
   });
 
-  it('vetoes editing an existing file the agent never read', async () => {
+  it('vetoes overwriting an existing file the agent never read', async () => {
     activeFs = stubFs({ mtimeMs: 5 });
 
     const veto = await runBeforeExecute(hooks, {
-      name: 'Edit',
-      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
-      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
     });
 
     expect(veto?.isError).toBe(true);
     expect(outputText(veto)).toContain('has not been read');
     expect(outputText(veto)).toContain('/tmp/a.txt');
+  });
+
+  it('lets an Edit of an unread file through, notes it, and does not count it as a read', async () => {
+    activeFs = stubFs({ mtimeMs: 5 });
+    const edit = toolCallOf('call_edit', 'Edit', { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' });
+
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Edit',
+      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
+      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      toolCall: edit,
+    });
+    activeFs = stubFs({ mtimeMs: 6 });
+    const result = await runDidExecute(hooks, {
+      name: 'Edit',
+      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      toolCall: edit,
+    });
+
+    expect(veto).toBeUndefined();
+    expect(result.note).toBe(
+      'Note: you had not read /tmp/a.txt; the edit was applied because the text it replaced matched the file exactly.',
+    );
+    expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBeUndefined();
+    const overwrite = await runBeforeExecute(hooks, {
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
+    });
+    expect(outputText(overwrite)).toContain('has not been read');
+  });
+
+  it('does not check appends', async () => {
+    activeFs = stubFs({ mtimeMs: 5 });
+    const append = toolCallOf('call_append', 'Write', { path: '/tmp/a.txt', content: 'x', mode: 'append' });
+
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x', mode: 'append' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
+      toolCall: append,
+    });
+    const result = await runDidExecute(hooks, { name: 'Write', accesses: ToolAccesses.writeFile('/tmp/a.txt'), toolCall: append });
+
+    expect(veto).toBeUndefined();
+    expect(result.note).toBeUndefined();
+    expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBeUndefined();
   });
 
   it('allows the write when the on-disk mtime matches the last read', async () => {
@@ -268,19 +315,75 @@ describe('StaleGuardService', () => {
     expect(veto).toBeUndefined();
   });
 
-  it('vetoes the write when the file changed on disk since the last read', async () => {
+  it('vetoes the overwrite when the file changed on disk since the last read', async () => {
     activeFs = stubFs({ mtimeMs: 111 });
     await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });
     activeFs = stubFs({ mtimeMs: 222 });
 
     const veto = await runBeforeExecute(hooks, {
-      name: 'Edit',
-      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
-      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
     });
 
     expect(veto?.isError).toBe(true);
     expect(outputText(veto)).toContain('modified on disk');
+  });
+
+  it('lets an Edit through after an external change and notes the change', async () => {
+    activeFs = stubFs({ mtimeMs: 111 });
+    await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });
+    activeFs = stubFs({ mtimeMs: 222 });
+    const edit = toolCallOf('call_edit', 'Edit', { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' });
+
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Edit',
+      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
+      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      toolCall: edit,
+    });
+    activeFs = stubFs({ mtimeMs: 333 });
+    const result = await runDidExecute(hooks, { name: 'Edit', accesses: ToolAccesses.readWriteFile('/tmp/a.txt'), toolCall: edit });
+
+    expect(veto).toBeUndefined();
+    expect(result.note).toContain('/tmp/a.txt changed on disk since you last read it; the edit was applied');
+    expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBe(111);
+  });
+
+  it('treats an earlier Edit of the same file in the batch as coverage for a later write', async () => {
+    activeFs = stubFs({ mtimeMs: 111 });
+    await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });
+    const edit = toolCallOf('call_0', 'Edit', { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' });
+    const write = toolCallOf('call_1', 'Write', { path: '/tmp/a.txt', content: 'x' });
+
+    await runBeforeExecute(hooks, {
+      name: 'Edit', args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
+      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'), batch: [edit, write], toolCall: edit,
+    });
+    activeFs = stubFs({ mtimeMs: 222 });
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Write', args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'), batch: [edit, write], toolCall: write,
+    });
+
+    expect(veto).toBeUndefined();
+  });
+
+  it('does not let an earlier Edit of an unread file in the batch cover an overwrite', async () => {
+    activeFs = stubFs({ mtimeMs: 5 });
+    const edit = toolCallOf('call_0', 'Edit', { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' });
+    const write = toolCallOf('call_1', 'Write', { path: '/tmp/a.txt', content: 'x' });
+
+    await runBeforeExecute(hooks, {
+      name: 'Edit', args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
+      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'), batch: [edit, write], toolCall: edit,
+    });
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Write', args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'), batch: [edit, write], toolCall: write,
+    });
+
+    expect(outputText(veto)).toContain('has not been read');
   });
 
   it('allows a write covered by an earlier Read of the same path in the same batch', async () => {
@@ -347,9 +450,9 @@ describe('StaleGuardService', () => {
       time: expect.any(Number),
     });
     const veto = await runBeforeExecute(hooks, {
-      name: 'Edit',
-      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
-      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
     });
     expect(outputText(veto)).toContain('has not been read');
   });
@@ -416,9 +519,9 @@ describe('StaleGuardService', () => {
     expect(replayed.freshness.recordedMtimeMs('/tmp/a.txt')).toBe(111);
     activeFs = stubFs({ mtimeMs: 999 });
     const veto = await runBeforeExecute(replayed.hooks, {
-      name: 'Edit',
-      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
-      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
     });
     expect(outputText(veto)).toContain('modified on disk');
   });
@@ -431,9 +534,9 @@ describe('StaleGuardService', () => {
 
     expect(other.freshness.recordedMtimeMs('/tmp/a.txt')).toBeUndefined();
     const veto = await runBeforeExecute(other.hooks, {
-      name: 'Edit',
-      args: { path: '/tmp/a.txt', old_string: 'a', new_string: 'b' },
-      accesses: ToolAccesses.readWriteFile('/tmp/a.txt'),
+      name: 'Write',
+      args: { path: '/tmp/a.txt', content: 'x' },
+      accesses: ToolAccesses.writeFile('/tmp/a.txt'),
     });
     expect(outputText(veto)).toContain('has not been read');
   });
@@ -450,17 +553,17 @@ describe('StaleGuardService', () => {
       await utimes(file, past, past);
 
       const veto = await runBeforeExecute(hooks, {
-        name: 'Edit',
-        args: { path: file, old_string: 'one', new_string: 'two' },
-        accesses: ToolAccesses.readWriteFile(file),
+        name: 'Write',
+        args: { path: file, content: 'two' },
+        accesses: ToolAccesses.writeFile(file),
       });
       expect(outputText(veto)).toContain('modified on disk');
 
       await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile(file) });
       const allowed = await runBeforeExecute(hooks, {
-        name: 'Edit',
-        args: { path: file, old_string: 'one', new_string: 'two' },
-        accesses: ToolAccesses.readWriteFile(file),
+        name: 'Write',
+        args: { path: file, content: 'two' },
+        accesses: ToolAccesses.writeFile(file),
       });
       expect(allowed).toBeUndefined();
     } finally {
@@ -481,7 +584,18 @@ describe('StaleGuardService in the agent test harness', () => {
     }
   });
 
-  it('rejects an Edit with a stale-mtime error after an external modification', async () => {
+  async function runBatch(
+    ctx: ReturnType<typeof createTestAgent>,
+    calls: ToolCall[],
+  ): Promise<string[]> {
+    ctx.mockNextResponse({ type: 'text', text: 'Working.' }, ...calls);
+    ctx.mockNextResponse({ type: 'text', text: 'Done.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Go' }] });
+    await ctx.untilTurnEnd();
+    return toolResultTexts(ctx.llmCalls.at(-1)!.history).slice(-calls.length);
+  }
+
+  it('applies an Edit after an external modification with a note but refuses a Write', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'file-freshness-e2e-'));
     const file = join(dir, 'a.txt');
     await writeFile(file, 'alpha beta', 'utf8');
@@ -491,34 +605,50 @@ describe('StaleGuardService in the agent test harness', () => {
     );
     try {
       await ctx.rpc.setPermission({ mode: 'yolo' });
-
-      const readCall: ToolCall = {
-        type: 'function',
-        id: 'call_read',
-        name: 'Read',
-        arguments: JSON.stringify({ path: file }),
-      };
-      ctx.mockNextResponse({ type: 'text', text: 'Reading the file.' }, readCall);
-      ctx.mockNextResponse({ type: 'text', text: 'Read complete.' });
-      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Read the file' }] });
-      await ctx.untilTurnEnd();
+      await runBatch(ctx, [toolCallOf('call_read', 'Read', { path: file })]);
 
       const past = new Date(Date.now() - 60_000);
       await utimes(file, past, past);
 
-      const editCall: ToolCall = {
-        type: 'function',
-        id: 'call_edit',
-        name: 'Edit',
-        arguments: JSON.stringify({ path: file, old_string: 'beta', new_string: 'gamma' }),
-      };
-      ctx.mockNextResponse({ type: 'text', text: 'Editing the file.' }, editCall);
-      ctx.mockNextResponse({ type: 'text', text: 'Done.' });
-      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Edit the file' }] });
-      await ctx.untilTurnEnd();
+      const [edited] = await runBatch(ctx, [
+        toolCallOf('call_edit', 'Edit', { path: file, old_string: 'beta', new_string: 'gamma' }),
+      ]);
+      const [written] = await runBatch(ctx, [toolCallOf('call_write', 'Write', { path: file, content: 'replaced' })]);
 
-      expect(toolResultText(ctx.llmCalls.at(-1)!.history)).toContain('modified on disk');
-      expect(await readFile(file, 'utf8')).toBe('alpha beta');
+      expect(edited).toContain('Replaced 1 occurrence');
+      expect(edited).toContain('changed on disk since you last read it');
+      expect(written).toContain('modified on disk');
+      expect(await readFile(file, 'utf8')).toBe('alpha gamma');
+    } finally {
+      await ctx.dispose();
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('runs several edits of one file in one batch without stale-read refusals or notes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'file-freshness-batch-'));
+    const file = join(dir, 'f.txt');
+    const filler = Array.from({ length: 2000 }, (_, i) => `line ${String(i)} ${'y'.repeat(60)}`).join('\n');
+    await writeFile(file, `${filler}\nalpha\nbeta\ngamma\n`, 'utf8');
+    const ctx = createTestAgent(
+      { cwd: dir },
+      hostEnvironmentServices(dir, process.platform === 'win32' ? 'win32' : 'posix'),
+    );
+    try {
+      await ctx.rpc.setPermission({ mode: 'yolo' });
+      await runBatch(ctx, [toolCallOf('r1', 'Read', { path: 'f.txt', line_offset: -3 })]);
+
+      const results = await runBatch(ctx, [
+        toolCallOf('e1', 'Edit', { path: 'f.txt', old_string: 'alpha', new_string: 'ALPHA' }),
+        toolCallOf('e2', 'Edit', { path: 'f.txt', old_string: 'beta', new_string: 'BETA' }),
+        toolCallOf('e3', 'Edit', { path: 'f.txt', old_string: 'gamma', new_string: 'GAMMA' }),
+        toolCallOf('w1', 'Write', { path: 'f.txt', content: 'rewritten\n', mode: 'overwrite' }),
+      ]);
+
+      expect(results.filter((text) => text.startsWith('Replaced 1 occurrence'))).toHaveLength(3);
+      expect(results.filter((text) => text.startsWith('Wrote'))).toHaveLength(1);
+      expect(results.join('\n')).not.toContain('Note:');
+      expect(await readFile(file, 'utf8')).toBe('rewritten\n');
     } finally {
       await ctx.dispose();
       await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -526,20 +656,11 @@ describe('StaleGuardService in the agent test harness', () => {
   });
 });
 
-function toolResultText(history: readonly { role: string; content: readonly unknown[] }[]): string {
+function toolResultTexts(history: readonly { role: string; content: readonly unknown[] }[]): string[] {
   return history
     .filter((message) => message.role === 'tool')
-    .flatMap((message) => message.content)
-    .map((part) => {
-      if (
-        part !== null &&
-        typeof part === 'object' &&
-        (part as { type?: unknown }).type === 'text'
-      ) {
-        const text = (part as { text?: unknown }).text;
-        return typeof text === 'string' ? text : '';
-      }
-      return '';
-    })
-    .join('\n');
+    .map((message) => message.content
+      .map((part) => (part as { text?: unknown }).text)
+      .filter((text): text is string => typeof text === 'string')
+      .join('\n'));
 }

@@ -42,10 +42,10 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
-import { AgentRuntimeCard } from './AgentRuntimeSettings';
+import { AgentMessagingCard } from './CommunicationSection';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
-import { SubagentAgentListFieldsCard, SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
 import { AGENT_QUERY_PARAM, UnifiedAgentManager } from './UnifiedAgentManager';
 import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
@@ -55,8 +55,13 @@ import { dispatchFieldsOf } from './profileEditor/profileDraft';
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
+/**
+ * The subagent limits and model rules. The AgentList default return fields
+ * that used to sit between them are an engine parameter now (Developer &
+ * labs › Engine parameters).
+ */
 export function SubagentGovernanceCard() {
-  return <><SubagentLimitsSettings /><SubagentAgentListFieldsCard /><SubagentModelGovernanceCard /></>;
+  return <><SubagentLimitsSettings /><SubagentModelGovernanceCard /></>;
 }
 
 function SubagentModelGovernanceCard() {
@@ -716,6 +721,10 @@ export function SubagentsSection() {
     <div className="space-y-4">
       <SubagentDefaultTargetCard />
       <SubagentGovernanceCard />
+      {/* Thread messages and progress notes travel between the agents this
+          tab dispatches, so their switches live here (they used to be on
+          Sessions). */}
+      <AgentMessagingCard />
       <SubagentOpenModeCard />
       <SubagentToolSettingsCard />
     </div>
@@ -767,11 +776,9 @@ export function AgentsSection() {
         <div className="space-y-4">
           <UnifiedAgentManager />
           {/* While one profile is open the page is about that profile; the
-              page-wide cards come back with the list. */}
-          {new URLSearchParams(search).has(AGENT_QUERY_PARAM) ? null : <>
-            <AgentRuntimeCard />
-            <PromptConfigCard />
-          </>}
+              page-wide card comes back with the list. Server identity and
+              agent loading moved to Developer & labs › Engine parameters. */}
+          {new URLSearchParams(search).has(AGENT_QUERY_PARAM) ? null : <PromptConfigCard />}
         </div>
       )}
     </div>

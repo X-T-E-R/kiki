@@ -73,6 +73,14 @@ function formatWaitSeconds(totalSeconds: number): string {
     : `${String(hours)}h ${remainingMinutes.toString().padStart(2, '0')}m`;
 }
 
+function skippedSubagentsNote(skipped: readonly AgentTaskInfo[]): string[] {
+  if (skipped.length === 0) return [];
+  const ids = skipped.map((task) => task.taskId).join(', ');
+  return [
+    `Not waited for: subagent ${skipped.length === 1 ? 'task' : 'tasks'} ${ids}. A wait without task_id leaves out subagent tasks, because their results reach you by notification; to wait for one, call TaskWait with its task_id.`,
+  ];
+}
+
 export interface TaskWaitProgressHandle {
   readonly stop: () => void;
   readonly tick: () => void;
@@ -153,7 +161,13 @@ export class TaskWaitTool implements ITaskWaitTool {
     const saved = ctx.executionWait?.kind === 'task' ? ctx.executionWait : undefined;
     const startedAt = saved?.startedAt ?? Date.now();
     const timeoutMs = saved?.timeoutMs ?? args.timeout * 1000;
-    const runningAtStart = saved === undefined ? this.tasks.list(true)
+    const skipsSubagents = args.task_id === undefined &&
+      this.scope.agentId === MAIN_AGENT_ID &&
+      this.scope.parentAgentId === undefined &&
+      this.goals.getGoal().goal?.status !== 'active';
+    const running: readonly AgentTaskInfo[] = saved === undefined ? this.tasks.list(true) : [];
+    const skippedSubagents: readonly AgentTaskInfo[] = skipsSubagents ? running.filter((task) => task.kind === 'agent') : [];
+    const runningAtStart = saved === undefined ? running.filter((task) => !skippedSubagents.includes(task))
       : saved.taskIds.flatMap(id => { const task = this.tasks.getTask(id); return task === undefined ? [] : [task]; });
     const executionWait = { kind: 'task' as const, taskIds: args.task_id === undefined ? runningAtStart.map(task => task.taskId) : [args.task_id], startedAt, timeoutMs };
 
@@ -163,7 +177,10 @@ export class TaskWaitTool implements ITaskWaitTool {
         return {
           output: [
             formatPlainObject({ waitStatus: 'no_tasks', waitedMs: 0, timeoutMs }),
-            'No background tasks are running, so there is nothing to wait for. Finished tasks report back via automatic notification.',
+            skippedSubagents.length === 0
+              ? 'No background tasks are running, so there is nothing to wait for. Finished tasks report back via automatic notification.'
+              : 'No background task other than subagent tasks is running, so there is nothing to wait for.',
+            ...skippedSubagentsNote(skippedSubagents),
           ].join('\n\n'),
           isError: false,
         };
@@ -171,23 +188,6 @@ export class TaskWaitTool implements ITaskWaitTool {
     } else if (this.tasks.getTask(args.task_id) === undefined) {
       this.track(args, startedAt, timeoutMs, 'task_not_found', 0);
       return { isError: true, output: `Task not found: ${args.task_id}` };
-    }
-
-    const target = args.task_id === undefined ? undefined : this.tasks.getTask(args.task_id);
-    const hasRunningAgent = args.task_id === undefined
-      ? runningAtStart.some((task) => task.kind === 'agent')
-      : target?.kind === 'agent' && !TERMINAL_STATUSES.has(target.status);
-    if (
-      hasRunningAgent &&
-      this.scope.agentId === MAIN_AGENT_ID &&
-      this.scope.parentAgentId === undefined &&
-      this.goals.getGoal().goal?.status !== 'active' &&
-      !(args.sync_wait === true && args.task_id !== undefined && args.sync_reason?.trim())
-    ) {
-      return {
-        isError: true,
-        output: 'TaskWait did not wait: outside active goal mode, a main agent must not wait merely to collect automatically notifying subagent reports. Do independent work or end the turn with a brief pending status, then continue on notification; the task remains running and its completion notification has not been consumed. Specify a process task_id to wait for your own process, or use sync_wait=true with a specific agent task_id and a non-empty concrete sync_reason for a genuine same-turn dependency. A wait-any call cannot use this exception; routine report collection is not a valid reason.',
-      };
     }
 
     let waited: AgentTaskInfo | undefined;
@@ -210,7 +210,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         (error === ctx.steerSignal.reason || isAbortError(error))
       ) {
         this.track(args, startedAt, timeoutMs, 'interrupted', 0);
-        return { output: this.formatInterrupted(args, startedAt, timeoutMs), isError: false };
+        return { output: this.formatInterrupted(args, startedAt, timeoutMs, skippedSubagents), isError: false };
       }
       this.track(args, startedAt, timeoutMs, 'aborted', 0);
       throw error;
@@ -225,11 +225,11 @@ export class TaskWaitTool implements ITaskWaitTool {
 
     if (!TERMINAL_STATUSES.has(waited.status) || waited.cleanupPending === true) {
       this.track(args, startedAt, timeoutMs, 'timed_out', 0);
-      return { output: this.formatTimeout(args, startedAt, timeoutMs), isError: false };
+      return { output: this.formatTimeout(args, startedAt, timeoutMs, skippedSubagents), isError: false };
     }
 
     const extras = this.collectExtras(runningAtStart, waited.taskId);
-    const output = await this.formatCompleted(waited, extras, startedAt, timeoutMs);
+    const output = await this.formatCompleted(waited, extras, startedAt, timeoutMs, skippedSubagents);
     this.tasks.markTasksDeliveredViaWait(
       [waited, ...extras].map((info) => ({ taskId: info.taskId, status: info.status })),
       ctx.toolCallId,
@@ -278,7 +278,7 @@ export class TaskWaitTool implements ITaskWaitTool {
     return extras;
   }
 
-  private formatTimeout(args: TaskWaitInput, startedAt: number, timeoutMs: number): string {
+  private formatTimeout(args: TaskWaitInput, startedAt: number, timeoutMs: number, skipped: readonly AgentTaskInfo[]): string {
     const lines = [
       formatPlainObject({
         waitStatus: 'timed_out',
@@ -287,6 +287,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         timeoutMs,
       }),
       'The wait timed out, not the task. The task is still running.',
+      ...skippedSubagentsNote(skipped),
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {
@@ -295,7 +296,7 @@ export class TaskWaitTool implements ITaskWaitTool {
     return lines.join('\n');
   }
 
-  private formatInterrupted(args: TaskWaitInput, startedAt: number, timeoutMs: number): string {
+  private formatInterrupted(args: TaskWaitInput, startedAt: number, timeoutMs: number, skipped: readonly AgentTaskInfo[]): string {
     const lines = [
       formatPlainObject({
         waitStatus: 'interrupted',
@@ -305,6 +306,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         timeoutMs,
       }),
       'New input ended this wait early. Read the new input before deciding what to do next. Background tasks have not been stopped; completion still arrives via automatic notification.',
+      ...skippedSubagentsNote(skipped),
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {
@@ -318,6 +320,7 @@ export class TaskWaitTool implements ITaskWaitTool {
     extras: readonly AgentTaskInfo[],
     startedAt: number,
     timeoutMs: number,
+    skipped: readonly AgentTaskInfo[],
   ): Promise<string> {
     const lines = [
       formatPlainObject({
@@ -338,6 +341,7 @@ export class TaskWaitTool implements ITaskWaitTool {
         'Use TaskOutput with one of the task_id values above to read the full output.',
       );
     }
+    if (skipped.length > 0) lines.push('', ...skippedSubagentsNote(skipped));
     const running = this.tasks.list(true);
     if (running.length > 0) {
       lines.push('', '[still_running]', formatTaskList(running, true));

@@ -33,6 +33,12 @@ export interface ShortcutDefinition {
   readonly context: 'global' | 'session' | 'composer' | 'approval' | 'terminal';
   readonly labelKey: string;
   readonly defaults: readonly ShortcutChord[];
+  /**
+   * Shipped chords for one platform, replacing `defaults` there. For an action
+   * whose conventional key differs by platform rather than by modifier — on a
+   * Mac keyboard F3 is a system key and "find next" is ⌘G.
+   */
+  readonly platformDefaults?: Partial<Record<ShortcutPlatform, readonly ShortcutChord[]>>;
   readonly desktopOnly: boolean;
   readonly source: string;
 }
@@ -46,8 +52,8 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: 'shortcuts', context: 'global', labelKey: 'shortcuts.thisPanel', defaults: [chord('/', 'mod')], desktopOnly: false, source: 'App.tsx' },
   { id: 'shortcuts-help', context: 'global', labelKey: 'shortcuts.thisPanel', defaults: [chord('?', 'none', true)], desktopOnly: false, source: 'App.tsx (outside editable surfaces)' },
   { id: 'find', context: 'global', labelKey: 'shortcuts.find', defaults: [chord('f', 'mod')], desktopOnly: false, source: 'lib/timelineFind.ts (session/settings routes)' },
-  { id: 'find-next', context: 'session', labelKey: 'shortcuts.findNext', defaults: [chord('F3')], desktopOnly: false, source: 'lib/timelineFind.ts' },
-  { id: 'find-previous', context: 'session', labelKey: 'shortcuts.findPrevious', defaults: [chord('F3', 'none', true)], desktopOnly: false, source: 'lib/timelineFind.ts' },
+  { id: 'find-next', context: 'session', labelKey: 'shortcuts.findNext', defaults: [chord('F3')], platformDefaults: { macos: [chord('g', 'meta'), chord('F3')] }, desktopOnly: false, source: 'lib/timelineFind.ts' },
+  { id: 'find-previous', context: 'session', labelKey: 'shortcuts.findPrevious', defaults: [chord('F3', 'none', true)], platformDefaults: { macos: [chord('g', 'meta', true), chord('F3', 'none', true)] }, desktopOnly: false, source: 'lib/timelineFind.ts' },
   { id: 'terminal-toggle', context: 'session', labelKey: 'shortcuts.termToggle', defaults: [chord('`', 'ctrl')], desktopOnly: false, source: 'SessionView.tsx' },
   { id: 'terminal-copy', context: 'terminal', labelKey: 'shortcuts.termCopy', defaults: [chord('c', 'ctrl', true)], desktopOnly: false, source: 'TerminalPanel.tsx' },
   { id: 'terminal-paste', context: 'terminal', labelKey: 'shortcuts.termPaste', defaults: [chord('v', 'ctrl', true)], desktopOnly: false, source: 'TerminalPanel.tsx' },
@@ -75,7 +81,7 @@ export const SHORTCUT_CATALOG: readonly (ShortcutDefinition | FixedShortcutDefin
   { id: 'newline', context: 'composer', labelKey: 'shortcuts.newline', defaults: [chord('Enter', 'none', true)], desktopOnly: false, source: 'settings.ts composerEnterAction (sendShortcut=enter)', managedBy: 'sendShortcut' },
   { id: 'escape-overlay', context: 'overlay', labelKey: 'shortcuts.escOverlay', defaults: [chord('Escape')], desktopOnly: false, source: 'Dialog.tsx / Composer.tsx', managedBy: 'interaction' },
   { id: 'escape-terminal', context: 'terminal', labelKey: 'shortcuts.escTerminal', defaults: [chord('Escape')], desktopOnly: false, source: 'SessionView.tsx / TerminalPanel.tsx (PTY focus has priority)', managedBy: 'interaction' },
-  { id: 'escape-abort', context: 'session', labelKey: 'shortcuts.escAbort', defaults: [chord('Escape')], desktopOnly: false, source: 'SessionView.tsx (after overlay/terminal)', managedBy: 'interaction' },
+  { id: 'escape-abort', context: 'session', labelKey: 'shortcuts.escAbort', defaults: [chord('Escape')], desktopOnly: false, source: 'SessionView.tsx (after overlay/terminal; never from a text field)', managedBy: 'interaction' },
   { id: 'escape-settings', context: 'settings', labelKey: 'shortcuts.escOverlay', defaults: [chord('Escape')], desktopOnly: false, source: 'App.tsx (outside editable surfaces/overlays)', managedBy: 'interaction' },
   { id: 'slash-menu', context: 'composer', labelKey: 'shortcuts.slashMenu', defaults: [chord('/')], desktopOnly: false, source: 'Composer.tsx (text trigger)', managedBy: 'interaction' },
   { id: 'file-mention', context: 'composer', labelKey: 'shortcuts.fileMention', defaults: [chord('@')], desktopOnly: false, source: 'Composer.tsx (text trigger)', managedBy: 'interaction' },
@@ -90,7 +96,7 @@ export const SHORTCUT_CATALOG: readonly (ShortcutDefinition | FixedShortcutDefin
 export function resolveShortcutBindings(preferences: ShortcutPreferences, platform: ShortcutPlatform): Record<ShortcutAction, ShortcutChord[]> {
   const overrides = preferences.overrides[platform];
   const bindings = Object.fromEntries(SHORTCUT_DEFINITIONS.map((definition) => [definition.id,
-    overrides?.[definition.id] ?? [...definition.defaults],
+    overrides?.[definition.id] ?? [...(definition.platformDefaults?.[platform] ?? definition.defaults)],
   ])) as Record<ShortcutAction, ShortcutChord[]>;
   // A newly shipped reverse action must not claim an existing explicit chord.
   if (overrides?.['previous-session'] === undefined) {

@@ -244,3 +244,77 @@ it('gives the exemption back to the dialog that owns the picker when it is on to
   await act(async () => { filter.focus(); });
   expect(document.activeElement).toBe(filter);
 });
+
+/**
+ * Phone back (coarse pointer): a dismissible dialog owns one history entry, a
+ * stacked confirmation one more on top of it. Back peels them one at a time,
+ * and a confirmation that closes its dialog in the same beat consumes both
+ * entries — no dead back press is left behind.
+ */
+function stubCoarsePointer() {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(pointer: coarse)', media: query,
+    addEventListener: () => {}, removeEventListener: () => {},
+  }));
+}
+const historyPop = () => new Promise<void>((resolve) => { window.addEventListener('popstate', () => { resolve(); }, { once: true }); });
+const layerMarker = () => (window.history.state as { usr?: { kikiLayer?: string } } | null)?.usr?.kikiLayer;
+
+it('closes on the phone back, a stacked confirmation first', async () => {
+  stubCoarsePointer();
+  window.history.pushState({ usr: { kikiNav: { visitId: 'dialog-back' } }, key: 'dialog-back' }, '');
+  const base = window.history.state as unknown;
+  function Editor() {
+    const [open, setOpen] = useState(true);
+    const [confirming, setConfirming] = useState(false);
+    return <I18nProvider>
+      {open ? <Dialog stacked ariaLabel="Editor" overlayId="back-editor" onClose={() => setOpen(false)}>
+        <button type="button" onClick={() => setConfirming(true)}>Delete</button>
+        <ConfirmDialog open={confirming} title="Delete?" confirmLabel="Delete" overlayId="back-confirm"
+          onConfirm={() => { setConfirming(false); setOpen(false); }} onCancel={() => setConfirming(false)} />
+      </Dialog> : null}
+    </I18nProvider>;
+  }
+  try {
+    await act(async () => root.render(<Editor />));
+    expect(layerMarker()).toBe('back-editor');
+    await clickByText('Delete');
+    expect(layerMarker()).toBe('back-confirm');
+    await act(async () => { const pop = historyPop(); window.history.back(); await pop; });
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Editor"]')).not.toBeNull();
+    expect(layerMarker()).toBe('back-editor');
+    await clickByText('Delete');
+    await act(async () => {
+      const pop = historyPop();
+      document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click();
+      await pop;
+    });
+    expect(document.querySelector('[aria-label="Editor"]')).toBeNull();
+    expect(window.history.state).toEqual(base);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('keeps a non-dismissible dialog out of the phone back stack', async () => {
+  stubCoarsePointer();
+  window.history.pushState({ usr: { kikiNav: { visitId: 'dialog-locked' } }, key: 'dialog-locked' }, '');
+  try {
+    await act(async () => root.render(<Dialog ariaLabel="Locked" overlayId="locked-dialog" dismissible={false} onClose={() => {}}>
+      <button type="button">Stay</button>
+    </Dialog>));
+    expect(layerMarker()).toBeUndefined();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('leaves an Escape that ends an IME composition to the field', async () => {
+  const onClose = vi.fn();
+  await act(async () => root.render(<Dialog ariaLabel="Compose" overlayId="ime-dialog" onClose={onClose}>
+    <input aria-label="Name" />
+  </Dialog>));
+  const input = document.querySelector<HTMLInputElement>('[aria-label="Name"]')!;
+  input.focus();
+  await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true })); });
+  expect(onClose).not.toHaveBeenCalled();
+  await escape();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});

@@ -66,14 +66,15 @@
 | 确认 / 选中 | `Enter` | select | `Enter select` |
 | 取消 / 关闭 | `Esc` | cancel | `Esc cancel` |
 | 删除 | `D` | delete | `D delete` |
-| 清空搜索 | `Backspace` | clear | `Backspace clear` |
+| 清空搜索 | `Esc`（有 query 时） | clear | `Esc clear` |
+| 返回上一层 | `Esc`（对话框内的子层级） | back | `Esc back` |
 | 切 provider | `Tab` | toggle provider | `Tab toggle provider` |
 | 搜索（标题后缀） | 打字 | — | `(type to search)` |
 
 - **键位 token 首字母大写**（`Enter` / `Esc` / `Tab` / `Backspace` / `D`），**描述词全小写**（navigate / select / cancel / page / delete / clear）；方向符 `↑↓` / `←→` 原样。
 - 方向符统一 `↑↓`（不用 `▲/▼`）。
-- 「离开对话框」统一只说 `cancel`（不混用 close / back / exit / dismiss）。业务语义（如审批的 reject）例外。
-- hint 随状态精简：可搜索列表无 query 时，「type to search」在标题后缀已出现，hint 不重复；有 query 时 hint 追加 `Backspace clear`。
+- 「离开对话框」统一只说 `cancel`（不混用 close / back / exit / dismiss）。业务语义（如审批的 reject）例外。`back` 只用于对话框内的子层级（审批的反馈输入、提问的 Other 输入）：那里 Esc 只退出该层，不离开对话框。
+- hint 随状态精简：可搜索列表无 query 时，「type to search」在标题后缀已出现，hint 不重复；有 query 时末项 `Esc cancel` 换成 `Esc clear`（此时 Esc 先清空 query）。`Backspace` 只删一个字符，不单独提示。
 
 ## 5. Tab 条（`/model` 的 provider 切换）
 
@@ -102,13 +103,14 @@
 | 翻页 | `PgUp` / `PgDn` | `matchesKey(data, Key.pageUp/pageDown)` |
 | 确认 / 选中 | `Enter` | `matchesKey(data, Key.enter)` |
 | 取消 / 关闭 | `Esc` | `matchesKey(data, Key.escape)` |
-| 删除 | `D` | `printableChar(data) === 'D'`（也接受 `'d'`） |
+| 删除 | `D`（不可搜索列表）/ `Ctrl+X`（可搜索列表） | `printableChar(data) === 'D'`（也接受 `'d'`）/ `matchesKey(data, Key.ctrl('x'))` |
 | 搜索 | 打字 | `printableChar(data)` |
 
 - **字符比较必须经 `printableChar()`**（Kitty 协议），由 `printable-key-guard` 强制；功能键用 `matchesKey(data, Key.*)`。
-- **`Esc` 两段式**：有 query 时先清空 query（`list.clearQuery()`），无 query 时才 `onCancel()`。
+- **`Esc` 两段式**：有 query 时先清空 query（`list.clearQuery()`），无 query 时才 `onCancel()`；hint 末项随之是 `Esc clear` / `Esc cancel`（见第 4 节）。
+- **`Esc` 只作用于当前层级**：对话框里有子层级（输入框、待确认状态）时，Esc 先退出该层；不得一次丢弃用户在整个对话框里已做的选择。
 - `←` / `→` 不固定语义：无翻页结构的组件里承担「值切换」（如 `/model` 的 thinking on/off）；`choice-picker` 这类无横向值的列表里用作翻页。**不要**在有 thinking 切换的组件里又拿 `←→` 翻页。
-- **删除键统一用字母 `D`**（`/provider`、`/plugins` 一致）。字母键要求该列表**不可 type-to-search**（否则会打进搜索框）——当前所有带删除动作的列表都不可搜索；若某列表既要搜索又要删除，删除须改用非打印键。
+- **删除键：不可搜索的列表用字母 `D`**（`/provider`、`/plugins` 一致）。字母键要求该列表**不可 type-to-search**（否则会打进搜索框）；既要搜索又要删除的列表用 `Ctrl+X`（`/sessions`）。
 
 ## 7. 开关列表与多选（toggle / multi-select）
 
@@ -163,16 +165,30 @@
 
 新列表组件**必须复用 `SearchableList`**（光标 / 搜索 / 翻页），并手工对齐本文件第 3–8 节的布局、键位、文案。
 
-## 11. 新增 / 改造 dialog 自查清单
+## 11. 打断式对话框（审批 / 提问）
+
+审批（`approval-panel`）和提问（`question-dialog`）由系统主动弹出并替换输入框，弹出那一刻用户可能还在打字。
+
+- **上膛时间**：挂载后一段时间内（构造参数 `armAfterMs`，约 500 ms）不响应选择 / 确认类按键（Enter、数字键、Space）；窗口内收到的每个按键都让窗口重新计时，所以用户停手之后才上膛。方向键照常移动指针，Esc / Ctrl+C / Ctrl+D 照常拒绝 / 取消。`armAfterMs` 为 0 或不传时立即可用。
+- 用户在弹出前约 1 秒内按过键时，由协调器加长初始窗口（从最后一次按键起算）。
+- **未上膛的样子**：选项整体用 `textDim` 渲染（指针保留），上膛后恢复正常样式；协调器传 `onArmed`，在上膛时重绘。
+- **不替换用户自己打开的对话框**：等用户关闭后再挂载，期间在状态行提示（协调器负责）。
+- **默认选中项**：普通请求为第一项；标记为危险的请求（`shell` 块带 `danger`）默认停在不带反馈的拒绝项。
+- **单次响应**：宿主的响应回调返回 Promise 时，对话框在它 settle 之前忽略所有按键，不会发出第二次响应；失败后对话框仍挂着时恢复可用。
+- **分层 Esc**：审批的反馈输入态 → 回到选项列表；提问的 Other 输入态 → 退出输入；提问里已有答案时，第一次 Esc 只把提示行末项换成 `Esc again to discard answers`，第二次才放弃（其它任意键解除）；其余情况拒绝 / 取消。
+- 只提示真正可用的键：宿主没有接上的功能（如 `Ctrl+E preview`）不出现在提示里。
+
+## 12. 新增 / 改造 dialog 自查清单
 
 - [ ] 头部按第 3 节：顶部一条 `─`、标题（+`(type to search)` 后缀）、hint、空行、`Search:` 行、列表、底部一条 `─`；标题下**无**内层 `─`。
 - [ ] hint 整行 `textMuted`，**不**做键位高亮；键位首字母大写、描述词小写、` · ` 分隔。
 - [ ] 选中指针用 `SELECT_POINTER`，当前项用 `CURRENT_MARK`，未自造 `>` / `▶` / `→` / `● ` / `(current)`。
 - [ ] 颜色全部来自 `colors.<token>`，无 named color。
-- [ ] 键位：`↑↓` 移动、`PgUp/PgDn` 翻页、`Enter` 确认、`Esc` 取消（可搜索列表 `Esc` 两段式：先清 query 再关闭）、`D` 删除；字符比较经 `printableChar()`。
-- [ ] 「离开对话框」只说 `cancel`，不混用 close / back / exit / dismiss。
+- [ ] 键位：`↑↓` 移动、`PgUp/PgDn` 翻页、`Enter` 确认、`Esc` 取消（可搜索列表 `Esc` 两段式：先清 query 再关闭）、`D` 删除（可搜索列表用 `Ctrl+X`）；字符比较经 `printableChar()`。
+- [ ] 「离开对话框」只说 `cancel`，不混用 close / back / exit / dismiss；对话框内子层级的 Esc 写 `Esc back`（见第 4 节）。
 - [ ] 开关列表用 `Space toggle` 就地切换、不关闭；状态标签 ` enabled`(`success`) / ` disabled`(`textDim`) 紧跟名称空 2 格（见第 7 节）。
 - [ ] 长列表有滚动 / 翻页指示（`▼ N more` 或 `x / y`），空态文案明确（`No matches` 等）。
 - [ ] 每行经 `truncateToWidth(line, width)`，CJK / 窄终端下不超宽。
 - [ ] 复用 `SearchableList`；输入框圆角盒，多字段支持 `Tab/↑↓` 切换、Enter 推进 / 末段提交。
+- [ ] 系统主动弹出、替换输入框的对话框按第 11 节处理上膛时间、默认项、单次响应和分层 Esc。
 - [ ] 有对应的组件测试（render 快照 + handleInput 键行为）。

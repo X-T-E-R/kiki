@@ -19,14 +19,11 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { isInlineSkillType } from '#/app/skillCatalog/types';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { renderPrompt } from '#/_base/utils/render-prompt';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesGlobRuleSubject, matchesStringRuleSubject } from '#/tool/rule-match';
 
 import {
   ISkillTool,
-  MAX_SKILL_QUERY_DEPTH,
-  NestedSkillTooDeepError,
   SkillToolInputSchema,
   type SkillToolInput,
 } from './skill';
@@ -35,14 +32,10 @@ import skillDescriptionTemplate from './skill.md?raw';
 export class SkillTool implements ISkillTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Skill';
-  readonly description: string = renderPrompt(skillDescriptionTemplate, {
-    MAX_SKILL_QUERY_DEPTH,
-  });
+  readonly description: string = skillDescriptionTemplate;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SkillToolInputSchema, (schema) => {
     schema['oneOf'] = [{ required: ['skill'] }, { required: ['path'] }];
   });
-
-  private queryDepth: number = 0;
 
   constructor(
     @ISessionSkillCatalog private readonly catalog: ISessionSkillCatalog,
@@ -130,18 +123,12 @@ export class SkillTool implements ISkillTool {
             promptCommand: isPromptCommandPath(lexicalPath),
             text: await lease.runtime.fs!.readText(actualPath),
           });
-          return await executeModelSkill(this.catalog, this.skill, args, this.queryDepth, this.sessionContext.sessionId, definition);
+          return await executeModelSkill(this.catalog, this.skill, args, this.sessionContext.sessionId, definition);
         } finally {
           lease.dispose();
         }
       },
     };
-  }
-
-  withInitialQueryDepth(initialQueryDepth: number): SkillTool {
-    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace, this.plugins, this.usage);
-    clone.queryDepth = initialQueryDepth;
-    return clone;
   }
 
   private async execution(args: SkillToolInput): Promise<ExecutableToolResult> {
@@ -159,7 +146,7 @@ export class SkillTool implements ISkillTool {
       }
       catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
     }
-    return executeModelSkill(this.catalog, this.skill, args, this.queryDepth, this.sessionContext.sessionId);
+    return executeModelSkill(this.catalog, this.skill, args, this.sessionContext.sessionId);
   }
 }
 
@@ -169,15 +156,9 @@ export async function executeModelSkill(
   catalog: ISessionSkillCatalog,
   skillService: IAgentSkillService,
   args: SkillToolInput,
-  queryDepth: number,
   sessionId: string,
   explicitDefinition?: SkillDefinition,
 ): Promise<ExecutableToolResult> {
-  const currentDepth = queryDepth;
-  if (currentDepth >= MAX_SKILL_QUERY_DEPTH) {
-    throw new NestedSkillTooDeepError(MAX_SKILL_QUERY_DEPTH, args.skill ?? args.path);
-  }
-
   await catalog.ready;
   const skill = explicitDefinition ?? (args.skill === undefined ? undefined : catalog.catalog.getSkill(args.skill));
   if (skill === undefined) {
@@ -195,7 +176,7 @@ export async function executeModelSkill(
   }
 
   const skillArgs = args.args ?? '';
-  const trigger = currentDepth > 0 ? 'nested-skill' : 'model-tool';
+  const trigger = 'model-tool';
   const origin: SkillActivationOrigin = {
     kind: 'skill_activation',
     activationId: randomUUID(),

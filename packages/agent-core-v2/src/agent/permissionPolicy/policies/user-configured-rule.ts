@@ -27,16 +27,16 @@ export function evaluateUserConfiguredRule(
   if (decision === 'deny') {
     return {
       kind: 'deny',
-      message: defaultPermissionRuleDenyMessage(context.toolCall.name, match.rule.reason),
+      message: defaultPermissionRuleDenyMessage(context.toolCall.name, match.rule.pattern, match.rule.reason),
     };
   }
   if (decision === 'ask') return { kind: 'ask' };
   return { kind: 'approve' };
 }
 
-function defaultPermissionRuleDenyMessage(tool: string, reason: string | undefined): string {
+function defaultPermissionRuleDenyMessage(tool: string, pattern: string, reason: string | undefined): string {
   const suffix = reason !== undefined && reason.length > 0 ? ` Reason: ${reason}` : '';
-  return `Tool "${tool}" was denied by permission rule.${suffix}`;
+  return `Tool "${tool}" was denied by permission rule "${pattern}".${suffix}`;
 }
 
 function firstMatchingRule(

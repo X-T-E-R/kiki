@@ -25,6 +25,7 @@ import {
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
 import { pushUndoToast } from '../../../lib/toasts';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
 import { FieldIssue, FORM_LABEL, SettingsSelect } from '../SettingsPrimitives';
@@ -224,6 +225,7 @@ export function NbSearchLaneEditor({
                 }}
                 onBlur={rename}
                 onKeyDown={(event) => {
+                  if (isImeKeyEvent(event)) return;
                   if (event.key === 'Enter') {
                     event.preventDefault();
                     rename();
@@ -306,6 +308,7 @@ export function NbSearchLaneEditor({
                 }}
                 onBlur={commitEvidence}
                 onKeyDown={(event) => {
+                  if (isImeKeyEvent(event)) return;
                   if (event.key === 'Enter') {
                     event.preventDefault();
                     commitEvidence();

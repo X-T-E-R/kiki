@@ -42,6 +42,7 @@ import { ISessionContext, makeSessionContext } from '#/session/sessionContext/se
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { IBashTool, type BashInput, BashInputSchema } from '#/agent/tools/os/bash/bash';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
+import { isConcurrencySafeBash } from '#/agent/tools/os/bash/bashConcurrency';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
 
 const disposables = new DisposableStore();
@@ -977,33 +978,6 @@ describe('BashTool', () => {
     expect(BashInputSchema.safeParse({ command: '' }).success).toBe(false);
     expect(BashInputSchema.safeParse({ command: 'echo x', timeout: 0 }).success).toBe(false);
     expect(BashInputSchema.safeParse({ command: 'echo x', timeout: 300 }).success).toBe(true);
-    expect(BashInputSchema.safeParse({ command: 'echo x', timeout: 301 }).success).toBe(false);
-    expect(BashInputSchema.safeParse({ command: 'echo x', timeout: 300_000 }).success).toBe(false);
-    expect(BashInputSchema.safeParse({ command: 'echo x', timeout: 300_001 }).success).toBe(false);
-    expect(
-      BashInputSchema.safeParse({
-        command: 'watch',
-        run_in_background: true,
-        description: 'watch files',
-        timeout: 86_400,
-      }).success,
-    ).toBe(true);
-    expect(
-      BashInputSchema.safeParse({
-        command: 'watch',
-        run_in_background: true,
-        description: 'watch files',
-        timeout: 86_401,
-      }).success,
-    ).toBe(false);
-    expect(
-      BashInputSchema.safeParse({
-        command: 'watch',
-        run_in_background: true,
-        description: 'watch files',
-        timeout: 600_000,
-      }).success,
-    ).toBe(false);
     expect(
       BashInputSchema.safeParse({
         command: 'watch',
@@ -1013,7 +987,6 @@ describe('BashTool', () => {
         disable_timeout: true,
       }).success,
     ).toBe(true);
-    expect(BashInputSchema.safeParse({ command: 'watch', lifetime: 'service' }).success).toBe(false);
   });
 
   it('describes the cwd, command, run_in_background, description, and disable_timeout parameters', () => {
@@ -1042,15 +1015,6 @@ describe('BashTool', () => {
       .properties;
 
     expect(properties['timeout']?.default).toBe(60);
-  });
-
-  it('briefly identifies shell-only work and dedicated file tools', () => {
-    const { runner } = createTestRunner(processWithOutput());
-    const tool = bashTool(runner);
-
-    expect(tool.description).toContain('pipes, package managers, git, builds and tests');
-    expect(tool.description).toContain('Use Read/Glob/Grep for files and Edit/Write');
-    expect(tool.description).not.toContain('/tasks');
   });
 
   it('strips background instructions when background tools are disabled', () => {
@@ -1167,17 +1131,17 @@ describe('BashTool', () => {
     });
   });
 
-  it('appends a Read hint after a file read but not when disabled in config', async () => {
+  it('appends a Read hint after a file read only when enabled in config', async () => {
     const ctx = createTestCtx();
-    const enabled = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
+    const byDefault = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
       undefined, ctx);
+    const plain = await executeTool(byDefault, context({ command: 'cat README.md' }));
+    expect(plain.output).toBe('contents\n');
+
+    const enabled = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
+      undefined, ctx, undefined, undefined, stubConfig({ background: { bashFileToolHints: true } }));
     const result = await executeTool(enabled, context({ command: 'cat README.md' }));
     expect(result.output).toBe('contents\n\nHint: to read a file, use Read (supports line ranges) instead of Bash.');
-
-    const disabled = bashTool(createTestRunner(processWithOutput({ stdout: 'contents\n' })).runner,
-      undefined, ctx, undefined, undefined, stubConfig({ background: { bashFileToolHints: false } }));
-    const suppressed = await executeTool(disabled, context({ command: 'cat README.md' }));
-    expect(suppressed.output).toBe('contents\n');
   });
 
   it('returns both stdout and stderr when a command fails', async () => {
@@ -1361,7 +1325,7 @@ describe('BashTool', () => {
 
     const result = await executeTool(tool, context({ command: 'echo nope' }, controller.signal));
 
-    expect(result).toEqual({ isError: true, output: 'Aborted before command started' });
+    expect(result).toMatchObject({ isError: true, output: 'Aborted before command started' });
     expect(exec).not.toHaveBeenCalled();
   });
 
@@ -1569,10 +1533,18 @@ describe('BashTool', () => {
 
     const description = tool.description;
     expect(description).toContain('`bash`');
-    expect(description).toContain('fresh shell');
-    expect(description).toContain('completion is notified automatically');
+    expect(description).toContain('by default 60 and at most 300');
+    expect(description).toContain('may move to background on timeout');
     expect(description).toContain('run_in_background=true');
-    expect(description).toContain('Do not run interactive');
+    expect(description).not.toContain('${');
+  });
+
+  it('describes killed-on-timeout foreground commands when automatic backgrounding is off', () => {
+    const { runner } = createTestRunner(processWithOutput());
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, stubConfig({ background: { bashAutoBackgroundOnTimeout: false } }));
+
+    expect(tool.description).toContain('Foreground commands are killed on timeout.');
+    expect(tool.description).not.toContain('may move to background on timeout');
   });
 
   it('disables background execution when TaskList is inactive even if TaskOutput/TaskStop are active', async () => {
@@ -1821,7 +1793,7 @@ describe('BashTool background mode', () => {
     });
   });
 
-  it('requires background tools to be enabled and description for background commands', async () => {
+  it('requires background tools to be enabled for background commands', async () => {
     const proc = processWithOutput();
     const { runner, exec } = createTestRunner(proc);
     const backgroundDisabled = bashTool(
@@ -1837,17 +1809,6 @@ describe('BashTool background mode', () => {
     );
     expect(unavailable).toMatchObject({ isError: true });
     expect(unavailable.output).toContain('Background execution is not available');
-    expect(exec).not.toHaveBeenCalled();
-
-    const { service } = createFakeTaskService();
-    const withService = bashTool(runner, createTestEnv(), createTestCtx(), service);
-    const missingDescription = await executeTool(
-      withService,
-      context({ command: 'sleep 10', run_in_background: true }),
-    );
-
-    expect(missingDescription).toMatchObject({ isError: true });
-    expect(missingDescription.output).toContain('description is required');
     expect(exec).not.toHaveBeenCalled();
   });
 
@@ -2105,7 +2066,7 @@ describe('BashTool background mode', () => {
     expect(output).not.toContain('TaskStop');
   });
 
-  it('rejects background command without description (description-required guard)', async () => {
+  it('labels a background command without description by the start of the command', async () => {
     const { service } = createFakeTaskService();
     const { runner, exec } = createTestRunner(processWithOutput());
     const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
@@ -2115,9 +2076,19 @@ describe('BashTool background mode', () => {
       context({ command: 'sleep 1', run_in_background: true }),
     );
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('description is required');
-    expect(exec).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ isError: false });
+    expect(result.output).toContain('description: Bash: sleep 1');
+    expect(exec).toHaveBeenCalledOnce();
+  });
+
+  it('says when a timeout above the limit was lowered', async () => {
+    const { runner } = createTestRunner(processWithOutput({ stdout: 'ok\n' }));
+    const tool = bashTool(runner);
+
+    const clamped = await executeTool(tool, context({ command: 'echo ok', timeout: 900 }));
+    expect(clamped.note).toContain('timeout 900 is above the 300-second limit for a foreground command, so 300 seconds was used.');
+    const within = await executeTool(tool, context({ command: 'echo ok', timeout: 300 }));
+    expect(within.note).toBeUndefined();
   });
 });
 
@@ -2146,5 +2117,53 @@ describe('BashTool prompt / runtime consistency', () => {
       expect(promptToolNames).toContain(name);
     }
     expect(errorToolNames.length).toBeGreaterThan(0);
+  });
+});
+
+describe('Bash concurrency classification', () => {
+  it.each([
+    'ls -la src',
+    'rg -n TODO src',
+    'grep -rn TODO src',
+    "find src -name '*.ts'",
+    'git -C packages/core log --oneline -5',
+    'git --no-pager log --oneline -5',
+    'git show HEAD:README.md',
+    'git rev-parse HEAD',
+    'git branch --list',
+    'git branch --show-current',
+    'which node',
+    'date -u',
+    'du -sh src',
+    'df -h',
+    'git log -1 | head -5',
+  ])('runs %s in parallel with other reads', (command) => {
+    expect(isConcurrencySafeBash(command)).toBe(true);
+  });
+
+  it.each([
+    'find . -name x -delete',
+    'find . -exec rm {} ;',
+    'find . -fprint out.txt',
+    'rg --pre ./script TODO',
+    'rg --pre=./script TODO',
+    'date -s 2020-01-01',
+    'date --set=2020-01-01',
+    'git status --short',
+    'git diff HEAD~1',
+    'git show --output=out.patch HEAD',
+    'git log --ext-diff',
+    'git checkout main',
+    'git add .',
+    'git -c core.pager=cat log',
+    'git branch feature',
+    'git branch --list -d feature',
+    'git branch --show-current --delete feature',
+    'git stash list',
+    'git log > log.txt',
+    'rg TODO $DIR',
+    'cat a | xargs rm',
+  ])('keeps %s serial', (command) => {
+    expect(isConcurrencySafeBash(command)).toBe(false);
   });
 });

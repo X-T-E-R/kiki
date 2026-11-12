@@ -6,9 +6,10 @@
  */
 
 import assert from "node:assert";
-import { beforeEach, describe, it } from "node:test";
+import { beforeEach, describe, it, mock } from "node:test";
 import { matchesKey } from "../src/keys.ts";
 import { StdinBuffer } from "../src/stdin-buffer.ts";
+import { resolveEscapeTimeoutMs } from "../src/terminal.ts";
 
 describe("StdinBuffer", () => {
 	let buffer: StdinBuffer;
@@ -189,6 +190,35 @@ describe("StdinBuffer", () => {
 			delayedBuffer.process("<65;48;39M");
 			assert.deepStrictEqual(delayedSequences, ["\x1b[<65;48;39M"]);
 			delayedBuffer.destroy();
+		});
+	});
+
+	// Kiki divergence: the local (non-SSH) escape timeout is 30ms instead of
+	// upstream's 10ms. The buffer is built the way ProcessTerminal builds it.
+	describe("local default escape timeout", () => {
+		it("joins an arrow key whose bytes arrive 20ms apart and still resolves a lone ESC as Escape", () => {
+			mock.timers.enable({ apis: ["setTimeout"] });
+			const localBuffer = new StdinBuffer({ escapeTimeout: resolveEscapeTimeoutMs({}) });
+			const sequences: string[] = [];
+			localBuffer.on("data", (sequence) => sequences.push(sequence));
+			try {
+				localBuffer.process("\x1b");
+				mock.timers.tick(20);
+				localBuffer.process("[A");
+				assert.deepStrictEqual(sequences, ["\x1b[A"]);
+				assert.equal(matchesKey(sequences[0] ?? "", "up"), true);
+
+				sequences.length = 0;
+				localBuffer.process("\x1b");
+				mock.timers.tick(20);
+				assert.deepStrictEqual(sequences, []);
+				mock.timers.tick(10);
+				assert.deepStrictEqual(sequences, ["\x1b"]);
+				assert.equal(matchesKey(sequences[0] ?? "", "escape"), true);
+			} finally {
+				localBuffer.destroy();
+				mock.timers.reset();
+			}
 		});
 	});
 

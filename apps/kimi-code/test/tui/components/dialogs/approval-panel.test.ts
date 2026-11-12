@@ -54,7 +54,9 @@ function makeDialog(): {
   }> = [];
   const dialog = new ApprovalPanelComponent(
     makePending(),
-    (response) => responses.push(response),
+    (response) => {
+      responses.push(response);
+    },
   );
   return { dialog, responses };
 }
@@ -133,7 +135,7 @@ describe('ApprovalPanelComponent', () => {
         ],
       },
     };
-    const dialog = new ApprovalPanelComponent(pending, () => {});
+    const dialog = new ApprovalPanelComponent(pending, () => {}, undefined, () => {});
 
     for (const width of [30, 40]) {
       const out = strip(dialog.render(width).join('\n'));
@@ -151,7 +153,7 @@ describe('ApprovalPanelComponent', () => {
     const out = strip(dialog.render(30).join('\n'));
     expect(out).toContain('type feedback');
     expect(out).toContain('Enter submit');
-    expect(out).toContain('Esc reject');
+    expect(out).toContain('Esc back');
   });
 
   it('renders choice descriptions beneath the label when present', () => {
@@ -261,7 +263,7 @@ describe('ApprovalPanelComponent', () => {
 
     const out = strip(dialog.render(80).join('\n'));
     expect(out).toContain('❯ 4. Reject with feedback');
-    expect(out).toContain('type feedback · Enter submit · Esc reject');
+    expect(out).toContain('type feedback · Enter submit · Esc back');
     expect(out).not.toContain('\n  > ');
   });
 
@@ -316,6 +318,110 @@ describe('ApprovalPanelComponent', () => {
       expect(responses).toEqual([{ response: 'rejected' }]);
     },
   );
+
+  it('Esc in the feedback input returns to the choice list instead of rejecting', () => {
+    const { dialog, responses } = makeDialog();
+    dialog.handleInput('4');
+    dialog.handleInput('n');
+    dialog.handleInput('\u001B');
+    expect(responses).toEqual([]);
+    expect(strip(dialog.render(80).join('\n'))).toContain('1-4/Enter confirm');
+
+    dialog.handleInput('\u001B');
+    expect(responses).toEqual([{ response: 'rejected' }]);
+  });
+
+  it('starts a dangerous request on Reject so Enter cannot approve it', () => {
+    const responses: Array<{ response: string }> = [];
+    const pending = makePending();
+    pending.data.display = [
+      { type: 'shell', language: 'bash', command: 'rm -rf build', danger: 'recursive delete' },
+    ];
+    const dialog = new ApprovalPanelComponent(pending, (r) => {
+      responses.push(r);
+    });
+
+    expect(strip(dialog.render(80).join('\n'))).toContain('❯ 3. Reject');
+    dialog.handleInput('\r');
+    expect(responses).toEqual([{ response: 'rejected' }]);
+  });
+
+  describe('arming window', () => {
+    function makeArmedDialog(armAfterMs: number) {
+      let clock = 0;
+      const responses: Array<{ response: string }> = [];
+      const dialog = new ApprovalPanelComponent(
+        makePending(),
+        (r) => {
+      responses.push(r);
+    },
+        undefined,
+        undefined,
+        { armAfterMs, now: () => clock },
+      );
+      return {
+        dialog,
+        responses,
+        at: (ms: number) => {
+          clock = ms;
+        },
+      };
+    }
+
+    it('ignores choosing keys typed into the window, and every such key restarts it', () => {
+      const { dialog, responses, at } = makeArmedDialog(500);
+      at(100);
+      dialog.handleInput('2');
+      at(450);
+      dialog.handleInput('\r');
+      at(900);
+      dialog.handleInput('2');
+      expect(responses).toEqual([]);
+
+      at(1400);
+      dialog.handleInput('3');
+      expect(responses).toEqual([{ response: 'rejected' }]);
+    });
+
+    it('lets arrows move the pointer and Esc reject before it is armed', () => {
+      const { dialog, responses, at } = makeArmedDialog(500);
+      at(10);
+      dialog.handleInput('\u001B[B');
+      at(600);
+      dialog.handleInput('\r');
+      expect(responses).toEqual([{ response: 'approved_for_session' }]);
+
+      const second = makeArmedDialog(500);
+      second.dialog.handleInput('\u001B');
+      expect(second.responses).toEqual([{ response: 'rejected' }]);
+    });
+
+    it('accepts keys at once when armAfterMs is 0', () => {
+      const { dialog, responses } = makeArmedDialog(0);
+      dialog.handleInput('1');
+      expect(responses).toEqual([{ response: 'approved' }]);
+    });
+  });
+
+  it('ignores keys while the host response is pending, then accepts them again', async () => {
+    const responses: Array<{ response: string }> = [];
+    let fail: () => void = () => {};
+    const dialog = new ApprovalPanelComponent(makePending(), (r) => {
+      responses.push(r);
+      return new Promise<void>((_resolve, reject) => {
+        fail = () => reject(new Error('network'));
+      });
+    });
+
+    dialog.handleInput('1');
+    dialog.handleInput('2');
+    expect(responses).toEqual([{ response: 'approved' }]);
+
+    fail();
+    await new Promise((resolve) => setImmediate(resolve));
+    dialog.handleInput('3');
+    expect(responses).toEqual([{ response: 'approved' }, { response: 'rejected' }]);
+  });
 
   it('renders ExitPlanMode with plan-specific header and plan-review choices', () => {
     const pending: PendingApproval = {
@@ -380,7 +486,9 @@ describe('ApprovalPanelComponent', () => {
     const previewCalls: Array<DiffDisplayBlock | FileContentDisplayBlock> = [];
     const dialog = new ApprovalPanelComponent(
       pending,
-      (r) => responses.push(r),
+      (r) => {
+      responses.push(r);
+    },
       () => toolOutputToggles++,
       (block) => previewCalls.push(block),
     );
@@ -423,7 +531,12 @@ describe('ApprovalPanelComponent', () => {
       },
     };
     let globalToggleCalls = 0;
-    const dialog = new ApprovalPanelComponent(pending, () => {}, () => globalToggleCalls++);
+    const dialog = new ApprovalPanelComponent(
+      pending,
+      () => {},
+      () => globalToggleCalls++,
+      () => {},
+    );
 
     dialog.handleInput('\u000F'); // Ctrl+O
 
@@ -480,7 +593,9 @@ describe('ApprovalPanelComponent', () => {
     const previewCalls: Array<DiffDisplayBlock | FileContentDisplayBlock> = [];
     const dialog = new ApprovalPanelComponent(
       pending,
-      (r) => responses.push(r),
+      (r) => {
+      responses.push(r);
+    },
       undefined,
       (block) => previewCalls.push(block),
     );
@@ -563,7 +678,9 @@ describe('ApprovalPanelComponent', () => {
     };
     const dialog = new ApprovalPanelComponent(
       pending,
-      (response) => responses.push(response),
+      (response) => {
+      responses.push(response);
+    },
     );
 
     dialog.handleInput('2');
@@ -599,7 +716,9 @@ describe('ApprovalPanelComponent external permission options', () => {
           ],
         },
       },
-      (response) => responses.push(response),
+      (response) => {
+      responses.push(response);
+    },
     );
     return { dialog, responses };
   }

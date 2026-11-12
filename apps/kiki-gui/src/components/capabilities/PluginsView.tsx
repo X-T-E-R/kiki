@@ -1,13 +1,15 @@
 /**
  * Plugins — two views over one data layer (Codex plugin-page grammar).
  *
- * Market: the catalog (marketplace.json) in categories (Featured,
- * Productivity, …) as two-column cards, each category capped with "See N
- * more"; installed entries carry a light Installed tag. Advanced (catalog
- * address, add from source) folds at the bottom.
+ * Installed (the first segment, and the page's default): every plugin on
+ * this server as a management list, whatever its origin (official, catalog,
+ * a local folder, git, a ZIP), the ones needing attention first. With none
+ * installed it is one sentence and a way to the market.
  *
- * Installed: every plugin on this server as a management list, whatever its
- * origin (official, catalog, a local folder, git, a ZIP). Detail is a
+ * Market: the catalog (marketplace.json) in categories (Featured,
+ * Productivity, …) as two-column cards; installed entries carry a light
+ * Installed tag, and search appears once the catalog is long. Advanced
+ * (catalog address, add from source) folds at the bottom. Detail is a
  * sub-view of both, so every surface shows the same state.
  */
 
@@ -20,9 +22,9 @@ import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
 import { useImportHistoryEnabled } from '../../lib/importHistory';
 import { localizeEntry, pluginUpdate, shelveCatalog, type CatalogShelfId, type PluginUpdateView } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
-import { InlineError } from '../controls';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
+import { LIST_TOOLS_MIN_ITEMS } from '../settings/list';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
 import { MediaSourcesView } from '../media/MediaSourcesView';
 import { InstalledList } from './InstalledList';
@@ -171,9 +173,13 @@ export function PluginsView({
   }
 
   const tab = route.view === 'installed' ? 'installed' : 'market';
-  const filtering = query.trim() !== '';
+  // Search is a list tool: a catalog of a handful of entries is read at a
+  // glance, and a query typed before the field went away stops narrowing it.
+  const searchable = entries.length >= LIST_TOOLS_MIN_ITEMS;
+  const activeQuery = searchable ? query : '';
+  const filtering = activeQuery.trim() !== '';
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
-  const shelves = shelveCatalog(entries, query, relevant);
+  const shelves = shelveCatalog(entries, activeQuery, relevant);
   const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
   const updateCheck = hasGithub ? (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[12px] leading-[18px]" data-plugins-update-check={githubQuery.isFetching ? 'checking' : githubQuery.isError ? 'failed' : 'checked'}>
@@ -201,12 +207,12 @@ export function PluginsView({
           ariaLabel={t('cap.plugins.views')}
           dataAttribute="data-plugins-tab"
           options={[
-            { value: 'market', label: t('cap.plugins.market') },
             { value: 'installed', label: installed.length > 0 ? `${t('cap.plugins.installed')} ${installed.length}` : t('cap.plugins.installed') },
+            { value: 'market', label: t('cap.plugins.market') },
           ]}
         />
         <div className="min-w-0 flex-1">
-          {tab === 'market' ? (
+          {tab === 'market' && searchable ? (
             <SearchField
               value={query}
               onChange={setQuery}
@@ -224,7 +230,15 @@ export function PluginsView({
             the same built-in surface. */}
       </div>
 
-      {tab === 'installed' ? (
+      {tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
+        // Nothing installed: one sentence and the one way to fill it.
+        <div data-plugins-installed-empty className="space-y-2">
+          <p className="text-[13px] text-ink-soft">{t('cap.installed.empty')}</p>
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => { onRoute({ view: 'market' }); }} data-plugins-browse-market>
+            {t('cap.installed.browseMarket')}
+          </button>
+        </div>
+      ) : tab === 'installed' ? (
         <InstalledList
           plugins={installed}
           entries={entries}
@@ -248,7 +262,7 @@ export function PluginsView({
             <p className="flex items-center gap-2 text-[13px] text-ink-faint" role="status"><Spinner label={t('cap.loading')} />{t('cap.plugins.loadingCatalog')}</p>
           ) : marketQuery.isError ? (
             <div className="space-y-2" data-plugins-catalog-error>
-              <InlineError error={marketQuery.error} />
+              <p role="alert" className="text-[13px] text-ink-soft">{t('cap.market.loadFailed', { detail: errorText(locale, marketQuery.error) })}</p>
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { void marketQuery.refetch(); }}>{t('common.retry')}</button>
             </div>
           ) : marketQuery.data?.configured === false ? (

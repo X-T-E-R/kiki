@@ -81,13 +81,16 @@ export class AgentSendTool implements IAgentSendTool {
           `Message identity "${acceptance.message.messageId}" was already used with different content.`,
         );
       }
-      return success({
-        message_id: acceptance.message.messageId,
-        status: acceptance.delivery,
-        deduplicated: acceptance.deduplicated,
-        resumed: acceptance.resumed,
-        target: { task_name: targetTaskName, agent_id: child.agentId },
-      });
+      return {
+        output: JSON.stringify({
+          message_id: acceptance.message.messageId,
+          status: acceptance.delivery,
+          deduplicated: acceptance.deduplicated,
+          resumed: acceptance.resumed,
+          target: { task_name: targetTaskName, agent_id: child.agentId },
+        } satisfies AgentSendResult),
+        note: receiptNote(acceptance.delivery, acceptance.resumed === true, acceptance.deduplicated),
+      };
     } catch (error) {
       if (error instanceof AgentMessageMailboxFullError) return failure(error.message);
       return failure(error instanceof Error ? error.message : String(error));
@@ -107,8 +110,14 @@ function callerTaskName(
   );
 }
 
-function success(value: AgentSendResult): ExecutableToolResult {
-  return { output: JSON.stringify(value) };
+function receiptNote(status: AgentSendResult['status'], resumed: boolean, deduplicated: boolean): string {
+  const state = status === 'delivered'
+    ? 'The message is in the child\'s context.'
+    : resumed
+      ? 'The message is saved and a continuation run of the child has started; the message enters its context in that run.'
+      : 'The message is saved but not yet in the child\'s context; it enters at the child\'s next step or continuation run.';
+  const repeat = deduplicated ? ' This call repeated an earlier send of the same message, so nothing new was sent.' : '';
+  return `<system>${state}${repeat} The child's result arrives with its task notification.</system>`;
 }
 
 function failure(message: string): ExecutableToolResult {

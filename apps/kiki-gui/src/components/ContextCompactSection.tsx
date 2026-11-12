@@ -29,6 +29,7 @@ import {
   type AutoCompactSource,
 } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
+import { isImeKeyEvent } from '../lib/shortcuts';
 import { Icon } from './icons';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { TokenPresetRow } from './TokenPresetRow';
@@ -368,6 +369,7 @@ export function ContextCompactSection({
             onChange={(event) => { setText(event.target.value); }}
             onBlur={() => { if (editing) commitText(); }}
             onKeyDown={(event) => {
+              if (isImeKeyEvent(event)) return;
               if (event.key === 'Enter') { event.preventDefault(); commitText(); }
               if (event.key === 'Escape') { event.stopPropagation(); setEditing(false); setText(formatCompactTokens(status.tokens)); event.currentTarget.blur(); }
             }}

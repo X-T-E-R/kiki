@@ -60,6 +60,7 @@ import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { useSavedTick } from '../useSavedTick';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 const USAGE_QUERY_KEY = (workspaceId: string) => ['plugin-usage', { workspace_id: workspaceId }] as const;
 const TRUST_QUERY_KEY = (workspaceId: string) => ['workspace-trust', workspaceId] as const;
@@ -222,6 +223,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
                   maxLength={100}
                   onChange={(event) => { setName(event.currentTarget.value); }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter' && dirty && !rename.isPending) rename.mutate(draftName.trim());
                     if (event.key === 'Escape') setName(null);
                   }}

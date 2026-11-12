@@ -10,6 +10,7 @@ import { useEffect, useId, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { compactInputTokens, formatCompactTokens, parseCompactInput } from '../../lib/autoCompact';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { TokenPresetRow } from '../TokenPresetRow';
 import { SMALL_INPUT } from '../ui';
 
@@ -85,7 +86,7 @@ export function CompactPointField({
         aria-describedby={error ? errorId : undefined}
         onChange={(event) => { setText(event.target.value); }}
         onBlur={commit}
-        onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }}
+        onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); commit(); } }}
       />
       {presets !== undefined && presets.length > 0 ? (
         <div className="-ml-2">

@@ -160,6 +160,12 @@ async function click(element: Element | null | undefined) {
   await flush();
 }
 
+/** A row's verbs sit behind its ⋯: open the menu, then pick the action. */
+async function rowAction(container: HTMLElement, id: string, action: 'restore' | 'delete') {
+  await click(container.querySelector(`[data-archive-more="${id}"]`));
+  await click(document.querySelector(`[role="menu"][data-archive-row-menu] [data-archive-action="${action}"]`));
+}
+
 function confirmDialog(container: HTMLElement): HTMLElement {
   return container.querySelector('[role="alertdialog"]') as HTMLElement;
 }
@@ -229,14 +235,23 @@ describe('ArchivedSessionsPage', () => {
     expect(container.querySelector('[data-archive-route]')?.textContent).toBe('/s/open-me');
   });
 
-  it('returns to session settings from the archive page', async () => {
-    listSpy(archiveFixture([archived('one')]));
+  it('restores a conversation from its row menu and reads the archive again', async () => {
+    const server = archiveFixture([archived('bring-back'), archived('stay')]);
+    listSpy(server);
     vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    const restore = vi.spyOn(client, 'restoreSession').mockImplementation(async (id) => {
+      server.forget(id);
+      return {} as never;
+    });
+    const deleteOne = vi.spyOn(client, 'deleteArchivedSession');
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-back]'));
+    await rowAction(container, 'bring-back', 'restore');
+    await flush();
 
-    expect(container.querySelector('[data-archive-route]')?.textContent).toBe('/settings/sessions');
+    expect(restore).toHaveBeenCalledWith('bring-back');
+    expect(deleteOne).not.toHaveBeenCalled();
+    expect(rowIds(container)).toEqual(['stay']);
   });
 
   it('cancelling a single delete writes nothing and keeps the row', async () => {
@@ -245,7 +260,7 @@ describe('ArchivedSessionsPage', () => {
     const deleteOne = vi.spyOn(client, 'deleteArchivedSession');
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-delete="keep-me"]'));
+    await rowAction(container, 'keep-me', 'delete');
 
     const dialog = confirmDialog(container);
     expect(dialog.textContent).toContain('Archived keep-me');
@@ -277,14 +292,14 @@ describe('ArchivedSessionsPage', () => {
     }));
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-delete="root"]'));
+    await rowAction(container, 'root', 'delete');
     const dialog = confirmDialog(container);
 
     await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     await flush(2);
 
     expect(deleteOne).toHaveBeenCalledWith('root', { exclude_session_ids: ['promoted'] });
-    expect(container.querySelector('[data-archive-delete="root"]')?.getAttribute('aria-label')).toBe('Deleting');
+    expect(container.querySelector('[data-archive-more="root"]')?.getAttribute('aria-label')).toBe('Deleting');
     expect(confirmDialog(container).querySelector('[data-confirm-action="confirm"]')?.hasAttribute('disabled')).toBe(true);
 
     await act(async () => { release(); });
@@ -314,7 +329,7 @@ describe('ArchivedSessionsPage', () => {
     });
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-delete="root"]'));
+    await rowAction(container, 'root', 'delete');
     await click(confirmDialog(container).querySelector('[data-confirm-action="confirm"]'));
     await flush();
 
@@ -336,7 +351,7 @@ describe('ArchivedSessionsPage', () => {
       .mockResolvedValue({ deleted_ids: [], failed: [{ id: 'stuck', message: 'conversation is still attached to a live run' }] });
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-delete="stuck"]'));
+    await rowAction(container, 'stuck', 'delete');
     await click(confirmDialog(container).querySelector('[data-confirm-action="confirm"]'));
     await flush();
 
@@ -366,7 +381,7 @@ describe('ArchivedSessionsPage', () => {
     });
 
     const { container } = await mountPage();
-    await click(container.querySelector('[data-archive-delete="root"]'));
+    await rowAction(container, 'root', 'delete');
     await click(confirmDialog(container).querySelector('[data-confirm-action="confirm"]'));
     await flush(3);
 
@@ -374,7 +389,7 @@ describe('ArchivedSessionsPage', () => {
     expect(reads > 1, 'the delete must have triggered a fresh read').toBe(true);
     // The delete answered, but the fresh read has not: the row is still
     // pending, and the bulk action is not yet safe to offer.
-    expect(container.querySelector('[data-archive-delete="root"]')?.getAttribute('aria-label')).toBe('Deleting');
+    expect(container.querySelector('[data-archive-more="root"]')?.getAttribute('aria-label')).toBe('Deleting');
     const bulk = container.querySelector('[data-archive-delete-all]');
     expect(bulk?.hasAttribute('disabled'), 'the bulk action stays disabled until the list is fresh').toBe(true);
 
@@ -386,7 +401,7 @@ describe('ArchivedSessionsPage', () => {
 
     await act(async () => { releaseFresh(); });
     await flush();
-    expect(container.querySelector('[data-archive-delete="root"]'), 'the fresh read drops the deleted row').toBeNull();
+    expect(container.querySelector('[data-archive-item="root"]'), 'the fresh read drops the deleted row').toBeNull();
     expect(container.querySelector('[data-archive-item]')?.getAttribute('aria-label')).toBeUndefined();
     expect(container.querySelector('[data-archive-empty]')?.textContent).toContain('No archived conversations');
     expect(list).toHaveBeenCalled();
@@ -439,7 +454,7 @@ describe('ArchivedSessionsPage', () => {
     };
     await render();
 
-    await click(container.querySelector('[data-archive-delete="local-only"]'));
+    await rowAction(container, 'local-only', 'delete');
     await act(async () => { confirmDialog(container).querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     await flush(2);
     expect(localDelete).toHaveBeenCalledTimes(1);
@@ -467,7 +482,7 @@ describe('ArchivedSessionsPage', () => {
     expect(remoteInvalidate, 'the new scope must not be invalidated by the old one').not.toHaveBeenCalled();
 
     // And this scope is usable on its own terms.
-    expect(container.querySelector('[data-archive-delete="remote-only"]')).not.toBeNull();
+    expect(container.querySelector('[data-archive-item="remote-only"]')).not.toBeNull();
     void localList;
   });
 
@@ -591,11 +606,12 @@ describe('ArchivedSessionsPage', () => {
 
 /**
  * The way in. The section renders as a whole, so this also holds the rest of
- * Settings → Sessions to its current shape: the archive entry is added, and
- * nothing else on the section moves or disappears.
+ * Settings → Sessions to its current shape: one page of five cards, the
+ * archive last, saying how many conversations it holds.
  */
 describe('SessionsSection archive entry', () => {
-  it('offers the archive first and keeps the other session cards on their tabs', async () => {
+  it('lists the five session cards on one page and counts the archive it opens', async () => {
+    listSpy(archiveFixture([archived('one'), archived('two')]));
     vi.spyOn(client, 'getConfig').mockResolvedValue({ interaction: {}, session_title: {} } as never);
     vi.spyOn(client, 'meta').mockResolvedValue({ experimental_flags: {} } as never);
     vi.spyOn(client, 'listModels').mockResolvedValue({ items: [] } as never);
@@ -623,15 +639,13 @@ describe('SessionsSection archive entry', () => {
 
     const cards = () => [...container.querySelectorAll<HTMLElement>('[data-settings-card]')]
       .map((card) => card.dataset['settingsCard'] ?? null);
-    expect(cards()).toEqual(['st-card-archived', 'st-card-session-title']);
-    await click(container.querySelector('[data-sessions-tab="behavior"]')!);
-    expect(cards()).toEqual(['st-card-defaults', 'st-card-questions', 'st-card-agent-messaging']);
-    await click(container.querySelector('[data-sessions-tab="runtime"]')!);
-    expect(cards()).toEqual(['st-card-task-policy', 'st-card-session-residency', 'st-card-resource-limits']);
-    await click(container.querySelector('[data-sessions-tab="conversations"]')!);
+    expect(cards()).toEqual(['st-card-defaults', 'st-card-session-title', 'st-card-questions', 'st-card-background-work', 'st-card-archived']);
+    expect(container.querySelector('[data-sessions-tab]')).toBeNull();
 
-    const entry = container.querySelector('[data-settings-open-archived]')!;
-    expect(entry.textContent).toContain('Manage archived conversations');
+    const card = container.querySelector('#st-card-archived')!;
+    expect(card.textContent).toContain('2 archived conversations');
+    const entry = card.querySelector('[data-settings-open-archived]')!;
+    expect(entry.textContent).toContain('View archive');
     await click(entry);
     expect(container.querySelector('[data-archive-route]')?.textContent).toBe('/archived');
   });

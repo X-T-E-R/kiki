@@ -1,4 +1,6 @@
-import { resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from '@kiki/pi-tui';
@@ -22,6 +24,12 @@ import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import * as clipboardImage from '#/utils/clipboard/clipboard-image';
 
 const created: DaemonTUI[] = [];
+const temporaryHomes: string[] = [];
+
+/** Plain text of the transcript, where command read-outs land. */
+function transcriptText(tui: DaemonTUI, width = 120): string {
+  return tui.state.transcriptContainer.render(width).join('\n').replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+}
 
 function freshUploadExpiry(): number {
   return Date.now() + MEDIA_STAGING_TTL_SECONDS * 1_000;
@@ -137,6 +145,11 @@ function driver(
     readonly session?: string;
   } = {},
 ) {
+  // Submitting through the editor persists input history under KIKI_HOME;
+  // keep it out of the real home directory.
+  const home = mkdtempSync(join(tmpdir(), 'kiki-tui-home-'));
+  temporaryHomes.push(home);
+  vi.stubEnv('KIKI_HOME', home);
   const tui = new DaemonTUI(
     { url: 'http://127.0.0.1:57580', token: 'secret' },
     {
@@ -415,12 +428,18 @@ function driver(
 afterEach(async () => {
   vi.unstubAllEnvs();
   for (const tui of created.splice(0)) {
-    const internal = tui as unknown as { clearActivityTickTimer(): void; clearStatusNotice(): void };
+    const internal = tui as unknown as {
+      clearActivityTickTimer(): void;
+      clearStatusNotice(): void;
+      inputHistory: Promise<unknown>;
+    };
     internal.clearActivityTickTimer();
     internal.clearStatusNotice();
     tui.state.footer.dispose();
+    await internal.inputHistory;
     await (tui as unknown as { client: { close(): Promise<void> } }).client.close();
   }
+  for (const home of temporaryHomes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
 describe('DaemonTUI commands', () => {
@@ -450,8 +469,7 @@ describe('DaemonTUI commands', () => {
       '/help (/h, /?)', 'Disabled in daemon TUI',
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
       'type / in the input box', 'Ctrl+-',
-      'Prompt steering shortcut is disabled in daemon TUI',
-      'Backgrounding the active turn is disabled in daemon TUI',
+      'press twice over a draft', '/stop',
     ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
     controllerState.busy = true;
     (tui as unknown as { renderActivityState(view: unknown): void }).renderActivityState({
@@ -480,7 +498,7 @@ describe('DaemonTUI commands', () => {
     vi.stubEnv('KIKI_HOME', 'C:/client-only-home');
     const internal = tui as unknown as { handleSlash(text: string): Promise<void> };
     await internal.handleSlash('/status');
-    const output = tui.state.activityContainer.render(120).join('\n');
+    const output = transcriptText(tui);
     expect(output).toContain(`Working directory: C:/workspace-${scope}`);
     expect(output).toContain(`Daemon: ${connection.url}`);
     expect(output).toContain(`Daemon ID: daemon-${scope}`);
@@ -500,7 +518,7 @@ describe('DaemonTUI commands', () => {
     const auth = internal.client.klient['global'] as { auth: { ensureReady: ReturnType<typeof vi.fn> } };
     auth.auth.ensureReady = vi.fn();
     await internal.handleSlash('/usage');
-    const output = tui.state.activityContainer.render(80).join('\n');
+    const output = transcriptText(tui, 80);
     expect(output).toContain('No token usage recorded yet.');
     expect(output).not.toContain('/login');
     expect(internal.client.createSession).not.toHaveBeenCalled();
@@ -509,12 +527,12 @@ describe('DaemonTUI commands', () => {
   });
 
   it('shows the active session usage rather than the empty hint', async () => {
-    const { internal, agentFacade } = driver();
+    const { tui, internal, agentFacade } = driver();
     agentFacade.getUsage.mockResolvedValue({ total: { inputTokens: 12 } } as never);
     await internal.handleSlash('/usage');
     expect(agentFacade.getUsage).toHaveBeenCalledTimes(1);
-    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('12'));
-    expect(internal.showStatus.mock.calls[0]?.[0]).not.toContain('No token usage');
+    expect(transcriptText(tui)).toContain('"inputTokens": 12');
+    expect(transcriptText(tui)).not.toContain('No token usage');
     expect(internal.client.createSession).not.toHaveBeenCalled();
   });
 
@@ -529,9 +547,9 @@ describe('DaemonTUI commands', () => {
     const { tui, internal } = driver();
     vi.stubEnv('KIKI_HOME', 'C:/client-only-home');
     await internal.handleSlash('/status');
-    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('Home ID: unavailable from this connection'));
-    expect(internal.showStatus).toHaveBeenCalledWith(expect.stringContaining('Host ID: unavailable from this connection'));
-    expect(internal.showStatus.mock.calls[0]?.[0]).not.toContain('client-only-home');
+    expect(transcriptText(tui)).toContain('Home ID: unavailable from this connection');
+    expect(transcriptText(tui)).toContain('Host ID: unavailable from this connection');
+    expect(transcriptText(tui)).not.toContain('client-only-home');
     expect(internal.client.createSession).not.toHaveBeenCalled();
   });
 
@@ -620,7 +638,7 @@ describe('DaemonTUI commands', () => {
   });
 
   it('lists active personas and switches by starting a new session', async () => {
-    const { internal } = driver();
+    const { tui, internal } = driver();
     internal.client.listPersonas.mockResolvedValue([
       { id: 'lin-lan', name: 'Lin Lan', title: 'Release', revision: '2', archived: false },
       { id: 'archived', name: 'Archived', revision: '1', archived: true },
@@ -629,7 +647,8 @@ describe('DaemonTUI commands', () => {
     internal.openSession = openSession;
 
     await internal.handleSlash('/persona list');
-    expect(internal.showStatus).toHaveBeenCalledWith('lin-lan · Lin Lan · Release');
+    expect(transcriptText(tui)).toContain('lin-lan · Lin Lan · Release');
+    expect(transcriptText(tui)).not.toContain('Archived');
 
     await internal.handleSlash('/persona switch lin-lan');
     expect(internal.client.createSession).toHaveBeenCalledWith(
@@ -737,7 +756,7 @@ describe('DaemonTUI commands', () => {
   });
 
   it('redacts settings output and rejects plaintext provider secrets', async () => {
-    const { internal, configFacade, providerFacade } = driver();
+    const { tui, internal, configFacade, providerFacade } = driver();
     configFacade.getAll.mockResolvedValue({
       provider: {
         apiKey: 'settings-secret',
@@ -747,7 +766,7 @@ describe('DaemonTUI commands', () => {
     });
 
     await internal.handleSlash('/settings');
-    const rendered = String(internal.showStatus.mock.calls.at(-1)?.[0]);
+    const rendered = transcriptText(tui);
     expect(rendered).not.toContain('settings-secret');
     expect(rendered).not.toContain('settings-token');
     expect(rendered).toContain('[redacted]');
@@ -1398,6 +1417,26 @@ describe('DaemonTUI commands', () => {
     expect(filesFacade.delete).not.toHaveBeenCalledWith('active-image-upload');
   });
 
+  it('puts a draft back when sending fails, but not once the daemon accepted it', async () => {
+    const { tui, internal, controller } = driver();
+    const editor = tui.state.editor;
+    controller.sendPrompt.mockRejectedValueOnce(new Error('fetch failed'));
+    editor.setText('a long instruction that took a minute to write');
+    editor.handleInput('\r');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('fetch failed', 'error'));
+    expect(editor.getText()).toBe('a long instruction that took a minute to write');
+
+    // Accepted by the daemon, then a follow-up resync failed: restoring the
+    // draft here would invite a duplicate send.
+    const image = internal.imageAttachments.addImage(Buffer.from('image'), 'image/png', 2, 2, undefined, 'file-image');
+    controller.resync.mockRejectedValueOnce(new Error('resync offline'));
+    editor.setText(`look ${image.placeholder}`);
+    editor.handleInput('\r');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('resync offline', 'error'));
+    expect(controller.sendPrompt).toHaveBeenCalledTimes(2);
+    expect(editor.getText()).toBe('');
+  });
+
   it('retains staged attachments after a failed send so the draft can retry', async () => {
     const { tui, internal, controller, filesFacade } = driver();
     const path = resolve(process.cwd(), 'package.json');
@@ -1417,6 +1456,133 @@ describe('DaemonTUI commands', () => {
     await internal.handleInterrupt('ctrl-c');
 
     expect(controller.abortActive).toHaveBeenCalledOnce();
+  });
+
+  describe('Esc, Ctrl-C and Ctrl-D typed into the input box', () => {
+    const ESC = '\u001B';
+    const CTRL_C = '\u0003';
+    const CTRL_D = '\u0004';
+    const UP = '\u001B[A';
+
+    function keys() {
+      const setup = driver();
+      const stop = vi.spyOn(setup.tui, 'stop').mockResolvedValue(undefined);
+      vi.spyOn(setup.tui.state.ui, 'requestRender').mockImplementation(() => {});
+      const editor = setup.tui.state.editor;
+      return { ...setup, stop, editor, hint: () => setup.tui.state.footer.getTransientHint() };
+    }
+
+    it('interrupts a running turn at once when the input box is empty', () => {
+      const { controller, controllerState, editor } = keys();
+      controllerState.busy = true;
+      editor.handleInput(ESC);
+      expect(controller.abortActive).toHaveBeenCalledOnce();
+    });
+
+    it('asks for a second Esc before interrupting over a draft, and keeps the draft', () => {
+      const { controller, controllerState, editor, hint } = keys();
+      controllerState.busy = true;
+      editor.setText('half typed draft');
+
+      editor.handleInput(ESC);
+      expect(controller.abortActive).not.toHaveBeenCalled();
+      expect(hint()).toBe('Press Esc again to interrupt');
+
+      editor.handleInput(ESC);
+      expect(controller.abortActive).toHaveBeenCalledOnce();
+      expect(editor.getText()).toBe('half typed draft');
+      expect(hint()).toBeNull();
+    });
+
+    it('disarms the pending interrupt on any other key', () => {
+      const { controller, controllerState, editor, hint } = keys();
+      controllerState.busy = true;
+      editor.setText('draft');
+      editor.handleInput(ESC);
+      editor.handleInput('x');
+      expect(hint()).toBeNull();
+      editor.handleInput(ESC);
+      expect(controller.abortActive).not.toHaveBeenCalled();
+      expect(editor.getText()).toBe('draftx');
+    });
+
+    it('does nothing on Esc while idle', () => {
+      const { controller, editor, hint } = keys();
+      editor.setText('draft');
+      editor.handleInput(ESC);
+      editor.handleInput(ESC);
+      expect(controller.abortActive).not.toHaveBeenCalled();
+      expect(editor.getText()).toBe('draft');
+      expect(hint()).toBeNull();
+    });
+
+    it('leaves history browsing with Esc and restores the earlier draft instead of interrupting', () => {
+      const { controller, controllerState, editor } = keys();
+      editor.addToHistory('older prompt');
+      controllerState.busy = true;
+      editor.setText('my draft');
+      editor.handleInput(UP);
+      editor.handleInput(UP);
+      expect(editor.getText()).toBe('older prompt');
+      editor.handleInput(ESC);
+      expect(editor.getText()).toBe('my draft');
+      expect(controller.abortActive).not.toHaveBeenCalled();
+    });
+
+    it('clears a draft with Ctrl-C without arming exit, then exits on two presses over an empty input', () => {
+      const { controller, editor, stop, hint } = keys();
+      editor.setText('draft');
+      editor.handleInput(CTRL_C);
+      expect(editor.getText()).toBe('');
+      expect(hint()).toBeNull();
+      editor.handleInput(CTRL_C);
+      expect(hint()).toBe('Press Ctrl+C again to exit');
+      expect(stop).not.toHaveBeenCalled();
+      editor.handleInput(CTRL_C);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(controller.abortActive).not.toHaveBeenCalled();
+    });
+
+    it('clears a draft and then interrupts with Ctrl-C while a turn runs', () => {
+      const { controller, controllerState, editor, stop } = keys();
+      controllerState.busy = true;
+      editor.setText('draft');
+      editor.handleInput(CTRL_C);
+      expect(editor.getText()).toBe('');
+      expect(controller.abortActive).not.toHaveBeenCalled();
+      editor.handleInput(CTRL_C);
+      expect(controller.abortActive).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+    });
+
+    it('exits on two Ctrl-D presses over an empty input even while a turn runs', () => {
+      const { controllerState, editor, stop, hint } = keys();
+      controllerState.busy = true;
+      editor.setText('ab');
+      editor.handleInput('\u0001');
+      editor.handleInput(CTRL_D);
+      expect(editor.getText()).toBe('b');
+      editor.setText('');
+      editor.handleInput(CTRL_D);
+      expect(hint()).toBe('Press Ctrl+D again to exit');
+      expect(stop).not.toHaveBeenCalled();
+      editor.handleInput(CTRL_D);
+      expect(stop).toHaveBeenCalledOnce();
+    });
+
+    it('closes the session picker on Ctrl-C when a session is open, and exits only from the startup picker', async () => {
+      const open = keys();
+      await open.internal.showSessionPicker();
+      open.tui.state.editorContainer.children[0]!.handleInput?.(CTRL_C);
+      expect(open.stop).not.toHaveBeenCalled();
+      expect(open.tui.state.editorContainer.children[0]).toBe(open.editor);
+
+      const startup = keys();
+      (startup.internal as unknown as { controller: undefined }).controller = undefined;
+      await startup.internal.showSessionPicker();
+      startup.tui.state.editorContainer.children[0]!.handleInput?.(CTRL_C);
+      expect(startup.stop).toHaveBeenCalledOnce();
+    });
   });
 
   it('always stops the UI when daemon close fails', async () => {
@@ -1478,6 +1644,47 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.editor.onUndo).toBeUndefined();
     expect(tui.state.editor.onRecall).toBeTypeOf('function');
     expect(tui.state.editor.onTextPaste).toBeTypeOf('function');
+  });
+
+  it('recalls submitted input with Up and reloads it for the same working directory', async () => {
+    const first = driver();
+    const shell = vi.fn(async () => {});
+    (first.internal.client as unknown as { runShellCommand: typeof shell }).runShellCommand = shell;
+    const editor = first.tui.state.editor;
+    // setText instead of per-key typing: a burst of synthetic keystrokes would
+    // trip paste-burst detection and turn Enter into a newline.
+    const submit = (text: string) => {
+      if (text.startsWith('!')) editor.handleInput('!');
+      editor.setText(text.replace(/^!/u, ''));
+      editor.handleInput('\r');
+    };
+    submit('first prompt');
+    submit('!ls -la');
+    submit('second prompt');
+    await vi.waitFor(() => expect(first.controller.sendPrompt).toHaveBeenCalledTimes(2));
+    expect(shell).toHaveBeenCalledOnce();
+    await (first.tui as unknown as { inputHistory: Promise<unknown> }).inputHistory;
+
+    editor.handleInput('\u001B[A');
+    expect(editor.getText()).toBe('second prompt');
+    editor.handleInput('\u001B[A');
+    expect(editor.getText()).toBe('first prompt');
+    editor.handleInput('\u001B[B');
+    editor.handleInput('\u001B[B');
+    expect(editor.getText()).toBe('');
+
+    const home = process.env['KIKI_HOME'];
+    const second = driver();
+    vi.stubEnv('KIKI_HOME', home);
+    await (second.tui as unknown as { loadInputHistory(): Promise<unknown> }).loadInputHistory();
+    const reloaded = second.tui.state.editor;
+    reloaded.handleInput('\u001B[A');
+    expect(reloaded.getText()).toBe('second prompt');
+    reloaded.handleInput('\u001B[B');
+    reloaded.handleInput('!');
+    reloaded.handleInput('\u001B[A');
+    expect(reloaded.inputMode).toBe('bash');
+    expect(reloaded.getText()).toBe('ls -la');
   });
 
   it.each([false, true])('restores a Ctrl-C-cleared draft with native undo (busy=%s), leaving /undo explicit', async (busy) => {
@@ -1544,9 +1751,7 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.setThinking).toHaveBeenCalledWith('session-1', 'high');
     expect(tui.state.appState.thinkingEffort).toBe('high');
     expect(configFacade.getAll).toHaveBeenCalledOnce();
-    expect(internal.showStatus).toHaveBeenCalledWith(
-      expect.stringContaining('example-flag'),
-    );
+    expect(transcriptText(tui)).toContain('example-flag');
     expect(internal.showStatus).toHaveBeenCalledWith(
       'Unknown daemon TUI command: /custom',
       'error',
@@ -1911,6 +2116,68 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.listSessions).toHaveBeenNthCalledWith(2, 50, 'other');
   });
 
+  it('holds an approval behind a dialog the user opened and arms it before keys can answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { tui, internal, controllerState } = driver();
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+      const sync = internal as unknown as { syncInteractionBlocks(blocks: unknown[]): void };
+      const focused = () => tui.state.editorContainer.children[0]!;
+      const approval = {
+        kind: 'approval',
+        id: 'approval-1',
+        request: {
+          approval_id: 'approval-1',
+          session_id: 'session-1',
+          tool_call_id: 'tool-1',
+          tool_name: 'Bash',
+          action: 'run command',
+          tool_input_display: { kind: 'generic' },
+          created_at: '2026-01-01T00:00:00.000Z',
+          expires_at: '2026-01-01T00:01:00.000Z',
+        },
+        resolution: undefined,
+      };
+
+      await internal.handleSlash('/permission');
+      const picker = focused();
+      controllerState.busy = true;
+      controllerState.blocks = [approval];
+      sync.syncInteractionBlocks(controllerState.blocks);
+      internal.renderActivityState(controllerState);
+      expect(focused()).toBe(picker);
+      expect(internal.showStatus).toHaveBeenLastCalledWith(
+        'Waiting for your approval · Esc to close this dialog and review',
+        expect.objectContaining({ source: 'activity' }),
+      );
+
+      // ↓ Enter still belong to the picker; the approval appears once it closes.
+      picker.handleInput?.('\u001B[B');
+      picker.handleInput?.('\r');
+      await vi.waitFor(() => expect(internal.client.setPermission).toHaveBeenCalledOnce());
+      expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+      const panel = focused();
+      expect(panel).not.toBe(picker);
+      expect(panel).not.toBe(tui.state.editor);
+
+      // Keys that arrive right after mount (the tail of what the user was
+      // typing) cannot answer it; once nothing arrived for the window, they can.
+      panel.handleInput?.('2');
+      panel.handleInput?.('\r');
+      expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(500);
+      panel.handleInput?.('1');
+      await vi.waitFor(() => expect(internal.client.resolveApproval).toHaveBeenCalledOnce());
+      expect(internal.client.resolveApproval).toHaveBeenCalledWith(
+        'session-1',
+        'approval-1',
+        expect.objectContaining({ decision: 'approved', scope: undefined }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps interaction response failures inside the TUI', async () => {
     const { internal, controller } = driver();
     const approval = {
@@ -2045,24 +2312,18 @@ describe('DaemonTUI commands', () => {
         controllerState.turnStartedAt = now;
         controllerState.blocks = [{ kind: 'user', id: 'u1', text: 'prompt', createdAt: new Date(now).toISOString() }];
         internal.renderActivityState(controllerState);
-        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working 0s · Esc to interrupt');
 
-        // Advance 2 real seconds via timer tick (still < 3s threshold)
+        // The clock runs from the first second, driven by the 1s interval tick
         vi.advanceTimersByTime(2_000);
-        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
-        expect(tui.state.activityContainer.render(80).join('\n')).not.toContain('waited');
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working 2s');
+        vi.advanceTimersByTime(16_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working 18s · Esc to interrupt');
 
-        // Advance 1 more second to cross 3s threshold (driven by 1s interval tick!)
-        vi.advanceTimersByTime(1_000);
-        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · waited 3s');
-
-        // Advance 15 more seconds to reach 18s via real tick
-        vi.advanceTimersByTime(15_000);
-        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · waited 18s');
-
-        // Verify 24 column wrap retains waited 18s
-        const narrowWaited = tui.state.activityContainer.render(24).join('\n');
-        expect(narrowWaited).toContain('waited 18s');
+        // A narrow terminal keeps the state on one line and drops the hint
+        const narrowWaited = tui.state.activityContainer.render(24);
+        expect(narrowWaited.filter((line) => line.trim() !== '')).toHaveLength(1);
+        expect(narrowWaited.join('\n')).toContain('Working 18s');
 
         // Agent first response arrives at t = 18s
         const firstResponseTime = now + 18_000;
@@ -2082,11 +2343,12 @@ describe('DaemonTUI commands', () => {
 
         // Advance 5 seconds in Window 2 via real tick
         vi.advanceTimersByTime(5_000);
-        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · last response 5s ago');
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working 23s · last response 5s ago · Esc to interrupt');
 
-        // Also verify 24 column wrap retains last response without truncation
-        const narrowWait = tui.state.activityContainer.render(24).join('\n');
-        expect(narrowWait).toContain('response');
+        // At 50 columns the interrupt hint outlasts the last-response detail
+        const phone = tui.state.activityContainer.render(50).join('\n');
+        expect(phone).toContain('Working 23s · Esc to interrupt');
+        expect(phone).not.toContain('last response');
 
         // Switch session resets tracker and clears tick timer
         await internal.openSession('session-2');
@@ -2312,15 +2574,15 @@ describe('DaemonTUI commands', () => {
         ];
         internal.renderActivityState(controllerState);
         vi.advanceTimersByTime(2_999);
-        expect(frame()).toContain('Working…');
+        expect(frame()).toContain('Working 2s');
         vi.advanceTimersByTime(1);
-        expect(frame()).toContain('Working · waited 3s');
+        expect(frame()).toContain('Working 3s');
         controllerState.tasks = [{ kind: 'bash', status: 'running' }, { kind: 'subagent', status: 'running' }];
         vi.advanceTimersByTime(15_000);
-        expect(frame()).toContain('Working · 2 tasks running · waited 18s');
+        expect(frame()).toContain('Working 18s · 2 tasks running · Esc to interrupt');
         const narrow = tui.state.activityContainer.render(24);
         expect(narrow.every((line) => visibleWidth(line) <= 24)).toBe(true);
-        expect(narrow.join(' ').replaceAll(/\s+/g, ' ')).toContain('running · waited 18s');
+        expect(narrow.join(' ')).toContain('Working 18s');
 
         const answer = { kind: 'assistant', id: 'new-a', text: 'Hello', streaming: true, createdAt: new Date(now + 18_000).toISOString() };
         controllerState.blocks.push(answer);
@@ -2350,11 +2612,11 @@ describe('DaemonTUI commands', () => {
         controllerState.blocks = [{ kind: 'user', id: 'untimed-u', text: 'run' }];
         internal.renderActivityState(controllerState);
         vi.advanceTimersByTime(3_000);
-        expect(frame()).toContain('waited 3s');
+        expect(frame()).toContain('Working 3s');
         controllerState.blocks.push({ kind: 'subagent', id: 'untimed-sa', status: 'running', toolCallCount: 0 });
         vi.advanceTimersByTime(1_000);
-        expect(frame()).toContain('Working · 2 tasks running');
-        expect(frame()).not.toMatch(/waited|last response/);
+        expect(frame()).toContain('Working 4s · 2 tasks running');
+        expect(frame()).not.toContain('last response');
         const closing = tui.close();
         await vi.advanceTimersByTimeAsync(1_000);
         await closing;
@@ -2380,7 +2642,7 @@ describe('DaemonTUI commands', () => {
         controllerState.busy = true;
         controllerState.turnStartedAt = Date.now();
         internal.renderActivityState(controllerState);
-        expect(frame()).toContain('Working…');
+        expect(frame()).toContain('Working 0s');
         internal.showStatus('Export: C:/export/result.md');
         vi.advanceTimersByTime(4_000);
         expect(frame()).toContain('C:/export/result.md');

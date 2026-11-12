@@ -117,8 +117,9 @@ function StringListEditor({ label, values, onChange, placeholder }: {
 
 /**
  * Identity and agent-profile loading (runtime split): the server-facing
- * identity plus the profile sources loaded at startup sit next to the main
- * agent profiles they govern. Name/slug edits need a server restart.
+ * identity plus the profile sources loaded at startup. Nobody changes these
+ * while working, so the card lives on Developer & labs › Engine parameters
+ * rather than beside the agent list. Name/slug edits need a server restart.
  *
  * Field-level dirty tracking selects the domains to replace; saving identity
  * alone never writes the profile switches' server-wide disable list.

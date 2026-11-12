@@ -22,6 +22,7 @@ import { TurnEnded } from '#/agent/loop/turnOps';
 import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentToolExecutorService, type ToolCallDupType } from '#/agent/toolExecutor/toolExecutor';
 import type { ContentPart } from '#/kosong/contract/message';
+import type { ToolAccesses } from '#/tool/toolContract';
 import { IAgentToolDedupeService, type ToolDedupeResult } from './toolDedupe';
 
 const REMINDER_TEXT_1 =
@@ -53,6 +54,9 @@ const REMINDER_TEXT_3 =
       'Text only.',
   );
 
+const SAME_STEP_DUPLICATE_MARKER =
+  '[Same call as another in this step; it ran once and this is that result.]\n';
+
 const REPEAT_REMINDER_1_START = 3;
 const REPEAT_REMINDER_2_START = 5;
 const REPEAT_REMINDER_3_START = 8;
@@ -81,6 +85,23 @@ function argsHash(args: unknown): string {
 
 function callSignature(key: string): string {
   return createHash('sha256').update(key).digest('hex');
+}
+
+function resultFingerprint(result: ToolDedupeResult): string {
+  const text = typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
+  return createHash('sha256').update(result.isError === true ? 'error\n' : 'ok\n').update(text).digest('hex');
+}
+
+function isReadOnlyExecution(accesses: ToolAccesses | undefined): boolean {
+  return accesses !== undefined && accesses.length > 0 && accesses.every((access) =>
+    access.kind === 'all' ? access.operation === 'read' : access.operation === 'read' || access.operation === 'search');
+}
+
+function markSameStepDuplicate(result: ToolDedupeResult): ToolDedupeResult {
+  const output = typeof result.output === 'string'
+    ? SAME_STEP_DUPLICATE_MARKER + result.output
+    : [{ type: 'text' as const, text: SAME_STEP_DUPLICATE_MARKER }, ...result.output];
+  return result.isError === true ? { ...result, output, isError: true } : { ...result, output };
 }
 
 interface CheckedToolCall {
@@ -161,6 +182,9 @@ export const toolDedupeTurnRepeatCountKey = defineState<number>(
 export class AgentToolDedupeService extends Service implements IAgentToolDedupeService {
   declare readonly _serviceBrand: undefined;
   private readonly stepDeferreds = new Map<string, Deferred<ToolDedupeResult>>();
+  private readonly stepResults = new Map<number, string>();
+  private readonly markedDuplicateCallIds = new Set<string>();
+  private consecutiveResult: string | null = null;
   private readonly nextStatusPollAt = new Map<string, number>();
 
   constructor(
@@ -197,6 +221,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
         event.args,
         event.trace,
         event.deduplicationKey,
+        event.deduplicationKey !== undefined || isReadOnlyExecution(event.execution.accesses),
       );
       if (checked.syntheticResult !== null) {
         event.veto(checked.syntheticResult);
@@ -294,6 +319,8 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
       deferred.resolve({ output: 'Tool call deduplicated but original result was lost', isError: true });
     }
     this.stepDeferreds.clear();
+    this.stepResults.clear();
+    this.markedDuplicateCallIds.clear();
     this.stepCalls = [];
     this.originalCallIndex.clear();
     this.syntheticCallIds.clear();
@@ -310,6 +337,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     if (turnId !== undefined && turnId !== this.activeTurnId) {
       this.activeTurnId = turnId;
       this.consecutiveKey = null;
+      this.consecutiveResult = null;
       this.consecutiveCount = 0;
       this.clearTurnRecords();
     }
@@ -321,14 +349,18 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
   }
 
   private endStep(): void {
-    for (const key of this.stepCalls) {
-      if (key === this.consecutiveKey) {
+    const latestResultByKey = new Map<string, string | null>();
+    this.stepCalls.forEach((key, index) => {
+      const fingerprint = this.stepResults.get(index) ?? latestResultByKey.get(key) ?? null;
+      latestResultByKey.set(key, fingerprint);
+      if (key === this.consecutiveKey && fingerprint !== null && fingerprint === this.consecutiveResult) {
         this.consecutiveCount += 1;
       } else {
         this.consecutiveKey = key;
+        this.consecutiveResult = fingerprint;
         this.consecutiveCount = 1;
       }
-    }
+    });
   }
 
   private recordTurnRepeat(
@@ -366,21 +398,23 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     toolName: string,
     args: unknown,
     trace: LLMRequestTrace | undefined,
-    deduplicationKey?: string,
+    deduplicationKey: string | undefined,
+    sameStepShareable: boolean,
   ): CheckedToolCall {
     const key = makeKey(toolName, args, deduplicationKey);
     const index = this.stepCalls.length;
     this.stepCalls.push(key);
     this.callKeyByCallId.set(toolCallId, key);
 
-    const existing = this.stepDeferreds.get(key);
+    const existing = sameStepShareable ? this.stepDeferreds.get(key) : undefined;
     if (existing !== undefined) {
       this.syntheticCallIds.add(toolCallId);
+      if (deduplicationKey === undefined) this.markedDuplicateCallIds.add(toolCallId);
       this.recordDupType(toolCallId, toolName, args, 'same_step', trace);
       return { syntheticResult: DEDUPE_PLACEHOLDER_RESULT };
     }
     this.recordTurnRepeat(toolCallId, toolName, args, key, trace);
-    this.stepDeferreds.set(key, makeDeferred<ToolDedupeResult>());
+    if (sameStepShareable) this.stepDeferreds.set(key, makeDeferred<ToolDedupeResult>());
     this.originalCallIndex.set(toolCallId, index);
     if (this.consecutiveKey === key && this.consecutiveCount > 0) {
       this.recordDupType(toolCallId, toolName, args, 'cross_step', trace);
@@ -404,7 +438,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
       parseToolCallArguments(rawArguments).parseFailed
         ? rawArguments
         : args;
-    this.checkToolCall(toolCallId, toolName, keyArgs, trace, deduplicationKey);
+    this.checkToolCall(toolCallId, toolName, keyArgs, trace, deduplicationKey, false);
   }
 
   private recordDupType(
@@ -466,28 +500,31 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
 
     if (this.syntheticCallIds.delete(toolCallId)) {
       const deferred = this.stepDeferreds.get(key);
+      const marked = this.markedDuplicateCallIds.delete(toolCallId);
       if (deferred === undefined) return result;
-      return deferred.promise;
+      const shared = await deferred.promise;
+      return marked ? markSameStepDuplicate(shared) : shared;
     }
     const index = this.originalCallIndex.get(toolCallId);
     if (index === undefined) return result;
     this.originalCallIndex.delete(toolCallId);
 
-    let lastKey = this.consecutiveKey;
-    let streak = this.consecutiveCount;
-    for (let i = 0; i <= index; i += 1) {
-      const k = this.stepCalls[i]!;
-      if (k === lastKey) {
-        streak += 1;
-      } else {
-        lastKey = k;
-        streak = 1;
-      }
+    const fingerprint = resultFingerprint(result);
+    this.stepResults.set(index, fingerprint);
+    let streak = 1;
+    let previous = index - 1;
+    while (previous >= 0 && this.stepCalls[previous] === key && this.stepResults.get(previous) === fingerprint) {
+      streak += 1;
+      previous -= 1;
+    }
+    if (previous < 0 && key === this.consecutiveKey && fingerprint === this.consecutiveResult) {
+      streak += this.consecutiveCount;
     }
 
     if (this.isRepeatableStatusRead(toolName, args, key, result)) {
       streak = 0;
       this.consecutiveKey = null;
+      this.consecutiveResult = null;
       this.consecutiveCount = 0;
     }
 
@@ -526,6 +563,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
 export const __testing = {
   REMINDER_TEXT_1,
   REMINDER_TEXT_3,
+  SAME_STEP_DUPLICATE_MARKER,
   makeReminderText2,
   REPEAT_REMINDER_1_START,
   REPEAT_REMINDER_2_START,

@@ -57,6 +57,18 @@ export interface IExitPlanModeTool extends AgentTool<ExitPlanModeInput> {
 }
 export const IExitPlanModeTool = createDecorator<IExitPlanModeTool>('exitPlanModeTool');
 
+/** Explains why the option labels would make the user's choice ambiguous, or returns undefined when they are usable. */
+export function exitPlanModeOptionsIssue(options: readonly ExitPlanModeOption[] | undefined): string | undefined {
+  if (options === undefined) return undefined;
+  if (!hasUniqueOptionLabels(options)) {
+    return 'Option labels must be unique, because the user\'s choice is reported by its label. Rename the duplicates and call ExitPlanMode again.';
+  }
+  if (!hasNoReservedOptionLabels(options)) {
+    return 'Option labels must not be Approve, Reject, Reject and Exit or Revise, because those name the review\'s own buttons. Rename the option and call ExitPlanMode again.';
+  }
+  return undefined;
+}
+
 function hasUniqueOptionLabels(options: readonly ExitPlanModeOption[]): boolean {
   const labels = new Set<string>();
   for (const option of options) {

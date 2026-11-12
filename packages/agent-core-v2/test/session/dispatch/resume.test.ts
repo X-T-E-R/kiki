@@ -190,26 +190,25 @@ describe('AgentRun context mode shape', () => {
     expect(SubagentToolInputSchema.safeParse(input).success).toBe(false);
     expect(SubagentToolInputSchema.safeParse({ ...input, resume: CHILD }).success).toBe(true);
     for (const flag of ['new_window', 'allow_model_change']) {
-      for (const value of [true, false]) {
-        const parsed = SubagentToolInputSchema.safeParse({ ...input, resume: CHILD, model_alias: NEW, [flag]: value });
-        expect(parsed.success).toBe(false);
-        if (!parsed.success) expect(parsed.error.message).toContain('mutually exclusive');
-      }
+      const parsed = SubagentToolInputSchema.safeParse({ ...input, resume: CHILD, model_alias: NEW, [flag]: true });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) expect(parsed.error.message).toContain('context_mode replaces new_window and allow_model_change');
+      expect(SubagentToolInputSchema.safeParse({ ...input, resume: CHILD, model_alias: NEW, [flag]: false }).success).toBe(true);
     }
     const schema = toInputJsonSchema(SubagentToolInputSchema, addSubagentBindingSchemaConstraints);
     expect(schema['properties']).toHaveProperty('context_mode');
-    expect(schema['allOf']).toContainEqual(JSON.parse('{"if":{"required":["context_mode"]},"then":{"required":["resume"]}}'));
-    expect(schema['allOf']).toContainEqual({ not: { allOf: [{ required: ['context_mode'] }, { anyOf: [{ required: ['new_window'] }, { required: ['allow_model_change'] }] }] } });
+    expect(schema['allOf']).toBeUndefined();
   });
-  it.each([false, true])('requires resume whenever new_window is %s', (new_window) => {
-    expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', new_window }).success).toBe(false);
-    expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', resume: CHILD, new_window }).success).toBe(true);
+  it('requires resume only when new_window is true', () => {
+    expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', new_window: true }).success).toBe(false);
+    expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', new_window: false }).success).toBe(true);
+    expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', resume: CHILD, new_window: true }).success).toBe(true);
   });
   it('retains allow_model_change shape and exposes new_window JSON shape', () => {
-    expect(SubagentToolInputSchema.safeParse({ prompt: '', description: '', resume: CHILD, allow_model_change: false, new_window: true }).success).toBe(false);
+    expect(SubagentToolInputSchema.safeParse({ prompt: '', description: '', resume: CHILD, allow_model_change: true, new_window: true }).success).toBe(false);
+    expect(SubagentToolInputSchema.safeParse({ prompt: '', description: '', resume: CHILD, allow_model_change: false, new_window: true }).success).toBe(true);
     const schema = toInputJsonSchema(SubagentToolInputSchema, addSubagentBindingSchemaConstraints);
     expect(schema['properties']).toHaveProperty('new_window');
-    expect(schema['allOf']).toContainEqual(JSON.parse('{"if":{"required":["new_window"]},"then":{"required":["resume"]}}'));
   });
 });
 

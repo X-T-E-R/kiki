@@ -1,6 +1,6 @@
 import { sliceUtf16 } from '#/_base/text/utf16';
-import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { basename, dirname } from 'pathe';
+import type { HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { basename, dirname, join } from 'pathe';
 import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
@@ -16,7 +16,10 @@ import {
   type ToolExecution,
 } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import {
+  isSensitiveFile,
   resolveRealPathAccess,
   resolveRealPathAccessPath,
   withDefinitionReadRoots,
@@ -36,8 +39,10 @@ import {
   TRANSCODE_MAX_BYTES,
   type ReadInput,
 } from './read';
-import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import readDescriptionTemplate from './read.md?raw';
+
+const MEDIA_TOOL_NAME = 'ReadMediaFile';
+const MAX_SIMILAR_NAMES = 5;
 
 interface LineEndingFlags {
   hasCrLf: boolean;
@@ -55,7 +60,12 @@ interface RenderedLine {
   readonly wasTruncated: boolean;
 }
 
-interface FinishReadResultInput {
+interface PageFacts {
+  readonly fileBytes: number;
+  readonly clampedLineOffset?: number;
+}
+
+interface FinishReadResultInput extends PageFacts {
   readonly renderedLines: readonly string[];
   readonly truncatedLineNumbers: readonly number[];
   readonly maxLinesReached: boolean;
@@ -68,6 +78,10 @@ interface FinishReadResultInput {
   readonly nextLine?: number;
   readonly requestedLines: number;
   readonly detectedEncoding?: UtfTextEncoding;
+}
+
+function directoryEntryLabel(entry: HostDirEntry): string {
+  return entry.isDirectory ? `${entry.name}/` : entry.name;
 }
 
 function truncateLine(line: string, maxLength: number): string {
@@ -203,6 +217,54 @@ function notUtf8DecodableFileOutput(path: string): string {
   );
 }
 
+function stemOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+function editDistanceWithin(a: string, b: string, limit: number): boolean {
+  if (Math.abs(a.length - b.length) > limit) return false;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const value = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      current.push(value);
+      rowMin = Math.min(rowMin, value);
+    }
+    if (rowMin > limit) return false;
+    previous = current;
+  }
+  return previous[b.length]! <= limit;
+}
+
+function similarityRank(candidate: string, target: string): number | undefined {
+  const name = candidate.toLowerCase();
+  const wanted = target.toLowerCase();
+  if (name === wanted) return 0;
+  const stem = stemOf(name);
+  const wantedStem = stemOf(wanted);
+  if (stem === wantedStem) return 1;
+  if (editDistanceWithin(name, wanted, Math.max(1, Math.floor(wanted.length / 4)))) return 2;
+  if (wantedStem.length >= 3 && stem.length >= 3 && (stem.includes(wantedStem) || wantedStem.includes(stem))) return 3;
+  return undefined;
+}
+
+function similarNames(entries: readonly HostDirEntry[], target: string, directory: string): string[] {
+  return entries
+    .filter((entry) => !isSensitiveFile(join(directory, entry.name)))
+    .map((entry) => ({ entry, rank: similarityRank(entry.name, target) }))
+    .filter((item): item is { entry: HostDirEntry; rank: number } => item.rank !== undefined)
+    .toSorted((a, b) => a.rank - b.rank || (a.entry.name < b.entry.name ? -1 : a.entry.name > b.entry.name ? 1 : 0))
+    .slice(0, MAX_SIMILAR_NAMES)
+    .map(({ entry }) => directoryEntryLabel(entry));
+}
+
 const READ_DESCRIPTION = renderPrompt(readDescriptionTemplate, {
   MAX_LINES,
   MAX_BYTES_KB: MAX_BYTES / 1024,
@@ -220,7 +282,8 @@ export class ReadTool implements IReadTool {
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
-    @IAgentToolResultTruncationService private readonly resultTruncation: IAgentToolResultTruncationService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
+    @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {}
 
@@ -242,12 +305,14 @@ export class ReadTool implements IReadTool {
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let implicitExternal: boolean;
+    let insideWorkspace: boolean;
     try {
       if (preparation.runtime.identity.generation !== generation) {
         return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
       }
       const admitted = await resolveRealPathAccess(args.path, pathOptions, preparation.runtime.fs!);
       path = admitted.path;
+      insideWorkspace = !admitted.outsideWorkspace;
       implicitExternal = admitted.implicitExternal === true ||
         (inspected.identity.runtimeId.startsWith('ssh:') && admitted.outsideWorkspace);
     } finally {
@@ -280,10 +345,8 @@ export class ReadTool implements IReadTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path, inspected.identity.runtimeId, signal), inspected);
-          return this.resultTruncation.isSpillFilePath(path)
-            ? { ...result, spillExempt: true as const }
-            : result;
+          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path, inspected.identity.runtimeId, insideWorkspace, signal), inspected);
+          return result.isError === true ? result : { ...result, spillExempt: true as const };
         } finally {
           lease.dispose();
         }
@@ -291,7 +354,14 @@ export class ReadTool implements IReadTool {
     };
   }
 
-  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string, signal: AbortSignal): Promise<ExecutableToolResult> {
+  private async execution(
+    fs: IHostFileSystem,
+    args: ReadInput,
+    safePath: string,
+    runtimeId: string,
+    insideWorkspace: boolean,
+    signal: AbortSignal,
+  ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
       let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
@@ -299,25 +369,31 @@ export class ReadTool implements IReadTool {
         stat = await fs.stat(safePath);
       } catch (error) {
         if (isFileNotFoundError(error)) {
-          return { isError: true, output: `"${args.path}" does not exist.` };
+          return { isError: true, output: await this.missingFileOutput(fs, args.path, safePath, insideWorkspace) };
         }
         throw error;
       }
+      if (stat.isDirectory) {
+        return await this.listDirectory(fs, args.path, safePath);
+      }
       if (!stat.isFile) {
-        return { isError: true, output: `"${args.path}" is not a file.` };
+        return { isError: true, output: `"${args.path}" is neither a regular file nor a directory, so Read cannot open it.` };
       }
 
       const header = await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
       const fileType = detectFileType(safePath, header);
       if (fileType.kind === 'image' || fileType.kind === 'video') {
+        const next = this.mediaToolAvailable() ? ` Use ${MEDIA_TOOL_NAME} to view it.` : '';
         return {
           isError: true,
-          output: `"${args.path}" is ${fileType.kind === 'image' ? 'an' : 'a'} ${fileType.kind} file. Only text files can be read.`,
+          output: `"${args.path}" is ${fileType.kind === 'image' ? 'an' : 'a'} ${fileType.kind} file, and Read only returns text.${next}`,
         };
       }
 
       const detection = detectTextEncoding(header);
-      const lineOffset = args.line_offset ?? 1;
+      const requestedOffset = args.line_offset ?? 1;
+      const clampedLineOffset = requestedOffset < -MAX_LINES ? requestedOffset : undefined;
+      const lineOffset = requestedOffset === 0 ? 1 : Math.max(requestedOffset, -MAX_LINES);
       const requestedLines = args.n_lines ?? MAX_LINES;
       const effectiveLimit = Math.min(requestedLines, MAX_LINES);
       let lines: AsyncIterable<string>;
@@ -365,9 +441,10 @@ export class ReadTool implements IReadTool {
         }
       }
 
+      const page: PageFacts = { fileBytes: stat.size, clampedLineOffset };
       const result = lineOffset < 0
-        ? await this.readTail(args.path, lines, lineOffset, effectiveLimit, requestedLines, detectedEncoding, sourceStartLine)
-        : await this.readForward(args.path, lines, lineOffset, effectiveLimit, requestedLines, sourceStartLine, detectedEncoding);
+        ? await this.readTail(args.path, lines, lineOffset, effectiveLimit, requestedLines, page, detectedEncoding, sourceStartLine)
+        : await this.readForward(args.path, lines, lineOffset, effectiveLimit, requestedLines, sourceStartLine, page, detectedEncoding);
       if (instructionContent === undefined || result.readRange === undefined) return result;
       return { ...result, fileRead: { ...result.readRange, file: { path: safePath, runtimeId,
         version: instructionVersion(instructionContent), scope: basename(dirname(safePath)).toLowerCase() === '.kiki' ? dirname(dirname(safePath)) : dirname(safePath) } } };
@@ -382,6 +459,70 @@ export class ReadTool implements IReadTool {
     }
   }
 
+  private mediaToolAvailable(): boolean {
+    return this.toolRegistry.resolve(MEDIA_TOOL_NAME) !== undefined &&
+      this.toolPolicy.isToolActive(MEDIA_TOOL_NAME, 'builtin');
+  }
+
+  private async listDirectory(fs: IHostFileSystem, displayPath: string, safePath: string): Promise<ExecutableToolResult> {
+    const entries = await fs.readdir(safePath);
+    const labels = entries
+      .filter((entry) => !isSensitiveFile(join(safePath, entry.name)))
+      .map(directoryEntryLabel)
+      .toSorted();
+    const filtered = entries.length - labels.length;
+    if (labels.length === 0) {
+      return {
+        output: filtered === 0
+          ? `"${displayPath}" is an empty directory.`
+          : `"${displayPath}" is a directory that contains only ${String(filtered)} sensitive file(s), which are not listed.`,
+      };
+    }
+    const shown: string[] = [];
+    let bytes = 0;
+    for (const label of labels) {
+      const lineBytes = Buffer.byteLength(label, 'utf8') + (shown.length === 0 ? 0 : 1);
+      if (shown.length >= MAX_LINES || bytes + lineBytes > MAX_BYTES) break;
+      shown.push(label);
+      bytes += lineBytes;
+    }
+    const parts = [
+      `"${displayPath}" is a directory; its ${String(labels.length)} entries are listed instead of file content, and names ending in / are subdirectories.`,
+    ];
+    if (shown.length < labels.length) {
+      parts.push(`Only the first ${String(shown.length)} are shown; use Glob with a pattern to find the others.`);
+    }
+    if (filtered > 0) parts.push(`${String(filtered)} sensitive file(s) are not listed.`);
+    parts.push('Read a file by its path, or use Glob to search below this level.');
+    return { output: shown.join('\n'), note: `<system>${parts.join(' ')}</system>` };
+  }
+
+  private async missingFileOutput(
+    fs: IHostFileSystem,
+    displayPath: string,
+    safePath: string,
+    insideWorkspace: boolean,
+  ): Promise<string> {
+    const missing = `"${displayPath}" does not exist.`;
+    if (!insideWorkspace) return missing;
+    const directory = dirname(safePath);
+    const shownDirectory = dirname(displayPath);
+    let entries: readonly HostDirEntry[];
+    try {
+      entries = await fs.readdir(directory);
+    } catch (error) {
+      return isFileNotFoundError(error)
+        ? `${missing} Its directory "${shownDirectory}" does not exist either.`
+        : missing;
+    }
+    const names = similarNames(entries, basename(safePath), directory);
+    if (names.length === 0) {
+      return `${missing} No entry in "${shownDirectory}" has a similar name; use Glob with a name pattern to search for it.`;
+    }
+    const suggestions = names.map((name) => shownDirectory === '.' ? name : join(shownDirectory, name));
+    return `${missing} Similar names in the same directory: ${suggestions.join(', ')}.`;
+  }
+
   private async readForward(
     displayPath: string,
     lines: AsyncIterable<string>,
@@ -389,6 +530,7 @@ export class ReadTool implements IReadTool {
     effectiveLimit: number,
     requestedLines: number,
     sourceStartLine: number,
+    page: PageFacts,
     detectedEncoding?: UtfTextEncoding,
   ): Promise<ExecutableToolResult> {
     const selectedEntries: ReadLineEntry[] = [];
@@ -438,6 +580,7 @@ export class ReadTool implements IReadTool {
       nextLine: hasMore && lastRendered !== undefined ? lastRendered.lineNo + 1 : undefined,
       requestedLines,
       detectedEncoding,
+      ...page,
     });
   }
 
@@ -447,6 +590,7 @@ export class ReadTool implements IReadTool {
     lineOffset: number,
     effectiveLimit: number,
     requestedLines: number,
+    page: PageFacts,
     detectedEncoding?: UtfTextEncoding,
     sourceStartLine = 1,
   ): Promise<ExecutableToolResult> {
@@ -477,6 +621,7 @@ export class ReadTool implements IReadTool {
       totalLines: currentLineNo,
       requestedLines,
       detectedEncoding,
+      page,
     });
   }
 
@@ -487,6 +632,7 @@ export class ReadTool implements IReadTool {
     totalLines: number;
     requestedLines: number;
     detectedEncoding?: UtfTextEncoding;
+    page: PageFacts;
   }): ExecutableToolResult {
     const lineEndingStyle = lineEndingStyleFromFlags(input.lineEndingFlags);
     let renderedCandidates = input.entries.slice(0, input.effectiveLimit).map((entry) => {
@@ -534,6 +680,7 @@ export class ReadTool implements IReadTool {
       totalLines: input.totalLines,
       requestedLines: input.requestedLines,
       detectedEncoding: input.detectedEncoding,
+      ...input.page,
     });
   }
 
@@ -558,6 +705,12 @@ export class ReadTool implements IReadTool {
       parts.push(`Total lines in file: ${String(input.totalLines)}.`);
     } else if (input.minimumTotalLines !== undefined) {
       parts.push(`Total lines in file: at least ${String(input.minimumTotalLines)}.`);
+    }
+    parts.push(`File size: ${String(input.fileBytes)} bytes.`);
+    if (input.clampedLineOffset !== undefined) {
+      parts.push(
+        `line_offset ${String(input.clampedLineOffset)} is below -${String(MAX_LINES)} and was read as -${String(MAX_LINES)}; use a positive line_offset to read earlier lines.`,
+      );
     }
     if (input.maxLinesReached) {
       parts.push(`Max ${String(MAX_LINES)} lines reached.`);

@@ -144,6 +144,27 @@ const hasText = (text: string) => () => document.body.textContent?.includes(text
 const gone = (selector: string) => () => document.querySelector(selector) === null;
 const rows = () => document.querySelectorAll('#quick-switcher-list [role="option"]').length;
 
+describe('quick switcher keyboard', () => {
+  it('leaves the Enter that commits an IME candidate to the IME', async () => {
+    client.searchMessages.mockResolvedValue(readyPage());
+    await mount();
+    const input = await typeQuery('cache');
+    await waitFor(hasText('Alpha cache notes'), 'the local title match');
+    const location = () => document.querySelector('[data-test-location]')?.textContent;
+    // Chromium flags a composing Enter; Safari/WKWebView delivers the
+    // committing Enter after compositionend with only keyCode 229.
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, keyCode: 229 }));
+    });
+    expect(location()).toBe('/');
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(location()).toBe('/s/session_alpha');
+  });
+});
+
 describe('quick switcher content search', () => {
   // 'cache' keeps a local title match beside the failure; 'distant' matches
   // nothing local, which is the state the old switcher answered with "no

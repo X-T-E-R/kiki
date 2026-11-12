@@ -6,7 +6,7 @@ The CLI and TUI are a terminal interface built from the input box, the conversat
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. When it is empty, `↑` / `↓` browse what you have typed before in this working directory, shell commands included.
 
-**Leaving the CLI**: `Ctrl-D` with an empty input box, `Ctrl-C` twice while idle, or `/exit`. All three need the agent to be idle — during streaming output, `Ctrl-C` and `Esc` only interrupt the current turn.
+**Leaving the CLI**: with the input box empty, press `Ctrl-D` twice or `Ctrl-C` twice, or type `/exit`. `Ctrl-C` on a draft only clears it, and while a turn is running an empty-input `Ctrl-C` interrupts the turn instead. `Ctrl-D` and `/exit` do not wait for a running turn: it keeps running on the shared daemon, and `kiki -r` resumes the session.
 
 ## Pasting images and video
 
@@ -27,11 +27,11 @@ Active [Agent Skills](../customization/skills.md) (skill packages that extend wh
 
 Inside a longer prompt, typing `/` after whitespace — including at the start of a later line — opens a skill-only completion menu. Reference several skills in one prompt that way: Kiki activates them together and runs them as a single turn, and one `/undo` reverts the whole submission. A skill mentioned inside a prompt is activated by name only and cannot carry arguments; arguments still need a standalone `/skill:<name> args`. Built-in and plugin commands only work at the very start of the input.
 
-Some commands need the agent to be idle — press `Esc` to interrupt streaming output or context compression first. Mode toggles and queries like `/yolo`, `/plan`, `/help` and `/btw` are always available. [Slash commands reference](../reference/slash-commands.md) has the full list.
+Some commands need the agent to be idle — interrupt the running turn first with `Esc` or `/stop`. Mode toggles and queries like `/yolo`, `/plan`, `/help` and `/btw` are always available. [Slash commands reference](../reference/slash-commands.md) has the full list.
 
 ## File references
 
-Type `@` to get file-path completion. Picking a path inserts its relative form into your message, and the agent reads the file when it picks up that message. It works in git and non-git directories alike, and folder suggestions end with `/` so you can keep completing paths inside them. While Kiki's fast file-search component is still downloading in the background, completion falls back to a plain filesystem scan. Hidden paths are suggested; `.git` is not.
+Type `@` to get file-path completion. Picking a path inserts its relative form into your message, and the agent reads the file when it picks up that message. It works in git and non-git directories alike, and folder suggestions end with `/` so you can keep completing paths inside them. Completion uses `fd` when it is installed; without it, completion falls back to a plain filesystem scan. Hidden paths are suggested; `.git` is not.
 
 > `@` references and slash commands are two separate mechanisms: `@` gives the agent file context, while `/` invokes built-in features or Skills. After whitespace, `/` offers Skill completions only; use a leading `/` for built-in and plugin commands.
 
@@ -41,7 +41,7 @@ When a tool call has side effects — running a command, writing outside the wor
 
 Use the arrow keys and `Enter`, or press `1` / `2` / `3` to pick by number. `Esc`, `Ctrl-C`, and `Ctrl-D` all mean reject.
 
-The panel usually offers **Approve for this session**, which approves that kind of call for the rest of the session. For rules that outlive a session, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
+The panel usually offers **Approve for this session**, which remembers approval for matching calls in the session. For sensitive files, protected `.git` control paths, and links out of the workspace, it applies only to the exact approved targets and operations; see [file approval rules](../reference/tools.md). For rules that outlive a session, add allow / deny entries in [Configuration files](../configuration/config-files.md#permission).
 
 ## Mode switching
 
@@ -82,11 +82,11 @@ The input box shows a `!` prompt on the left in shell mode (in the desktop GUI t
 
 ## During streaming output
 
-The activity row shows `Working…` while a turn is running. When its start time is known, waiting three seconds for the first output adds `waited …`. After output begins, `last response … ago` tracks its latest observed activity when a response timestamp is available. If session synchronization fails, the recovery message stays visible; run `/reload` to retry.
+The activity row shows `Working` and how long the turn has been running (from its first second, when the start time is known), followed by how to interrupt it: `Esc to interrupt`, or `Esc twice to interrupt` when the input box holds a draft. After output begins, `last response … ago` tracks its latest observed activity when a response timestamp is available. While the turn waits for your approval or answer, the row says `Waiting for your approval` or `Waiting for your answer` instead. On a narrow terminal the row stays on one line and drops these details before the interrupt hint. If session synchronization fails, the recovery message stays visible; run `/reload` to retry.
 
 The input box remains usable while the agent is thinking or calling tools, and supports the following extra actions:
 
-- **`Esc` / `Ctrl-C`**: interrupt the current turn
+- **`Esc`**: interrupt the current turn (press twice if you have a draft); **`Ctrl-C`** clears a draft first, then interrupts; **`/stop`** does the same without special keys
 - **`Ctrl-O`**: globally toggle the collapsed/expanded state of tool output and compaction summaries
 
 ## External editor

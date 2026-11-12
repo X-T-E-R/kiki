@@ -1,6 +1,9 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
@@ -37,6 +40,8 @@ import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSyste
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 import type { ILogService } from '#/_base/log/log';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { Event } from '#/_base/event';
@@ -132,6 +137,8 @@ interface FakeKaos {
   gethome(): string;
   stat(path: string): Promise<HostFileStat>;
   exec(...args: string[]): Promise<IHostProcess>;
+  spawn?: IHostProcessService['spawn'];
+  sshProcess?: boolean;
 }
 
 function notImplemented(method: string): never {
@@ -182,10 +189,13 @@ function createTestFs(kaos: FakeKaos): IHostFileSystem {
 }
 
 function createTestProcessService(kaos: FakeKaos): IHostProcessService {
-  return {
+  const service: IHostProcessService = {
     _serviceBrand: undefined,
-    spawn: (command, args = []) => kaos.exec(command, ...args),
+    spawn: kaos.spawn ?? ((command, args = []) => kaos.exec(command, ...args)),
   };
+  return kaos.sshProcess === true
+    ? Object.assign(Object.create(SshHostProcessService.prototype) as IHostProcessService, service)
+    : service;
 }
 
 class GrepTool extends ProductionGrepTool {
@@ -528,7 +538,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
     expect(result.output).toBe('src/a.ts');
   });
@@ -581,7 +591,7 @@ describe('GrepTool', () => {
     try {
       const result = await executeTool(tool, context({ pattern: 'private-secret' }));
 
-      expect(result).toEqual({ isError: true, output: 'Failed to grep: ripgrep exited with code 2' });
+      expect(result).toEqual({ isError: true, output: 'Failed to grep: ripgrep exited with code 2', runtimeId: 'local' });
       expect(records.map(({ level, message, payload }) => ({ level, message, payload }))).toEqual([
         {
           level: 'warn',
@@ -808,7 +818,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
   });
 
@@ -836,7 +846,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
   });
 
@@ -867,7 +877,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
   });
 
@@ -889,7 +899,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
   });
 
@@ -973,18 +983,24 @@ describe('GrepTool', () => {
     });
   });
 
-  it('rejects relative path escapes before spawning ripgrep', async () => {
-    const exec = vi.fn();
+  it('treats a relative path outside the workspace exactly like its absolute form', async () => {
+    const exec = vi.fn().mockResolvedValue(processWithOutput('', '', 1));
     const tool = new GrepTool(createFakeKaos({ exec }), {
       workspaceDir: '/workspace/project',
       additionalDirs: [],
     });
 
+    for (const [relative, absolute] of [['../outside', '/workspace/outside'], ['../.env', '/workspace/.env']] as const) {
+      const fromRelative = await tool.resolveExecution({ pattern: 'hit', path: relative });
+      const fromAbsolute = await tool.resolveExecution({ pattern: 'hit', path: absolute });
+      expect(fromRelative.isError ?? false).toBe(false);
+      expect((fromRelative as { accesses?: unknown }).accesses).toEqual((fromAbsolute as { accesses?: unknown }).accesses);
+    }
+
     const result = await executeTool(tool, context({ pattern: 'hit', path: '../outside' }));
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(exec).not.toHaveBeenCalled();
+    expect(result.isError ?? false).toBe(false);
+    expect(exec.mock.calls[0]?.at(-1)).toBe('/workspace/outside');
   });
 
   it('appends sensitive prefilter globs after user glob filters', async () => {
@@ -1002,7 +1018,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toBe('src/main.ts');
   });
@@ -1055,7 +1071,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
     expect(result.output).toContain('src/main.ts:10:hit');
     expect(result.output).toContain('src/main.ts:11:hit');
@@ -1133,7 +1149,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toBe(
       [
@@ -1175,7 +1191,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'workspace',
-      '/workspace',
+      '.',
     );
     expect(result.output).toBe('/workspace/not-a-path');
   });
@@ -1224,7 +1240,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      'C:\\workspace',
+      '.',
     );
     expect(toolContentString(result)).toBe(
       ['src/main.ts:hit', 'Filtered 1 sensitive file(s): .aws/credentials'].join('\n'),
@@ -1279,7 +1295,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toBe(
       [
@@ -1323,7 +1339,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'hit',
-      'C:\\workspace',
+      '.',
     );
     expect(toolContentString(result)).toBe(
       [
@@ -1463,6 +1479,7 @@ describe('GrepTool', () => {
     expect(result).toEqual({
       isError: true,
       output: 'Grep timed out after 20s. Try a more specific path or pattern.',
+      runtimeId: 'local',
     });
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
@@ -1749,7 +1766,7 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit' }));
 
-    expect(result).toEqual({ isError: true, output: 'Failed to grep: ripgrep exited with code 2' });
+    expect(result).toEqual({ isError: true, output: 'Failed to grep: ripgrep exited with code 2', runtimeId: 'local' });
   });
 
   it('marks ripgrep stderr as truncated when error output exceeds the cap', async () => {
@@ -1772,7 +1789,7 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit' }));
 
-    expect(result).toEqual({ isError: true, output: 'rg unavailable: download failed' });
+    expect(result).toEqual({ isError: true, output: 'rg unavailable: download failed', runtimeId: 'local' });
     expect(exec).not.toHaveBeenCalled();
   });
 
@@ -1806,6 +1823,7 @@ describe('GrepTool', () => {
     expect(result).toEqual({
       isError: true,
       output: 'rg unavailable: spawn /mock/rg ENOENT',
+      runtimeId: 'local',
     });
   });
 
@@ -1815,7 +1833,7 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit' }));
 
-    expect(result).toEqual({ isError: true, output: 'permission denied' });
+    expect(result).toEqual({ isError: true, output: 'permission denied', runtimeId: 'local' });
   });
 
   it('aborts while resolving the ripgrep path without spawning', async () => {
@@ -1851,7 +1869,7 @@ describe('GrepTool', () => {
       }),
     ]);
 
-    expect(result).toEqual({ isError: true, output: 'Grep aborted' });
+    expect(result).toEqual({ isError: true, output: 'Grep aborted', runtimeId: 'local' });
     expect(exec).not.toHaveBeenCalled();
   });
 
@@ -1879,7 +1897,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'TestClass',
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toContain('TestClass');
     expect(toolContentString(result)).toContain('pre1');
@@ -1910,7 +1928,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       'TestClass',
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toContain('post1');
     expect(toolContentString(result)).toContain('post2');
@@ -1980,7 +1998,7 @@ describe('GrepTool', () => {
       ...SENSITIVE_RG_ARGS,
       '--',
       String.raw`This is a\n    multiline`,
-      '/workspace',
+      '.',
     );
     expect(toolContentString(result)).toContain('This is a');
     expect(toolContentString(result)).toContain('multiline');
@@ -2295,7 +2313,7 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit' }, controller.signal));
 
-    expect(result).toEqual({ isError: true, output: 'Grep aborted' });
+    expect(result).toEqual({ isError: true, output: 'Grep aborted', runtimeId: 'local' });
     expect(exec).toHaveBeenCalledTimes(1);
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
@@ -2308,7 +2326,118 @@ describe('GrepTool', () => {
 
     const result = await executeTool(tool, context({ pattern: 'hit' }, controller.signal));
 
-    expect(result).toEqual({ isError: true, output: 'Aborted before search started' });
+    expect(result).toEqual({ isError: true, output: 'Aborted before search started', runtimeId: 'local' });
     expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('runs ripgrep inside a searched directory and reports paths relative to the working directory', async () => {
+    const spawn = vi.fn(async () => processWithOutput(nullRecord('./src/a.ts')));
+    const stat = vi.fn(async (): Promise<HostFileStat> => ({ isFile: false, isDirectory: true, size: 0 }));
+    const tool = new GrepTool(createFakeKaos({ spawn, stat }), workspace);
+
+    const result = await executeTool(tool, context({ pattern: 'hit', path: 'pkg', glob: '/workspace/pkg/src/**' }));
+
+    expect(spawn).toHaveBeenCalledWith(
+      '/mock/rg',
+      expect.arrayContaining(['--glob', 'src/**', '--', 'hit', '.']),
+      { cwd: '/workspace/pkg' },
+    );
+    expect(result.output).toBe('pkg/src/a.ts');
+  });
+
+  it('passes -F for a literal pattern', async () => {
+    const exec = vi.fn().mockResolvedValue(processWithOutput(''));
+    const tool = new GrepTool(createFakeKaos({ exec }), workspace);
+
+    await executeTool(tool, context({ pattern: 'foo(', literal: true }));
+
+    expect(exec.mock.calls[0]).toContain('-F');
+    expect(exec.mock.calls[0]?.slice(-3)).toEqual(['--', 'foo(', '.']);
+  });
+
+  it('escapes a literal pattern for the Windows SSH search, which has no -F', async () => {
+    const spawn = vi.fn(async () => processWithOutput(''));
+    const tool = new GrepTool(
+      createFakeKaos({ pathClass: () => 'win32', spawn, sshProcess: true }),
+      { workspaceDir: 'C:/workspace', additionalDirs: [] },
+    );
+
+    await executeTool(tool, context({ pattern: 'a.b(c)', literal: true }));
+
+    const args = (spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args).not.toContain('-F');
+    expect(args.slice(-3)).toEqual(['--', String.raw`a\.b\(c\)`, '.']);
+  });
+});
+
+describe('GrepTool with real ripgrep', () => {
+  let realRg: string | undefined;
+  let dir: string | undefined;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('#/os/backends/node-local/tools/rgLocator')>(
+      '#/os/backends/node-local/tools/rgLocator',
+    );
+    const processService = new HostProcessService();
+    try {
+      realRg = (await actual.ensureRgPath({
+        exec: async ([command, ...rest]) => {
+          const proc = await processService.spawn(command!, rest);
+          proc.stdin.end();
+          proc.stdout.resume();
+          proc.stderr.resume();
+          const exitCode = await proc.wait();
+          void proc.dispose();
+          return { exitCode };
+        },
+      }, { allowCachedFallback: false })).path;
+    } catch {
+      realRg = undefined;
+    }
+  });
+
+  afterEach(async () => {
+    if (dir !== undefined) await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    dir = undefined;
+  });
+
+  async function realTool(): Promise<GrepTool> {
+    dir = await mkdtemp(join(tmpdir(), 'grep-rg-'));
+    await mkdir(join(dir, 'pkg', 'src'), { recursive: true });
+    await mkdir(join(dir, 'other'), { recursive: true });
+    await writeFile(join(dir, 'pkg', 'src', 'a.ts'), 'foo(1)\n');
+    await writeFile(join(dir, 'other', 'b.ts'), 'foo(2)\n');
+    const fs = new HostFileSystem();
+    const processService = new HostProcessService();
+    return new GrepTool(
+      createFakeKaos({
+        stat: (path) => fs.stat(path),
+        spawn: (_command, args, options) => processService.spawn(realRg!, args, options),
+      }),
+      { workspaceDir: dir, additionalDirs: [] },
+    );
+  }
+
+  it('applies a glob with a directory prefix relative to the search directory', async (testCtx) => {
+    if (realRg === undefined) testCtx.skip();
+    const tool = await realTool();
+
+    const fromRoot = await executeTool(tool, context({ pattern: 'foo', glob: 'pkg/**/*.ts' }));
+    const fromSubdir = await executeTool(tool, context({ pattern: 'foo', path: 'pkg', glob: 'src/**/*.ts' }));
+    const absolute = await executeTool(tool, context({ pattern: 'foo', glob: `${dir!.replaceAll('\\', '/')}/pkg/**/*.ts` }));
+
+    expect(fromRoot.output).toBe('pkg/src/a.ts');
+    expect(fromSubdir.output).toBe('pkg/src/a.ts');
+    expect(absolute.output).toBe('pkg/src/a.ts');
+  });
+
+  it('matches regex metacharacters as plain text when literal is set', async (testCtx) => {
+    if (realRg === undefined) testCtx.skip();
+    const tool = await realTool();
+
+    const result = await executeTool(tool, context({ pattern: 'foo(', literal: true, output_mode: 'content' }));
+
+    expect(result.isError).not.toBe(true);
+    expect(toolContentString(result).split('\n').toSorted()).toEqual(['other/b.ts:1:foo(2)', 'pkg/src/a.ts:1:foo(1)']);
   });
 });

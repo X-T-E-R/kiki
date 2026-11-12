@@ -370,7 +370,7 @@ describe('QuestionDialogComponent', () => {
     expect(editing).toContain('type answer');
     expect(editing).toContain('Enter save');
     expect(editing).toContain('Tab switch');
-    expect(editing).toContain('Esc cancel');
+    expect(editing).toContain('Esc back');
 
     dialog.handleInput('H');
     dialog.handleInput('i');
@@ -410,7 +410,7 @@ describe('QuestionDialogComponent', () => {
 
     dialog.handleInput('3');
     const out = strip(dialog.render(80).join('\n'));
-    expect(out).toContain('type answer · Enter save · Tab switch · Esc cancel');
+    expect(out).toContain('type answer · Enter save · Tab switch · Esc back');
   });
 
   it('shows confirm and cancel keys on the review-tab hint', () => {
@@ -574,6 +574,71 @@ describe('QuestionDialogComponent', () => {
     const { dialog, collected } = makeDialog(pending);
     dialog.handleInput('\u001B');
     expect(collected).toEqual([[]]);
+  });
+
+  it('Esc in the Other input leaves the input and keeps the dialog open', () => {
+    const pending = makePending([
+      {
+        question: 'Pick one?',
+        multi_select: false,
+        options: [{ label: 'A' }, { label: 'B' }],
+      },
+    ]);
+    const { dialog, collected } = makeDialog(pending);
+    dialog.handleInput('3');
+    dialog.handleInput('H');
+    dialog.handleInput('\u001B');
+    expect(collected).toEqual([]);
+    expect(strip(dialog.render(80).join('\n'))).toContain('1-3/Enter choose');
+  });
+
+  it('asks for a second Esc before discarding answers already given', () => {
+    const pending = makePending([
+      { question: 'First?', multi_select: false, options: [{ label: 'A' }, { label: 'B' }] },
+      { question: 'Second?', multi_select: false, options: [{ label: 'C' }, { label: 'D' }] },
+    ]);
+    const { dialog, collected } = makeDialog(pending);
+    dialog.handleInput('1');
+
+    dialog.handleInput('\u001B');
+    expect(collected).toEqual([]);
+    expect(strip(dialog.render(80).join('\n'))).toContain('Esc again to discard answers');
+
+    // Any other key disarms the pending discard.
+    dialog.handleInput('\u001B[B');
+    dialog.handleInput('\u001B');
+    expect(collected).toEqual([]);
+
+    dialog.handleInput('\u001B');
+    expect(collected).toEqual([[]]);
+  });
+
+  it('ignores choosing keys until armed while arrows still navigate', () => {
+    let clock = 0;
+    const collected: string[][] = [];
+    const pending = makePending([
+      { question: 'Pick one?', multi_select: false, options: [{ label: 'A' }, { label: 'B' }] },
+    ]);
+    const dialog = new QuestionDialogComponent(
+      pending,
+      (response) => {
+        collected.push(response.answers);
+      },
+      6,
+      undefined,
+      { armAfterMs: 500, now: () => clock },
+    );
+
+    clock = 100;
+    dialog.handleInput('1');
+    dialog.handleInput('\r');
+    dialog.handleInput('\u001B[B');
+    expect(strip(dialog.render(80).join('\n'))).toContain('Pick one?');
+
+    clock = 600;
+    dialog.handleInput('\r');
+    dialog.handleInput('1');
+    expect(collected).toEqual([['B']]);
   });
 
   it.each(['\u0003', '\u0004'])('ctrl shortcut %j dismisses question dialog', (key) => {

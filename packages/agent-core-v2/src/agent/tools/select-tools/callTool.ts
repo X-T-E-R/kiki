@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
-import { CALL_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { CALL_TOOL_NAME, IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 
@@ -17,14 +17,13 @@ export const ICallTool = createDecorator<ICallTool>('callTool');
 export class CallTool implements ICallTool {
   declare readonly _serviceBrand: undefined;
   readonly name = CALL_TOOL_NAME;
-  readonly description = 'After SelectTools has loaded an MCP, plugin, or deferred builtin tool, use CallTool to run it by exact name with its JSON arguments. Use ordinary tools directly; never use CallTool for names absent from the folded <tools_added>/<tools_removed> announcements. The real tool retains its permission checks. An unloaded or unavailable name returns an error.';
+  readonly description = 'After SelectTools has loaded an MCP, plugin, or deferred builtin tool, use CallTool to run it by exact name with its JSON arguments. Use ordinary tools directly; never use CallTool for names absent from the folded <tools_added>/<tools_removed> announcements. The real tool retains its permission checks. A name that is announced but not yet loaded is not run: the error loads that tool and returns its parameter schema. Any other unavailable name returns an error that says why.';
   readonly parameters = toInputJsonSchema(CallToolInputSchema);
 
-  resolveExecution(): ToolExecution {
-    return {
-      isError: true,
-      output: 'This tool was not loaded or is no longer available. Call SelectTools with an announced name before retrying.',
-    };
+  constructor(@IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService) {}
+
+  resolveExecution(args: z.infer<typeof CallToolInputSchema>): ToolExecution {
+    return { isError: true, output: this.toolSelect.describeCallToolTarget(args.name) };
   }
 }
 

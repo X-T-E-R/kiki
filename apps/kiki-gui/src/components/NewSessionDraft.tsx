@@ -426,15 +426,16 @@ export function isAbsoluteRemoteCwdPath(value: string): boolean {
 }
 
 /**
- * Whether /new should offer first-run provider guidance. True only when both
- * probes have answered and agree there is nothing to answer with — an
- * in-flight or failed probe stays silent, because a card that flashes on
- * every visit costs more than a late one.
+ * Whether /new needs native-provider setup. Both probes must have answered and
+ * agree there is no native model; an external execution choice does not depend
+ * on Kiki's native provider catalog.
  */
 export function needsProviderSetup(
   auth: AuthSummary | undefined,
   models: readonly unknown[] | undefined,
+  execution?: Pick<ExecutionChoice, 'executor'>,
 ): boolean {
+  if (execution !== undefined && !isNativeExecutor(execution.executor)) return false;
   if (auth === undefined || models === undefined) return false;
   return !auth.ready && models.length === 0;
 }
@@ -642,7 +643,7 @@ export function useNewSessionDraft({
     staleTime: 10_000,
     retry: false,
   });
-  const providerSetupNeeded = needsProviderSetup(authQuery.data, modelsQuery.data?.items);
+  const providerSetupNeeded = needsProviderSetup(authQuery.data, modelsQuery.data?.items, execution);
   // Server default first — the local mirror only fills in when the server
   // has not reported one (matches the session page).
   const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;

@@ -25,7 +25,8 @@ import { SshHostFileSystem } from '#/os/backends/ssh/sshHostServices';
 import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
-import type { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
+import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ToolExecution, ExecutableToolContext } from '#/tool/toolContract';
 import { sshTestTools } from './stubs';
@@ -239,11 +240,12 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
   } as IAgentRuntimeService;
   const workspace = { _serviceBrand: undefined, workDir: home, additionalDirs: [], resolve: (path: string) => path, isWithin: () => true } as ISessionWorkspaceContext;
   const catalog = { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog;
-  const truncation = { isSpillFilePath: () => false } as unknown as IAgentToolResultTruncationService;
+  const toolPolicy = { isToolActive: () => false } as unknown as IAgentToolPolicyService;
+  const toolRegistry = { resolve: () => undefined } as unknown as IAgentToolRegistryService;
   const telemetry = { track2: () => undefined } as unknown as ITelemetryService;
-  const tools = sshTestTools({ runtime, workspace, localFs, catalog, truncation, telemetry });
+  const tools = sshTestTools({ runtime, workspace, localFs, catalog, toolRegistry, telemetry });
   openTools.push(tools);
-  return { home, files, directories, failures, response, io, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry, tools };
+  return { home, files, directories, failures, response, io, commands, manager, remote, localFs, runtime, workspace, catalog, toolPolicy, toolRegistry, telemetry, tools };
 }
 
 async function execute(execution: ToolExecution) {
@@ -567,7 +569,7 @@ describe('SSH tools over a real ssh2 transport', () => {
 
   it('reads Windows drive paths and roundtrips exact scratch bytes through Write and Edit', async () => {
     const f = await fixture('win32');
-    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
+    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.toolPolicy, f.toolRegistry);
     const write = new WriteTool(f.runtime, f.workspace);
     const edit = new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace);
     const original = 'E:/work/attempts/run-01/task.log.err';
@@ -597,7 +599,7 @@ describe('SSH tools over a real ssh2 transport', () => {
     const f = await fixture();
     const tools = [
       new BashTool(f.runtime, undefined as never, f.workspace, undefined as never, undefined as never, undefined as never, undefined as never, undefined as never),
-      new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation),
+      new ReadTool(f.runtime, f.workspace, f.catalog, f.toolPolicy, f.toolRegistry),
       new WriteTool(f.runtime, f.workspace),
       new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace),
       new GlobTool(f.runtime, f.workspace, f.telemetry),
@@ -621,7 +623,7 @@ describe('SSH tools over a real ssh2 transport', () => {
 
   it('routes Read/Write/Edit, local override, Bash process, Glob and Grep over one verified connection', async () => {
     const f = await fixture();
-    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
+    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.toolPolicy, f.toolRegistry);
     const write = new WriteTool(f.runtime, f.workspace);
     const edit = new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace);
     const { glob, grep } = f.tools;

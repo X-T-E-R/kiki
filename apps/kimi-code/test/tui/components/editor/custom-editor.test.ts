@@ -111,8 +111,43 @@ describe('CustomEditor onNonEscapeInput', () => {
     const onNonEscapeInput = vi.fn();
     editor.onNonEscapeInput = onNonEscapeInput;
 
-    editor.handleInput('\u0003');
+    editor.handleInput('\u0001');
     expect(onNonEscapeInput).toHaveBeenCalledOnce();
+  });
+
+  it('restoreHistoryDraft returns to the pre-browse draft only while browsing', () => {
+    const editor = makeEditor();
+    editor.addToHistory('older entry');
+    editor.addToHistory('newer entry');
+    editor.handleInput('draft');
+    editor.handleInput('\u0001');
+    expect(editor.restoreHistoryDraft()).toBe(false);
+
+    editor.handleInput('\u001B[A');
+    editor.handleInput('\u001B[A');
+    expect(editor.getText()).toBe('older entry');
+
+    expect(editor.restoreHistoryDraft()).toBe(true);
+    expect(editor.getText()).toBe('draft');
+    expect(editor.restoreHistoryDraft()).toBe(false);
+  });
+
+  it('does not fire for Ctrl-C or empty-editor Ctrl-D, which are the second press of exit', () => {
+    const editor = makeEditor();
+    const onNonEscapeInput = vi.fn();
+    const onCtrlC = vi.fn();
+    const onCtrlD = vi.fn();
+    editor.onNonEscapeInput = onNonEscapeInput;
+    editor.onCtrlC = onCtrlC;
+    editor.onCtrlD = onCtrlD;
+
+    editor.handleInput('\u0003');
+    editor.handleInput('\u0003');
+    editor.handleInput('\u0004');
+    editor.handleInput('\u0004');
+    expect(onCtrlC).toHaveBeenCalledTimes(2);
+    expect(onCtrlD).toHaveBeenCalledTimes(2);
+    expect(onNonEscapeInput).not.toHaveBeenCalled();
   });
 });
 
@@ -621,6 +656,7 @@ describe('CustomEditor paste marker expansion', () => {
     editor.onPasteImage = vi.fn(async () => {
       throw new Error('clipboard backend broken');
     });
+    editor.readClipboardText = async () => undefined;
 
     // Regression: a rejecting onPasteImage must not leak an unhandled
     // rejection — the CLI's crash path turns those into a silent exit.
@@ -640,6 +676,18 @@ describe('CustomEditor paste marker expansion', () => {
     } finally {
       process.off('unhandledRejection', onRejection);
     }
+  });
+
+  it('pastes clipboard text on Ctrl-V when there is no image, ahead of keys typed meanwhile', async () => {
+    const editor = makeEditor();
+    editor.onPasteImage = vi.fn(async () => false);
+    editor.readClipboardText = async () => 'from clipboard';
+
+    editor.handleInput(process.platform === 'win32' ? '\u001Bv' : '\u0016');
+    editor.handleInput('!');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(editor.getText()).toBe('from clipboard!');
   });
 
   it('queues Enter and typing until an asynchronous image paste inserts its placeholder', async () => {

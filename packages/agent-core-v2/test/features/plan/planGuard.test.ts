@@ -371,14 +371,12 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(false);
     });
 
-    it('blocks TaskStop while plan mode is active', async () => {
+    it('leaves TaskStop to the normal permission chain while plan mode is active', async () => {
       await enterPlan();
       const decision = await run(hookContext('TaskStop', { args: { task_id: 'bash-abc12345' } }));
 
-      expect(decision?.veto?.isError).toBe(true);
-      expect(decision?.veto?.output).toContain('TaskStop');
-      expect(decision?.veto?.output).toContain('ExitPlanMode');
-      expect(permissionRan).toBe(false);
+      expect(decision).toBeUndefined();
+      expect(permissionRan).toBe(true);
     });
 
     it.each(['AgentRun', 'AgentSend'] as const)(

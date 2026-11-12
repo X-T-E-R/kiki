@@ -3,7 +3,7 @@ import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHan
 import { applyContextCompactionRecord } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { evaluateFreshEligibility } from '#/agent/fullCompaction/freshEligibility';
-import { budgetFileReads, collectFileReads, fileReadLedgerBudget, renderFileReads, withoutFileReadLedgerText } from '#/agent/contextMemory/fileReadLedger';
+import { budgetFileReads, collectFileReads, fileReadEvidence, fileReadLedgerBudget, renderFileReads, withoutFileReadLedgerText } from '#/agent/contextMemory/fileReadLedger';
 import { renderPendingReceipts, renderRelay, renderStandingDirectives, type RelayInput } from '#/agent/fullCompaction/relayPackage';
 import { compactionDirectivesBudget, hashTodoNotes, mergeTodoNotes } from '#/session/todo/todoNotes';
 import { tagSshResult } from '#/agent/tools/os/sshToolTarget';
@@ -230,6 +230,21 @@ describe('relay-v1 zero-model contract', () => {
     expect(collectFileReads([history[0]!, forged]).entries[0]?.ranges).toEqual([]);
     const hosts = collectFileReads([...history, ...exchange('remote', 'Read', '/project/example.ts', 5, 1, 'remote-example')]);
     expect(hosts.entries).toHaveLength(2);
+  });
+
+  it('does not record Read directory listings as file reads', () => {
+    const [call, result] = exchange('listing', 'Read', '/project/src', 1, 1);
+    const [fileCall, fileResult] = exchange('file', 'Read', '/project/src/a.ts', 1, 1);
+    const listing = { ...result!, content: [{ type: 'text' as const, text: 'a.ts\nlib/' }],
+      note: '<system>"/project/src" is a directory; its 2 entries are listed instead of file content, and names ending in / are subdirectories.</system>' };
+    const merged = { ...listing, note: undefined, content: [{ type: 'text' as const, text: `a.ts\nlib/\n${listing.note}` }] };
+    const empty = { ...listing, note: undefined, content: [{ type: 'text' as const, text: '"/project/src" is an empty directory.' }] };
+    for (const message of [listing, merged, empty]) {
+      expect(collectFileReads([call!, message]).entries).toHaveLength(0);
+      expect(fileReadEvidence(call!.toolCalls[0]!, message)).toBeUndefined();
+    }
+    expect(fileReadEvidence(fileCall!.toolCalls[0]!, fileResult!)).toContain('L1/50');
+    expect(collectFileReads([fileCall!, fileResult!, call!, listing]).entries).toHaveLength(1);
   });
 
   it('reads empty results from notes and keeps footer-like file content separate', () => {

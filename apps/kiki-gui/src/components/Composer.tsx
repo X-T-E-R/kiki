@@ -103,8 +103,9 @@ import {
   type AgentCandidateGroup,
 } from '../lib/agentMentionCandidates';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
-import { registerOverlay } from '../lib/uiBusy';
-import { useCoarsePointer } from '../lib/layoutHooks';
+import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { useSeatFileDrop } from './seatFileDrop';
+import { isCoarsePointer, useCoarsePointer } from '../lib/layoutHooks';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
@@ -120,7 +121,7 @@ import { useComposerContextMenu } from './ComposerContextMenu';
 import { ComposerInput } from './ComposerInput';
 import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
 import { Icon } from './icons';
-import { useNow } from './RelativeTime';
+import { useElapsedSince, useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
 import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
@@ -755,7 +756,9 @@ export function Composer({
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
   const remoteControlClient = localClient ?? (connectionSource === 'remote' || connectionSource === 'ssh' ? null : client);
-  const remoteRecords = useRemoteConnections(remoteControlClient);
+  // Only a remote space reads the list, so a local one keeps no 8-second
+  // observer on it.
+  const remoteRecords = useRemoteConnections(connectionId === null ? null : remoteControlClient);
   const remoteTarget = connectionId === null
     ? null
     : remoteRecords.data?.find((record) => record.id === connectionId) ?? null;
@@ -1091,7 +1094,12 @@ export function Composer({
     staleTime: 60_000,
     retry: false,
   });
-  const capabilityNow = useNow();
+  // An external engine's capabilities go stale with age, so reading them
+  // follows the second clock — but only such an engine has any. Joining the
+  // clock unconditionally re-rendered the whole composer every second in
+  // every session. Elapsed time since 0 is the clock itself; without an
+  // engine the value is never read (both responses are absent).
+  const capabilityNow = useElapsedSince(executorId !== undefined || boundExecutorId !== undefined ? 0 : undefined) ?? 0;
   const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
     if (boundExecutorId === undefined) return undefined;
     const response = boundExecutorId === executorId ? executorModelResponse : boundExecutorModelsQuery.data;
@@ -1835,6 +1843,26 @@ export function Composer({
     requestAnimationFrame(() => { textareaRef.current?.focus(); });
   };
 
+  /**
+   * A committed pick in a toolbar picker (model, profile, persona) hands the
+   * keyboard back to the editor the same way: the picker's close leaves focus
+   * on its trigger, where the next keystroke typed nothing — or a bare y/n
+   * reached a pending approval. Escape / cancel do not call this, so keyboard
+   * users who dismiss a menu stay on its trigger. The move happens on the next
+   * frame and only if focus is still on that trigger, so a confirm dialog the
+   * pick opened, or a click elsewhere meanwhile, keeps what it took. Never on
+   * touch: focusing the editor there raises the software keyboard.
+   */
+  const focusEditorAfterPick = () => {
+    if (isCoarsePointer()) return;
+    const trigger = document.activeElement;
+    requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      if (input === null || input.disabled || document.activeElement !== trigger || anyOverlayOpen()) return;
+      input.focus();
+    });
+  };
+
   type SelectedAttachmentFile = {
     readonly name: string;
     readonly size: number;
@@ -2074,9 +2102,33 @@ export function Composer({
   const insertDroppedFilePathsRef = useRef(insertNativeDrop);
   insertDroppedFilePathsRef.current = insertNativeDrop;
 
+  /** The card's drop path; the seated composer also gets the column's drops. */
+  const dropFiles = (files: readonly File[]) => {
+    if (disabled || files.length === 0) return;
+    const images = queueEditing || messageEditing ? files.filter((file) => ACCEPTED_IMAGE_MIMES.includes(file.type)) : [];
+    if (images.length > 0) addFiles(readyAttachmentFiles(images));
+    insertDroppedFilePaths(files.filter((file) => !images.includes(file)).map(droppedFilePath));
+  };
+  const dropFilesRef = useRef(dropFiles);
+  dropFilesRef.current = dropFiles;
+  // Non-null only when the shell seats this composer: a file released
+  // anywhere on the conversation column lands here, and the card shows its
+  // drop state for the whole drag.
+  const seatFileDrop = useSeatFileDrop();
+  const seatFileDropRef = useRef(seatFileDrop);
+  seatFileDropRef.current = seatFileDrop;
+  const registerSeatDrop = seatFileDrop?.registerDrop;
+  useEffect(() => {
+    if (registerSeatDrop === undefined) return;
+    return registerSeatDrop((files) => { dropFilesRef.current(files); });
+  }, [registerSeatDrop]);
+  const dropHighlight = dragActive || seatFileDrop?.dragActive === true;
+
   // Desktop file drops: Tauri intercepts HTML5 drag-and-drop, so real drops
-  // arrive through the host bridge carrying absolute paths. Only drops that
-  // land on the composer card insert; drops elsewhere stay inert.
+  // arrive through the host bridge carrying absolute paths. A drop on the
+  // card inserts; the seated composer also takes one anywhere else on its
+  // conversation column, unless another editor there (an inline message
+  // edit) is under it. Drops outside the column stay inert.
   const cardRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (host.onFileDrop === undefined) return;
@@ -2084,13 +2136,14 @@ export function Composer({
       const card = cardRef.current;
       if (card === null || drop.paths.length === 0) return;
       if (drop.position !== undefined) {
-        const rect = card.getBoundingClientRect();
-        const inside =
-          drop.position.x >= rect.left &&
-          drop.position.x <= rect.right &&
-          drop.position.y >= rect.top &&
-          drop.position.y <= rect.bottom;
-        if (!inside) return;
+        const { x, y } = drop.position;
+        const contains = (rect: DOMRect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+        if (!contains(card.getBoundingClientRect())) {
+          const column = seatFileDropRef.current?.column ?? null;
+          if (column === null || !contains(column.getBoundingClientRect())) return;
+          const under = document.elementFromPoint(x, y)?.closest('[data-composer-card]');
+          if (under !== null && under !== undefined && under !== card) return;
+        }
       }
       insertDroppedFilePathsRef.current(drop.paths);
     });
@@ -2810,6 +2863,7 @@ export function Composer({
             }}
             onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
             boundExecution={boundExecution}
+            onPicked={focusEditorAfterPick}
           />
         </ComposerPanelOrigin>
       ),
@@ -2852,6 +2906,7 @@ export function Composer({
             executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
             onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
             domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
+            onPicked={focusEditorAfterPick}
           />
         </ComposerPanelOrigin>
       ),
@@ -3111,7 +3166,7 @@ export function Composer({
           data-composer-card
           data-composer-takeover={takenOver ? '' : undefined}
           className={`composer-card relative rounded-[18px] bg-panel transition-[box-shadow] duration-[var(--kiki-motion-quick)] ${
-            dragActive ? 'ring-2 ring-accent/50' : ''
+            dropHighlight ? 'ring-2 ring-accent/50' : ''
           } ${takenOver ? 'ring-1 ring-attention/35' : ''}`}
           onDragEnter={(event) => {
             if (!dragHasFiles(event)) return;
@@ -3133,12 +3188,10 @@ export function Composer({
             const files = [...event.dataTransfer.files];
             if (disabled || files.length === 0) return;
             event.preventDefault();
-            const images = queueEditing || messageEditing ? files.filter((file) => ACCEPTED_IMAGE_MIMES.includes(file.type)) : [];
-            if (images.length > 0) addFiles(readyAttachmentFiles(images));
-            insertDroppedFilePaths(files.filter((file) => !images.includes(file)).map(droppedFilePath));
+            dropFiles(files);
           }}
         >
-          {dragActive ? (
+          {dropHighlight ? (
             <div className="pointer-events-none absolute inset-0 z-20 rounded-[18px] border-2 border-dashed border-accent/60 bg-panel/85" />
           ) : null}
           {/* The takeover: the pending decision is the card's body. The input
@@ -3183,7 +3236,9 @@ export function Composer({
                 <Icon name="edit" />
               </span>
               <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
-                {t('composer.queueEditBanner')}
+                {/* A touch keyboard's Enter is the newline key, so the hint
+                    names no keys there; ✓ and ✕ are right beside it. */}
+                {t(coarsePointer ? 'composer.queueEditBannerTouch' : 'composer.queueEditBanner')}
               </p>
               <button
                 type="button"
@@ -3681,10 +3736,10 @@ export function Composer({
                   }}
                   title={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveTitle')}
                   aria-label={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveAria')}
-                  className={`flex h-8 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none ${
+                  className={`flex h-8 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none pointer-coarse:h-10 ${
                     queueEditRemoveArmed
                       ? 'gap-1 border-danger/60 bg-danger/10 px-3 text-[11px] font-medium text-danger hover:bg-danger/20'
-                      : 'w-8 border-danger/40 text-danger hover:bg-danger/10'
+                      : 'w-8 border-danger/40 text-danger hover:bg-danger/10 pointer-coarse:w-10'
                   }`}
                 >
                   {queueEditRemoveArmed ? (
@@ -3708,7 +3763,7 @@ export function Composer({
                   disabled={abortPending}
                   title={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
                   aria-label={abortPending === true ? t('tasks.stopping') : t('composer.abortTitle')}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-10 pointer-coarse:w-10"
                 >
                   <Icon name="stop" size={12} />
                 </button>
@@ -3877,12 +3932,16 @@ export function Composer({
               )}
               {takenOver && busy && onAbort !== undefined ? (
                 // The card's Stop button is under the takeover; the line keeps it.
+                // On touch an invisible box around it makes the target 40px
+                // tall without changing the 16px line: it reaches up only as
+                // far as the gap under the card (the card's own row stays
+                // tappable) and takes the rest from the padding below.
                 <button
                   type="button"
                   data-composer-status-stop
                   onClick={onAbort}
                   disabled={abortPending}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50"
+                  className="relative inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-top-1.5 pointer-coarse:after:-bottom-4.5"
                 >
                   <Icon name="stop" size={12} />
                   {abortPending ? t('tasks.stopping') : t('composer.status.stop')}
@@ -3927,6 +3986,7 @@ function SlashMenuBody({
   onHoverRow: (index: number) => void;
 }) {
   const { t } = useI18n();
+  const coarsePointer = useCoarsePointer();
   const skills = items.filter((item) => item.kind === 'skill');
   const plugins = items.filter((item) => item.kind === 'plugin');
   const actions = items.filter((item) => item.kind === 'action');
@@ -4007,7 +4067,8 @@ function SlashMenuBody({
       ) : null}
       {items.length === 0 ? (
         <p className="px-3 py-2 text-[13px] text-ink-faint">
-          {t('composer.slash.empty')}
+          {/* On touch Enter is a newline; the line goes out from the send button. */}
+          {t(coarsePointer ? 'composer.slash.emptyTouch' : 'composer.slash.empty')}
         </p>
       ) : null}
       {skillsFailed && hasSession ? (
@@ -4616,15 +4677,20 @@ function ComposerWorkingLine({
         setDetailsOpen(false);
       }
     };
+    // Registered as an overlay so the session's Escape-to-stop yields while
+    // this is open: stopping propagation here did nothing for a sibling
+    // listener on the same target, and one Escape closed the popover and
+    // aborted the queued turn behind it.
+    const unregister = registerOverlay('composer-queued-details');
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setDetailsOpen(false);
-      }
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      setDetailsOpen(false);
     };
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
     return () => {
+      unregister();
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
     };
@@ -4661,7 +4727,7 @@ function ComposerWorkingLine({
           <span className="min-w-0 truncate tabular-nums">{status}</span>
         )}
         {sendNowHint !== undefined ? (
-          <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
+          <span data-composer-send-now-hint className="hidden shrink-0 sm:inline pointer-coarse:hidden">· {sendNowHint}</span>
         ) : null}
       </p>
 

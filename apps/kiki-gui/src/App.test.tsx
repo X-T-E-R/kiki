@@ -311,6 +311,9 @@ describe('App sidebar Escape wiring', () => {
         </QueryClientProvider>,
       );
     });
+    // /usage is one of the pages App downloads on first visit: let its module
+    // arrive inside act so the page has rendered before the test looks at it.
+    await act(async () => { await import('./components/UsagePage'); });
   }
 
   async function withHistoryPop<T>(action: () => Promise<T>): Promise<T> {
@@ -398,14 +401,14 @@ describe('App sidebar Escape wiring', () => {
     for (const { event, overlayOpen } of [first, second]) {
       expect(shouldHandleGlobalAbortOnEscape({
         key: event.key, defaultPrevented: event.defaultPrevented, overlayOpen,
-        terminalFocused: false, terminalOpen: false, inFormField: false,
+        terminalFocused: false, terminalOpen: false, railOpen: false, inFormField: false,
       })).toBe(false);
     }
     const third = await escape();
     expect(third.event.defaultPrevented).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({
       key: third.event.key, defaultPrevented: third.event.defaultPrevented, overlayOpen: third.overlayOpen,
-      terminalFocused: false, terminalOpen: false, inFormField: false,
+      terminalFocused: false, terminalOpen: false, railOpen: false, inFormField: false,
     })).toBe(true);
   });
 
@@ -431,6 +434,16 @@ describe('App sidebar Escape wiring', () => {
     updateHarness.offer = null;
   });
 
+  it('opens no dialog on load, even on a server with nothing to answer with', async () => {
+    const base = appHarness.connection as { client: Record<string, unknown> };
+    base.client['getAuth'] = async () => ({ ready: false, providers_count: 0, default_model: null, managed_provider: null });
+    base.client['listModels'] = async () => ({ items: [] });
+    await mountApp();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.querySelector('[role="dialog"], [aria-modal="true"]')).toBeNull();
+    expect(anyOverlayOpen()).toBe(false);
+  });
+
   it('passes the sessions waiting on an approval to the scheduler', async () => {
     const base = appHarness.connection as { client: { listSessions: () => Promise<unknown> } };
     const sessions = [{
@@ -447,6 +460,35 @@ describe('App sidebar Escape wiring', () => {
     } finally {
       base.client.listSessions = original;
     }
+  });
+
+  describe('plugin focus requests', () => {
+    // A live request: a window that watches would move to its session.
+    const request = { request: { id: 1, pluginId: 'example-plugin', sessionId: 'example-session', at: 0 } };
+
+    async function mountWatching(phone: boolean) {
+      const base = appHarness.connection as { client: { pluginNavigation: () => Promise<unknown> } };
+      const pluginNavigation = vi.fn(async () => request);
+      base.client.pluginNavigation = pluginNavigation;
+      vi.stubGlobal('matchMedia', (media: string) => ({
+        media,
+        matches: media === '(max-width: 767px)'
+          || (phone && (media === '(pointer: coarse)' || media === '(pointer: coarse) and (max-width: 639px)')),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+      await mountApp();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      return pluginNavigation;
+    }
+
+    it('are watched outside phone mode', async () => {
+      expect(await mountWatching(false)).toHaveBeenCalled();
+    });
+
+    it('are never read on a phone, so its page cannot change with nobody touching it', async () => {
+      expect(await mountWatching(true)).not.toHaveBeenCalled();
+    });
   });
 
   it('shows a pinned session that sits beyond the first loaded page in the Pinned group', async () => {

@@ -1785,7 +1785,9 @@ describe('live and event chrome', () => {
     expect(loadButton).toBeDefined();
     expect(container.textContent).not.toContain('A blank page');
     await act(async () => { click(loadButton!); });
-    expect(onLoadOlder).toHaveBeenCalledOnce();
+    // The click starts an older-history run; how far a run goes on by itself
+    // is pinned by the virtualized paging cases.
+    expect(onLoadOlder).toHaveBeenCalled();
   });
 
   it('renders a stable delivered user row after the older page fills the filtered tail', async () => {
@@ -1863,10 +1865,11 @@ describe('live and event chrome', () => {
 
   it('does not certify an unverified empty cold read as a blank session', async () => {
     const retry = vi.fn();
+    const loadOlder = vi.fn(async () => false);
     const { root, container } = makeRoot();
     await renderSettled(root, <Transcript
       state={transcriptState([], { historyCoverageKind: 'unknown', hasMoreHistory: true })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onLoadOlder={loadOlder} onResolveApproval={noopActions}
       onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
     />);
     expect(container.textContent).not.toContain('A blank page');
@@ -1874,7 +1877,8 @@ describe('live and event chrome', () => {
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
     await act(async () => { click(button!); });
-    expect(retry).toHaveBeenCalledOnce();
+    expect(loadOlder).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it('keeps loaded historical rows visible beside a retryable refresh error', async () => {
@@ -5955,6 +5959,38 @@ describe('virtualized transcript scrolling', () => {
     expect(scroll.scrollTop).toBe(readingTop);
   });
 
+  it('marks the jump pill when a row arrives after the reader left the end, without moving them, until they are back', async () => {
+    const initial = virtualBlocks(120);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const pill = () => container.querySelector<HTMLButtonElement>('[data-jump-to-latest]');
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(pill()).toBeNull();
+
+    await setTranscriptScroll(scroll, scroll.scrollTop - 500);
+    await settleVirtualizer();
+    expect(pill()).not.toBeNull();
+    expect(pill()!.dataset['jumpHasNew']).toBeUndefined();
+    expect(pill()!.getAttribute('aria-label')).toBeNull();
+
+    const readingTop = scroll.scrollTop;
+    await renderSettled(root, virtualTranscript(transcriptState([...initial, assistantBlock('arrived', 'newer')])));
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(readingTop);
+    expect(pill()!.dataset['jumpHasNew']).toBe('true');
+    expect(pill()!.getAttribute('aria-label')).toBe('Jump to latest — new content below');
+
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(pill()).toBeNull();
+    await setTranscriptScroll(scroll, scroll.scrollTop - 500);
+    await settleVirtualizer();
+    expect(pill()).not.toBeNull();
+    expect(pill()!.dataset['jumpHasNew']).toBeUndefined();
+  });
+
   it('keeps the same reading anchor when older blocks prepend', async () => {
     const current = virtualBlocks(160, 'current');
     const { root, container } = makeRoot();
@@ -6058,7 +6094,7 @@ describe('virtualized transcript scrolling', () => {
     } finally { rect.mockRestore(); }
   });
 
-  it('starts one finite prefetch before the reader reaches the loaded edge', async () => {
+  it('starts one bounded prefetch run before the reader reaches the loaded edge; the next run needs a new gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
     await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100)), hasMoreHistory: true }, onLoadOlder));
@@ -6066,31 +6102,42 @@ describe('virtualized transcript scrolling', () => {
     await settleVirtualizer();
     await setTranscriptScroll(scroll, scroll.clientHeight);
     expect(onLoadOlder).not.toHaveBeenCalled();
+    // These pages bring nothing to read, so the reader stays near the top and
+    // the run goes on by itself: the gesture's page plus four, then it stops.
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
-    expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await settleReadingFrames();
-    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(onLoadOlder).toHaveBeenCalledTimes(5);
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(5);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(10);
   });
 
-  it('refills an undersized prepend only once without another gesture', async () => {
-    let resolveFlight!: (loaded: boolean) => void;
-    const onLoadOlder = vi.fn().mockImplementationOnce(() => new Promise<boolean>(resolve => { resolveFlight = resolve; }))
-      .mockResolvedValue(true);
-    const current = virtualBlocks(100, 'small-page');
-    const state = { ...transcriptState(current), hasMoreHistory: true };
+  it('keeps loading undersized pages after one gesture until the reader has enough above them', async () => {
+    let state = { ...transcriptState(virtualBlocks(100, 'small-page')), hasMoreHistory: true };
     const { root, container } = makeRoot();
+    // Two one-row pages leave the reader within the prefetch distance of the
+    // top; the third page puts enough above them.
+    const sizes = [1, 1, 10];
+    let pages = 0;
+    const onLoadOlder = vi.fn(async () => {
+      const size = sizes[pages] ?? 10;
+      pages += 1;
+      state = { ...state, blocks: [...virtualBlocks(size, `page-${pages}`), ...state.blocks] };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
     await renderSettled(root, virtualTranscript(state, onLoadOlder));
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     await settleVirtualizer();
     await setTranscriptScroll(scroll, 0);
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
-    expect(onLoadOlder).toHaveBeenCalledTimes(1);
-    await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(1, 'tiny-prefix'), ...current] }, onLoadOlder));
-    await act(async () => { resolveFlight(true); });
+    for (let tick = 0; tick < 4; tick += 1) await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
+    expect(scroll.scrollTop).toBeGreaterThanOrEqual(scroll.clientHeight * 1.5);
     await settleReadingFrames();
-    expect(onLoadOlder).toHaveBeenCalledTimes(2);
-    await settleReadingFrames();
-    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
   });
 
   it('continues loading older pages across one large upward wheel gesture without teleporting to byte zero and cancels on downward wheel', async () => {
@@ -6332,6 +6379,66 @@ describe('virtualized transcript scrolling', () => {
     expect(scroll.scrollTop).toBe(userScrollTop);
   });
 
+  it('keeps an older-history read in flight through a wheel that does not move vertically', async () => {
+    let resolveFlight!: (loaded: boolean) => void;
+    let flightSignal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((signal?: AbortSignal) => {
+      flightSignal = signal;
+      return new Promise<boolean>((resolve) => { resolveFlight = resolve; });
+    });
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript({ ...transcriptState(virtualBlocks(100, 'sideways')), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaX: 120, deltaY: 0, bubbles: true })); });
+    expect(flightSignal?.aborted).toBe(false);
+    expect(container.querySelector('[data-history-feedback] [data-top-edge="loading"]')).not.toBeNull();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(flightSignal?.aborted).toBe(true);
+    await act(async () => { resolveFlight(false); });
+  });
+
+  it('keeps the older-history wait and asks again, without new input, while the page is still being prepared', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    let finish!: (result: Awaited<ReturnType<SessionController['loadOlderHistory']>>) => void;
+    const older = vi.spyOn(controller, 'loadOlderHistory')
+      .mockResolvedValueOnce({ kind: 'preparing', changed: false })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const onLoadOlder = vi.fn(async () => false);
+    const { root, container } = makeRoot();
+    try {
+      await renderSettled(root,
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+          {virtualTranscript({ ...transcriptState(virtualBlocks(100, 'preparing')), hasMoreHistory: true }, onLoadOlder)}
+        </TranscriptDetailProvider>);
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 0);
+      await settleVirtualizer();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      await settleReadingFrames();
+      expect(older).toHaveBeenCalledTimes(2);
+      expect(older).toHaveBeenLastCalledWith('main', expect.any(AbortSignal));
+      expect(container.querySelector('[data-history-feedback] [data-top-edge="loading"]')).not.toBeNull();
+      expect(onLoadOlder).not.toHaveBeenCalled();
+
+      await act(async () => { finish({ kind: 'exhausted', changed: false }); });
+      await settleReadingFrames();
+      expect(older).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-history-feedback]')).toBeNull();
+    } finally {
+      older.mockRestore();
+      await act(async () => { root.render(null); });
+      controller.close();
+    }
+  });
+
   it('loads an older page from the top button without a wheel gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
@@ -6377,8 +6484,10 @@ describe('virtualized transcript scrolling', () => {
     await setTranscriptScroll(scroll, 0);
     await settleVirtualizer();
     expect(onLoadOlder).not.toHaveBeenCalled();
+    // A new gesture starts a run; how far it goes on by itself is pinned by
+    // the prefetch-run cases above.
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
-    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(onLoadOlder).toHaveBeenCalled();
   });
 
   it('does not treat a delayed programmatic scroll as the old upward gesture', async () => {
@@ -9548,35 +9657,48 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
-  it('reads a visible turn’s partial structure on its own and leaves closed folds alone until opened or hidden', async () => {
+  it.each(['main', 'child'])('reads an incomplete turn’s structure while any of its rows is in view, whatever its folds, and says what is missing (%s)', async (agentId) => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const { controller } = await openLiveTranscript();
     const { root, container } = makeRoot();
     const leases = new Map<string, ReturnType<typeof vi.fn>[]>();
-    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation((_agent, source, roots) => {
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation((agent, source, roots) => {
       const release = vi.fn();
-      if (roots?.length === 1 && roots[0] === 'steps') leases.set(source.id, [...leases.get(source.id) ?? [], release]);
+      if (agent === agentId && roots?.length === 1 && roots[0] === 'steps') leases.set(source.id, [...leases.get(source.id) ?? [], release]);
       return { release, retry: () => {} };
     });
-    const partialTurns = new Set(['t1', 't3']);
-    const pending = vi.spyOn(controller, 'turnStructurePending').mockImplementation((_agent, turnId) => partialTurns.has(turnId));
+    const retry = vi.spyOn(controller, 'retryTurnStructureRead').mockImplementation(() => {});
     const blocks = [...turnBlocks(1, 'first'), { ...userBlock({ id: 'u3', text: 'latest' }), turnId: 't3' }, doneTool('tool3', 't3', { status: 'running' })];
     const render = (visible = true) => renderSettled(root,
-      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
-        <Transcript state={transcriptState(blocks)} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId={agentId}>
+        <Transcript state={transcriptState(blocks, { incompleteTurnIds: ['t1', 't3'] })} agentId={agentId} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
       </TranscriptDetailProvider>);
+    const toggle = () => container.querySelector('[data-history-fold] [data-activity-toggle]')!;
     try {
       await render();
+      // Both turns read on their own, the one whose steps sit behind a
+      // closed fold too: the missing steps are not inside that fold.
+      expect(container.querySelector('[data-history-fold-open]')).toBeNull();
+      expect(begin).toHaveBeenCalledWith(agentId, { kind: 'turn', id: 't1' }, ['steps']);
+      expect(leases.get('t1')).toHaveLength(1);
       expect(leases.get('t3')).toHaveLength(1);
-      expect(leases.has('t1')).toBe(false);
-      expect(container.querySelector('[data-turn-structure="idle"]')).toBeNull();
-      expect(container.querySelector('[data-turn-structure="loading"]')).not.toBeNull();
-      await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
-      expect(leases.get('t1')?.length).toBeGreaterThan(0);
+      // Neither gap is silent: each turn's tail says steps are missing and
+      // offers to load them, and the fold says its count is not final.
+      expect(container.querySelectorAll('[data-turn-structure]')).toHaveLength(2);
+      expect(container.querySelector('[data-history-fold] [data-history-fold-incomplete]')).not.toBeNull();
+      await act(async () => { click(container.querySelector('[data-turn-structure] [data-content-continuation-action]')!); });
+      expect(retry).toHaveBeenCalledWith(agentId, 't1');
+      // Opening and closing the fold never lets the turn's own read go.
+      const ownRead = leases.get('t1')![0]!;
+      await act(async () => { click(toggle()); });
+      await act(async () => { click(toggle()); });
+      expect(container.querySelector('[data-history-fold-open]')).toBeNull();
+      expect(ownRead).not.toHaveBeenCalled();
+      // Hidden, nothing is in view: every read is let go, once.
       await render(false);
       expect([...leases.values()].flat().every(release => release.mock.calls.length === 1)).toBe(true);
     } finally {
-      pending.mockRestore();
+      retry.mockRestore();
       begin.mockRestore();
       await act(async () => { root.render(null); });
       controller.close();
@@ -9912,23 +10034,21 @@ describe('settled history folds and the unified locate entry', () => {
 
       // 1) Initial load is still in flight (!loaded, !initialScrollDoneRef.current); locate() enters its rAF wait loop.
       let waitingOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
-      await act(async () => {
-        void capturedLocator!.locate({ kind: 'turn', turnId: 't1' }).then((value) => {
-          waitingOutcome = value;
-        });
-        await new Promise((resolve) => setTimeout(resolve, 0));
+      const waiting = capturedLocator!.locate({ kind: 'turn', turnId: 't1' }).then((value) => {
+        waitingOutcome = value;
+        return value;
       });
-      for (let frame = 0; frame < 5; frame += 1) {
-        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
-      }
+      await act(async () => {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      });
       expect(waitingOutcome).toBeUndefined();
 
       // After a delay, a hard loadError arrives before initial load ever completes: locate() must settle as 'load-failed' on the next frame without hanging or calling onLoadOlder.
       state = { ...state, loadError: 'Session failed to open' };
       await render();
-      for (let frame = 0; frame < 5 && waitingOutcome === undefined; frame += 1) {
-        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
-      }
+      // The locator's pending frame observes the rerendered load error; wait on
+      // the actual locate promise rather than assuming a second frame ordering.
+      await act(async () => { await waiting; });
       expect(waitingOutcome).toEqual({ status: 'load-failed' });
       expect(onLoadOlder).not.toHaveBeenCalled();
 

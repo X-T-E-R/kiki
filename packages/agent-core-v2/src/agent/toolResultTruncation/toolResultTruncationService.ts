@@ -15,14 +15,14 @@ import {
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { join, normalize } from 'pathe';
+import { join } from 'pathe';
 import {
   IAgentToolResultTruncationService,
   type ToolResultTruncationInput,
 } from './toolResultTruncation';
 
-const TOOL_RESULT_PREVIEW_HEAD_CHARS = 4_096;
-const TOOL_RESULT_PREVIEW_TAIL_CHARS = 1_024;
+const TOOL_RESULT_PREVIEW_HEAD_CHARS = 6_000;
+const TOOL_RESULT_PREVIEW_TAIL_CHARS = 18_000;
 const TOOL_RESULT_MAX_LINE_CHARS = 2_000;
 const TRUNCATION_MARKER = '[...truncated]';
 
@@ -162,12 +162,6 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
 
   async preserveOriginal(input: ToolResultTruncationInput): Promise<string | undefined> {
     return (await this.saveToolResult(input.toolName, input.toolCallId, persistableToolResultText(input.result.output)))?.outputPath;
-  }
-
-  isSpillFilePath(path: string): boolean {
-    const dir = normalize(join(this.bootstrap.homeDir, this.storageScope));
-    const normalized = normalize(path);
-    return normalized === dir || normalized.startsWith(`${dir}/`);
   }
 
   private async saveToolResult(

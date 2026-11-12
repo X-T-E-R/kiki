@@ -328,7 +328,7 @@ describe('progressive tool disclosure end-to-end', () => {
       `Unknown tool: ${MCP_ALPHA}. Pick from the latest announced tools list.`,
     );
     expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
-      'This tool was not loaded or is no longer available.',
+      `Tool "${MCP_ALPHA}" cannot be run through CallTool`,
     );
     expect(alpha.calls).toBe(0);
     expect(toolNames(firstWire.tools)).not.toContain('SelectTools');
@@ -421,7 +421,7 @@ describe('progressive tool disclosure end-to-end', () => {
 
     expect(toolNames(ctx.llmCalls[0]!.tools)).toContain('CallTool');
     expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain(
-      'This tool was not loaded or is no longer available.',
+      `Tool "${MCP_ALPHA}" had not been loaded, so this call was not run. It is loaded now. Call it again through CallTool`,
     );
     expect(ctx.llmCalls[2]!.tools).toEqual(ctx.llmCalls[0]!.tools);
     expect(historyText(ctx.llmCalls[2]!.history)).toContain('<dynamic_tool_schemas>');

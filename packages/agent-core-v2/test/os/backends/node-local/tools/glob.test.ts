@@ -255,17 +255,26 @@ describe('GlobTool', () => {
     expect(GlobInputSchema.safeParse({ pattern: '*.js', path: '/src' }).success).toBe(true);
   });
 
-  it('is files-only and exposes include_ignored; include_dirs is deprecated and ignored', () => {
+  it('exposes include_ignored and no longer accepts the removed include_dirs flag', () => {
     const { tool } = makeTool(workspace);
     const schema = tool.parameters as {
       properties: Record<string, { description?: string; default?: unknown }>;
-      required?: string[];
+      additionalProperties?: unknown;
     };
 
     expect(schema.properties).toHaveProperty('include_ignored');
-    expect(schema.properties).toHaveProperty('include_dirs');
-    expect(schema.properties['include_dirs']?.default).toBeUndefined();
-    expect(schema.required ?? []).not.toContain('include_dirs');
+    expect(schema.properties).not.toHaveProperty('include_dirs');
+    expect(schema.additionalProperties).toBe(false);
+  });
+
+  it('returns paths relative to the working directory when searching a subdirectory', async () => {
+    const exec = execReturning('/workspace/pkg/src/b.ts\n/workspace/pkg/src/a.ts\n');
+    const { tool, withCwd } = makeTool(workspace, { exec });
+
+    const result = await execute(tool, { pattern: '*.ts', path: 'pkg/src' });
+
+    expect(result.output).toBe('pkg/src/b.ts\npkg/src/a.ts');
+    withCwd.toHaveBeenCalledWith('/workspace/pkg/src');
   });
 
   it('injects the Windows path hint into the description on a win32 backend', () => {
@@ -702,19 +711,23 @@ describe('GlobTool', () => {
       withCwd.toHaveBeenCalledWith('/skills/feishu/scripts');
     });
 
-    it('rejects a relative path that escapes both workspace and additionalDirs', async () => {
-      const exec = vi.fn();
+    it('treats a relative path that leaves workspace and additionalDirs exactly like its absolute form', async () => {
+      const exec = execReturning('/tmp/evil/a.py\n');
       const { tool, withCwd } = makeTool(
         stubWorkspaceContext('/workspace/project', ['/skills']),
         { exec },
       );
 
+      const fromRelative = await tool.resolveExecution({ pattern: '*.py', path: '../../tmp/evil' });
+      const fromAbsolute = await tool.resolveExecution({ pattern: '*.py', path: '/tmp/evil' });
+      expect(fromRelative.isError ?? false).toBe(false);
+      expect((fromRelative as { accesses?: unknown }).accesses).toEqual((fromAbsolute as { accesses?: unknown }).accesses);
+
       const result = await execute(tool, { pattern: '*.py', path: '../../tmp/evil' });
 
-      expect(result).toMatchObject({ isError: true });
-      expect(result.output).toContain('absolute path');
-      expect(exec).not.toHaveBeenCalled();
-      withCwd.not.toHaveBeenCalled();
+      expect(result.isError ?? false).toBe(false);
+      expect(result.output).toContain('/tmp/evil/a.py');
+      withCwd.toHaveBeenCalledWith('/tmp/evil');
     });
 
     it('accepts a path inside a deeply nested additionalDir entry', async () => {

@@ -107,6 +107,27 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+interface ImeKeyFields {
+  readonly isComposing?: boolean;
+  readonly keyCode?: number;
+}
+
+/**
+ * True when this keydown belongs to an input method (Chinese, Japanese,
+ * Korean, …) rather than to the page: Enter commits a candidate, Escape
+ * cancels it, arrows walk the candidate window. A field's own Enter/Escape/
+ * arrow handling must ignore it, or picking a candidate also submits,
+ * navigates or closes. `isComposing` alone is not enough: Safari/WKWebView
+ * fires `compositionend` first and then delivers the committing Enter with
+ * `isComposing=false` but `keyCode` 229, the "IME is processing" code every
+ * engine uses. Accepts a DOM event or a React synthetic one (whose
+ * `nativeEvent` carries `isComposing`).
+ */
+export function isImeKeyEvent(event: ImeKeyFields & { readonly nativeEvent?: ImeKeyFields }): boolean {
+  const native = event.nativeEvent ?? event;
+  return native.isComposing === true || native.keyCode === 229;
+}
+
 /** Tab cycling belongs to the browser, not the web application. */
 export function browserOwnsShortcut(event: ShortcutKeyEvent): boolean {
   return event.key === 'Tab' && event.ctrlKey && !event.altKey;
@@ -132,8 +153,16 @@ export function matchesShortcutAction(
 ): boolean {
   if (recording > 0) return false;
   const editable = event.target !== undefined && isEditableTarget(event.target);
+  // macOS text fields give Ctrl+letter to the caret (Ctrl+N next line, Ctrl+K
+  // kill line, Ctrl+F forward, …). A `mod` chord's Ctrl alias must not also
+  // fire there: one keystroke would both edit the text and leave the session.
+  // The ⌘ form is the one the UI advertises, and it is unaffected; so is a
+  // chord bound to literal Ctrl, which the user chose on purpose.
+  const macTextNavigation = editable && state.platform === 'macos' && event.ctrlKey && !event.metaKey;
   return state.bindings[action].some((chord) =>
-    matchesShortcut(event, chord) && !(editable && isBareCharacterChord(chord)));
+    matchesShortcut(event, chord)
+    && !(editable && isBareCharacterChord(chord))
+    && !(macTextNavigation && chord.modifier === 'mod'));
 }
 
 export function shortcutDefinition(action: ShortcutAction) {
@@ -150,9 +179,11 @@ export function chordKeys(chord: ShortcutChord, platform: ShortcutPlatform): str
   const mac = platform === 'macos';
   const keys: string[] = [];
   if (chord.modifier === 'mod') keys.push(mac ? '⌘' : 'Ctrl');
-  else if (chord.modifier === 'ctrl') keys.push('Ctrl');
+  // macOS chords are written as glyphs with no separator (`chordText`), so
+  // Control has to be its glyph too: the word would read as "Ctrl`".
+  else if (chord.modifier === 'ctrl') keys.push(mac ? '⌃' : 'Ctrl');
   else if (chord.modifier === 'meta') keys.push(mac ? '⌘' : platform === 'windows' ? 'Win' : 'Super');
-  else if (chord.modifier === 'ctrl-meta') keys.push('Ctrl', mac ? '⌘' : platform === 'windows' ? 'Win' : 'Super');
+  else if (chord.modifier === 'ctrl-meta') keys.push(mac ? '⌃' : 'Ctrl', mac ? '⌘' : platform === 'windows' ? 'Win' : 'Super');
   if (chord.alt) keys.push(mac ? '⌥' : 'Alt');
   // `?` already implies Shift; spelling it out would read as Shift+Shift+/.
   const impliedShift = chord.shift && Array.from(chord.key).length === 1 && chord.key.toLowerCase() === chord.key.toUpperCase() && !/[0-9]/.test(chord.key);

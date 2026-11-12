@@ -25,6 +25,8 @@ import type {
   QuestionSubmissionMethod,
 } from '#/tui/interactions/types';
 
+import { ArmingWindow, type ArmingOptions } from './arming-window';
+
 const NUMBER_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 const MAX_BODY_LINES = 12;
 const DEFAULT_OTHER_LABEL = 'Other';
@@ -70,6 +72,16 @@ function appendWrapped(
   }
 }
 
+function isNavigationKey(data: string): boolean {
+  return (
+    matchesKey(data, Key.up) ||
+    matchesKey(data, Key.down) ||
+    matchesKey(data, Key.left) ||
+    matchesKey(data, Key.right) ||
+    matchesKey(data, Key.tab)
+  );
+}
+
 /** Greedy word-wrap for hint segments: packs whole ` · `-joined segments per
  * line so narrow terminals wrap the hint instead of truncating away keys. */
 function layoutHintLines(parts: string[], width: number): string[] {
@@ -92,15 +104,20 @@ export class QuestionDialogComponent extends Container implements Focusable {
   focused = false;
 
   private readonly request: PendingQuestion;
-  private readonly onAnswer: (response: QuestionPanelResponse) => void;
+  private readonly onAnswer: (response: QuestionPanelResponse) => void | Promise<unknown>;
   private readonly maxVisibleOptions: number;
   private readonly otherInput = new Input();
+  private readonly arming: ArmingWindow;
 
   private currentTab = 0;
   private submitActionIdx = 0;
   private editingOther = false;
   private reviewMessage: string | undefined;
   private lastAnswerMethod: QuestionSubmissionMethod | undefined;
+  /** Set by a first Esc while answers exist; a second Esc then discards them. */
+  private confirmingDiscard = false;
+  /** True while an answer promise returned by the host is pending. */
+  private responding = false;
 
   /** Per-question cursor position. */
   private readonly cursors: number[];
@@ -117,17 +134,23 @@ export class QuestionDialogComponent extends Container implements Focusable {
 
   private readonly onToggleToolOutput: (() => void) | undefined;
 
+  /**
+   * `onAnswer` may return a promise; the dialog then ignores every key until
+   * it settles, so a second press cannot send a second answer.
+   */
   constructor(
     request: PendingQuestion,
-    onAnswer: (response: QuestionPanelResponse) => void,
+    onAnswer: (response: QuestionPanelResponse) => void | Promise<unknown>,
     maxVisibleOptions = 6,
     onToggleToolOutput?: () => void,
+    arming: ArmingOptions = {},
   ) {
     super();
     this.request = request;
     this.onAnswer = onAnswer;
     this.maxVisibleOptions = maxVisibleOptions;
     this.onToggleToolOutput = onToggleToolOutput;
+    this.arming = new ArmingWindow(arming);
     this.otherInput.onSubmit = (value) => {
       this.commitOtherInput(value, 'enter');
     };
@@ -144,13 +167,28 @@ export class QuestionDialogComponent extends Container implements Focusable {
   // ── Input ─────────────────────────────────────────────────────────
 
   handleInput(data: string): void {
+    if (this.responding) return;
+
+    // Esc acts on the current level only: it leaves the Other input first,
+    // and asks for a second press before throwing away answers already given.
     if (matchesKey(data, Key.escape)) {
-      this.onAnswer({ answers: [] });
+      if (this.isEditingOther()) {
+        const questionIdx = this.currentQuestionIndex();
+        if (questionIdx !== undefined) this.syncOtherDraft(questionIdx);
+        this.editingOther = false;
+        return;
+      }
+      if (!this.confirmingDiscard && this.hasWorkToDiscard()) {
+        this.confirmingDiscard = true;
+        return;
+      }
+      this.respond({ answers: [] });
       return;
     }
+    this.confirmingDiscard = false;
 
     if (matchesKey(data, Key.ctrl('c')) || matchesKey(data, Key.ctrl('d'))) {
-      this.onAnswer({ answers: [] });
+      this.respond({ answers: [] });
       return;
     }
 
@@ -158,6 +196,10 @@ export class QuestionDialogComponent extends Container implements Focusable {
       this.onToggleToolOutput?.();
       return;
     }
+
+    // Until armed, a key may still be one meant for the input box the dialog
+    // just replaced: navigation keys pass (they never choose), the rest drop.
+    if (!this.arming.admitKey() && !isNavigationKey(data)) return;
 
     if (this.isEditingOther()) {
       this.handleOtherInput(data);
@@ -435,7 +477,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
 
   private executeSubmitAction(actionIdx: number, method: QuestionSubmissionMethod): void {
     if (actionIdx === 1) {
-      this.onAnswer({ answers: [] });
+      this.respond({ answers: [] });
       return;
     }
 
@@ -449,7 +491,17 @@ export class QuestionDialogComponent extends Container implements Focusable {
       const answer = this.answers[i];
       if (answer !== undefined && answer.length > 0) out[i] = answer;
     }
-    this.onAnswer({ answers: out, method: this.lastAnswerMethod ?? method });
+    this.respond({ answers: out, method: this.lastAnswerMethod ?? method });
+  }
+
+  private respond(response: QuestionPanelResponse): void {
+    const pending = this.onAnswer(response);
+    if (!(pending instanceof Promise)) return;
+    this.responding = true;
+    const settle = (): void => {
+      this.responding = false;
+    };
+    void pending.then(settle, settle);
   }
 
   // ── Render ────────────────────────────────────────────────────────
@@ -498,6 +550,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
     const visibleEnd = Math.min(options.length, visibleStart + this.maxVisibleOptions);
     const multiSet = this.multiSelections[questionIdx] ?? new Set<number>();
     const singleSelection = this.singleSelections[questionIdx];
+    const armed = this.arming.isArmed();
 
     for (let i = visibleStart; i < visibleEnd; i++) {
       const option = options[i];
@@ -533,6 +586,8 @@ export class QuestionDialogComponent extends Container implements Focusable {
         prefix = `    [${String(num)}] `;
         tone = dim;
       }
+      // Unarmed options render dim: visible, but not yet taking a choice.
+      if (!armed) tone = dim;
       const continuation = ' '.repeat(visibleWidth(prefix));
       appendWrapped(lines, prefix, continuation, label, renderWidth, tone);
 
@@ -613,7 +668,10 @@ export class QuestionDialogComponent extends Container implements Focusable {
       const label = SUBMIT_ACTIONS[i];
       if (label === undefined) continue;
       const num = i + 1;
-      if (i === this.submitActionIdx) {
+      if (!this.arming.isArmed()) {
+        const pointer = i === this.submitActionIdx ? SELECT_POINTER : ' ';
+        lines.push(dim(`  ${pointer} [${String(num)}] ${label}`));
+      } else if (i === this.submitActionIdx) {
         lines.push(accent(`  ${SELECT_POINTER} [${String(num)}] ${label}`));
       } else {
         lines.push(dim(`    [${String(num)}] ${label}`));
@@ -660,29 +718,33 @@ export class QuestionDialogComponent extends Container implements Focusable {
         'type answer',
         'Enter save',
         ...(this.totalTabs() > 1 ? ['Tab switch'] : []),
-        'Esc cancel',
+        'Esc back',
       ];
     }
 
     const optionCount = Math.min(this.displayOptions(questionIdx).length, NUMBER_KEYS.length);
     const numberHint = optionCount <= 1 ? '1' : `1-${String(optionCount)}`;
     const question = this.request.data.questions[questionIdx];
-    if (question === undefined) return ['Esc cancel'];
+    if (question === undefined) return [this.escHint()];
 
     const parts: string[] = [
       '↑↓ navigate',
       question.multi_select ? `${numberHint}/Space toggle` : `${numberHint}/Enter choose`,
     ];
     if (this.totalTabs() > 1) parts.push('←→/Tab switch');
-    parts.push('Esc cancel');
+    parts.push(this.escHint());
     return parts;
   }
 
   private submitHintParts(): string[] {
     const parts: string[] = ['↑↓ navigate', '1-2/Enter confirm'];
     if (this.totalTabs() > 1) parts.push('←→/Tab switch');
-    parts.push('Esc cancel');
+    parts.push(this.escHint());
     return parts;
+  }
+
+  private escHint(): string {
+    return this.confirmingDiscard ? 'Esc again to discard answers' : 'Esc cancel';
   }
 
   private computeVisibleStart(cursor: number, total: number): number {
@@ -799,6 +861,14 @@ export class QuestionDialogComponent extends Container implements Focusable {
   private isAnswered(questionIdx: number): boolean {
     const answer = this.answers[questionIdx];
     return answer !== undefined && answer.length > 0;
+  }
+
+  /** Any answer, or any Other text typed but not yet saved, that Esc would lose. */
+  private hasWorkToDiscard(): boolean {
+    for (let i = 0; i < this.request.data.questions.length; i++) {
+      if (this.isAnswered(i) || (this.otherDrafts[i] ?? '').trim().length > 0) return true;
+    }
+    return false;
   }
 
   private hasUnansweredQuestions(): boolean {

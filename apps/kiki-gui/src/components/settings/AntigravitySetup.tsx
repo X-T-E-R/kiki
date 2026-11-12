@@ -15,6 +15,7 @@ import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { EXECUTORS_QUERY_KEY } from './profileEditor/engines';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 
 export const ANTIGRAVITY_ID = 'antigravity-acp';
 const BINARIES_KEY = ['executors', ANTIGRAVITY_ID, 'binaries'] as const;
@@ -380,7 +381,7 @@ function AntigravitySignIn({ ready, loginStatus, onLoginStatus: setLoginStatus, 
           placeholder={`${pending.redirect_uri}?state=…&code=…`} disabled={working !== null || expired}
           aria-invalid={error !== null} aria-describedby="antigravity-redirect-status"
           onChange={(event) => { setRedirect(event.target.value); setError(null); }}
-          onKeyDown={(event) => { if (event.key === 'Enter' && pasteValid && !expired) void complete(); }}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event) && pasteValid && !expired) void complete(); }}
           className={`${INPUT} h-8 min-w-0 flex-1 basis-[20rem] py-1 font-mono text-[11.5px] ${error !== null ? 'border-danger' : ''}`} />
         <button type="button" data-antigravity-complete className={PRIMARY_BUTTON}
           disabled={working !== null || !pasteValid || expired} aria-busy={working === 'complete'} onClick={() => void complete()}>

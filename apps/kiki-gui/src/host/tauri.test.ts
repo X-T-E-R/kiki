@@ -15,16 +15,21 @@ const {
   openUrl: openExternalUrl,
 } = tauriHost;
 
-const { getCurrentWebview, getCurrentWindow, invoke, listen, open, readFile, stat } = vi.hoisted(() => ({
+const { getCurrentWebview, getCurrentWindow, invoke, listen, open, readFile, readSettings, stat } = vi.hoisted(() => ({
   getCurrentWebview: vi.fn(),
   getCurrentWindow: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
   open: vi.fn(),
   readFile: vi.fn(),
+  readSettings: vi.fn(),
   stat: vi.fn(),
 }));
 
+vi.mock('@kiki/session-core/settings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@kiki/session-core/settings')>(),
+  readSettings,
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview }));
@@ -45,6 +50,7 @@ describe('native desktop bridge', () => {
     listen.mockReset();
     open.mockReset();
     readFile.mockReset();
+    readSettings.mockReset();
     stat.mockReset();
     vi.unstubAllGlobals();
   });
@@ -265,6 +271,23 @@ describe('native desktop bridge', () => {
     invoke.mockResolvedValueOnce(true);
     await expect(supportsDesktopUpdates()).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith('supports_desktop_updates');
+  });
+
+  it('adopts the camelCase work-mode descriptor that native serializes', async () => {
+    invoke.mockResolvedValueOnce({ presetId: 'work', windowId: 'window-1' })
+      .mockResolvedValueOnce({ preset_id: 'work', window_id: 'window-1' });
+    await expect(tauriHost.windowMode()).resolves.toEqual({ presetId: 'work', windowId: 'window-1' });
+    expect(invoke).toHaveBeenCalledWith('desktop_window_mode');
+    await expect(tauriHost.windowMode()).resolves.toBeNull();
+  });
+
+  it('returns the native theme to the OS under the system preference so prefers-color-scheme keeps following it', async () => {
+    const setTheme = vi.fn().mockResolvedValue(undefined);
+    getCurrentWindow.mockReturnValue({ setTheme });
+    readSettings.mockReturnValueOnce({ theme: 'system' }).mockReturnValueOnce({ theme: 'dark' });
+    await tauriHost.setTheme('dark');
+    await tauriHost.setTheme('dark');
+    expect(setTheme.mock.calls).toEqual([[null], ['dark']]);
   });
 
   it('checks and installs a desktop update through native commands', async () => {

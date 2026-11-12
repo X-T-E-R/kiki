@@ -241,3 +241,42 @@ describe('MiniContextMenu focus', () => {
     expect(document.activeElement).not.toBe(gone);
   });
 });
+
+describe('MiniContextMenu on a coarse pointer', () => {
+  const settle = () => act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
+
+  it('renders the entries as an action sheet that Escape, a scrim tap and the phone back close', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(pointer: coarse)', media: query,
+      addEventListener: () => {}, removeEventListener: () => {},
+    }));
+    window.history.pushState({ usr: { kikiNav: { visitId: 'mini-menu-sheet' } }, key: 'mini-menu-sheet' }, '');
+    try {
+      const onClose = vi.fn();
+      await render(<Harness onClose={onClose} />);
+      await openFromTrigger();
+      expect(menu()?.querySelector('[role="menu"]')).not.toBeNull();
+      expect(anyOverlayOpen()).toBe(true);
+      expect(document.activeElement).toBe(items()[0]);
+      await keydown(window, 'Escape');
+      expect(menu()).toBeNull();
+      expect(document.activeElement).toBe(trigger());
+      await settle();
+
+      await openFromTrigger();
+      await click(document.body.querySelector('.kiki-action-sheet-scrim')!);
+      expect(menu()).toBeNull();
+      await settle();
+
+      await openFromTrigger();
+      await act(async () => {
+        const popped = new Promise<void>((resolve) => { window.addEventListener('popstate', () => { resolve(); }, { once: true }); });
+        window.history.back();
+        await popped;
+      });
+      expect(menu()).toBeNull();
+      expect(onClose).toHaveBeenCalledTimes(3);
+      expect(anyOverlayOpen()).toBe(false);
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

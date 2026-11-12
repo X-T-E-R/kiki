@@ -158,8 +158,11 @@ export function ConnectScreen({
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto bg-paper px-4 py-4">
-      <div className="anim-enter w-full max-w-[420px]">
+    // Centered with auto margins, not `items-center`: when the card outgrows
+    // the viewport (phone keyboard open over the manual form) the margins
+    // collapse and the top stays scrollable instead of overflowing above it.
+    <div className="flex h-full overflow-y-auto bg-paper px-4 py-4">
+      <div className="anim-enter m-auto w-full max-w-[420px]">
         <div className="rounded-2xl border border-hairline bg-panel shadow-[0_1px_2px_rgba(28,25,23,0.04),0_12px_32px_-16px_rgba(28,25,23,0.12)]">
           {children}
         </div>
@@ -280,6 +283,38 @@ function DesktopFailureCard({
   );
 }
 
+/**
+ * Whether this page was served from the device it is open on. A browser's
+ * "find Kiki" asks whoever served the page, so it only finds Kiki on *this*
+ * device when the page came from loopback; opened from another address (a
+ * phone on the LAN, a tunnel) it would be looking on a different machine.
+ */
+function servedFromThisDevice(hostname: string | undefined = globalThis.location?.hostname): boolean {
+  if (hostname === undefined) return true;
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '[::1]'
+    || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/**
+ * The error in plain words, with the raw text kept under "Details". A client
+ * transport failure (`code -1`) or timeout (`code -2`) means the address did
+ * not answer; anything else only says the connection did not happen.
+ */
+function ConnectError({ error }: { error: string }) {
+  const { t } = useI18n();
+  const unreachable = /\(code -[12]\)$/.test(error);
+  return (
+    <div role="alert" className="mb-4 rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2 text-[13px] text-danger">
+      <p>{t(unreachable ? 'connect.errorUnreachable' : 'connect.errorFailed')}</p>
+      <details className="mt-1 text-[12px] text-ink-soft" data-connect-error-details>
+        <summary className="cursor-pointer select-none">{t('connect.errorDetails')}</summary>
+        <p className="mt-1 break-words font-mono">{error}</p>
+      </details>
+    </div>
+  );
+}
+
 function BrowserConnectForm({
   initial,
   connecting,
@@ -300,13 +335,17 @@ function BrowserConnectForm({
   const host = useHost();
   const { t } = useI18n();
   const shellConnect = appShellConnectUrl();
+  // Desktop and editor hosts discover on their own machine; a browser only
+  // when the page itself came from this device.
+  const offerDetect = host.kind !== 'browser' || servedFromThisDevice();
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
   const [showToken, setShowToken] = useState(false);
   // Manual URL + token are for connecting elsewhere; a saved manual
-  // connection (or a failed attempt) keeps the fields open.
+  // connection (or a failed attempt) keeps the fields open, and so does a
+  // page with nothing to find here, where the form is the only way in.
   const [manualOpen, setManualOpen] = useState(
-    initial.url !== '' || initial.token !== '' || (error !== null && shellConnect === null),
+    initial.url !== '' || initial.token !== '' || (shellConnect === null && (error !== null || !offerDetect)),
   );
   useEffect(() => {
     if (error !== null && shellConnect === null) setManualOpen(true);
@@ -351,7 +390,7 @@ function BrowserConnectForm({
           : onRetryPaired !== undefined && error !== null
             ? 'connect.shellUnreachable'
             : 'connect.shellTagline'
-      : 'connect.tagline';
+      : offerDetect ? 'connect.tagline' : 'connect.taglineRemote';
 
   return (
     <div className="px-7 pt-6 pb-7">
@@ -382,16 +421,17 @@ function BrowserConnectForm({
               {t('connect.switchComputer')}
             </a>
           </div>
-        ) : (
+        ) : offerDetect ? (
           <button
             type="button"
+            data-connect-detect
             onClick={() => { void detect(); }}
             disabled={detecting || connecting}
             className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
           >
             {detecting ? t('connect.detecting') : t('connect.detect')}
           </button>
-        )}
+        ) : null}
         {detectNote !== null ? (
           <p role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">{detectNote}</p>
         ) : null}
@@ -447,11 +487,7 @@ function BrowserConnectForm({
         </div>
         <p id="connect-token-help" className="sr-only">{t('connect.accessTokenHelp')}</p>
 
-        {error !== null ? (
-          <div role="alert" className="mb-4 rounded-md border-l-2 border-danger bg-danger/5 px-3 py-2 text-[13px] text-danger">
-            {error}
-          </div>
-        ) : null}
+        {error !== null ? <ConnectError error={error} /> : null}
 
         <button
           type="submit"

@@ -216,7 +216,7 @@ async function deleteWebPeerToken(serverId, origins = []) {
 const COPY = {
   en: {
     connectTitle: 'Connect a computer',
-    lede: 'Open the QR code in Settings → Remote Connection on your computer.',
+    lede: 'On your computer, open Settings → Access from elsewhere → Other Kiki → Pairing code.',
     tabConnect: 'Connect',
     tabComputers: 'Computers',
     tabNetwork: 'Network',
@@ -230,7 +230,7 @@ const COPY = {
     label: 'Server address or entry link',
     codeLabel: 'Pairing code',
     codeOptional: '8 chars · for new pairing',
-    hint: 'Find the address and pairing code in Settings → Remote Connection on your computer.',
+    hint: 'Find the address and pairing code on your computer under Settings → Access from elsewhere → Other Kiki → Pairing code.',
     open: 'Open Kiki',
     reconnect: 'Reconnect',
     switchComputer: 'Switch computer',
@@ -287,7 +287,7 @@ const COPY = {
   },
   zh: {
     connectTitle: '连接电脑',
-    lede: '在电脑的 设置 → 远程连接 打开二维码。',
+    lede: '在电脑上打开 设置 → 外部接入 → 其他 Kiki → 配对码。',
     tabConnect: '连接',
     tabComputers: '电脑',
     tabNetwork: '网络',
@@ -301,7 +301,7 @@ const COPY = {
     label: '服务器地址或访问链接',
     codeLabel: '配对码',
     codeOptional: '8 位 · 新设备配对',
-    hint: '在电脑端 设置 → 远程连接 查看地址与配对码。',
+    hint: '在电脑上打开 设置 → 外部接入 → 其他 Kiki → 配对码，查看地址与配对码。',
     open: '打开 Kiki',
     reconnect: '重新连接',
     switchComputer: '切换电脑',

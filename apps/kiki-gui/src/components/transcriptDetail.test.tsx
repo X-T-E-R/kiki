@@ -1044,6 +1044,39 @@ it('renders a failed 9-of-17 structural read, retries to every step, and cancels
 });
 
 
+const CHILD_TASK_SOURCE = { kind: 'task' as const, id: 'task-1' };
+const OUTPUT_TAIL_ROOTS = ['outputTail'];
+
+it('refreshes a row that reads another agent\'s content when only that agent publishes', async () => {
+  // A subagent's task body shown in the main timeline reads the child's refs
+  // through the controller. Main publishes nothing that changes its own refs or
+  // load states here, so only the controller's content revision can tell the
+  // row that the child's field was read.
+  const ref = boundedRef(TASK_SOURCE, ['outputTail'], 'text', 3, 9);
+  const read = vi.fn(async ({ ref: requested }: { ref: ContentRef }) => ({ ref: requested, value: 'defghi', contentRefs: [] }));
+  const view = { snapshot: async () => ({ session: { id: 'test', title: 'Reading' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  controller.retainAgentView('test-child', 'child', 'delta');
+  controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'child', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [], tasks: [{ taskId: 'task-1', kind: 'shell', state: 'completed', detached: false, outputTail: 'abc', contentRefs: [ref] }], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+  function MainTimeline() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    return (
+      <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="main">
+        <ContentContinuation source={CHILD_TASK_SOURCE} roots={OUTPUT_TAIL_ROOTS} callerAgentId="child" autoRead={false} label="Output" />
+      </TranscriptDetailProvider>
+    );
+  }
+  try {
+    const container = await render(<MainTimeline />);
+    expect(continuation(container).row()?.getAttribute('data-content-continuation')).toBe('idle');
+    const mainRefs = controller.getState().contentRefs;
+    await act(async () => { expect(await controller.loadContentSegment('child', ref)).toBe(true); });
+    expect(controller.getState().contentRefs).toBe(mainRefs);
+    expect(continuation(container).row()).toBeNull();
+  } finally { controller.close(); }
+});
+
 it('counts backward structural progress from the suffix while preserving forward progress and empty windows', () => {
   const base: ContentRef = { source: { kind: 'turn', id: 'example' }, revision: 'fixed', path: ['steps'], kind: 'array', offset: 9, total: 17 };
   const translate: Parameters<typeof contentRefProgress>[1] = (_key, params) => `${params?.['shown']}/${params?.['total']}`;

@@ -317,7 +317,7 @@ describe('thread mailbox agent collaboration adapter', () => {
     runtimeMailboxes.push({ runtime, store: thread });
     const originalClaimOwner = CanonicalMailboxDatabase.prototype.claimOwner;
     let delayInitialization = true;
-    const claimOwner = vi.spyOn(CanonicalMailboxDatabase.prototype, 'claimOwner').mockImplementation(async function (owner) {
+    const claimOwner = vi.spyOn(CanonicalMailboxDatabase.prototype, 'claimOwner').mockImplementation(async function (this: CanonicalMailboxDatabase<unknown>, owner) {
       if (delayInitialization) {
         delayInitialization = false;
         await new Promise<void>((resolve) => setTimeout(resolve, initializationDelayMs));

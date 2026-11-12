@@ -1571,7 +1571,7 @@ describe('AgentRun and dispatch parity golden', () => {
       profile: 'coder', prompt: 'work', description: 'Default notify', background: true,
     });
     expect(defaultLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBeUndefined();
-    expect(outputText(defaultResult.output)).toContain('parent_notify: enabled');
+    expect(outputText(defaultResult.output)).not.toContain('parent_notify:');
     await complete(defaultLane, 0);
 
     const disabledLane = createLane(disposables, 'internal');
@@ -1598,7 +1598,7 @@ describe('AgentRun and dispatch parity golden', () => {
       allow_parent_notify: true,
     });
     expect(overrideLane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.allowParentNotify).toBe(true);
-    expect(outputText(overrideResult.output)).toContain('parent_notify: enabled');
+    expect(outputText(overrideResult.output)).not.toContain('parent_notify:');
     await complete(overrideLane, 0);
 
     const globallyDisabledLane = createLane(disposables, 'internal', { notifyParent: false });
@@ -1615,7 +1615,7 @@ describe('AgentRun and dispatch parity golden', () => {
     const spawned = await lane.runInternal({
       profile: 'coder', name: 'notify_child', prompt: 'work', description: 'Spawn notify', background: true,
     });
-    expect(outputText(spawned.output)).toContain('parent_notify: enabled');
+    expect(outputText(spawned.output)).not.toContain('parent_notify:');
     await complete(lane, 0);
 
     const disabled = await lane.runInternal({
@@ -1635,7 +1635,7 @@ describe('AgentRun and dispatch parity golden', () => {
       resume: 'notify_child', prompt: 'continue', description: 'Enable notify', background: true,
       allow_parent_notify: true,
     });
-    expect(outputText(enabled.output)).toContain('parent_notify: enabled');
+    expect(outputText(enabled.output)).not.toContain('parent_notify:');
     expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
     await complete(lane, 3);
   });
@@ -1840,6 +1840,23 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(readText).toHaveBeenCalledTimes(1);
   });
 
+  it('AgentRun resume keeps the child roots and launch and says the passed ones were not applied', async () => {
+    const lane = createLane(disposables, 'internal', { workDir: '/worktrees/child', additionalDirs: ['/materials/review'] });
+    const launched = await lane.runInternal({ profile: 'coder', name: 'kept_roots', prompt: 'Start work', description: 'Start', background: true });
+    expect(launched.isError, JSON.stringify(launched.output)).not.toBe(true);
+    await complete(lane, 0);
+    const resumeArgs = { resume: 'kept_roots', workDir: '/elsewhere', additionalDirs: ['/other'], executor_launch: { args: ['--example'] },
+      prompt: 'Continue work', description: 'Continue', background: true };
+    const execution = await lane.ix.get(ISubagentTool).resolveExecution(resumeArgs);
+    expect(JSON.stringify((execution as { accesses?: unknown }).accesses ?? [])).not.toContain('/elsewhere');
+    const resumed = await lane.runInternal(resumeArgs);
+    expect(resumed.isError, JSON.stringify(resumed.output)).not.toBe(true);
+    expect(resumed.note).toContain('workDir, additionalDirs, executor_launch were not applied');
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(lane.subagentRun.mock.calls.map((call) => call[0])).toEqual(['agent_child_1', 'agent_child_1']);
+    expect(lane.ix.get(ISessionWorkspaceContext)).toMatchObject({ workDir: '/worktrees/child', additionalDirs: ['/materials/review'] });
+  });
+
   it('dispatches a Windows profile_file when realpath uses different drive casing and separators', async () => {
     const lane = createLane(disposables, 'internal', { pathClass: 'win32', workDir: 'E:\\Creator' });
     const runtime = lane.ix.get(IAgentRuntimeService).inspect();
@@ -1860,9 +1877,25 @@ describe('AgentRun and dispatch parity golden', () => {
     Object.defineProperty(runtime, 'fs', { value: {
       realpath: async () => '/outside/custom.md', readText,
     } });
-    const result = await lane.runInternal({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain('outside runtime workspace');
+    await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: 'custom.md', prompt: 'use file role', description: 'File role', background: true }))
+      .rejects.toMatchObject({ code: 'fs.path_escapes' });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('declares the resolved profile target before reading and rejects a changed target', async () => {
+    const lane = createLane(disposables, 'internal');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const admittedPath = '/workspace/.git/hooks/profile.md';
+    const readText = vi.fn();
+    const realpath = vi.fn(async () => admittedPath);
+    Object.defineProperty(runtime, 'fs', { value: { realpath, readText } });
+    const execution = await lane.ix.get(ISubagentTool).resolveExecution({ profile_file: 'profile.md', prompt: 'review', description: 'File role' });
+    expect(execution).toMatchObject({ accesses: [expect.objectContaining({ kind: 'file', operation: 'read', path: admittedPath })] });
+    expect(readText).not.toHaveBeenCalled();
+    if (execution.isError === true) throw new Error('Expected a prepared profile execution');
+    realpath.mockResolvedValue('/workspace/other.md');
+    await expect(execution.execute({ toolCallId: 'profile-file', turnId: 1, signal: new AbortController().signal }))
+      .resolves.toMatchObject({ isError: true, output: expect.stringContaining('Profile file target changed after path admission') });
     expect(readText).not.toHaveBeenCalled();
   });
 
@@ -1909,8 +1942,8 @@ describe('AgentRun and dispatch parity golden', () => {
       profile_file: 'reviewer.md', name: 'file_review', prompt: 'review', description: 'Review', background: true,
     });
     expect(allowed.isError).not.toBe(true);
-    expect(allowed.output).toContain('dispatch_policy: fixed');
-    expect(allowed.output).toContain('recommendation_status: unconfigured');
+    expect(allowed.output).not.toContain('dispatch_policy:');
+    expect(allowed.output).not.toContain('recommendation_status:');
     expect(allowed.output).toContain('selection_kind: profile_file');
     expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding).toMatchObject({ model: 'parity-model', dispatchDecision: { version: 2, selectionKind: 'profile_file' } });
     expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding!.lease).toBeUndefined();
@@ -2012,7 +2045,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(first.isError).not.toBe(true);
     const fields = fieldMap(outputText(first.output));
     expect(fields['actual_profile']).toBe('solo');
-    expect(fields['selection_kind']).toBe('profile');
+    expect(fields['selection_kind']).toBeUndefined();
     expect(fields['main_profile_notice']).toContain('ThreadCreate');
     expect(lane.lifecycleCreate.mock.calls[0]![0]!.delegator).toEqual({ kind: 'agent', agentId: 'main' });
     expect(lane.metadataAgents['agent_child_1']).toMatchObject({ type: 'sub', parentAgentId: 'main' });
@@ -2859,11 +2892,6 @@ describe('AgentRun and dispatch parity golden', () => {
       'agent_id: agent_child_1',
       'actual_profile: coder',
       'actual_model: parity-model',
-      'dispatch_policy: fixed',
-      'selection_kind: profile',
-      'selection_origin: explicit',
-      'recommendation_status: preferred',
-      'parent_notify: enabled',
       'status: completed',
       '',
       '[summary]',

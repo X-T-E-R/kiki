@@ -21,7 +21,7 @@ const record = (overrides: Partial<RemoteConnection> = {}): RemoteConnection => 
 const reply = (data: unknown) => Response.json({ code: 0, msg: 'success', data });
 const clients: KikiClient[] = [];
 
-function setup(records: RemoteConnection[] = [record()], homeId = targetHome) {
+function setup(records: RemoteConnection[] = [record()], homeId = targetHome, broker: () => Response = () => reply(identity(homeId))) {
   const selection: ConnectionSelection = { config: { url: 'http://source.example.test', token: 'source-token' }, persist: false, source: 'desktop', scopeId: 'local' };
   const commit = vi.fn(); const reload = vi.fn(); const nativePrepare = vi.fn();
   const created: KikiClient[] = [];
@@ -30,7 +30,7 @@ function setup(records: RemoteConnection[] = [record()], homeId = targetHome) {
     if (url === 'http://source.example.test/api/remote-connections') return reply(records);
     expect(url).toBe(`http://source.example.test/api/remote-connections/${id}/call`);
     expect(JSON.parse(init?.body as string)).toMatchObject({ operation: 'meta' });
-    return reply(identity(homeId));
+    return broker();
   });
   vi.stubGlobal('fetch', fetchMock);
   const client = new KikiClient({ baseUrl: selection.config.url, token: selection.config.token }); clients.push(client);
@@ -88,14 +88,25 @@ describe('remote scope identity gate', () => {
 
   it.each([
     { name: 'absent', records: [], reason: 'scope-invalid' },
-    { name: 'disabled flag', records: [record({ enabled: false })], reason: 'identity-mismatch' },
-    { name: 'disabled state', records: [record({ state: 'disabled' })], reason: 'identity-mismatch' },
-    { name: 'protocol mismatch', records: [record({ target: { homeId: targetHome, hostId: 'example-host', protocol: 2 as unknown as typeof CONNECTION_PROTOCOL } })], reason: 'identity-mismatch' },
+    { name: 'disabled flag', records: [record({ enabled: false })], reason: 'remote-paused' },
+    { name: 'disabled state', records: [record({ state: 'disabled' })], reason: 'remote-paused' },
+    { name: 'protocol mismatch', records: [record({ target: { homeId: targetHome, hostId: 'example-host', protocol: 2 as unknown as typeof CONNECTION_PROTOCOL } })], reason: 'remote-protocol' },
+    { name: 'answered by another space', records: [record({ state: 'identity_changed' })], reason: 'remote-identity-changed' },
   ])('rejects $name before creating or committing a remote client', async ({ records, reason }) => {
     const test = setup(records);
     await expect(test.adapter.prepare(scope, new AbortController().signal)).rejects.toMatchObject({ reason });
     expect(test.created).toHaveLength(0); expect(test.commit).not.toHaveBeenCalled(); expect(test.reload).not.toHaveBeenCalled();
     expect(test.fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { name: 'an unlisted broker reason', broker: () => Response.json({ code: 40101, msg: 'connection_not_shared', data: null, request_id: 'example' }, { status: 403 }) },
+    { name: 'a broker that could not reach the other side', broker: () => Response.json({ code: 50001, msg: 'fetch failed', data: null, request_id: 'example' }) },
+    { name: 'a network failure', broker: (): Response => { throw new TypeError('Failed to fetch'); } },
+  ])('falls back to unreachable for $name, never to a token request', async ({ broker }) => {
+    const test = setup([record()], targetHome, broker);
+    await expect(test.adapter.prepare(scope, new AbortController().signal)).rejects.toMatchObject({ reason: 'remote-unreachable' });
+    expect(test.commit).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -113,7 +113,8 @@ describe('ExperimentalRows', () => {
     const names = locale === 'en'
       ? ['Model Recipes', 'Workspace plugin selection', 'App plugin services', 'Space work modes', 'External MCP clients']
       : ['模型 Recipe', '工作区插件选择', '应用级插件服务', '空间工作模式', '外部 MCP 客户端'];
-    const sections = ['recipes', 'extensions', 'extensions', 'spaces', 'connection-services'];
+    // Recipes is a tab of Models now, so its flag row is one of Models' rows.
+    const sections = ['ai', 'extensions', 'extensions', 'spaces', 'connection-services'];
     for (const [index, id] of flags.entries()) {
       await render(sections[index]!);
       const row = container.querySelector(`[data-experimental-row="${id}"]`)!;

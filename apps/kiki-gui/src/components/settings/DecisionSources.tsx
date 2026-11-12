@@ -40,6 +40,7 @@ import { SearchableSelect, type SearchableSelectOption } from '../SearchableSele
 import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 
 const PICKER =
   'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
@@ -296,6 +297,7 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
               spellCheck={false} autoComplete="off" disabled={busy}
               onChange={(event) => { setModel(event.target.value); }}
               onKeyDown={(event) => {
+                if (isImeKeyEvent(event)) return;
                 if (event.key === 'Enter' && modelDirty) { event.preventDefault(); void commit(decisionSourceWithModel(connection, model)); }
               }} />
             <SettingsDraftFooter id={`decision-judge-${consumer}`} dirty={modelDirty} saving={busy}

@@ -1,7 +1,11 @@
 /**
  * UsagePage (/usage) — the cross-session usage dashboard on `GET /api/usage`
- * (V2 aggregation). Reading order is one path, not a set of cards:
+ * (V2 aggregation). It opens on History, because "how much have I used" is
+ * the page's question; Live and Quotas are the other views, and prices and
+ * export sit behind the header's `⋯`. Reading order is one path, not a set
+ * of cards:
  *
+ *   - while requests run or wait, one line says so and leads to Live;
  *   - pick a range and conditions (time first, then workspace and filters);
  *   - read the total: estimated cost is the headline, tokens and cache hit
  *     rate are supporting numbers;
@@ -35,6 +39,7 @@ import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { ApiError } from '../lib/client';
+import { usePhoneMode } from '../lib/layoutHooks';
 import { RequestGovernanceView } from './RequestGovernanceView';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
 import { UsageExportPanel } from './usage/export/UsageExportPanel';
@@ -80,7 +85,7 @@ import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
 import { SettingsSelect } from './settings/SettingsPrimitives';
 import { SECONDARY_BUTTON } from './ui';
-import { PAGE_WIDTH, PageHeader } from './PageChrome';
+import { PAGE_WIDTH, PageHeader, PageMoreMenu } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
 import { UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
@@ -299,6 +304,56 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
   );
 }
 
+/** How old a shared governance read may be and still be told as "now". */
+const LIVE_BAND_FRESH_MS = 5_000;
+
+/**
+ * "Now: 3 model requests running, 1 queued" above the history, only while
+ * something runs or waits, with the longest wait named. It starts no read of
+ * its own: it watches the governance snapshot that the sidebar's Usage badge
+ * (or the Live tab) already polls, and says nothing when that read is absent,
+ * failing or older than a few seconds. So on a screen where nothing polls —
+ * a phone with the drawer shut — the band stays away rather than report a
+ * stale "now".
+ */
+function LiveBand({ onOpen }: { readonly onOpen: () => void }) {
+  const { client, scopeId } = useConnection();
+  const { t, time } = useI18n();
+  const live = useQuery({
+    queryKey: ['request-governance', scopeId],
+    queryFn: () => client.getRequestGovernance(),
+    enabled: false,
+  });
+  const snapshot = live.data;
+  if (snapshot === undefined || live.isError || Date.now() - live.dataUpdatedAt > LIVE_BAND_FRESH_MS) return null;
+  if (snapshot.active === 0 && snapshot.queued === 0) return null;
+  const waiting = snapshot.waiting.reduce<(typeof snapshot.waiting)[number] | undefined>(
+    (longest, row) => (longest === undefined || row.waitedMs > longest.waitedMs ? row : longest),
+    undefined,
+  );
+  return (
+    <p data-usage-live-band role="status" className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12.5px] text-ink-soft">
+      <span className="text-ink">{t('usage.live.band', { active: snapshot.active, queued: snapshot.queued })}</span>
+      {waiting !== undefined ? (
+        <span className="min-w-0 text-ink-faint">
+          {waiting.modelId}
+          {waiting.blockingRules.length > 0 ? ` ${t('usage.governance.blockedBy', { rules: waiting.blockingRules.join(', ') })}` : ''}
+          {` · ${time.formatDuration(waiting.waitedMs)}`}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        data-usage-live-band-open
+        onClick={onOpen}
+        className="inline-flex min-h-8 items-center gap-1 rounded-sm font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+      >
+        {t('usage.governance.realtime')}
+        <Icon name="arrowRight" size={12} />
+      </button>
+    </p>
+  );
+}
+
 /** The strip's own today query is unscoped by definition. */
 const USAGE_FILTER_DEFAULTS_SCOPED: UsageFilters = {
   granularity: 'five_hour',
@@ -351,6 +406,7 @@ function FilterBar({
   onChange: (next: UsageFilters) => void;
 }) {
   const { t } = useI18n();
+  const phone = usePhoneMode();
   // Field-level guard for the custom range: an inverted pair is rejected
   // locally with an inline error instead of being sent (the server answers
   // 40001 and the page would degrade to a load failure).
@@ -370,31 +426,49 @@ function FilterBar({
   }
 
   const selectClass = `h-8 max-w-44 appearance-none truncate rounded-md border border-hairline bg-paper pr-7 pl-3 text-[13px] cursor-pointer pointer-coarse:h-11`;
+  const changeRange = (range: UsageFilters['range']) => {
+    setRangeInvalid(false);
+    if (range === 'custom') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      onChange({
+        ...filters,
+        range,
+        startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
+        endAt: filters.endAt ?? today.getTime() + DAY_MS,
+      });
+    } else {
+      onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+    }
+  };
 
   return (
     <div data-anchor="usage-filter" data-usage-filters className="flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b border-hairline pt-1 pb-3">
-      <AxisGroup
-        label={t('usage.axis.range')}
-        dataAxis="range"
-        options={USAGE_RANGE_PRESETS}
-        value={filters.range}
-        onChange={(range) => {
-          setRangeInvalid(false);
-          if (range === 'custom') {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            onChange({
-              ...filters,
-              range,
-              startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
-              endAt: filters.endAt ?? today.getTime() + DAY_MS,
-            });
-          } else {
-            onChange({ ...filters, range, startAt: undefined, endAt: undefined });
-          }
-        }}
-        labelFor={(option) => t(`usage.range.${option}`)}
-      />
+      {/* Six range presets fold into two rows on a phone; there it is one
+          dropdown on the same line as the workspace. */}
+      {phone ? (
+        <label className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[13px] text-ink">{t('usage.axis.range')}</span>
+          <span className="min-w-0 max-w-44">
+            <SettingsSelect<UsageFilters['range']>
+              ariaLabel={t('usage.axis.range')}
+              value={filters.range}
+              dataAttr="data-usage-range-select"
+              onChange={changeRange}
+              choices={USAGE_RANGE_PRESETS.map((option) => ({ value: option, label: t(`usage.range.${option}`) }))}
+            />
+          </span>
+        </label>
+      ) : (
+        <AxisGroup
+          label={t('usage.axis.range')}
+          dataAxis="range"
+          options={USAGE_RANGE_PRESETS}
+          value={filters.range}
+          onChange={changeRange}
+          labelFor={(option) => t(`usage.range.${option}`)}
+        />
+      )}
       {filters.range === 'custom' ? (
         <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
           <input
@@ -878,7 +952,7 @@ function FiveHourTab({
 export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const location = useLocation();
   const [, setSearchParams] = useSearchParams();
   const panel = usagePanelFromSearch(location.search);
@@ -1223,19 +1297,20 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
-        {/* 模型价格 is a panel over the page, not a view, so it stays a quiet
-            header action; the views themselves are the tab strip below. */}
-        <button
-          type="button"
-          data-usage-pricing-open
-          aria-haspopup="dialog"
-          onClick={() => { setPricingOpen(true); }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[13px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11"
-        >
-          <Icon name="sliders" size={14} />
-          {t('usage.pricing.open')}
-          {unpricedCount > 0 ? <span className="text-[12px] text-amber-ink tabular-nums">{unpricedCount}</span> : null}
-        </button>
+        {/* Model prices is a panel over the page and export a one-off action
+            on the data; neither is a view, so both sit behind the header's
+            `⋯` and the tab strip below holds only the views. */}
+        <PageMoreMenu
+          menuId="usage-more"
+          entries={[
+            {
+              key: 'pricing',
+              label: unpricedCount > 0 ? tp('usage.prices.missing', unpricedCount) : t('usage.pricing.open'),
+              run: () => { setPricingOpen(true); },
+            },
+            { key: 'export', label: t('usage.export.nav'), run: () => { selectPanel('export'); } },
+          ]}
+        />
       </PageHeader>
       {pricingOpen ? (
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
@@ -1250,6 +1325,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : panel !== 'history' ? (
             <RequestGovernanceView view={searchParams.get('panel') === 'limits' ? 'limits' : 'realtime'} />
           ) : <>
+          <LiveBand onOpen={() => { selectPanel('realtime'); }} />
           <FilterBar
             filters={filters}
             workspaces={workspaces}
@@ -1266,7 +1342,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               {t('usage.loading')}
             </div>
           ) : null}
-          {usageQuery.isError ? (
+          {usageQuery.isError && isUnsupportedUsageRead(usageQuery.error) ? (
+            <p data-usage-unsupported role="status" className="py-6 text-[13px] text-ink-soft">{t('usage.unsupported')}</p>
+          ) : usageQuery.isError ? (
             <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
               <p className="font-medium">{t('usage.loadFailedKeep')}</p>
               <button
@@ -1323,8 +1401,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               </div>
 
               {trend.length === 0 ? (firstPage.reliability.complete ? (
-                <p className="py-8 text-center text-[13px] text-ink-faint">
-                  {t('usage.empty')}
+                <p data-usage-empty className="py-8 text-center text-[13px] text-ink-faint">
+                  {/* Only an unscoped all-history read can say there has never
+                      been any usage; any narrower read says "not in this range". */}
+                  {filters.range === 'all' && !usageFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
                 </p>
               ) : null) : (
                 <div className="border-t border-hairline pt-3">
@@ -1482,6 +1562,15 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       </main>
     </div>
   );
+}
+
+/**
+ * A server that predates the usage route answers "not found" (40401), the
+ * same reading `executionControls` gives an older server. That is a fact
+ * about the server, not a failure to retry.
+ */
+function isUnsupportedUsageRead(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 40401;
 }
 
 const METRIC_SEARCH_TO_METRIC: Record<string, UsageMetric> = {

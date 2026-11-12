@@ -10,7 +10,7 @@
  * the fallback for busy sessions that are not currently mounted.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQueries } from '@tanstack/react-query';
 
 import type { Session } from '@kiki/protocol';
@@ -28,11 +28,21 @@ export function activityPollInterval(busyCount: number): number {
   return 15_000;
 }
 
-export function useSessionActivity(sessions: readonly Session[]): {
+/**
+ * `polling` false pauses the per-session prompt and task reads (the drawer
+ * that shows them is closed); the model keeps building from the cached
+ * answers, and the reads resume — at once, being stale — when it is true.
+ */
+export function useSessionActivity(sessions: readonly Session[], polling = true): {
   readonly model: ActivityModel;
   readonly byId: ReadonlyMap<string, ActivityEntry>;
-  /** Live elapsed ms for a running main turn, or undefined. */
-  readonly elapsedFor: (entry: ActivityEntry) => number | undefined;
+  /**
+   * Epoch ms a running main turn's clock counts from, or undefined. The
+   * ticking belongs to whoever shows the number (`useElapsedSince`), so this
+   * hook's owner — the whole session list — does not re-render every second
+   * for as long as any session is working.
+   */
+  readonly anchorFor: (entry: ActivityEntry) => number | undefined;
 } {
   const { client } = useConnection();
   const registry = useOptionalControllerRegistry();
@@ -104,6 +114,7 @@ export function useSessionActivity(sessions: readonly Session[]): {
       queryFn: () => client.listPrompts(sessionId, { observe: true }),
       refetchInterval: pollInterval,
       staleTime: pollInterval - 1_000,
+      enabled: polling,
     })),
   });
   const taskQueries = useQueries({
@@ -112,6 +123,7 @@ export function useSessionActivity(sessions: readonly Session[]): {
       queryFn: () => client.listTasks(sessionId, { status: 'running' }).then((data) => data.items),
       refetchInterval: pollInterval,
       staleTime: pollInterval - 1_000,
+      enabled: polling,
     })),
   });
 
@@ -131,8 +143,14 @@ export function useSessionActivity(sessions: readonly Session[]): {
 
   // First-seen-busy anchors: the timer's fallback when the active prompt (and
   // its created_at) has not been fetched yet.
+  // Kept in step during render rather than in an effect: a row reads its
+  // anchor in the same pass that first shows it running, and nothing ticks
+  // here any more to hand it one a moment later. Idempotent, so a repeated
+  // render changes nothing.
   const anchorsRef = useRef(new Map<string, number>());
-  useEffect(() => {
+  const anchoredRunningRef = useRef<ActivityModel['running'] | null>(null);
+  if (anchoredRunningRef.current !== model.running) {
+    anchoredRunningRef.current = model.running;
     const anchors = anchorsRef.current;
     const runningIds = new Set(model.running.map((entry) => entry.sessionId));
     for (const id of runningIds) {
@@ -141,25 +159,18 @@ export function useSessionActivity(sessions: readonly Session[]): {
     for (const id of anchors.keys()) {
       if (!runningIds.has(id)) anchors.delete(id);
     }
-  }, [model.running]);
+  }
 
-  const hasRunning = model.running.length > 0;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!hasRunning) return;
-    setNow(Date.now());
-    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
-    return () => { clearInterval(timer); };
-  }, [hasRunning]);
-
-  const elapsedFor = (entry: ActivityEntry): number | undefined => {
+  const anchorFor = useCallback((entry: ActivityEntry): number | undefined => {
+    if (!entry.mainTurnActive) return undefined;
     const anchor = entry.turnStartedAt !== undefined
       ? new Date(entry.turnStartedAt).getTime()
       : anchorsRef.current.get(entry.sessionId);
-    return entry.mainTurnActive && anchor !== undefined && !Number.isNaN(anchor)
-      ? Math.max(0, now - anchor)
-      : undefined;
-  };
-  const byId = new Map([...model.running, ...model.waiting].map((entry) => [entry.sessionId, entry]));
-  return { model, byId, elapsedFor };
+    return anchor !== undefined && !Number.isNaN(anchor) ? anchor : undefined;
+  }, []);
+  const byId = useMemo(
+    () => new Map([...model.running, ...model.waiting].map((entry) => [entry.sessionId, entry])),
+    [model.running, model.waiting],
+  );
+  return { model, byId, anchorFor };
 }

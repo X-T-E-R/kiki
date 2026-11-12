@@ -17,22 +17,27 @@
  *     back to labeled raw JSON instead of a misleading pseudo-title.
  */
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { QueryClientContext } from '@tanstack/react-query';
 
-import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@kiki/protocol';
+import type { ApprovalDecision, PermissionMode, QuestionAnswer, QuestionItem } from '@kiki/protocol';
 
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
+import { buildHunks, type DiffHunk } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { PERMISSION_RULES_ROUTE, saveAllowRule } from '../lib/permissionRules';
 import { pushToast } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import { reviewerLabel, reviewerTooltip } from './approvalReviewer';
+import { ContentContinuation } from './ContentContinuation';
+import { DiffCard } from './DiffCard';
 import { DisclosureChevron, Icon } from './icons';
 import { Markdown } from './Markdown';
 import { HistoryLine } from './ActivityHistory';
+import { PathText, splitPath } from './PathText';
 import { SshApprovalCard } from './ssh/SshApprovalCard';
+import { useContentContinuation, useTranscriptController, type ContentBodySource } from './transcriptDetail';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'allow-rule' | 'reject-once';
 
@@ -75,6 +80,9 @@ const PRIMARY_BUTTON =
   'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
   'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
+/** An action inside running text: ink, not accent (accent is "needs you"). */
+const TEXT_ACTION =
+  'inline-flex min-h-6 items-center rounded-sm font-medium text-ink underline underline-offset-2 decoration-ink-faint hover:decoration-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10';
 
 /* ── External permission display (ACP harness, design §9) ──────────────── */
 
@@ -195,6 +203,9 @@ function approvalDetail(
       ? { label: t('ia.detail.command'), text: command }
       : undefined;
   }
+  // A file the title already names (ApprovalSubject) needs no second well
+  // saying the same path; what changes in it is ApprovalChangePreview's.
+  if (approvalFile(display) !== undefined) return undefined;
   if (kind === 'file_io') {
     const d = display as { operation?: string; path?: string };
     const text = `${d.operation ?? ''} ${d.path ?? ''}`.trim();
@@ -238,6 +249,149 @@ function approvalDetail(
   }
 }
 
+/* ── File approvals: what file, and what changes in it ─────────────────── */
+
+/** The file an approval acts on, read from the structured display. */
+interface ApprovalFile {
+  /** `edit` / `write` read as an action word; any other operation keeps the tool's name. */
+  readonly operation: 'edit' | 'write' | undefined;
+  readonly path: string;
+}
+
+function approvalFile(display: unknown): ApprovalFile | undefined {
+  if (typeof display !== 'object' || display === null) return undefined;
+  const d = display as { kind?: unknown; operation?: unknown; path?: unknown };
+  if (typeof d.path !== 'string' || d.path === '') return undefined;
+  if (d.kind === 'diff') return { operation: 'edit', path: d.path };
+  if (d.kind !== 'file_io') return undefined;
+  return { operation: d.operation === 'edit' || d.operation === 'write' ? d.operation : undefined, path: d.path };
+}
+
+function approvalVerb(file: ApprovalFile, toolName: string, t: Translate): string {
+  return file.operation === 'edit' ? t('ia.op.edit') : file.operation === 'write' ? t('ia.op.write') : toolName;
+}
+
+/**
+ * What an approval acts on, as one line: "Edit …/workshop/bench.md" for a
+ * file — the path from the display, never parsed out of the server's English
+ * description, cut so the file name stays whole — otherwise the tool and the
+ * server's description. A flex row of its own: give it a width-bound parent.
+ */
+export function ApprovalSubject({ request }: { request: ApprovalBlock['request'] }) {
+  const { t } = useI18n();
+  const file = approvalFile(request.tool_input_display);
+  if (file === undefined) return <span className="min-w-0 truncate">{request.tool_name} · {request.action}</span>;
+  return (
+    <span className="flex min-w-0 items-baseline gap-1">
+      <span className="shrink-0">{approvalVerb(file, request.tool_name, t)}</span>
+      <PathText path={file.path} />
+    </span>
+  );
+}
+
+/** What an edit or write approval would change, built from the display alone. */
+type ApprovalChange =
+  | { readonly kind: 'diff'; readonly hunks: readonly DiffHunk[] }
+  | { readonly kind: 'content'; readonly lines: readonly string[] };
+
+/**
+ * An edit's `before`/`after` (several replacements in one call arrive joined
+ * by a `…` line, so each shows as its own run), a `diff` display, or a
+ * write's `content`. Undefined when the display carries no text to show.
+ */
+function approvalChange(display: unknown): ApprovalChange | undefined {
+  if (typeof display !== 'object' || display === null) return undefined;
+  const d = display as { kind?: unknown; operation?: unknown; before?: unknown; after?: unknown; content?: unknown };
+  const diff = (before: string, after: string): ApprovalChange | undefined => {
+    const hunks = buildHunks(before, after);
+    return hunks.length === 0 ? undefined : { kind: 'diff', hunks };
+  };
+  if (d.kind === 'diff' || (d.kind === 'file_io' && d.operation === 'edit')) {
+    return typeof d.before === 'string' && typeof d.after === 'string' ? diff(d.before, d.after) : undefined;
+  }
+  if (d.kind !== 'file_io' || d.operation !== 'write' || typeof d.content !== 'string') return undefined;
+  // A write that also carries the old text is a rewrite: show what changes.
+  if (typeof d.before === 'string') return diff(d.before, d.content);
+  const lines = d.content.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines.length === 0 ? undefined : { kind: 'content', lines };
+}
+
+const DIFF_FOLD_ROWS = 12;
+const CONTENT_PREVIEW_LINES = 8;
+
+/** The first `limit` rows of a diff, keeping the hunk boundaries. */
+function firstDiffRows(hunks: readonly DiffHunk[], limit: number): DiffHunk[] {
+  const rows: DiffHunk[] = [];
+  let left = limit;
+  for (const hunk of hunks) {
+    if (left <= 0) break;
+    rows.push(hunk.slice(0, left));
+    left -= hunk.length;
+  }
+  return rows;
+}
+
+function ApprovalChangePreview({ change }: { change: ApprovalChange }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const total = change.kind === 'diff'
+    ? change.hunks.reduce((sum, hunk) => sum + hunk.length, 0)
+    : change.lines.length;
+  const limit = change.kind === 'diff' ? DIFF_FOLD_ROWS : CONTENT_PREVIEW_LINES;
+  const folded = !expanded && total > limit;
+  return (
+    <div data-approval-change={change.kind} className="mt-2">
+      {change.kind === 'diff' ? (
+        // The old/new text carries no position in the file: no line numbers.
+        <DiffCard hunks={folded ? firstDiffRows(change.hunks, limit) : change.hunks} numbered={false} surface="bg-ink/[0.04]" />
+      ) : (
+        <pre className={DETAIL_WELL}>{(folded ? change.lines.slice(0, limit) : change.lines).join('\n')}</pre>
+      )}
+      {folded ? (
+        <button
+          type="button"
+          data-approval-change-expand
+          onClick={() => { setExpanded(true); }}
+          className="mt-1 inline-flex min-h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-10"
+        >
+          {t('ia.diff.expand', { count: total })}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Field roots of an interaction's request: where its display lives. */
+const REQUEST_ROOTS: readonly string[] = ['request'];
+
+/* ── Auto mode, explained once per device ──────────────────────────────── */
+
+/**
+ * Set once either action of the explanation (or a decision on the card that
+ * carried it) has been taken on this device. Device-level, not per space:
+ * the explanation is about the product, not about a home's data.
+ */
+const AUTO_EXPLAINED_KEY = 'kiki.firstRun.autoExplained';
+
+function readAutoExplained(): boolean {
+  try {
+    return localStorage.getItem(AUTO_EXPLAINED_KEY) !== null;
+  } catch {
+    // No storage (private mode, a locked-down WebView): explain, and keep
+    // the acknowledgement for this card only.
+    return false;
+  }
+}
+
+function writeAutoExplained(): void {
+  try {
+    localStorage.setItem(AUTO_EXPLAINED_KEY, '1');
+  } catch {
+    // Not persisted; the card still hides it for now.
+  }
+}
+
 const NEAR_DEADLINE_MS = 10 * 60_000;
 
 /** True when the request expires within ten minutes (and has a real deadline). */
@@ -253,6 +407,8 @@ export function ApprovalCard({
   onResolve,
   originAgentName,
   showShortcutHints = false,
+  permissionMode,
+  onAskEveryStep,
 }: {
   block: ApprovalBlock;
   onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string, review?: PlanReviewResponse) => Promise<void>;
@@ -260,6 +416,13 @@ export function ApprovalCard({
   originAgentName?: string;
   /** y/n hints show on every pending card (focused or topmost visible wins). */
   showShortcutHints?: boolean;
+  /**
+   * The session's permission mode as the composer shows it. In `auto`, the
+   * first approval this device sees explains why Kiki is asking at all.
+   */
+  permissionMode?: PermissionMode;
+  /** Switches this session to asking at every step (the explanation's action). */
+  onAskEveryStep?: () => void;
 }) {
   const { t, time } = useI18n();
   const connection = useOptionalConnection();
@@ -273,6 +436,10 @@ export function ApprovalCard({
   const [submittingOptionId, setSubmittingOptionId] = useState<string | null>(null);
   const [answered, setAnswered] = useState<ApprovalDecision | null>(null);
   const [failed, setFailed] = useState(false);
+  // "Reject with a note": the one-line note opens under the decisions.
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [autoExplained, setAutoExplained] = useState(readAutoExplained);
   const respondingRef = useRef(false);
   // Epoch guard: bumped whenever this card's request identity changes; async
   // completions compare against their captured epoch before touching state.
@@ -287,7 +454,31 @@ export function ApprovalCard({
     setFailed(false);
     setSavedRule(null);
     setRuleFailed(false);
+    setNoteOpen(false);
+    setNote('');
   }, [approvalId]);
+  const display = block.request.tool_input_display;
+  // A decided approval renders one resolution line; no diff to build.
+  const pendingDecision = block.resolution === undefined;
+  const change = useMemo(() => (pendingDecision ? approvalChange(display) : undefined), [pendingDecision, display]);
+  // The transport bounds an interaction's text: a long edit's old/new text
+  // or a write's content can arrive cut, and only the interaction's content
+  // refs say so. A diff of two cut texts would show a change that is not the
+  // one being approved, so the preview waits until the whole display has been
+  // read (ContentContinuation below reads it and shows progress). Outside a
+  // transcript-detail provider nothing can say the text is whole: no preview.
+  const changeSource = useMemo<ContentBodySource | undefined>(
+    () => (change === undefined ? undefined : { kind: 'interaction', id: approvalId }),
+    [change, approvalId],
+  );
+  // The engine records an interaction in the wire of the agent that asked
+  // (`interactionService` → the origin agent's dispatcher), so its refs live
+  // in that agent's transcript, whichever view the card is shown in. No
+  // origin means the provider's own agent.
+  const ownerAgentId = block.originUnknown === true ? undefined : block.originAgentId;
+  const { pending: cutRefs } = useContentContinuation(changeSource, REQUEST_ROOTS, ownerAgentId);
+  const detailController = useTranscriptController();
+  const changeWhole = detailController !== undefined && cutRefs.length === 0;
   useEffect(
     () => () => {
       epochRef.current += 1; // unmount: late completions become no-ops
@@ -347,10 +538,20 @@ export function ApprovalCard({
     block.request.tool_input_display !== null &&
     (block.request.tool_input_display as { kind?: unknown }).kind === 'plan_enter';
   const detail = external === undefined ? approvalDetail(block, t) : undefined;
+  const file = external === undefined ? approvalFile(display) : undefined;
+  const filePath = file === undefined ? undefined : splitPath(file.path);
+  // Auto mode is explained on the approval in front of the user, once per
+  // device: the line stays until they act on it or decide this card.
+  const explainAuto = permissionMode === 'auto' && !autoExplained && external === undefined && !planEnter;
+  const acknowledgeAuto = () => {
+    writeAutoExplained();
+    setAutoExplained(true);
+  };
 
-  const submit = (decision: ApprovalDecision, selectedOptionId?: string) => {
+  const submit = (decision: ApprovalDecision, selectedOptionId?: string, feedback?: string) => {
     // In-flight guard: drop double-clicks and clicks during submission.
     if (respondingRef.current || answered !== null) return;
+    if (explainAuto) acknowledgeAuto();
     const scope = forSession ? ('session' as const) : undefined;
     const intent = intentFor(decision, scope);
     const epoch = epochRef.current;
@@ -358,7 +559,11 @@ export function ApprovalCard({
     setSubmitting(intent);
     setSubmittingOptionId(selectedOptionId ?? (decision === 'cancelled' ? '__cancel' : null));
     setFailed(false);
-    void onResolve(decision, scope, selectedOptionId)
+    // A note rides the same `feedback` field the plan review sends; an empty
+    // note is a plain rejection.
+    void (feedback === undefined
+      ? onResolve(decision, scope, selectedOptionId)
+      : onResolve(decision, scope, selectedOptionId, { feedback }))
       .then(() => {
         if (epochRef.current !== epoch) return; // stale response — newer request owns the card
         setAnswered(decision);
@@ -384,6 +589,7 @@ export function ApprovalCard({
   const allowAlways = () => {
     if (approvalRule === undefined || connection === null) return;
     if (respondingRef.current || answered !== null) return;
+    if (explainAuto) acknowledgeAuto();
     const epoch = epochRef.current;
     respondingRef.current = true;
     setSubmitting('allow-rule');
@@ -412,6 +618,11 @@ export function ApprovalCard({
         respondingRef.current = false;
         setSubmitting(null);
       });
+  };
+
+  const rejectWithNote = () => {
+    const feedback = note.trim();
+    submit('rejected', undefined, feedback === '' ? undefined : feedback);
   };
 
   const cancelButton = (
@@ -457,11 +668,49 @@ export function ApprovalCard({
           </span>
         ) : null}
       </div>
-      {/* What: tool + action, then the exact command/target. */}
-      <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
-        <span className="font-mono text-[13px] font-semibold">{block.request.tool_name}</span>
-        <span className="text-ink-soft"> · {block.request.action}</span>
-      </p>
+      {explainAuto && answered === null ? (
+        <p data-auto-explain className="mt-1 text-[12px] leading-relaxed text-ink-soft">
+          {t('firstRun.auto.explain')}{' '}
+          {onAskEveryStep !== undefined ? (
+            <button
+              type="button"
+              data-auto-explain-manual
+              onClick={() => { acknowledgeAuto(); onAskEveryStep(); }}
+              className={`${TEXT_ACTION} mr-2`}
+            >
+              {t('firstRun.auto.manual')}
+            </button>
+          ) : null}
+          <button type="button" data-auto-explain-ok onClick={acknowledgeAuto} className={TEXT_ACTION}>
+            {t('firstRun.auto.ok')}
+          </button>
+        </p>
+      ) : null}
+      {/* What: the file and the action on it, or the tool and its action;
+          then the exact command/target or the change itself. */}
+      {file !== undefined ? (
+        // The whole path, wrapped anywhere: where the file is can be the very
+        // reason Kiki is asking, so the card never cuts it. The file name
+        // reads stronger than its directory.
+        <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
+          <span className={file.operation === undefined ? 'font-mono text-[13px] font-semibold' : 'font-medium'}>
+            {approvalVerb(file, block.request.tool_name, t)}
+          </span>{' '}
+          <span data-approval-path className="font-mono text-[13px] break-all">
+            <span className="text-ink-soft">{filePath?.dir}</span>
+            <span className="font-medium">{filePath?.name}</span>
+          </span>
+        </p>
+      ) : (
+        <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
+          <span className="font-mono text-[13px] font-semibold">{block.request.tool_name}</span>
+          <span className="text-ink-soft"> · {block.request.action}</span>
+        </p>
+      )}
+      {change !== undefined && changeWhole ? <ApprovalChangePreview key={approvalId} change={change} /> : null}
+      {change !== undefined && !changeWhole && detailController !== undefined ? (
+        <ContentContinuation source={changeSource} roots={REQUEST_ROOTS} label={t('tc.changes')} callerAgentId={ownerAgentId} className="mt-2" />
+      ) : null}
       {planEnter ? (
         <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">
           {t('ia.planEnter.body')}
@@ -511,13 +760,15 @@ export function ApprovalCard({
                 ) : null}
               </button>
               {approvalRule !== undefined ? (
+                // On a phone the three decisions keep the first row; this one
+                // follows them.
                 <button
                   type="button"
                   data-approval-always-allow
                   disabled={submitting !== null}
                   onClick={allowAlways}
                   title={t('ia.alwaysAllow.title', { rule: approvalRule })}
-                  className={SECONDARY_BUTTON}
+                  className={`${SECONDARY_BUTTON} max-sm:order-1`}
                 >
                   {submitting === 'allow-rule'
                     ? savedRule === null ? t('ia.alwaysAllow.saving') : t('ia.approving')
@@ -530,12 +781,23 @@ export function ApprovalCard({
                 onClick={() => { submit('rejected'); }}
                 className={SECONDARY_BUTTON}
               >
-                {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
+                {submitting === 'reject-once' && !noteOpen ? t('ia.rejecting') : t('ia.reject')}{' '}
                 {showShortcutHints ? (
                   <kbd className="ml-1 rounded-[4px] bg-ink/[0.07] px-1 font-mono text-[11px] text-ink-soft pointer-coarse:hidden">n</kbd>
                 ) : null}
               </button>
-              <label className="ml-1 flex min-h-8 pointer-coarse:min-h-10 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft">
+              <button
+                type="button"
+                data-approval-reject-note
+                aria-expanded={noteOpen}
+                disabled={submitting !== null}
+                onClick={() => { setNoteOpen((open) => !open); }}
+                className={SECONDARY_BUTTON}
+              >
+                {t('ia.rejectWithNote')}
+              </button>
+              {/* Its own row on a phone, under the three decisions. */}
+              <label className="ml-1 flex min-h-8 pointer-coarse:min-h-10 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft max-sm:order-2 max-sm:ml-0 max-sm:basis-full">
                 <input
                   type="checkbox"
                   checked={forSession}
@@ -546,6 +808,38 @@ export function ApprovalCard({
                 {t('ia.remember', { tool: block.request.tool_name })}
               </label>
             </div>
+            {noteOpen ? (
+              <div data-approval-note-row className="mt-2 flex items-center gap-2">
+                <input
+                  data-approval-note
+                  // Opened by the user's own tap on "Reject with a note", so
+                  // taking focus (and with it a phone's keyboard) is what they
+                  // asked for.
+                  autoFocus
+                  value={note}
+                  disabled={submitting !== null}
+                  aria-label={t('ia.rejectNote.placeholder')}
+                  placeholder={t('ia.rejectNote.placeholder')}
+                  onChange={(event) => { setNote(event.target.value); }}
+                  onKeyDown={(event) => {
+                    // Enter that commits an IME candidate is not a send.
+                    if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    event.preventDefault();
+                    rejectWithNote();
+                  }}
+                  className="min-h-8 w-full min-w-0 flex-1 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink disabled:opacity-60 pointer-coarse:min-h-10"
+                />
+                <button
+                  type="button"
+                  data-approval-reject-send
+                  disabled={submitting !== null}
+                  onClick={rejectWithNote}
+                  className={`${SECONDARY_BUTTON} shrink-0 hover:text-danger`}
+                >
+                  {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.rejectNote.send')}
+                </button>
+              </div>
+            ) : null}
             {ruleFailed ? (
               <p role="alert" className="mt-2 text-[12px] text-danger">
                 {t('ia.alwaysAllow.failed')}
@@ -686,7 +980,7 @@ function PlanReviewCard({
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={sending !== null}>
             <button type="button" data-plan-approve disabled={sending !== null} onClick={() => { send('approve'); }} className={PRIMARY_BUTTON}>
               {sending === 'approve' ? t('ia.approving') : options !== undefined && choice !== undefined ? t('ia.plan.approveChoice', { option: choice }) : t('ia.plan.approve')}
-              {showShortcutHints ? <kbd className="ml-1.5 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium">y</kbd> : null}
+              {showShortcutHints ? <kbd className="ml-1.5 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium pointer-coarse:hidden">y</kbd> : null}
             </button>
             <button type="button" data-plan-revise disabled={sending !== null || trimmed === ''} title={trimmed === '' ? t('ia.plan.reviseNeedsNote') : undefined}
               onClick={() => { send('revise'); }} className={SECONDARY_BUTTON}>
@@ -1092,8 +1386,8 @@ export function InteractionRecord({
   const id = block.kind === 'approval' ? block.request.approval_id : block.request.question_id;
   const subject =
     block.kind === 'approval'
-      ? `${block.request.tool_name} · ${block.request.action}`
-      : (block.request.questions[0]?.question ?? t('ia.kikiAsks'));
+      ? <ApprovalSubject request={block.request} />
+      : <span className="min-w-0 truncate">{block.request.questions[0]?.question ?? t('ia.kikiAsks')}</span>;
   return (
     <div
       data-interaction-record={id}
@@ -1108,8 +1402,8 @@ export function InteractionRecord({
       <span className="shrink-0 font-medium text-ink">
         {t(block.kind === 'approval' ? 'ia.record.awaitingApproval' : 'ia.record.awaitingAnswer')}
       </span>
-      <span className="min-w-0 truncate text-ink-faint">
-        {originName === undefined ? '' : `${originName} · `}
+      <span className="flex min-w-0 items-baseline text-ink-faint">
+        {originName === undefined ? null : <span className="shrink-0 whitespace-pre">{`${originName} · `}</span>}
         {subject}
       </span>
       {onReview !== undefined ? (

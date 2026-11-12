@@ -189,6 +189,26 @@ function extractFromArgs(
     };
   }
 
+  if (detail['edits'] !== undefined) {
+    const path = stringField(detail, 'file_path') ?? stringField(detail, 'path') ?? '';
+    const pairs = editPairs(detail['edits']);
+    // One diff block per replacement, so the panel shows every hunk being
+    // approved. A malformed list is shown verbatim rather than reduced to
+    // a path-only row.
+    return {
+      blocks:
+        pairs === undefined
+          ? [{ type: 'brief', text: `edit ${path}: ${JSON.stringify(detail['edits'], null, 2)}` }]
+          : pairs.map((pair) => ({
+              type: 'diff' as const,
+              path,
+              old_text: pair.oldText,
+              new_text: pair.newText,
+            })),
+      description: '',
+    };
+  }
+
   const oldString = stringField(detail, 'old_string');
   const newString = stringField(detail, 'new_string');
   if (oldString !== undefined && newString !== undefined) {
@@ -247,6 +267,19 @@ function extractFromArgs(
   }
 
   return null;
+}
+
+function editPairs(value: unknown): { oldText: string; newText: string }[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const pairs: { oldText: string; newText: string }[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return undefined;
+    const oldText = stringField(entry, 'old_string');
+    const newText = stringField(entry, 'new_string');
+    if (oldText === undefined || newText === undefined) return undefined;
+    pairs.push({ oldText, newText });
+  }
+  return pairs;
 }
 
 function inferFileOp(toolName: string): 'read' | 'write' | 'edit' | 'glob' | 'grep' {

@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
+import { QueryClientContext } from '@tanstack/react-query';
 import { activeSpace } from '../lib/spaceStorage';
+import { connectionIdOfSpaceKey, remoteConnectionKeys } from '../lib/remoteConnections';
 import { createVisitId, getCurrentVisit, getPreviousVisit, getVisitDelta, getVisitForLocation, isCrossScopeNavigation, markVisitMissing, recordNavigation, type NavScopeIdentity } from '../lib/navHistory';
 import { captureVisitSnapshots } from '../lib/navViewState';
 import { readHomeViewRoute } from '../lib/spaceViewState';
@@ -11,12 +13,20 @@ import { destinationForLocation, isScopeEntityRoute, markScopeReload, prepareSco
 import { useHost } from '../host';
 import { useConnection } from '../state/connection';
 import { DirtyGuardContext, DirtyGuardStateContext, useDirtyGuardState, type GuardedNavigate, type NavigationRedirect } from './dirtyGuard';
-import { NavScopeRecovery } from './NavScopeRecovery';
+import { NavScopeRecovery, type RemoteRecoveryActions } from './NavScopeRecovery';
+
+/**
+ * Where the pairing list lives today (Settings → Access from elsewhere → Other
+ * Kiki). No `#st-card-…` focus: the search spec still files the outbound card
+ * under Spaces, so its card hash would resolve to the wrong page.
+ */
+const PAIRING_SETTINGS_ROUTE = '/settings/connection-services?tab=kiki';
 
 export interface ScopeRestoreValue {
   readonly state: ScopeRestoreState;
   retry(token?: string): void;
-  cancel(): void;
+  /** Give up the attempt; `route` is where to go instead of staying put. */
+  cancel(route?: string): void;
 }
 const ScopeRestoreContext = createContext<ScopeRestoreValue | null>(null);
 export function useScopeRestore(): ScopeRestoreValue | null { return useContext(ScopeRestoreContext); }
@@ -243,7 +253,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     void requestScopeNavigation({ scope: targetScope, route }).catch(() => {});
   }), [host]);
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback((route?: string) => {
     bootAttemptRef.current?.abort();
     guard.cancel();
     acceptedRef.current = null;
@@ -252,14 +262,33 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     retryRef.current = null;
     setState({ phase: 'idle' });
     if (!safe && !connection.needsScopeReload) {
-      void rawNavigate('/new', { replace: true, state: { kikiNav: { scope: active } } });
-    }
-  }, [guard.cancel, safe, connection.needsScopeReload, active, rawNavigate]);
+      void rawNavigate(route ?? '/new', { replace: true, state: { kikiNav: { scope: active } } });
+    } else if (route !== undefined) void guard.navigate(route);
+  }, [guard.cancel, guard.navigate, safe, connection.needsScopeReload, active, rawNavigate]);
   const retry = useCallback((token?: string) => {
     tokenRef.current = token;
     if (retryRef.current !== null) retryRef.current();
     else void Promise.resolve(guard.confirm()).catch(() => {});
   }, [guard.confirm]);
+  const queryClient = useContext(QueryClientContext);
+  // A paired space's pairing record lives on this window's own home — the same
+  // control connection the adapter lists it from — never on the paired space.
+  const failedPairing = state.phase === 'failed' ? connectionIdOfSpaceKey(state.target.scope.scopeId) : null;
+  const control = connection.localClient ?? (connection.connectionSource === 'remote' || connection.connectionSource === 'ssh' ? null : connection.client);
+  const pairings = failedPairing === null ? undefined : control?.klient.rest?.connections;
+  const remote: RemoteRecoveryActions | undefined = failedPairing === null || pairings === undefined ? undefined : {
+    turnOn: async () => {
+      await pairings.setEnabled(failedPairing, true);
+      void queryClient?.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+      retry();
+    },
+    remove: async () => {
+      await pairings.remove(failedPairing);
+      void queryClient?.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+      cancel();
+    },
+    pairAgain: () => { cancel(PAIRING_SETTINGS_ROUTE); },
+  };
   const value = { state, retry, cancel };
   return <ScopeRestoreContext.Provider value={value}>
     <DirtyGuardStateContext.Provider value={guard}>
@@ -267,7 +296,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
         <div className="relative h-full">
           <div className="h-full" inert={state.phase !== 'idle'}>{safe ? children : null}</div>
           {state.phase !== 'idle' ? <div className="absolute inset-0 z-50 bg-canvas">
-            <NavScopeRecovery state={state} retry={retry} cancel={cancel} />
+            <NavScopeRecovery state={state} retry={retry} cancel={cancel} remote={remote} />
           </div> : null}
         </div>
       </DirtyGuardContext.Provider>

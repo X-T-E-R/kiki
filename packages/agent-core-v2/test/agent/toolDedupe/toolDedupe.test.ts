@@ -14,7 +14,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
-import type { ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolExecution, ToolResult } from '#/tool/toolContract';
+import { ToolAccesses, type ExecutableTool, type ExecutableToolContext, type ExecutableToolResult, type ToolExecution, type ToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext, ResolvedToolExecutionHookContext, BeforeExecuteDecision } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolDedupeService, type ToolDedupeResult } from '#/agent/toolDedupe/toolDedupe';
 import { AgentToolDedupeService, toolDedupeStepCallsKey, __testing as toolDedupeTesting } from '#/agent/toolDedupe/toolDedupeService';
@@ -33,7 +33,7 @@ import { createFakeProcessRunner } from '../../tools/fixtures/fake-exec';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
-const { REMINDER_TEXT_1, REMINDER_TEXT_3, makeReminderText2 } = toolDedupeTesting;
+const { REMINDER_TEXT_1, REMINDER_TEXT_3, SAME_STEP_DUPLICATE_MARKER, makeReminderText2 } = toolDedupeTesting;
 const ZERO_USAGE = emptyUsage();
 
 let disposables: DisposableStore;
@@ -150,11 +150,13 @@ class EchoTool implements ExecutableTool<Record<string, unknown>> {
     private readonly resultFor: (args: Record<string, unknown>) => ExecutableToolResult = (args) => ({
       output: typeof args['text'] === 'string' ? args['text'] : '',
     }),
+    private readonly accesses: ToolAccesses | null = ToolAccesses.readAll(),
   ) {}
 
   resolveExecution(args: Record<string, unknown>): ToolExecution {
     return {
       approvalRule: this.name,
+      accesses: this.accesses ?? undefined,
       execute: async (ctx) => {
         this.calls.push({ ...ctx, args });
         return this.resultFor(args);
@@ -218,7 +220,11 @@ async function runStep(
 }
 
 function dummyExecution(): ResolvedToolExecutionHookContext['execution'] {
-  return { approvalRule: 'x', execute: async () => ({ output: '' }) };
+  return { approvalRule: 'x', accesses: ToolAccesses.readFile('/a'), execute: async () => ({ output: '' }) };
+}
+
+function duplicateOf(result: ToolDedupeResult): ToolDedupeResult {
+  return { ...result, output: SAME_STEP_DUPLICATE_MARKER + (result.output as string) };
 }
 
 function willCtx(
@@ -276,7 +282,7 @@ describe('AgentToolDedupeService', () => {
     expect(await call('distinct', 'request-2')).toEqual(first);
     expect(tool.calls).toHaveLength(2);
     const ordinary = await call('ordinary-first');
-    expect(await call('ordinary-repeat')).toEqual({ ...ordinary, approvalRule: undefined });
+    expect(await call('ordinary-repeat')).toEqual({ ...duplicateOf(ordinary), approvalRule: undefined });
     expect(tool.calls).toHaveLength(3);
     await afterStep(h, 1, 1);
   });
@@ -315,7 +321,7 @@ describe('AgentToolDedupeService', () => {
 
       const d2 = didCtx('c2', 'Read', { path: '/a' }, b2!.veto!);
       await h.executor.hooks.onDidExecuteTool.run(d2);
-      expect(d2.result).toEqual(okResult('FILE_A'));
+      expect(d2.result).toEqual(duplicateOf(okResult('FILE_A')));
     });
 
     it('propagates error results to same-step dups', async () => {
@@ -330,7 +336,7 @@ describe('AgentToolDedupeService', () => {
       await h.executor.hooks.onDidExecuteTool.run(d1);
       const d2 = didCtx('c2', 'Bash', { cmd: 'x' }, b2!.veto!);
       await h.executor.hooks.onDidExecuteTool.run(d2);
-      expect(d2.result).toEqual(errResult('boom'));
+      expect(d2.result).toEqual(duplicateOf(errResult('boom')));
     });
 
     it('finalizes original before dup (provider order)', async () => {
@@ -344,7 +350,10 @@ describe('AgentToolDedupeService', () => {
       ]);
 
       expect(tool.calls).toHaveLength(1);
-      expect(results.map((result) => result.result.output)).toEqual(['A', 'A']);
+      expect(new Map(results.map((result) => [result.toolCallId, result.result.output]))).toEqual(new Map([
+        ['c1', 'A'],
+        ['c2', `${SAME_STEP_DUPLICATE_MARKER}A`],
+      ]));
     });
 
     it('wires through ToolExecutor hooks and replaces same-step placeholders', async () => {
@@ -365,7 +374,7 @@ describe('AgentToolDedupeService', () => {
       }
 
       expect(tool.calls).toHaveLength(1);
-      expect(results.map((result) => result.output)).toEqual(['same', 'same']);
+      expect(results.map((result) => result.output).sort()).toEqual(['same', `${SAME_STEP_DUPLICATE_MARKER}same`].sort());
       expect(telemetryEvents).toContainEqual({
         event: 'tool_call_dedup_detected',
         properties: expect.objectContaining({
@@ -376,6 +385,28 @@ describe('AgentToolDedupeService', () => {
           dup_type: 'same_step',
         }),
       });
+    });
+    it.each([
+      ['a write access', ToolAccesses.writeFile('/log.txt')],
+      ['exclusive access', ToolAccesses.all()],
+      ['no declared resources', ToolAccesses.none()],
+      ['undeclared accesses', null],
+    ] as const)('runs every identical call with %s in one step', async (_label, accesses) => {
+      const h = createHarness();
+      const tool = new EchoTool('Append', () => ({ output: 'Appended 2 bytes to log.txt' }), accesses);
+      h.registry.register(tool);
+
+      const results = await runStep(h, 1, 1, [
+        toolCall('first', 'Append', { path: 'log.txt', content: 'x\n' }),
+        toolCall('second', 'Append', { path: 'log.txt', content: 'x\n' }),
+      ]);
+
+      expect(tool.calls).toHaveLength(2);
+      expect(results.map((result) => result.result.output)).toEqual([
+        'Appended 2 bytes to log.txt',
+        'Appended 2 bytes to log.txt',
+      ]);
+      expect(telemetryEvents.filter((e) => e.event === 'tool_call_dedup_detected')).toHaveLength(0);
     });
   });
 
@@ -400,7 +431,8 @@ describe('AgentToolDedupeService', () => {
       for (let step = 1; step <= 15; step += 1) {
         const results = await runStep(h, 1, step, [toolCall(`original-${step}`, name, args), toolCall(`duplicate-${step}`, name, args)]);
         expect(results).toHaveLength(2);
-        expect(results[0]!.result.output).toBe(results[1]!.result.output);
+        const byId = new Map(results.map((item) => [item.toolCallId, item.result.output]));
+        expect(byId.get(`duplicate-${step}`)).toBe(`${SAME_STEP_DUPLICATE_MARKER}${byId.get(`original-${step}`) as string}`);
         for (const { result } of results) {
           expect(result.stopTurn).not.toBe(true);
           expect(result.output).not.toContain('<system-reminder>');
@@ -558,6 +590,42 @@ describe('AgentToolDedupeService', () => {
       expect(byId.get('dup')!.output as string).toContain('what new information you expect');
     });
 
+    it('does not remind a repeated call whose output changes', async () => {
+      const h = createHarness();
+      let tick = 0;
+      h.registry.register(new EchoTool('Bash', () => ({ output: String(++tick) }), ToolAccesses.all()));
+      for (let step = 1; step <= 5; step += 1) {
+        const [result] = await runStep(h, 1, step, [toolCall(`poll-${String(step)}`, 'Bash', { command: 'date +%s%N' })]);
+        expect(result!.result.output).toBe(String(step));
+      }
+      expect(telemetryEvents.filter((e) => e.event === 'tool_call_repeat')).toHaveLength(0);
+    });
+
+    it('restarts the count when the output changes and counts identical results again', async () => {
+      const h = createHarness();
+      const outputs = ['busy', 'busy', 'ready', 'ready', 'ready'];
+      let index = 0;
+      h.registry.register(new EchoTool('Bash', () => ({ output: outputs[index++]! }), ToolAccesses.all()));
+      let last: ToolResult | undefined;
+      for (let step = 1; step <= outputs.length; step += 1) {
+        last = (await runStep(h, 1, step, [toolCall(`c-${String(step)}`, 'Bash', { command: 'status' })]))[0]!.result;
+      }
+      expect(last!.output).toBe('ready' + REMINDER_TEXT_1);
+      expect(telemetryEvents.filter((e) => e.event === 'tool_call_repeat').map((e) => e.properties?.['repeat_count'])).toEqual([2, 2, 3]);
+    });
+
+    it('still stops a side-effecting call that keeps returning the same result at the twelfth call', async () => {
+      const h = createHarness();
+      const tool = new EchoTool('Bash', () => ({ output: 'same' }), ToolAccesses.all());
+      h.registry.register(tool);
+      let last: ToolResult | undefined;
+      for (let step = 1; step <= 12; step += 1) {
+        last = (await runStep(h, 1, step, [toolCall(`c-${String(step)}`, 'Bash', { command: 'retry' })]))[0]!.result;
+        expect(last.stopTurn === true).toBe(step === 12);
+      }
+      expect(tool.calls).toHaveLength(12);
+    });
+
     it('same-step spam alone does not trigger reminder', async () => {
       const h = createHarness();
       registerRead(h);
@@ -668,7 +736,7 @@ describe('AgentToolDedupeService', () => {
       await h.executor.hooks.onDidExecuteTool.run(d1);
       const d2 = didCtx('c2', 'Read', { b: 2, a: 1 }, b2!.veto!);
       await h.executor.hooks.onDidExecuteTool.run(d2);
-      expect(d2.result).toEqual(okResult('SAME'));
+      expect(d2.result).toEqual(duplicateOf(okResult('SAME')));
     });
   });
 
@@ -695,7 +763,7 @@ describe('AgentToolDedupeService', () => {
         }),
       ]);
       expect(d1.result).toEqual(okResult('A'));
-      expect(d2.result).toEqual(okResult('A'));
+      expect(d2.result).toEqual(duplicateOf(okResult('A')));
     });
   });
 

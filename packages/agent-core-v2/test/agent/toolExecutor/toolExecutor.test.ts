@@ -102,8 +102,7 @@ beforeEach(() => {
       reg.defineInstance(IAgentToolResultTruncationService, {
         _serviceBrand: undefined,
         truncateForModel: (input) => truncateForModel(input),
-        isSpillFilePath: () => false,
-      });
+          });
       reg.defineInstance(IEventBus, {
         publish: (event: ProtocolEvent) => {
           if (event.type.startsWith('tool.')) {
@@ -935,11 +934,70 @@ describe('AgentToolExecutorService', () => {
     expect(bodyCalls).toBe(0);
   });
 
+  it('ignores an undeclared argument, shows only the remaining arguments to every stage, and notes it on the result', async () => {
+    ix.stub(ISessionContext, { sessionId: 'session-extension' });
+    const approvalRequests: Array<Parameters<IAgentToolApprovalService['requestToolApproval']>> = [];
+    ix.stub(IAgentToolApprovalService, {
+      requestToolApproval: async (...args: Parameters<IAgentToolApprovalService['requestToolApproval']>) => {
+        approvalRequests.push(args);
+        return { permissionDecision: 'approved' };
+      },
+    });
+    const policyArgs: unknown[] = [];
+    disposables.add(extensions.registerToolPreExecutePolicy('plugin-ask', (context) => {
+      policyArgs.push(context.args);
+      return { decision: 'require_ask', promptReason: 'check this call' };
+    }));
+    let beforeArgs: unknown;
+    disposables.add(executor.onBeforeExecuteTool((event) => {
+      beforeArgs = event.args;
+    }));
+    const tool = new TestTool('strict-extra', {
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string' } },
+        required: ['text'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([toolCall('extra-call', 'strict-extra', { text: 'hi', reason: 'because' })]);
+
+    const stripped = { text: 'hi' };
+    expect(results[0]).toMatchObject({ output: 'hi', note: 'Note: ignored unknown argument(s): reason.' });
+    expect(results[0]?.isError).not.toBe(true);
+    expect(policyArgs).toEqual([stripped]);
+    expect(beforeArgs).toEqual(stripped);
+    expect(approvalRequests).toHaveLength(1);
+    expect(approvalRequests[0]?.[0].args).toEqual(stripped);
+    expect(approvalRequests[0]?.[0].toolCall.arguments).toBe(JSON.stringify(stripped));
+    expect(protocolEvents.find((event) => event.type === 'tool.call.started')).toMatchObject({ args: stripped });
+    expect(tool.calls.map((call) => call.args)).toEqual([stripped]);
+  });
+
+  it('keeps rejecting a near miss of a declared argument and names the intended one', async () => {
+    const tool = new TestTool('edit-like', {
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' }, replace_all: { type: 'boolean' } },
+        required: ['path'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([toolCall('typo-call', 'edit-like', { path: 'a.txt', replace_al: true })]);
+
+    expect(results[0]).toMatchObject({ isError: true, output: expect.stringContaining("did you mean 'replace_all'") });
+    expect(tool.calls).toEqual([]);
+  });
+
   it('recompiles the cached args validator when a tool advertises a different schema object', async () => {
     const inner = new TestTool('dynamic');
     let currentSchema: Record<string, unknown> = {
       type: 'object',
-      properties: { value: { type: 'number' } },
+      properties: { value: { type: 'number' }, model: { type: 'number' } },
       required: ['value'],
       additionalProperties: false,
     };
@@ -1191,7 +1249,7 @@ describe('AgentToolExecutorService', () => {
     expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ output: 'first result' }),
       expect.objectContaining({ output: 'batch stopped', stopTurn: true }),
-      expect.objectContaining({ output: 'Tool skipped because a previous tool call stopped this batch.' }),
+      expect.objectContaining({ output: 'Tool skipped because a previous tool call stopped this batch. It was not run; if it is still needed, issue it again in the next step.' }),
     ]));
     expect(lastResolve).not.toHaveBeenCalled();
     expect(admitted).toEqual(source === 'veto' ? ['first-call', 'stopped-call'] : ['first-call']);
@@ -1218,7 +1276,7 @@ describe('AgentToolExecutorService', () => {
     expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ output: 'first result', stopBatchAfterThis: true }),
       expect.objectContaining({
-        output: 'Tool skipped because a previous tool call stopped this batch.',
+        output: 'Tool skipped because a previous tool call stopped this batch. It was not run; if it is still needed, issue it again in the next step.',
         isError: true,
       }),
     ]));
@@ -1882,7 +1940,7 @@ describe('truncation pipeline', () => {
     expect(rendered).toContain('HEAD_MARKER');
     expect(rendered).toContain('TAIL_MARKER');
     expect(rendered).not.toContain('MIDDLE_MARKER');
-    expect(rendered).toMatch(/\[elided: chars \[4096, \d+\)\]/);
+    expect(rendered).toMatch(/\[elided: chars \[6000, \d+\)\]/);
 
     const outputPath = renderedOutputPath(rendered);
     const expectedPrefix = join(

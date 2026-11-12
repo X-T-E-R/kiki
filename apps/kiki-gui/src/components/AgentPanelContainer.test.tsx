@@ -62,6 +62,8 @@ const harness = vi.hoisted(() => {
     getAgentState: (agentId: string) => agents[agentId],
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeAgent: vi.fn((_agentId: string, listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }),
+    retainAgentView: vi.fn(),
+    releaseAgentView: vi.fn(),
   };
   const registry = {
     add: () => undefined,
@@ -80,6 +82,8 @@ const harness = vi.hoisted(() => {
     retryOpen,
     resync,
     subscribeAgent: controller.subscribeAgent,
+    retainAgentView: controller.retainAgentView,
+    releaseAgentView: controller.releaseAgentView,
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
@@ -150,6 +154,8 @@ beforeEach(() => {
   harness.retryOpen.mockClear();
   harness.resync.mockClear();
   harness.subscribeAgent.mockClear();
+  harness.retainAgentView.mockClear();
+  harness.releaseAgentView.mockClear();
   for (const agentId of Object.keys(harness.agents)) delete harness.agents[agentId];
   harness.agents['main'] = viewState();
   harness.holder.value = harness.registry;
@@ -195,13 +201,25 @@ function todosStatus(): string | undefined {
   return element.querySelector<HTMLElement>('[data-agent-todos-status]')?.dataset['agentTodosStatus'];
 }
 
-it('observes tree metric revisions without subscribing every historical agent transcript', async () => {
+it('observes tree metric revisions without asking for every historical agent transcript', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'main' }, available: true,
     targets: [], tools: [], skills: [], metrics: { main: UNKNOWN_AGENT_PANEL_METRICS },
   });
   await render('main', { part: 'overview', forest: forestOf(['main', 'child-a', 'child-b', 'child-c']) });
-  expect(harness.subscribeAgent).not.toHaveBeenCalled();
+  expect(harness.subscribeAgent.mock.calls.every(([agentId]) => agentId === 'main')).toBe(true);
+  expect(harness.retainAgentView.mock.calls.map(([, agentId]) => agentId)).toEqual(['main']);
+});
+
+it('holds its own agent at turn while shown and releases it when hidden or unmounted', async () => {
+  harness.agents['child'] = viewState();
+  await render('child', { part: 'work' });
+  expect(harness.retainAgentView).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^agent-panel:child:/), 'child', 'turn');
+  const viewId = harness.retainAgentView.mock.calls[0]?.[0] as string;
+  await render('child', { part: 'work', visible: false });
+  expect(harness.releaseAgentView).toHaveBeenCalledExactlyOnceWith(viewId);
+  await render('child', { part: 'work' });
+  expect(harness.retainAgentView).toHaveBeenCalledTimes(2);
 });
 
 it('defers agent panel reads until visible and stops reads while hidden', async () => {

@@ -10,9 +10,44 @@ pub fn read_clipboard_file_paths(app: tauri::AppHandle) -> Result<Option<Vec<Str
     Ok(paths)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_file_paths() -> Result<Option<Vec<String>>, String> {
     Ok(None)
+}
+
+/// Finder copies one `public.file-url` item per file. Anything else (text,
+/// images, web URLs) and any unreadable pasteboard returns `None`, which
+/// leaves the paste to the web view's own clipboard data.
+#[cfg(target_os = "macos")]
+fn read_file_paths() -> Result<Option<Vec<String>>, String> {
+    use objc2::{runtime::AnyObject, ClassType};
+    use objc2_app_kit::{NSPasteboard, NSPasteboardURLReadingFileURLsOnlyKey};
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let file_url = NSString::from_str("public.file-url");
+    if !pasteboard.canReadItemWithDataConformingToTypes(&NSArray::from_slice(&[&*file_url])) {
+        return Ok(None);
+    }
+    let classes = NSArray::from_slice(&[NSURL::class()]);
+    let file_urls_only = NSNumber::new_bool(true);
+    let file_urls_only: &AnyObject = &file_urls_only;
+    // SAFETY: an immutable AppKit string constant.
+    let key: &NSString = unsafe { NSPasteboardURLReadingFileURLsOnlyKey };
+    let options = NSDictionary::from_slices(&[key], &[file_urls_only]);
+    // SAFETY: NSURL adopts NSPasteboardReading, and the option value is the
+    // boolean NSNumber AppKit documents for this key.
+    let Some(objects) = (unsafe { pasteboard.readObjectsForClasses_options(&classes, Some(&options)) }) else {
+        return Ok(None);
+    };
+    let mut paths = Vec::new();
+    for object in objects.to_vec() {
+        let Ok(url) = object.downcast::<NSURL>() else { return Ok(None); };
+        let Some(path) = url.to_file_path() else { return Ok(None); };
+        let Some(path) = path.to_str().filter(|path| std::path::Path::new(path).is_absolute()) else { return Ok(None); };
+        paths.push(path.to_string());
+    }
+    Ok(if paths.is_empty() { None } else { Some(paths) })
 }
 
 #[cfg(windows)]

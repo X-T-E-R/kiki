@@ -14,9 +14,17 @@
  * The workspace picker + send path come from the shared `useNewSessionDraft`
  * hook; /new is the single new-session surface (Ctrl+N and the sidebar button
  * navigate here).
+ *
+ * While the server has no model to answer with (`needsProviderSetup`), the
+ * seat holds the connect card instead of the composer and the masthead is the
+ * wordmark alone: there is nothing to type into yet, so neither the claim, the
+ * target row nor the starters are offered. A connection that lands puts the
+ * composer back in the same place with one line saying what is connected. The
+ * tour invitation is the page's only other first-run text (`firstRun/TourLine`).
+ * No dialog opens here, ever.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
@@ -26,6 +34,9 @@ import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed'
 import { Icon } from './icons';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
+import { ConnectedLine } from './firstRun/ConnectedLine';
+import { TourLine } from './firstRun/TourLine';
+import { lazyPage } from './LazyPage';
 import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
@@ -38,8 +49,10 @@ import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
-import { importHistoryPath } from '@kiki/session-core/settings';
+import { isNativeExecutor } from '@kiki/session-core/composer';
+import { importHistoryPath, isFirstRunHintDone, markFirstRunHintDone } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
+import { useExecutorCatalogQuery } from './settings/profileEditor/engines';
 import { composerInputOf } from '../lib/composerInput';
 
 /**
@@ -144,83 +157,10 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
 }
 
 /**
- * Where each connection choice lands. The providers section preselects its
- * lane from the card hash: `#st-card-auth` opens the account sign-in lane,
- * `#st-card-providers-add` the API key / local server lane. Navigating there
- * starts nothing by itself — sign-in and keys stay the user's own action.
+ * The connect card is only needed while the server has no model, so it is
+ * downloaded then, not with the page every conversation opens on.
  */
-const CONNECT_ACCOUNT_HREF = '/settings/ai?tab=providers#st-card-auth';
-const CONNECT_KEY_HREF = '/settings/ai?tab=providers#st-card-providers-add';
-
-/**
- * First-run model connection, shown only when the server reports no provider
- * and no model, i.e. the next send is guaranteed to fail. Exploring the page
- * (starters, discovery, the workspace) works without a model, so at rest this
- * is one quiet line under the starters. Once the user actually tries to send,
- * it becomes the card that explains the fix. Both forms carry the same two
- * choices, each to its own lane in the providers section.
- */
-function ProviderSetupPrompt({ emphasis }: { emphasis: 'quiet' | 'card' }) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const openAccount = () => { void navigate(CONNECT_ACCOUNT_HREF); };
-  const openKey = () => { void navigate(CONNECT_KEY_HREF); };
-
-  if (emphasis === 'quiet') {
-    return (
-      <p
-        data-provider-setup="quiet"
-        className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] text-left text-[12.5px] leading-relaxed text-ink-faint"
-      >
-        <span>{t('new.connect.quiet')}</span>{' '}
-        <button
-          type="button"
-          onClick={openAccount}
-          className="rounded-sm text-ink-soft underline decoration-hairline-strong underline-offset-[3px] hover:text-ink hover:decoration-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          {t('new.connect.account')}
-        </button>
-        <span aria-hidden className="px-1.5">·</span>
-        <button
-          type="button"
-          onClick={openKey}
-          className="rounded-sm text-ink-soft underline decoration-hairline-strong underline-offset-[3px] hover:text-ink hover:decoration-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          {t('new.connect.key')}
-        </button>
-      </p>
-    );
-  }
-
-  return (
-    <div
-      data-provider-setup="card"
-      role="status"
-      className="anim-enter mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-[var(--kiki-sheet-radius)] bg-panel px-4 py-3 text-left shadow-[var(--kiki-sheet-shadow)]"
-    >
-      <p className="font-display text-[15px] font-semibold tracking-tight text-ink">
-        {t('new.connect.title')}
-      </p>
-      <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">{t('new.connect.body')}</p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={openAccount}
-          className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-11"
-        >
-          {t('new.connect.account')}
-        </button>
-        <button
-          type="button"
-          onClick={openKey}
-          className="motion-press h-8 rounded-md border border-hairline px-3 text-[13px] text-ink hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-        >
-          {t('new.connect.key')}
-        </button>
-      </div>
-    </div>
-  );
-}
+const ModelConnectCard = lazyPage(() => import('./firstRun/ModelConnectCard').then((m) => m.ModelConnectCard));
 
 /**
  * Starters, contextualised by the current target: the first one names the
@@ -320,12 +260,35 @@ function NewSessionPageContent({
   const heroAvatarSize = narrow ? 48 : 56;
   const personaPick = useMemo(() => ({ value: personaChip, onChange: state.selectPersona }), [personaChip, state.selectPersona]);
   const echo = useTypingEcho(state.draft);
-  // The connection prompt stays a quiet line until the user actually tries to
-  // send; then it becomes the card. The draft is untouched either way.
-  const [sendAttempted, setSendAttempted] = useState(false);
+  // The connection card repairs native model setup only. An external execution
+  // selection or catalogued external executor keeps the composer in reach even
+  // when its login or setup still needs attention. An unresolved catalog read
+  // cannot prove that no alternative exists.
+  const executorCatalogQuery = useExecutorCatalogQuery();
+  const hasExternalAlternative = executorCatalogQuery.isLoading || executorCatalogQuery.isError
+    || (executorCatalogQuery.data?.items ?? []).some((item) => !isNativeExecutor(item.id) && item.status !== 'unavailable');
+  const [cardHeld, setCardHeld] = useState(false);
+  const connectFirst = isNativeExecutor(state.execution.executor)
+    && !hasExternalAlternative
+    && (state.needsProviderSetup || cardHeld);
+  // Once the card was on screen in this visit and a connection replaced it,
+  // the composer says what got connected. Which way connected, when known,
+  // comes from the card itself.
+  const [cardShown, setCardShown] = useState(false);
+  const [connectedName, setConnectedName] = useState<string | undefined>(undefined);
+  useEffect(() => { if (connectFirst) setCardShown(true); }, [connectFirst]);
+  const justConnected = cardShown && !connectFirst;
+  const onConnected = useCallback((name: string | undefined) => {
+    setConnectedName(name);
+    setCardHeld(false);
+  }, []);
+  const holdCard = useCallback(() => { setCardHeld(true); }, []);
+  const [tourDone, setTourDone] = useState(() => isFirstRunHintDone('tourLine'));
   const stateSend = state.send;
   const send = useCallback((...args: Parameters<NewSessionDraftState['send']>) => {
-    setSendAttempted(true);
+    // The first message is the introduction the tour line was offering.
+    markFirstRunHintDone('tourLine');
+    setTourDone(true);
     return stateSend(...args);
   }, [stateSend]);
 
@@ -357,7 +320,14 @@ function NewSessionPageContent({
   const seat: ConversationSeat = useMemo(
     () => ({
       phase: 'hero',
-      composer: (
+      composer: connectFirst ? (
+        // Nothing to type into yet, so no textarea to keep across the send
+        // hand-off below. Downloaded on first need; until it arrives the seat
+        // stays empty rather than suspending the whole page.
+        <Suspense fallback={null}>
+          <ModelConnectCard onConnected={onConnected} onHold={holdCard} />
+        </Suspense>
+      ) : (
         // Keep the seat's top-level element type identical to the session
         // view's (ContextBreakdownProvider > Composer): a type change here
         // remounts the subtree and destroys the textarea DOM node across the
@@ -404,6 +374,9 @@ function NewSessionPageContent({
       ),
     }),
     [
+      connectFirst,
+      onConnected,
+      holdCard,
       state.busy,
       composerDisabled,
       sendDisabled,
@@ -416,6 +389,7 @@ function NewSessionPageContent({
       personaPick,
       state.inheritedDefault,
       state.modelSource,
+      state.execution,
       state.setExecution,
       state.cancelCreation,
       state.permissionMode,
@@ -525,7 +499,7 @@ function NewSessionPageContent({
                   </blockquote>
                 </div>
               </figure>
-            ) : (
+            ) : connectFirst ? null : (
               <p
                 data-hero-headline
                 className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink-soft"
@@ -547,22 +521,26 @@ function NewSessionPageContent({
               </blockquote>
             ) : null}
           </div>
-          <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
-            <EphemeralOption state={state} />
-            <WorktreeOption state={state} />
-            <span className="ml-auto inline-flex"><LocalSessionsEntry /></span>
-          </div>
-          {showTargetHint ? (
+          {/* Where the session runs only matters once there is a composer to
+              start it from; the connect card stands alone under the wordmark. */}
+          {connectFirst ? null : (
+            <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
+              <EphemeralOption state={state} />
+              <WorktreeOption state={state} />
+              <span className="ml-auto inline-flex"><LocalSessionsEntry /></span>
+            </div>
+          )}
+          {showTargetHint && !connectFirst ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}
-          {state.workspacesError !== null && cwd === '' ? (
+          {state.workspacesError !== null && cwd === '' && !connectFirst ? (
             <div role="alert" data-hero-workspace-failure className="mt-2 text-[12px] text-danger">
               <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
               <button type="button" data-hero-workspace-retry onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
             </div>
           ) : null}
-          {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
+          {!connectFirst && state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
             <p role="alert" className="mt-2 text-[12px] text-danger">{t('selection.workspaceInvalid', { value: state.workspaceId })}</p>
           ) : null}
           {state.creationNotice !== null || state.hasCreationIntent ? (
@@ -596,59 +574,68 @@ function NewSessionPageContent({
       {slots.heroFooter !== null
         ? createPortal(
             <div className="px-4 sm:px-6">
-              {/* Starters belong to the composer: they only fill its draft, so
-                  they hang 8px under the card with no heading of their own and
-                  never send. Quiet at rest (text only), a neutral wash on hover. */}
-              <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] text-left">
-                <div
-                  role="group"
-                  aria-label={t('new.startersAria')}
-                  data-hero-starters
-                  className="motion-stagger -mx-1 mt-2 flex flex-wrap gap-x-0.5 gap-y-1"
-                >
-                  {/*
-                    Bringing an old conversation in is the other way to start
-                    working, and it belongs beside the starters rather than
-                    behind Capabilities → Plugins: a reader who already has the
-                    history should not have to know that a plugin ships it. It
-                    offers itself only where the server can actually read one.
-                  */}
-                  {canImportHistory ? (
-                    <button
-                      type="button"
-                      data-hero-import
-                      onClick={() => { void navigate(importHistoryPath()); }}
-                      className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-                    >
-                      <Icon name="read" size={12} className="text-ink-faint" />
-                      {t('cap.import.entry')}
-                    </button>
-                  ) : null}
-                  {starters.map((starter, index) => (
-                    <button
-                      key={starter.key}
-                      type="button"
-                      data-hero-starter
-                      style={staggerStyle(index)}
-                      onClick={() => {
-                        state.updateDraft(t(starter.draftKey));
-                        focusComposer();
-                      }}
-                      className="motion-press h-7 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-                    >
-                      {starter.named === true
-                        ? t('new.starter.explainNamed', { name: workspaceChipLabel(state) ?? '' })
-                        : t(starter.labelKey)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {state.needsProviderSetup ? (
-                <div className={sendAttempted ? 'mt-6' : 'mt-4'}>
-                  <ProviderSetupPrompt emphasis={sendAttempted ? 'card' : 'quiet'} />
+              {justConnected ? (
+                <div className="mt-1">
+                  <ConnectedLine name={connectedName} model={state.inheritedDefault} />
                 </div>
               ) : null}
+              {/* Starters belong to the composer: they only fill its draft, so
+                  they hang 8px under the card with no heading of their own and
+                  never send. Quiet at rest (text only), a neutral wash on hover.
+                  With the connect card in the composer's place there is no
+                  draft to fill, so there are none. */}
+              {connectFirst ? null : (
+                <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] text-left">
+                  <div
+                    role="group"
+                    aria-label={t('new.startersAria')}
+                    data-hero-starters
+                    className="motion-stagger -mx-1 mt-2 flex flex-wrap gap-x-0.5 gap-y-1"
+                  >
+                    {/*
+                      Bringing an old conversation in is the other way to start
+                      working, and it belongs beside the starters rather than
+                      behind Capabilities → Plugins: a reader who already has the
+                      history should not have to know that a plugin ships it. It
+                      offers itself only where the server can actually read one.
+                    */}
+                    {canImportHistory ? (
+                      <button
+                        type="button"
+                        data-hero-import
+                        onClick={() => { void navigate(importHistoryPath()); }}
+                        className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+                      >
+                        <Icon name="read" size={12} className="text-ink-faint" />
+                        {t('cap.import.entry')}
+                      </button>
+                    ) : null}
+                    {starters.map((starter, index) => (
+                      <button
+                        key={starter.key}
+                        type="button"
+                        data-hero-starter
+                        style={staggerStyle(index)}
+                        onClick={() => {
+                          state.updateDraft(t(starter.draftKey));
+                          focusComposer();
+                        }}
+                        className="motion-press h-7 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+                      >
+                        {starter.named === true
+                          ? t('new.starter.explainNamed', { name: workspaceChipLabel(state) ?? '' })
+                          : t(starter.labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {tourDone ? null : (
+                <div className={connectFirst ? 'mt-1' : 'mt-4'}>
+                  <TourLine onDone={() => { setTourDone(true); }} />
+                </div>
+              )}
             </div>,
             slots.heroFooter,
           )

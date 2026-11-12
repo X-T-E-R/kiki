@@ -1,4 +1,5 @@
-import { accessSync, constants as fsConstants, readdirSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
 import {
@@ -13,8 +14,30 @@ import {
 import { findInlineSkillTokens } from '../../utils/inline-skill-tokens';
 
 const PATH_DELIMITERS = new Set([' ', '\t', '"', "'", '=']);
-const MAX_FALLBACK_SCAN = 2000;
+// The filesystem fallback (no fd) scans asynchronously, breadth first, within
+// an entry and a time budget, and reuses its result for a few seconds so
+// typing after `@` does not rescan on every key.
+const MAX_FALLBACK_SCAN = 20_000;
+const FALLBACK_SCAN_TIME_BUDGET_MS = 1500;
+const FALLBACK_SCAN_CACHE_MS = 5000;
 const MAX_FALLBACK_SUGGESTIONS = 50;
+// Never listed: VCS metadata.
+const FALLBACK_HIDDEN_DIRS = new Set(['.git']);
+// Listed, but never entered: dependency, build and environment trees that
+// would use up the scan budget before the project's own files (fd skips them
+// through .gitignore; the fallback reads no ignore files).
+const FALLBACK_UNSCANNED_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'target',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.next',
+  '.turbo',
+  '.cache',
+]);
 
 export interface SlashAutocompleteCommand extends SlashCommand {
   readonly aliases?: readonly string[];
@@ -40,6 +63,9 @@ interface FsMentionCandidate {
 export class FileMentionProvider implements AutocompleteProvider {
   private readonly inner: CombinedAutocompleteProvider;
   private readonly additionalDirs: readonly string[];
+  private fsScan:
+    | { readonly startedAt: number; readonly candidates: Promise<FsMentionCandidate[]> }
+    | undefined;
 
   constructor(
     private readonly slashCommands: SlashAutocompleteCommand[],
@@ -83,23 +109,13 @@ export class FileMentionProvider implements AutocompleteProvider {
       // (e.g. the managed binary was removed or lost execute permission), or if
       // spawning it fails below. A genuine fd no-match still returns null.
       if (this.fdPath === null || !isExecutableFd(this.fdPath)) {
-        return getFsMentionSuggestions(
-          this.workDir,
-          this.additionalDirs,
-          atPrefix,
-          options.signal,
-        );
+        return this.getFsMentionSuggestions(atPrefix, options.signal);
       }
       try {
         return await this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
       } catch {
         // If fd fails to spawn unexpectedly, keep @ completion usable.
-        return getFsMentionSuggestions(
-          this.workDir,
-          this.additionalDirs,
-          atPrefix,
-          options.signal,
-        );
+        return this.getFsMentionSuggestions(atPrefix, options.signal);
       }
     }
 
@@ -238,6 +254,20 @@ export class FileMentionProvider implements AutocompleteProvider {
     } catch {
       return null;
     }
+  }
+
+  private getFsMentionSuggestions(
+    atPrefix: string,
+    signal: AbortSignal,
+  ): Promise<AutocompleteSuggestions | null> {
+    const now = Date.now();
+    if (this.fsScan === undefined || now - this.fsScan.startedAt > FALLBACK_SCAN_CACHE_MS) {
+      this.fsScan = {
+        startedAt: now,
+        candidates: collectFsMentionCandidates(this.workDir, this.additionalDirs),
+      };
+    }
+    return getFsMentionSuggestionsFrom(this.fsScan.candidates, atPrefix, signal);
   }
 
   private getInlineSkillSuggestions(prefix: string): AutocompleteSuggestions | null {
@@ -440,17 +470,16 @@ function applyPathCompletion(
   };
 }
 
-function getFsMentionSuggestions(
-  workDir: string,
-  additionalDirs: readonly string[],
+async function getFsMentionSuggestionsFrom(
+  scan: Promise<FsMentionCandidate[]>,
   atPrefix: string,
   signal: AbortSignal,
-): AutocompleteSuggestions | null {
+): Promise<AutocompleteSuggestions | null> {
   if (signal.aborted) return null;
 
   const isQuotedPrefix = atPrefix.startsWith('@"');
   const query = isQuotedPrefix ? atPrefix.slice(2) : atPrefix.slice(1);
-  const candidates = collectFsMentionCandidates(workDir, additionalDirs, signal);
+  const candidates = await scan;
   if (candidates.length === 0 || signal.aborted) return null;
 
   const ranked = rankFsMentionCandidates(candidates, query).slice(0, MAX_FALLBACK_SUGGESTIONS);
@@ -462,11 +491,16 @@ function getFsMentionSuggestions(
   };
 }
 
-function collectFsMentionCandidates(
+/**
+ * Breadth first, so shallow project files come before deep ones, and
+ * asynchronous: each directory read yields to the event loop, so keys keep
+ * flowing while it runs. Not tied to one request's abort signal — the result
+ * is shared by the keystrokes that follow.
+ */
+async function collectFsMentionCandidates(
   workDir: string,
   additionalDirs: readonly string[],
-  signal: AbortSignal,
-): FsMentionCandidate[] {
+): Promise<FsMentionCandidate[]> {
   const candidatesByAbsolutePath = new Map<string, FsMentionCandidate>();
   const roots = [
     { root: normalizePath(resolve(workDir)), isAdditionalDir: false },
@@ -475,25 +509,26 @@ function collectFsMentionCandidates(
       isAdditionalDir: true,
     })),
   ];
+  const deadline = Date.now() + FALLBACK_SCAN_TIME_BUDGET_MS;
   let scanned = 0;
 
   for (const { root, isAdditionalDir } of roots) {
-    const stack = [''];
+    const queue = [''];
 
-    while (stack.length > 0 && scanned < MAX_FALLBACK_SCAN) {
-      if (signal.aborted) break;
-      const relativeDir = stack.pop() ?? '';
+    for (let next = 0; next < queue.length && scanned < MAX_FALLBACK_SCAN; next++) {
+      if (Date.now() > deadline) break;
+      const relativeDir = queue[next] ?? '';
       const absoluteDir = relativeDir.length === 0 ? root : join(root, relativeDir);
       let entries;
       try {
-        entries = readdirSync(absoluteDir, { withFileTypes: true });
+        entries = await readdir(absoluteDir, { withFileTypes: true });
       } catch {
         continue;
       }
 
       for (const entry of entries) {
-        if (signal.aborted || scanned >= MAX_FALLBACK_SCAN) break;
-        if (entry.name === '.git') continue;
+        if (scanned >= MAX_FALLBACK_SCAN) break;
+        if (FALLBACK_HIDDEN_DIRS.has(entry.name)) continue;
 
         const relativePath = normalizePath(
           relativeDir.length === 0 ? entry.name : join(relativeDir, entry.name),
@@ -503,7 +538,7 @@ function collectFsMentionCandidates(
         let isDirectory = entry.isDirectory();
         if (!isDirectory && isSymlink) {
           try {
-            isDirectory = statSync(absolutePath).isDirectory();
+            isDirectory = (await stat(absolutePath)).isDirectory();
           } catch {
             // Broken symlink or permission error — keep it as a file candidate.
           }
@@ -517,8 +552,8 @@ function collectFsMentionCandidates(
             isDirectory,
           });
         }
-        if (isDirectory && !isSymlink) {
-          stack.push(relativePath);
+        if (isDirectory && !isSymlink && !FALLBACK_UNSCANNED_DIRS.has(entry.name)) {
+          queue.push(relativePath);
         }
       }
     }

@@ -54,7 +54,7 @@ export function InstalledPluginsList() {
       id="st-card-plugins"
       title={t('st.plugins.installedTitle')}
       actions={(
-        <Link to="/capabilities" className={LINK_CLASS} data-plugins-market-link>
+        <Link to="/capabilities?view=market" className={LINK_CLASS} data-plugins-market-link>
           {t('st.plugins.browseMarket')}
           <Icon name="arrowRight" size={14} />
         </Link>

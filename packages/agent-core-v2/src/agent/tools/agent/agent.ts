@@ -51,9 +51,9 @@ export const SubagentToolInputSchema = z.preprocess(
       ),
     source_ref: z.string().trim().min(1).optional().describe('Reference id from a server-generated agent_ref in a visible user message. Links this run to that message; it does not choose a target or grant permission.'),
     profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
-    context_mode: z.enum(['direct', 'compact', 'fresh']).optional().describe('Explicit resume context choice: direct retains the current context; compact summarizes it with the current model before continuing; fresh rebuilds context from saved task state without calling the old model. Keeps the same child ID, task notes, Todo, history and workspace. Requires resume, works without changing model, and confirms an explicit model_alias change within existing policy. Native context rebuilding only. Mutually exclusive with new_window and allow_model_change, including false values.'),
-    allow_model_change: z.boolean().optional().describe('Legacy confirmation for an explicit model_alias change on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. Requires resume and model_alias. Mutually exclusive with context_mode. Does not bypass role, caller, route or executor restrictions.'),
-    new_window: z.boolean().optional().describe('Legacy fresh-context resume of the same child, preserving task state and history without calling the old model. Requires resume and is mutually exclusive with context_mode. Also confirms an explicit model_alias change; false does not veto allow_model_change:true.'),
+    context_mode: z.enum(['direct', 'compact', 'fresh']).optional().describe('Explicit resume context choice: direct retains the current context; compact summarizes it with the current model before continuing; fresh rebuilds context from saved task state without calling the old model. Keeps the same child ID, task notes, Todo, history and workspace. Requires resume, works without changing model, and confirms an explicit model_alias change within existing policy. Native context rebuilding only. Mutually exclusive with new_window:true and allow_model_change:true; false values are ignored.'),
+    allow_model_change: z.boolean().optional().describe('Legacy confirmation for an explicit model_alias change on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. When true, requires resume and model_alias and is mutually exclusive with context_mode; false is ignored. Does not bypass role, caller, route or executor restrictions.'),
+    new_window: z.boolean().optional().describe('Legacy fresh-context resume of the same child, preserving task state and history without calling the old model. When true, requires resume and is mutually exclusive with context_mode; false is ignored. Also confirms an explicit model_alias change; false does not veto allow_model_change:true.'),
     allow_parent_notify: z.boolean().optional().describe('Override AgentNotify availability for this child. On a new agent, omission uses the selected profile setting, which defaults to enabled. On resume, omission preserves the saved setting. This cannot override the global [agents].notify_parent switch or tool policy.'),
     tools: z.array(z.string().trim().min(1)).optional().describe('Replace the resolved child tool selection. A lone * keeps ordinary tools without opting in to restricted groups. For browser control use ["*", "BrowserConnections", "BrowserTabs", "browser__*"]; for computer control add "mcp__kiki-computer__*" (or the actual installed MCP server name). [] selects no business tools and revokes temporary access on resume. New agents default to the profile selection; omission on resume preserves the saved override. Denies, caller ceilings, group switches, connection allowsets and read-only restrictions still apply. Native executor only.'),
     disallowed_tools: z.array(z.string().trim().min(1)).optional().describe('Additional denied tools for this child binding. Omission on resume preserves the saved call-level deny; an explicit list replaces that layer, and [] clears only that layer, not profile or ancestor denies. Native executor only.'),
@@ -61,7 +61,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires an explicit context_mode or legacy allow_model_change:true / new_window:true. A running child cannot be resumed; use AgentSend. If the child is still finishing earlier work, the prompt is saved and the receipt reports status: queued.',
+        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route; a name or profile equal to the child\'s own is ignored. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires an explicit context_mode or legacy allow_model_change:true / new_window:true. A running child cannot be resumed; use AgentSend. If the child is still finishing earlier work, the prompt is saved and the receipt reports status: queued.',
       ),
     background: z
       .boolean()
@@ -98,34 +98,8 @@ export const SubagentToolInputSchema = z.preprocess(
     if (args.model_alias === 'inherit') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: INHERIT_MODEL_ALIAS_UNAVAILABLE, path: ['model_alias'] });
     }
-    if (args.resume?.trim() && args.executor_launch !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set executor_launch when continuing an existing agent; its launch patch is fixed at creation', path: ['executor_launch'] });
-    }
-    if (args.profile_file !== undefined && (args.profile !== undefined || args.route !== undefined)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profile_file is mutually exclusive with profile and route' });
-    }
-    if (args.resume?.trim() && (args.route !== undefined || args.profile_file !== undefined || args.profile !== undefined)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set profile, profile_file, or route when continuing an existing agent' });
-    }
-    if (args.context_mode !== undefined) {
-      if (!args.resume?.trim()) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'context_mode requires resume', path: ['context_mode'] });
-      }
-      if (args.new_window !== undefined || args.allow_model_change !== undefined) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'context_mode is mutually exclusive with new_window and allow_model_change, including false values', path: ['context_mode'] });
-      }
-    }
-    if (args.allow_model_change !== undefined && (!args.resume?.trim() || args.model_alias === undefined)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'allow_model_change requires resume and model_alias' });
-    }
-    if (args.new_window !== undefined && !args.resume?.trim()) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'new_window requires resume; it continues an existing child with fresh context', path: ['new_window'] });
-    }
-    if (args.resume?.trim() && args.name !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Cannot set name when continuing an existing agent; the name was fixed at creation',
-      });
+    for (const message of subagentArgumentConflicts(args)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message });
     }
     if (args.name !== undefined) {
       const issue = agentNameIssue(args.name);
@@ -133,13 +107,42 @@ export const SubagentToolInputSchema = z.preprocess(
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `name ${issue}`, path: ['name'] });
       }
     }
-    if (args.resume?.trim() && (args.workDir !== undefined || args.additionalDirs !== undefined)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set workDir or additionalDirs when continuing an existing agent; its workspace roots are fixed at creation.' });
-    }
   }),
 );
 
 export type SubagentToolInput = z.infer<typeof SubagentToolInputSchema>;
+
+type SubagentArgumentSelectors = Pick<SubagentToolInput,
+  'resume' | 'profile' | 'profile_file' | 'route' | 'name' | 'context_mode' | 'allow_model_change' | 'new_window' | 'model_alias'>;
+
+/** Cross-field conflicts among AgentRun's target and resume options, in the order they are reported. A false `new_window` or `allow_model_change` changes nothing and is never a conflict. */
+export function subagentArgumentConflicts(args: SubagentArgumentSelectors): string[] {
+  const resume = (args.resume?.trim().length ?? 0) > 0;
+  const profile = (args.profile?.length ?? 0) > 0;
+  const conflicts: string[] = [];
+  if (resume && (profile || args.profile_file !== undefined || args.route !== undefined)) {
+    conflicts.push('Cannot set profile, profile_file, or route when continuing an existing agent; pass only resume with the name or agent id.');
+  }
+  if (resume && args.name !== undefined) {
+    conflicts.push('Cannot set name when continuing an existing agent; the name was fixed at creation.');
+  }
+  if (args.profile_file !== undefined && (profile || args.route !== undefined)) {
+    conflicts.push('profile_file is mutually exclusive with profile and route.');
+  }
+  if (args.context_mode !== undefined && !resume) {
+    conflicts.push('context_mode requires resume; it chooses how an existing child continues.');
+  }
+  if (args.context_mode !== undefined && (args.new_window === true || args.allow_model_change === true)) {
+    conflicts.push('context_mode replaces new_window and allow_model_change; send context_mode without them.');
+  }
+  if (args.allow_model_change === true && (!resume || args.model_alias === undefined)) {
+    conflicts.push('allow_model_change requires resume and model_alias.');
+  }
+  if (args.new_window === true && !resume) {
+    conflicts.push('new_window requires resume; it continues an existing child with fresh context.');
+  }
+  return conflicts;
+}
 
 export const BACKGROUND_AGENT_UNAVAILABLE =
   'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled. Main defaults to background when background is omitted; no foreground fallback was attempted. Enable those tools, or retry with background:false for a genuine synchronous dependency.';

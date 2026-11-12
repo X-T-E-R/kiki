@@ -1,7 +1,8 @@
 import { useEffect, useId, useState } from 'react';
 
 import { useI18n } from '../../i18n';
-import { SavedTick } from '../controls';
+import { isImeKeyEvent } from '../../lib/shortcuts';
+import { FeedbackLine, SavedTick } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { useDirtyReporter } from '../dirtyGuard';
 import { SearchableSelect } from '../SearchableSelect';
@@ -98,6 +99,9 @@ export function CommitInput({ id, value, onCommit, validate, disabled = false, c
       onChange={(event) => { setText(event.target.value); if (issue !== null) setIssue(null); }}
       onBlur={commit}
       onKeyDown={(event) => {
+        // An IME's Enter commits its candidate and its Escape cancels it;
+        // neither is meant for the field.
+        if (isImeKeyEvent(event)) return;
         if (event.key === 'Enter') { event.preventDefault(); commit(); }
         else if (event.key === 'Escape') { setText(value); setIssue(null); }
       }} />
@@ -233,4 +237,96 @@ export function SettingsSelect<T extends string>({ id, choices, value, onChange,
     placement="auto"
     buttonClassName={`${trigger} ${mono ? 'font-mono' : ''} ${className ?? ''}`} />;
   return dataAttr === undefined ? select : <div className="contents" {...{ [dataAttr]: value }}>{select}</div>;
+}
+
+/**
+ * A link or text button in settings ("Change", "Test with sample data", "View
+ * archive", "Retry"): ink, underlined on hover. The accent is kept for the one
+ * primary button on a screen and for what needs the user, so a column of quiet
+ * verbs never reads as a column of alerts (settings conventions §2).
+ */
+export const TEXT_BUTTON =
+  'rounded text-[12px] font-medium text-ink underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline';
+
+/**
+ * The tab strip of a tabbed settings page. The page owns the `?tab=` address
+ * and passes the selection back in; this only draws the strip, in the one look
+ * every settings page uses (an ink underline, never an accent fill).
+ */
+export function SettingsTabs<T extends string>({ tabs, current, ariaLabel, labelOf, onSelect, dataAttr = 'data-settings-tab' }: {
+  tabs: readonly T[];
+  current: T;
+  ariaLabel: string;
+  labelOf: (tab: T) => string;
+  onSelect: (tab: T) => void;
+  /** Per-tab data attribute name carrying the tab id (e.g. `data-ai-tab`). */
+  dataAttr?: string;
+}) {
+  return <div role="tablist" aria-label={ariaLabel} className="flex flex-wrap gap-1 border-b border-hairline">
+    {tabs.map((tab) => {
+      const active = tab === current;
+      return <button key={tab} type="button" role="tab" aria-selected={active}
+        {...{ [dataAttr]: tab }}
+        onClick={() => { if (!active) onSelect(tab); }}
+        className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
+          active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+        }`}>
+        {labelOf(tab)}
+      </button>;
+    })}
+  </div>;
+}
+
+/** How long a read may take before the page admits it is still reading. */
+export const LOADING_DELAY_MS = 300;
+
+/**
+ * A read in progress (settings conventions §3.6). Nothing for the first
+ * `LOADING_DELAY_MS`, so a fast read never flashes a placeholder; after that
+ * either `rows` placeholder rows of the real row height (lists) or the one
+ * `label` line ("Loading connections…"). `label` also names the placeholder
+ * rows for assistive tech.
+ */
+export function SettingsLoading({ label, rows, rowHeight = 56 }: {
+  label: string;
+  /** Draw this many empty rows instead of the label line. */
+  rows?: number;
+  rowHeight?: number;
+}) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => { setShown(true); }, LOADING_DELAY_MS);
+    return () => { clearTimeout(timer); };
+  }, []);
+  if (!shown) return null;
+  if (rows === undefined) return <p role="status" data-settings-loading className="text-[12px] text-ink-faint">{label}</p>;
+  return <div role="status" aria-label={label} data-settings-loading className="overflow-hidden rounded-lg border border-hairline bg-panel">
+    {Array.from({ length: rows }, (_, index) => (
+      <div key={index} style={{ height: rowHeight }} className="border-b border-hairline last:border-b-0">
+        <div className="mx-3 mt-4 h-3 w-1/3 rounded bg-ink/[0.05]" />
+      </div>
+    ))}
+  </div>;
+}
+
+/**
+ * A read that failed, said where the content would have been (settings
+ * conventions §3.6): one `FeedbackLine` reading "Couldn't {do what}: {reason}.
+ * {How to recover}" — the caller composes it, with the server's own wording as
+ * the reason — and Retry beside it when the read can be repeated.
+ */
+export function SettingsLoadFailure({ message, onRetry, retrying = false }: {
+  message: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  const { t } = useI18n();
+  return <div data-settings-load-failure className="flex flex-wrap items-start gap-x-3 gap-y-1">
+    <FeedbackLine feedback={{ tone: 'error', text: message }} />
+    {onRetry !== undefined ? (
+      <button type="button" data-settings-retry disabled={retrying} onClick={onRetry} className={`leading-[18px] ${TEXT_BUTTON}`}>
+        {t('common.retry')}
+      </button>
+    ) : null}
+  </div>;
 }

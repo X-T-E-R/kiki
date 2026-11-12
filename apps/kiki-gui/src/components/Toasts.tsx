@@ -220,7 +220,7 @@ export function Toasts() {
     <div
       data-toast-stack={anchor === null ? 'viewport' : 'anchored'}
       className={`pointer-events-none flex flex-col items-end gap-2 ${
-        anchor === null ? 'fixed right-4 bottom-4 z-[60]' : 'absolute right-0 bottom-0 max-w-full'
+        anchor === null ? 'fixed right-4 bottom-[max(1rem,var(--kiki-safe-bottom-inset))] z-[60]' : 'absolute right-0 bottom-0 max-w-full'
       }`}
     >
       {toasts.map((toast) => (

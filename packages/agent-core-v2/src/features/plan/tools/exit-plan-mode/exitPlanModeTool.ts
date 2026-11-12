@@ -10,6 +10,7 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import DESCRIPTION from './exit-plan-mode.md?raw';
 import {
   ExitPlanModeInputSchema,
+  exitPlanModeOptionsIssue,
   IExitPlanModeTool,
   type ExitPlanModeInput,
   type ExitPlanModePlanSource,
@@ -32,6 +33,8 @@ export class ExitPlanModeTool implements IExitPlanModeTool {
   ) {}
 
   async resolveExecution(args: ExitPlanModeInput): Promise<ToolExecution> {
+    const optionsIssue = exitPlanModeOptionsIssue(args.options);
+    if (optionsIssue !== undefined) return { isError: true, output: optionsIssue };
     return {
       description: 'Presenting plan and exiting plan mode',
       display: await this.resolvePlanReviewDisplay(args),

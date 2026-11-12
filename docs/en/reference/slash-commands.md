@@ -5,7 +5,7 @@ Slash commands are built-in control commands provided by Kiki in the interactive
 After typing the full command name, press `Enter` to execute. If the `/`-prefixed input does not match any built-in or Skill command, it is sent to the Agent as a regular message.
 
 ::: tip
-Some commands are only available in the idle state. Executing these commands while a session is streaming output or compacting context will be blocked — press `Esc` or `Ctrl-C` to interrupt first. The "Always available" column in the tables below indicates commands that are also available during streaming.
+Some commands are only available in the idle state. Executing these commands while a session is streaming output or compacting context will be blocked — interrupt first with `Esc` (twice if the input box holds a draft), `Ctrl-C`, or `/stop`. The "Always available" column in the tables below indicates commands that are also available during streaming.
 :::
 
 ## Account & Configuration
@@ -52,6 +52,9 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/plan [on\|off]` | — | Toggle Plan mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. Simply toggling does not create an empty plan file | Yes |
 | `/plan clear` | — | Clear the current plan | No |
 | `/goal [...]` | — | Start or manage an autonomous goal | See below |
+| `/stop` | `/interrupt` | Interrupt the running turn, like `Esc` | Yes |
+| `/expand` | `/output` | Expand or collapse tool output, like `Ctrl-O` | Yes |
+| `/todos` | — | Expand or collapse a truncated todo list, like `Ctrl-T` | Yes |
 
 ::: warning
 `/yolo` skips approval for regular tool calls. Please make sure you understand the potential risks before enabling it. Plan mode exit approval is not bypassed by `/yolo`; `Bash` inside Plan mode is still subject to the regular `/yolo` allow rules.
@@ -100,12 +103,14 @@ Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and
 | Command | Alias | Description | Always available |
 | --- | --- | --- | --- |
 | `/help` | `/h`, `/?` | Open scrollable help with command usage, aliases, descriptions, supported/disabled status, input shortcuts, and the local docs path. Type `/` in the input box to browse current Skills and agent profiles. See [Help navigation](./keyboard.md#popup-mode) | Yes |
-| `/btw [question]` | — | Open a side conversation in a forked sub-Agent without affecting the current main Agent turn; without a question, opens the panel first to wait for input | Yes |
+| `/btw <question>` | — | Ask a forked sub-Agent a side question without affecting the current main Agent turn; the question and its answer appear in the conversation view | Yes |
 | `/usage` | — | Show token usage, context consumption, and quota information | Yes |
 | `/status` | — | Show the current session runtime state: version, model, working directory, permission mode, etc. | Yes |
 | `/mcp` | — | List MCP servers and their connection status in the current session | Yes |
 | `/plugins` | — | Open the interactive plugin manager — see [Plugins](../customization/plugins.md) for installing from a source and the one-time consent a plugin running its own code needs | Yes |
 | `/version` | — | Display the Kiki version number | Yes |
+
+Read-outs such as `/status`, `/usage`, `/mcp`, `/experiments`, `/settings`, and listings from `/plugins` and `/provider` appear in the conversation view as local notes. They are not sent to the agent, and they stay until you switch sessions.
 
 ## Exit
 

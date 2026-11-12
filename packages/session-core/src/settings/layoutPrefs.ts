@@ -60,6 +60,28 @@ export const DEFAULT_PINNED_NAV_ITEMS: readonly SidebarNavKey[] = [
   'usage',
 ];
 
+const PHONE_PINNED_NAV_ITEMS: readonly SidebarNavKey[] = [];
+
+/**
+ * The pinned tools a device shows. A phone that has never saved a choice
+ * starts with none pinned, so its drawer opens on the conversation list
+ * rather than a column of tool rows; any saved choice — made on the device
+ * or brought in by a settings import — wins everywhere.
+ *
+ * "Never saved" is the default list itself, by identity: reading storage
+ * without a stored list yields `DEFAULT_PINNED_NAV_ITEMS`, while a stored,
+ * imported or chosen list is always an array of its own, even when it holds
+ * the same three entries.
+ */
+export function shownPinnedNavItems(
+  preferences: Pick<LayoutPreferences, 'pinnedNavItems'>,
+  phone: boolean,
+): readonly SidebarNavKey[] {
+  return phone && preferences.pinnedNavItems === DEFAULT_PINNED_NAV_ITEMS
+    ? PHONE_PINNED_NAV_ITEMS
+    : preferences.pinnedNavItems;
+}
+
 export interface LayoutPreferences extends SessionListPreferences {
   /** Sidebar (left) width in px. */
   sidebarWidth: number;
@@ -71,6 +93,13 @@ export interface LayoutPreferences extends SessionListPreferences {
    * `boolean`: user explicit toggle choice overriding automatic breakpoint.
    */
   sidebarCollapsed?: boolean;
+  /**
+   * Last open/closed choice for the docked right rail (wide layouts only; the
+   * narrow overlay rail opens per visit).
+   * `undefined`: follow the `railOpenByDefault` setting.
+   * `boolean`: the user's explicit toggle, kept across sessions and reloads.
+   */
+  railOpen?: boolean;
   /**
    * Navigation destinations shown directly in the primary nav. The rest are
    * tucked into the secondary "More tools" section below it.
@@ -160,6 +189,7 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarWidth = stored['sidebarWidth'];
   const railWidth = stored['railWidth'];
   const sidebarCollapsed = stored['sidebarCollapsed'];
+  const railOpen = stored['railOpen'];
   const pinnedNavItems = parsePinnedNavItems(stored['pinnedNavItems']);
   const sidebarNavSectionCollapsed = typeof stored['sidebarNavSectionCollapsed'] === 'boolean'
     ? stored['sidebarNavSectionCollapsed']
@@ -179,6 +209,7 @@ export function readLayoutPreferences(): LayoutPreferences {
       RAIL_MAX_WIDTH,
     ),
     sidebarCollapsed: typeof sidebarCollapsed === 'boolean' ? sidebarCollapsed : undefined,
+    railOpen: typeof railOpen === 'boolean' ? railOpen : undefined,
     pinnedNavItems,
     sidebarNavSectionCollapsed,
   };
@@ -235,6 +266,11 @@ export function layoutPreferencesSnapshot(): LayoutPreferences {
   return snapshotCache;
 }
 
+/** Test-only: drop the cached snapshot so the next read comes from storage. */
+export function resetLayoutPreferencesForTests(): void {
+  snapshotCache = undefined;
+}
+
 export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): LayoutPreferences {
   const current = layoutPreferencesSnapshot();
   const next: LayoutPreferences = {
@@ -243,6 +279,7 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
     sidebarWidth: clamp(patch.sidebarWidth ?? current.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
     railWidth: clamp(patch.railWidth ?? current.railWidth, RAIL_MIN_WIDTH, RAIL_MAX_WIDTH),
     sidebarCollapsed: patch.sidebarCollapsed !== undefined ? patch.sidebarCollapsed : current.sidebarCollapsed,
+    railOpen: patch.railOpen !== undefined ? patch.railOpen : current.railOpen,
     pinnedNavItems: patch.pinnedNavItems !== undefined
       ? parsePinnedNavItems(patch.pinnedNavItems)
       : current.pinnedNavItems,
@@ -250,8 +287,14 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
       ? patch.sidebarNavSectionCollapsed
       : current.sidebarNavSectionCollapsed,
   };
+  // Every write stores the whole record, so an unrelated write (a width, the
+  // grouping) would otherwise save the default tool list as if it had been
+  // chosen. Only a list someone actually set is stored; the default stays
+  // implicit, which is what lets a phone apply its own (`shownPinnedNavItems`).
+  const { pinnedNavItems: _unsavedDefault, ...withoutPinned } = next;
+  const stored = next.pinnedNavItems === DEFAULT_PINNED_NAV_ITEMS ? withoutPinned : next;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
   } catch {
     // Storage is a convenience; in-memory state remains authoritative.
   }

@@ -2,8 +2,7 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
-import { resolvePathAccessPath } from '#/tool/path-access';
-import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
+import { loadDispatchProfileFile, inheritProfileFileSources, resolveDispatchProfilePath } from '#/session/dispatch/profileFile';
 import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from '#/session/dispatch/resume';
 import { evaluateDispatchAdmission, tightenDispatchLaunchPolicy, type DispatchLaunchPolicy } from '#/session/dispatch/launchPolicy';
 import {
@@ -93,6 +92,7 @@ import {
   RESUMED_LABEL,
   SUBAGENT_STOPPED_MESSAGE,
   SubagentToolInputSchema,
+  subagentArgumentConflicts,
   USER_INTERRUPTED_SUBAGENT_MESSAGE,
   type SubagentToolInput,
 } from './agent';
@@ -112,6 +112,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
 const PARENT_NOTIFY_DESCRIPTION =
   'Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.';
 const AGENT_RUN_SLOW_PHASE_MS = 1000;
+const RESUME_FIXED_ARGUMENTS = ['workDir', 'additionalDirs', 'executor_launch'] as const;
 
 type AgentRunPhase = 'launch_prepare' | 'dispatch' | 'started' | 'task_register';
 
@@ -292,30 +293,28 @@ export class SubagentTool implements ISubagentTool {
     }));
   }
 
-  async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
-    if (args.model_alias?.trim() === 'inherit') {
+  async resolveExecution(input: SubagentToolInput): Promise<ToolExecution> {
+    if (input.model_alias?.trim() === 'inherit') {
       return { output: INHERIT_MODEL_ALIAS_UNAVAILABLE, isError: true };
     }
     const capturedLaunchPolicy = this.dispatch.readLaunchPolicy(this.callerAgentId);
-    const admission = evaluateDispatchAdmission(capturedLaunchPolicy, args.resume?.trim() ? 'resume' : 'spawn');
+    const admission = evaluateDispatchAdmission(capturedLaunchPolicy, input.resume?.trim() ? 'resume' : 'spawn');
     if (!admission.allowed) return { output: admission.reason!, isError: true };
+    const normalized = await this.withoutRedundantArguments(input);
+    const conflict = subagentArgumentConflicts(normalized)[0];
+    if (conflict !== undefined) return { output: conflict, isError: true };
+    const notAppliedOnResume = normalized.resume?.trim()
+      ? RESUME_FIXED_ARGUMENTS.filter((key) => normalized[key] !== undefined)
+      : [];
+    const args: SubagentToolInput = notAppliedOnResume.length === 0
+      ? normalized
+      : { ...normalized, workDir: undefined, additionalDirs: undefined, executor_launch: undefined };
+    const resumeNote = notAppliedOnResume.length === 0
+      ? undefined
+      : `Note: ${notAppliedOnResume.join(', ')} ${notAppliedOnResume.length === 1 ? 'was' : 'were'} not applied. A resumed child keeps the working directory, additional directories and executor launch settings it was created with; start a new child without resume to use different ones.`;
     const requestedProfileName = args.profile?.length ? args.profile : undefined;
     const requestedRoute = args.route?.trim();
     const resumeAgentId = args.resume?.trim();
-
-    if (
-      resumeAgentId !== undefined &&
-      resumeAgentId.length > 0 &&
-      requestedProfileName !== undefined
-    ) {
-      return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
-    }
-    if (resumeAgentId !== undefined && resumeAgentId.length > 0 && requestedRoute !== undefined) {
-      return { output: 'Cannot set route when resuming an existing agent.', isError: true };
-    }
-    if (args.profile_file !== undefined && (resumeAgentId || requestedProfileName || requestedRoute)) {
-      return { output: 'profile_file is only for a new agent and is mutually exclusive with profile and route.', isError: true };
-    }
 
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
@@ -337,13 +336,13 @@ export class SubagentTool implements ISubagentTool {
     );
     let filePath: string | undefined;
     if (args.profile_file !== undefined) {
-      const view = new RuntimeWorkspaceView(runtime, rootsForResolution);
-      filePath = resolvePathAccessPath(args.profile_file, {
-        env: runtime.environment,
-        workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
-        operation: 'read',
-      });
-      view.resolve(filePath, view.workDir, true);
+      const lease = this.runtime.acquire(['fs']);
+      try {
+        if (lease.runtime.identity.generation !== runtime.identity.generation) {
+          return { isError: true, output: 'Runtime changed before profile file admission. Retry the tool call.' };
+        }
+        filePath = await resolveDispatchProfilePath(args.profile_file, lease.runtime, rootsForResolution);
+      } finally { lease.dispose(); }
     }
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
@@ -359,7 +358,11 @@ export class SubagentTool implements ISubagentTool {
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots),
+      execute: async (ctx) => {
+        const result = await this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+        if (resumeNote === undefined || result.isError === true) return result;
+        return { ...result, note: result.note === undefined ? resumeNote : `${resumeNote}\n${result.note}` };
+      },
     };
   }
 
@@ -383,6 +386,36 @@ export class SubagentTool implements ISubagentTool {
       ErrorCodes.PROFILE_UNKNOWN,
       'No agent profile specified and [subagent].default_profile is explicitly blank. Pass an explicit profile, route, or profile_file, or configure a default profile name.',
     );
+  }
+
+  private async withoutRedundantArguments(args: SubagentToolInput): Promise<SubagentToolInput> {
+    const resume = args.resume?.trim();
+    const dropNewWindow = args.new_window === false && (!resume || args.context_mode !== undefined);
+    const dropAllowModelChange = args.allow_model_change === false &&
+      (!resume || args.model_alias === undefined || args.context_mode !== undefined);
+    let normalized: SubagentToolInput = dropNewWindow || dropAllowModelChange
+      ? {
+          ...args,
+          new_window: dropNewWindow ? undefined : args.new_window,
+          allow_model_change: dropAllowModelChange ? undefined : args.allow_model_change,
+        }
+      : args;
+    if (!resume || (!normalized.profile?.length && normalized.name === undefined)) return normalized;
+    const profileName = normalized.profile?.length ? await this.resumeProfileName(resume) : undefined;
+    if (profileName !== undefined && normalized.profile === profileName) normalized = { ...normalized, profile: undefined };
+    if (normalized.name !== undefined && normalized.name.trim() === await this.resumeName(resume)) {
+      normalized = { ...normalized, name: undefined };
+    }
+    return normalized;
+  }
+
+  private async resumeName(ref: string): Promise<string | undefined> {
+    const agents = (await this.metadata.read()).agents ?? {};
+    const matches = Object.entries(agents).filter(([agentId, meta]) =>
+      subagentParentAgentId(meta) === this.callerAgentId &&
+      (agentId === ref || meta.labels?.[COLLABORATION_TASK_NAME_LABEL] === ref),
+    );
+    return matches.length === 1 ? matches[0]![1].labels?.[COLLABORATION_TASK_NAME_LABEL] : undefined;
   }
 
   private async resumeProfileName(ref: string): Promise<string | undefined> {
@@ -897,10 +930,11 @@ export function bindingResultLines(handle: Omit<SubagentHandle, 'completion'> & 
     ...(handle.model === undefined ? [] : [`actual_model: ${handle.model}`]),
     ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
     ...(handle.dispatchDecision === undefined ? [] : [
-      `dispatch_policy: ${handle.dispatchDecision.policyMode}`,
-      `selection_kind: ${handle.dispatchDecision.selectionKind}`,
-      `selection_origin: ${handle.dispatchDecision.selectionOrigin}`,
-      `recommendation_status: ${handle.dispatchDecision.recommendationStatus}`,
+      ...(handle.dispatchDecision.policyMode === 'fixed' ? [] : [`dispatch_policy: ${handle.dispatchDecision.policyMode}`]),
+      ...(handle.dispatchDecision.selectionKind === 'profile' ? [] : [`selection_kind: ${handle.dispatchDecision.selectionKind}`]),
+      ...(handle.dispatchDecision.selectionOrigin === 'explicit' ? [] : [`selection_origin: ${handle.dispatchDecision.selectionOrigin}`]),
+      ...(handle.dispatchDecision.recommendationStatus === 'preferred' || handle.dispatchDecision.recommendationStatus === 'unconfigured'
+        ? [] : [`recommendation_status: ${handle.dispatchDecision.recommendationStatus}`]),
       ...(handle.dispatchDecision.advisoryDeviation ? ['recommendation_deviation: true'] : []),
       ...(handle.dispatchDecision.fallback === undefined
         ? []
@@ -917,7 +951,7 @@ export function bindingResultLines(handle: Omit<SubagentHandle, 'completion'> & 
       `binding_advisory_first: ${JSON.stringify(bindingAdvisories[0])}`,
       `binding_advisories: ${JSON.stringify(bindingAdvisories)}`,
     ]),
-    `parent_notify: ${handle.parentNotify ?? 'enabled'}`,
+    ...(handle.parentNotify === 'disabled' ? ['parent_notify: disabled'] : []),
   ];
 }
 

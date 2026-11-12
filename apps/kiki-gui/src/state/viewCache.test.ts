@@ -215,6 +215,30 @@ describe('LiveControllerRegistry view cache', () => {
     expect(idle2.close).toHaveBeenCalledTimes(1);
   });
 
+  it('drops a live parked view to turn by releasing its focus and focuses it again when shown', async () => {
+    const registry = new LiveControllerRegistry();
+    const scope = {};
+    const running = fake('running', 1024, { busy: true });
+    const idle = fake('idle');
+    const focus = new Map<SessionController, (string | undefined)[]>();
+    for (const view of [running, idle]) {
+      const calls: (string | undefined)[] = [];
+      focus.set(view.controller, calls);
+      view.controller.setFocusedAgent = (agentId) => { calls.push(agentId); };
+    }
+    registry.acquire('running', scope, () => running.controller, 'main').release();
+    registry.acquire('idle', scope, () => idle.controller, 'main').release();
+    expect(running.suspend).not.toHaveBeenCalled();
+    expect(focus.get(running.controller)).toEqual(['main', undefined]);
+    // A suspended view receives nothing anyway; its focus is left alone.
+    expect(focus.get(idle.controller)).toEqual(['main']);
+    const shown = registry.acquire('running', scope, () => fake('running').controller, 'child-1');
+    expect(focus.get(running.controller)).toEqual(['main', undefined, 'child-1']);
+    await shown.ready;
+    shown.release();
+    registry.clearParked();
+  });
+
   it('bounds live parked subscriptions by suspending the oldest protected view', () => {
     const registry = new LiveControllerRegistry({ maxLiveParked: 1 });
     const scope = {};

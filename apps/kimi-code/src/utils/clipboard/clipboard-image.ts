@@ -34,8 +34,10 @@ import {
   isWSL,
   parseTargetList,
   runCommand as runCommandBase,
+  runCommandAsync,
   safeAvailableFormats,
   type RunCommand,
+  type RunCommandAsync,
   type RunCommandOptions,
 } from './clipboard-common';
 import { clipboard, type ClipboardModule } from './clipboard-native';
@@ -349,8 +351,8 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
   }
 }
 
-function readClipboardFilePathsViaMacOs(run: RunCommand): string[] {
-  const result = run('osascript', ['-l', 'JavaScript', '-e', MACOS_FILE_PATH_SCRIPT], {
+async function readClipboardFilePathsViaMacOs(run: RunCommand | RunCommandAsync): Promise<string[]> {
+  const result = await run('osascript', ['-l', 'JavaScript', '-e', MACOS_FILE_PATH_SCRIPT], {
     timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
   });
   if (!result.ok || result.stdout.length === 0) return [];
@@ -402,12 +404,13 @@ export async function readClipboardMedia(options?: {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   clipboard?: ClipboardModule | null;
-  runCommand?: RunCommand;
+  /** Runs the macOS file-URL probe; async by default so it never blocks input. */
+  runCommand?: RunCommand | RunCommandAsync;
 }): Promise<ClipboardMedia | null> {
   const env = options?.env ?? process.env;
   const platform = options?.platform ?? process.platform;
   const clip = options?.clipboard ?? clipboard;
-  const run = options?.runCommand ?? runCommand;
+  const run = options?.runCommand ?? runCommandAsync;
 
   // Termux on Android has no desktop clipboard; skip early rather than
   // churn through every fallback.
@@ -433,8 +436,12 @@ export async function readClipboardMedia(options?: {
       image = await readClipboardImageViaNative(clip);
     }
   } else {
-    if (platform === 'darwin') {
-      const fileMedia = readMediaFromPaths(readClipboardFilePathsViaMacOs(run));
+    // The osascript probe costs ~0.3 s per paste. Run it only when the
+    // clipboard may hold file URLs: the native module lists no formats, or
+    // lists a file-like one. Plain text and screenshots skip it.
+    const formats = safeAvailableFormats(clip);
+    if (platform === 'darwin' && (formats.length === 0 || formats.some(isFileLikeNativeFormat))) {
+      const fileMedia = readMediaFromPaths(await readClipboardFilePathsViaMacOs(run));
       if (fileMedia !== null) return fileMedia;
     }
 

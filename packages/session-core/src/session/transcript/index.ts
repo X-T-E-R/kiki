@@ -41,6 +41,7 @@ export {
   type ToolBlock,
   type ToolStatus,
   type TurnExecutionInfo,
+  type TurnGap,
   type ExecutorNote,
   type ExternalTextNote,
   type TurnRetryInfo,

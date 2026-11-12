@@ -154,14 +154,52 @@ describe('the personas page scope', () => {
     expect(container.querySelector('[data-persona-save-bar]')?.className).toContain('sticky');
   });
 
-  it('shows the lede only in the empty state and hides it once personas exist', async () => {
+  it('explains what a persona is only in the empty state and hides it once personas exist', async () => {
     listPersonas.mockResolvedValueOnce([]);
     const emptyContainer = await render('/personas');
-    expect(emptyContainer.querySelector('[data-persona-empty]')?.textContent).toContain('角色决定「谁」来和你说话');
+    expect(emptyContainer.querySelector('[data-persona-empty]')?.textContent).toContain('角色决定谁在和你说话');
 
     listPersonas.mockResolvedValueOnce([LIN_LAN]);
     const filledContainer = await render('/personas');
-    expect(filledContainer.textContent).not.toContain('角色决定「谁」来和你说话');
+    expect(filledContainer.textContent).not.toContain('角色决定谁在和你说话');
+  });
+});
+
+describe('the personas header on a phone', () => {
+  beforeEach(() => {
+    // A phone: touch, and narrower than 640px.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(pointer: coarse) and (max-width: 639px)',
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }));
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('keeps New persona in the header and moves Ask Kiki and Import into the ⋯ sheet', async () => {
+    listPersonas.mockResolvedValue([LIN_LAN]);
+    listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
+    const container = await render('/personas');
+    const header = container.querySelector('header')!;
+    expect(header.querySelector('[data-persona-new]')).not.toBeNull();
+    expect(header.querySelector('[data-persona-ask-kiki]')).toBeNull();
+    expect(header.querySelector('[data-persona-import]')).toBeNull();
+
+    await act(async () => { header.querySelector<HTMLButtonElement>('[data-persona-more]')!.click(); });
+    const sheet = document.querySelector('[data-persona-more-menu][class~="kiki-action-sheet-layer"]')!;
+    expect(sheet).not.toBeNull();
+    const items = [...sheet.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(items.map((item) => item.textContent)).toEqual(['帮我创建', '导入角色卡']);
+
+    // The sheet's Import opens the same import dialog the desktop button does.
+    await act(async () => { items[1]!.click(); });
+    expect(document.querySelector('[data-persona-more-menu][class~="kiki-action-sheet-layer"]')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   });
 });
 

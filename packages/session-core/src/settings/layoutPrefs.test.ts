@@ -7,12 +7,18 @@ import {
   RAIL_MAX_WIDTH,
   RAIL_MIN_WIDTH,
   readLayoutPreferences,
+  resetLayoutPreferencesForTests,
+  shownPinnedNavItems,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
   subscribeLayoutPreferences,
   writeLayoutPreferences,
 } from './layoutPrefs';
+import {
+  applyLocalSettingsTransferPreferences,
+  readLocalSettingsTransferPreferences,
+} from './settingsTransfer';
 
 class MemoryStorage implements Storage {
   readonly #items = new Map<string, string>();
@@ -86,6 +92,20 @@ describe('readLayoutPreferences', () => {
     expect(readLayoutPreferences().sidebarCollapsed).toBe(false);
   });
 
+  it('keeps the docked rail choice, and leaves it to the setting until one is made', () => {
+    expect(readLayoutPreferences().railOpen).toBeUndefined();
+    writeLayoutPreferences({ railOpen: false });
+    expect(readLayoutPreferences().railOpen).toBe(false);
+    // A write that does not name the rail keeps the choice.
+    writeLayoutPreferences({ railWidth: 320 });
+    expect(readLayoutPreferences().railOpen).toBe(false);
+    writeLayoutPreferences({ railOpen: true });
+    expect(readLayoutPreferences().railOpen).toBe(true);
+
+    ls().setItem('kiki.layout', JSON.stringify({ railOpen: 'yes' }));
+    expect(readLayoutPreferences().railOpen).toBeUndefined();
+  });
+
   it('keeps explicitly pinned capabilities and discovery', () => {
     ls().setItem('kiki.layout', JSON.stringify({ pinnedNavItems: ['capabilities', 'discover'] }));
     expect(readLayoutPreferences().pinnedNavItems).toEqual(['capabilities', 'discover']);
@@ -127,11 +147,14 @@ describe('subscribeLayoutPreferences', () => {
 
 describe('writeLayoutPreferences', () => {
   it('persists and returns the merged preferences', () => {
+    resetLayoutPreferencesForTests();
     const next = writeLayoutPreferences({ groupBy: 'workspace', sortBy: 'title', sidebarWidth: 300 });
     expect(next.groupBy).toBe('workspace');
     expect(next.sortBy).toBe('title');
     expect(next.sidebarWidth).toBe(300);
-    expect(JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toEqual(next);
+    // The default tool list nobody chose stays implicit (see below).
+    const { pinnedNavItems: _implicit, ...persisted } = next;
+    expect(JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toEqual(persisted);
   });
 
   it('clamps widths on write', () => {
@@ -148,5 +171,50 @@ describe('writeLayoutPreferences', () => {
     expect(next.sidebarNavSectionCollapsed).toBe(false);
     expect(readLayoutPreferences().pinnedNavItems).toEqual(['usage', 'capabilities']);
     expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(false);
+  });
+});
+
+describe('pinned tools on a phone', () => {
+  const stored = () => JSON.parse(ls().getItem('kiki.layout') ?? '{}') as Record<string, unknown>;
+
+  it('starts a phone with none pinned until this device saves a choice, which then wins', () => {
+    resetLayoutPreferencesForTests();
+    expect(shownPinnedNavItems(readLayoutPreferences(), true)).toEqual([]);
+    expect(shownPinnedNavItems(readLayoutPreferences(), false)).toEqual(['memory', 'personas', 'usage']);
+
+    // An unrelated write must not save the default list as if it were chosen.
+    writeLayoutPreferences({ sidebarNavSectionCollapsed: false, groupBy: 'none' });
+    expect(stored()).not.toHaveProperty('pinnedNavItems');
+    resetLayoutPreferencesForTests();
+    expect(shownPinnedNavItems(readLayoutPreferences(), true)).toEqual([]);
+
+    // A choice is saved even when it equals the default, and a phone keeps it
+    // across later writes and reloads.
+    writeLayoutPreferences({ pinnedNavItems: ['memory', 'personas', 'usage'] });
+    writeLayoutPreferences({ sidebarWidth: 300 });
+    expect(stored()['pinnedNavItems']).toEqual(['memory', 'personas', 'usage']);
+    resetLayoutPreferencesForTests();
+    expect(shownPinnedNavItems(readLayoutPreferences(), true)).toEqual(['memory', 'personas', 'usage']);
+
+    // Unpinning everything is a choice too.
+    writeLayoutPreferences({ pinnedNavItems: [] });
+    expect(shownPinnedNavItems(readLayoutPreferences(), false)).toEqual([]);
+  });
+
+  it('respects a tool list that arrived through a settings import', async () => {
+    resetLayoutPreferencesForTests();
+    const result = await applyLocalSettingsTransferPreferences({ layout: { pinnedNavItems: ['cron'] } }, 'overwrite');
+    expect(result.status).toBe('complete');
+    resetLayoutPreferencesForTests();
+    expect(shownPinnedNavItems(readLayoutPreferences(), true)).toEqual(['cron']);
+
+    // An import that carries no tool list leaves the phone default in place,
+    // and an export only carries a list this device actually saved.
+    ls().clear();
+    resetLayoutPreferencesForTests();
+    await applyLocalSettingsTransferPreferences({ layout: { sidebarWidth: 300 } }, 'overwrite');
+    resetLayoutPreferencesForTests();
+    expect(shownPinnedNavItems(readLayoutPreferences(), true)).toEqual([]);
+    expect(readLocalSettingsTransferPreferences()?.layout).not.toHaveProperty('pinnedNavItems');
   });
 });

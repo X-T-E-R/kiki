@@ -339,6 +339,8 @@ describe('EditTool', () => {
 
     expect(result).toMatchObject({ isError: true });
     expect(result.output).toContain('old_string not found');
+    expect(result.output).toContain('lines 1–2 match it when whitespace is ignored');
+    expect(result.output).toContain('The file has:\nalpha\\r\nbeta\n');
     expect(writeText).not.toHaveBeenCalled();
   });
 
@@ -432,10 +434,130 @@ describe('EditTool', () => {
     });
 
     expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('not unique');
-    expect(result.output).toContain('set replace_all=true');
-    expect(result.output).toContain('include more surrounding context');
+    expect(result.output).toBe(
+      'old_string matches 2 places in /tmp/a.txt (line 1). Add neighbouring lines to old_string so it matches only one place, or set replace_all=true to change every match.',
+    );
     expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('lists the line of every match when old_string is not unique', async () => {
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('call()\nother\ncall()\nmore\ncall()\n'),
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/a.txt', old_string: 'call()', new_string: 'run()' });
+
+    expect(result.output).toContain('matches 3 places in /tmp/a.txt (lines 1, 3, 5)');
+  });
+
+  it('recognises line-number prefixes copied from Read output', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('one\ntwo\nthree\n'),
+      writeText,
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/a.txt', old_string: '2\ttwo\n3\tthree', new_string: 'x' });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('starts with a line number and a tab copied from Read output');
+    expect(result.output).toContain('Without them it matches the file once, starting at line 2.');
+    expect(result.output).not.toContain('Read Tool to reload');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('says where the first line of a missing old_string occurs, or that it does not', async () => {
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('function a() {\n  return 1;\n}\n'),
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const partial = await execute(tool, {
+      path: '/tmp/a.ts', old_string: 'function a() {\n  return 2;', new_string: 'x',
+    });
+    const absent = await execute(tool, { path: '/tmp/a.ts', old_string: 'function b() {', new_string: 'x' });
+
+    expect(partial.output).toContain('Its first line, "function a() {", appears at line 1');
+    expect(absent.output).toContain('Its first line, "function b() {", does not appear in the file either.');
+  });
+
+  it('reports the changed line range of a successful edit', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('a\nb\nc\nd\n'),
+      writeText,
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const single = await execute(tool, { path: '/tmp/a.txt', old_string: 'c', new_string: 'C1\nC2' });
+    const all = await execute(tool, { path: '/tmp/a.txt', old_string: 'b\n', new_string: '', replace_all: true });
+
+    expect(single.output).toBe('Replaced 1 occurrence in /tmp/a.txt (lines 3–4).');
+    expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'a\nb\nC1\nC2\nd\n');
+    expect(all.output).toBe('Replaced 1 occurrence in /tmp/a.txt (line 2).');
+  });
+
+  it('applies several edits in order and writes once', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('alpha\nbeta\ngamma\nbeta\n'),
+      writeText,
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, {
+      path: '/tmp/a.txt',
+      edits: [
+        { old_string: 'alpha', new_string: 'ALPHA\nINSERTED' },
+        { old_string: 'ALPHA', new_string: 'A' },
+        { old_string: 'beta', new_string: 'B', replace_all: true },
+      ],
+    });
+
+    expect(result.output).toBe('Applied 3 edits to /tmp/a.txt, replacing 4 occurrences (lines 1–3, 5).');
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith('/tmp/a.txt', 'A\nINSERTED\nB\ngamma\nB\n');
+  });
+
+  it('writes nothing and names the failing edit when one of several edits fails', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({
+      readText: vi.fn().mockResolvedValue('alpha\nbeta\n'),
+      writeText,
+    });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, {
+      path: '/tmp/a.txt',
+      edits: [
+        { old_string: 'alpha', new_string: 'ALPHA' },
+        { old_string: 'alpha', new_string: 'again' },
+      ],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/^edits\[1\] failed, so \/tmp\/a\.txt was not changed\. old_string not found in \/tmp\/a\.txt\./);
+    expect(result.output).toContain('Line numbers in this message count lines after edits[0] was applied in memory.');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('rejects a call that mixes or omits both edit forms before reading the file', async () => {
+    const readText = vi.fn().mockResolvedValue('alpha');
+    const { fs } = createSpiedEditFs({ readText });
+    const tool = buildTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const mixed = await execute(tool, {
+      path: '/tmp/a.txt', old_string: 'alpha', new_string: 'b', edits: [{ old_string: 'alpha', new_string: 'c' }],
+    });
+    const missing = await execute(tool, { path: '/tmp/a.txt', old_string: 'alpha' });
+    const unchanged = await execute(tool, { path: '/tmp/a.txt', edits: [{ old_string: 'a', new_string: 'a' }] });
+
+    expect(mixed).toMatchObject({ isError: true, output: expect.stringContaining('not both') });
+    expect(missing).toMatchObject({ isError: true, output: expect.stringContaining('needs old_string and new_string') });
+    expect(unchanged).toMatchObject({ isError: true, output: expect.stringContaining('edits[0] makes no change') });
+    expect(readText).not.toHaveBeenCalled();
   });
 
   it('declares the actual external edit target for approval before reading', async () => {
@@ -454,10 +576,19 @@ describe('EditTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rejects relative traversal edits before reading', async () => {
+  it('treats a relative path outside the workspace exactly like its absolute form', async () => {
     const readText = vi.fn().mockResolvedValue('secret');
-    const { fs } = createSpiedEditFs({ readText });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { fs } = createSpiedEditFs({ readText, writeText });
     const tool = buildTool(fs, createTestEnv(), stubWorkspaceContext('/workspace/project'));
+
+    for (const [relative, absolute] of [['../outside.txt', '/workspace/outside.txt'], ['../.env', '/workspace/.env']] as const) {
+      const fromRelative = await tool.resolveExecution({ path: relative, old_string: 'secret', new_string: 'x' });
+      const fromAbsolute = await tool.resolveExecution({ path: absolute, old_string: 'secret', new_string: 'x' });
+      expect(fromRelative.isError ?? false).toBe(false);
+      expect((fromRelative as { accesses?: unknown }).accesses).toEqual((fromAbsolute as { accesses?: unknown }).accesses);
+      expect(fromRelative).toMatchObject({ approvalRule: (fromAbsolute as { approvalRule?: string }).approvalRule });
+    }
 
     const result = await execute(tool, {
       path: '../outside.txt',
@@ -465,9 +596,8 @@ describe('EditTool', () => {
       new_string: 'x',
     });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(readText).not.toHaveBeenCalled();
+    expect(result.isError).toBeFalsy();
+    expect(writeText).toHaveBeenCalledWith('/workspace/outside.txt', 'x');
   });
 
   it('replaces unicode strings (CJK) and round-trips the surrounding text', async () => {
@@ -614,9 +744,7 @@ describe('EditTool', () => {
       const result = await service.edit({
         path: file,
         displayPath: file,
-        old_string: 'foo',
-        new_string: 'bar',
-        replace_all: false,
+        edits: [{ old_string: 'foo', new_string: 'bar', replace_all: false }],
       });
 
       expect(result.ok).toBe(false);

@@ -3,28 +3,35 @@ import { z } from 'zod';
 import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
 
+const OLD_STRING_DESCRIPTION =
+  "Text to replace, exactly as it appears in the file. Do not include Read's line-number prefix.";
+const NEW_STRING_DESCRIPTION = 'Replacement text.';
+const REPLACE_ALL_DESCRIPTION =
+  'Set true to replace every occurrence of old_string instead of requiring exactly one.';
+
+export const EditOperationSchema = z.object({
+  old_string: z.string().min(1).describe(OLD_STRING_DESCRIPTION),
+  new_string: z.string().describe(NEW_STRING_DESCRIPTION),
+  replace_all: z.boolean().optional().describe(REPLACE_ALL_DESCRIPTION),
+});
+
 export const EditInputSchema = z.object({
   host: z.string().optional(),
   path: z
     .string()
     .describe(
-      'Path to the text file to edit. Relative paths resolve against the working directory; a path outside the working directory must be absolute.',
+      'Path to the text file to edit. Relative paths resolve against the working directory.',
     ),
-  old_string: z
-    .string()
+  old_string: z.string().min(1).optional().describe(`${OLD_STRING_DESCRIPTION} Required unless \`edits\` is given.`),
+  new_string: z.string().optional().describe(`${NEW_STRING_DESCRIPTION} Required unless \`edits\` is given.`),
+  replace_all: z.boolean().optional().describe(REPLACE_ALL_DESCRIPTION),
+  edits: z
+    .array(EditOperationSchema)
     .min(1)
-    .describe(
-      'Exact content to replace from the Read output view, without the line-number prefix. Use LF for pure CRLF files; use actual \\r escapes where Read shows \\r.',
-    ),
-  new_string: z
-    .string()
-    .describe(
-      'Replacement text in the same Read output view. LF is written back as CRLF only for pure CRLF files.',
-    ),
-  replace_all: z
-    .boolean()
     .optional()
-    .describe('Set true only when every occurrence of old_string should be replaced.'),
+    .describe(
+      'Several replacements in this file, used instead of old_string, new_string and replace_all. Each one applies to the result of the previous one, and the file is written only if all of them succeed.',
+    ),
 });
 
 export type EditInput = z.infer<typeof EditInputSchema>;

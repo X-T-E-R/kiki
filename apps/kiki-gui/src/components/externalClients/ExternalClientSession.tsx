@@ -32,6 +32,7 @@ import {
   type ExternalClientTextReceipt,
   type ExternalTextKind,
 } from '../../lib/externalClients';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
@@ -193,6 +194,7 @@ export function ExternalNoteComposer({ sessionId, disabled = false }: {
         placeholder={t('st.xs.notePlaceholder')}
         onChange={(event) => { setText(event.target.value); }}
         onKeyDown={(event) => {
+          if (isImeKeyEvent(event)) return;
           if (event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
           void save();

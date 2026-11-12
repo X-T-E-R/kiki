@@ -65,6 +65,30 @@ describe('approval adapter', () => {
     ]);
   });
 
+  it('emits one diff block per replacement for an Edit edits list', () => {
+    const adapted = adaptApprovalRequest({
+      toolCallId: 'tc-edits',
+      toolName: 'Edit',
+      action: 'edit',
+      display: {
+        kind: 'generic',
+        summary: 'edit',
+        detail: {
+          path: 'src/foo.ts',
+          edits: [
+            { old_string: 'a', new_string: 'b' },
+            { old_string: 'c', new_string: 'd', replace_all: true },
+          ],
+        },
+      },
+    });
+
+    expect(adapted.display).toEqual([
+      { type: 'diff', path: 'src/foo.ts', old_text: 'a', new_text: 'b' },
+      { type: 'diff', path: 'src/foo.ts', old_text: 'c', new_text: 'd' },
+    ]);
+  });
+
   it('emits a file_content block for Write so the new file previews as code, not diff', () => {
     const adapted = adaptApprovalRequest(
       {
