@@ -32,7 +32,7 @@ import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows, type OptionalCapabilityId } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
-import { ActivityFeed, CapabilitiesBlock, ProfileHead, profileEffortDisplay } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, profileEffortDisplay } from './DefaultSections';
 
 const {
   readCapabilities,
@@ -1039,5 +1039,45 @@ describe('profileEffortDisplay external vs native thinking effort', () => {
       effort_source: 'profile',
     };
     expect(profileEffortDisplay(liveExplicit, t)).toBe(profileEffortDisplay(coldExplicit, t));
+  });
+});
+
+describe('NeedsYouList subject truncation', () => {
+  it('renders file approvals through ApprovalSubject so the file name stays whole while preserving pendingSubject as title', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    const longPath = 'C:/fixture/deeply/nested/workspace/packages/session-core/src/settings/importantTargetFile.tsx';
+    const forest = buildAgentForest([], []);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <NeedsYouList
+              items={[{
+                kind: 'approval',
+                id: 'a-long',
+                request: {
+                  approval_id: 'a-long',
+                  session_id: 'sess-1',
+                  tool_call_id: 'call-long',
+                  tool_name: 'Edit',
+                  action: `Editing ${longPath}`,
+                  tool_input_display: { kind: 'file_io', operation: 'edit', path: longPath, before: 'a', after: 'b' },
+                  created_at: '2026-01-01T00:00:00.000Z',
+                  expires_at: '2026-01-02T00:00:00.000Z',
+                },
+                resolution: undefined,
+              }]}
+              forest={forest}
+              onInspect={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    const subject = container.querySelector<HTMLElement>('[data-needs-you-subject]')!;
+    expect(subject.getAttribute('title')).toBe(longPath);
+    const pathEl = subject.querySelector('[data-path-text]')!;
+    expect(pathEl.textContent).toContain('importantTargetFile.tsx');
+    expect(subject.textContent).toContain('Edit');
   });
 });

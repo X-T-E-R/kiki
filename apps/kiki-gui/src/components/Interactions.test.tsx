@@ -448,6 +448,34 @@ describe('ApprovalCard edit preview', () => {
     expect(diffRows(container)).toEqual([]);
     expect(container.querySelector('[data-content-continuation]')).not.toBeNull();
   });
+
+  it('shows "New file · N lines" above a new-file write preview, folded past 8 lines until expanded', async () => {
+    const writeLines = Array.from({ length: 12 }, (_, index) => `export const v${index + 1} = ${index + 1};`).join('\n');
+    const writeBlock: ApprovalBlock = {
+      kind: 'approval',
+      id: 'approval-write-1',
+      request: {
+        approval_id: 'approval-write-1',
+        session_id: 'session_test',
+        tool_call_id: 'call-write-1',
+        tool_name: 'Write',
+        action: 'Writing C:/fixture/workshop/newFile.ts',
+        tool_input_display: { kind: 'file_io', operation: 'write', path: 'C:/fixture/workshop/newFile.ts', content: `${writeLines}\n` },
+        created_at: '2026-01-01T00:00:00.000Z',
+        expires_at: '2026-01-02T00:00:00.000Z',
+      },
+      resolution: undefined,
+    };
+    const container = await renderCard(writeBlock, () => Promise.resolve(), { controller: detailController() });
+    expect(container.querySelector('[data-approval-new-file]')?.textContent).toBe('New file · 12 lines');
+    const pre = container.querySelector('[data-approval-change="content"] pre')!;
+    expect(pre.textContent?.split('\n')).toHaveLength(8);
+    const expand = container.querySelector<HTMLButtonElement>('[data-approval-change-expand]')!;
+    expect(expand.textContent).toBe('Show all 12 lines');
+    await act(async () => { click(expand); });
+    expect(pre.textContent?.split('\n')).toHaveLength(12);
+    expect(container.querySelector('[data-approval-change-expand]')).toBeNull();
+  });
 });
 
 function typeInto(input: HTMLInputElement, value: string): void {
@@ -511,13 +539,23 @@ describe('ApprovalCard Auto mode explanation', () => {
     expect(next.querySelector('[data-auto-explain]')).toBeNull();
   });
 
-  it('switches this session to asking at every step from the explanation', async () => {
+  it('switches this session to asking at every step and offers the Settings follow-up once', async () => {
     const onAskEveryStep = vi.fn();
     const container = await renderCard(editBlock('approval-auto-3', 'a', 'b'), () => Promise.resolve(),
       { permissionMode: 'auto', onAskEveryStep });
     await act(async () => { click(container.querySelector('[data-auto-explain-manual]')!); });
     expect(onAskEveryStep).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-auto-explain]')).toBeNull();
+    const followUp = container.querySelector('[data-auto-explain-future]');
+    expect(followUp?.textContent).toContain('Use this for new conversations too');
+    const link = followUp?.querySelector('a');
+    expect(link?.textContent).toBe('Settings');
+    expect(link?.getAttribute('href')).toBe('/settings/permissions#st-card-permission-defaults');
+
+    const next = await renderCard(editBlock('approval-auto-4', 'a', 'b'), () => Promise.resolve(),
+      { permissionMode: 'auto', onAskEveryStep });
+    expect(next.querySelector('[data-auto-explain]')).toBeNull();
+    expect(next.querySelector('[data-auto-explain-future]')).toBeNull();
   });
 
   it('says nothing about Auto mode in the other modes', async () => {

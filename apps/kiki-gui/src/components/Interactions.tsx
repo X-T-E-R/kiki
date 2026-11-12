@@ -17,13 +17,14 @@
  *     back to labeled raw JSON instead of a misleading pseudo-title.
  */
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { QueryClientContext } from '@tanstack/react-query';
 
 import type { ApprovalDecision, PermissionMode, QuestionAnswer, QuestionItem } from '@kiki/protocol';
 
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
+import { settingsCardRoute } from '@kiki/session-core/sessions';
 import { buildHunks, type DiffHunk } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { PERMISSION_RULES_ROUTE, saveAllowRule } from '../lib/permissionRules';
@@ -77,9 +78,9 @@ const STRIP_CLASS =
 const DETAIL_WELL =
   'mt-2 max-h-64 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
 const PRIMARY_BUTTON =
-  'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
-  'inline-flex min-h-8 pointer-coarse:min-h-10 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 /** An action inside running text: ink, not accent (accent is "needs you"). */
 const TEXT_ACTION =
   'inline-flex min-h-6 items-center rounded-sm font-medium text-ink underline underline-offset-2 decoration-ink-faint hover:decoration-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10';
@@ -346,7 +347,12 @@ function ApprovalChangePreview({ change }: { change: ApprovalChange }) {
         // The old/new text carries no position in the file: no line numbers.
         <DiffCard hunks={folded ? firstDiffRows(change.hunks, limit) : change.hunks} numbered={false} surface="bg-ink/[0.04]" />
       ) : (
-        <pre className={DETAIL_WELL}>{(folded ? change.lines.slice(0, limit) : change.lines).join('\n')}</pre>
+        <>
+          <p data-approval-new-file className="text-[12px] font-medium text-ink-faint">{t('ia.write.newFile', { count: total })}</p>
+          <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">
+            {(folded ? change.lines.slice(0, limit) : change.lines).join('\n')}
+          </pre>
+        </>
       )}
       {folded ? (
         <button
@@ -402,6 +408,56 @@ export function deadlineIsNear(expiresAt: string, now: number = Date.now()): boo
   return left > 0 && left < NEAR_DEADLINE_MS;
 }
 
+/**
+ * Pins the approval's decision block to the bottom of the tray's scroll box,
+ * drawing a top hairline only while content above is still scrolled under it.
+ */
+function TrayDecisionFooter({ pinned, children }: { readonly pinned: boolean; readonly children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overlaps, setOverlaps] = useState(false);
+
+  const measure = useCallback(() => {
+    const node = ref.current;
+    const scroller = node?.closest<HTMLElement>('[data-tray-current]') ?? null;
+    if (scroller === null) {
+      setOverlaps(false);
+      return;
+    }
+    const remaining = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+    setOverlaps(scroller.scrollHeight - scroller.clientHeight > 1 && remaining > 1);
+  }, []);
+
+  useEffect(() => {
+    if (!pinned) return;
+    const node = ref.current;
+    const scroller = node?.closest<HTMLElement>('[data-tray-current]') ?? null;
+    if (scroller === null) return;
+    measure();
+    scroller.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : undefined;
+    observer?.observe(scroller);
+    if (scroller.firstElementChild !== null) observer?.observe(scroller.firstElementChild);
+    return () => {
+      scroller.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, [pinned, measure]);
+
+  if (!pinned) return <>{children}</>;
+  return (
+    <div
+      ref={ref}
+      data-approval-decision-bar
+      data-scrolled-under={overlaps || undefined}
+      className={`sticky bottom-0 z-10 mt-2 bg-panel pt-2 pb-2 ${overlaps ? 'border-t border-hairline' : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function ApprovalCard({
   block,
   onResolve,
@@ -409,6 +465,7 @@ export function ApprovalCard({
   showShortcutHints = false,
   permissionMode,
   onAskEveryStep,
+  stickyDecisions = false,
 }: {
   block: ApprovalBlock;
   onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string, review?: PlanReviewResponse) => Promise<void>;
@@ -423,6 +480,8 @@ export function ApprovalCard({
   permissionMode?: PermissionMode;
   /** Switches this session to asking at every step (the explanation's action). */
   onAskEveryStep?: () => void;
+  /** True when rendered inside NeedsYouTray's bounded scroll area. */
+  stickyDecisions?: boolean;
 }) {
   const { t, time } = useI18n();
   const connection = useOptionalConnection();
@@ -440,6 +499,7 @@ export function ApprovalCard({
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
   const [autoExplained, setAutoExplained] = useState(readAutoExplained);
+  const [autoManualPicked, setAutoManualPicked] = useState(false);
   const respondingRef = useRef(false);
   // Epoch guard: bumped whenever this card's request identity changes; async
   // completions compare against their captured epoch before touching state.
@@ -456,6 +516,7 @@ export function ApprovalCard({
     setRuleFailed(false);
     setNoteOpen(false);
     setNote('');
+    setAutoManualPicked(false);
   }, [approvalId]);
   const display = block.request.tool_input_display;
   // A decided approval renders one resolution line; no diff to build.
@@ -644,7 +705,7 @@ export function ApprovalCard({
   return (
     <div
       data-approval-id={approvalId}
-      className={STRIP_CLASS}
+      className={stickyDecisions ? 'anim-enter border-l-2 border-accent pt-2 pr-3 pl-3' : STRIP_CLASS}
     >
       {/* Provenance line: what kind of decision, who asked, time left. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
@@ -675,7 +736,7 @@ export function ApprovalCard({
             <button
               type="button"
               data-auto-explain-manual
-              onClick={() => { acknowledgeAuto(); onAskEveryStep(); }}
+              onClick={() => { acknowledgeAuto(); setAutoManualPicked(true); onAskEveryStep(); }}
               className={`${TEXT_ACTION} mr-2`}
             >
               {t('firstRun.auto.manual')}
@@ -684,6 +745,13 @@ export function ApprovalCard({
           <button type="button" data-auto-explain-ok onClick={acknowledgeAuto} className={TEXT_ACTION}>
             {t('firstRun.auto.ok')}
           </button>
+        </p>
+      ) : autoManualPicked && answered === null ? (
+        <p data-auto-explain-future className="mt-1 text-[12px] leading-relaxed text-ink-soft">
+          {t('firstRun.auto.future')}{' '}
+          <Link to={settingsCardRoute('permissions', 'st-card-permission-defaults')} className={TEXT_ACTION}>
+            {t('st.title')}
+          </Link>
         </p>
       ) : null}
       {/* What: the file and the action on it, or the tool and its action;
@@ -744,8 +812,8 @@ export function ApprovalCard({
 
       {answered === null ? (
         external === undefined ? (
-          <>
-            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={submitting !== null}>
+          <TrayDecisionFooter pinned={stickyDecisions}>
+            <div className={`${stickyDecisions ? '' : 'mt-2 '}flex flex-wrap items-center gap-x-2 gap-y-2`} aria-busy={submitting !== null}>
               <button
                 type="button"
                 disabled={submitting !== null}
@@ -847,11 +915,11 @@ export function ApprovalCard({
             ) : null}
             {savedRule !== null ? <SavedRuleNote rule={savedRule} /> : null}
             {sendFailed}
-          </>
+          </TrayDecisionFooter>
         ) : external.ok ? (
-          <>
+          <TrayDecisionFooter pinned={stickyDecisions}>
             <div
-              className="mt-2 space-y-1"
+              className={`${stickyDecisions ? '' : 'mt-2 '}space-y-1`}
               role="radiogroup"
               aria-busy={submittingOptionId !== null}
             >
@@ -867,22 +935,22 @@ export function ApprovalCard({
             </div>
             <div className="mt-2">{cancelButton}</div>
             {sendFailed}
-          </>
+          </TrayDecisionFooter>
         ) : (
           /* Fail closed: the payload claims external_permission but does not
              validate — no option may be picked, cancel stays available. */
-          <>
-            <p role="alert" className="mt-2 text-[13px] text-danger">
+          <TrayDecisionFooter pinned={stickyDecisions}>
+            <p role="alert" className={`${stickyDecisions ? '' : 'mt-2 '}text-[13px] text-danger`}>
               {t('ia.external.unknownShape')}
             </p>
             <div className="mt-2">{cancelButton}</div>
             {sendFailed}
-          </>
+          </TrayDecisionFooter>
         )
       ) : (
         <p
           role="status"
-          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${
+          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${stickyDecisions ? 'pb-2 ' : ''}${
             answered === 'approved' || answered === 'cancelled' ? 'text-ink-soft' : 'text-danger'
           }`}
         >
@@ -1353,9 +1421,16 @@ function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: Qu
  * only a one-line record per item (the tray renders ApprovalCard/QuestionCard
  * itself). `onReview` lets the record's action focus that item in the tray.
  */
+export interface PendingInteractionRef {
+  readonly kind: 'approval' | 'question';
+  readonly id: string;
+}
+
 export interface InteractionPlacement {
   readonly inTray: boolean;
   readonly onReview?: (kind: 'approval' | 'question', id: string) => void;
+  /** Pending items in the tray's handling order, so phone timelines can name the batch once. */
+  readonly pendingItems?: readonly PendingInteractionRef[];
 }
 
 export const InteractionPlacementContext = createContext<InteractionPlacement>({ inTray: false });
@@ -1411,7 +1486,49 @@ export function InteractionRecord({
           type="button"
           onClick={onReview}
           aria-label={t('ia.record.reviewAria')}
-          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink"
+          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
+        >
+          {t('ia.record.review')}
+          <Icon name="arrowDown" size={12} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Phone-mode summary for pending tray items: one merged line on the first
+ * pending record in timeline order, instead of repeating a line per item right
+ * above the tray that already lists them.
+ */
+export function MergedInteractionRecord({
+  id,
+  count,
+  onReview,
+}: {
+  readonly id: string;
+  readonly count: number;
+  readonly onReview?: () => void;
+}) {
+  const { t, tp } = useI18n();
+  return (
+    <div
+      data-interaction-record={id}
+      data-interaction-merged={count}
+      className="anim-enter flex min-h-7 items-center gap-2 text-[12px]"
+    >
+      <span aria-hidden className="flex w-[18px] shrink-0 justify-center">
+        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium text-ink">
+        {tp('transcript.needsYouCount', count)}
+      </span>
+      {onReview !== undefined ? (
+        <button
+          type="button"
+          onClick={onReview}
+          aria-label={t('ia.record.reviewAria')}
+          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
         >
           {t('ia.record.review')}
           <Icon name="arrowDown" size={12} />

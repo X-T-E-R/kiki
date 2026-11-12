@@ -192,6 +192,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
       block={current}
       originAgentName={originName(current)}
       showShortcutHints
+      stickyDecisions
       permissionMode={permissionMode}
       onAskEveryStep={askEveryStep}
       onResolve={(decision, scope, selectedOptionId, review) =>
@@ -258,7 +259,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
             keyboard up (a reject note, an answer) `vh` still counts the
             space behind the keyboard, and the card would push the session
             off the top of what is left. */}
-        <div data-tray-current={currentId} className="max-h-[min(400px,calc(var(--kiki-visual-height,100vh)*0.44))] overflow-y-auto px-3 pt-1 pb-2">
+        <div data-tray-current={currentId} className={`max-h-[min(400px,calc(var(--kiki-visual-height,100vh)*0.44))] overflow-y-auto px-3 pt-1 ${current.kind === 'approval' ? 'pb-0' : 'pb-2'}`}>
           {currentCard}
         </div>
         {footer}
@@ -336,28 +337,8 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         </header>
         {/* The current item: the real card, bounded so a long question never
             pushes the composer off screen. */}
-        <div data-tray-current={currentId} className="max-h-[min(46vh,420px)] overflow-y-auto px-3 pt-2 pb-3">
-          {current.kind === 'approval' ? (
-            <ApprovalCard
-              key={currentId}
-              block={current}
-              originAgentName={originName(current)}
-              showShortcutHints
-              permissionMode={permissionMode}
-              onAskEveryStep={askEveryStep}
-              onResolve={(decision, scope, selectedOptionId, review) =>
-                onResolveApproval(currentId, decision, scope, selectedOptionId, review)
-              }
-            />
-          ) : (
-            <QuestionCard
-              key={currentId}
-              block={current}
-              originAgentName={originName(current)}
-              onAnswer={(answers) => onAnswerQuestion(currentId, answers)}
-              onDismiss={() => onDismissQuestion(currentId)}
-            />
-          )}
+        <div data-tray-current={currentId} className={`max-h-[min(46vh,420px)] overflow-y-auto px-3 pt-2 ${current.kind === 'approval' ? 'pb-0' : 'pb-3'}`}>
+          {currentCard}
         </div>
         {rest.length > 0 ? (
           <ul data-tray-rest aria-label={tp('tray.more', rest.length)} className="border-t border-hairline px-1.5 py-1">

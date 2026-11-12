@@ -5494,9 +5494,20 @@ boundExecution,
   ]);
   useRegisterSeat(seat);
 
+  const pendingInteractionRefs = useMemo(
+    () => [
+      ...trayItems
+        .filter((item): item is ApprovalBlock => item.kind === 'approval')
+        .map((item) => ({ kind: 'approval' as const, id: item.request.approval_id })),
+      ...trayItems
+        .filter((item): item is QuestionBlock => item.kind === 'question')
+        .map((item) => ({ kind: 'question' as const, id: item.request.question_id })),
+    ],
+    [trayItems],
+  );
   const interactionPlacement = useMemo<InteractionPlacement>(
-    () => ({ inTray: true, onReview: reviewPending }),
-    [reviewPending],
+    () => ({ inTray: true, onReview: reviewPending, pendingItems: pendingInteractionRefs }),
+    [reviewPending, pendingInteractionRefs],
   );
   // The subagent route branch: the shell resolves the target and navigation;
   // the workspace owns header, timeline, resync, details, and actions.

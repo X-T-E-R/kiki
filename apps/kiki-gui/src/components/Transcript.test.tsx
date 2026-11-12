@@ -90,6 +90,7 @@ import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
 import { readTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { Markdown } from './Markdown';
+import { InteractionPlacementContext } from './Interactions';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
@@ -11531,5 +11532,80 @@ describe('serialized queue edit consumer', () => {
     expect(textPart.text).toBe(fixture.carry.prefix + editedBody);
     expect(projectPresentedText(textPart.text, textPart.presentation)).toBe(editedBody);
     expect(input.value).toBe('');
+  });
+});
+
+describe('phone mode pending tray records (#26)', () => {
+  const media = window as unknown as { matchMedia?: unknown };
+  let originalMatchMedia: unknown;
+
+  afterEach(() => {
+    if (originalMatchMedia === undefined) delete media.matchMedia;
+    else media.matchMedia = originalMatchMedia;
+  });
+
+  it('merges 3 pending items into one "3 items need you" line on phones and keeps 3 records on desktop', async () => {
+    originalMatchMedia = media.matchMedia;
+    let phone = true;
+    const listeners = new Set<() => void>();
+    media.matchMedia = (query: string) => ({
+      get matches() {
+        return phone && (query === '(pointer: coarse)' || query === '(pointer: coarse) and (max-width: 639px)');
+      },
+      media: query,
+      addEventListener: (_event: string, fn: () => void) => { listeners.add(fn); },
+      removeEventListener: (_event: string, fn: () => void) => { listeners.delete(fn); },
+    });
+
+    const q1 = virtualQuestionBlock('q-first');
+    const a1 = virtualApprovalBlock('a-second');
+    const a2 = virtualApprovalBlock('a-third');
+    const state = transcriptState([q1, a1, a2]);
+    const onReview = vi.fn();
+    const pendingItems = [
+      { kind: 'approval' as const, id: 'a-second' },
+      { kind: 'approval' as const, id: 'a-third' },
+      { kind: 'question' as const, id: 'q-first' },
+    ];
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <InteractionPlacementContext.Provider value={{ inTray: true, onReview, pendingItems }}>
+        {virtualTranscript(state)}
+      </InteractionPlacementContext.Provider>,
+    );
+
+    const phoneRecords = container.querySelectorAll('[data-interaction-record]');
+    expect(phoneRecords).toHaveLength(1);
+    expect(phoneRecords[0]?.textContent).toContain('3 items need you');
+    await act(async () => { click(phoneRecords[0]!.querySelector('button')!); });
+    expect(onReview).toHaveBeenCalledWith('approval', 'a-second');
+
+    phone = false;
+    await act(async () => { for (const fn of listeners) fn(); });
+    await settleVirtualizer();
+    expect(container.querySelectorAll('[data-interaction-record]')).toHaveLength(3);
+  });
+
+  it('uses singular copy when a single pending item is in the tray on a phone', async () => {
+    originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(pointer: coarse) and (max-width: 639px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    const state = transcriptState([virtualApprovalBlock('a-only')]);
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <InteractionPlacementContext.Provider value={{ inTray: true, pendingItems: [{ kind: 'approval', id: 'a-only' }] }}>
+        {virtualTranscript(state)}
+      </InteractionPlacementContext.Provider>,
+    );
+    const records = container.querySelectorAll('[data-interaction-record]');
+    expect(records).toHaveLength(1);
+    expect(records[0]?.textContent).toContain('1 item needs you');
   });
 });

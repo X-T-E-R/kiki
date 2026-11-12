@@ -23,6 +23,7 @@ import { OptionalCapabilityRows, SessionMcpRail } from '../capabilities/optional
 import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
 import { Icon } from '../icons';
 import { ExecutorAuthStatus } from '../harness/ExecutorAuthStatus';
+import { ApprovalSubject } from '../Interactions';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
 
@@ -121,9 +122,15 @@ export const NeedsYouList = memo(function NeedsYouList({
                   ) : <span className="text-[13px] text-ink">{t('rail.ownerMain')}</span>}
                   <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums">{age(now - Date.parse(item.request.created_at), locale)}</span>
                 </span>
-                <span className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
-                  {item.kind === 'approval' ? item.request.tool_name : t('rail.questionTag')} {pendingSubject(item)}
-                </span>
+                {item.kind === 'approval' ? (
+                  <span data-needs-you-subject className="flex min-w-0 font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
+                    <ApprovalSubject request={item.request} />
+                  </span>
+                ) : (
+                  <span data-needs-you-subject className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
+                    {t('rail.questionTag')} {pendingSubject(item)}
+                  </span>
+                )}
               </span>
               {decidable(item) && canDecide ? (
                 <span className="flex shrink-0 items-center gap-0.5">

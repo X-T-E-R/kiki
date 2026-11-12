@@ -14,6 +14,7 @@
 
 import {
   Fragment,
+  createContext,
   memo,
   useCallback,
   useContext,
@@ -126,6 +127,7 @@ import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/time
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
+import { usePhoneMode } from '../lib/layoutHooks';
 import {
   HistoryLine,
   isAbortedPromptNotice,
@@ -151,7 +153,7 @@ import {
   observeRowMutations,
   reconcileMountedRows,
 } from './transcriptVirtualizer';
-import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
+import { ApprovalCard, InteractionRecord, MergedInteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { ExternalTextRow } from './timeline/ExternalTextRow';
 import { AssistantOutputContent, useOutputLayer } from './output-layer';
@@ -2885,6 +2887,8 @@ function HistoryFoldRow({
   );
 }
 
+const PhoneMergedPendingLeadContext = createContext<string | undefined>(undefined);
+
 const BlockView = memo(function BlockView({
   block,
   onResolveApproval,
@@ -2942,6 +2946,24 @@ const BlockView = memo(function BlockView({
   // Pending interactions answer in the composer's tray when it is mounted;
   // the transcript then keeps a one-line record per item.
   const placement = useInteractionPlacement();
+  const phoneMode = usePhoneMode();
+  const mergedPendingLeadId = useContext(PhoneMergedPendingLeadContext);
+  const pendingItems = placement.pendingItems;
+  const renderMergedPending = (recordId: string, fallbackKind: 'approval' | 'question') => {
+    const count = pendingItems !== undefined && pendingItems.length > 0 ? pendingItems.length : 1;
+    const target = pendingItems?.[0] ?? { kind: fallbackKind, id: recordId };
+    return (
+      <MergedInteractionRecord
+        id={recordId}
+        count={count}
+        onReview={
+          placement.onReview === undefined
+            ? undefined
+            : () => { placement.onReview?.(target.kind, target.id); }
+        }
+      />
+    );
+  };
   const originUnknown =
     (block.kind === 'approval' || block.kind === 'question') && block.originUnknown === true;
   // Only a subagent origin is named (as its timeline row names it); the
@@ -3031,15 +3053,21 @@ const BlockView = memo(function BlockView({
           }}
         />
       ) : placement.inTray ? (
-        <InteractionRecord
-          block={block}
-          originName={originAgentName ?? originFallback}
-          onReview={
-            placement.onReview === undefined
-              ? undefined
-              : () => { placement.onReview?.('approval', block.request.approval_id); }
-          }
-        />
+        phoneMode && mergedPendingLeadId !== undefined
+          ? mergedPendingLeadId === block.request.approval_id
+            ? renderMergedPending(block.request.approval_id, 'approval')
+            : null
+          : (
+            <InteractionRecord
+              block={block}
+              originName={originAgentName ?? originFallback}
+              onReview={
+                placement.onReview === undefined
+                  ? undefined
+                  : () => { placement.onReview?.('approval', block.request.approval_id); }
+              }
+            />
+          )
       ) : (
         <ApprovalCard
           block={block}
@@ -3063,15 +3091,21 @@ const BlockView = memo(function BlockView({
           }}
         />
       ) : placement.inTray ? (
-        <InteractionRecord
-          block={block}
-          originName={originAgentName ?? originFallback}
-          onReview={
-            placement.onReview === undefined
-              ? undefined
-              : () => { placement.onReview?.('question', block.request.question_id); }
-          }
-        />
+        phoneMode && mergedPendingLeadId !== undefined
+          ? mergedPendingLeadId === block.request.question_id
+            ? renderMergedPending(block.request.question_id, 'question')
+            : null
+          : (
+            <InteractionRecord
+              block={block}
+              originName={originAgentName ?? originFallback}
+              onReview={
+                placement.onReview === undefined
+                  ? undefined
+                  : () => { placement.onReview?.('question', block.request.question_id); }
+              }
+            />
+          )
       ) : (
         <QuestionCard
           block={block}
@@ -4807,7 +4841,38 @@ export const Transcript = memo(function Transcript({
       : []),
     [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
   );
-  const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  const rawGroupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  const phoneMode = usePhoneMode();
+  const placement = useInteractionPlacement();
+  const { groupedNodes, mergedPendingLeadId } = useMemo(() => {
+    const isPendingInteractionNode = (node: TimelineNode): string | undefined => {
+      if (node.kind === 'approval' && node.resolution === undefined) return node.request.approval_id;
+      if (node.kind === 'question' && node.outcome === undefined) return node.request.question_id;
+      return undefined;
+    };
+    if (!phoneMode || !placement.inTray || readOnly) {
+      return { groupedNodes: rawGroupedNodes, mergedPendingLeadId: undefined };
+    }
+    let leadId: string | undefined;
+    for (const block of timelineBlocks) {
+      if (block.kind === 'approval' && block.resolution === undefined) {
+        leadId = block.request.approval_id;
+        break;
+      }
+      if (block.kind === 'question' && block.outcome === undefined) {
+        leadId = block.request.question_id;
+        break;
+      }
+    }
+    if (leadId === undefined) {
+      return { groupedNodes: rawGroupedNodes, mergedPendingLeadId: undefined };
+    }
+    const filtered = rawGroupedNodes.filter((node) => {
+      const pendingId = isPendingInteractionNode(node);
+      return pendingId === undefined || pendingId === leadId;
+    });
+    return { groupedNodes: filtered, mergedPendingLeadId: leadId };
+  }, [rawGroupedNodes, phoneMode, placement.inTray, readOnly, timelineBlocks]);
   const expandedStructureReads = useRef(new Map<string, ReturnType<SessionController['beginContentRead']>>());
   // Keyed by its inputs, so a render that only moves the window (a scroll
   // crossing a row) skips both passes over every fold member.
@@ -6222,6 +6287,7 @@ export const Transcript = memo(function Transcript({
       >
         {/* Bottom clearance is 24px of breathing room + the 36px fade band the
             shell's active composer seat overlaps (see index.css). */}
+        <PhoneMergedPendingLeadContext.Provider value={mergedPendingLeadId}>
         <div
           ref={virtualizer.containerRef}
           data-transcript-virtual-content
@@ -6350,6 +6416,7 @@ export const Transcript = memo(function Transcript({
             );
           })}
         </div>
+        </PhoneMergedPendingLeadContext.Provider>
       </div>
       {annotationPopover !== null && openAnnotation !== undefined ? (
         <AnnotationPopover

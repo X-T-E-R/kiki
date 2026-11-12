@@ -87,6 +87,44 @@ describe('NeedsYouTray card placement', () => {
     expect(stepper().textContent).toContain('3 / 3');
     expect(current()).toBe('a3');
   });
+
+  it('pins the approval decision bar to the bottom of the tray scroll area and shows its top hairline only while scrolled under', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MemoryRouter>
+            <NeedsYouTray
+              placement="card"
+              items={[approval('a1', Array.from({ length: 40 }, (_, i) => `echo line ${i + 1}`).join('\n'))]}
+              agentNames={new Map()}
+              onResolveApproval={async () => {}}
+              onAnswerQuestion={async () => {}}
+              onDismissQuestion={async () => {}}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    const scroller = container.querySelector<HTMLElement>('[data-tray-current]')!;
+    const bar = container.querySelector<HTMLElement>('[data-approval-decision-bar]')!;
+    expect(bar.className).toContain('sticky');
+    expect(bar.className).toContain('bottom-0');
+
+    Object.defineProperty(scroller, 'scrollHeight', { value: 640, configurable: true });
+    Object.defineProperty(scroller, 'clientHeight', { value: 320, configurable: true });
+    Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true, configurable: true });
+    await act(async () => { scroller.dispatchEvent(new Event('scroll')); });
+    expect(bar.hasAttribute('data-scrolled-under')).toBe(true);
+    expect(bar.className).toContain('border-t');
+
+    scroller.scrollTop = 320;
+    await act(async () => { scroller.dispatchEvent(new Event('scroll')); });
+    expect(bar.hasAttribute('data-scrolled-under')).toBe(false);
+  });
 });
 
 describe('NeedsYouTray approval chords', () => {
