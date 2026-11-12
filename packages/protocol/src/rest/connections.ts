@@ -110,6 +110,7 @@ export const connectionPairInputSchema = z.object({
   code: z.string().min(8).max(16),
   label: z.string().max(128).optional(),
   backgroundSummary: z.boolean().default(true),
+  requestBridge: z.boolean().optional(),
 }).strict();
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
 export const pairClaimInputSchema = z.object({

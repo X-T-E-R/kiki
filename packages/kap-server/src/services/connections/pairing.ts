@@ -117,8 +117,9 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   const endpoint = normalizeEndpoint(parsedUri?.endpoint ?? input.endpoint);
   const code = normalizePairingCode(parsedUri?.code ?? input.code);
   if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
-  const sourceWorkspaces = hooks === undefined ? [] : await hooks.workspaces();
-  const response = await fetch(endpoint + '/api/remote-connections/pair/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, source: manager.identity, sourceLabel: machineLabel(), requestBridge: true, sourceWorkspaces }), redirect: 'error', signal: AbortSignal.timeout(15000) });
+  const requestBridge = input.requestBridge ?? true;
+  const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
+  const response = await fetch(endpoint + '/api/remote-connections/pair/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, source: manager.identity, sourceLabel: machineLabel(), requestBridge, sourceWorkspaces }), redirect: 'error', signal: AbortSignal.timeout(15000) });
   const envelope = await readBoundedJsonBody(response, 65536).catch(() => undefined) as { code?: number; msg?: string; data?: unknown } | undefined;
   if (!response.ok || envelope?.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, typeof envelope?.msg === 'string' ? envelope.msg : 'invalid_pairing_code');
   const claimed = claimedSchema.parse(envelope.data);

@@ -684,6 +684,54 @@ describe('short-code pairing on two real servers', () => {
       await desktopClient.close();
     }
   }, 120_000);
+
+  it('respects requestBridge false and requestBridge true when pairing outbound', async () => {
+    const source = await boot(); const target = await boot();
+    const sourceClient = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
+    const targetClient = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    const sourceWorkDir = join(homes[0]!, 'workspace');
+    const targetWorkDir = join(homes[1]!, 'workspace');
+    try {
+      await sourceClient.global.sessions.create({ sessionId: 'pair-source', workDir: sourceWorkDir });
+      await targetClient.global.sessions.create({ sessionId: 'pair-target', workDir: targetWorkDir });
+      await target.core.accessor.get(ISessionManager).close('pair-target');
+      const sourceConfig = source.core.accessor.get(IConfigService);
+      const targetConfig = target.core.accessor.get(IConfigService);
+
+      const codeNoBridge = await targetClient.rest!.connections.createPairCode({});
+      const targetEndpoint = codeNoBridge.suggestedEndpoints[0]!;
+
+      const noBridgeRecord = await sourceClient.rest!.connections.pair({
+        endpoint: targetEndpoint,
+        code: codeNoBridge.code,
+        requestBridge: false,
+        backgroundSummary: true,
+      });
+
+      expect(noBridgeRecord.purposes).toEqual(['gui']);
+      expect((await targetClient.rest!.threadBridges.status()).inbound).toHaveLength(0);
+      expect((await sourceClient.rest!.threadBridges.status()).outbound).toHaveLength(0);
+      expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
+      expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
+
+      const codeWithBridge = await targetClient.rest!.connections.createPairCode({});
+      const withBridgeRecord = await sourceClient.rest!.connections.pair({
+        endpoint: targetEndpoint,
+        code: codeWithBridge.code,
+        requestBridge: true,
+        backgroundSummary: true,
+      });
+
+      expect(withBridgeRecord.purposes).toEqual(['gui', 'bridge']);
+      expect((await targetClient.rest!.threadBridges.status()).inbound).toHaveLength(1);
+      expect((await sourceClient.rest!.threadBridges.status()).outbound).toHaveLength(1);
+      expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).toBe(true);
+      expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).toBe(true);
+    } finally {
+      await sourceClient.close();
+      await targetClient.close();
+    }
+  }, 120_000);
 });
 
 function runCli(home: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {

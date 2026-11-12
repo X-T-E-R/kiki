@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri } from '../rest/connections';
+import { connectionPairInputSchema, formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri } from '../rest/connections';
 
 describe('pairing code', () => {
   it('folds case and an optional hyphen into XXXX-XXXX', () => {
@@ -25,5 +25,24 @@ describe('pairing code', () => {
     expect(isDirectConnectionHost('b.example.test')).toBe(false);
     expect(isDirectConnectionHost('1.2.3.4')).toBe(false);
     expect(isDirectConnectionHost('100.63.1.1')).toBe(false);
+  });
+
+  it('validates connectionPairInputSchema with optional requestBridge and rejects unknown keys', () => {
+    const base = { endpoint: 'http://127.0.0.1:58627', code: 'K9F2-7X4M' };
+    expect(connectionPairInputSchema.parse(base)).toEqual({
+      ...base,
+      backgroundSummary: true,
+    });
+    expect(connectionPairInputSchema.parse({ ...base, requestBridge: false })).toEqual({
+      ...base,
+      backgroundSummary: true,
+      requestBridge: false,
+    });
+    expect(connectionPairInputSchema.parse({ ...base, requestBridge: true })).toEqual({
+      ...base,
+      backgroundSummary: true,
+      requestBridge: true,
+    });
+    expect(() => connectionPairInputSchema.parse({ ...base, unknownKey: 'value' })).toThrow();
   });
 });
