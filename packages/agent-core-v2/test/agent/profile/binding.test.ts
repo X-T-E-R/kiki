@@ -2183,9 +2183,13 @@ describe('AgentProfileService.bind', () => {
   it('hot-reloads allowed_models and model_profiles from the live catalog when resuming or switching a named role', async () => {
     const fileDefinition = {
       name: 'resume-profile',
+      definitionId: `user:${homeDir}/worker.md`,
+      contributionRoot: homeDir,
+      private: false,
       description: 'Worker role',
-      sourcePath: `${homeDir}/worker.md`,
-      scope: 'user' as const,
+      override: false,
+      path: `${homeDir}/worker.md`,
+      source: 'user' as const,
       allowedModels: [RESUME_OLD_MODEL],
       modelAlias: RESUME_OLD_MODEL,
       prompt: 'Base worker instructions.',
