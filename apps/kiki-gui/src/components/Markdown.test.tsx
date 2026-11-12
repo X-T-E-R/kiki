@@ -18,12 +18,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
+import { MediaArtifactList } from './media/MediaArtifactList';
+import { MediaPart } from './mediaParts';
 import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
 import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
+import type { KikiComputerConnection } from '../state/previewResource';
 
 const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), openUrl: vi.fn(), desktop: false }));
-const connectionScope = vi.hoisted(() => ({ scopeId: null as string | null }));
+const connectionScope = vi.hoisted(() => ({
+  scopeId: null as string | null,
+  override: undefined as (KikiComputerConnection & { client?: unknown }) | null | undefined,
+}));
 vi.mock('../host', () => ({
   useHost: () => hostMocks.desktop
     ? { kind: 'tauri', revealPath: hostMocks.revealPath, openPath: hostMocks.openPath, openUrl: hostMocks.openUrl }
@@ -37,7 +43,15 @@ vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
-  return { ...original, useOptionalConnection: () => connectionScope.scopeId === null ? null : { scopeId: connectionScope.scopeId } };
+  return {
+    ...original,
+    useOptionalConnection: () => {
+      if (connectionScope.override !== undefined) return connectionScope.override;
+      if (connectionScope.scopeId !== null) return { scopeId: connectionScope.scopeId };
+      if (hostMocks.desktop) return { scopeId: 'local', spaceKey: 'main', connectionSource: 'desktop' as const };
+      return null;
+    },
+  };
 });
 
 const roots: Root[] = [];
@@ -79,6 +93,7 @@ afterAll(() => {
 beforeEach(() => {
   hostMocks.desktop = false;
   connectionScope.scopeId = null;
+  connectionScope.override = undefined;
   hostMocks.openPath.mockReset();
   hostMocks.openUrl.mockReset();
   hostMocks.revealPath.mockReset();
@@ -226,6 +241,139 @@ describe('Markdown link menus', () => {
     expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
     expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
     expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+  });
+
+  it('offers copy-path without show/open in a remote non-SSH space, all three on local desktop, and none without a path (#35)', async () => {
+    hostMocks.desktop = true;
+    connectionScope.override = {
+      scopeId: 'remote:space-1',
+      spaceKey: 'remote:space-1',
+      connectionSource: 'remote',
+      client: {},
+    };
+    const remoteProbe = makeRoot();
+    await renderSettled(
+      remoteProbe.root,
+      <MediaPreviewProvider sessionId="session-1" cwd="/remote/work">
+        <Markdown text="[reply link](./src/server.ts)" />
+        <FilePathLink path="src/server.ts" />
+      </MediaPreviewProvider>,
+    );
+    await rightClick(remoteProbe.container.querySelector('a')!);
+    const remoteMdMenu = document.body.querySelector('[data-file-link-menu]')!;
+    expect(remoteMdMenu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(remoteMdMenu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(remoteMdMenu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => {
+      remoteMdMenu.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')!.click();
+    });
+
+    await rightClick(remoteProbe.container.querySelector('[role="link"]')!);
+    const remotePathMenu = document.body.querySelector('[data-file-link-menu]')!;
+    expect(remotePathMenu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(remotePathMenu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(remotePathMenu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => {
+      remotePathMenu.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')!.click();
+    });
+
+    connectionScope.override = {
+      scopeId: 'local',
+      spaceKey: 'main',
+      connectionSource: 'desktop',
+      client: {},
+    };
+    const localProbe = makeRoot();
+    await renderSettled(
+      localProbe.root,
+      <MediaPreviewProvider sessionId="session-1" cwd="C:/work">
+        <Markdown text="[reply link](./src/server.ts)" />
+        <FilePathLink path="src/server.ts" />
+        <MediaPart item={{ kind: 'file', fileId: 'file_plain_1', name: 'notes.pdf', mime: 'application/pdf' }} />
+        <MediaArtifactList
+          sessionId="session-1"
+          artifacts={[
+            {
+              id: 'art_1',
+              file_id: 'file_secret_id_999',
+              name: 'transcript-summary.txt',
+              mime: 'text/plain',
+              bytes: 512,
+              kind: 'file',
+              role: 'original',
+              complete: true,
+            },
+          ]}
+        />
+      </MediaPreviewProvider>,
+    );
+
+    for (const selector of ['a', '[role="link"]']) {
+      await rightClick(localProbe.container.querySelector(selector)!);
+      const localMenu = document.body.querySelector('[data-file-link-menu]')!;
+      expect(localMenu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+      expect(localMenu.querySelector('[data-menu-item="show-in-folder"]')).not.toBeNull();
+      expect(localMenu.querySelector('[data-menu-item="open-default-app"]')).not.toBeNull();
+      await act(async () => {
+        localMenu.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')!.click();
+      });
+    }
+
+    const chipButtons = [...localProbe.container.querySelectorAll('button')];
+    const pdfChip = chipButtons.find((btn) => btn.textContent?.includes('notes.pdf'))!;
+    expect(pdfChip).toBeDefined();
+    await rightClick(pdfChip);
+    const chipMenu = document.body.querySelector('[data-file-link-menu]')!;
+    expect(chipMenu.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(chipMenu.querySelector('[data-menu-item="download"]')).not.toBeNull();
+    expect(chipMenu.querySelector('[data-menu-item="copy-path"]')).toBeNull();
+    expect(chipMenu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(chipMenu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    const artifactButton = localProbe.container.querySelector<HTMLButtonElement>('[data-media-artifact="art_1"] button')!;
+    expect(artifactButton.getAttribute('title')).toBe('transcript-summary.txt');
+    expect(artifactButton.getAttribute('title')).not.toContain('file_secret_id_999');
+    await rightClick(artifactButton);
+    const artifactMenu = document.body.querySelector('[data-file-link-menu]')!;
+    expect(artifactMenu.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+    expect(artifactMenu.querySelector('[data-menu-item="download"]')).not.toBeNull();
+  });
+
+  it('forwards optional line and column from FilePathLink to openFile (#35)', async () => {
+    const openFile = vi.fn();
+    const api: MediaPreviewApi = {
+      cwd: 'C:/work',
+      sessionId: 'session-1',
+      openFile,
+      openImage: vi.fn(),
+      openAttachment: vi.fn(),
+      previewTabCount: 0,
+      previewPanelOpen: false,
+      togglePreviewPanel: vi.fn(),
+      openAgentPanel: vi.fn(),
+      openBuiltinSkill: vi.fn(),
+      activeAgentPanelId: undefined,
+    };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewContext.Provider value={api}>
+        <FilePathLink path="src/server.ts" line={42} column={5} />
+      </MediaPreviewContext.Provider>,
+    );
+    const link = probe.container.querySelector('[role="link"]')!;
+    await act(async () => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(openFile).toHaveBeenCalledWith({
+      path: 'C:/work/src/server.ts',
+      line: 42,
+      column: 5,
+      heading: undefined,
+    });
   });
 
   it('external links raise open/copy and copy writes the URL', async () => {

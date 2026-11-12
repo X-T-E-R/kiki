@@ -37,12 +37,12 @@ import { formatBytes } from '@kiki/session-core/composer/media';
 import { useI18n } from '../../i18n';
 import type { MediaArtifact } from '../../lib/mediaSources';
 import { useOptionalConnection } from '../../state/connection';
-import { MediaPart } from '../mediaParts';
+import { attachmentName, MediaPart, useMediaRefMenu } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
-import { isRemoteConnection } from '../imageActions';
+import { isOnKikiComputer } from '../imageActions';
 
 /** An SDK artifact as the existing media surface already understands. */
 export function artifactToMediaRef(artifact: MediaArtifact): MediaRef {
@@ -202,7 +202,7 @@ function MediaArtifactRow({
       data-media-kind={artifact.kind}
       data-media-role={artifact.role}
     >
-      <FileChip item={item} />
+      <FileChip item={item} sessionId={sessionId} />
       {artifact.role === 'original' ? null : (
         <span className="shrink-0 text-[11px] text-ink-faint">
           {artifact.role === 'preview' ? t('cap.media.artifact.preview') : t('cap.media.artifact.subtitle')}
@@ -213,15 +213,14 @@ function MediaArtifactRow({
 }
 
 /**
- * A file chip for a non-picture artifact. Local rather than imported so this
- * file owns no dependency on a surface someone else is editing; it is the same
- * shape the shared one uses — a name, a size, and a click that opens the
- * existing preview when there is a session to resolve it against.
+ * A file chip for a non-picture artifact. Uses the display name in its tooltip
+ * (never the internal `file_id`) and binds the shared `resourceActions` menu.
  */
-function FileChip({ item }: { readonly item: MediaRef }) {
+function FileChip({ item, sessionId }: { readonly item: MediaRef; readonly sessionId?: string }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const label = item.name ?? item.fileId ?? t('media.attachment');
+  const label = attachmentName(item, undefined, t('media.attachment'));
+  const chipMenu = useMediaRefMenu(item, label, sessionId);
   const openable = item.fileId !== undefined && preview !== null;
   const className = `inline-flex max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-left ${
     openable ? 'transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink' : 'opacity-70'
@@ -232,11 +231,29 @@ function FileChip({ item }: { readonly item: MediaRef }) {
       <span className="min-w-0 truncate font-mono text-[12px] text-ink">{label}</span>
     </>
   );
-  if (!openable) return <span className={className} title={item.fileId}>{body}</span>;
+  if (!openable) {
+    return (
+      <>
+        <span className={className} title={label} onContextMenu={chipMenu.openMenu}>
+          {body}
+        </span>
+        {chipMenu.menuElement}
+      </>
+    );
+  }
   return (
-    <button type="button" className={className} title={item.fileId} onClick={() => { preview!.openAttachment(item); }}>
-      {body}
-    </button>
+    <>
+      <button
+        type="button"
+        className={className}
+        title={label}
+        onClick={() => { preview!.openAttachment(item); }}
+        onContextMenu={chipMenu.openMenu}
+      >
+        {body}
+      </button>
+      {chipMenu.menuElement}
+    </>
   );
 }
 
@@ -253,7 +270,7 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const remoteScope = isRemoteConnection(connection);
+  const remoteScope = !isOnKikiComputer(connection);
   // Armed state binds to the exact client connection, session, and fileId (not containing attempt so retries preserve arming)
   const [armedSource, setArmedSource] = useState<{ client: typeof client; sessionId: string | undefined; fileId: string | undefined } | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);

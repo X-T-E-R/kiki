@@ -17,6 +17,7 @@ import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { useOptionalConnection } from '../state/connection';
+import { hostFileResource } from '../state/previewWorkspace';
 import { sourceTextVersion, type TimelineAnnotation } from '@kiki/session-core/composer';
 import {
   resolveFileReference,
@@ -33,6 +34,8 @@ import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdow
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
 import './markdown/markdown.css';
+import { isOnKikiComputer } from './imageActions';
+import { buildResourceMenuEntries } from './mediaParts';
 import { useMediaPreview } from './mediaPreviewContext';
 import { Icon, type IconName } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -331,7 +334,8 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const connection = useOptionalConnection();
+  const localKikiComputer = isOnKikiComputer(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
   const sameDocument = target?.startsWith('#') === true && documentPath !== undefined;
@@ -347,30 +351,18 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
   const closeMenu = () => { setMenu(null); };
 
   if (filePath !== undefined && preview !== null && target !== undefined) {
-    const entries: MiniMenuEntry[] = [
-      { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(fileReference ?? filePath); } },
-      { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(target) },
-      {
-        key: 'copy-absolute',
-        label: t('file.copyAbsolutePath'),
-        run: () => copyTextToClipboard(filePath),
-      },
-      ...(!remoteScope && host.revealPath !== undefined && host.openPath !== undefined
-        ? [
-            { separator: true } as const,
-            {
-              key: 'show-in-folder',
-              label: t('file.showInFolder'),
-              run: () => host.revealPath?.(filePath),
-            } as const,
-            {
-              key: 'open-default-app',
-              label: t('file.openDefaultApp'),
-              run: () => host.openPath?.(filePath),
-            } as const,
-          ]
-        : []),
-    ];
+    const resource = hostFileResource(filePath, documentDirectory ?? preview.cwd);
+    const entries = buildResourceMenuEntries({
+      resource,
+      rawPath: target,
+      cwd: documentDirectory ?? preview.cwd,
+      sessionId: preview.sessionId,
+      localKikiComputer,
+      host,
+      client: connection?.client,
+      t,
+      onOpenPreview: () => { preview.openFile(fileReference ?? filePath); },
+    });
     return (
       <>
         <a

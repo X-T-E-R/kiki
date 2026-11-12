@@ -5,10 +5,11 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { HostSaveSink } from '../host/host';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
+import { useOptionalConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, noteMediaReady, saveMediaToDisk } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isOnKikiComputer, noteMediaReady, saveMediaToDisk } from './imageActions';
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
 import { ImageViewportAnnotations, renderAnnotatedImage, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
@@ -38,16 +39,20 @@ export function mediaSourceLabel(value: string | undefined): string | undefined 
   }
 }
 
-export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, remote = false, mime, size, onSaveOriginal }: {
+export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal }: {
   src?: string; name?: string; identity?: string; loading?: boolean; failed?: boolean; onRetry?: () => void;
   index?: number; count?: number; onSelect?: (index: number) => void; onClose: () => void;
-  sourcePath?: string; linkUrl?: string; outcomeKey?: string; remote?: boolean;
+  sourcePath?: string; linkUrl?: string; outcomeKey?: string; localKikiComputer?: boolean; remote?: boolean;
   /** What the viewer actually holds, when the caller knows it — never inferred here. */
   mime?: string; size?: number;
   onSaveOriginal?: (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => Promise<void>;
 }) {
   const { t } = useI18n();
   const host = useHost();
+  const connection = useOptionalConnection();
+  const onKikiComputer =
+    localKikiComputer ??
+    (remote !== undefined ? !remote : isOnKikiComputer(connection));
   const [zoom, setZoom] = useState<'fit' | number>('fit');
   const [natural, setNatural] = useState<{ width: number; height: number }>();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -251,7 +256,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     src,
     path: sourcePath,
     link: linkUrl ?? httpImageLink(src),
-    remote,
+    localKikiComputer: onKikiComputer,
     revealPath: host.revealPath,
     openPath: host.openPath,
     canCopyImage: src !== undefined && !loading && !failed && !sourceFailed,
@@ -270,7 +275,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const displayWidth = natural === undefined ? undefined : natural.width * scale;
   const sliderMin = Math.min(MIN_ZOOM, Math.max(1, Math.floor(fitPercent)));
   const mode = zoom === 'fit' ? 'fit' : percent === 100 ? 'actual' : 'custom';
-  const source = remote ? linkUrl : (linkUrl ?? sourcePath);
+  const source = !onKikiComputer ? linkUrl : (linkUrl ?? sourcePath);
   const shownSource = mediaSourceLabel(source);
   const zoomable = natural !== undefined && !loading && !failed && !sourceFailed;
   const details = [

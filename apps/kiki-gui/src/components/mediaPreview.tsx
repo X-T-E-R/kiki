@@ -47,7 +47,7 @@ import { useMediaQuery } from '../lib/layoutHooks';
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
 import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
-import { httpImageLink, isRemoteConnection, mediaOutcomeKey, resolveImageMime } from './imageActions';
+import { httpImageLink, isOnKikiComputer, mediaOutcomeKey, resolveImageMime } from './imageActions';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { attachmentName, useSessionMedia } from './mediaParts';
 import { remoteImageUrl } from './RemoteImageGate';
@@ -150,7 +150,7 @@ export function MediaPreviewProvider({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const clientIdentity = connection?.client;
-  const remoteScope = isRemoteConnection(connection);
+  const localKikiComputer = isOnKikiComputer(connection);
   const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
   const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
   const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
@@ -529,7 +529,7 @@ export function MediaPreviewProvider({
         <GalleryLightbox
           image={gallery.images[gallery.selected]!}
           sessionId={sessionId}
-          remote={remoteScope}
+          localKikiComputer={localKikiComputer}
           seededSrc={gallery.seededId === gallery.images[gallery.selected]!.id ? gallery.seededSrc : undefined}
           index={gallery.selected}
           count={gallery.images.length}
@@ -562,7 +562,7 @@ export function MediaPreviewProvider({
               sourcePath={image.sourcePath}
               linkUrl={httpImageLink(image.src)}
               outcomeKey={mediaOutcomeKey({ url: image.src })}
-              remote={remoteScope}
+              localKikiComputer={localKikiComputer}
               onClose={() => { setImage(null); }}
             />
           </Suspense>
@@ -598,7 +598,7 @@ function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | unde
   return typed?.url;
 }
 
-function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
+function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
@@ -646,7 +646,7 @@ function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, c
           sourcePath={hostPath}
           linkUrl={httpImageLink(image.item.url)}
           outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })}
-          remote={remote}
+          localKikiComputer={localKikiComputer}
           mime={mime}
           size={size}
           loading={canonical && load.status === 'loading'}

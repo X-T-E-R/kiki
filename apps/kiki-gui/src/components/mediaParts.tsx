@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { formatBytes, resolveHostPath, type MediaRef } from '@kiki/session-core/composer/media';
-import { useHost } from '../host';
+import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
+import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import { openExternalUrl, useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 import { useOptionalConnection } from '../state/connection';
+import { resourceActions, resourceMutability, type PreviewEnvironment, type PreviewResource } from '../state/previewResource';
+import { hostFileResource, mediaRefResource } from '../state/previewWorkspace';
 import { Icon } from './icons';
-import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
+import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
-import { copyImageBitmap, hostActionPath, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
-import { imagePreviewDownloadName } from './imagePreviewName';
+import { copyImageBitmap, hostActionPath, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isOnKikiComputer, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
@@ -140,7 +142,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
   const connection = useOptionalConnection();
   const client = connection?.client;
   const preview = useMediaPreview();
-  const remote = isRemoteConnection(connection);
+  const localKikiComputer = isOnKikiComputer(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const openMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -176,7 +178,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     path: item.path,
     cwd: preview?.cwd,
     link: httpImageLink(item.url),
-    remote,
+    localKikiComputer,
     revealPath: host.revealPath,
     openPath: host.openPath,
     canCopyImage: src !== undefined,
@@ -264,13 +266,232 @@ function AudioPart({ item }: { item: MediaRef }) {
   return <span ref={hostRef} className="inline-flex max-w-full"><audio controls src={src} preload="none" className="h-10 max-w-full" /></span>;
 }
 
-function FileChip({ item }: { item: MediaRef }) {
+function relativePathForMention(path: string, cwd: string | undefined): string {
+  if (cwd === undefined) return path;
+  const normPath = resolveHostPath(path).replaceAll('\\', '/');
+  const normCwd = resolveHostPath(cwd).replaceAll('\\', '/').replace(/\/+$/, '');
+  const prefix = `${normCwd}/`;
+  if (normPath.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return normPath.slice(prefix.length);
+  }
+  return path;
+}
+
+export function buildResourceMenuEntries({
+  resource,
+  rawPath,
+  cwd,
+  sessionId,
+  localKikiComputer,
+  host,
+  client,
+  t,
+  onOpenPreview,
+  onOpenCurrentFile,
+}: {
+  readonly resource: PreviewResource;
+  readonly rawPath?: string;
+  readonly cwd?: string;
+  readonly sessionId?: string;
+  readonly localKikiComputer: boolean;
+  readonly host: ReturnType<typeof useHost>;
+  readonly client?: unknown;
+  readonly t: ReturnType<typeof useI18n>['t'];
+  readonly onOpenPreview?: () => void;
+  readonly onOpenCurrentFile?: (path: string) => void;
+}): MiniMenuEntry[] {
+  const environment: PreviewEnvironment = {
+    isKikiComputer: localKikiComputer,
+    hasSession: sessionId !== undefined,
+    capabilities: {
+      reveal: host.revealPath !== undefined,
+      open: host.openPath !== undefined,
+    },
+  };
+  const actions = resourceActions(resource, environment, {
+    status: 'ready',
+    readableFromDevice:
+      resource.source.kind === 'session-copy'
+        ? sessionId !== undefined && client !== undefined
+        : resource.source.kind === 'url'
+          ? resource.source.url !== ''
+          : client !== undefined && (localKikiComputer || sessionId !== undefined),
+    originalReadable: true,
+  });
+  const isCopy = resourceMutability(resource) === 'copy';
+  const trustedPath =
+    resource.origin !== undefined && resource.origin.trusted
+      ? resolveHostPath(resource.origin.path, cwd)
+      : resource.source.kind === 'host-file'
+        ? resolveHostPath(resource.source.path, cwd)
+        : undefined;
+
+  const entries: MiniMenuEntry[] = [];
+  if (onOpenPreview !== undefined) {
+    entries.push({ key: 'open-preview', label: t('file.openPreview'), run: onOpenPreview });
+  }
+  const hostEntries: MiniMenuEntry[] = [];
+  for (const action of actions) {
+    if (action.id === 'open-current-file' && trustedPath !== undefined && onOpenCurrentFile !== undefined) {
+      entries.push({
+        key: 'open-current-file',
+        label: t('preview.openCurrentFile'),
+        run: () => { onOpenCurrentFile(trustedPath); },
+      });
+    } else if (action.id === 'download' && resource.source.kind !== 'host-file') {
+      const downloadName =
+        safeImagePreviewName({ name: resource.name, path: trustedPath }) ?? resource.name ?? t('media.attachment');
+      const copySource = resource.source;
+      entries.push({
+        key: 'download',
+        label: t('media.download'),
+        run: async () => {
+          try {
+            await saveMediaToDisk(
+              {
+                url: copySource.kind === 'url' ? copySource.url : undefined,
+                fileId: copySource.kind === 'session-copy' ? copySource.fileId : undefined,
+              },
+              downloadName,
+              host,
+              client as Parameters<typeof saveMediaToDisk>[3],
+              copySource.kind === 'session-copy' ? (copySource.sessionId || sessionId) : sessionId,
+            );
+          } catch (error) {
+            pushToast({ tone: 'error', text: imageDownloadFailureText(error, t), detail: errorToText(error) });
+          }
+        },
+      });
+    } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+      entries.push({
+        key: 'add-to-chat',
+        label: t('preview.addToChat'),
+        run: () => {
+          appendToDraft(
+            sessionId,
+            mentionToken({
+              kind: 'file',
+              path: relativePathForMention(trustedPath, cwd),
+              name: basenameOf(trustedPath),
+              isDir: false,
+            }),
+          );
+        },
+      });
+    } else if (action.id === 'copy-path' && trustedPath !== undefined) {
+      const copyTarget = rawPath ?? trustedPath;
+      entries.push({
+        key: 'copy-path',
+        label: t('file.copyPath'),
+        run: () => copyTextToClipboard(copyTarget),
+      });
+      if (!isCopy && rawPath !== undefined && trustedPath !== rawPath) {
+        entries.push({
+          key: 'copy-absolute',
+          label: t('file.copyAbsolutePath'),
+          run: () => copyTextToClipboard(trustedPath),
+        });
+      }
+    } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
+      hostEntries.push({
+        key: 'show-in-folder',
+        label: isCopy ? t('preview.showOnThisComputer') : t('file.showInFolder'),
+        run: () => host.revealPath!(trustedPath),
+      });
+    } else if (action.id === 'open-with-default-app' && trustedPath !== undefined && host.openPath !== undefined) {
+      hostEntries.push({
+        key: 'open-default-app',
+        label: isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+        run: () => host.openPath!(trustedPath),
+      });
+    } else if (action.id === 'open-in-browser' && resource.source.kind === 'url') {
+      const url = resource.source.url;
+      entries.push({
+        key: 'open-link',
+        label: t('link.open'),
+        run: () => openExternalUrl(host, url, t('common.popupBlocked')),
+      });
+    }
+  }
+  if (hostEntries.length > 0) {
+    if (entries.length > 0) entries.push({ separator: true });
+    entries.push(...hostEntries);
+  }
+  return entries;
+}
+
+export function useMediaRefMenu(item: MediaRef, label: string, sessionIdOverride?: string) {
+  const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const localKikiComputer = isOnKikiComputer(connection);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const sessionId = sessionIdOverride ?? preview?.sessionId;
+  const resource = useMemo(
+    () =>
+      mediaRefResource(item, {
+        sessionId,
+        origin: item.origin,
+        cwd: preview?.cwd,
+        name: label,
+      }),
+    [item, sessionId, preview?.cwd, label],
+  );
+  const openItem = useCallback(() => {
+    if (preview === null) return;
+    if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) preview.openAttachment(item);
+    else if (item.path !== undefined) preview.openFile(item.path);
+    else if (item.fileId !== undefined || item.url !== undefined) preview.openAttachment(item);
+  }, [item, preview]);
+  const canOpen = (item.path !== undefined || item.fileId !== undefined || item.url !== undefined) && preview !== null;
+  const entries = useMemo(
+    () =>
+      buildResourceMenuEntries({
+        resource,
+        rawPath: item.path,
+        cwd: preview?.cwd,
+        sessionId,
+        localKikiComputer,
+        host,
+        client: connection?.client,
+        t,
+        onOpenPreview: canOpen ? openItem : undefined,
+        onOpenCurrentFile: preview === null ? undefined : (targetPath) => { preview.openFile(targetPath); },
+      }),
+    [resource, item.path, preview, sessionId, localKikiComputer, host, connection?.client, t, canOpen, openItem],
+  );
+  const openMenu = useCallback(
+    (event: React.MouseEvent) => {
+      if (entries.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu({ x: event.clientX, y: event.clientY });
+    },
+    [entries.length],
+  );
+  const menuElement =
+    menu === null || entries.length === 0 ? null : (
+      <MiniContextMenu
+        x={menu.x}
+        y={menu.y}
+        entries={entries}
+        onClose={() => { setMenu(null); }}
+        ariaLabel={label}
+        overlayId="media-chip-menu"
+        dataAttribute="data-file-link-menu"
+      />
+    );
+  return { openItem, canOpen, openMenu, menuElement };
+}
+
+function FileChip({ item }: { item: MediaRef }) {
+  const { t } = useI18n();
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const label = attachmentName(item, undefined, fallback);
   const detail = item.size !== undefined ? formatBytes(item.size) : item.mime;
-  const openable = (item.path !== undefined || item.fileId !== undefined) && preview !== null;
+  const chipMenu = useMediaRefMenu(item, label);
+  const openable = (item.path !== undefined || item.fileId !== undefined) && chipMenu.canOpen;
   const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-left ${
     openable ? 'border-hairline bg-paper transition-colors hover:border-accent' : 'border-hairline bg-paper/60'
   }`;
@@ -281,20 +502,29 @@ function FileChip({ item }: { item: MediaRef }) {
       {detail !== undefined && detail !== '' ? <span className="shrink-0 font-mono text-[11px] text-ink-faint">{detail}</span> : null}
     </>
   );
-  if (!openable) return <span className={className} title={label}>{body}</span>;
+  if (!openable) {
+    return (
+      <>
+        <span className={className} title={label} onContextMenu={chipMenu.openMenu}>
+          {body}
+        </span>
+        {chipMenu.menuElement}
+      </>
+    );
+  }
   return (
-    <button
-      type="button"
-      className={className}
-      title={label}
-      onClick={() => {
-        if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) preview.openAttachment(item);
-        else if (item.path !== undefined) preview.openFile(item.path);
-        else if (item.fileId !== undefined) preview.openAttachment(item);
-      }}
-    >
-      {body}
-    </button>
+    <>
+      <button
+        type="button"
+        className={className}
+        title={label}
+        onClick={chipMenu.openItem}
+        onContextMenu={chipMenu.openMenu}
+      >
+        {body}
+      </button>
+      {chipMenu.menuElement}
+    </>
   );
 }
 
@@ -452,35 +682,57 @@ export function MediaPartList({ media, align = 'start', agentId }: { media: read
  * `children` replaces how the path reads (a one-line row passes `PathText`);
  * the link, its menu and its title still act on `path`.
  */
-export function FilePathLink({ path, className, children }: { path: string; className?: string; children?: ReactNode }) {
+export function FilePathLink({
+  path,
+  line,
+  column,
+  heading,
+  className,
+  children,
+}: {
+  path: string;
+  line?: number;
+  column?: number;
+  heading?: string;
+  className?: string;
+  children?: ReactNode;
+}) {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
   const connection = useOptionalConnection();
-  const remoteScope = isRemoteConnection(connection);
+  const localKikiComputer = isOnKikiComputer(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{children ?? path}</span>;
   const filePath = resolveHostPath(path, preview.cwd);
-  const hostEntries: MiniMenuEntry[] = [];
-  if (!remoteScope) {
-    if (host.revealPath !== undefined) hostEntries.push({ key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath?.(filePath) });
-    if (host.openPath !== undefined) hostEntries.push({ key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath?.(filePath) });
-  }
-  const entries: MiniMenuEntry[] = [
-    { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(filePath); } },
-    { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
-    ...(filePath !== path ? [{ key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(filePath) } as const] : []),
-    ...(hostEntries.length > 0 ? [{ separator: true } as const, ...hostEntries] : []),
-  ];
+  const target: string | FileReference =
+    line !== undefined || column !== undefined || heading !== undefined
+      ? { path: filePath, line, column, heading }
+      : filePath;
+  const openTarget = () => {
+    preview.openFile(target);
+  };
+  const resource = hostFileResource(filePath, preview.cwd);
+  const entries = buildResourceMenuEntries({
+    resource,
+    rawPath: path,
+    cwd: preview.cwd,
+    sessionId: preview.sessionId,
+    localKikiComputer,
+    host,
+    client: connection?.client,
+    t,
+    onOpenPreview: openTarget,
+  });
   return (
     <>
       <span
         role="link"
         tabIndex={0}
         title={filePath}
-        onClick={(event) => { event.stopPropagation(); preview.openFile(filePath); }}
+        onClick={(event) => { event.stopPropagation(); openTarget(); }}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}
-        onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); preview.openFile(filePath); } }}
+        onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); openTarget(); } }}
         className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${className ?? ''}`}
       >
         {children ?? path}

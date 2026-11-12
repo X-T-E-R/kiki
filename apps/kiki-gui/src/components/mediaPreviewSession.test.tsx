@@ -51,7 +51,8 @@ vi.mock('../state/connection', async (importOriginal) => {
     ...original,
     useOptionalConnection: () => ({
       client: (mocks.activeClient ?? defaultClient) as typeof defaultClient,
-      connectionSource: mocks.remote ? 'remote' : 'local',
+      connectionSource: mocks.remote ? 'remote' : 'local-detection',
+      config: mocks.remote ? { url: 'https://remote.example.test' } : { url: 'http://localhost:8080' },
     }),
   };
 });

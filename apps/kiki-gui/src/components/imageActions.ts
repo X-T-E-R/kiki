@@ -5,21 +5,33 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { copyImageToClipboard, copyTextToClipboard, isPngBlob, readBlobBytes } from '../lib/clipboard';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import type { HostSaveSink } from '../host/host';
+import {
+  classifyResource,
+  isKikiComputer,
+  resourceActions,
+  type KikiComputerConnection,
+  type PreviewResource,
+} from '../state/previewResource';
 import type { MiniMenuEntry } from './MiniContextMenu';
 
 const COPY_IMAGE = 'media.copyImage' as I18nKey;
 const URL_SCHEME = /^(?:https?|data|blob|kimi-file|blobref):/i;
 
-export function isRemoteConnection(connection: {
-  readonly scopeId?: string;
-  readonly spaceKey?: string;
-  readonly connectionSource?: string | null;
-} | null | undefined): boolean {
+export function isOnKikiComputer(connection: KikiComputerConnection | null | undefined): boolean {
+  const pageUrl = typeof window !== 'undefined' ? window.location.href : undefined;
+  return isKikiComputer(connection, { pageUrl });
+}
+
+/**
+ * Compatibility helper retained only for same-session HTML attachment routing
+ * in `message/MessageRow.tsx` (outside the preview write slice); show/open/copy
+ * actions never call this and always gate fail-closed via `isOnKikiComputer`.
+ */
+export function isRemoteConnection(connection: KikiComputerConnection | null | undefined): boolean {
   if (connection === null || connection === undefined) return false;
   if (connection.scopeId?.startsWith('ssh:') || connection.scopeId === 'direct:peer') return true;
-  if (connection.connectionSource === 'remote') return true;
-  if (connection.spaceKey?.startsWith('remote:')) return true;
-  return false;
+  if (connection.connectionSource === 'remote' || connection.connectionSource === 'app-shell') return true;
+  return Boolean(connection.spaceKey?.startsWith('remote:'));
 }
 
 export function localImagePath(path: string | undefined): string | undefined {
@@ -325,6 +337,7 @@ export function imageMenuEntries({
   path,
   cwd,
   link,
+  localKikiComputer,
   remote,
   revealPath,
   openPath,
@@ -340,7 +353,8 @@ export function imageMenuEntries({
   path?: string;
   cwd?: string;
   link?: string;
-  remote: boolean;
+  localKikiComputer?: boolean;
+  remote?: boolean;
   revealPath?: (path: string) => Promise<void>;
   openPath?: (path: string) => Promise<void>;
   canCopyImage: boolean;
@@ -352,24 +366,52 @@ export function imageMenuEntries({
 }): MiniMenuEntry[] {
   const entries: MiniMenuEntry[] = [];
   const filePath = localImagePath(path);
+  const onKikiComputer = localKikiComputer ?? (remote === undefined ? false : !remote);
+  const actionable = filePath === undefined ? undefined : hostActionPath(filePath, cwd);
+  const resource: PreviewResource =
+    actionable !== undefined
+      ? {
+          source: { kind: 'host-file', path: actionable },
+          origin: { path: actionable, trusted: true },
+          type: classifyResource({ name: actionable, mime: 'image/*' }),
+        }
+      : {
+          source: { kind: 'url', url: link ?? src ?? '' },
+          type: 'image',
+        };
+  const actions = resourceActions(
+    resource,
+    {
+      isKikiComputer: onKikiComputer,
+      capabilities: {
+        reveal: revealPath !== undefined,
+        open: openPath !== undefined,
+      },
+    },
+    { status: 'ready', readableFromDevice: canSave, originalReadable: true },
+  );
+  const hasAction = (id: (typeof actions)[number]['id']) => actions.some((action) => action.id === id);
+
   if (canCopyImage && src !== undefined) entries.push({ key: 'copy-image', label: t(COPY_IMAGE), run: onCopyImage });
   if (link !== undefined) entries.push({ key: 'copy-link', label: t('link.copyLink'), run: () => copyTextToClipboard(link) });
-  if (filePath !== undefined) entries.push({ key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(filePath) });
-  if (!remote && filePath !== undefined) {
-    const actionable = hostActionPath(filePath, cwd);
-    if (actionable !== filePath) {
+  if (hasAction('copy-path') && filePath !== undefined && actionable !== undefined) {
+    entries.push({ key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(filePath) });
+    if (onKikiComputer && actionable !== filePath) {
       entries.push({ key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(actionable) });
     }
-    const hasHostAction = revealPath !== undefined || openPath !== undefined;
-    if (hasHostAction) entries.push({ separator: true });
-    if (revealPath !== undefined) {
+  }
+  const canShow = hasAction('show-on-this-computer') && revealPath !== undefined && actionable !== undefined;
+  const canOpen = hasAction('open-with-default-app') && openPath !== undefined && actionable !== undefined;
+  if (canShow || canOpen) {
+    if (entries.length > 0) entries.push({ separator: true });
+    if (canShow) {
       entries.push({ key: 'show-in-folder', label: t('file.showInFolder'), run: () => revealPath(actionable) });
     }
-    if (openPath !== undefined) {
+    if (canOpen) {
       entries.push({ key: 'open-default-app', label: t('file.openDefaultApp'), run: () => openPath(actionable) });
     }
   }
-  if (canSave) {
+  if (hasAction('download')) {
     if (entries.length > 0) entries.push({ separator: true });
     entries.push({ key: 'save-image', label: t('media.download'), run: onSave });
     if (annotated && onSaveAnnotated !== undefined) entries.push({ key: 'save-annotated-image', label: t('media.downloadAnnotated'), run: onSaveAnnotated });

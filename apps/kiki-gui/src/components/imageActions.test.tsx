@@ -7,7 +7,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
 import { MediaLightbox, mediaSourceLabel } from './MediaLightbox';
-import { copyImageBitmap, hostActionPath, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
+import { copyImageBitmap, hostActionPath, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isOnKikiComputer, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
 import type { MiniMenuEntry as MenuEntry } from './MiniContextMenu';
 
 function keys(entries: readonly MenuEntry[]): string[] {
@@ -17,12 +17,15 @@ function keys(entries: readonly MenuEntry[]): string[] {
 const label = (key: I18nKey) => key;
 
 describe('image action targets', () => {
-  it('identifies remote connections accurately across SSH, direct peer, and remote space', () => {
+  it('identifies Kiki computer vs remote connections fail-closed across SSH, paired shell, and remote space', () => {
+    expect(isOnKikiComputer(undefined)).toBe(false);
     expect(isRemoteConnection(undefined)).toBe(false);
-    expect(isRemoteConnection({ scopeId: 'local', spaceKey: 'main' })).toBe(false);
-    expect(isRemoteConnection({ scopeId: 'ssh:prod', spaceKey: 'ssh:prod' })).toBe(true);
-    expect(isRemoteConnection({ scopeId: 'direct:peer', spaceKey: 'peer:node' })).toBe(true);
-    expect(isRemoteConnection({ scopeId: 'remote:c1', connectionSource: 'remote' })).toBe(true);
+    expect(isOnKikiComputer({ scopeId: 'local', spaceKey: 'main', connectionSource: 'desktop' })).toBe(true);
+    expect(isRemoteConnection({ scopeId: 'local', spaceKey: 'main', connectionSource: 'desktop' })).toBe(false);
+    expect(isOnKikiComputer({ scopeId: 'ssh:prod', spaceKey: 'ssh:prod', connectionSource: 'desktop' })).toBe(false);
+    expect(isOnKikiComputer({ scopeId: 'direct:peer', spaceKey: 'peer:node', connectionSource: 'desktop' })).toBe(false);
+    expect(isOnKikiComputer({ scopeId: 'remote:c1', connectionSource: 'remote' })).toBe(false);
+    expect(isOnKikiComputer({ scopeId: 'local', connectionSource: 'app-shell' })).toBe(false);
     expect(isRemoteConnection({ spaceKey: 'remote:uuid' })).toBe(true);
   });
 
@@ -411,8 +414,25 @@ describe('lightbox image menu', () => {
     openMenu(false, undefined, 'https://example.test/shot.png');
     expect(document.querySelector('[data-menu-item="copy-path"]')).toBeNull();
     expect(document.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(document.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
     expect(document.querySelector('[data-menu-item="copy-link"]')?.textContent).toBe('Copy link');
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-menu-item="copy-link"]')!.click(); });
     expect(writeText).toHaveBeenCalledWith('https://example.test/shot.png');
+
+    act(() => {
+      root.render(
+        <I18nProvider>
+          <HostProvider host={host}>
+            <MediaLightbox src="blob:shot" name="shot.png" sourcePath="/remote/space/shot.png" localKikiComputer={false} onClose={() => {}} />
+          </HostProvider>
+        </I18nProvider>,
+      );
+    });
+    act(() => {
+      document.querySelector('[data-lightbox-viewport]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 }));
+    });
+    expect(document.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(document.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(document.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
   });
 });

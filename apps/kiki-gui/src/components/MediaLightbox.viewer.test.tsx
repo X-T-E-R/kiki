@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 
 function renderLightbox(props: Partial<Parameters<typeof MediaLightbox>[0]> & { src?: string }) {
   act(() => {
-    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} remote={props.remote} /></I18nProvider>);
+    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} localKikiComputer={props.localKikiComputer ?? (props.remote === undefined ? true : !props.remote)} remote={props.remote} /></I18nProvider>);
   });
 }
 

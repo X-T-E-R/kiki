@@ -28,7 +28,7 @@ import {
 } from '#/state/previewResource';
 import { CodeEditor } from '../CodeEditor';
 import { Icon } from '../icons';
-import { imageDownloadFailureText, imageDownloadSink, imageDownloadStep, isRemoteConnection, saveMediaToDisk } from '../imageActions';
+import { imageDownloadFailureText, imageDownloadSink, imageDownloadStep, saveMediaToDisk } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
 import { ImageViewport } from '../ImageViewport';
 import { Markdown } from '../Markdown';
@@ -85,13 +85,13 @@ export function PreviewAttachmentView({
   const connection = useOptionalConnection();
   const client = connection?.client;
   const remoteScope = !isLocalKikiComputer(connection);
-  const remotePlaybackScope = isRemoteConnection(connection);
   const { source } = resource;
   const sessionId =
     source.kind === 'session-copy' && source.sessionId !== ''
       ? source.sessionId
       : fallbackSessionId;
   const environment = usePreviewEnvironment(sessionId);
+  const remotePlaybackScope = !environment.isKikiComputer;
   const fallbackName = resource.type === 'image' ? t('media.image') : t('media.attachment');
   const name =
     resource.name ??
