@@ -45,6 +45,7 @@ describe('daemon discovery', () => {
       url: 'http://127.0.0.1:57580',
       token: 'token',
       serverId: 'server-1',
+      localOwner: true,
     });
     expect(mocks.findReachableServer).toHaveBeenCalledWith('C:\\home', 'C:\\repo');
   });
@@ -62,6 +63,7 @@ describe('daemon discovery', () => {
       url: 'http://127.0.0.1:57580',
       token: 'token',
       serverId: 'server-1',
+      localOwner: true,
     });
     expect(mocks.ensureServer).toHaveBeenCalledWith({
       homeDir: 'C:\\home',

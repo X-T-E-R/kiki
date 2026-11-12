@@ -18,7 +18,7 @@ const KITTY_KEYBOARD_PROTOCOL_QUERY = `\x1b[>${DESIRED_KITTY_KEYBOARD_PROTOCOL_F
 
 export type KeyboardProtocolNegotiationSequence =
 	| { type: "kitty-flags"; flags: number }
-	| { type: "device-attributes" };
+	| { type: "device-attributes"; sequence: string };
 
 export function parseKeyboardProtocolNegotiationSequence(
 	sequence: string,
@@ -28,7 +28,7 @@ export function parseKeyboardProtocolNegotiationSequence(
 		return { type: "kitty-flags", flags: Number.parseInt(kittyFlags[1]!, 10) };
 	}
 	if (/^\x1b\[\?[\d;]*c$/.test(sequence)) {
-		return { type: "device-attributes" };
+		return { type: "device-attributes", sequence };
 	}
 	return undefined;
 }
@@ -134,6 +134,7 @@ export class ProcessTerminal implements Terminal {
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
 	private keyboardProtocolPushed = false;
+	private keyboardProtocolDA1Pending = false;
 	private keyboardProtocolNegotiationBuffer = "";
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
@@ -252,6 +253,7 @@ export class ProcessTerminal implements Terminal {
 		this.setupStdinBuffer();
 		process.stdin.on("data", this.stdinDataHandler!);
 		this.keyboardProtocolPushed = true;
+		this.keyboardProtocolDA1Pending = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
 		process.stdout.write(KITTY_KEYBOARD_PROTOCOL_QUERY);
 	}
@@ -274,6 +276,11 @@ export class ProcessTerminal implements Terminal {
 			return true;
 		}
 
+		if (!this.keyboardProtocolDA1Pending) {
+			this.forwardInputSequence(negotiationSequence.sequence);
+			return true;
+		}
+		this.keyboardProtocolDA1Pending = false;
 		if (!this._kittyProtocolActive) {
 			this.enableModifyOtherKeys();
 		}

@@ -45,6 +45,18 @@ interface Envelope<T> {
   readonly request_id?: string;
 }
 
+export interface SessionAccessConfig {
+  readonly enabled: boolean;
+  readonly terminal_handoff: boolean;
+  readonly server_id: string;
+}
+
+export interface SessionAccessPresence {
+  readonly ready: Promise<void>;
+  readonly closed: Promise<void>;
+  close(): void;
+}
+
 export interface DaemonClientOptions extends DaemonConnection {
   readonly fetch?: typeof fetch;
   readonly WebSocket?: typeof WebSocket;
@@ -204,6 +216,55 @@ export class DaemonClient implements SessionTransport {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/goal`);
   }
 
+  getSessionAccess(): Promise<SessionAccessConfig> {
+    return this.request('GET', '/session-access');
+  }
+
+  requestSessionAccessTicket(session_id: string, challenge: string, holder_id: string): Promise<{ ticket: string }> {
+    return this.request('POST', '/session-access/tickets', { session_id, challenge, holder_id });
+  }
+
+  releaseSessionAccess(holder_id: string, session_id?: string, signal?: AbortSignal): Promise<{ revoked: number }> {
+    return this.request('POST', '/session-access/release', { holder_id, session_id }, undefined, undefined, signal);
+  }
+
+  openSessionAccessPresence(holderId: string): SessionAccessPresence {
+    const controller = new AbortController();
+    let markReady!: () => void;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      markReady = resolve;
+      rejectReady = reject;
+    });
+    const closed = (async () => {
+      const response = await this.fetchImpl(`${this.url}/api/session-access/holders/${encodeURIComponent(holderId)}/presence`, {
+        headers: { Accept: 'text/event-stream', Authorization: `Bearer ${this.token}` },
+        signal: controller.signal,
+      });
+      if (!response.ok || response.body === null) throw new Error('Session hand-off presence refused');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+          let end: number;
+          while ((end = buffer.indexOf('\n\n')) !== -1) {
+            const event = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            if (event.split('\n').includes('event: ready')) markReady();
+          }
+        }
+        throw new Error('Session hand-off presence closed');
+      } finally {
+        reader.releaseLock();
+      }
+    })().catch((error: unknown) => { rejectReady(error); });
+    return { ready, closed, close: () => controller.abort() };
+  }
+
   renewServerLease(leaseId?: string): Promise<{
     readonly lease_id: string;
     readonly expires_at: number;
@@ -302,6 +363,7 @@ export class DaemonClient implements SessionTransport {
     body?: unknown,
     query?: Record<string, string | number | undefined>,
     okCodes: readonly number[] = [API_CODES.SUCCESS],
+    signal?: AbortSignal,
   ): Promise<T> {
     const url = new URL(`${this.url}/api${path}`);
     for (const [key, value] of Object.entries(query ?? {})) {
@@ -316,6 +378,7 @@ export class DaemonClient implements SessionTransport {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
     const envelope = (await response.json()) as Envelope<T>;
     if (!okCodes.includes(envelope.code)) throw new ApiError(envelope);

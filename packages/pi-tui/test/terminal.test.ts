@@ -187,6 +187,37 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 		}
 	});
 
+	it("consumes only the keyboard sentinel and forwards later DA1 replies", () => {
+		const harness = setupNegotiation();
+		try {
+			harness.send("\x1b[?7u\x1b[?62;4c");
+			assert.equal(harness.getInput(), undefined);
+			harness.send("\x1b[?62;4;52c");
+			assert.equal(harness.getInput(), "\x1b[?62;4;52c");
+			assert.equal(harness.terminal.kittyProtocolActive, true);
+			assert.equal(harness.writes.includes("\x1b[>4;2m"), false);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("preserves a later split DA1 reply after keyboard fallback", () => {
+		mock.timers.enable({ apis: ["setTimeout"] });
+		const harness = setupNegotiation();
+		try {
+			harness.send("\x1b[?62c");
+			harness.send("\x1b[?62;4");
+			mock.timers.tick(50);
+			assert.equal(harness.getInput(), undefined);
+			harness.send(";52c");
+			assert.equal(harness.getInput(), "\x1b[?62;4;52c");
+			assert.equal(harness.writes.filter((write) => write === "\x1b[>4;2m").length, 1);
+		} finally {
+			harness.cleanup();
+			mock.timers.reset();
+		}
+	});
+
 	it("forwards normal input while waiting for Kitty response", () => {
 		const harness = setupNegotiation();
 		try {

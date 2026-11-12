@@ -1,6 +1,6 @@
 ---
 title: Session access tokens and terminal status
-description: The contract for credentials bound to one session, the terminal hand-off that issues them, and the TUI's OSC 7501 status reports; none of it is built yet.
+description: Canonical contract for session access tokens, terminal hand-off, and OSC 7501 TUI status, with implementation ownership, remaining scope, and verification paths.
 outline: [2, 3]
 ---
 
@@ -232,28 +232,25 @@ A client holding a token depends on behaviours of prompt submission, turn events
 
 ## What is built
 
-Nothing of this contract is built. No code in `apps/` or `packages/` mentions `session-access`, `ksa_` or OSC 7501, and the TUI writes no terminal title. The contract builds on what exists: the credential admission path for owner, peer, web and external-client credentials (`packages/kap-server/src/services/connections/audience.ts`), the loopback address test for external-client credentials, `ISessionManager.onDidDeleteSession` (`packages/agent-core-v2/src/app/sessionManager/sessionManager.ts`), `registerConfigSection` and `onDidSectionChange` for configuration, `ServerStartOptions.leaseTtlMs` as the pattern for an injectable clock and a short presence grace in tests, `userPromptOriginSchema` (`packages/protocol/src/events.ts`) as the origin type to extend, `temporarySessionIds` in `apps/kimi-code/src/tui/daemon/daemon-tui.ts` for knowing a session is ephemeral, and pi-tui's input listeners and stdin buffer for consuming terminal replies.
+The server exposes owner-token routes and terminal ticket, presence, release, and exchange routes. Their registrations are in `packages/kap-server/src/routes/sessionAccess.ts` and `packages/kap-server/src/routes/sessionAccessHandoff.ts`; kap-server registers `[session_access]`, and the `kiki session-access` CLI is implemented in `apps/kimi-code/src/kiki/connections.ts` and `apps/kimi-code/src/kiki/register.ts`.
+
+`ProgramStatusReporter` (`apps/kimi-code/src/tui/utils/program-status.ts`) owns OSC 7501 negotiation, report encoding, input parsing, and ticket replies. `DaemonProgramStatus` (`apps/kimi-code/src/tui/daemon/program-status.ts`) projects session state and owns hand-off eligibility, ticket/presence lifecycle, session-switch release, and presence retry. Hand-off fields and ticket requests require a local-owner loopback connection without SSH and both `[session_access].enabled` and `[session_access].terminal_handoff` set to `true`; ephemeral sessions omit `session` and cannot receive tickets. `DaemonTUI` wires the reporter to early input, session/view updates, reconnect refresh, and disposal; `apps/kimi-code/src/cli/run-shell.ts` clears status on emergency exit. `ProcessTerminal` consumes its first DA1 reply for keyboard negotiation and forwards later reconstructed DA1 replies to TUI input. Its local divergence is recorded in `packages/pi-tui/AGENTS.md`.
 
 ## What is not built
 
-Each piece is tracked by an issue with the title given, in this order:
+- The GUI has no surface for listing or revoking session-access tokens; its placement and controls remain undesigned.
+- The TUI remains connected to its original server endpoint and does not follow a daemon that restarts on a different port.
 
-- **"Add session access tokens scoped to one session (server, owner channel)"**: the token store, enforcement on REST and WebSocket, the restricted prompt body, `via`, management routes, `[session_access]`, the CLI, and the user docs (`server/local-server.md`, `server/rest-api.md`, `configuration/config-files.md`, `reference/command.md`, in en and zh).
-- **"Add the terminal hand-off channel for session access tokens (server)"**: tickets, presence, release and `exchange`.
-- **"Report the TUI's status to terminals that support OSC 7501 program status"**: the probe, the encoder, the state mapping and `state=clear`. Any change to `packages/pi-tui`, which is vendored, must be minimal and registered as a local divergence in `packages/pi-tui/AGENTS.md` with a guarding test.
-- **"Let the hosting terminal request a session access ticket from the TUI"**: the hand-off keys, ticket requests and the holder lifecycle.
-- **"Pin down with tests the session behaviours that REST prompt clients rely on"**: the five remaining coverage gaps above. It does not depend on tokens and can run in parallel.
+## Verification
 
-## What was never verified
+`apps/kimi-code/test/tui/program-status.test.ts` covers probe negotiation, report serialization, fragmented replies, ticket scheduling, session-switch invalidation, presence recovery/retry, and teardown. `apps/kimi-code/test/tui/daemon/program-status.integration.ts` runs the TUI through a virtual terminal against a real local server and covers ticket issue/exchange, `ksa_` HTTP access, `/new` and exit revocation, session/state updates, ephemeral/disabled cases, and split/paste input. Its `refreshes access metadata and presence after an idle daemon restart` case verifies same-port restart recovery and reissues a ticket for the still-open session. DA1 ownership and split-reply handling are guarded by `consumes only the keyboard sentinel and forwards later DA1 replies` and `preserves a later split DA1 reply after keyboard fallback` in `packages/pi-tui/test/terminal.test.ts`.
 
-Everything here was settled by reading the code; nothing was run against a server or a terminal.
+Related client-flow test locations are `packages/kap-server/test/client-flow.integration.ts`, `packages/kap-server/test/sessionAccess.integration.ts`, `packages/kap-server/test/sessionAccess.handoff.integration.ts`, `packages/kap-server/test/sessionAccess.ws.integration.ts`, `packages/kap-server/test/messages.integration.ts`, `packages/kap-server/test/transcript.integration.ts`, `packages/kap-server/test/wsV1Resync.integration.ts`, and `packages/kap-server/test/prompts.integration.ts`.
 
-- That a prompt submitted over REST renders as a user message; `turn.started.promptId` and `turn.ended.reason`; whether `transcript?after_turn=` pages strictly forward; and when message ids change (`packages/kap-server/test/prompts.integration.ts` already covers same-body replay, conflicting `prompt_id` reuse, and queued receipts).
-- That no content reference passed to the large-field read can resolve into another session.
-- Whether the rule that every built-in setting needs a Settings home and en/zh copy applies to plain config keys such as `[session_access]`. It is written for flag ids; `packages/session-core/src/settings/settings.test.ts` decides.
-- How a long-lived `text/event-stream` response interacts with the server's idle exit and lease accounting. A presence stream should not keep an otherwise idle server alive beyond what the TUI's own lease already does.
+OSC 7501 compatibility with a physical terminal remains a manual check; the TUI integration tests use a virtual terminal.
 
 ## Open questions
 
 - The TUI keeps the server endpoint it found at start-up and does not follow a server that restarts on another port, so re-reporting after a restart covers only a changed `server_id` on the same endpoint. Following a server to a new port is outside this contract; decide whether it should be.
 - Where the GUI lists and revokes tokens, and what it shows, is not designed; it belongs with the "Spaces & devices" settings.
+- Whether plain `[session_access]` configuration needs a Settings home and localized copy.

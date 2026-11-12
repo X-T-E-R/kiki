@@ -3919,3 +3919,13 @@ describe('DaemonTUI commands', () => {
     });
   });
 });
+
+it('reports a definite send-now authentication failure from the busy Enter path', async () => {
+  const { tui, controller, controllerState } = driver();
+  const status = (tui as unknown as { programStatus: { requireAuth(message: string | undefined): void } }).programStatus;
+  const requireAuth = vi.spyOn(status, 'requireAuth');
+  controllerState.busy = true;
+  controller.sendPromptNow.mockRejectedValueOnce(new SendNowError('submit', new ApiError({ code: 40111, msg: 'Sign in required', data: null })));
+  tui.state.editor.onSubmit?.('Continue');
+  await vi.waitFor(() => expect(requireAuth).toHaveBeenCalledWith('Sign in required (code 40111)'));
+});

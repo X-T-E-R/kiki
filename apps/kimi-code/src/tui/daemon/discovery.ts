@@ -7,6 +7,7 @@ export interface DaemonConnection {
   readonly token: string;
   readonly serverId?: string;
   readonly identity?: ConnectionIdentity;
+  readonly localOwner?: boolean;
 }
 
 export interface EnsureDaemonOptions {
@@ -23,12 +24,13 @@ export async function discoverDaemon(
   workspacePath?: string,
 ): Promise<DaemonConnection | null> {
   const connection = await findReachableServer(homeDir, workspacePath);
-  return connection ?? null;
+  return connection === undefined ? null : { ...connection, localOwner: true };
 }
 
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<DaemonConnection> {
-  return ensureServer({
+  const connection = await ensureServer({
     homeDir: options.homeDir ?? resolveDaemonHome(),
     workspace: options.workspacePath,
   });
+  return { ...connection, localOwner: true };
 }

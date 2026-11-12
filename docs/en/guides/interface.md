@@ -2,6 +2,8 @@
 
 The desktop app and the browser UI are the same interface, and a session in either is built from three areas: the conversation view, the input box, and the right rail. This page is a tour of those three. For sessions, boards and drafts see [Workspace and session management](/en/guides/sessions); for the terminal version of the same concepts see [Interaction and input](/en/guides/interaction).
 
+Interactive TUI sessions send OSC 7501 status reports only after a terminal confirms support in response to the startup probe. On loopback connections using the local owner credential, reports include `handoff=1` (hand-off version 1), `session` (the current session ID), `port` (the local server port), and `server` (the server ID) only when `[session_access].enabled` and `[session_access].terminal_handoff` are both `true`; see [the session-access configuration](../configuration/config-files.md#session-access). Remote or SSH connections omit these hand-off fields; for `--ephemeral` sessions, the report omits `session` and the TUI does not issue a hand-off ticket.
+
 ## Conversation view
 
 This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices.

@@ -3,8 +3,9 @@ import { basename, resolve } from 'node:path';
 
 import { Container, Spacer, Text, TuiAltScreen, type Component, type Terminal } from '@kiki/pi-tui';
 import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
-import type { ManagedUsageResult, MessageContent, PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
+import { ErrorCode, type ManagedUsageResult, type MessageContent, type PromptStatus, type UpdateSessionProfileRequest } from '@kiki/protocol';
 
+import type { SessionViewSignal } from '@kiki/klient/session-view';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
 import { latestTurnId } from '@kiki/session-core/session';
@@ -107,6 +108,7 @@ import {
   type DaemonSkillCommand,
 } from './commands';
 import { resolveDaemonHome, type DaemonConnection } from './discovery';
+import { DaemonProgramStatus } from './program-status';
 import { DaemonTranscriptRenderer, TranscriptNoteComponent } from './transcript-renderer';
 import {
   activityLineText,
@@ -175,6 +177,7 @@ export class DaemonTUI {
   public onExit?: (exitCode?: number) => Promise<void>;
 
   private readonly client: DaemonClient;
+  private readonly programStatus: DaemonProgramStatus;
   private readonly renderer: DaemonTranscriptRenderer;
   private readonly startup: DaemonTUIStartupInput;
   private currentTuiConfig: TuiConfig;
@@ -213,6 +216,8 @@ export class DaemonTUI {
   private readonly sideControllers = new Set<SessionController>();
   private readonly temporarySessionIds = new Set<string>();
   private stopped = false;
+  private disposal: Promise<void> | undefined;
+  private exiting: Promise<void> | undefined;
   private sourceOverlayErrorActive = false;
   private activeStatusNotice: StatusNotice | undefined;
   private lastActivityKind: ActivityKind = 'idle';
@@ -230,6 +235,7 @@ export class DaemonTUI {
   private wasBusy = false;
   private completedTurns = 0;
   private disposeFocusTracking: (() => void) | undefined;
+  private authFlowTimer: ReturnType<typeof setTimeout> | undefined;
   /** fd binary for `@` mentions; null keeps the built-in directory scan. */
   private fdPath: string | null = null;
   /** Startup's session open/create; input submitted meanwhile waits for it. */
@@ -241,6 +247,14 @@ export class DaemonTUI {
     this.currentTuiConfig = { ...startup.tuiConfig };
     this.state = createTUIState(createOptions(startup), terminal);
     this.client = new DaemonClient(connection);
+    this.programStatus = new DaemonProgramStatus(
+      this.client,
+      connection,
+      (sequence) => this.state.terminal.write(sequence),
+      () => this.state.terminalState.focused,
+      (sessionId) => this.temporarySessionIds.has(sessionId) || this.startup.cliOptions.ephemeral === true,
+    );
+    this.state.ui.addInputListener((data) => this.programStatus.input(data));
     this.state.transcriptContainer.addChild(this.transcriptBody);
     this.renderer = new DaemonTranscriptRenderer(
       this.transcriptBody,
@@ -259,6 +273,7 @@ export class DaemonTUI {
   async start(): Promise<void> {
     this.inputHistory = this.loadInputHistory();
     this.state.ui.start();
+    this.programStatus.start();
     // Focus reports let `[notifications] notification_condition = "unfocused"`
     // stay quiet while the user is looking at this terminal.
     this.disposeFocusTracking = installTerminalFocusTracking(this.state);
@@ -283,13 +298,13 @@ export class DaemonTUI {
     await this.sessionReady;
   }
 
-  async close(): Promise<void> {
-    await this.dispose();
+  close(): Promise<void> {
+    return this.dispose();
   }
 
-  async stop(exitCode = 0): Promise<void> {
-    await this.dispose();
-    await this.onExit?.(exitCode);
+  stop(exitCode = 0): Promise<void> {
+    this.exiting ??= this.dispose().then(() => this.onExit?.(exitCode));
+    return this.exiting;
   }
 
   getCurrentSessionId(): string {
@@ -300,8 +315,16 @@ export class DaemonTUI {
     return (this.controller?.getState().blocks.length ?? 0) > 0;
   }
 
-  private async dispose(): Promise<void> {
-    if (this.stopped) return;
+  clearProgramStatus(): Promise<void> {
+    return this.programStatus.dispose();
+  }
+
+  private dispose(): Promise<void> {
+    this.disposal ??= this.finishDispose();
+    return this.disposal;
+  }
+
+  private async finishDispose(): Promise<void> {
     this.stopped = true;
     let failure: Error | undefined;
     const cleanup = async (operation: () => void | Promise<void>): Promise<void> => {
@@ -311,6 +334,9 @@ export class DaemonTUI {
         failure ??= error instanceof Error ? error : new Error(String(error));
       }
     };
+    clearTimeout(this.authFlowTimer);
+    this.authFlowTimer = undefined;
+    await cleanup(() => this.clearProgramStatus());
     await cleanup(() => {
       this.clearPendingConfirm();
     });
@@ -454,14 +480,7 @@ export class DaemonTUI {
         !trimmed.startsWith('!') &&
         (this.state.appState.busySubmit ?? 'send_now') === 'send_now'
       ) {
-        void this.steerSubmittedText(text, mode).catch((error: unknown) => {
-          this.showStatus(
-            error instanceof SendNowError && error.reason === 'unknown'
-              ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
-              : formatErrorMessage(error),
-            'error',
-          );
-        });
+        void this.steerSubmittedText(text, mode).catch((error: unknown) => this.showSubmissionError(error));
         return;
       }
       this.recordInputHistory(text, mode);
@@ -475,7 +494,7 @@ export class DaemonTUI {
           editor.setInputMode(mode);
           editor.setText(text);
         }
-        this.showStatus(formatErrorMessage(error), 'error');
+        this.showSubmissionError(error);
       });
     };
     editor.onChange = (text) => {
@@ -527,11 +546,7 @@ export class DaemonTUI {
       void this.openExternalEditor(command);
     };
     editor.onCtrlS = () => {
-      void this.steerPrompt().catch((error: unknown) => {
-        this.showStatus(error instanceof SendNowError && error.reason === 'unknown'
-          ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
-          : formatErrorMessage(error), 'error');
-      });
+      void this.steerPrompt().catch((error: unknown) => this.showSubmissionError(error));
     };
     editor.onAltEnter = () => {
       const raw = editor.getExpandedText();
@@ -547,16 +562,12 @@ export class DaemonTUI {
           editor.setInputMode(mode);
           editor.setText(raw);
         }
-        this.showStatus(formatErrorMessage(error), 'error');
+        this.showSubmissionError(error);
       });
     };
     editor.onAltS = () => {
       if (editor.getExpandedText().trim() !== '') return;
-      void this.steerPrompt().catch((error: unknown) => {
-        this.showStatus(error instanceof SendNowError && error.reason === 'unknown'
-          ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
-          : formatErrorMessage(error), 'error');
-      });
+      void this.steerPrompt().catch((error: unknown) => this.showSubmissionError(error));
     };
     editor.onToggleMouse = () => {
       this.applyMouseReporting(this.state.appState.mouse === false);
@@ -1049,6 +1060,7 @@ export class DaemonTUI {
 
   private async openSession(sessionId: string): Promise<void> {
     const previous = this.controller;
+    await this.programStatus.switchSession(sessionId);
     this.clearStatusNotice();
     this.clearActivityTickTimer();
     this.turnActivityTracker.reset();
@@ -1078,7 +1090,16 @@ export class DaemonTUI {
       agentProfile: this.startupOverridesPending ? this.startup.agentProfile : undefined,
       thinkingEffort: this.startupOverridesPending ? this.startup.cliOptions.thinking ?? 'off' : 'off',
     });
-    const controller = new SessionController(this.client, this.client.klient.session(sessionId).view, sessionId);
+    const sessionView = this.client.klient.session(sessionId).view;
+    const watchReconnect = (onSignal: (signal: SessionViewSignal) => void) => (signal: SessionViewSignal) => {
+      onSignal(signal);
+      if (signal.type === 'ready' && signal.reconnected) void this.programStatus.refreshConfig();
+    };
+    const controller = new SessionController(this.client, {
+      ...sessionView,
+      bootstrap: sessionView.bootstrap === undefined ? undefined : (input, onSignal) => sessionView.bootstrap!(input, watchReconnect(onSignal)),
+      subscribe: (input, onSignal) => sessionView.subscribe(input, watchReconnect(onSignal)),
+    }, sessionId);
     this.controller = controller;
     const unsubscribe = controller.subscribe(() => this.renderSession(controller.getState()));
     const unsubscribeInterrupted = controller.subscribeInterruptedPrompt((content) => this.restorePromptDraft(content));
@@ -1146,6 +1167,7 @@ export class DaemonTUI {
   }
 
   private renderSession(view: SessionViewState): void {
+    this.programStatus.update(view);
     this.settleAttachmentLeases(view);
     // An armed Esc has nothing left to interrupt once the turn ends.
     if (!view.busy && this.pendingConfirm?.kind === 'escape') this.clearPendingConfirm();
@@ -1492,6 +1514,16 @@ export class DaemonTUI {
       ? 'No foreground task to move to background.'
       : `Moved ${String(detached)} foreground task${detached === 1 ? '' : 's'} to background.`,
     { transient: true });
+  }
+
+  private showSubmissionError(error: unknown): void {
+    const cause = error instanceof SendNowError && error.reason === 'submit' ? error.cause : error;
+    if (cause instanceof ApiError && ([ErrorCode.AUTH_PROVISIONING_REQUIRED, ErrorCode.AUTH_TOKEN_MISSING, ErrorCode.AUTH_TOKEN_UNAUTHORIZED] as number[]).includes(cause.code)) {
+      this.programStatus.requireAuth(formatErrorMessage(cause));
+    }
+    this.showStatus(error instanceof SendNowError && error.reason === 'unknown'
+      ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
+      : formatErrorMessage(error), 'error');
   }
 
   /** `submission.accepted` turns true once the daemon has taken the input. */
@@ -2471,15 +2503,35 @@ export class DaemonTUI {
   }
 
   private async login(provider: string | undefined): Promise<void> {
+    clearTimeout(this.authFlowTimer);
+    this.authFlowTimer = undefined;
     const flow = await this.client.klient.global.auth.startLogin(provider);
     if (flow.status === 'authenticated') {
+      this.programStatus.requireAuth(undefined);
       this.showStatus(`Authenticated with ${flow.provider}.`, { transient: true });
       return;
     }
+    this.programStatus.requireAuth(`Sign in to ${flow.provider} to continue.`);
     openUrl(flow.verification_uri_complete);
     this.showResult(
       `Open ${flow.verification_uri} and enter code ${flow.user_code}. The provider is added to the daemon as soon as authentication completes.`,
     );
+    this.watchLogin(flow.provider, flow.flow_id, flow.interval);
+  }
+
+  private watchLogin(provider: string, flowId: string, interval: number): void {
+    this.authFlowTimer = setTimeout(() => {
+      this.authFlowTimer = undefined;
+      void this.client.klient.global.auth.flow(provider).then(async (flow) => {
+        if (this.stopped || flow?.flow_id !== flowId) return;
+        if (flow.status === 'pending') this.watchLogin(provider, flowId, interval);
+        else if (flow.status === 'authenticated') {
+          this.programStatus.requireAuth(undefined);
+          await this.refreshModels();
+        }
+      }).catch((error: unknown) => this.showStatus(`Sign-in status failed: ${formatErrorMessage(error)}`, 'error'));
+    }, interval * 1000);
+    this.authFlowTimer.unref();
   }
 
   private async logout(provider: string | undefined): Promise<void> {
@@ -3029,6 +3081,7 @@ export class DaemonTUI {
   private async showModelPicker(): Promise<void> {
     const models = await this.refreshModels();
     if (models.length === 0) {
+      this.programStatus.requireAuth('Sign in with /login or configure a provider to continue.');
       this.showStatus('No models configured. Run /login or configure a provider.', { transient: true });
       return;
     }

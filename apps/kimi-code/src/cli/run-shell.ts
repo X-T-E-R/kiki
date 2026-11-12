@@ -100,7 +100,12 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   // If we crash without going through DaemonTUI.stop(), the terminal is left in
   // raw mode with a hidden cursor and XON/XOFF flow control disabled. Restore
   // both before exiting so the user's shell is usable afterwards.
-  const emergencyExit = (exitCode: number): void => {
+  const emergencyExit = async (exitCode: number): Promise<void> => {
+    try {
+      await tui.clearProgramStatus();
+    } catch {
+      /* the terminal may already be gone */
+    }
     // The crash log above is only enqueued into the async sink; flush it
     // synchronously or the `process.exit()` below would drop the one line that
     // explains why we crashed. Best-effort: an exit path must never throw.
@@ -126,7 +131,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch {
       /* ignore */
     }
-    emergencyExit(1);
+    void emergencyExit(1);
   };
   const onUnhandledRejection = (reason: unknown): void => {
     try {
@@ -134,7 +139,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch {
       /* ignore */
     }
-    emergencyExit(1);
+    void emergencyExit(1);
   };
   let terminating = false;
   const stopAfterSignal = async (exitCode: number): Promise<void> => {
@@ -146,7 +151,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
           error: String(error),
         });
       } finally {
-        emergencyExit(exitCode);
+        await emergencyExit(exitCode);
       }
     }
   };
@@ -163,7 +168,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch (closeError) {
       log.error('TUI close failed after output stream error', { error: String(closeError) });
     } finally {
-      emergencyExit(129);
+      await emergencyExit(129);
     }
   };
   const onOutputError = (error: NodeJS.ErrnoException): void => {

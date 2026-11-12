@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   tuiStart: vi.fn(),
   tuiClose: vi.fn(),
   tuiStop: vi.fn(),
+  tuiClearProgramStatus: vi.fn(),
   restoreTerminalModes: vi.fn(),
 }));
 
@@ -45,6 +46,7 @@ vi.mock('@kiki/node-sdk', async (importOriginal) => {
 
 vi.mock('../../src/tui/config', () => ({
   TuiConfigParseError: class TuiConfigParseError extends Error {},
+  getTuiConfigPath: vi.fn(() => 'C:\\home\\tui.toml'),
   loadTuiConfig: vi.fn(async () => ({
     theme: 'dark',
     editorCommand: null,
@@ -95,6 +97,7 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
 
     close = mocks.tuiClose;
     stop = mocks.tuiStop;
+    clearProgramStatus = mocks.tuiClearProgramStatus;
     getCurrentSessionId = () => '';
     hasSessionContent = () => false;
   },
@@ -167,6 +170,7 @@ describe('runShell daemon startup', () => {
     mocks.tuiStart.mockResolvedValue(undefined);
     mocks.tuiClose.mockResolvedValue(undefined);
     mocks.tuiStop.mockResolvedValue(undefined);
+    mocks.tuiClearProgramStatus.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -272,6 +276,23 @@ describe('runShell daemon startup', () => {
     expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
   });
 
+  it('waits for terminal status cleanup before emergency restoration and exit', async () => {
+    const prior = new Set(process.listeners('uncaughtException'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    let finish!: () => void;
+    mocks.tuiClearProgramStatus.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await runShell(options, '1.0.0');
+    const listener = process.listeners('uncaughtException').find((candidate) => !prior.has(candidate));
+    expect(listener).toBeDefined();
+    listener!(new Error('fixture crash'), 'uncaughtException');
+    expect(mocks.tuiClearProgramStatus).toHaveBeenCalledOnce();
+    expect(mocks.restoreTerminalModes).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+    expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
+  });
+
   it('uses hangup semantics for terminal output errors even when close fails', async () => {
     const prior = new Set(process.stdout.listeners('error'));
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
@@ -283,8 +304,7 @@ describe('runShell daemon startup', () => {
     expect(listener).toBeDefined();
 
     listener!(Object.assign(new Error('closed'), { code: 'EPIPE' }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(129));
 
     expect(mocks.tuiClose).toHaveBeenCalledOnce();
     expect(mocks.restoreTerminalModes).toHaveBeenCalledOnce();
