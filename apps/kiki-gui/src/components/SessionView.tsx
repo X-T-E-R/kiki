@@ -4471,7 +4471,7 @@ boundExecution,
     [controller],
   );
   const handleCancelQueued = useCallback(
-    (promptId: string) => actions?.cancelQueued(promptId) ?? Promise.resolve(),
+    async (promptId: string) => { await actions?.cancelQueued(promptId); },
     [actions],
   );
   // Transcript's prop type predates the queue strip and wants a void return:
