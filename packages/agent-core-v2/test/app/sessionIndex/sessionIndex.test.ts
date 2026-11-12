@@ -1278,6 +1278,66 @@ describe('FileSessionIndex (read model)', () => {
     }
   });
 
+  it('coalesces concurrent stale read failures and ignores their late failures after recovery', async () => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const originalCheckpoint = queryStore.getCheckpoint.bind(queryStore);
+    const reached = deferred<void>();
+    const releaseFirstWave = deferred<void>();
+    const releaseLate = deferred<void>();
+    const sharedFailure = new Error('one failed query worker read');
+    let manifestReads = 0;
+    const checkpoint = vi.spyOn(queryStore, 'getCheckpoint').mockImplementation(async (source, signal, options) => {
+      if (source === SESSION_INDEX_MANIFEST && manifestReads < 90) {
+        const readIndex = manifestReads++;
+        if (manifestReads === 90) reached.resolve();
+        if (readIndex === 89) await releaseLate.promise;
+        else await releaseFirstWave.promise;
+        throw sharedFailure;
+      }
+      return originalCheckpoint(source, signal, options);
+    });
+    const recover = vi.spyOn(queryStore, 'recover');
+    const degradedStatuses: SessionIndexStatus[] = [];
+    const subscription = store.onDidChangeStatus((status) => {
+      if (status.state === 'degraded') degradedStatuses.push(status);
+    });
+    const reads = Array.from({ length: 89 }, (_, index) => index % 3 === 0
+      ? store.get('existing', workspaceId)
+      : index % 3 === 1
+        ? store.listRecent({ workspaceIds: [workspaceId] })
+        : store.count({ workspaceIds: [workspaceId] }));
+    const late = store.count({ workspaceIds: [workspaceId] });
+    const pending = store as unknown as { prepareFlight?: Promise<unknown> };
+    try {
+      await reached.promise;
+      releaseFirstWave.resolve();
+      const results = await Promise.allSettled(reads);
+      for (const [index, result] of results.entries()) {
+        if (index % 3 === 0) expect(result).toMatchObject({ status: 'fulfilled', value: { id: 'existing' } });
+        else expect(result).toMatchObject({ status: 'rejected', reason: expect.any(SessionIndexBuildingError) });
+      }
+      await vi.waitFor(() => expect(store.status()).toMatchObject({ state: 'ready', generation: 2, degradedCount: 1 }));
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(degradedStatuses).toHaveLength(1);
+
+      releaseLate.resolve();
+      await expect(late).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      expect(store.status()).toMatchObject({ state: 'ready', generation: 2, degradedCount: 1 });
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(degradedStatuses).toHaveLength(1);
+    } finally {
+      releaseFirstWave.resolve();
+      releaseLate.resolve();
+      await Promise.allSettled([...reads, late]);
+      await pending.prepareFlight;
+      subscription.dispose();
+      checkpoint.mockRestore();
+      recover.mockRestore();
+    }
+  });
+
   it('automatically retires failed readers and publishes a fresh generation without user cleanup', async () => {
     await seedSession('existing', { createdAt: 1, updatedAt: 2 });
     const store = build();

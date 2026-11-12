@@ -21,6 +21,7 @@ import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThre
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IConfigService } from '#/app/config/config';
+import { ICpuWorkerService, CpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
@@ -246,6 +247,7 @@ describe('ThreadCommunicationService', () => {
     const wireStorage = new InMemoryStorageService();
     ix.stub(IFileSystemStorageService, wireStorage);
     ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(ICpuWorkerService, new SyncDescriptor(CpuWorkerService));
     ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     ix.stub(IAppendLogStore, {
       generation: async () => 'legacy',

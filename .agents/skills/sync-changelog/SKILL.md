@@ -7,23 +7,23 @@ description: Use after a release succeeds, when maintainers need to sync apps/ki
 
 ## Overview
 
-`kimi-code` uses changesets for versioning. Each package gets its own `CHANGELOG.md`. The user-facing CLI package, `@moonshot-ai/kimi-code`, writes its changelog here:
+Kiki uses changesets for package changelogs alongside tagged `kiki-v<version>` releases. The user-facing CLI package (`@kiki/cli`, published on npm as `kiki-agent` / `kiki-agent-lite`) writes its package changelog here:
 
 ```text
 apps/kimi-code/CHANGELOG.md
 ```
 
-This file is the **only upstream source** for the documentation-site changelog. Internal package changelogs such as `packages/*/CHANGELOG.md` do not go into the documentation site.
+This file (plus `.github/release-notes/kiki-<version>.md` for tagged releases) is the **upstream source** for the documentation-site changelog. Internal package changelogs such as `packages/*/CHANGELOG.md` do not go into the documentation site.
 
-After the release flow finishes (Release PR merged → `Version Packages` completed → npm publish succeeded), maintainers manually run this skill to copy the new CLI changelog entries into the docs site, translate the English increment into Chinese, wait for an optional human review, then commit on a dedicated branch and open a PR.
+After a release finishes (`kiki-v<version>` tag / npm publish succeeded and `apps/kimi-code/CHANGELOG.md` reflects the released version), maintainers run this skill to copy the new CLI changelog entries into the docs site, translate the English increment into Chinese, wait for an optional human review, then commit on a dedicated branch and open a PR.
 
 ## When To Use
 
-- A new version has been published to npm.
+- A new version has been published (`kiki-v<version>` GitHub Release / npm `kiki-agent`).
 - The top of `apps/kimi-code/CHANGELOG.md` contains version blocks that are not yet in `docs/en/release-notes/changelog.md`.
 - The `gen-docs` flow does not run this automatically; maintainers must explicitly do it after release.
 
-Do **not** run this before the Release PR is merged. At that point, changesets has not yet written the new version into `apps/kimi-code/CHANGELOG.md`.
+Do **not** run this before the release changelog block exists in `apps/kimi-code/CHANGELOG.md`.
 
 ## Source And Targets
 
@@ -39,23 +39,23 @@ Core rule: the English docs changelog is the source of truth, and Chinese is tra
 
 Before editing, confirm:
 
-- The released version exists on npm (`npm view @moonshot-ai/kimi-code versions --json`) or has a matching GitHub Release tag.
+- The released version exists on npm (`npm view kiki-agent versions --json`) or has a matching `kiki-v<version>` GitHub Release tag.
 - The top of `apps/kimi-code/CHANGELOG.md` is that new version.
 
 If any condition is not true, stop and confirm with the user.
 
-Do **not** edit or commit directly on `main`. All sync work happens on a dedicated branch created in step 1.
+Do **not** edit or commit directly on `kiki`. All sync work happens on a dedicated branch created in step 1.
 
 ## Workflow
 
 ### 1. Prepare Branch
 
-Start from an up-to-date default branch:
+Start from an up-to-date default branch (`kiki`):
 
 ```bash
 git fetch origin
-git checkout main
-git pull --ff-only origin main
+git checkout kiki
+git pull --ff-only origin kiki
 ```
 
 Before creating the branch, peek at the version range so the branch name matches the newest version being synced:
@@ -103,7 +103,7 @@ Changesets may add a `Thanks ...!` credit, but it must be removed every time. Ke
 
 Remove:
 
-- The upstream H1 `# @moonshot-ai/kimi-code` because the docs page already has `# Changelog`.
+- The upstream H1 (`# @kiki/cli` or legacy `# @moonshot-ai/kimi-code`) because the docs page already has `# Changelog`.
 - Changesets subheadings such as `### Patch Changes`, `### Minor Changes`, and `### Major Changes`.
 - PR links such as `[#317](...)`.
 - Commit hash links such as ``[`2f51db4`](...)``.
@@ -111,7 +111,7 @@ Remove:
 
 After stripping, each entry is `- <body text>`.
 
-Drop SDK-only and provider-internal detail. This changelog serves `@moonshot-ai/kimi-code` CLI and web users. Within an entry, keep only what CLI/web users can perceive, and remove sentences that document internals instead of user-visible behavior. Apply this on both the English and Chinese pages:
+Drop SDK-only and provider-internal detail. This changelog serves `@kiki/cli` (`kiki-agent`) CLI, desktop, and web users. Within an entry, keep only what CLI/desktop/web users can perceive, and remove sentences that document internals instead of user-visible behavior. Apply this on both the English and Chinese pages:
 
 - Drop sentences about how the SDK maps a capability, builds model aliases, or exposes a flag through an API such as `getExperimentalFeatures()` — that belongs in the SDK changelog, not here.
 - Drop provider / wire-format implementation mechanics (XML markers like `<tools_added>`, protocol field explanations, "the wire protocol is unchanged", cache-hit mechanics) unless they are the behavior a user perceives.
@@ -134,7 +134,7 @@ Before classifying, merge related entries and drop redundant ones from the user-
   - `Bug Fixes`: keep only **behavior-change** fixes — the fix changes how something works going forward, so readers must update a habit, a config, or a widely-adopted workaround. Everything else folds, for one of two opposite reasons. Loud failures (crashes, refusals, interrupted runs): the fix itself notifies whoever was hit — announcement value falls as bug visibility rises. Silent past damage (dropped data, wrong results the user never noticed): the changelog cannot repair the past, and in this product the notice names no locatable instance and no realistic action — users cannot enumerate which old sessions were affected, and they do not audit finished sessions; a "some past outputs may be wrong" line is anxiety without an outlet, not diligence. The rare exception is a retrospective notice with a concrete, locatable action (for example rotating a token after a credential-handling flaw); keep those. Never keep a fix merely because it was severe, and never keep one because the bug class feels important.
   - Do not grade entries by engineering importance. Severity and effort are already represented upstream; the curated changelog is not a credit ledger — its only job is to change what the reader does or knows.
   - **Density, not quota.** Standalone sections stay short so the changelog actually gets read — as a default, expect about 2 Polish and 3 Bug Fixes entries per version, while `Features` is gated by the test alone and has no count. The defaults yield whenever more entries genuinely pass the reader-action test: keep them and flag the overflow for the human reviewer; never fold a qualifying entry just to hit the number, and never pad a section to reach it. The reviewer owns the final cutoff — the curator's job is to surface the borderline calls, not to resolve them silently.
-  - Everything else collapses into a single catch-all bullet placed last under `Bug Fixes`: `Fix several known issues.` When entries beyond fixes were also collapsed, use `Fix several known issues and make various refinements.` instead (Chinese: `修复了一些已知问题。` / `修复了一些已知问题，并做了若干细节优化。`). End the catch-all line with a pointer to the upstream file so folded entries stay reachable, phrased as a separate short sentence — `See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.` (Chinese: `更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。`). Link the file itself, never a per-version anchor — GitHub's generated heading anchors are fragile. Keep the pointer wording restrained ("more technical entries"): upstream only contains changes that received a changeset, so never claim the list is complete.
+  - Everything else collapses into a single catch-all bullet placed last under `Bug Fixes`: `Fix several known issues.` When entries beyond fixes were also collapsed, use `Fix several known issues and make various refinements.` instead (Chinese: `修复了一些已知问题。` / `修复了一些已知问题，并做了若干细节优化。`). End the catch-all line with a pointer to the upstream file so folded entries stay reachable, phrased as a separate short sentence — `See the [changelog on GitHub](https://github.com/X-T-E-R/kiki/blob/kiki/apps/kimi-code/CHANGELOG.md) for more technical entries.` (Chinese: `更详细的变更记录见 [GitHub](https://github.com/X-T-E-R/kiki/blob/kiki/apps/kimi-code/CHANGELOG.md)。`). Link the file itself, never a per-version anchor — GitHub's generated heading anchors are fragile. Keep the pointer wording restrained ("more technical entries"): upstream only contains changes that received a changeset, so never claim the list is complete.
   - If no fix survives, the `Bug Fixes` section is the catch-all line alone; if the whole version has no user-facing change, the version block is a single section with that line. Match the catch-all to what was folded — never claim fixes that did not happen: when the folded entries include fixes, use the forms above under `Bug Fixes`; when everything folded is polish or internal work, place the catch-all under `Polish` as `Make several refinements and internal improvements.` (Chinese: `做了若干细节优化和内部改进。`).
 - **Merge micro-tweaks to the same surface.** Collapse several small tweaks to the same UI area or feature into one concise entry at the higher level. For example, "change the composer's default height" and "change the composer's default font" merge into "Polish the composer's default styling." Use the most specific common ancestor (composer, settings page, tool card, and so on). Classify the merged entry by its combined effect
 - **Merge same-surface or same-kind fixes when you have three or more.** The `Bug Fixes` section tends to accumulate many narrow UI/polish fixes that read as noise when listed one by one. When three or more fixes target the same area (for example several tool cards in the TUI, or the web session/conversation surface) or the same class of problem (for example several "jumping/flickering/collapsing during streaming" fixes), merge them into one higher-level entry. Examples:
@@ -198,10 +198,10 @@ Never change the English page header:
 ```markdown
 # Changelog
 
-This page documents the changes in each Kimi Code CLI release.
+This page documents the changes in each Kiki release.
 ```
 
-Insert new version blocks immediately after the header paragraph and before the previous latest version.
+Insert new version blocks immediately after the opening callout block and before the previous latest version.
 
 Every version heading must carry its release date in parentheses:
 
@@ -212,7 +212,7 @@ Every version heading must carry its release date in parentheses:
 Take the date from the version's published GitHub Release tag, not from when you run the sync:
 
 ```bash
-git log -1 --format=%cs "@moonshot-ai/kimi-code@<version>"
+git log -1 --format=%cs "kiki-v<version>"
 ```
 
 Use the half-width parenthesis form ` (YYYY-MM-DD)` on the English page. Never invent or guess a date; if the tag is missing, stop and confirm with the user.
@@ -247,7 +247,7 @@ Chinese page requirements:
   ```markdown
   # 变更记录
 
-  本页记录 Kimi Code CLI 每个版本的变更内容。
+  本页记录 Kiki 每个版本的变更内容。
   ```
 
 - Preserve version headings including the release date, but use full-width parentheses on the Chinese page, such as `## 0.2.0（2026-05-26）`. The date must match the English page; only the parenthesis style differs (half-width `()` in English, full-width `（）` in Chinese).
@@ -450,7 +450,7 @@ Return the PR URL to the user when done.
 - Never edit upstream `apps/kimi-code/CHANGELOG.md`.
 - Do not backfill unreleased `.changeset/*.md` drafts into the docs site.
 - If upstream wording is wrong, leave upstream alone and fix it in a future changeset.
-- Always sync on a `docs/changelog-sync-*` branch and open a PR; never push changelog docs sync directly to `main`.
+- Always sync on a `docs/changelog-sync-*` branch and open a PR; never push changelog docs sync directly to `kiki`.
 - Wait for the human review checkpoint before committing, pushing, or opening a PR.
 
 ## Common Mistakes
@@ -487,7 +487,7 @@ Return the PR URL to the user when done.
 | Wrapping a whole doc link in backticks | Code-style the link text inside the brackets instead, so the link stays clickable: [`loop_control`](...) |
 | Keeping hook/event payload-mechanics clauses | Drop what an event reports or carries; keep the new capability and how to configure it |
 | Creating a changeset for docs sync | Do not create one |
-| Committing or pushing directly on `main` | Create `docs/changelog-sync-<version>`, commit there, then open a PR |
+| Committing or pushing directly on `kiki` | Create `docs/changelog-sync-<version>`, commit there, then open a PR |
 | Committing or opening a PR before the user skips review or confirms review is done | Wait at the human review checkpoint |
 | Using curly quotes or half-width Chinese punctuation | Follow `docs/AGENTS.md` |
 | Omitting the release date from a version heading, or guessing it | Add ` (YYYY-MM-DD)` (full-width `（）` in Chinese) taken from the published tag |

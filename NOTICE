@@ -97,10 +97,11 @@ Vendored and adapted source
 
 * nb-search — MIT
   https://github.com/NB-Corp/nb-search
-  Current patched runtime tarball: vendor/nb-search-0.4.0-4218580a.tgz.
+  Active runtime tarball: vendor/nb-corp-nb-search-0.5.0-next.7.tgz (agent-core-v2
+  and node-sdk; protocol retains vendor/nb-corp-nb-search-0.5.0-next.4.tgz).
   Copyright (c) 2026 nb-search contributors.
-  Full license and patch/source hashes are preserved under
-  vendor/nb-search-patches/canonical-target/LICENSE and provenance.json.
+  Each archive carries LICENSE, THIRD_PARTY_NOTICES.md, and LICENSES/*; Kiki
+  patch lineage is recorded under vendor/nb-search-patches/canonical-target/.
 
 * Redis zskiplist provenance — unresolved revision/license
   packages/minidb/src/skiplist.ts names Redis zskiplist; DESIGN_NOTES.md
@@ -164,10 +165,12 @@ with `pnpm install --offline --frozen-lockfile` followed by
 lockfile changes, retain required license texts, and separately inventory the
 Rust crates and non-package assets actually shipped by a desktop release.
 
-@nb-im/core 0.1.0 is an installed runtime dependency from
-vendor/nb-im-core-0.1.0.tgz. Its package metadata has no license declaration
-and the tarball has no LICENSE file. No license is inferred here; obtain the
-applicable terms and attribution from its owner before distribution clearance.
+@nb-im/core 0.3.0 is an installed runtime dependency from
+vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz (rebuilt from vendor/nb-im-core-0.3.0.tgz
+via vendor/nb-im-patches/telegram-metadata/rebuild.mjs). Its package metadata has
+no top-level license declaration; the archive retains NOTICE and LICENSES/* for
+its bundled SDKs and adapted donors. Obtain the applicable package-level terms
+from its owner before distribution clearance.
 
 The VS Code extension declares Apache-2.0 and retains apps/vscode/LICENSE;
 that package declaration is distinct from the root MIT license. First-party

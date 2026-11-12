@@ -3,6 +3,32 @@ import type { NavigationAnchor, NavigationAnchorSequence, NavigationTurnSequence
 
 const statementCaches = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
 const MAX_CACHED_STATEMENTS = 128;
+const scopeCaches = new WeakMap<DatabaseSync, Map<string, number>>();
+
+export function clearNavigationScopes(db: DatabaseSync): void { scopeCaches.delete(db); }
+
+export function navigationScope(db: DatabaseSync, name: string, create = true): number {
+  let cache = db.isTransaction ? scopeCaches.get(db) : undefined;
+  if (db.isTransaction && cache === undefined) { cache = new Map(); scopeCaches.set(db, cache); }
+  const cached = cache?.get(name);
+  if (cached !== undefined) return cached;
+  const lookup = navigationStatement(db, 'SELECT id FROM scopes WHERE name=?');
+  let row = lookup.get(name) as { id: number } | undefined;
+  if (row === undefined) {
+    if (!create) return -1;
+    const parts = name.split('\0');
+    const projection = parts[0]?.startsWith('directory:') && parts.length >= 4 ? parts.shift()!.slice(10) : '';
+    const [workspace = '', session = '', agent = ''] = parts;
+    navigationStatement(db, 'INSERT OR IGNORE INTO scopes(name,projection,workspace,session,agent) VALUES(?,?,?,?,?)')
+      .run(name, projection, workspace, session, agent);
+    row = lookup.get(name) as { id: number };
+  }
+  if (cache !== undefined) {
+    if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+    cache.set(name, row.id);
+  }
+  return row.id;
+}
 
 export function navigationStatement(db: DatabaseSync, sql: string): StatementSync {
   let statements = statementCaches.get(db);
@@ -20,7 +46,7 @@ export function navigationStatement(db: DatabaseSync, sql: string): StatementSyn
 
 /** A Map-compatible scalar store backed by the navigation sidecar's keyed state table. */
 export class SqliteNavigationMap<V> extends Map<string, V> {
-  constructor(private readonly db: DatabaseSync, private readonly scope: string,
+  constructor(private readonly db: DatabaseSync, private readonly scope: number,
     private readonly bucket: string) { super(); }
 
   override get(key: string): V | undefined {
@@ -79,7 +105,7 @@ export class SqliteNavigationMap<V> extends Map<string, V> {
 
 export class SqliteNavigationSet extends Set<string> {
   private readonly valuesByKey: SqliteNavigationMap<boolean>;
-  constructor(db: DatabaseSync, scope: string, bucket: string) {
+  constructor(db: DatabaseSync, scope: number, bucket: string) {
     super();
     this.valuesByKey = new SqliteNavigationMap<boolean>(db, scope, bucket);
   }
@@ -101,7 +127,7 @@ export class SqliteNavigationSet extends Set<string> {
 
 /** Suffixes stay on disk as tombstones until their visibility effect is applied. */
 export class SqliteNavigationTurnSequence implements NavigationTurnSequence {
-  constructor(private readonly db: DatabaseSync, private readonly scope: string) {}
+  constructor(private readonly db: DatabaseSync, private readonly scope: number) {}
   get length(): number {
     return (navigationStatement(this.db, 'SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1')
       .get(this.scope) as { n: number }).n;
@@ -140,7 +166,7 @@ export class SqliteNavigationTurnSequence implements NavigationTurnSequence {
 }
 
 export class SqliteNavigationAnchorSequence implements NavigationAnchorSequence {
-  constructor(private readonly db: DatabaseSync, private readonly scope: string) {}
+  constructor(private readonly db: DatabaseSync, private readonly scope: number) {}
   push(anchor: NavigationAnchor): void {
     navigationStatement(this.db, `INSERT INTO anchor_sequence(scope,seq,ordinal,turn_id,message_id,active)
       VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM anchor_sequence WHERE scope=?),?,?,?,1)`)

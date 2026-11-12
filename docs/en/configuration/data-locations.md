@@ -57,7 +57,8 @@ $KIKI_HOME  (default: ~/.kiki)
 ├── store/
 │   └── thread-mailbox-sqlite-v1/ # Canonical mailbox and upgrade recovery copies
 ├── server/
-│   └── events/             # Bounded client event replay journals
+│   ├── events/             # Bounded client event replay journals
+│   └── history-navigation.sqlite # Derived history navigation index
 ├── bin/
 │   ├── rg                  # managed ripgrep binary for Grep (rg.exe on Windows)
 │   └── fd                  # managed fd binary for file references (fd.exe on Windows)
@@ -114,7 +115,7 @@ The 0.5.x upgrade retains its checkpoint in `migration.json`, frozen source copi
 
 ## Session and usage query cache
 
-`cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists and thread-turn lookups. Usage facts and source coverage use a separate database at `cache/usage-read-model-v2/index.sqlite`. Kiki rebuilds these views from session metadata, usage-fact journals, retained accounting ledgers, and conversation history when needed. Each open database may have adjacent `-wal` and `-shm` files.
+`cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists and thread-turn lookups. Usage facts and source coverage use a separate database at `cache/usage-read-model-v2/index.sqlite`. Conversation history navigation (`HistoryList`, `HistoryRead`, `HistorySearch`, and older transcript detail lookups) uses a derived SQLite index at `server/history-navigation.sqlite` inside a dedicated background worker; when upgrading from an earlier index format, Kiki automatically resets and compacts `server/history-navigation.sqlite` on first use and rebuilds slices on demand from `wire.jsonl`, so continuation cursors issued before the rebuild restart from a fresh query. Kiki rebuilds these views from session metadata, usage-fact journals, retained accounting ledgers, and conversation history when needed. Each open database may have adjacent `-wal` and `-shm` files.
 
 If one cache is damaged, stop every Kiki process using the data root, back up and remove only that cache directory, then restart. Rebuilding a large Usage history can take several requests; committed import progress survives a restart. Keep `cache/usage-facts-v1/`, `sessions/`, and `store/`: they contain the journals and records needed for recovery, including standalone requests such as Output Layer transformations in `store/session-operations-v1.jsonl`. Older generic Usage collections and `cache/query-store-v*/` directories are retained for rollback; do not remove the shared query database to reset Usage.
 

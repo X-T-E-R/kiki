@@ -17,6 +17,7 @@ import {
   IFileService,
   ISessionMediaStore,
   ISessionMetadata,
+  ISessionIndex,
   ISessionAgentProfileCatalog,
   ISessionDispatchService,
   ISessionSkillCatalog,
@@ -489,7 +490,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       method: 'GET',
       path: '/sessions/{session_id}/prompts',
       params: sessionIdParamSchema,
-      querystring: z.object({ admission: z.literal('durable').optional(), agent_id: z.string().min(1).optional(), cursor: z.string().optional() }),
+      querystring: z.object({ admission: z.literal('durable').optional(), agent_id: z.string().min(1).optional(), cursor: z.string().optional(), observe: z.literal('true').optional() }),
       success: { data: promptListResponseSchema },
       errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
       description: 'List the active prompt and queued prompts for a session',
@@ -502,6 +503,20 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         if (req.query.admission === 'durable') {
           const page = await ingress.list(session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.query.cursor);
           reply.send(okEnvelope({ active: null, queued: [], ingress: page.items, ingress_next_cursor: page.nextCursor }, req.id));
+          return;
+        }
+        if (req.query.observe === 'true') {
+          const live = core.accessor.get(ISessionManager).get(session_id);
+          if (live !== undefined) {
+            const main = live.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+            reply.send(okEnvelope(main === undefined
+              ? { active: null, queued: [] }
+              : projectPromptList(main.accessor.get(IAgentPromptService).list()), req.id));
+            return;
+          }
+          const summary = await core.accessor.get(ISessionIndex).get(session_id);
+          if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          reply.send(okEnvelope({ active: null, queued: [] }, req.id));
           return;
         }
         await withSessionOperation(core, session_id, async (handle) => {

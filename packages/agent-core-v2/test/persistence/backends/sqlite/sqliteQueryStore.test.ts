@@ -50,6 +50,23 @@ describe('SqliteQueryStore', () => {
     await peer.delete('a', 'x'); expect(await peer.getMany('a', ['x', 'bad'])).toEqual(new Map());
   });
 
+  it('preserves trigger rollback errors and keeps the connection usable', async () => {
+    const store = open();
+    await store.put('stable', 'existing', { value: 1 });
+    const database = new DatabaseSync(join(home, 'cache', SQLITE_QUERY_STORE_SUBDIR, 'index.sqlite'));
+    try {
+      database.exec(`CREATE TRIGGER automatic_rollback BEFORE INSERT ON rows WHEN NEW.collection='rollback-trigger' BEGIN SELECT RAISE(ROLLBACK, 'trigger forced rollback'); END;`);
+      await expect(store.batch([
+        { kind: 'put', collection: 'rolled-back', key: 'first', value: { value: 2 } },
+        { kind: 'put', collection: 'rollback-trigger', key: 'failure', value: { value: 3 } },
+      ])).rejects.toThrow('trigger forced rollback');
+      expect(await store.get('rolled-back', 'first')).toBeUndefined();
+      expect(await store.get('stable', 'existing')).toEqual({ value: 1 });
+      await store.put('stable', 'after-rollback', { value: 4 });
+      expect(await store.get('stable', 'after-rollback')).toEqual({ value: 4 });
+    } finally { database.close(); }
+  });
+
   it('applies collection before column bounds, filter, ordering and limit', async () => {
     const store = open();
     const ops: WriteOp[] = [];

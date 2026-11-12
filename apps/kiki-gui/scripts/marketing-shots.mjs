@@ -3,7 +3,7 @@
  *
  *   node scripts/marketing-shots.mjs                 # render every shot
  *   node scripts/marketing-shots.mjs --only=h01      # names containing "h01"
- *   node scripts/marketing-shots.mjs --collect       # copy masters to marketing/shots
+ *   node scripts/marketing-shots.mjs --collect       # copy frames to docs/public/shots
  *
  * It boots the shared fixture server + a dedicated vite dev server (exactly
  * like scripts/visual-proof.mjs) and drives the real GUI with Playwright. Each
@@ -11,14 +11,14 @@
  * the concrete UI state (not networkidle), parks the pointer away from any
  * hover target, and writes a DPR-2 PNG master.
  *
- * This runner never touches the tracked visual-proof goldens; there is no
+ * This runner never touches the visual-proof goldens; there is no
  * --update-goldens path. The output directory is throwaway by default and is
  * wiped on start, so point KIKI_MARKETING_SHOTS_DIR at a disposable path.
  */
 
 import { spawn, execSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,11 +26,11 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { collectFrames } from './marketing-collect.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = join(ROOT, '..', '..');
 const OUT_DIR = process.env.KIKI_MARKETING_SHOTS_DIR ?? join(REPO_ROOT, '.tmp', 'marketing-shots');
-const COLLECT_DIR = join(REPO_ROOT, 'marketing', 'shots');
 const DPR = 2;
 
 const onlyArg = process.argv.find((arg) => arg === '--only' || arg.startsWith('--only='));
@@ -469,12 +469,7 @@ async function main() {
     }
 
     if (collect && failures.length === 0) {
-      mkdirSync(COLLECT_DIR, { recursive: true });
-      for (const file of readdirSync(OUT_DIR)) {
-        if (!file.endsWith('.png')) continue;
-        copyFileSync(join(OUT_DIR, file), join(COLLECT_DIR, file));
-      }
-      console.log(`[shots] collected ${readdirSync(OUT_DIR).filter((f) => f.endsWith('.png')).length} PNG(s) into ${COLLECT_DIR}`);
+      collectFrames(OUT_DIR);
     }
 
     if (failures.length > 0) {

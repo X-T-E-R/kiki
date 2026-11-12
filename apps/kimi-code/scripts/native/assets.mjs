@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   KAP_MODEL_PRICES_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
+  KAP_HISTORY_NAVIGATION_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
   USAGE_READ_MODEL_WORKER_ASSET,
@@ -379,6 +380,10 @@ export async function collectNativeAssets({ appRoot, target }) {
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'sqlite-query-worker.mjs'),
       KAP_SQLITE_QUERY_WORKER_ASSET,
+    ],
+    [
+      resolve(appRoot, 'dist-native', 'intermediates', 'history-navigation-worker.mjs'),
+      KAP_HISTORY_NAVIGATION_WORKER_ASSET,
     ],
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'usage-parser-worker.mjs'),

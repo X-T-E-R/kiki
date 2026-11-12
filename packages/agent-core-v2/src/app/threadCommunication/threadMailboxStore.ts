@@ -129,7 +129,7 @@ export interface IThreadMailboxStore {
     options?: ThreadMailboxMutationOptions,
   ): Promise<number>;
 
-  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[] }): Promise<readonly ThreadRef[]>;
+  listPendingTargets(options?: ThreadMailboxMutationOptions & { readonly targets?: readonly ThreadRef[]; readonly scope?: Pick<ThreadRef, 'hostId' | 'workspaceId'> }): Promise<readonly ThreadRef[]>;
 
   appendActivity(input: {
     readonly target: ThreadRef;

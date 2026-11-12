@@ -8,5 +8,6 @@ for (const key of Object.keys(process.env)) {
 
 delete process.env['KIKI_SQLITE_QUERY_WORKER_PATH'];
 delete process.env['KIKI_SQLITE_INDEXER_PATH'];
+delete process.env['KIKI_HISTORY_NAVIGATION_WORKER_ENTRY'];
 
 process.env['KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL'] = 'false';

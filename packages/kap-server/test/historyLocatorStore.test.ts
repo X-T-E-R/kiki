@@ -519,8 +519,8 @@ describe('history navigation source rows', () => {
       const scope = 'ws\0s\0main';
       const manifest = (await firstDb.ready()).readManifest(scope);
       expect(manifest).toMatchObject({ v: 2, offset: Buffer.byteLength(lines.join('')), ordinal: 6 });
-      const size = (await firstDb.ready()).db.prepare('SELECT length(value) AS size FROM manifest WHERE scope=?')
-        .get(scope) as { size: number };
+      const size = (await firstDb.ready()).db.prepare(`SELECT length(m.value) AS size FROM manifest m
+        JOIN scopes s ON s.id=m.scope WHERE s.name=?`).get(scope) as { size: number };
       expect(size.size).toBeLessThanOrEqual(16 << 10);
       await firstDb.close();
       const appended = [
@@ -675,11 +675,13 @@ describe('history navigation source rows', () => {
       expect(allowed).toMatchObject({ status: 'fulfilled', value: { hits: [{ turn: 4 }] } });
       expect(disk.readManifest(scope)?.generation).toBe(generation);
       const scopeBytes = Buffer.from(scope).toString('hex').toUpperCase();
-      expect(disk.db.prepare('SELECT hex(scope) AS scope FROM manifest').all()).toEqual([{ scope: scopeBytes }]);
-      expect(disk.db.prepare('SELECT DISTINCT hex(scope) AS scope FROM state').all()).toEqual([{ scope: scopeBytes }]);
-      const indexPlan = disk.db.prepare(`EXPLAIN QUERY PLAN SELECT value FROM rows
-        WHERE workspace=? AND session=? AND agent=? AND active=1
-        AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
+      expect(disk.db.prepare(`SELECT hex(s.name) AS scope FROM manifest m
+        JOIN scopes s ON s.id=m.scope`).all()).toEqual([{ scope: scopeBytes }]);
+      expect(disk.db.prepare(`SELECT DISTINCT hex(s.name) AS scope FROM state t
+        JOIN scopes s ON s.id=t.scope`).all()).toEqual([{ scope: scopeBytes }]);
+      const indexPlan = disk.db.prepare(`EXPLAIN QUERY PLAN SELECT r.value FROM rows r
+        JOIN scopes s ON s.id=r.scope WHERE s.workspace=? AND s.session=? AND s.agent=? AND r.active=1
+        AND json_extract(r.value, '$.anchor.start')=? LIMIT 1024`)
         .all('ws', 's', 'main', 0) as Array<{ detail: string }>;
       expect(indexPlan.some((step) => step.detail.includes('nav_source'))).toBe(true);
       await appendFile(wirePath, line({ type: 'context.undo', count: 1, time: 1010 }));
@@ -778,7 +780,8 @@ describe('history navigation source rows', () => {
       expect(absentTail.pageToken).toBeUndefined();
       const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
       expect(alternate.items.map((hit) => hit.turn)).toEqual([8]);
-      const manifestScopes = (await db.ready()).db.prepare('SELECT hex(scope) AS scope FROM manifest').all() as Array<{ scope: string }>;
+      const manifestScopes = (await db.ready()).db.prepare(`SELECT hex(s.name) AS scope FROM manifest m
+        JOIN scopes s ON s.id=m.scope`).all() as Array<{ scope: string }>;
       expect(manifestScopes).toEqual([{ scope: Buffer.from('ws\0s\0main').toString('hex').toUpperCase() }]);
       await appendFile(wirePath, line({ type: 'context.clear', time: 1011 }));
       await nav.scan('s', 'main');
@@ -853,10 +856,13 @@ describe('history navigation source rows', () => {
       } finally { await reopenedDb.close(); }
       const database = (await db.ready()).db;
       const version = database.prepare('PRAGMA user_version').get();
-      expect(version).toEqual({ user_version: 2 });
-      const plan = database.prepare(`EXPLAIN QUERY PLAN SELECT key,value FROM rows WHERE workspace='ws' AND session='s' AND agent='main'
-        AND active=1 AND json_extract(value,'$.part') IN ('prompt','text','output') ORDER BY coalesce(time,0) DESC,key DESC LIMIT 64`).all() as Array<{ detail: string }>;
-      expect(plan.some((row) => row.detail.includes('nav_search_order'))).toBe(true);
+      expect(version).toEqual({ user_version: 3 });
+      const scopeId = (database.prepare('SELECT id FROM scopes WHERE name=?').get('ws\0s\0main') as { id: number }).id;
+      const plan = database.prepare(`EXPLAIN QUERY PLAN SELECT r.key,r.value FROM rows r
+        WHERE r.scope=? AND r.active=1 AND json_extract(r.value,'$.part') IN ('prompt','text','output')
+        AND coalesce(json_extract(r.value,'$.role'),'user')='user'
+        ORDER BY coalesce(r.time,0) DESC,r.key DESC LIMIT 64`).all(scopeId) as Array<{ detail: string }>;
+      expect(plan.some((row) => row.detail.includes('nav_search_role_order'))).toBe(true);
       expect(plan.some((row) => row.detail.includes('TEMP B-TREE'))).toBe(false);
       await expect(archive.search({ ...request, sort: 'oldest', pageToken: newest.pageToken })).rejects.toThrow('stale_scan_cursor');
       await expect(archive.search({ ...request, query: 'other', sort: 'newest', pageToken: newest.pageToken })).rejects.toThrow('stale_scan_cursor');

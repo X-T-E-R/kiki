@@ -29,6 +29,7 @@ export type MailboxOperation =
   | { readonly type: 'find_identity'; readonly partition: string; readonly field: 'messageId' | 'legacyIdentity'; readonly value: string }
   | { readonly type: 'batch'; readonly ops: readonly MailboxWrite<unknown>[]; readonly owner?: MailboxOwner; readonly archive?: { readonly source: string; readonly rows: readonly MailboxRow[] }; readonly importCheckpoint?: { readonly source: string; readonly after: string; readonly items: number; readonly bytes: number } }
   | { readonly type: 'scan'; readonly prefix: string; readonly after?: string; readonly limit: number; readonly kind?: string }
+  | { readonly type: 'pending_targets'; readonly after?: string; readonly limit: number; readonly scope?: { readonly hostId: string; readonly workspaceId: string } }
   | { readonly type: 'peer'; readonly group: string; readonly before?: string; readonly limit: number }
   | { readonly type: 'checkpoint'; readonly source: string }
   | { readonly type: 'legacy_deliveries'; readonly source: string; readonly after?: LegacyDeliveryCursor; readonly limit: number }

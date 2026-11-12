@@ -387,6 +387,9 @@ export function configureBundledMobileAssets(
   const externalHarness = join(bundleDir, 'external-harness');
   if (existsSync(externalHarness)) env['KIKI_SOURCE_OWNED_ADAPTER_ROOT'] ??= externalHarness;
 
+  const historyNavigationWorker = join(bundleDir, 'history-navigation-worker.mjs');
+  if (existsSync(historyNavigationWorker)) env['KIKI_HISTORY_NAVIGATION_WORKER_ENTRY'] ??= historyNavigationWorker;
+
   const sqliteIndexer = join(bundleDir, 'sqlite-indexer.mjs');
   const sqliteQuery = join(bundleDir, 'sqlite-query-worker.mjs');
   if (existsSync(sqliteIndexer) && existsSync(sqliteQuery)) {

@@ -1,15 +1,15 @@
 ---
 name: gen-changesets
-description: Use when generating changesets in the kimi-code repository — deciding whether to write one, which package to list, the bump level, the wording, and the confirmation workflow.
+description: Use when generating changesets in the Kiki repository — deciding whether to write one, which package to list, the bump level, the wording, and the confirmation workflow.
 ---
 
 # Generate Changesets
 
-The only user-facing published package is the CLI: `@kiki/cli`. All other `@moonshot-ai/*` packages (sdk, agent-core, kosong, kaos, oauth, telemetry, and so on) are internal.
+The primary user-facing published CLI package in this monorepo is `@kiki/cli` (shipped on npm as `kiki-agent` / `kiki-agent-lite`), alongside published SDK packages such as `@kiki/node-sdk`, `@kiki/plugin-sdk`, `@kiki/klient`, and `@kiki/pi-tui`. Internal engine/server packages (`@kiki/agent-core-v2`, `@kiki/kap-server`, `@kiki/kaos`, `@kiki/oauth`, `@kiki/transcript`, etc.) are not curated for end-user changelogs.
 
 ## 1. Whether to Write
 
-Rule of thumb: **if users cannot perceive the change, write no changeset.** A changeset is a user-facing changelog entry, not a shipping gate — internal changes merged to main ship with the next release anyway, so skipping loses nothing.
+Rule of thumb: **if users cannot perceive the change, write no changeset.** A changeset is a user-facing changelog entry, not a shipping gate — internal changes merged to `kiki` ship with the next tagged release anyway, so skipping loses nothing.
 
 Do not write:
 - Docs-only or tests-only changes that never enter the shipped artifact.
@@ -59,4 +59,4 @@ Wording:
 4. Write the sentence yourself and commit it with the change; the requester reviews it when integrating the work. Only a `major` bump needs explicit confirmation before committing (section 3).
 5. Do not guess at changes you do not understand: finish the parts that are clear, then list what is unclear and ask whether you may dig into the code.
 
-Before a release, review the accumulated `.changeset/` entries and delete the non-user-facing ones — the release PR regenerates from `.changeset/` on main, so deleting a file removes its changelog entry without touching shipped code.
+Before a release (`pnpm run version:release` or `kiki-v<version>` tag prep), review the accumulated `.changeset/` entries and delete non-user-facing or already-shipped ones so historical drafts do not clutter the next release changelog.

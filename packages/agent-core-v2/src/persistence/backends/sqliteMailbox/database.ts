@@ -41,6 +41,10 @@ export class CanonicalMailboxDatabase<V> {
     return this.worker.request({ type: 'scan', prefix, after, limit, kind }, signal);
   }
 
+  pendingTargets(after?: string, scope?: { readonly hostId: string; readonly workspaceId: string }, signal?: AbortSignal): Promise<readonly MailboxRow<V>[]> {
+    return this.worker.request({ type: 'pending_targets', after, scope, limit: 128 }, signal);
+  }
+
   async prefix(prefix: string, kind?: string): Promise<readonly MailboxRow<V>[]> {
     const result: MailboxRow<V>[] = [];
     let after: string | undefined;

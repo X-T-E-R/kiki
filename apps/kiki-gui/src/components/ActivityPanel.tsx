@@ -111,7 +111,7 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
   const promptQueries = useQueries({
     queries: busyIds.map((sessionId) => ({
       queryKey: ['activity-prompts', sessionId],
-      queryFn: () => client.listPrompts(sessionId),
+      queryFn: () => client.listPrompts(sessionId, { observe: true }),
       refetchInterval: pollInterval,
       staleTime: pollInterval - 1_000,
       enabled: polling,

@@ -84,6 +84,7 @@ export default [
   bundleConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
   bundleConfig('sqlite-indexer', '../../packages/kap-server/src/search/sqlite/indexerDev.ts'),
   bundleConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
+  bundleConfig('history-navigation-worker', '../../packages/kap-server/src/services/history/worker/entry.ts'),
   bundleConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
   bundleConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
   bundleConfig('usage-read-model-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/usageEntry.ts'),

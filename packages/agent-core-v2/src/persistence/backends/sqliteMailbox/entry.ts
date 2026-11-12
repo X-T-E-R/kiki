@@ -41,6 +41,8 @@ function open(): DatabaseSync {
         peer_group TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerGroup')) VIRTUAL,
         peer_order TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerOrder')) VIRTUAL) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS records_by_kind ON records(kind,key);
+      CREATE INDEX IF NOT EXISTS records_pending_by_scope ON records(json_extract(json,'$.target.hostId'),json_extract(json,'$.target.workspaceId'),key)
+        WHERE kind='target_meta' AND json_extract(json,'$.pendingCount')>0;
       CREATE INDEX IF NOT EXISTS records_by_peer ON records(peer_group,peer_order,key) WHERE kind='peer_index';
       CREATE INDEX IF NOT EXISTS records_by_expiry ON records(expire_at) WHERE expire_at>0;
       CREATE INDEX IF NOT EXISTS records_by_message ON records(json_extract(json,'$.message.messageId'),key) WHERE kind='message';
@@ -222,6 +224,15 @@ async function execute(operation: MailboxOperation): Promise<unknown> {
       if (operation.kind !== undefined) { sql += ' AND kind=?'; values.push(operation.kind); }
       values.push(operation.limit);
       return db.prepare(`${sql} ORDER BY key LIMIT ?`).all(...values).map(row);
+    }
+    case 'pending_targets': {
+      const values: SQLInputValue[] = [operation.after ?? '', Date.now()];
+      let sql = "SELECT key,json,expire_at FROM records WHERE kind='target_meta' AND key>? AND (expire_at=0 OR expire_at>?) AND json_extract(json,'$.pendingCount')>0";
+      if (operation.scope !== undefined) {
+        sql += " AND json_extract(json,'$.target.hostId')=? AND json_extract(json,'$.target.workspaceId')=?";
+        values.push(operation.scope.hostId, operation.scope.workspaceId);
+      }
+      return db.prepare(`${sql} ORDER BY key LIMIT ?`).all(...values, operation.limit).map(row);
     }
     case 'peer': {
       const values: SQLInputValue[] = [operation.group, Date.now()];

@@ -55,6 +55,8 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { IAgentActivityView, type IAgentActivityView as AgentActivityView } from '#/agent/activityView/activityView';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -243,6 +245,101 @@ describe('thread mailbox agent collaboration adapter', () => {
     expect(lstatSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2')).isFile()).toBe(true);
     expect(lstatSync(join(homeDir, 'store', 'thread-mailbox-v3')).isFile()).toBe(true);
     expect(await readMailboxAuthority(homeDir)).toMatchObject({ backend: 'sqlite' });
+  });
+
+  it('lists pending agent targets only for the session mailbox scope and omits zero-pending metadata', async () => {
+    const { adapter, thread } = rawMailbox(tempDir());
+    await adapter.accept(messageInput('in scope', 'pending-in-scope'));
+    await adapter.accept({ ...messageInput('other session', 'pending-other-session'), sessionId: 'session-2' });
+    await thread.acceptMessage({
+      producer: { kind: 'external_client' },
+      target: { hostId: 'unrelated-host', workspaceId: 'session-1', sessionId: 'foreign-agent' },
+      content: 'unrelated host',
+      idempotencyKey: 'pending-unrelated-host',
+    });
+    await adapter.accept({ ...messageInput('already delivered', 'delivered-zero-pending'), targetAgentId: 'agent-empty' });
+    const emptyClaim = await adapter.nextQueued('session-1', 'agent-empty');
+    expect(emptyClaim).toBeDefined();
+    expect(await adapter.markDelivered(emptyClaim!.claim)).toBe(true);
+
+    const scope = { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1' };
+    const scopedTargets = await thread.listPendingTargets({ scope });
+    expect(scopedTargets).toEqual([{
+      hostId: MAILBOX_HOST_ID,
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    }]);
+    await expect(thread.listPendingTargets({ scope: { hostId: MAILBOX_HOST_ID, workspaceId: 'session-3' } }))
+      .resolves.toEqual([]);
+    const listPendingTargets = vi.spyOn(thread, 'listPendingTargets');
+    try {
+      await expect(adapter.listPendingAgents('session-1')).resolves.toEqual(['agent-target']);
+      expect(listPendingTargets).toHaveBeenCalledWith({ scope });
+    } finally {
+      listPendingTargets.mockRestore();
+    }
+  });
+
+  it('batch reads selected pending-target metadata with one partition mget', async () => {
+    const { adapter, thread } = rawMailbox(tempDir());
+    const selected = ['agent-one', 'agent-two', 'agent-missing'].map((sessionId) => ({
+      hostId: MAILBOX_HOST_ID,
+      workspaceId: 'session-1',
+      sessionId,
+    }));
+    await adapter.accept({ ...messageInput('one', 'selected-one'), targetAgentId: 'agent-one' });
+    await adapter.accept({ ...messageInput('two', 'selected-two'), targetAgentId: 'agent-two' });
+
+    const partitionMget = vi.spyOn(CanonicalMailboxDatabase.prototype, 'partitionMget');
+    const partitionGet = vi.spyOn(CanonicalMailboxDatabase.prototype, 'partitionGet');
+    try {
+      await expect(thread.listPendingTargets({ targets: selected })).resolves.toEqual(selected.slice(0, 2));
+      expect(partitionMget).toHaveBeenCalledOnce();
+      expect(partitionMget.mock.calls[0]?.[0]).toBe('s/thread-mailbox-v3');
+      expect(partitionMget.mock.calls[0]?.[1]).toHaveLength(selected.length);
+      expect(partitionGet).not.toHaveBeenCalled();
+    } finally {
+      partitionMget.mockRestore();
+      partitionGet.mockRestore();
+    }
+  });
+
+  it('lets the first mailbox RPC finish after its nominal timeout within one owner initialization deadline', async () => {
+    const startupTimeoutMs = 500;
+    const initializationDelayMs = 750;
+    const homeDir = tempDir();
+    const seed: IBootstrapService = {
+      ...bootstrap(homeDir),
+      getEnv: (name) => name === 'KIKI_THREAD_MAILBOX_TIMEOUT_MS' ? String(startupTimeoutMs) : undefined,
+    };
+    const runtime = new HomeRuntimeHostService(seed);
+    const thread = new RuntimeThreadMailboxStore(seed, runtime);
+    runtimeMailboxes.push({ runtime, store: thread });
+    const originalClaimOwner = CanonicalMailboxDatabase.prototype.claimOwner;
+    let delayInitialization = true;
+    const claimOwner = vi.spyOn(CanonicalMailboxDatabase.prototype, 'claimOwner').mockImplementation(async function (owner) {
+      if (delayInitialization) {
+        delayInitialization = false;
+        await new Promise<void>((resolve) => setTimeout(resolve, initializationDelayMs));
+      }
+      return originalClaimOwner.call(this, owner);
+    });
+    const runtimeCall = vi.spyOn(HomeRuntimeHostService.prototype, 'call');
+    try {
+      const startedAt = Date.now();
+      await expect(thread.listPendingTargets()).resolves.toEqual([]);
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(claimOwner).toHaveBeenCalledOnce();
+      expect(runtimeCall).toHaveBeenCalledOnce();
+      expect(runtimeCall.mock.calls[0]?.[0]).toBe(THREAD_MAILBOX_RUNTIME_METHODS.pendingTargets);
+      expect(runtimeCall.mock.calls[0]?.[2]?.timeoutMs).toBeGreaterThan(startupTimeoutMs);
+      expect(elapsedMs).toBeGreaterThan(initializationDelayMs);
+      expect(elapsedMs).toBeLessThan(startupTimeoutMs * 6);
+    } finally {
+      claimOwner.mockRestore();
+      runtimeCall.mockRestore();
+    }
   });
 });
 
@@ -1524,6 +1621,22 @@ describe('agent collaboration safe-boundary delivery', () => {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     const target = agentHandle('agent-target');
+    const executors = { get: () => undefined, list: () => [] } as unknown as IAgentExecutorRegistry;
+    const activityView: AgentActivityView = {
+      _serviceBrand: undefined,
+      state: () => ({ lifecycle: 'ready', background: [] }),
+      telemetry: () => ({ toolCallCount: 0 }),
+    };
+    const targetHandle: IAgentScopeHandle = {
+      ...target.handle,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => {
+          if (id === IAgentExecutorRegistry) return executors as T;
+          if (id === IAgentActivityView) return activityView as T;
+          return target.handle.accessor.get(id);
+        },
+      },
+    };
     const agents: Record<string, AgentMeta> = {
       main: { type: 'main' },
       'agent-target': {
@@ -1552,7 +1665,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       },
       dispose: () => {},
     };
-    lifecycle = lifecycleHarness([main, target.handle]).service;
+    lifecycle = lifecycleHarness([main, targetHandle]).service;
     const completions: Array<(summary: string) => void> = [];
     ix.stub(IAgentLifecycleService, lifecycle);
     ix.stub(ISessionMetadata, metadata);
@@ -1572,6 +1685,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     ix.stub(ISessionAgentProfileCatalog, {});
     ix.stub(IAgentCollaborationRegistry, {});
+    ix.stub(IAgentExecutorRegistry, executors);
     ix.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
     ix.stub(IModelCatalog, {});
     ix.stub(IModelService, {});

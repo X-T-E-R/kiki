@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../src/services/history/historyLocatorStore';
+import { navigationScope } from '../src/services/history/historyNavigationState';
 import * as logicalWire from '../src/services/history/logicalWireRead';
 import { CanonicalEntityPreparingError, HistoryCanonicalReader } from '../src/services/history/historyCanonicalReader';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -705,8 +706,12 @@ describe('source-backed canonical detail', () => {
       const sources = (await f.db.ready()).canonicalSources('ws\0s\0main', 't20', -1, 128);
       const output = sources.find((span) => file.slice(span.start, span.end).includes('tool.result'))!;
       const db = await f.db.ready();
-      db.db.prepare("UPDATE state SET value=json_set(value,'$.digest',?) WHERE scope=? AND bucket='canonicalRecords' AND key=?")
-        .run('0'.repeat(64), 'ws\0s\0main', String(output.ordinal));
+      const scope = navigationScope(db.db, 'ws\0s\0main');
+      const stored = db.db.prepare(`SELECT typeof(digest) AS digest_type FROM canonical_spans
+        WHERE scope=? AND turn_id=? AND ordinal=?`).get(scope, 't20', output.ordinal);
+      expect(stored).toEqual({ digest_type: 'blob' });
+      db.db.prepare('UPDATE canonical_spans SET digest=? WHERE scope=? AND turn_id=? AND ordinal=?')
+        .run(Buffer.alloc(32), scope, 't20', output.ordinal);
       await expect(f.service.lookupToolCall('s', 'main', 'call-20')).rejects.toThrow('history_source_changed');
       const spy = vi.spyOn(logicalWire, 'openLogicalWire').mockRejectedValueOnce(Object.assign(new Error('unreadable synthetic file'), { code: 'EACCES' }));
       await expect(f.service.lookupToolCall('s', 'main', 'absent')).rejects.toThrow('unreadable synthetic file');

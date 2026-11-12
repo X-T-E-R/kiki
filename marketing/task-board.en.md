@@ -4,13 +4,13 @@
 
 Chat history is where work gets discussed, and it is a poor place for work to *live* — scroll back far enough and every decision dissolves into the transcript. The **task board** is the optional official plugin `kiki-task-board`: install and enable it from the catalog, and each workspace keeps requirements as cards that link to the sessions working on them.
 
-![The workspace task board.](shots/r04-task-board.en.light.png)
+![The workspace task board.](../docs/public/shots/long-work/r04-task-board.en.png)
 
 ## Tasks linked to sessions
 
 Every card can link to the session working on it, so you can see not just *what* is pending but *who* is on it, and jump straight into that session to steer. The main agent reads and updates the board itself through the plugin's `BoardRead` and `BoardWrite` tools, under the ordinary approval rules, so a card's status moves as the work does instead of going stale while the conversation scrolls past.
 
-![A card detail view: the linked execution sessions are one click away from the task.](shots/board-task-detail.en.light.png)
+![A card detail view: the linked execution sessions are one click away from the task.](../docs/public/shots/long-work/board-task-detail.en.png)
 
 ## Cards outlast the session
 

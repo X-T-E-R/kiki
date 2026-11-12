@@ -46,4 +46,4 @@ Follow the chapters in [bilibili.zh-CN.md](bilibili.zh-CN.md): setup, dispatch, 
 
 ## Fallback: fixture scenes (if the recording isn't ready)
 
-Build a 25 s cut from the existing fixture shots (see [../shots/RESHOOT.md](../shots/RESHOOT.md)): h01 (workbench) → r05 (models per role) → r02 (goal + queue timing) → d04 (background completion notice) → r04 (board) → d02 (prompt fields) → wordmark. Label it "Example scenes rendered by the real UI" throughout, **drop the "recovers a crashed line" beat and all "hours" wording**, and don't use it as the Product Hunt video or the B站 cut.
+Build a 25 s cut from the existing fixture shots (see [../RESHOOT.md](../RESHOOT.md)): h01 (workbench) → r05 (models per role) → r02 (goal + queue timing) → d04 (background completion notice) → r04 (board) → d02 (prompt fields) → wordmark. Label it "Example scenes rendered by the real UI" throughout, **drop the "recovers a crashed line" beat and all "hours" wording**, and don't use it as the Product Hunt video or the B站 cut.

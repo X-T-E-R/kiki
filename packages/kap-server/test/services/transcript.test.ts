@@ -2116,6 +2116,30 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it.each([false, true])('bounds the first screen when its leading record spans many windows (only oversized tail: %s)', async (onlyOversizedTail) => {
+    const home = await seedWireHomeWithTool();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    await appendFile(path, JSON.stringify({ type: 'context.append_loop_event', event: {
+      type: 'tool.result', toolCallId: 'large-result', output: 'x'.repeat(12 << 20),
+    } }) + '\n' + (onlyOversizedTail ? '' : JSON.stringify({ type: 'turn.prompt', turnId: 9,
+      promptId: 'visible', input: [{ type: 'text', text: 'recent prompt' }], origin: { kind: 'user' }, time: 10_000 }) + '\n'));
+    const agents = new FakeAgents();
+    agents.add('main');
+    const reader = vi.fn(streamWireRecords);
+    const service = new TranscriptService({ homeDir: home, wireRecordReader: reader,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      service.forSessionLive('s1', { tailFirst: true });
+      const visible = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      expect(service.memoryReport().coldReads.bytes).toBeLessThan(2 << 20);
+      expect(visible?.hasMoreOlder).toBe(true);
+      expect(visible?.snapshot().toolCallCountKnown).toBe(false);
+      if (!onlyOversizedTail) expect(visible?.getTurn('t9')?.prompt).toBe('recent prompt');
+      else expect(visible?.getItems()).toEqual([]);
+      expect(reader.mock.calls.every(([, options]) => options?.startByteOffset !== undefined)).toBe(true);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
   it('finishes tail-first live replay before verification and retains the explicit full-history contract', async () => {
     const home = await seedWireHomeWithTool();
     const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');

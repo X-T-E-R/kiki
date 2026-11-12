@@ -67,9 +67,8 @@ const heroAlt = computed(() => isZh.value
 
 /**
  * The same frame the README leads with, so a GitHub visitor and a docs visitor
- * see one workbench rather than two. It is a copied asset, not a second source:
- * marketing/shots stays the master, and `marketing-collect.mjs` is the only
- * thing that copies it here.
+ * see one workbench rather than two. `docs/public/shots` is the single
+ * canonical screenshot store, populated by `marketing-collect.mjs`.
  */
 const heroShot = computed(() => withBase(isZh.value
   ? '/shots/index/wl-20261005-hero-workbench.zh.png'

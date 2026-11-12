@@ -7,7 +7,7 @@
  *
  *   node scripts/visual-proof.mjs                         # disposable full walk
  *   node scripts/visual-proof.mjs --only=reconnect        # disposable subset
- *   node scripts/visual-proof.mjs --update-goldens        # replace tracked goldens
+ *   node scripts/visual-proof.mjs --update-goldens        # replace local golden snapshots (gitignored)
  *
  * `proof/runner.mjs` owns the build, the static server, the job queue and the
  * per-job browser context + fixture server; this file owns the scenarios.

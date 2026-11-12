@@ -4,7 +4,7 @@
  *
  *   node scripts/marketing-p2-shots.mjs                 # render every shot
  *   node scripts/marketing-p2-shots.mjs --only=d01,d05   # names containing a filter
- *   node scripts/marketing-p2-shots.mjs --collect        # copy masters to marketing/shots
+ *   node scripts/marketing-p2-shots.mjs --collect        # copy frames to docs/public/shots
  *
  * Every shot renders twice — en-light and zh-light — from a per-locale fixture
  * scenario (`marketing-d0X-en` / `marketing-d0X-zh`, built by
@@ -19,22 +19,22 @@
  * DPR-2 PNG master as `<name>.<locale>.light.png`.
  *
  * The output directory is disposable and is wiped recursively on start — point
- * KIKI_PROOF_OUTPUT_DIR at a throwaway path, never at marketing/shots. There is
- * no --update-goldens path here; the tracked visual-proof goldens are never
- * touched.
+ * KIKI_PROOF_OUTPUT_DIR at a throwaway path, never at docs/public/shots. There
+ * is no --update-goldens path here; the visual-proof goldens are never touched.
  */
 
 import { spawn, execSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { collectFrames } from './marketing-collect.mjs';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = join(ROOT, '..', '..');
 const DPR = 2;
-const COLLECT_DIR = join(REPO_ROOT, 'marketing', 'shots');
 const OUT_DIR = process.env.KIKI_PROOF_OUTPUT_DIR ?? join(REPO_ROOT, '.tmp', 'marketing-p2-shots');
 const LOCALES = ['en', 'zh'];
 
@@ -583,14 +583,7 @@ async function main() {
     }
 
     if (collect && failures.length === 0) {
-      mkdirSync(COLLECT_DIR, { recursive: true });
-      let copied = 0;
-      for (const file of readdirSync(OUT_DIR)) {
-        if (!file.endsWith('.png')) continue;
-        copyFileSync(join(OUT_DIR, file), join(COLLECT_DIR, file));
-        copied += 1;
-      }
-      console.log(`[shots] collected ${copied} PNG(s) into ${COLLECT_DIR}`);
+      collectFrames(OUT_DIR);
     }
 
     if (failures.length > 0) {

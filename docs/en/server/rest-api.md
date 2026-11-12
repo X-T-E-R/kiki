@@ -539,6 +539,8 @@ The transcript response's `agents` descriptors use camelCase: `{ agentId, type?,
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | Read a saved request, including its complete content, without restoring the agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | Retry a held or failed saved request |
 
+Add `?observe=true` to the prompt list for a read-only view of the current main agent's active and queued prompts. An inactive saved session or an unstarted main returns `{ active: null, queued: [] }` without restoring or creating an agent. This view does not enumerate saved prompt requests; use `admission=durable` for those.
+
 A saved session opts in with `admission: "durable"` and a stable `prompt_id` of 1–256 characters. Saving while that session is still restoring is one use; the gate is the saved session, not an in-progress restore. Any other `admission` value is rejected before a body is stored. A session that does not exist, and a temporary session that is live but not yet saved, are rejected before storage and do not produce an acceptance receipt.
 
 The server then saves the complete request and uploaded attachments and returns `status: "queued", admission: "restoring"`. That pair means the message is persisted and waiting for recovery, not that the agent has accepted it. A successful HTTP envelope confirms only the save.
@@ -713,7 +715,7 @@ PTY terminal endpoints; mounted only on loopback binds.
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/sessions/{session_id}/terminals` | List terminals |
+| `GET /api/sessions/{session_id}/terminals` | List live terminals; an inactive saved session returns an empty list without being restored |
 | `POST /api/sessions/{session_id}/terminals` | Create a terminal |
 | `GET /api/sessions/{session_id}/terminals/{terminal_id}` | Read a terminal (including scrollback) |
 | `POST /api/sessions/{session_id}/terminals/{terminal_id}:close` | Close a terminal |

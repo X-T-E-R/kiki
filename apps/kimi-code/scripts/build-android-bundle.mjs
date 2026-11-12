@@ -203,6 +203,7 @@ export async function buildAndroidBundle() {
     'text-build-worker.mjs',
     'sqlite-indexer.mjs',
     'sqlite-query-worker.mjs',
+    'history-navigation-worker.mjs',
     'usage-parser-worker.mjs',
     'query-store-worker.mjs',
     'usage-read-model-worker.mjs',

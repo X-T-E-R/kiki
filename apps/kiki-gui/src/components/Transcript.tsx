@@ -6172,7 +6172,11 @@ export const Transcript = memo(function Transcript({
             unread session is never announced as an empty one. */}
         {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
           <button type="button" data-reading-restore-retry={readingRestoreFailed !== null || undefined}
-            onClick={() => { if (readingRestoreFailed !== null) reading.retryRestore(); else if (onRetryLoad !== undefined) onRetryLoad(); else void onLoadOlder(); }}
+            onClick={() => {
+              if (readingRestoreFailed !== null) reading.retryRestore();
+              else if (state.hasMoreHistory || onRetryLoad === undefined) void onLoadOlder();
+              else onRetryLoad();
+            }}
             className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint hover:text-ink-soft">
             {t('common.retry')}
           </button>

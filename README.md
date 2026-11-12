@@ -14,7 +14,7 @@ Kiki is an open-source, local agent workbench. The lead session splits the work:
 
 It is open source (MIT).
 
-![One session, several models: each agent in the dispatch tree bound to a different model.](marketing/shots/r05-multi-model-fleet.en.light.png)
+![One session, several models: each agent in the dispatch tree bound to a different model.](docs/public/shots/workbench/workbench-per-role-models.en.png)
 
 ## Start here
 
@@ -83,7 +83,7 @@ See [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launc
 
 The lead agent splits your task and dispatches subagents, and each one can run a different model — or a different vendor — in the same session. A strong reasoning model can plan while cheaper models do the routine work, and a review by a different vendor is not anchored to the same blind spots as the implementation. Kimi works out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added, and you can sign in with a GitHub Copilot or ChatGPT account.
 
-![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](marketing/shots/wl-hero-workbench.en.light.png)
+![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](docs/public/shots/index/wl-20261005-hero-workbench.en.png)
 
 Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it, while a session already running keeps the snapshot it started with until you rebuild its context. You can create a profile by copying an existing one, starting from a shipped template, or starting blank.
 
@@ -99,7 +99,7 @@ The agent can search its own earlier messages and tool output — including text
 
 The **Usage** page breaks a date range into tokens, cost, and cache hit rate — a provider that never returned usage reads as unknown rather than as a real zero — and names the concurrency rule holding each waiting request. External sync sends only content-free numbers, never a prompt, answer, title, or path, to a webhook, a VibeCafe account, or a script you approve, and nothing is sent until you add a destination, preview the exact payload, agree once, and enable it.
 
-![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](marketing/shots/ux-usage-live.en.light.png)
+![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](docs/public/shots/daily/ux-usage-live.en.png)
 
 See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [`kiki usage-export`](https://x-t-e-r.github.io/kiki/en/reference/command#kiki-usage-export).
 
@@ -121,7 +121,7 @@ A **room** puts two to six of them on one topic, speaking in order, with a host,
 
 A persona is not an agent profile. A profile is execution configuration — tools, permissions, model, effort; a persona is identity — who it is and what it remembers. Rebinding one does not touch the other. See [Roles you can talk to](https://x-t-e-r.github.io/kiki/en/features/people).
 
-![A room where three personas discuss a release, each message attributed to its speaker.](marketing/shots/people-room.en.light.png)
+![A room where three personas discuss a release, each message attributed to its speaker.](docs/public/shots/people/people-room.en.png)
 
 ### Skills, plugins, and tool connections
 

@@ -206,33 +206,39 @@ function originalText(record: Record<string, unknown>, part: HistoryNavRow['part
   return undefined;
 }
 
-export class HistoryLocatorStore {
+export type HistoryNavigationSources = Pick<TranscriptService, 'historyWireLocation' | 'detailCacheBudgetBytes' |
+  'scheduleHistoryRead' | 'readRetainedColdTurn' | 'readColdWindowTurn' | 'readProjectedColdTurn'>;
+
+export type HistoryLocatorStore = Omit<HistoryLocatorEngine, 'residentCheckpoint' | 'proveResidentCheckpoint' | 'checkResidentFailure'>;
+
+export class HistoryLocatorEngine {
   private readonly scanners = new Map<string, Scanner>();
   private readonly flights = new Map<string, NavigationScanFlight>();
   private scanQueue = { tail: Promise.resolve(), queued: 0 };
   private projectionPrefix = '';
-  private readonly directoryPrefixes = new Map<string, HistoryLocatorStore>();
+  private readonly directoryPrefixes = new Map<string, HistoryLocatorEngine>();
   private directoryWindow?: HistoryDirectoryWindow;
-  private readonly directoryWindows = new Map<string, HistoryLocatorStore>();
+  private readonly directoryWindows = new Map<string, HistoryLocatorEngine>();
   private readonly directoryFlights = new Map<string, NavigationScanFlight<HistoryDirectoryPage | undefined>>();
 
   constructor(private readonly store: Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>,
-    private readonly transcript: TranscriptService) {}
+    private readonly transcript: HistoryNavigationSources, private readonly serial = false) {}
 
   private canonicalReader?: HistoryCanonicalReader;
 
   private canonical(): HistoryCanonicalReader {
     if (!('ready' in this.store)) throw new Error('history_canonical_requires_navigation_db');
     return this.canonicalReader ??= new HistoryCanonicalReader(this.store as LazyHistoryNavigationDb,
-      this.transcript, (session, agent, signal) => this.scan(session, agent, signal));
+      this.transcript, (session, agent, signal) => this.scan(session, agent, signal), this.serial);
   }
 
   lookupToolCall(session: string, agent: string, toolCallId: string, signal?: AbortSignal): Promise<CanonicalToolLookup> {
     return this.canonical().lookupToolCall(session, agent, toolCallId, signal);
   }
 
-  readCanonicalEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal): Promise<CanonicalEntityLookup> {
-    return this.canonical().readEntity(session, agent, source, signal);
+  readCanonicalEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal,
+    allowDirectRead?: boolean): Promise<CanonicalEntityLookup> {
+    return this.canonical().readEntity(session, agent, source, signal, allowDirectRead);
   }
 
   readDurableTurn(session: string, agent: string, turnId: string, signal: AbortSignal): ReturnType<HistoryCanonicalReader['readDurableTurn']> {
@@ -241,6 +247,18 @@ export class HistoryLocatorStore {
 
   prepareResidentProof(session: string, agent: string, signal: AbortSignal): ReturnType<HistoryCanonicalReader['prepareResidentProof']> {
     return this.canonical().prepareResidentProof(session, agent, signal);
+  }
+
+  residentCheckpoint(...args: Parameters<HistoryCanonicalReader['residentCheckpoint']>) {
+    return this.canonical().residentCheckpoint(...args);
+  }
+
+  proveResidentCheckpoint(...args: Parameters<HistoryCanonicalReader['proveResidentCheckpoint']>) {
+    return this.canonical().proveResidentCheckpoint(...args);
+  }
+
+  checkResidentFailure(...args: Parameters<HistoryCanonicalReader['checkResidentFailure']>) {
+    return this.canonical().checkResidentFailure(...args);
   }
 
   readCanonicalTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): ReturnType<HistoryCanonicalReader['readTurnHeader']> {
@@ -302,7 +320,7 @@ export class HistoryLocatorStore {
     const flightKey = through === undefined ? key : `${key}\0through:${through}`;
     const existing = search === undefined ? this.flights.get(flightKey) : undefined;
     if (existing !== undefined && !existing.controller.signal.aborted) return this.awaitScan(existing, signal);
-    const controller = search === undefined ? new AbortController() : undefined;
+    const controller = search === undefined && !this.serial ? new AbortController() : undefined;
     const scanSignal = controller?.signal ?? signal;
     if (this.scanQueue.queued >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
     this.scanQueue.queued += 1;
@@ -329,10 +347,7 @@ export class HistoryLocatorStore {
       } catch (error) {
         if (entered) {
           this.scanners.delete(key);
-          if ('ready' in this.store) {
-            const db = await (this.store as LazyHistoryNavigationDb).ready().catch(() => undefined);
-            db?.rollbackSlice();
-          }
+          if ('ready' in this.store) await (this.store as LazyHistoryNavigationDb).rollbackSlice();
         }
         throw error;
       } finally {
@@ -826,7 +841,7 @@ export class HistoryLocatorStore {
       incompleteReason: throughWatermark ? undefined : read.incompleteReason, hits: activeHits };
   }
 
-  private prefixNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>): HistoryLocatorStore | undefined {
+  private prefixNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>): HistoryLocatorEngine | undefined {
     if (anchor.window === undefined || !('ready' in this.store)) return undefined;
     const window = { ...anchor.window, start: 0, mode: 'prefix' as const };
     const id = digest(JSON.stringify([anchor.workspace, anchor.session, anchor.agent, anchor.incarnation, window]));
@@ -836,7 +851,7 @@ export class HistoryLocatorStore {
       this.directoryPrefixes.set(id, cached);
       return cached;
     }
-    const child = new HistoryLocatorStore((this.store as LazyHistoryNavigationDb).projected(id), this.transcript);
+    const child = new HistoryLocatorEngine((this.store as LazyHistoryNavigationDb).projected(id), this.transcript, this.serial);
     child.directoryWindow = window;
     child.projectionPrefix = `directory:${id}\0`;
     child.scanQueue = this.scanQueue;
@@ -846,7 +861,7 @@ export class HistoryLocatorStore {
   }
 
   private async windowNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>,
-    signal?: AbortSignal): Promise<{ navigation: HistoryLocatorStore; bytesRead: number; recordsRead: number } | undefined> {
+    signal?: AbortSignal): Promise<{ navigation: HistoryLocatorEngine; bytesRead: number; recordsRead: number } | undefined> {
     const window = anchor.window;
     if (window === undefined) return undefined;
     const location = await this.transcript.historyWireLocation(anchor.session, anchor.agent);
@@ -863,7 +878,7 @@ export class HistoryLocatorStore {
       this.directoryWindows.set(key, cached);
       return { navigation: cached, bytesRead: 0, recordsRead: 0 };
     }
-    const child = new HistoryLocatorStore(historyDirectoryWindowStore(), this.transcript);
+    const child = new HistoryLocatorEngine(historyDirectoryWindowStore(), this.transcript, this.serial);
     child.directoryWindow = window;
     let scan: HistoryNavScan;
     try {
@@ -887,6 +902,7 @@ export class HistoryLocatorStore {
         request.order !== 'newest' || request.at !== undefined || request.beforeTurn !== undefined ||
         request.afterTurn !== undefined || request.agentId === undefined) return undefined;
     request.signal?.throwIfAborted();
+    if (this.serial) return this.projectRecentDirectory({ ...request, agentId: request.agentId });
     const key = `${request.workspaceId}\0${request.sessionId}\0${request.agentId}\0${request.limit}`;
     const existing = this.directoryFlights.get(key);
     if (existing !== undefined && !existing.controller.signal.aborted) return this.awaitScan(existing, request.signal);
@@ -1192,3 +1208,5 @@ export class HistoryLocatorStore {
     return encodeHistoryRef({ ...row.anchor, selector: row.selector, focus });
   }
 }
+
+export const HistoryLocatorStore = HistoryLocatorEngine;

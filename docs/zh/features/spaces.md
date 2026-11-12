@@ -36,7 +36,7 @@ Kiki 跑在哪儿由你决定，它能触达的东西也由你决定。这一页
 
 目标暂时不可达时，手机端会自动重连，已打开的会话和草稿留在原处；也可以就地重试或切换电脑。若目标关闭入站访问，等所有者重新打开后，普通读取会自动恢复。某一次操作被拒绝不会把整条连接判成未登录，Kiki 也不会自动重发被拒绝或结果未知的写入。令牌失效或授权被撤销时，请重新配对或更新授权后再试。
 
-见 [`kiki pair`](/zh/reference/command#kiki-pair)、[`kiki connections`](/zh/reference/command#kiki-connections) 和 [`kiki bridges`](/zh/reference/command#kiki-bridges)。
+见 [`kiki pair`](/zh/reference/command#kiki-pair)、[`kiki connections`](/zh/reference/command#kiki-pair) 和 [`kiki bridges`](/zh/reference/command#kiki-bridges)。
 
 ![远端连接列表：每个对端 Kiki 一行，各带自己的状态和最后一次读数的时间。](/shots/spaces/ps-20261005-spaces-remote.zh.png)
 
@@ -82,6 +82,6 @@ Agent 也可以在工具调用里直接指定已配置的主机，不必先手�
 
 ## 下一步
 
-- [`kiki connections`](/zh/reference/command#kiki-connections) 和 [`kiki bridges`](/zh/reference/command#kiki-bridges)——这些设置背后的命令参考
+- [`kiki pair` 与 `kiki connections`](/zh/reference/command#kiki-pair) 和 [`kiki bridges`](/zh/reference/command#kiki-bridges)——这些设置背后的命令参考
 - [在浏览器里使用 Kiki](/zh/server/local-server#在浏览器里使用-kiki)——Web 访问的细节
 - [设置页导览](/zh/guides/settings)——对话框里其余部分，包括连接服务

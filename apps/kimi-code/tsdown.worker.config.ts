@@ -60,6 +60,7 @@ function workerConfig(name: string, entry: string) {
 export default [
   workerConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
   workerConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
+  workerConfig('history-navigation-worker', '../../packages/kap-server/src/services/history/worker/entry.ts'),
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
   workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
   workerConfig('usage-read-model-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/usageEntry.ts'),

@@ -7,6 +7,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { ICpuWorkerService, CpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IThreadTurnStore, ThreadTurnStore, type ThreadTurnPage } from '#/app/threadCommunication/threadTurnStore';
 import { IAppendLogStore, AppendLogCorruptedError } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -40,6 +42,8 @@ describe('ThreadTurnStore', () => {
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore));
+    ix.stub(IConfigService, { get: <T>() => ({ maxQueuedBytes: 32 * 1024 }) as T });
+    ix.set(ICpuWorkerService, new SyncDescriptor(CpuWorkerService));
     ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     logs = ix.get(IAppendLogStore);
     query = ix.get(IQueryStore);
@@ -225,6 +229,17 @@ describe('ThreadTurnStore', () => {
     expect((await ready()).turns).toEqual([]);
     await storage.append(SCOPE, KEY, Buffer.from(terminal.slice(20) + '\n'));
     expect((await ready()).turns[0]?.output).toBe('unfinished');
+  });
+
+  it('streams complete and torn records larger than the CPU queue budget', async () => {
+    const output = '答'.repeat(96 * 1024);
+    await seed([{ ...prompt(), turnId: 0 }, part(0, output), ended(0), { ...prompt('later'), turnId: 1 }]);
+    expect((await ready()).turns).toMatchObject([{ turnId: 0 }]);
+    const terminal = JSON.stringify({ ...ended(1), padding: 'x'.repeat(128 * 1024) });
+    await storage.append(SCOPE, KEY, Buffer.from(terminal.slice(0, -1)));
+    expect((await ready()).turns.map((turn) => turn.turnId)).toEqual([0]);
+    await storage.append(SCOPE, KEY, Buffer.from('}\n'));
+    expect((await ready()).turns.map((turn) => turn.turnId)).toEqual([0, 1]);
   });
 
   it('propagates read errors and cancellation without publishing a partial projection', async () => {

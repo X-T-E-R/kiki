@@ -283,6 +283,7 @@ export async function readSessionViewTranscriptDetail(
 export function sessionViewSnapshotHistoryCursor(snapshot: AgentTranscriptSnapshot, agentId: string,
   source: TranscriptRead['source'], epoch?: string): string | undefined {
   const first = snapshot.items[0];
+  if (first === undefined && snapshot.hasMoreOlder === true) return encodePageCursor('tail', agentId, source, epoch);
   if (snapshot.olderCursor === undefined || first?.kind !== 'turn' || first.origin.kind !== 'other' ||
       first.message !== undefined || first.promptId !== undefined) return snapshot.olderCursor;
   return encodePageCursor(itemKey(first), agentId, source, epoch, undefined, first.turnId, undefined, first.turnId);
@@ -1135,7 +1136,9 @@ function paginateTurns(items: readonly TranscriptItem[], query: PageQuery) {
   const cursor = query.beforeItem ?? query.afterItem;
   const consumed = query.afterItem !== undefined || query.afterTurn !== undefined ? undefined : query.consumedBeforeTurn;
   const eligible = consumed === undefined ? undefined : new Set(paginateCanonicalTurns(items, { beforeTurn: consumed, pageSize: Number.MAX_SAFE_INTEGER }).items);
-  if (cursor === undefined) return paginateCanonicalTurns(eligible === undefined ? items : items.filter(item => eligible.has(item)), query);
+  if (cursor === undefined || query.beforeItem === 'tail') {
+    return paginateCanonicalTurns(eligible === undefined ? items : items.filter(item => eligible.has(item)), query);
+  }
   const index = items.findIndex((item) => historyAnchorMatches(itemKey(item), cursor));
   const pageSize = Math.max(1, Math.min(100, Math.floor(query.pageSize)));
   if (index < 0) {

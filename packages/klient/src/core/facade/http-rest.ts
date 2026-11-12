@@ -470,7 +470,7 @@ export interface HttpRestFacade {
       sessionId: string,
       query?: { readonly before_id?: string; readonly page_size?: number },
     ): Promise<PageResponse<Message>>;
-    listPrompts(sessionId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string; readonly cursor?: string }): Promise<PromptListResponse>;
+    listPrompts(sessionId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string; readonly cursor?: string; readonly observe?: true }): Promise<PromptListResponse>;
     getPrompt(sessionId: string, promptId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string }): Promise<PromptItem>;
     resumePrompt(sessionId: string, promptId: string, body: PromptSubmission, query?: { readonly agent_id?: string }): Promise<PromptItem>;
     listApprovals(sessionId: string): Promise<ApprovalRequest[]>;

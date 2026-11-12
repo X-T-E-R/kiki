@@ -57,7 +57,8 @@ $KIKI_HOME  （默认 ~/.kiki）
 ├── store/
 │   └── thread-mailbox-sqlite-v1/ # 持久消息邮箱与升级恢复副本
 ├── server/
-│   └── events/             # 有界的客户端事件重放日志
+│   ├── events/             # 有界的客户端事件重放日志
+│   └── history-navigation.sqlite # 派生的历史导航索引
 ├── bin/
 │   ├── rg                  # Grep 使用的托管 ripgrep 二进制（Windows 为 rg.exe）
 │   └── fd                  # 文件引用使用的托管 fd 二进制（Windows 为 fd.exe）
@@ -114,7 +115,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 ## 会话与用量查询缓存
 
-`cache/query-store-sqlite-v1/index.sqlite` 保存会话列表和线程轮次查询使用的 SQLite 缓存。用量事实与来源覆盖水位使用独立数据库 `cache/usage-read-model-v2/index.sqlite`。Kiki 会按需从会话元数据、用量事实日志、保留用量账本和对话历史重建这些视图。每个数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
+`cache/query-store-sqlite-v1/index.sqlite` 保存会话列表和线程轮次查询使用的 SQLite 缓存。用量事实与来源覆盖水位使用独立数据库 `cache/usage-read-model-v2/index.sqlite`。对话历史导航（`HistoryList`、`HistoryRead`、`HistorySearch` 及更早历史详情定位）在独立后台工作线程中使用派生 SQLite 索引 `server/history-navigation.sqlite`；从旧版索引格式升级后首次使用时，Kiki 会自动清空紧缩 `server/history-navigation.sqlite` 并按需从 `wire.jsonl` 分片重建，重建前签发的翻页游标需从新查询重新开始。Kiki 会按需从会话元数据、用量事实日志、保留用量账本和对话历史重建这些视图。每个数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
 
 如果某个缓存损坏，先停止所有使用该数据根目录的 Kiki 进程，备份后仅移除对应缓存目录，再重新启动。历史较多时，Usage 重建可能需要多次请求；已提交的导入进度可在重启后接续。请保留 `cache/usage-facts-v1/`、`sessions/` 和 `store/`，这些目录存放恢复所需的日志与记录。Output Layer 转换等独立请求的用量记录位于 `store/session-operations-v1.jsonl`。旧通用用量集合和 `cache/query-store-v*/` 目录会保留供回滚使用；不要为了重置 Usage 而删除共享查询数据库。
 

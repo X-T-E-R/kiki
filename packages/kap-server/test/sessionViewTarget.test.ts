@@ -1,6 +1,7 @@
 import { channel } from 'node:diagnostics_channel';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
+import { ISessionIndex } from '@kiki/agent-core-v2';
 import type { SessionSnapshotResponse } from '@kiki/protocol';
 import * as snapshotReads from '../src/routes/snapshot';
 import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION, type AgentTranscriptSnapshot } from '@kiki/transcript';
@@ -728,8 +729,9 @@ describe('SessionViewTarget', () => {
         input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
       } });
       await vi.waitFor(() => expect(records.map((record) => record['stage'])).toEqual([
-        'attach_queue', 'cold_roster', 'cold_agent_read', 'first_detail_reset', 'attach_cursor', 'attach_ready',
+        'attach_queue', 'cold_agent_read', 'first_detail_reset', 'attach_cursor', 'attach_ready',
       ]));
+      expect(service.readColdRoster).not.toHaveBeenCalled();
       for (const record of records) {
         expect(record['durationMs']).toEqual(expect.any(Number));
         expect(Number(record['durationMs'])).toBeGreaterThanOrEqual(0);
@@ -741,6 +743,28 @@ describe('SessionViewTarget', () => {
       connection.dispose();
       timing.unsubscribe(collect);
     }
+  });
+
+  it('rejects missing cold sessions with explicit off-only transcript grades', async () => {
+    const readColdRoster = vi.fn();
+    const readColdPageSnapshot = vi.fn();
+    const indexGet = vi.fn(async () => undefined);
+    const errors = vi.fn();
+    const send = vi.fn();
+    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? { get: indexGet } : { get: () => undefined } } };
+    const connection = new SessionViewHttpConnection({ getCursor: vi.fn(), unsubscribe: vi.fn() } as never,
+      send, errors, { core: core as never, service: { readColdRoster, readColdPageSnapshot } as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 'missing', data: {
+        generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'off' } },
+      } });
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith('v1', expect.objectContaining({ code: 40401 })));
+      expect(indexGet).toHaveBeenCalledOnce();
+      expect(readColdRoster).not.toHaveBeenCalled();
+      expect(readColdPageSnapshot).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    } finally { connection.dispose(); }
   });
 
   it('keeps an unverified empty cold baseline unknown instead of certifying a blank session', async () => {
@@ -773,7 +797,7 @@ describe('SessionViewTarget', () => {
     try {
       connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
         generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
-        input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
+        input: { sessionCursor: { seq: 7 }, transcriptGrades: { '*': 'delta' } },
       } });
       await vi.waitFor(() => expect(service.readColdRoster).toHaveBeenCalledOnce());
       expect(passedSignal).toBeInstanceOf(AbortSignal);

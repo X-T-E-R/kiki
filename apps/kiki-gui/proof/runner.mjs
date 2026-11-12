@@ -142,7 +142,8 @@ export function parseProofArgs(argv, scenarioNames) {
 /**
  * Pick this run's screenshot directory. A disposable run always gets its own
  * run-id directory, so two concurrent `--only` runs cannot clear each other's
- * output; `--update-goldens` writes the tracked goldens instead.
+ * output; `--update-goldens` writes to the local golden snapshot directory
+ * (`screenshots/batch3`, gitignored) instead.
  */
 export function selectOutput({ root, argv, scenarioNames, goldensDir }) {
   const { updateGoldens, only, matrix, noBuild } = parseProofArgs(argv, scenarioNames);
@@ -425,8 +426,8 @@ export async function runProof({
 
   mkdirSync(options.outputDir, { recursive: true });
   if (options.updateGoldens) {
-    // Updating the tracked goldens replaces them: a scenario that no longer
-    // captures a screen must not leave its old golden behind.
+    // Updating the local golden snapshot directory replaces its contents: a
+    // scenario that no longer captures a screen must not leave an old shot behind.
     rmSync(options.outputDir, { recursive: true, force: true });
     mkdirSync(options.outputDir, { recursive: true });
   } else {

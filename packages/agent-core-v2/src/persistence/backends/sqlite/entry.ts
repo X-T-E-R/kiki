@@ -64,7 +64,7 @@ function transaction<T>(work: (connection: DatabaseSync) => T): T {
   const connection = open();
   connection.exec('BEGIN IMMEDIATE');
   try { const result = work(connection); connection.exec('COMMIT'); return result; }
-  catch (error) { connection.exec('ROLLBACK'); throw error; }
+  catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
 }
 
 function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], staged?: StagedWrite): boolean {
@@ -207,7 +207,7 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     const connection = open();
     connection.exec('BEGIN');
     try { const page = await query(operation.query); connection.exec('COMMIT'); return page; }
-    catch (error) { connection.exec('ROLLBACK'); throw error; }
+    catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
   }
   if (operation.type === 'index') return ensureIndex(operation.collection, operation.definition);
   if (operation.type === 'drop') return transaction((connection) => {
@@ -224,7 +224,7 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     try {
       for (const key of operation.keys) { check(); const row = get.get(operation.collection, Buffer.from(key)); if (row !== undefined) rows.push([key, JSON.parse(String(row['json']))]); }
       connection.exec('COMMIT');
-    } catch (error) { connection.exec('ROLLBACK'); throw error; }
+    } catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
     return rows;
   }
   const keys: string[] = [];

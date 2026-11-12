@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import {
   getLiveSessionById,
   IHostTerminalService,
+  ISessionIndex,
+  ISessionManager,
   ISessionTerminalService,
   ScopeActivation,
   LifecycleScope,
@@ -314,6 +316,64 @@ describe('server-v2 /api/sessions/{sid}/terminals', () => {
     const body = (await res.json()) as Envelope<Terminal>;
     expect(body.code).toBe(0);
     expect(body.data.session_id).toBe(sid);
+  });
+
+  it('lists live terminals and leaves saved cold sessions unrestored', async () => {
+    const liveId = await createSession(work as string);
+    const liveTerminal = (await post<Terminal>(`/api/sessions/${liveId}/terminals`, {})).data;
+    expect((await get<{ items: Terminal[] }>(`/api/sessions/${liveId}/terminals`)).data.items.map(({ id }) => id)).toEqual([liveTerminal.id]);
+
+    const coldId = await createSession(work as string);
+    const manager = server!.core.accessor.get(ISessionManager);
+    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
+    await manager.close(coldId);
+    expect(manager.get(coldId)).toBeUndefined();
+    expect(await server!.core.accessor.get(ISessionIndex).get(coldId)).toBeDefined();
+    const expectedRestoreError = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(expectedRestoreError);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(expectedRestoreError);
+    try {
+      const cold = await get<{ items: Terminal[] }>(`/api/sessions/${coldId}/terminals`);
+      expect(cold).toMatchObject({ code: 0, data: { items: [] } });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.get(coldId)).toBeUndefined();
+    } finally { acquire.mockRestore(); resume.mockRestore(); }
+  });
+
+  it('does not restore when terminal polling races a session close', async () => {
+    const id = await createSession(work as string);
+    const manager = server!.core.accessor.get(ISessionManager);
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const closingStarted = vi.fn();
+    const listener = manager.onWillCloseSession!((event) => {
+      if (event.sessionId !== id) return;
+      closingStarted();
+      event.waitUntil(gate);
+    });
+    const closing = manager.close(id);
+    let listing: Promise<Envelope<{ items: Terminal[] }>> | undefined;
+    const acquire = vi.spyOn(manager, 'acquire');
+    const acquireLive = vi.spyOn(manager, 'acquireLive');
+    const resume = vi.spyOn(manager, 'resume');
+    try {
+      await vi.waitFor(() => expect(closingStarted).toHaveBeenCalled());
+      expect(manager.get(id)).toBeDefined();
+      listing = get<{ items: Terminal[] }>(`/api/sessions/${id}/terminals`);
+      await vi.waitFor(() => expect(acquireLive).toHaveBeenCalledOnce());
+      release();
+      await closing;
+      expect(await listing).toMatchObject({ code: 0, data: { items: [] } });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.get(id)).toBeUndefined();
+    } finally {
+      release();
+      await closing;
+      await listing;
+      listener.dispose(); acquire.mockRestore(); acquireLive.mockRestore(); resume.mockRestore();
+    }
   });
 
   it('creates terminals for multiple sessions using each session workspace cwd', async () => {
