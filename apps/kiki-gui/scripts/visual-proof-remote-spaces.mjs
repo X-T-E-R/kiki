@@ -46,11 +46,11 @@ const ID_APPROVAL = 'e8d3b204-7c69-4f11-a3d8-5e71b0c9f205';
 const MINUTE = 60_000;
 /** Text assertions follow the locale the runner asked for; ids and counts do not. */
 const STALE = { en: 'as of', zh: '截至' };
-const REMOVE_BODY = { en: 'does not shut that Kiki down', zh: '不会关掉对方的 Kiki' };
-const GATE_BODY = { en: 'Each Kiki still needs its own row', zh: '还需在下方单独允许' };
+const REMOVE_BODY = { en: 'does not shut that space down', zh: '不会关掉对方空间' };
+const GATE_BODY = { en: 'Each space still needs its own row', zh: '还需在下方单独允许' };
 const ONCE = { en: 'Valid once', zh: '有效一次' };
 const NOT_SAVED = { en: 'not saved', zh: '不会保存' };
-const REVOKE_BODY = { en: 'Other Kikis are unaffected', zh: '不影响其他 Kiki' };
+const REVOKE_BODY = { en: 'Other spaces are unaffected', zh: '不影响其他空间' };
 
 /** The locale the runner asked this job for, read from the document. */
 async function locale(page) {
@@ -222,8 +222,12 @@ async function boot({ page, webUrl, fixtureUrl }, state) {
 }
 
 async function openSpaces({ page, webUrl, fixtureUrl }, selector) {
-  // Inbound and outbound connections live on Access from elsewhere → Other Kiki.
-  // The default tab is web, which does not mount either list.
+  await page.goto(deepLink(webUrl, fixtureUrl, '/settings/spaces'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(selector, { timeout: 30_000 });
+  await page.waitForTimeout(300);
+}
+
+async function openAccessOtherSpaces({ page, webUrl, fixtureUrl }, selector) {
   await page.goto(deepLink(webUrl, fixtureUrl, '/settings/connection-services?tab=kiki'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(selector, { timeout: 30_000 });
   await page.waitForTimeout(300);
@@ -300,9 +304,8 @@ async function outbound(context) {
   expect(await page.locator(`[data-remote-connection="${ID_BRIDGE}"] [data-remote-enter]`).count() === 0, 'a thread-message-only connection offers no way in');
   expect(await page.locator(`[data-remote-connection="${ID_B}"] [data-remote-enter]`).count() === 1, 'a browsable connection offers the switch');
   expect(await page.locator(`[data-remote-connection="${ID_HOME}"][data-remote-stale]`).count() === 1, 'the stale reading is marked in the list too');
-  expect(await page.locator('[data-remote-self-identity] [data-copy-field]').count() === 1, 'this Kiki’s identity is offered for copying');
-  const source = await page.textContent('[data-remote-source]');
-  expect(source?.includes('https://b.example.test') === false, `the source line names the local control home: ${source}`);
+  const cardHeading = await page.textContent('#st-card-remote-connections h2');
+  expect(cardHeading?.includes('https://b.example.test') === false, `the heading names the local control home: ${cardHeading}`);
   await page.locator('[data-remote-connections]').scrollIntoViewIfNeeded();
   await shot('remote-outbound-list');
 
@@ -352,17 +355,18 @@ async function outbound(context) {
   expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 }
 
-/** Settings → Spaces: the inbound gate, the allow list and one pairing code. */
+/** Settings → Access → Other spaces: the inbound gate, the allow list and one pairing code. */
 async function inbound(context) {
   const { page, shot, state, errors } = context;
   await boot(context, state);
-  await openSpaces(context, '[data-inbound-connections]');
+  await openAccessOtherSpaces(context, '[data-inbound-connections]');
   await page.waitForSelector('[data-inbound-list]');
   expect(await page.isChecked('#inbound-connections-enabled') === false, 'the inbound gate starts off');
   expect(await page.isDisabled('[data-inbound-invite]') === false, 'a pairing code can be created while the gate is off');
   expect(await page.locator('[data-inbound-grant]').count() === 3, 'the allow list reads back all lines');
   expect(await page.getAttribute('[data-inbound-grant="be20c3d4-e5f6-4a7b-9c8d-e5f6a7b8c902"]', 'data-inbound-status') === 'invited', 'an invited line reads invited');
   expect(await page.locator('[data-inbound-status-chip="revoked"]').count() === 1, 'a revoked line stays visible as revoked');
+  expect(await page.locator('[data-inbound-advanced-fold] [data-remote-self-identity] [data-copy-field]').count() === 1, 'this space’s identity is offered under Advanced');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
   await shot('remote-inbound-off');
 
@@ -403,7 +407,7 @@ async function devRuntime(context) {
   const { page, shot, state, errors } = context;
   state.inbound = { ...state.inbound, enabled: false, configuredEnabled: true, unavailableReason: 'dangerous_auth_bypass' };
   await boot(context, state);
-  await openSpaces(context, '[data-inbound-connections]');
+  await openAccessOtherSpaces(context, '[data-inbound-connections]');
   await page.waitForSelector('[data-inbound-dev-runtime]');
   expect(await page.isChecked('#inbound-connections-enabled') === false, 'a saved-on setting must not read as open');
   expect(await page.isDisabled('#inbound-connections-enabled') === true, 'this runtime cannot be switched on');

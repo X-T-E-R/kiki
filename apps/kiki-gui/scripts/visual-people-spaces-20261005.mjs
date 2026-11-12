@@ -470,7 +470,7 @@ const SHOTS = [
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot, locale }) => {
       await serveRemote(page, locale);
-      await open(page, link, '/settings/spaces', '[data-inbound-connections]', 60_000);
+      await open(page, link, '/settings/connection-services?tab=kiki', '[data-inbound-connections]', 60_000);
       await page.locator('[data-inbound-gate]').waitFor({ timeout: 20_000 });
       await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
       await settle(page);
@@ -484,7 +484,7 @@ const SHOTS = [
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot, locale }) => {
       await serveRemote(page, locale);
-      await open(page, link, '/settings/spaces', '[data-web-access]', 60_000);
+      await open(page, link, '/settings/connection-services?tab=web', '[data-web-access]', 60_000);
       await page.locator('[data-web-access]').scrollIntoViewIfNeeded();
       // Open the address disclosure: the link, the countdown and the
       // unencrypted-LAN warning are the three facts this section is about, and

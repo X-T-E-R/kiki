@@ -2446,10 +2446,10 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'browser-control', labelKey: 'st.section.browserControl' },
   { id: 'permissions', labelKey: 'st.section.permissions' },
   { id: 'hooks', labelKey: 'st.section.hooks' },
-  { id: 'connection', labelKey: 'st.section.serverConnection' },
   { id: 'spaces', labelKey: 'st.section.spaces' },
-  { id: 'ssh', labelKey: 'st.section.ssh' },
   { id: 'connection-services', labelKey: 'st.section.externalAccess' },
+  { id: 'connection', labelKey: 'st.section.serverConnection' },
+  { id: 'ssh', labelKey: 'st.section.ssh' },
   { id: 'developer', labelKey: 'st.section.developer' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
@@ -2484,7 +2484,7 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   // gains rather than with permission rules.
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['extensions', 'search', 'browser-control', 'hooks'] },
   { kind: 'group', id: 'rules', labelKey: 'st.group.permissionsRules', sections: ['permissions'] },
-  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'spaces', 'ssh', 'connection-services'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['spaces', 'connection-services', 'connection', 'ssh'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['about', 'developer'] },
 ];
 
@@ -2725,7 +2725,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint', 'st.thinking.keep'], synonyms: ['thinking keep', '保留思考'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-auto-compact', titleKey: 'st.compact.globalTitle', keywordKeys: ['st.compact.globalLabel', 'st.compact.reserveLabel'], synonyms: ['auto compact', 'autocompact', 'compaction', '自动压缩', '压缩点', 'context window', '上下文窗口'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.subagentStrategy'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'loop control', '步数上限', '尝试次数'] },
-  { section: 'connection', tab: 'current', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'], synonyms: ['server connection', '服务器连接', 'connection & remote', '连接与远程'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   // Mounted only inside the Android app, where the phone's own permissions
@@ -2809,11 +2809,11 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
   { section: 'spaces', cardId: 'st-card-space-window', titleKey: 'st.spaces.windowTitle', keywordKeys: ['st.spaces.windowSwitch', 'st.spaces.windowWindows', 'st.spaces.windowNextLaunch'], synonyms: ['window mode', '窗口模式', 'multi window', '多窗口'] },
   { section: 'spaces', cardId: 'st-card-spaces', titleKey: 'st.spaces.listTitle', keywordKeys: ['st.spaces.new', 'st.spaces.attach', 'st.spaces.removeFromList', 'st.spaces.delete', 'st.spaces.credentials'], synonyms: ['space', 'spaces', '空间', 'home', 'kiki home', 'profile', '多开', '独立空间', 'isolated'] },
-  { section: 'spaces', cardId: 'st-card-remote-connections', titleKey: 'st.remote.outboundTitle', keywordKeys: ['st.remote.addTitle', 'st.remote.way.ssh', 'st.remote.removeTitle'], synonyms: ['remote kiki', 'remote space', 'connection', '远端 kiki', '远端空间', '连接', 'broker', 'over ssh'] },
-  { section: 'connection-services', cardId: 'st-card-inbound-connections', tab: 'kiki', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel', 'st.inbound.bridgeNote'], synonyms: ['inbound', 'allow', 'invitation', '入站', '准入', '允许', '邀请', '被连接'] },
+  { section: 'spaces', cardId: 'st-card-remote-connections', titleKey: 'st.remote.outboundTitle', keywordKeys: ['st.remote.addTitle', 'st.remote.way.ssh', 'st.remote.removeTitle'], synonyms: ['remote kiki', 'remote space', 'other kiki', 'connection', 'connection & remote', '远端 kiki', '其他 kiki', '远端空间', '连接与远程', '连接', 'broker', 'over ssh', 'owner (ssh)', '所有者（ssh）'] },
+  { section: 'connection-services', cardId: 'st-card-inbound-connections', tab: 'kiki', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel'], synonyms: ['inbound', 'allow', 'invitation', 'access from elsewhere', 'other kiki', 'connection & remote', '入站', '准入', '允许', '邀请', '被连接', '外部接入', '其他 kiki', '连接与远程'] },
   { section: 'spaces', cardId: 'st-card-space-credentials', titleKey: 'st.spaces.credTitle', keywordKeys: ['st.spaces.credShared', 'st.spaces.credIsolated', 'st.spaces.copySsh'], synonyms: ['credentials', '凭据', '账号与密钥', 'ssh password', 'oauth'] },
   { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.ownChoices', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
-  { section: 'connection-services', cardId: 'st-card-web-access', tab: 'web', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
+  { section: 'connection-services', cardId: 'st-card-web-access', tab: 'web', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'access from elsewhere', 'connection & remote', 'web 访问', '网页访问', '外部接入', '连接与远程', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
   // The import surface has its own sub-route; the hit lands on its entry card.
   { section: 'sessions', cardId: 'st-card-import-history', titleKey: 'cap.import.entry', keywordKeys: ['cap.import.settingsHint', 'cap.import.open'], synonyms: ['import', '导入', '导入历史', '迁移', 'history', '旧对话'] },
   { section: 'ai', tab: 'recipes', cardId: 'st-card-recipes-library', titleKey: 'st.recipes.libraryTitle', keywordKeys: ['st.recipes.checkUpdates', 'st.recipes.usedBy'], synonyms: ['Recipe', '配方', '食谱', '提示包', 'prompt package', 'fork', 'export', '导出', 'update', '更新'] },

@@ -1,17 +1,14 @@
 /**
- * Settings → Access from elsewhere → Other Kiki: "Kikis I connect to" (outbound, §5.1 of the remote-space
- * design). A flat list in the accepted settings style: one row per registered
- * remote Kiki, the connection's own state, and the actions that affect only
- * this window's connection to it.
+ * Settings → Spaces: "Spaces on other computers" (outbound paired spaces plus
+ * saved Owner (SSH) profiles).
  *
- * The records belong to the local control home's server. While a remote space
- * is open this section still talks to that home, and says so in its source
- * line, so nobody configures B thinking they are configuring A.
+ * The records belong to the local control home's server. While a space on
+ * another computer is open this section still reads that home, and names it in
+ * the section title so nobody configures B thinking they are configuring A.
  */
 
-import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { RemoteConnection } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -20,44 +17,41 @@ import { relativeTime } from '@kiki/session-core/util/time';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import {
-  browsableRemote, connectionAddress, connectionsApi, hasGuiPurpose, identityBlock,
+  browsableRemote, connectionAddress, connectionsApi, hasGuiPurpose,
   remoteConnectionKeys, purposeKeys, remoteSummaryView, useRemoteConnections,
 } from '../../lib/remoteConnections';
+import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
+import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
 import { useConnection } from '../../state/connection';
+import type { SshProfile } from '../../state/connectionConfig';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SshProfilesPanel } from '../SshProfilesPanel';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
-import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
-import { AdvancedDetails } from './fields';
 import { SectionCard } from './SectionCard';
-import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
 import { SpaceRowMenu } from './spaces/SpaceRowMenu';
 import { AddConnectionDialog } from './remote/AddConnectionDialog';
-import { CopyField, RemoteStateChip, connectionFailureText } from './remote/parts';
+import { RemoteStateChip, connectionFailureText } from './remote/parts';
 import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
-import { CloudflareEntry } from './remote/CloudflareEntry';
 
 export function RemoteConnectionsSection() {
   const host = useHost();
-  const { client, localClient } = useConnection();
+  const { client, localClient, connectionId, sshLabel, activateSshProfile } = useConnection();
   const { t, locale } = useI18n();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  // Management is always the control home's; a remote space's own client may
-  // not reach `/api/remote-connections` at all.
-  const control = host.kind === 'tauri' ? localClient : client;
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const connections = useRemoteConnections(control);
-  // The same target read the local space list uses, so the two never disagree
-  // about which home is being configured (and the read is shared, not repeated).
   const controlTarget = useSpaceSettingsTarget(control);
-  const identity = useQuery({
-    queryKey: ['remote-connections', 'identity', control?.baseUrl ?? null],
-    queryFn: async () => (control === null ? null : connectionsApi(control).handshake()),
-    enabled: control !== null,
-    staleTime: 60_000,
-  });
-  const [dialog, setDialog] = useState<{ kind: 'add' } | { kind: 'remove'; record: RemoteConnection } | null>(null);
+  const [sshProfiles, setSshProfiles] = useState<SshProfile[]>([]);
+  const [dialog, setDialog] = useState<
+    | { kind: 'add' }
+    | { kind: 'remove'; record: RemoteConnection }
+    | { kind: 'ssh'; profile?: SshProfile }
+    | null
+  >(null);
   const [menu, setMenu] = useState<{ record: RemoteConnection; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -65,6 +59,27 @@ export function RemoteConnectionsSection() {
   const api = control === null ? null : connectionsApi(control);
   const enterRemoteSpace = useRemoteSpaceEntry();
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all }); };
+
+  const reloadSshProfiles = () => {
+    if (!host.connection?.listSshProfiles) return;
+    void host.connection.listSshProfiles().then(
+      (items) => { setSshProfiles(items); },
+      () => { setSshProfiles([]); },
+    );
+  };
+
+  useEffect(() => {
+    if (!host.connection?.listSshProfiles) {
+      setSshProfiles([]);
+      return;
+    }
+    let active = true;
+    void host.connection.listSshProfiles().then(
+      (items) => { if (active) setSshProfiles(items); },
+      () => { if (active) setSshProfiles([]); },
+    );
+    return () => { active = false; };
+  }, [host]);
 
   const run = (record: RemoteConnection, work: (api: ReturnType<typeof connectionsApi>) => Promise<unknown>, done: Feedback) => {
     if (api === null) return;
@@ -80,24 +95,30 @@ export function RemoteConnectionsSection() {
   };
 
   const controlHome = controlTarget?.identity.homeId;
-  // A space is named from the space list, never by its home id; until the list
-  // says, the source line names only the address.
   const spaceList = useSpaces(controlHome !== undefined && controlHome !== MAIN_SPACE_ID ? control : null);
   const controlHomeLabel = controlHome === undefined ? undefined
     : controlHome === MAIN_SPACE_ID ? t('st.spaces.main')
     : spaceList.data?.find((item) => item.id === controlHome)?.name;
+  const sectionTitle = controlHomeLabel !== undefined
+    ? t('st.remote.outboundTitleFrom', { space: controlHomeLabel })
+    : t('st.remote.outboundTitle');
   const sourceLine = control === null
     ? t('st.remote.controlUnavailable')
     : controlHomeLabel === undefined
       ? t('st.remote.configuresNoHome', { origin: connectionAddress(control.baseUrl) })
-      : t('st.remote.configures', { origin: connectionAddress(control.baseUrl), home: controlHomeLabel });
+      : undefined;
+
+  const canManageSsh = Boolean(
+    host.connection?.listSshProfiles &&
+    host.connection?.saveSshProfile &&
+    host.connection?.removeSshProfile &&
+    activateSshProfile,
+  );
 
   return (
-    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server"
-      aside={<span data-remote-source>{sourceLine}</span>}
+    <SectionCard id="st-card-remote-connections" title={sectionTitle} scope="server"
+      aside={sourceLine === undefined ? undefined : <span data-remote-source>{sourceLine}</span>}
       actions={control === null ? undefined : (
-        // One primary per screen: the invite on the card above is it; adding
-        // an outbound connection stays secondary.
         <button type="button" data-remote-add className={`${SECONDARY_BUTTON} inline-flex items-center gap-1`}
           onClick={() => { setDialog({ kind: 'add' }); }}>
           <Icon name="plus" size={12} />{t('st.remote.add')}
@@ -107,44 +128,35 @@ export function RemoteConnectionsSection() {
         {connections.isLoading ? <Hint>{t('st.remote.loading')}</Hint> : null}
         {connections.isError ? <InlineError error={connections.error} /> : null}
 
-        {connections.isSuccess && records.length === 0 ? (
-          // One quiet line, not a dashed box (#12).
+        {connections.isSuccess && records.length === 0 && sshProfiles.length === 0 ? (
           <p className="text-[13px] text-ink-soft" data-remote-empty>{t('st.remote.emptyLine')}</p>
         ) : null}
 
-        {records.length > 0 ? (
+        {records.length > 0 || sshProfiles.length > 0 ? (
           <div role="list" aria-label={t('st.remote.outboundTitle')} className="space-y-1.5" data-remote-list>
             {records.map((record) => (
               <RemoteConnectionRow key={record.id} record={record} busy={busyId === record.id}
                 onEnter={() => { enterRemoteSpace(record.id, record.label); }}
                 onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }} />
             ))}
+            {sshProfiles.map((profile) => (
+              <OwnerSshProfileRow key={profile.id} profile={profile}
+                onConnect={() => { setDialog({ kind: 'ssh', profile }); }} />
+            ))}
+          </div>
+        ) : null}
+
+        {canManageSsh && sshProfiles.length === 0 ? (
+          <div>
+            <button type="button" data-owner-ssh-manage
+              className="text-[12.5px] text-ink-faint underline decoration-hairline-strong underline-offset-2 hover:text-ink"
+              onClick={() => { setDialog({ kind: 'ssh' }); }}>
+              {t('st.remote.ownerSshManage')}
+            </button>
           </div>
         ) : null}
 
         <FeedbackLine feedback={feedback} />
-        <CloudflareEntry />
-
-        {/* 连接诊断 lives here, off the standing page (#12); the reciprocal
-            cross-links are gone because the two cards are already adjacent. */}
-        <AdvancedDetails summary={t('st.computer.advanced')} data-remote-advanced-fold>
-          <div className="pt-1">
-            <button type="button" data-remote-diagnostics className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-              onClick={() => { void navigate('/settings/connection'); }}>
-              {t('st.remote.diagnostics')}
-            </button>
-          </div>
-        </AdvancedDetails>
-
-        {identity.data !== undefined && identity.data !== null ? (
-          <div className="pt-4" data-remote-self-identity>
-            <CopyField id="remote-self-identity" dataAttr="self"
-              label={t('st.remote.identityTitle')}
-              value={identityBlock(identity.data.identity)}
-              copyLabel={t('st.remote.identityCopy')} copiedLabel={t('st.remote.identityCopied')}
-              hint={t('st.remote.identityBody')} />
-          </div>
-        ) : null}
       </div>
 
       {menu !== null ? (
@@ -167,7 +179,7 @@ export function RemoteConnectionsSection() {
             }] : []),
             {
               key: 'remove',
-              label: t('common.remove'),
+              label: t('st.remote.removeMenu'),
               danger: true,
               separatorBefore: true,
               run: () => { setDialog({ kind: 'remove', record: menu.record }); },
@@ -182,6 +194,29 @@ export function RemoteConnectionsSection() {
             refresh();
             setFeedback({ tone: 'success', text: t('st.remote.added', { name: record.label }) });
           }} />
+      ) : null}
+
+      {dialog?.kind === 'ssh' && activateSshProfile !== undefined ? (
+        <Dialog onClose={() => { setDialog(null); reloadSshProfiles(); }} overlayId="owner-ssh-profiles"
+          ariaLabel={t('connect.sshTitle')}
+          panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
+          <div className="space-y-3" data-owner-ssh-dialog>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-[14px] font-medium text-ink">{t('st.remote.ownerSshTag')}</h2>
+              <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDialog(null); reloadSshProfiles(); }}>
+                {t('common.close')}
+              </button>
+            </div>
+            <SshProfilesPanel
+              selectedProfile={dialog.profile}
+              onConnect={async (id, token) => {
+                await activateSshProfile(id, token);
+                setDialog(null);
+                reloadSshProfiles();
+              }}
+            />
+          </div>
+        </Dialog>
       ) : null}
 
       {dialog?.kind === 'remove' && control !== null ? (
@@ -200,10 +235,38 @@ export function RemoteConnectionsSection() {
   );
 }
 
-/**
- * OneKiki: the name leads, the address and the last contact follow, and a Kiki
- * that only carries thread messages says so instead of offering a way in.
- */
+function OwnerSshProfileRow({ profile, onConnect }: {
+  readonly profile: SshProfile;
+  readonly onConnect: () => void;
+}) {
+  const { t } = useI18n();
+  const target = profile.target.kind === 'alias' ? profile.target.alias : profile.target.hostname;
+  return (
+    <div role="listitem" data-ssh-profile-row={profile.id}
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-ink/[0.03] px-3 py-2">
+      <Icon name="terminal" size={14} className="shrink-0 text-ink-faint" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={profile.label}>
+            {profile.label}
+          </span>
+          <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft" data-owner-ssh-tag>
+            {t('st.remote.ownerSshTag')}
+          </span>
+        </div>
+        <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" title={target}>
+          {target}{profile.remotePort !== undefined ? ` · 127.0.0.1:${profile.remotePort}` : ''}
+        </p>
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <button type="button" data-ssh-profile-connect={profile.id} className={SECONDARY_BUTTON} onClick={onConnect}>
+          {t('st.remote.ownerSshConnect')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
   record: RemoteConnection;
   busy: boolean;
@@ -231,8 +294,6 @@ function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
             <span key={key} className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft">{t(key)}</span>
           ))}
         </div>
-        {/* Address and time only: this line is the secondary position, and the
-            row keeps its width for the state and the counts. */}
         <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" data-remote-address title={record.endpoint}>
           {connectionAddress(record.endpoint)}
           {record.lastConnectedAt !== undefined ? ` · ${relativeTime(new Date(record.lastConnectedAt).toISOString(), locale)}` : ''}

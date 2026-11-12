@@ -15,12 +15,7 @@ import { useConnection } from '../state/connection';
 import { DirtyGuardContext, DirtyGuardStateContext, useDirtyGuardState, type GuardedNavigate, type NavigationRedirect } from './dirtyGuard';
 import { NavScopeRecovery, type RemoteRecoveryActions } from './NavScopeRecovery';
 
-/**
- * Where the pairing list lives today (Settings → Access from elsewhere → Other
- * Kiki). No `#st-card-…` focus: the search spec still files the outbound card
- * under Spaces, so its card hash would resolve to the wrong page.
- */
-const PAIRING_SETTINGS_ROUTE = '/settings/connection-services?tab=kiki';
+const PAIRING_SETTINGS_ROUTE = '/settings/spaces#st-card-remote-connections';
 
 export interface ScopeRestoreValue {
   readonly state: ScopeRestoreState;

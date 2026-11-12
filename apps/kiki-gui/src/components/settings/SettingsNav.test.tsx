@@ -91,8 +91,10 @@ describe('SettingsNav grouped tree', () => {
 
       // Assert leaf labels for connection, connection-services, extensions, browser-control, and developer
       const leafText = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent?.trim();
-      expect(leafText('connection')).toBe('Server connection');
-      expect(leafText('connection-services')).toBe('Access from elsewhere');
+      expect(leafText('spaces')).toBe('Spaces');
+      expect(leafText('connection-services')).toBe('Access');
+      expect(leafText('connection')).toBe('This device’s connection');
+      expect(leafText('ssh')).toBe('SSH hosts');
       expect(leafText('extensions')).toBe('Extensions & tools');
       expect(leafText('browser-control')).toBe('Browser & computer');
       expect(leafText('developer')).toBe('Developer & labs');
@@ -110,12 +112,12 @@ describe('SettingsNav grouped tree', () => {
     const tree = container.querySelector('[data-settings-nav-tree]')!;
     expect([...tree.children].every((child) => child.hasAttribute('data-settings-nav-group'))).toBe(true);
     expect(tree.querySelector('.border-t')).toBeNull();
-    expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
+    expect(container.textContent).not.toMatch(/All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
       .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & security', 'Connection & remote', 'Advanced']);
+      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & security', 'Spaces & devices', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
@@ -126,7 +128,7 @@ describe('SettingsNav grouped tree', () => {
     expect(leaves(4)).toEqual(['permissions']);
     // Spaces and external services sit with the ways of reaching a server;
     // workspaces with the sessions that run in them.
-    expect(leaves(5)).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
+    expect(leaves(5)).toEqual(['spaces', 'connection-services', 'connection', 'ssh']);
     expect(leaves(6)).toEqual(['about', 'developer']);
   });
 
@@ -170,6 +172,31 @@ describe('SettingsNav grouped tree', () => {
       .find((element) => element.textContent!.endsWith('Models'))!;
     await click(option);
     expect(hits.length).toBe(1);
+  });
+
+  it('lands legacy connection & remote search queries on their canonical Spaces & devices pages', async () => {
+    const container = await render(
+      <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+    );
+    const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    const expectSectionFor = async (query: string, expectedSections: readonly string[]) => {
+      const matched: string[] = [];
+      const local = await render(
+        <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={(entry) => { matched.push(entry.section); }} />,
+      );
+      const search = local.querySelector<HTMLInputElement>('input[type="search"]')!;
+      await typeInto(search, query);
+      const options = [...local.querySelectorAll('[role="option"]')];
+      expect(options.length, query).toBeGreaterThan(0);
+      for (const opt of options) await click(opt);
+      expect(matched.some((sec) => expectedSections.includes(sec)), `${query} -> ${matched.join(',')}`).toBe(true);
+    };
+    expect(input).not.toBeNull();
+    await expectSectionFor('外部接入', ['connection-services']);
+    await expectSectionFor('Access from elsewhere', ['connection-services']);
+    await expectSectionFor('其他 Kiki', ['spaces', 'connection-services']);
+    await expectSectionFor('Other Kiki', ['spaces', 'connection-services']);
+    await expectSectionFor('Connection & remote', ['connection']);
   });
 
   it('keeps the tree at two levels: a page\'s tabs and an open plugin never become nav children', async () => {

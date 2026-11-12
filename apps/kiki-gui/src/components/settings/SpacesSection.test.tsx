@@ -25,17 +25,35 @@ import { I18nProvider } from '../../i18n';
 import { OriginBadge } from './spaces/OriginBadge';
 import { CreateSpaceDialog } from './spaces/CreateSpaceDialog';
 import { SpacesSection } from './SpacesSection';
+import { ConnectionServicesSection } from './ConnectionServicesSection';
 
 const homes = {
   list: vi.fn(), create: vi.fn(), attach: vi.fn(), remove: vi.fn(), erase: vi.fn(),
   update: vi.fn(), sshCopyCandidates: vi.fn(), inspect: vi.fn(),
   detail: vi.fn(), preview: vi.fn(), apply: vi.fn(), undo: vi.fn(), importPreferences: vi.fn(),
 };
+const connections = {
+  list: vi.fn(),
+  inbound: vi.fn(),
+  setInbound: vi.fn(),
+  handshake: vi.fn(),
+  createPairCode: vi.fn(),
+  pair: vi.fn(),
+  revoke: vi.fn(),
+  remove: vi.fn(),
+  retry: vi.fn(),
+  setEnabled: vi.fn(),
+};
 const config = { removeOverride: vi.fn() };
 const ssh = { list: vi.fn(), copySharedCredentialsToIsolated: vi.fn() };
 const getConfig = vi.fn();
+const hostConnection = {
+  listSshProfiles: vi.fn<() => Promise<unknown[]>>(),
+  saveSshProfile: vi.fn(),
+  removeSshProfile: vi.fn(),
+};
 const host = {
-  kind: 'tauri' as const,
+  kind: 'tauri' as 'tauri' | 'browser',
   pickDirectory: vi.fn(),
   spaceStatuses: vi.fn(),
   openSpace: vi.fn(),
@@ -46,26 +64,33 @@ const host = {
   writeDesktopPrefs: vi.fn(async () => undefined),
   revealPath: vi.fn(async () => undefined),
   restartServer: vi.fn(async () => undefined),
+  connection: hostConnection,
 };
 
 const localMeta = vi.fn();
-const client = { klient: { rest: { homes, config, ssh } }, getConfig, meta: localMeta };
+const client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes, connections, config, ssh } }, getConfig, meta: localMeta };
 const connection = vi.hoisted(() => ({
   remoteClient: null as unknown,
+  connectionId: null as string | null,
   sshLabel: null as string | null,
   localPending: false,
+  activateSshProfile: vi.fn<(id: string, token: string) => Promise<void>>(),
   verifyLocal: vi.fn<(...args: [AbortSignal?]) => Promise<void>>(),
   order: [] as string[],
 }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client: connection.remoteClient ?? client, localClient: connection.localPending ? null : client,
-    sshLabel: connection.sshLabel, meta: { server_id: connection.remoteClient === null ? 'server-test' : 'remote-server', current_space_id: connection.remoteClient === null ? currentSpaceId() : 'h-acme' },
+    connectionId: connection.connectionId, sshLabel: connection.sshLabel,
+    activateSshProfile: connection.activateSshProfile,
+    meta: { server_id: connection.remoteClient === null ? 'server-test' : 'remote-server', current_space_id: connection.remoteClient === null ? currentSpaceId() : 'h-acme' },
     scopeAdapter: { prepare: async (scope: { homeId: string; scopeId: string }, signal: AbortSignal) => {
       await connection.verifyLocal(signal);
       return { scope, validate: async (_route: string, validationSignal: AbortSignal) => { validationSignal.throwIfAborted(); },
         commit: async () => { signal.throwIfAborted(); connection.order.push('local'); }, dispose: async () => {} };
     } },
   }),
+  useOptionalConnection: () => ({ client: connection.remoteClient ?? client, localClient: connection.localPending ? null : client,
+    connectionId: connection.connectionId, sshLabel: connection.sshLabel }),
 }));
 vi.mock('../../host', () => ({ useHost: () => host }));
 
@@ -88,13 +113,37 @@ beforeAll(() => {
 afterAll(() => { env.IS_REACT_ACT_ENVIRONMENT = false; vi.unstubAllGlobals(); });
 
 beforeEach(() => {
-  for (const fn of [...Object.values(homes), ...Object.values(config), ...Object.values(ssh), getConfig, host.spaceStatuses]) fn.mockReset();
+  host.kind = 'tauri';
+  for (const fn of [
+    ...Object.values(homes),
+    ...Object.values(connections),
+    ...Object.values(config),
+    ...Object.values(ssh),
+    ...Object.values(hostConnection),
+    getConfig,
+    host.spaceStatuses,
+    connection.activateSshProfile,
+  ]) fn.mockReset();
   homes.list.mockResolvedValue(LIST);
   homes.inspect.mockResolvedValue({ state: 'missing' });
+  connections.list.mockResolvedValue([]);
+  connections.inbound.mockResolvedValue({
+    enabled: false,
+    configuredEnabled: false,
+    identity: { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 },
+    grants: [],
+  });
+  connections.handshake.mockResolvedValue({
+    identity: { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 },
+    serverId: 'server-test',
+    inboundEnabled: false,
+  });
+  hostConnection.listSshProfiles.mockResolvedValue([]);
   host.pickDirectory.mockReset().mockResolvedValue(null);
   localMeta.mockReset().mockResolvedValue({ server_id: 'server-test', current_space_id: 'main' });
   clearSpaceAuthority();
   connection.remoteClient = null;
+  connection.connectionId = null;
   connection.sshLabel = null;
   connection.localPending = false;
   connection.order.length = 0;
@@ -754,5 +803,99 @@ describe('direct remote settings control operations', () => {
     expect(host.openSpace).not.toHaveBeenCalled();
     expect(document.querySelector('[data-settings-dirty]')?.textContent).toBe('true');
     expect(document.querySelector<HTMLInputElement>('[data-settings-draft]')!.value).toBe('unsaved settings draft');
+  });
+});
+
+describe('Spaces & Access IA (#16)', () => {
+  it('lists local spaces, paired spaces on other computers, Owner (SSH) profiles, and bottom window mode on Spaces', async () => {
+    connections.list.mockResolvedValue([
+      {
+        id: 'pair-b',
+        label: 'Workstation B',
+        endpoint: 'https://b.example.test',
+        target: { homeId: '0f4c6e1a-2b7d-4a3e-9c11-7d0a51b2c301', hostId: 'gpu-box', protocol: 1 },
+        credentialRef: 'pair-b',
+        purposes: ['gui'],
+        enabled: true,
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 1,
+      },
+    ]);
+    hostConnection.listSshProfiles.mockResolvedValue([
+      {
+        id: 'ssh-build',
+        label: 'Build box',
+        target: { kind: 'alias', alias: 'build-box' },
+        releaseChannel: 'stable',
+        remotePort: 58627,
+        serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed',
+      },
+    ]);
+    await render(<SpacesSection />);
+    expect(document.querySelector('[data-space-row="main"]')).not.toBeNull();
+    expect(document.querySelector('[data-remote-connection="pair-b"]')?.textContent).toContain('Workstation B');
+    expect(document.querySelector('#st-card-remote-connections')?.textContent).toContain('Spaces on other computers · openable from “Main space”');
+    const sshRow = document.querySelector('[data-ssh-profile-row="ssh-build"]')!;
+    expect(sshRow).not.toBeNull();
+    expect(sshRow.textContent).toContain('Build box');
+    expect(sshRow.textContent).toContain('Owner (SSH)');
+
+    // Window mode card sits at the bottom after local and remote lists.
+    const cardIds = [...document.querySelectorAll('section[id^="st-card-"]')].map((el) => el.id);
+    expect(cardIds).toEqual(['st-card-spaces', 'st-card-remote-connections', 'st-card-space-window']);
+
+    // Connect… on Owner (SSH) opens the token dialog and connects with the typed bearer token.
+    await click('[data-ssh-profile-connect="ssh-build"]');
+    expect(document.querySelector('[data-owner-ssh-dialog]')).not.toBeNull();
+    const token = 'a'.repeat(43);
+    await type('[data-owner-ssh-dialog] input[type="password"]', token);
+    const connectButton = [...document.querySelectorAll<HTMLButtonElement>('[data-owner-ssh-dialog] button')]
+      .find((btn) => btn.textContent === 'Connect to running server')!;
+    await act(async () => { connectButton.click(); });
+    await flush();
+    expect(connection.activateSshProfile).toHaveBeenCalledWith('ssh-build', token);
+  });
+
+  it('lists local spaces read-only in a browser host without New space or Add existing space buttons', async () => {
+    host.kind = 'browser';
+    await render(<SpacesSection />);
+    expect(document.querySelector('[data-space-row="main"]')).not.toBeNull();
+    expect(document.querySelector('[data-space-row="h-acme"]')).not.toBeNull();
+    expect(document.querySelector('[data-space-new]')).toBeNull();
+    expect(document.querySelector('[data-space-attach-open]')).toBeNull();
+    expect(document.querySelector('[data-space-enter]')).toBeNull();
+    expect(document.querySelector('[data-space-menu]')).toBeNull();
+    expect(document.querySelector('#st-card-space-window')).toBeNull();
+  });
+
+  it('shows the local-space banner and sends zero remote: home requests when opened from a paired remote space', async () => {
+    const remote = remoteControlFixture();
+    connection.sshLabel = null;
+    connection.connectionId = '9d5b4bd0-8f2b-4a1f-9f37-52c1b48a1a01';
+    configureSpaceStorage({ homeId: 'remote:9d5b4bd0-8f2b-4a1f-9f37-52c1b48a1a01' });
+    await render(<SpacesSection />);
+    expect(document.querySelector('[data-spaces-remote-scope-banner]')?.textContent)
+      .toBe('These are the spaces and pairings of Main space.');
+    expect(homes.detail).not.toHaveBeenCalled();
+    for (const call of homes.detail.mock.calls) {
+      expect(String(call[0])).not.toContain('remote:');
+    }
+    for (const spy of Object.values(remote.homes)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('keeps outbound list out of Access → Other spaces and places manual identity exchange under Advanced as one row', async () => {
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+    expect(document.querySelector('[data-inbound-connections]')).not.toBeNull();
+    expect(document.querySelector('[data-remote-connections]')).toBeNull();
+    expect(document.querySelector('[data-inbound-outbound-note]')?.textContent)
+      .toContain('Spaces you open are managed on the Spaces page.');
+    // Identity is inside closed Advanced disclosure, with no raw JSON code block.
+    const fold = document.querySelector<HTMLDetailsElement>('[data-inbound-advanced-fold]')!;
+    expect(fold).not.toBeNull();
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('code')).toBeNull();
+    expect(fold.querySelector('[data-remote-self-identity] [data-copy-field="self"]')).not.toBeNull();
+    expect(fold.textContent).not.toContain('homeId');
   });
 });

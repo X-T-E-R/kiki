@@ -350,7 +350,7 @@ describe('shared connected Kikis', () => {
     expect(checkA!.checked).toBe(true);
     expect(checkB!.checked).toBe(false);
     expect(saveBtn!.disabled).toBe(true);
-    expect(find(container, '[data-feedback-tone="success"]')?.textContent).toContain('Saved which connected Kikis browsers can use.');
+    expect(find(container, '[data-feedback-tone="success"]')?.textContent).toContain('Saved which paired spaces devices can open.');
 
     await click(checkA);
     expect(checkA!.checked).toBe(false);

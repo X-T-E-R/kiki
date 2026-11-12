@@ -23,7 +23,6 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { ExternalClientsSection } from './ExternalClientsSection';
 import { ExternalConnectionSection } from './ExternalConnectionSection';
 import { InboundConnectionsSection } from './InboundConnectionsSection';
-import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 import { WebAccessSection } from './WebAccessSection';
 
 export function ConnectionServicesSection() {
@@ -84,12 +83,7 @@ export function ConnectionServicesSection() {
       </div>
       <div id="access-tab-panel" role="tabpanel" aria-labelledby={`access-tab-${tab}`} data-access-panel={tab} className="space-y-6">
         {tab === 'kiki' ? (
-          <>
-            {/* One relationship, two directions on one view: who may connect to
-                this Kiki first (the gate), then the Kikis this one connects to. */}
-            <InboundConnectionsSection />
-            <RemoteConnectionsSection />
-          </>
+          <InboundConnectionsSection />
         ) : tab === 'clients' ? (
           <ExternalClientsSection />
         ) : (

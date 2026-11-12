@@ -8,7 +8,6 @@ import { workspaceSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { SshProfilesPanel } from '../SshProfilesPanel';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { InlineEditor } from '../InlineEditor';
@@ -51,7 +50,7 @@ export function WorkspacesSection({ workspaceId }: { readonly workspaceId?: stri
 }
 
 function WorkspacesList() {
-  const { client, scopeId, sshLabel, activateSshProfile, activateLocal } = useConnection();
+  const { client, scopeId, sshLabel, activateLocal } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
@@ -207,11 +206,6 @@ function WorkspacesList() {
         />
       ) : null}
     </SectionCard>
-    {/* A whole remote environment is its own object (F06): not part of the
-        workspace directory card, and named differently from the session's
-        SSH tool hosts. D24 will give remote spaces their real home; until
-        then the panel stays here as a peer, not nested in workspace management. */}
-    <SshProfilesPanel onConnect={activateSshProfile} />
     <WorktreesCard />
     </>
   );

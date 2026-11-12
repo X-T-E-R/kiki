@@ -48,6 +48,7 @@ import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
+import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
@@ -55,22 +56,37 @@ import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
  * rename is not offered: the contract has no rename yet.
  */
 export function SpacesSection() {
-  const { client, localClient, meta } = useConnection();
+  const { client, localClient, meta, connectionId, sshLabel } = useConnection();
   const host = useHost();
   const { t } = useI18n();
-  const controlClient = host.kind === 'tauri' ? localClient : client;
+  const inRemotePair = typeof connectionId === 'string' && connectionId !== '';
+  const inRemoteScope = inRemotePair || Boolean(sshLabel);
+  const controlClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const controlTarget = useSpaceSettingsTarget(controlClient, controlClient === client ? meta : undefined);
-  const sub = currentSpace() !== null;
+  const here = currentSpace();
+  const localHere = here !== null && !here.homeId.startsWith('remote:') ? here : null;
+  const sub = !inRemotePair && localHere !== null;
   const openLocalSpace = useGuardedSpaceOpen(controlClient);
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
+  const controlSpaces = useSpaces(controlClient);
+  const localHomeId = controlTarget?.identity.homeId ?? localHere?.homeId ?? MAIN_SPACE_ID;
+  const localSpaceName = localHomeId === MAIN_SPACE_ID
+    ? t('st.spaces.main')
+    : (localHere?.name ?? controlSpaces.data?.find((item) => item.id === localHomeId)?.name ?? t('sidebar.space.unnamed'));
   return (
     <>
-      <WindowModeCard sub={sub} />
+      {inRemoteScope ? (
+        <p className="text-[13px] text-ink-soft" data-spaces-remote-scope-banner>
+          {t('st.spaces.remoteScopeBanner', { space: localSpaceName })}
+        </p>
+      ) : null}
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
         <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
+        <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
       </>}
+      <WindowModeCard sub={sub} />
     </>
   );
 }
@@ -87,10 +103,12 @@ export function SpacesSection() {
  */
 function CurrentSpaceSettings({ target }: { target: SpaceSettingsTarget | null }) {
   const here = currentSpace();
-  const selected = target === null ? null : { ...target, identity: { ...target.identity, homeId: currentSpaceId() } };
+  const homeId = currentSpaceId();
+  if (homeId.startsWith('remote:')) return null;
+  const selected = target === null ? null : { ...target, identity: { ...target.identity, homeId } };
   return (
     <section id="st-card-space-overrides" className="pt-6" data-space-settings-section>
-      <SpaceSettingsDetail target={selected} name={here?.name ?? currentSpaceId()} />
+      <SpaceSettingsDetail target={selected} name={here?.name ?? homeId} />
     </section>
   );
 }
@@ -156,7 +174,7 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   if (!desktop) return null;
   const aside = sub ? t('st.spaces.windowSubHint') : undefined;
   return (
-    <SectionCard id="st-card-space-window" title={t('st.spaces.windowTitle')} scope="app" aside={aside}>
+    <SectionCard id="st-card-space-window" title={t('st.spaces.windowCardTitle')} scope="app" aside={aside}>
       {!sub ? (
         <SettingsBox data-space-window-mode={prefs.windowMode} data-testid="space-window-box">
           <SettingField
@@ -193,7 +211,8 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
   openLocalSpace: (id: string, mode: SpaceWindowMode) => void | Promise<void>;
 }) {
   const host = useHost();
-  const { sshLabel } = useConnection();
+  const { connectionId, sshLabel } = useConnection();
+  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || Boolean(sshLabel);
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const spaces = useSpaces(client);
@@ -216,7 +235,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
 
   // The sidebar's "New space…" lands here with ?new=1: open create once, then
   // drop the flag so back/refresh does not reopen it.
-  const wantsCreate = !sub && new URLSearchParams(location.search).get('new') === '1';
+  const wantsCreate = desktop && !sub && new URLSearchParams(location.search).get('new') === '1';
   useEffect(() => {
     if (!wantsCreate) return;
     setPanel({ kind: 'create' });
@@ -368,7 +387,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
 
   const renderRow = (space: SpaceListItem) => {
     const localRun = spaceRunState(space.id, statuses.data);
-    const run = sshLabel !== null && localRun === 'current' ? 'hot' : localRun;
+    const run = inRemoteScope && localRun === 'current' ? 'hot' : localRun;
     const pending = mode === 'switch' ? (spaceStatus(space.id, statuses.data)?.pendingCount ?? 0) : 0;
     const isMain = space.id === MAIN_SPACE_ID;
     const label = spaceLabel(space);
@@ -379,11 +398,15 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
         <SpaceDot color={isMain ? 'var(--color-ink-faint)' : space.color} />
         {compact ? (
           <div className="flex min-w-0 flex-1 items-baseline gap-x-2">
-            <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
-              title={label}
-              className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
-              {label}
-            </button>
+            {desktop ? (
+              <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
+                title={label}
+                className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                {label}
+              </button>
+            ) : (
+              <span className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+            )}
             {!isMain ? (
               <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
                 {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
@@ -394,11 +417,15 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
         ) : (
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-x-2">
-              <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
-                title={label}
-                className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
-                {label}
-              </button>
+              {desktop ? (
+                <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
+                  title={label}
+                  className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                  {label}
+                </button>
+              ) : (
+                <span className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+              )}
               {!isMain ? (
                 <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
                   {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
@@ -415,30 +442,21 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
           ) : null}
           {run === 'current' ? (
             <span className="text-[12px] font-medium text-ink-soft" data-space-current>{t('st.spaces.current')}</span>
-          ) : (
+          ) : desktop ? (
             <>
-              {desktop && mode === 'switch' ? (
+              {mode === 'switch' ? (
                 <span className="inline-flex items-center gap-1 text-[12px] text-ink-faint" data-space-run={run}>
                   <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${run === 'hot' ? 'bg-success' : 'border border-ink-faint/70'}`} />
                   {t(run === 'hot' ? 'st.spaces.running' : 'st.spaces.notStarted')}
                 </span>
               ) : null}
-              {desktop ? (
-                <button type="button" data-space-enter={space.id} disabled={entering !== null} className={SECONDARY_BUTTON}
-                  onClick={() => { enter(space); }}>
-                  {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
-                </button>
-              ) : (
-                // The browser cannot open another space; looking at and changing
-                // what it holds is the row's primary action there.
-                <button type="button" data-space-settings-open={space.id} className={SECONDARY_BUTTON}
-                  onClick={() => { detail.open(space.id); }}>
-                  {t('st.spaces.settingsMenu')}
-                </button>
-              )}
+              <button type="button" data-space-enter={space.id} disabled={entering !== null} className={SECONDARY_BUTTON}
+                onClick={() => { enter(space); }}>
+                {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
+              </button>
             </>
-          )}
-          {!sub ? (
+          ) : null}
+          {desktop && !sub ? (
             <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
               className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={(event) => {
@@ -516,7 +534,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
 
   return (
     <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server"
-      actions={!sub ? (
+      actions={desktop && !sub ? (
         <div className="flex items-center gap-2">
           <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
             <Icon name="plus" size={12} />{t('st.spaces.new')}

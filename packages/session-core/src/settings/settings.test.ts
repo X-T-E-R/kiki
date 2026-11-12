@@ -1524,7 +1524,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
     expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
     expect(sectionsOf('rules')).toEqual(['permissions']);
-    expect(sectionsOf('connection')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
+    expect(sectionsOf('connection')).toEqual(['spaces', 'connection-services', 'connection', 'ssh']);
     expect(sectionsOf('advanced')).toEqual(['about', 'developer']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     // Legacy routes resolve to their canonical merged leaf instead of landing on "unknown setting".

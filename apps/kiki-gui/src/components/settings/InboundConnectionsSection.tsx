@@ -11,19 +11,22 @@
 
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import type { ConnectionGrant } from '@kiki/protocol';
+import type { ConnectionGrant, ConnectionIdentity } from '@kiki/protocol';
 import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { connectionsApi, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
+import { copyTextToClipboard } from '../../lib/clipboard';
+import { connectionsApi, identityBlock, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
-import { PRIMARY_BUTTON } from '../ui';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { AdvancedDetails } from './fields';
 import { RowFrame } from './RowFrame';
 import { SectionCard } from './SectionCard';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
@@ -119,12 +122,47 @@ function InboundGrantRow({ grant, onRevoke }: {
   );
 }
 
+function ManualIdentityExchangeRow({ identity }: { readonly identity: ConnectionIdentity }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const copy = async () => {
+    setFailed(null);
+    try {
+      await copyTextToClipboard(identityBlock(identity));
+      setCopied(true);
+      window.setTimeout(() => { setCopied(false); }, 1_600);
+    } catch (error) {
+      setFailed(error instanceof Error ? error.message : String(error));
+    }
+  };
+  return (
+    <div className="pt-1" data-remote-self-identity>
+      <div className="flex flex-wrap items-center justify-between gap-3" data-copy-field="self">
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] text-ink" id="remote-self-identity-label">{t('st.remote.identityTitle')}</p>
+          <p className="mt-0.5 text-[12px] text-ink-faint">{t('st.remote.identityBody')}</p>
+        </div>
+        <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} data-copy-action
+          aria-describedby="remote-self-identity-label"
+          onClick={() => { void copy(); }}>
+          <Icon name="copy" size={12} className="mr-1 inline-block align-[-1px]" />
+          {copied ? t('st.remote.identityCopied') : t('st.remote.identityCopy')}
+        </button>
+      </div>
+      {failed !== null ? <p className="mt-1.5 text-[12px] text-danger" role="alert">{t('st.remote.copyFailed', { reason: failed })}</p> : null}
+    </div>
+  );
+}
+
 export function InboundConnectionsSection() {
   const host = useHost();
-  const { client, localClient } = useConnection();
+  const { client, localClient, connectionId, sshLabel } = useConnection();
   const { t, locale } = useI18n();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const control = host.kind === 'tauri' ? localClient : client;
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useInboundStatus(control);
   const api = control === null ? null : connectionsApi(control);
   const [dialog, setDialog] = useState<{ kind: 'invite' } | { kind: 'revoke'; grantId: string; name: string } | null>(null);
@@ -195,6 +233,20 @@ export function InboundConnectionsSection() {
                 ))}
               </div>
             ) : null}
+
+            <p className="text-[12.5px] text-ink-faint" data-inbound-outbound-note>
+              {t('st.inbound.outboundNotePrefix')}
+              <button type="button" data-inbound-open-spaces
+                className="text-ink-soft underline decoration-hairline-strong underline-offset-2 hover:text-ink"
+                onClick={() => { void navigate('/settings/spaces'); }}>
+                {t('st.inbound.outboundNoteLink')}
+              </button>
+              {t('st.inbound.outboundNoteSuffix')}
+            </p>
+
+            <AdvancedDetails summary={t('st.computer.advanced')} data-inbound-advanced-fold>
+              <ManualIdentityExchangeRow identity={status.data.identity} />
+            </AdvancedDetails>
           </>
         ) : null}
 
@@ -209,7 +261,7 @@ export function InboundConnectionsSection() {
         <ConfirmDialog open overlayId="inbound-revoke-confirm" tone="danger"
           title={t('st.inbound.revokeTitle', { name: dialog.name })}
           body={t('st.inbound.revokeBody')}
-          confirmLabel={t('st.inbound.revoke')}
+          confirmLabel={t('st.inbound.revokeConfirm')}
           onCancel={() => { setDialog(null); }}
           onConfirm={() => {
             const grantId = dialog.grantId;
