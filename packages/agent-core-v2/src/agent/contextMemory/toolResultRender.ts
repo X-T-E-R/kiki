@@ -5,11 +5,13 @@ const TOOL_EMPTY_STATUS = '<system>Tool output is empty.</system>';
 const TOOL_EMPTY_ERROR_STATUS =
   '<system>ERROR: Tool execution failed. Tool output is empty.</system>';
 const TOOL_OUTPUT_EMPTY_TEXT = 'Tool output is empty.';
+const BASH_EXIT_LINE_PATTERN = /^Command failed with exit code: (-?\d+)\.$/gm;
 
 export interface RenderableToolResult {
   readonly output: string | readonly ContentPart[];
   readonly note?: string;
   readonly isError?: boolean;
+  readonly toolName?: string;
 }
 
 export function renderToolResultForModel(result: RenderableToolResult): ContentPart[] {
@@ -28,7 +30,7 @@ function renderStatus(result: RenderableToolResult): ContentPart[] {
   if (single !== undefined) {
     if (result.isError === true) {
       if (single.length === 0) return [textPart(TOOL_EMPTY_ERROR_STATUS)];
-      return [textPart(TOOL_ERROR_STATUS + '\n' + single)];
+      return [textPart(errorStatusLine(result.toolName, single) + '\n' + single)];
     }
     return isEmptyOutputText(single) ? [textPart(TOOL_EMPTY_STATUS)] : [textPart(single)];
   }
@@ -39,6 +41,17 @@ function renderStatus(result: RenderableToolResult): ContentPart[] {
   }
   if (result.isError === true) return [textPart(TOOL_ERROR_STATUS), ...parts];
   return [...parts];
+}
+
+function errorStatusLine(toolName: string | undefined, text: string): string {
+  if (toolName !== 'Bash') return TOOL_ERROR_STATUS;
+  let exitCode: string | undefined;
+  for (const match of text.matchAll(BASH_EXIT_LINE_PATTERN)) {
+    exitCode = match[1];
+  }
+  return exitCode === undefined
+    ? TOOL_ERROR_STATUS
+    : `<system>ERROR: Command exited with code ${exitCode}.</system>`;
 }
 
 function singleTextPart(output: readonly ContentPart[]): string | undefined {

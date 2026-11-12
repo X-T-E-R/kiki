@@ -448,6 +448,7 @@ function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly, call?: 
           output: typeof output === 'string' ? renderModelReceipt(call?.name, output, call?.arguments) : output,
           isError: source.isError,
           note: source.note,
+          toolName: call?.name,
         })
       : source.content;
   const projected = cleanContent(source, source.origin?.kind === 'compaction_summary' ? content.filter(part => part.type === 'text') : content, onAnomaly);

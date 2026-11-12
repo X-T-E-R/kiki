@@ -616,6 +616,124 @@ describe('projector tool-exchange normalization', () => {
     ]);
   });
 
+  it('reports non-zero Bash exits with the exit code instead of tool failure', () => {
+    const spilled =
+      'Tool output exceeded 50000 characters; the full output was saved to a file.\n' +
+      'tool_name: Bash\n' +
+      'tool_call_id: call_bash_spill\n' +
+      'output_size_chars: 60000\n' +
+      'output_size_bytes: 60000\n' +
+      'output_path: /tmp/tasks/bash-1/output.log\n' +
+      'next_step: Use Read with output_path to page through; use Grep to search.\n\n' +
+      '[preview: chars [0, 6000)]\nhead\n\n' +
+      '[elided: chars [6000, 42000)]\n\n' +
+      '[preview: chars [42000, 60000)]\ntail\n\n' +
+      'Command failed with exit code: 7.\n' +
+      'task_id: bash-1\n' +
+      'output_size_bytes: 60000';
+    const history: ContextMessage[] = [
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [
+          { type: 'function', id: 'call_bash_exit', name: 'Bash', arguments: '{"command":"exit 3"}' },
+          { type: 'function', id: 'call_bash_spill', name: 'Bash', arguments: '{"command":"loud"}' },
+          { type: 'function', id: 'call_bash_multi', name: 'Bash', arguments: '{"command":"echo nested"}' },
+          { type: 'function', id: 'call_bash_timeout', name: 'Bash', arguments: '{"command":"sleep 99"}' },
+          { type: 'function', id: 'call_bash_other', name: 'Bash', arguments: '{"command":"bad"}' },
+          { type: 'function', id: 'call_read', name: 'Read', arguments: '{"path":"/tmp/x"}' },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'Process exited with code 3\nCommand failed with exit code: 3.' }],
+        toolCalls: [],
+        toolCallId: 'call_bash_exit',
+        isError: true,
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: spilled }],
+        toolCalls: [],
+        toolCallId: 'call_bash_spill',
+        isError: true,
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'Command failed with exit code: 1.\nCommand failed with exit code: 2.' }],
+        toolCalls: [],
+        toolCallId: 'call_bash_multi',
+        isError: true,
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'Command killed by timeout (1m)' }],
+        toolCalls: [],
+        toolCallId: 'call_bash_timeout',
+        isError: true,
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'Interrupted by user' }],
+        toolCalls: [],
+        toolCallId: 'call_bash_other',
+        isError: true,
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'Command failed with exit code: 3.' }],
+        toolCalls: [],
+        toolCallId: 'call_read',
+        isError: true,
+      },
+    ];
+
+    const projected = project(history);
+
+    expect(projected[1]?.content).toEqual([
+      {
+        type: 'text',
+        text:
+          '<system>ERROR: Command exited with code 3.</system>\n' +
+          'Process exited with code 3\n' +
+          'Command failed with exit code: 3.',
+      },
+    ]);
+    expect(projected[2]?.content).toEqual([
+      {
+        type: 'text',
+        text: `<system>ERROR: Command exited with code 7.</system>\n${spilled}`,
+      },
+    ]);
+    expect(projected[3]?.content).toEqual([
+      {
+        type: 'text',
+        text:
+          '<system>ERROR: Command exited with code 2.</system>\n' +
+          'Command failed with exit code: 1.\n' +
+          'Command failed with exit code: 2.',
+      },
+    ]);
+    expect(projected[4]?.content).toEqual([
+      {
+        type: 'text',
+        text: '<system>ERROR: Tool execution failed.</system>\nCommand killed by timeout (1m)',
+      },
+    ]);
+    expect(projected[5]?.content).toEqual([
+      {
+        type: 'text',
+        text: '<system>ERROR: Tool execution failed.</system>\nInterrupted by user',
+      },
+    ]);
+    expect(projected[6]?.content).toEqual([
+      {
+        type: 'text',
+        text: '<system>ERROR: Tool execution failed.</system>\nCommand failed with exit code: 3.',
+      },
+    ]);
+  });
+
   it('strict mode dedupes duplicate assistant tool call ids', () => {
     const history = [
       user('go'),
