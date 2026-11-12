@@ -241,6 +241,7 @@ export function ImageViewport({
           ref={imageRef}
           src={src}
           alt={alt}
+          referrerPolicy="no-referrer"
           draggable={false}
           decoding="async"
           onLoad={(event) => {

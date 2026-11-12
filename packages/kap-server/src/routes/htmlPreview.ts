@@ -9,6 +9,7 @@ import { openSessionMedia, resolveTrustedSessionAttachmentHostSource } from './s
 import { peerAudience } from '../services/connections/audience';
 import { buildEtag, guessMime } from '@kiki/agent-core-v2/_base/utils/fileMeta';
 import { findGitWorkTree } from '@kiki/agent-core-v2/app/git/workTree';
+import { isSensitiveFile } from '@kiki/agent-core-v2/tool/path-access';
 import { HTML_PREVIEW_SANDBOX, htmlPreviewRequestSchema, htmlPreviewResponseSchema, type HtmlPreviewResponse } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -21,8 +22,9 @@ import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
 
-export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; object-src 'none'`;
-export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace('allow-same-origin ', '')}; object-src 'none'`;
+const PREVIEW_RESOURCE_CSP = "default-src 'none'; connect-src 'self' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:; style-src 'self' 'unsafe-inline' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; worker-src 'self' blob: data:; frame-src 'self' blob: data:; form-action 'none'; base-uri 'self'; object-src 'none'";
+export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; ${PREVIEW_RESOURCE_CSP}`;
+export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace(' allow-same-origin', '')}; ${PREVIEW_RESOURCE_CSP}`;
 const TTL = 30 * 60 * 1000;
 const resourceOptions = { config: { htmlPreviewResource: true } };
 interface SessionHtmlResource { bytes: Buffer; mime: string; entryPath: string }
@@ -55,6 +57,9 @@ function resourcePath(value: string): string {
   if (value.includes('\\') || value.includes('\0') || value.startsWith('/') || value.split('/').some((part) => part === '..' || part === '.' || part.includes(':'))) throw new AdmissionError(403, 'preview_path_outside_root');
   return value;
 }
+function requirePreviewFile(path: string): void {
+  if (path.split(/[\\/]/u).some((part) => part.toLowerCase() === '.git') || isSensitiveFile(path)) throw new AdmissionError(403, 'preview_resource_forbidden');
+}
 function previewUrl(id: string, path: string): string { return `/html-preview/${id}/${path.split('/').map(encodeURIComponent).join('/')}`; }
 function mime(path: string): string {
   const extra: Record<string, string> = { '.htm': 'text/html', '.xhtml': 'application/xhtml+xml', '.mjs': 'text/javascript', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.wasm': 'application/wasm' };
@@ -62,7 +67,7 @@ function mime(path: string): string {
 }
 function security(reply: FastifyReply, independent = false): void {
   reply.header('content-security-policy', independent ? HTML_PREVIEW_CSP : HTML_PREVIEW_OPAQUE_CSP).header('referrer-policy', 'no-referrer').header('x-content-type-options', 'nosniff')
-    .header('access-control-allow-origin', '*').header('cache-control', 'no-store');
+    .header('x-dns-prefetch-control', 'off').header('cache-control', 'no-store');
 }
 function sendError(error: unknown, reply: FastifyReply): unknown {
   let status: number; let message: string;
@@ -87,6 +92,17 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   const closing = new Set<Promise<void>>();
   const hostFs = core.accessor.get(IHostFileSystem);
   const privateHomes = Promise.all((options.privateHomes ?? []).map((home) => hostFs.realpath(home).catch(() => resolve(home))));
+  const gitControlRoots = async (directory: string): Promise<readonly string[]> => {
+    const git = await findGitWorkTree(hostFs, directory);
+    if (git === null) return [];
+    const common = (await hostFs.readText(join(git.controlDirPath, 'commondir')).catch((error: unknown) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'os.fs.not_found' || code === 'os.fs.not_directory') return '';
+      throw error;
+    })).trim();
+    const paths = common === '' ? [git.dotGitPath, git.controlDirPath] : [git.dotGitPath, git.controlDirPath, resolve(git.controlDirPath, common)];
+    return Promise.all(paths.map((path) => hostFs.realpath(path).catch(() => resolve(path))));
+  };
   const release = (id: string): void => {
     const entry = remote.get(id);
     local.delete(id); remote.delete(id); entry?.dispose();
@@ -153,6 +169,7 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
           input.source_id,
         );
         if (trustedSource !== undefined && isAbsolute(trustedSource.path)) {
+          requirePreviewFile(trustedSource.path);
           const explicitRoot = allowAutomaticRoot ? undefined : trustedSource.workspaceRoot;
           if ((allowAutomaticRoot || explicitRoot !== undefined) && (explicitRoot === undefined || (isAbsolute(explicitRoot) && inside(resolve(explicitRoot), resolve(trustedSource.path))))) {
             const sourceReal = await hostFs.realpath(trustedSource.path).catch(() => undefined);
@@ -170,8 +187,11 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
                 }
               }
               if (rootValid) {
-                const homes = explicitRoot === undefined ? await privateHomes : [];
-                const documentHome = homes.find((home) => inside(home, candidateRoot));
+                requirePreviewFile(targetFile);
+                const controls = await gitControlRoots(dirname(targetFile));
+                if (controls.some((control) => inside(control, targetFile))) throw new AdmissionError(403, 'preview_resource_forbidden');
+                const homes = await privateHomes;
+                const documentHome = homes.find((home) => inside(home, targetFile));
                 if (explicitRoot === undefined && documentHome === undefined && dirname(candidateRoot) !== candidateRoot) {
                   const hint = trustedSource.workspaceRoot;
                   const workspaceRoot = hint !== undefined && isAbsolute(hint) && (inside(hint, candidateRoot) || inside(hint, trustedSource.path))
@@ -190,7 +210,7 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
                   entryPath = relEntry.split(sep).join('/');
                   root = candidateRoot;
                   fileOnly = documentHome !== undefined || candidateRoot === parse(candidateRoot).root ? targetFile : undefined;
-                  excludedRoots = fileOnly === undefined ? homes : [];
+                  excludedRoots = fileOnly === undefined ? [...homes, ...controls] : controls;
                 }
               }
             }
@@ -214,15 +234,17 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
       throw new AdmissionError(400, 'preview_path_and_root_must_be_absolute');
     }
     if (explicitRoot !== undefined && !inside(resolve(explicitRoot), resolve(input.path))) throw new AdmissionError(403, 'preview_path_outside_root');
+    requirePreviewFile(input.path);
     const path = await hostFs.realpath(input.path);
+    requirePreviewFile(path);
     let root = dirname(path);
     if (explicitRoot !== undefined) {
       root = await hostFs.realpath(explicitRoot);
       if (root === parse(root).root || !inside(root, path) || relative(root, path) === '') throw new AdmissionError(403, 'preview_path_outside_root');
     }
     if (!(await hostFs.stat(path)).isFile || !/\.(html?|xhtml)$/iu.test(path)) throw new AdmissionError(400, 'html_document_required');
-    const homes = explicitRoot === undefined ? await privateHomes : [];
-    const documentHome = homes.find((home) => inside(home, root));
+    const homes = await privateHomes;
+    const documentHome = homes.find((home) => inside(home, path));
     if (explicitRoot === undefined && documentHome === undefined && dirname(root) !== root) {
       const hint = input.workspace_root;
       const workspaceRoot = hint !== undefined && isAbsolute(hint) && (inside(hint, root) || inside(hint, input.path))
@@ -234,11 +256,13 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
         return [];
       }));
     }
+    const controls = await gitControlRoots(dirname(path));
+    if (controls.some((control) => inside(control, path))) throw new AdmissionError(403, 'preview_resource_forbidden');
     const id = randomBytes(32).toString('hex'); const expiresAt = Date.now() + TTL;
     const fileOnly = documentHome !== undefined || root === parse(root).root ? path : undefined;
-    local.set(id, { root, fileOnly, excludedRoots: fileOnly === undefined ? homes : [], expiresAt });
+    local.set(id, { root, fileOnly, excludedRoots: fileOnly === undefined ? [...homes, ...controls] : controls, expiresAt });
     try {
-      const resource = explicitRoot === undefined ? relative(root, path) : relative(resolve(explicitRoot), resolve(input.path));
+      const resource = explicitRoot === undefined || fileOnly !== undefined ? relative(root, path) : relative(resolve(explicitRoot), resolve(input.path));
       const url = await documentUrl(id, resource.split(sep).join('/'));
       return { preview_id: id, expires_at: expiresAt, sandbox: HTML_PREVIEW_SANDBOX, url };
     } catch (error) { release(id); throw error; }
@@ -255,8 +279,10 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
       if (entry.root === '') throw new AdmissionError(404, 'preview_resource_not_found');
     }
     const candidate = resolve(entry.root, resourcePath(path));
+    requirePreviewFile(candidate);
     if (entry.fileOnly !== undefined && candidate !== entry.fileOnly) throw new AdmissionError(403, 'preview_path_outside_root');
     const canonical = await hostFs.realpath(candidate);
+    requirePreviewFile(canonical);
     if (!inside(entry.root, canonical) || (entry.fileOnly !== undefined && canonical !== entry.fileOnly) || entry.excludedRoots.some((home) => inside(home, canonical))) throw new AdmissionError(403, 'preview_path_outside_root');
     const stat = await hostFs.stat(canonical);
     if (!stat.isFile) throw new AdmissionError(404, 'preview_resource_not_found');

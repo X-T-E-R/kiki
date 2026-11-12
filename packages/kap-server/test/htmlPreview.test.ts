@@ -35,7 +35,7 @@ async function fixture(options: { registered?: boolean; automatic?: boolean; pri
   await writeFile(join(root, 'app.js'), 'window.loaded=true');
   await writeFile(join(root, 'systems/index.html'), '<h1>nested</h1>');
   await writeFile(join(root, 'font.woff2'), new Uint8Array([1, 2, 3, 4]));
-  const hostFs = { realpath, stat: async (path: string) => { const s = await stat(path); return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; } };
+  const hostFs = { realpath, readText: (path: string) => readFile(path, 'utf8'), stat: async (path: string) => { const s = await stat(path); return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; } };
   const core = { accessor: { get: () => hostFs } } as unknown as Scope;
   const app = Fastify();
   app.addHook('onRequest', createOriginHook({}));
@@ -68,7 +68,12 @@ describe('browser document resource tree', () => {
     expect(script.headers['content-type']).toContain('text/javascript');
     const font = await app.inject({ url: new URL('../font.woff2', data.url).pathname, headers: { origin: 'null' } });
     expect(font.headers['content-type']).toBe('font/woff2');
-    expect(font.headers['access-control-allow-origin']).toBe('*');
+    expect(font.headers['access-control-allow-origin']).toBeUndefined();
+    expect(document.headers['content-security-policy']).toContain("connect-src 'self' data: blob:");
+    expect(document.headers['content-security-policy']).toContain("img-src 'self' data: blob:");
+    expect(document.headers['content-security-policy']).toContain("form-action 'none'");
+    expect(document.headers['content-security-policy']).not.toContain('allow-same-origin');
+    expect(data.sandbox).toBe('allow-scripts allow-same-origin');
     const privateResponse = await app.inject({ url: '/api/private', headers: { origin: 'null' } });
     expect(privateResponse.statusCode).toBe(403);
     expect(privateResponse.headers['access-control-allow-origin']).toBeUndefined();
@@ -124,7 +129,50 @@ describe('browser document resource tree', () => {
     }
   });
 
-  it.each(['', 'credentials'])('grants only the selected automatic HTML inside a private home subdirectory %s', async (subdirectory) => {
+  it('blocks protected files and Git control paths through lexical and symlink paths', async () => {
+    const { app, root, data } = await fixture();
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, 'secrets'));
+    await writeFile(join(root, '.git/config'), 'fixture git config');
+    await writeFile(join(root, '.git/index.html'), '<h1>private</h1>');
+    await writeFile(join(root, '.env'), 'FIXTURE_TOKEN=private');
+    await writeFile(join(root, '.env.example'), 'FIXTURE_TOKEN=');
+    await writeFile(join(root, 'secrets/id_ed25519'), 'fixture key');
+    await symlink(join(root, '.git'), join(root, 'git-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(join(root, 'secrets'), join(root, 'key-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const path of ['.git', '.GIT/config', '.git/config', 'git-alias/config', '.env', 'secrets/id_ed25519', 'key-alias/id_ed25519']) {
+      const response = await app.inject(`/api/html-preview/${data.preview_id}/resource?path=${encodeURIComponent(path)}`);
+      expect(response.statusCode, path).toBe(403);
+    }
+    expect((await app.inject(`/api/html-preview/${data.preview_id}/resource?path=.env.example`)).statusCode).toBe(200);
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root, path: join(root, 'git-alias/index.html') } });
+    expect(opened.statusCode).toBe(403);
+    await rm(join(root, '.git'), { recursive: true });
+    await writeFile(join(root, '.git'), 'gitdir: ../fixture-control');
+    expect((await app.inject(`/api/html-preview/${data.preview_id}/resource?path=.git`)).statusCode).toBe(403);
+  });
+
+  it('excludes a linked worktree’s common Git directory from an enclosing explicit root', async () => {
+    const { app, root } = await fixture();
+    const common = join(root, 'control');
+    const control = join(common, 'worktrees', 'slides');
+    await mkdir(control, { recursive: true });
+    await mkdir(join(common, 'refs'));
+    await writeFile(join(root, 'slides/.git'), 'gitdir: ../control/worktrees/slides');
+    await writeFile(join(control, 'commondir'), '../..\n');
+    await writeFile(join(control, 'HEAD'), 'ref: refs/heads/main');
+    await writeFile(join(common, 'config'), '[core]\n');
+    await writeFile(join(common, 'refs/main'), 'fixture-ref');
+    const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root, path: join(root, 'slides/index.html') } });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const { preview_id } = opened.json().data;
+    for (const path of ['slides/.git', 'control/worktrees/slides/HEAD', 'control/config', 'control/refs/main']) {
+      expect((await app.inject(`/html-preview/${preview_id}/${path}`)).statusCode, path).toBe(403);
+    }
+    expect((await app.inject(`/html-preview/${preview_id}/app.js`)).statusCode).toBe(200);
+  });
+
+  it.each(['', 'credentials'])('grants only the selected HTML inside a private home subdirectory %s', async (subdirectory) => {
     const { app, root } = await fixture({ registered: true, privateHome: true });
     const home = join(root, 'kiki-home');
     const directory = join(home, subdirectory);
@@ -140,7 +188,11 @@ describe('browser document resource tree', () => {
     expect((await app.inject(new URL('./credentials.toml', url).pathname)).statusCode).toBe(403);
     const explicit = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path, root: directory } });
     expect(explicit.statusCode, explicit.body).toBe(200);
-    expect((await app.inject(new URL('./credentials.toml', explicit.json().data.url).pathname)).statusCode).toBe(200);
+    expect((await app.inject(explicit.json().data.url)).body).toBe(html);
+    expect((await app.inject(new URL('./credentials.toml', explicit.json().data.url).pathname)).statusCode).toBe(403);
+    const ancestor = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { path, root } });
+    expect(ancestor.statusCode, ancestor.body).toBe(200);
+    expect((await app.inject(new URL('./credentials.toml', ancestor.json().data.url).pathname)).statusCode).toBe(403);
   });
 
   it('keeps the explicit root contract on SSH-managed servers', async () => {

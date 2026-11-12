@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { registerWebAssetRoutes } from '../src/routes/webAssets';
+import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
 
 describe('web asset cache policy', () => {
   let app: FastifyInstance;
@@ -22,6 +23,8 @@ describe('web asset cache policy', () => {
       writeFile(join(assetsDir, 'manifest.webmanifest'), '{}'),
     ]);
     app = Fastify();
+    app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
+    app.get('/api/fixture', async () => ({ ok: true }));
     await registerWebAssetRoutes(app, assetsDir);
   });
 
@@ -36,6 +39,12 @@ describe('web asset cache policy', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
     expect(response.body).toBe('<main>Kimi</main>');
+    expect(response.headers['content-security-policy']).toContain("img-src 'self' data: blob: https: http:");
+  });
+
+  it('keeps remote image sources out of the default response policy', async () => {
+    const response = await app.inject('/api/fixture');
+    expect(response.headers['content-security-policy']).toContain("img-src 'self' data: blob:;");
   });
 
   it('caches content-hashed assets as immutable', async () => {

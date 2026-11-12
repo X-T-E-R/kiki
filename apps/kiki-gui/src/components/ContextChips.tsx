@@ -84,7 +84,7 @@ export function ImageTile({
         onContextMenu={imageMenu.openMenu}
         className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
       >
-        <img src={src} alt={name} className="h-full w-full object-cover" draggable={false} />
+        <img src={src} alt={name} referrerPolicy="no-referrer" className="h-full w-full object-cover" draggable={false} />
       </button>
       {imageMenu.menuElement}
       {viewing ? <MediaLightbox src={src} name={name} onClose={() => { setViewing(false); }} /> : null}

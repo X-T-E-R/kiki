@@ -388,7 +388,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         {loading ? <div aria-busy="true" className="flex min-h-48 items-center justify-center text-sm text-shell-ink">{t('preview.loading')}</div>
           : failed || sourceFailed ? <div role="alert" data-lightbox-failure className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-shell-ink"><span>{t('media.unavailable', { name: label })}</span><button type="button" onClick={() => { setFailed(false); setNatural(undefined); setAttempt((value) => value + 1); onRetry?.(); }} className={controlClass}>{t('transcript.detail.retry')}</button></div>
             : <div className="relative mx-auto" style={{ width: displayWidth, maxWidth: zoom === 'fit' ? '100%' : 'none' }}>
-              <img ref={image} key={`${identity}:${attempt}`} src={src} alt={label} tabIndex={0} draggable={false} decoding="async"
+              <img ref={image} key={`${identity}:${attempt}`} src={src} alt={label} referrerPolicy="no-referrer" tabIndex={0} draggable={false} decoding="async"
                 onError={() => { setFailed(true); }} onLoad={(event) => { setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); noteMediaReady(outcomeKey ?? (src === undefined ? undefined : `url:${src}`)); }}
                 onClick={(event) => { if (!editing && !pan.consumePan()) switchZoom({ x: event.clientX, y: event.clientY }); }} className="block h-auto w-full rounded-lg" />
               {natural === undefined ? null : <ImageViewportAnnotations key={`${identity}:${editing}`} width={natural.width} height={natural.height} marks={marks} tool={tool} editing={editing} selected={selected} onSelect={setSelected} onChange={changeMarks} />}

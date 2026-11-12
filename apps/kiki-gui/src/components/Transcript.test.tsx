@@ -1011,6 +1011,12 @@ async function renderedImageTargets(text: string): Promise<string[]> {
   return JSON.parse(raw) as string[];
 }
 
+async function showRemoteImages(container: ParentNode): Promise<void> {
+  await act(async () => {
+    for (const button of container.querySelectorAll<HTMLButtonElement>('[data-markdown-remote-image]')) button.click();
+  });
+}
+
 describe('media part deduplication', () => {
   it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', async () => {
     const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
@@ -1058,6 +1064,9 @@ describe('media part deduplication', () => {
         media: [{ kind: 'image', url: 'https://example.test/chart.png' }],
       }),
     ]);
+    expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
+    expect(container.querySelector('img[src="https://example.test/chart.png"]')).toBeNull();
+    await showRemoteImages(container);
     const markdownImg = container.querySelector('img[src="https://example.test/chart.png"]');
     expect(markdownImg).not.toBeNull();
     const thumbContainers = container.querySelectorAll('[data-assistant-prose] > div.flex.flex-wrap');
@@ -1073,6 +1082,9 @@ describe('media part deduplication', () => {
         ],
       }),
     ]);
+    expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(2);
+    expect(container.querySelector('img[src^="https://example.test/"]')).toBeNull();
+    await showRemoteImages(container);
     expect(container.querySelector('img[src="https://example.test/chart.png"]')).not.toBeNull();
     expect(container.querySelector('img[src="https://example.test/extra.png"]')).not.toBeNull();
   });
@@ -1148,7 +1160,8 @@ describe('media part deduplication', () => {
     ]);
     // The code block should contain the literal text
     expect(container.textContent).toContain('![fenced](https://example.test/fenced.png)');
-    // And the MediaPartList thumbnail must still be rendered below the prose!
+    expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
+    await showRemoteImages(container);
     const imgInMediaPart = container.querySelector('[data-assistant-prose] img[src="https://example.test/fenced.png"]');
     expect(imgInMediaPart).not.toBeNull();
   });
@@ -1171,6 +1184,8 @@ describe('media part deduplication', () => {
     ]);
     const prose = container.querySelector('[data-block-id="asst-ref"] [data-assistant-prose]');
     expect(prose?.textContent).toContain('![board][fig]');
+    expect(prose?.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
+    await showRemoteImages(container);
     expect(prose?.querySelectorAll('img[src="https://example.test/board.png?v=1#crop"]')).toHaveLength(1);
   });
 
@@ -1180,6 +1195,8 @@ describe('media part deduplication', () => {
         media: [{ kind: 'image', url: 'https://example.test/nested.png' }],
       }),
     ]);
+    expect(nested.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
+    await showRemoteImages(nested);
     expect(nested.querySelector('img[src="https://example.test/nested.png"]')).not.toBeNull();
     expect(nested.querySelector('[data-block-id="asst-nested"] [data-assistant-prose]')?.querySelectorAll(':scope > div.flex.flex-wrap')).toHaveLength(0);
 
@@ -1189,6 +1206,8 @@ describe('media part deduplication', () => {
       }),
     ]);
     expect(fenced.textContent).toContain('![diagram](https://example.test/nested-fence.png)');
+    expect(fenced.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
+    await showRemoteImages(fenced);
     expect(fenced.querySelector('[data-block-id="asst-nested-fence"] [data-assistant-prose] img[src="https://example.test/nested-fence.png"]')).not.toBeNull();
   });
 
@@ -1207,6 +1226,9 @@ describe('media part deduplication', () => {
 
     // Msg2 has the MediaPartList thumbnail rendered because it was not in msg2's text
     const msg2Prose = container.querySelector('[data-block-id="asst-msg2"] [data-assistant-prose]');
+    expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(2);
+    await showRemoteImages(msg2Prose!);
+    expect(msg1Prose?.querySelector('img[src="https://example.test/shared.png"]')).toBeNull();
     const msg2Thumb = msg2Prose?.querySelector('img[src="https://example.test/shared.png"]');
     expect(msg2Thumb).not.toBeNull();
   });

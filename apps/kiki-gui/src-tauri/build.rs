@@ -65,6 +65,9 @@ fn validate_main_capability() {
         .as_array()
         .expect("The main Tauri capability must declare its windows");
     assert_eq!(windows, &[serde_json::Value::String("main".to_string())]);
+    assert_eq!(capability["local"], serde_json::Value::Bool(true));
+    assert!(capability.get("remote").is_none(), "The main Tauri capability must not authorize remote documents");
+    assert!(capability.get("webviews").is_none(), "The main Tauri capability must be scoped only to the main window");
     let permissions = capability["permissions"]
         .as_array()
         .expect("The main Tauri capability must declare permissions");

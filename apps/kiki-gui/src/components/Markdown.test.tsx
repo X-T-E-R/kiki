@@ -629,8 +629,13 @@ describe('mobile reading & containment', () => {
         <Markdown mode="static" text={'![Tall mobile screenshot](https://example.test/tall-shot.png)'} />
       </MediaPreviewContext.Provider>,
     );
+    expect(probe.container.querySelector('img')).toBeNull();
+    const consent = probe.container.querySelector<HTMLButtonElement>('[data-markdown-remote-image]')!;
+    expect(consent.textContent).toContain('Tall mobile screenshot · example.test');
+    await act(async () => { consent.click(); });
     const trigger = probe.container.querySelector<HTMLButtonElement>('.kiki-md-img-trigger')!;
     const img = trigger.querySelector<HTMLImageElement>('img.kiki-md-img')!;
+    expect(img.getAttribute('referrerpolicy')).toBe('no-referrer');
     expect(img.getAttribute('src')).toBe('https://example.test/tall-shot.png');
     expect(img.getAttribute('alt')).toBe('Tall mobile screenshot');
     await act(async () => {

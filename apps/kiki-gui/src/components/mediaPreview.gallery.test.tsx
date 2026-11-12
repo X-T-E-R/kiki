@@ -28,6 +28,12 @@ function render(node: ReactNode): HTMLDivElement {
   return container;
 }
 
+function showRemoteImages(container: ParentNode): void {
+  act(() => {
+    for (const button of container.querySelectorAll<HTMLButtonElement>('[data-markdown-remote-image]')) button.click();
+  });
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal('IntersectionObserver', undefined);
@@ -57,6 +63,12 @@ describe('image gallery', () => {
         </MediaGalleryOrder>
       </MediaPreviewProvider>,
     );
+    expect(container.querySelector('img')).toBeNull();
+    act(() => {
+      for (const button of container.querySelectorAll<HTMLButtonElement>('[data-markdown-remote-image]')) {
+        if (!button.textContent?.includes('other.png')) button.click();
+      }
+    });
     const open = (name: string) => container.querySelector<HTMLButtonElement>(`img[alt="${name}"]`)!.closest('button')!;
     act(() => { open('second.png').click(); });
     const dialog = document.querySelector('[role="dialog"]');
@@ -75,6 +87,7 @@ describe('image gallery', () => {
       return <button type="button" data-open-kept onClick={() => { preview?.openGalleryImage?.(item, 'main'); }}>open</button>;
     }
     const container = render(<MediaPreviewProvider sessionId="session"><MediaPartList media={[first, second]} /><Open item={first} /></MediaPreviewProvider>);
+    showRemoteImages(container);
     expect(container.querySelectorAll('img')).toHaveLength(2);
     act(() => {
       flushSync(() => {
@@ -105,6 +118,7 @@ describe('image gallery', () => {
         </MediaGalleryOrder>
       </MediaPreviewProvider>,
     );
+    showRemoteImages(container);
     const keptImage = container.querySelector<HTMLImageElement>('img[alt="kept.png"]')!;
     const foreignImage = container.querySelector<HTMLImageElement>('img[alt="foreign.png"]')!;
     act(() => { container.querySelector('img[alt="broken.png"]')!.dispatchEvent(new Event('error')); });
@@ -132,11 +146,13 @@ describe('image gallery', () => {
       media: [{ kind: 'file', fileId: 'notes', name: 'notes.txt' }, image],
     };
     const run: MediaRun = { kind: 'media-run', id: 'media-mixed', turnId: 't1', members: [tool], latest: false };
-    const view = { sessionId: 'session', blocks: [tool] } as unknown as SessionViewState;
+    const unloaded: ToolBlock = { ...tool, id: 'unloaded-tool', toolCallId: 'unloaded-call', media: [{ kind: 'image', url: 'https://example.test/unloaded.png' }] };
+    const view = { sessionId: 'session', blocks: [tool, unloaded] } as unknown as SessionViewState;
     const container = render(<MediaPreviewProvider sessionId="session" sessionViewState={view}>
       <MediaRunRow run={run} agentId="main" blockOrder={new Map([['mixed-tool', 0]])} />
     </MediaPreviewProvider>);
     expect(container.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+    showRemoteImages(container);
     act(() => { container.querySelector<HTMLButtonElement>('[data-media-thumb] button')!.click(); });
     expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(image.url);
     expect(document.querySelector('[role="dialog"] [aria-label="Next image"]')).toBeNull();

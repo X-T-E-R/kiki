@@ -19,8 +19,11 @@ export function createSecurityHeadersHook(
   return async (_req, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
-    if ((_req.routeOptions.config as { htmlPreviewResource?: boolean }).htmlPreviewResource !== true) {
-      reply.header('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    const config = _req.routeOptions.config as { htmlPreviewResource?: boolean; webGui?: boolean };
+    if (config.htmlPreviewResource !== true) {
+      reply.header('Content-Security-Policy', config.webGui === true
+        ? CONTENT_SECURITY_POLICY.replace("img-src 'self' data: blob:", "img-src 'self' data: blob: https: http:")
+        : CONTENT_SECURITY_POLICY);
     }
     if (opts.tls === true) {
       reply.header('Strict-Transport-Security', HSTS_VALUE);

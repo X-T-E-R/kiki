@@ -132,6 +132,7 @@ function QueueMediaItem({
     <img
       src={src}
       alt={normalizedMedia.name ?? ''}
+      referrerPolicy="no-referrer"
       className="h-4 w-4 rounded object-cover"
       onError={() => { setFailedUrl(src); }}
     />

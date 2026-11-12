@@ -1901,6 +1901,7 @@ export const en = {
   'media.attachment': 'Attachment',
   'media.image': 'Image',
   'media.viewImage': 'View image',
+  'media.showImage': 'Show image',
   'media.download': 'Download',
   'media.zoomFit': 'Fit to screen',
   'media.zoomActual': 'Actual size',

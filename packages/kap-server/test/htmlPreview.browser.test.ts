@@ -215,6 +215,33 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
       return { parentReadable, parentBridge, ownerStorage: localStorage.getItem('owner-secret'), ownBridge: Reflect.get(window, '__TAURI_INTERNALS__') !== undefined, api, origin: location.origin, query: location.search, hash: location.hash };
     }, endpoint);
     expect(isolation).toMatchObject({ parentReadable: false, parentBridge: false, ownerStorage: null, ownBridge: false, api: 'blocked', query: '?mode=origin&slide=0', hash: '#2' });
+    const outbound: string[] = [];
+    await embedded.route('https://example.test/**', async (route) => {
+      outbound.push(route.request().url());
+      await route.fulfill({ status: 200, body: 'unexpected outbound request' });
+    });
+    const network = await frame.evaluate(async () => {
+      const violations: string[] = [];
+      document.addEventListener('securitypolicyviolation', (event) => { violations.push(event.effectiveDirective); });
+      const request = await fetch('https://example.test/collect').then(() => 'loaded', () => 'blocked');
+      const image = await new Promise<string>((resolve) => {
+        const image = new Image();
+        image.onload = () => { resolve('loaded'); };
+        image.onerror = () => { resolve('blocked'); };
+        image.src = 'https://example.test/pixel.png';
+      });
+      const worker = await new Promise<string>((resolve, reject) => {
+        const url = URL.createObjectURL(new Blob(['postMessage("worker-ok")'], { type: 'text/javascript' }));
+        const worker = new Worker(url);
+        worker.onmessage = (event) => { worker.terminate(); URL.revokeObjectURL(url); resolve(String(event.data)); };
+        worker.onerror = reject;
+      });
+      return { request, image, worker, canvas: document.createElement('canvas').getContext('2d') !== null, violations };
+    });
+    expect(network).toMatchObject({ request: 'blocked', image: 'blocked', worker: 'worker-ok', canvas: true });
+    expect(network.violations).toEqual(expect.arrayContaining(['connect-src', 'img-src']));
+    expect(outbound).toEqual([]);
+    await writeFile(join(output, 'network-proof.json'), JSON.stringify({ network, outbound }, null, 2));
     await frame.goto(preview.url);
     await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined);
     const afterReload = await frame.evaluate(async () => await Reflect.get(window, 'result'));

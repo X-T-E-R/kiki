@@ -9,14 +9,21 @@ import { mediaOutcomeKey, useMediaReady } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
 import { MediaPart, useGalleryImage, useMessageImageMenu, useSessionMedia } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
+import { RemoteImageGate } from '../RemoteImageGate';
 import { useRecordRenderedImage } from './renderedImages';
 
-type ImageProps = ComponentProps<'img'>;
-
-export function MarkdownFileImage({ src, alt, title: _title, node: _node, documentDirectory, ...props }: ImageProps & {
+type ImageProps = ComponentProps<'img'> & {
   documentDirectory?: string;
   node?: unknown;
-}) {
+};
+
+export function MarkdownFileImage(props: ImageProps) {
+  const source = props.src;
+  useRecordRenderedImage(source);
+  return <RemoteImageGate source={source} alt={props.alt}><LoadedMarkdownFileImage {...props} /></RemoteImageGate>;
+}
+
+function LoadedMarkdownFileImage({ src, srcSet: _srcSet, alt, title: _title, node: _node, documentDirectory, ...props }: ImageProps) {
   const client = useOptionalConnection()?.client;
   const preview = useMediaPreview();
   const { t } = useI18n();
@@ -44,7 +51,6 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   const galleryItem = useMemo<MediaRef>(() => ({ kind: 'image', fileId, path: localPath, url: localPath === undefined && typeof src === 'string' ? src : undefined, name }), [fileId, localPath, src, name]);
   const offset = (_node as { position?: { start?: { offset?: number } } } | undefined)?.position?.start?.offset ?? 0;
   const openImage = useGalleryImage(galleryItem, 0, undefined, offset);
-  useRecordRenderedImage(typeof src === 'string' && src !== '' ? src : undefined);
   const label = name ?? t('media.image');
   const description = safeImagePreviewName({ name: alt }) ?? label;
   const url = path === undefined ? src : load.status === 'ready' ? load.url : undefined;
@@ -66,7 +72,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
     );
   }
 
-  const content = <img {...props} data-markdown-image="" src={url} alt={description} decoding="async" onContextMenu={imageMenu.openMenu} onError={() => { setFailedMedia({ client, path }); }} className="kiki-md-img max-w-full h-auto" />;
+  const content = <img {...props} data-markdown-image="" src={url} alt={description} referrerPolicy="no-referrer" decoding="async" onContextMenu={imageMenu.openMenu} onError={() => { setFailedMedia({ client, path }); }} className="kiki-md-img max-w-full h-auto" />;
   if (preview === null) return <>{content}{imageMenu.menuElement}</>;
   return (
     <><button

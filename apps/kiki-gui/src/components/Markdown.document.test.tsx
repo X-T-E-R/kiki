@@ -39,7 +39,7 @@ vi.mock('@streamdown/mermaid', () => ({
   mermaid: { getMermaid: () => ({ render: renderMermaid }) },
 }));
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
-const fakeClient = { readingOptions: () => ({}), readHostMediaPreviewBytes };
+const fakeClient = { baseUrl: 'http://127.0.0.1:58627', readingOptions: () => ({}), readHostMediaPreviewBytes };
 connectionMock.activeClient = fakeClient;
 connectionMock.defaultClient = fakeClient;
 vi.mock('../state/connection', async (importOriginal) => ({
@@ -120,6 +120,8 @@ it('loads relative images with URL query and fragment suffixes from the document
 it('leaves external image URLs with query strings on the external path', async () => {
   const container = await render('![logo](https://example.test/logo.png?rev=2)', '/work/docs');
   expect(readHostMediaPreviewBytes).not.toHaveBeenCalled();
+  expect(container.querySelector('img')).toBeNull();
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-markdown-remote-image]')!.click(); });
   expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/logo.png?rev=2');
   await act(async () => { container.querySelector('img')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); });
   expect(document.querySelector('[data-menu-item="copy-image"]')).not.toBeNull();
@@ -316,7 +318,12 @@ it('shows timeline data and URL images without weakening link or HTML sanitizati
     'blob:example-image',
   ];
   const container = await render(urls.map((url) => `![diagram](${url})`).join('\n\n') + '\n\n[unsafe](javascript:alert(1))\n\n<img src="javascript:alert(1)" onerror="alert(1)"><script>alert(1)</script>');
+  expect([...container.querySelectorAll('img')].map((image) => image.getAttribute('src')).filter(Boolean)).toEqual(urls.filter((url) => !url.startsWith('https:')));
+  const consent = container.querySelector<HTMLButtonElement>('[data-markdown-remote-image]')!;
+  expect(consent.textContent).toContain('example.test');
+  await act(async () => { consent.click(); });
   expect([...container.querySelectorAll('img')].map((image) => image.getAttribute('src')).filter(Boolean)).toEqual(urls);
+  expect([...container.querySelectorAll('img[src]')].every((image) => image.getAttribute('referrerpolicy') === 'no-referrer')).toBe(true);
   expect(container.textContent).not.toContain('diagram [blocked]');
   expect(container.textContent).toContain('unsafe [blocked]');
   expect(container.textContent).toContain('[Image blocked:');
@@ -324,6 +331,33 @@ it('shows timeline data and URL images without weakening link or HTML sanitizati
   expect(readHostMediaPreviewBytes).not.toHaveBeenCalled();
 });
 
+
+it('renders current-server session media immediately but gates unrelated loopback URLs', async () => {
+  const local = 'http://127.0.0.1:58627/api/sessions/session-1/media/f_image';
+  const container = await render(`![session image](${local})\n\n![external image](http://127.0.0.1:9999/pixel.png)`);
+  expect(container.querySelector('img')?.getAttribute('src')).toBe(local);
+  expect(container.querySelectorAll('img')).toHaveLength(1);
+  expect(container.querySelector('[data-markdown-remote-image]')?.textContent).toContain('127.0.0.1:9999');
+});
+
+it('requires consent again when the remote image URL changes and ignores alternate sources', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const draw = (src: string) => <I18nProvider><MarkdownFileImage src={src} alt="Remote diagram" srcSet="https://example.test/alternate.png 2x" /></I18nProvider>;
+  await act(async () => { root.render(draw('https://example.com/pixel.png')); });
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.querySelector('button')?.textContent).toContain('Remote diagram · example.com');
+  await act(async () => { container.querySelector('button')!.click(); });
+  const image = container.querySelector('img')!;
+  expect(image.getAttribute('src')).toBe('https://example.com/pixel.png');
+  expect(image.getAttribute('referrerpolicy')).toBe('no-referrer');
+  expect(image.getAttribute('srcset')).toBeNull();
+  await act(async () => { root.render(draw('https://example.com/changed.png')); });
+  expect(container.querySelector('img')).toBeNull();
+});
 
 it('keeps a local Markdown image unloaded when its connection is unavailable', async () => {
   connectionMock.activeClient = undefined;

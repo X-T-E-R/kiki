@@ -1881,6 +1881,7 @@ export const zh = {
   'media.attachment': '附件',
   'media.image': '图片',
   'media.viewImage': '查看图片',
+  'media.showImage': '显示图片',
   'media.download': '下载',
   'media.zoomFit': '适应屏幕',
   'media.zoomActual': '原始大小',

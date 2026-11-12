@@ -50,6 +50,7 @@ import { Dialog } from './Dialog';
 import { Icon } from './icons';
 import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
+import { remoteImageUrl } from './RemoteImageGate';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
@@ -172,12 +173,15 @@ export function MediaPreviewProvider({
     if (id === undefined) return [];
     const blocks = sessionViewState?.sessionId === sessionId ? sessionViewState?.blocks : undefined;
     const activeBlocks = blocks === undefined ? undefined : new Set(blocks.map((block) => block.id));
-    const source = blocks === undefined ? [] : blockGalleryImages(blocks, snapshotAgentId);
-    const entries = [...source, ...[...registeredImages.current.images.values()].filter((entry) =>
-      activeBlocks === undefined || entry.blockId === undefined || entry.agentId !== snapshotAgentId || activeBlocks.has(entry.blockId))];
+    const registered = [...registeredImages.current.images.values()].filter((entry) =>
+      activeBlocks === undefined || entry.blockId === undefined || entry.agentId !== snapshotAgentId || activeBlocks.has(entry.blockId));
+    const approved = new Set(registered.map((entry) => entry.item.url).filter((url) => url !== undefined));
+    const source = blocks === undefined ? [] : blockGalleryImages(blocks, snapshotAgentId).filter(({ item: entry }) =>
+      remoteImageUrl(entry.url, clientIdentity?.baseUrl) === undefined || entry.url === item.url || (entry.url !== undefined && approved.has(entry.url)));
+    const entries = [...source, ...registered];
     if (!entries.some((entry) => entry.id === id)) entries.push({ id, agentId, order: [Number.MAX_SAFE_INTEGER], item: canonicalGalleryItem(item, agentId) });
     return orderedGalleryImages(entries, agentId);
-  }, [sessionId, snapshotAgentId, sessionViewState]);
+  }, [clientIdentity, sessionId, snapshotAgentId, sessionViewState]);
   const openGalleryImage = useCallback((item: MediaRef, agentId = snapshotAgentId, initialSrc?: string, occurrenceId?: string) => {
     const id = galleryImageId(item, agentId);
     if (id === undefined) return;
@@ -682,7 +686,7 @@ function AttachmentPreviewDialog({
         }}
         className="block w-full max-w-full overflow-hidden rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
       >
-        <img src={load.url} alt={name} decoding="async" onLoad={() => { noteMediaReady(mediaOutcomeKey({ ...item, sessionId })); }} onError={() => { setFailedUrl(load.url); }} className="mx-auto block h-auto w-full max-w-full" />
+        <img src={load.url} alt={name} referrerPolicy="no-referrer" decoding="async" onLoad={() => { noteMediaReady(mediaOutcomeKey({ ...item, sessionId })); }} onError={() => { setFailedUrl(load.url); }} className="mx-auto block h-auto w-full max-w-full" />
       </button>
     );
   } else if (load.mime.startsWith('video/')) {

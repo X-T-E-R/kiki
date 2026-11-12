@@ -14,6 +14,7 @@ import { imagePreviewDownloadName } from './imagePreviewName';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
+import { RemoteImageGate } from './RemoteImageGate';
 
 export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: string, markdownOffset?: number) {
   const preview = useMediaPreview();
@@ -234,7 +235,7 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         onContextMenu={imageMenu.openMenu}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
-        <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
+        <img src={load.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
     );
   }
@@ -336,7 +337,7 @@ function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }
   const body = imageFailed ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
     : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
-    : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
+    : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }
 
@@ -401,7 +402,17 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   );
 }
 
-export function MediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: { item: MediaRef; agentId?: string; size?: MediaThumbSize; galleryIndex?: number }) {
+interface MediaPartProps { item: MediaRef; agentId?: string; size?: MediaThumbSize; galleryIndex?: number }
+
+export function MediaPart(props: MediaPartProps) {
+  const { item } = props;
+  if (item.kind === 'image' && item.url !== undefined && item.detail === undefined && item.blobHash === undefined && item.fileId === undefined) {
+    return <RemoteImageGate source={item.url} alt={item.name}><LoadedMediaPart {...props} /></RemoteImageGate>;
+  }
+  return <LoadedMediaPart {...props} />;
+}
+
+function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: MediaPartProps) {
   const order = useMediaGalleryOrder();
   const openImage = useGalleryImage(item, galleryIndex, agentId);
   if (item.detail !== undefined) return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
