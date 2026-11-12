@@ -465,7 +465,7 @@ original workspace, storage root, storage identity, and revision; changing the
 storage configuration does not rewrite these references.
 
 The KAP host bundles the pinned local Own Work candidate from
-`vendor/own-work-0.1.1-kiki-05c3e1ae.tgz`; registry Own Work 0.1.1 does not provide
+`vendor/own-work-0.1.1-kiki-7a5fb754.tgz`; registry Own Work 0.1.1 does not provide
 the required API and is not an equivalent replacement. `taskBoardHost.ts`
 validates registered workspaces, holds real workspace leases around native
 operations, and requires workspace trust for writes. Current configured and

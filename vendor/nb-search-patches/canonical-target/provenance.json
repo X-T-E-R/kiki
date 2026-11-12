@@ -8,7 +8,7 @@
   "patch": "source.patch",
   "patch_sha256": "0f8b4cee1b366a01d116807cbce397d7a54c39bb498bcf3118f4c070081cdfbe",
   "adapter_revision": "4-kiki-0.4.0-multi-key",
-  "integration_status": "core and node-sdk depend on vendor/nb-search-0.4.0-4218580a.tgz",
+  "integration_status": "agent-core-v2 and node-sdk depend on vendor/nb-corp-nb-search-0.5.0-next.7.tgz; protocol retains vendor/nb-corp-nb-search-0.5.0-next.4.tgz",
   "additive_patch": "hosted-worker.patch",
   "additive_patch_sha256": "cdfb8f67fc74462f780e5736f3dcc388ddc37c0f6aa1e8981b005c3396ae8510",
   "tavily_patch": "tavily-official.patch",
@@ -17,9 +17,10 @@
   "hosted_worker_api": "Expose existing launcher injection and side-effect-free runWorker with readiness callback; no file admission or operation fingerprint changes.",
   "tavily_api": "Align every Tavily lane to the official API reference: /search and /extract use the Authorization Bearer header and documented body fields (time_range instead of the undocumented days, include_published_date, extract format/extract_depth), /crawl is added as a typed lane returning fetch-shaped page documents, and /research is added as the official create-then-poll async task lane. tavily.synthesis is retained as the documented /search include_answer answer. Provider adapter_version moved from 1 to 2 with the operation fingerprint change. The key scheduler test expects Bearer authorization rather than the old request-body key.",
   "vendor_tarball": {
-    "path": "vendor/nb-search-0.4.0-4218580a.tgz",
-    "sha512": "4218580ae9d7d17a22de54c3db06330376285dd30c4a45cb6743ba8f46ff9d4c8873f6e8bb33370be0bb1ee0b7a04f7902627b8b902663dba6fa8520c7dd0c0e",
-    "sha256": "782e3196855d6d0e50642ff0a2870f9d79c16edabed23e7dffa9573be365b3cc"
+    "path": "vendor/nb-corp-nb-search-0.5.0-next.7.tgz",
+    "sha512": "0407cc300d80c6935897e15d6ecae2a028656ca5b7b5bb618c516f0cec432ac9af3135a9245d39c58af30e783c7eea97b7e3b1b9921d211cd6a7b2738c7faedd",
+    "sha256": "145f6dfcc99de9639cb42b95312a262e1a3f10834f6685f8aa7d796f0cfcc7dd",
+    "historical_0_4_0_sha256": "782e3196855d6d0e50642ff0a2870f9d79c16edabed23e7dffa9573be365b3cc"
   },
   "scope": "Rebase the three Kiki-specific patches onto nb-search 0.4.0 plus commits 66aa4ac and f7cbfde0 (keyless defaults and multi-key scheduling). File-scope identity and hosted-worker exports remain Kiki-only; Tavily official API parity remains a separate patch. One key remains compatible with the existing secrets.json format; ordered comma-separated keys enable scheduling without copying key material into config.toml.",
   "install": "pnpm --dir .tmp/nb-search-multikey install --ignore-workspace --frozen-lockfile",
