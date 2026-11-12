@@ -14,7 +14,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 
-import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, useModelSwitchFlow, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -41,8 +41,7 @@ import { AdmissionScope, useAdmissionScope, withAdmissionUserBlocks, withOptimis
 import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
-import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from './model-switch/ModelSwitchNotice';
-import { resolveSwitchEffort } from './model-switch/switchEffort';
+import { ModelSwitchActionsContext } from './model-switch/ModelSwitchNotice';
 import { useModelSwitches } from './model-switch/useModelSwitches';
 import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
@@ -145,16 +144,12 @@ import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMes
 import { spaceStorage } from '../lib/spaceStorage';
 import {
   composerDefaultsForProfile,
-  modelSwitchPreferencesToWire,
   readLastSessionId,
-  readModelSwitchPreferences,
   readSettings,
   readTerminalPanelPrefs,
-  rememberModelSwitchChoice,
   resolveCatalogModel,
   resolveEffectiveModel,
   resolveModelSource,
-  resolveModelSwitchPreferences,
   resolveSessionModelOverride,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -2941,16 +2936,10 @@ export function SessionView({
   // read through `configQuery` above); the resolution snapshot is captured
   // when a pick is accepted, never re-derived later, so a settings edit cannot
   // change an accepted switch.
-  const modelSwitchPrefs = useMemo(
-    () => readModelSwitchPreferences(configQuery.data?.model_switch),
-    [configQuery.data],
-  );
   const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID);
-  const setModelSwitchDialog = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
+  const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
     setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
   }, []);
-  const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
-  const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
   // Canonical ids on both sides: a bare alias lands on its provider row, so
   // "same model" reads as the same model and the panel names what it shows.
   const canonicalModel = useCallback(
@@ -2964,110 +2953,37 @@ export function SessionView({
   const switchEffortChoice = manualEffort ?? (effortSourceSwitch !== undefined ? effortSourceSwitch.input.thinking
     : executionBinding?.sources['thinking'] === 'session' ? boundExecution.overrides?.thinking : undefined);
   const modelSwitchThinking = typeof switchEffortChoice === 'string' && switchEffortChoice !== '' ? switchEffortChoice : undefined;
-  const resolveTargetSwitchEffort = useCallback((toModel: string, carried: string | undefined) => {
+  const mainProfileDefaultEffort = useCallback((toModel: string) => {
     const items = modelsQuery.data?.items;
-    if (items === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
-    const targetCatalog = resolveCatalogModel(items, toModel);
-    if (targetCatalog === undefined) return { efforts: undefined, defaultEffort: undefined, effort: carried, adjustedFrom: undefined };
-    const targetEfforts = targetCatalog.support_efforts ?? [];
-    const profileDefault = selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
-      ? profileThinkingDefault(selectedProfile, toModel, items) : undefined;
-    const defaultEffort = resolveSelectedEffort(targetEfforts, profileDefault, targetCatalog.default_effort);
-    const resolved = resolveSwitchEffort({ targetEfforts, carried, targetDefault: defaultEffort });
-    return { efforts: targetEfforts, defaultEffort, effort: resolved.effort, adjustedFrom: resolved.adjustedFrom };
+    if (items === undefined) return undefined;
+    return selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
+      ? profileThinkingDefault(selectedProfile, toModel, items)
+      : undefined;
   }, [modelsQuery.data, selectedProfile, shownExecution.executor]);
-  const dialogSwitchEffort = useMemo(() => {
-    if (modelSwitchDialog === undefined) return undefined;
-    if (modelSwitchDialog.editingOperationId !== undefined) {
-      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === modelSwitchDialog.editingOperationId);
-      const editedThinking = typeof entry?.input.thinking === 'string' && entry.input.thinking !== '' ? entry.input.thinking : undefined;
-      return resolveTargetSwitchEffort(modelSwitchDialog.toModel, editedThinking);
-    }
-    return resolveTargetSwitchEffort(modelSwitchDialog.toModel, modelSwitchThinking);
-  }, [modelSwitchDialog, modelSwitchThinking, modelSwitches.switches, resolveTargetSwitchEffort]);
-  const submitModelSwitch = useCallback(async (choice: {
-    readonly fromModel: string;
-    readonly toModel: string;
-    readonly mode: ModelSwitchMode;
-    readonly remember: boolean;
-    readonly effort?: string;
-    readonly editingOperationId?: string;
-    readonly editingRevision?: number;
-  }) => {
-    setModelSwitchSubmitting(true);
-    try {
-      if (choice.editingOperationId !== undefined) {
-        const existing = modelSwitches.switches.find(entry => entry.input.operationId === choice.editingOperationId)?.input.thinking;
-        const nextThinking = choice.effort !== undefined ? choice.effort : existing !== undefined && existing !== null ? null : existing;
-        await client.updateAgentModelSwitch(sessionId, MAIN_AGENT_ID, {
-          operationId: choice.editingOperationId,
-          model: choice.toModel,
-          mode: choice.mode,
-          thinking: nextThinking,
-          selectedFromModel: choice.fromModel,
-        }, choice.editingRevision);
-        modelSwitches.refresh();
-      } else {
-        const nextThinking = choice.effort !== undefined
-          ? choice.effort
-          : choice.toModel === choice.fromModel && modelSwitchThinking !== undefined
-            ? null
-            : undefined;
-        const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
-          operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
-          thinking: nextThinking, selectedFromModel: choice.fromModel,
-          intent: choice.mode === 'direct' ? 'setting' : undefined,
-        });
-        if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
-        modelSwitches.refresh();
-      }
-      setModelSwitchDialog(undefined);
-    } catch (error) {
-      pushToast({
-        tone: 'error',
-        text: t(choice.editingOperationId !== undefined ? 'modelSwitch.updateFailed' : 'modelSwitch.submitFailed', {
-          detail: error instanceof Error ? error.message : String(error),
-        }),
-      });
-      return;
-    } finally {
-      setModelSwitchSubmitting(false);
-    }
-    if (!choice.remember) return;
-    // The switch is already accepted: a preference write failure reports the
-    // unsaved preference and must not revoke the accepted operation. Only the
-    // rule table goes out — sending the whole domain would write back the
-    // default mode and ask flag this session last read, clobbering a change
-    // made in Settings meanwhile.
-    try {
-      const remembered = modelSwitchPreferencesToWire(
-        rememberModelSwitchChoice(modelSwitchPrefs, choice.fromModel, choice.toModel, choice.mode),
-      );
-      const echoed = await client.patchConfig({ model_switch: { rules: remembered.rules } });
-      queryClient.setQueryData(['config'], echoed);
-    } catch (error) {
-      pushToast({
-        tone: 'error',
-        text: t('modelSwitch.prefsSaveFailed', {
-          detail: error instanceof Error ? error.message : String(error),
-        }),
-      });
-    }
-  }, [client, modelSwitchPrefs, modelSwitches, modelSwitchThinking, queryClient, sessionId, t]);
-  // Opens the confirm panel per the effective preference, or accepts straight
-  // away when the rule/default says not to ask. `explicitMode` is the user's
-  // own choice (the same-model fresh entry), which outranks rule matching.
+  const {
+    dialogEffort: dialogSwitchEffort,
+    submitting: modelSwitchSubmitting,
+    submit: submitModelSwitch,
+    open: openModelSwitchFlow,
+    applyEffortSetting: applyMainEffortSetting,
+    noticeActions: modelSwitchActions,
+    setDialog: setModelSwitchDialog,
+  } = useModelSwitchFlow({
+    client,
+    sessionId,
+    agentId: MAIN_AGENT_ID,
+    catalogItems: modelsQuery.data?.items,
+    currentModel: currentBoundModel,
+    carriedThinking: modelSwitchThinking,
+    switches: modelSwitches,
+    rawConfigModelSwitch: configQuery.data?.model_switch,
+    profileDefaultEffort: mainProfileDefaultEffort,
+    dialog: modelSwitchDialog,
+    onChangeDialog: setModelSwitchDialogState,
+  });
   const openModelSwitchPanel = useCallback((toModel: string, explicitMode?: ModelSwitchMode) => {
-    const fromModel = currentBoundModel;
-    if (fromModel === undefined || (toModel === fromModel && explicitMode === undefined)) return;
-    const resolved = resolveModelSwitchPreferences(modelSwitchPrefs, fromModel, toModel, explicitMode);
-    if (resolved.confirm) {
-      setModelSwitchDialog({ fromModel, toModel, initialMode: resolved.mode, matchedRuleId: resolved.matchedRuleId });
-      return;
-    }
-    const { effort } = resolveTargetSwitchEffort(toModel, modelSwitchThinking);
-    void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false, effort });
-  }, [currentBoundModel, modelSwitchPrefs, modelSwitchThinking, resolveTargetSwitchEffort, submitModelSwitch]);
+    void openModelSwitchFlow(toModel, explicitMode);
+  }, [openModelSwitchFlow]);
   // A model/effort pick made while a profile switch is pending is explicit:
   // it overrides the incoming profile's pins on the switch prompt. The same
   // pick with nothing pending is what says "send this one", so it counts as
@@ -3103,71 +3019,6 @@ export function SessionView({
     }
     openModelSwitchPanel(target);
   }, [canonicalModel, currentBoundModel, executionPending, harness, openModelSwitchPanel, pendingProfile, sessionModel, state.blocks, state.loaded, state.thinkingEffort]);
-
-  const runModelSwitchAction = useCallback((
-    operationId: string,
-    run: () => Promise<unknown>,
-    failureKey: 'modelSwitch.cancelFailed' | 'modelSwitch.recoverFailed',
-  ) => {
-    setModelSwitchActionPending(operationId);
-    void run()
-      .then(() => { modelSwitches.refresh(); })
-      .catch((error: unknown) => {
-        pushToast({
-          tone: 'error',
-          text: t(failureKey, { detail: error instanceof Error ? error.message : String(error) }),
-        });
-      })
-      .finally(() => { setModelSwitchActionPending((current) => (current === operationId ? undefined : current)); });
-  }, [modelSwitches, t]);
-  // Timeline and queue rows share these actions; the timeline notice reads
-  // them from context so the Transcript renderer stays presentational.
-  const modelSwitchActions = useMemo<ModelSwitchNoticeActions>(() => ({
-    pendingOperationId: modelSwitchActionPending,
-    edit: (operationId) => {
-      const entry = modelSwitches.switches.find((candidate) => candidate.input.operationId === operationId);
-      // Only a pending operation is editable; preparing already committed to
-      // its input (and by contract cannot be cancelled either).
-      if (entry === undefined || entry.receipt.state !== 'pending') return;
-      setModelSwitchDialog({
-        fromModel: entry.receipt.fromModel,
-        toModel: canonicalModel(entry.input.model) ?? entry.receipt.toModel,
-        initialMode: entry.input.mode,
-        editingOperationId: operationId,
-        editingRevision: entry.revision,
-      });
-    },
-    cancel: (operationId) => {
-      runModelSwitchAction(
-        operationId,
-        () => client.cancelAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId),
-        'modelSwitch.cancelFailed',
-      );
-    },
-    retry: (operationId) => {
-      runModelSwitchAction(
-        operationId,
-        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry'),
-        'modelSwitch.recoverFailed',
-      );
-    },
-    // A fresh-mode retry keeps the operation id, so messages waiting on this
-    // switch keep waiting on it instead of hanging on a failed operation.
-    retryAsFresh: (operationId) => {
-      runModelSwitchAction(
-        operationId,
-        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry', 'fresh'),
-        'modelSwitch.recoverFailed',
-      );
-    },
-    keepOriginal: (operationId) => {
-      runModelSwitchAction(
-        operationId,
-        () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'keep_original'),
-        'modelSwitch.recoverFailed',
-      );
-    },
-  }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
   const persistModeChange = useCallback((
     patch: { permission_mode?: PermissionMode; plan_mode?: boolean; plan_gate?: PromptPlanGate },
     onFailure: () => void,
@@ -3228,18 +3079,8 @@ export function SessionView({
       setEffortTouched(true);
       return;
     }
-    void client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
-      operationId: crypto.randomUUID(), model: modelSwitches.dependency?.input.model ?? currentBoundModel,
-      thinking: effort === '' ? null : effort ?? null, mode: 'direct', intent: 'setting',
-    }).then(receipt => {
-      if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
-      modelSwitches.refresh();
-    }).catch((error: unknown) => {
-      pushToast({ tone: 'error', text: t('subagent.effortChangeFailed', {
-        detail: error instanceof Error ? error.message : String(error),
-      }) });
-    });
-  }, [client, currentBoundModel, executionPending, harness, initialBindingPending, modelSwitches, pendingProfile, sessionId, sessionModel, state.thinkingEffort, t]);
+    void applyMainEffortSetting(modelSwitches.dependency?.input.model ?? currentBoundModel, effort);
+  }, [applyMainEffortSetting, currentBoundModel, executionPending, harness, initialBindingPending, modelSwitches.dependency, pendingProfile, sessionModel, state.thinkingEffort]);
   // Applying an incoming binding's pins is that binding taking ownership, not
   // the user moving a control, so both flags drop together. Kept as one helper
   // because the two flags are only ever cleared as a pair.

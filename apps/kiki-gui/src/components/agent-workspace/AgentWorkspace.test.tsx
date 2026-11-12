@@ -27,6 +27,7 @@ import { registerTimelineLocator, type TimelineTarget } from '../../lib/timeline
 import { agentContinuationAvailable } from './AgentWorkspace';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
 import { useAgentTimeline } from './useAgentTimeline';
+import { useModelSwitchFlow, type ModelSwitchCatalogItem, type ModelSwitchFlowClient, type UseModelSwitchFlowResult } from './useModelSwitchFlow';
 
 const harness = vi.hoisted(() => ({
   header: null as HTMLElement | null,
@@ -3122,4 +3123,310 @@ it('does not re-render the main timeline while its composer is typed into', asyn
   await settle();
   expect(composerInput(container).value).toBe('ab');
   expect(harness.transcriptRenders).toBe(rendered);
+});
+
+const MODEL_SWITCH_CATALOG: readonly ModelSwitchCatalogItem[] = [
+  {
+    id: 'fixture/kiki-pro',
+    provider_id: 'fixture',
+    remote_id: 'kiki-pro',
+    support_efforts: ['low', 'medium', 'high'],
+    default_effort: 'medium',
+  },
+  {
+    id: 'fixture/other',
+    provider_id: 'fixture',
+    remote_id: 'other',
+    support_efforts: ['low', 'medium', 'high'],
+    default_effort: 'low',
+  },
+];
+
+it('useModelSwitchFlow handles confirm vs straight switch by rule, revision-guarded edit, failed receipt, remember failure, and cancel/recover errors', async () => {
+  const switchesList: QueuedModelSwitch[] = [
+    {
+      input: { operationId: 'op-edit', model: 'fixture/other', mode: 'direct', thinking: 'medium' },
+      revision: 7,
+      receipt: {
+        operationId: 'op-edit',
+        agentId: 'main',
+        state: 'pending',
+        mode: 'direct',
+        fromModel: 'fixture/kiki-pro',
+        toModel: 'fixture/other',
+      },
+      originalBinding: { model: 'fixture/kiki-pro', thinking: 'medium' },
+      queueIndex: 0,
+    },
+  ];
+  const refresh = vi.fn();
+  const switchesHandle = {
+    switches: switchesList,
+    active: switchesList[0],
+    setting: undefined,
+    dependency: switchesList[0],
+    loading: false,
+    error: undefined,
+    refresh,
+  };
+  const switchClient: ModelSwitchFlowClient = {
+    switchAgentModel: vi.fn().mockImplementation(async (_s, _a, input) => ({
+      operationId: input.operationId,
+      agentId: 'main',
+      state: 'pending',
+      mode: input.mode,
+      fromModel: 'fixture/kiki-pro',
+      toModel: input.model,
+    })),
+    updateAgentModelSwitch: vi.fn().mockImplementation(async (_s, _a, input) => ({
+      operationId: input.operationId,
+      agentId: 'main',
+      state: 'pending',
+      mode: input.mode,
+      fromModel: 'fixture/kiki-pro',
+      toModel: input.model,
+    })),
+    cancelAgentModelSwitch: vi.fn().mockRejectedValue(new Error('already preparing')),
+    recoverAgentModelSwitch: vi.fn().mockRejectedValue(new Error('recovery denied')),
+    getConfig: vi.fn().mockResolvedValue({}),
+    patchConfig: vi.fn().mockRejectedValue(new Error('disk read-only')),
+  };
+
+  let flow!: UseModelSwitchFlowResult;
+  function FlowProbe({ rawConfig }: { rawConfig?: Parameters<typeof useModelSwitchFlow>[0]['rawConfigModelSwitch'] }) {
+    flow = useModelSwitchFlow({
+      client: switchClient,
+      sessionId: 'session-flow',
+      agentId: 'main',
+      catalogItems: MODEL_SWITCH_CATALOG,
+      currentModel: 'fixture/kiki-pro',
+      carriedThinking: 'high',
+      switches: switchesHandle,
+      rawConfigModelSwitch: rawConfig,
+    });
+    return null;
+  }
+
+  // 1. Confirm rule opens dialog instead of submitting straight away
+  await act(async () => root.render(
+    <QueryClientProvider client={queries}>
+      <I18nProvider>
+        <FlowProbe rawConfig={{
+          default_mode: 'direct',
+          confirm: true,
+          rules: [{ id: 'rule-ask', enabled: true, mode: 'compact', confirm: true, to_models: ['fixture/other'] }],
+        }} />
+      </I18nProvider>
+    </QueryClientProvider>,
+  ));
+  await settle();
+  await act(async () => { await flow.open('fixture/other'); });
+  expect(switchClient.switchAgentModel).not.toHaveBeenCalled();
+  expect(flow.dialog).toEqual({
+    fromModel: 'fixture/kiki-pro',
+    toModel: 'fixture/other',
+    initialMode: 'compact',
+    matchedRuleId: 'rule-ask',
+  });
+
+  // 2. Non-confirm rule switches straight away without opening dialog
+  await act(async () => { flow.setDialog(undefined); });
+  await act(async () => root.render(
+    <QueryClientProvider client={queries}>
+      <I18nProvider>
+        <FlowProbe rawConfig={{
+          default_mode: 'direct',
+          confirm: true,
+          rules: [{ id: 'rule-auto', enabled: true, mode: 'fresh', confirm: false, to_models: ['fixture/other'] }],
+        }} />
+      </I18nProvider>
+    </QueryClientProvider>,
+  ));
+  await settle();
+  await act(async () => { await flow.open('fixture/other'); });
+  expect(flow.dialog).toBeUndefined();
+  expect(switchClient.switchAgentModel).toHaveBeenCalledWith(
+    'session-flow',
+    'main',
+    expect.objectContaining({
+      model: 'fixture/other',
+      mode: 'fresh',
+      thinking: 'high',
+      selectedFromModel: 'fixture/kiki-pro',
+    }),
+  );
+
+  // 3. Edit a pending switch with its revision
+  await act(async () => { flow.noticeActions.edit?.('op-edit'); });
+  expect(flow.dialog).toEqual({
+    fromModel: 'fixture/kiki-pro',
+    toModel: 'fixture/other',
+    initialMode: 'direct',
+    editingOperationId: 'op-edit',
+    editingRevision: 7,
+  });
+  await act(async () => {
+    await flow.submit({
+      fromModel: 'fixture/kiki-pro',
+      toModel: 'fixture/other',
+      mode: 'compact',
+      remember: false,
+      effort: 'low',
+      editingOperationId: 'op-edit',
+      editingRevision: 7,
+    });
+  });
+  expect(switchClient.updateAgentModelSwitch).toHaveBeenCalledWith(
+    'session-flow',
+    'main',
+    {
+      operationId: 'op-edit',
+      model: 'fixture/other',
+      mode: 'compact',
+      thinking: 'low',
+      selectedFromModel: 'fixture/kiki-pro',
+    },
+    7,
+  );
+  expect(flow.dialog).toBeUndefined();
+
+  // 4. Failed receipt keeps dialog open and toasts submitFailed
+  vi.mocked(switchClient.switchAgentModel).mockResolvedValueOnce({
+    operationId: 'op-fail',
+    agentId: 'main',
+    state: 'failed',
+    mode: 'direct',
+    fromModel: 'fixture/kiki-pro',
+    toModel: 'fixture/other',
+    error: { code: 'REJECTED', message: 'model denied by policy' },
+  });
+  await act(async () => {
+    flow.setDialog({ fromModel: 'fixture/kiki-pro', toModel: 'fixture/other', initialMode: 'direct' });
+  });
+  harness.pushToast.mockClear();
+  await act(async () => {
+    await flow.submit({
+      fromModel: 'fixture/kiki-pro',
+      toModel: 'fixture/other',
+      mode: 'direct',
+      remember: false,
+    });
+  });
+  expect(flow.dialog).toBeDefined();
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'modelSwitch.submitFailed', { detail: 'model denied by policy' }),
+  });
+
+  // 5. Remember with failing patchConfig keeps accepted switch, writes only rules, and toasts prefsSaveFailed
+  harness.pushToast.mockClear();
+  refresh.mockClear();
+  await act(async () => {
+    await flow.submit({
+      fromModel: 'fixture/kiki-pro',
+      toModel: 'fixture/other',
+      mode: 'compact',
+      remember: true,
+    });
+  });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(flow.dialog).toBeUndefined();
+  expect(switchClient.patchConfig).toHaveBeenCalledWith({
+    model_switch: {
+      rules: [expect.objectContaining({ id: 'rule-auto', mode: 'compact', confirm: false })],
+    },
+  });
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'modelSwitch.prefsSaveFailed', { detail: 'disk read-only' }),
+  });
+
+  // 6. Cancel and recover failures report their respective toasts
+  harness.pushToast.mockClear();
+  await act(async () => { flow.noticeActions.cancel?.('op-edit'); });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'modelSwitch.cancelFailed', { detail: 'already preparing' }),
+  });
+
+  harness.pushToast.mockClear();
+  await act(async () => { flow.noticeActions.retry?.('op-edit'); });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({
+    tone: 'error',
+    text: translate('en', 'modelSwitch.recoverFailed', { detail: 'recovery denied' }),
+  });
+});
+
+it('uses profile thinking default on main while subagent uses catalog default', async () => {
+  const emptySwitches = {
+    switches: [] as readonly QueuedModelSwitch[],
+    active: undefined,
+    setting: undefined,
+    dependency: undefined,
+    loading: false,
+    error: undefined,
+    refresh: vi.fn(),
+  };
+  const dummyClient: ModelSwitchFlowClient = {
+    switchAgentModel: vi.fn(),
+    updateAgentModelSwitch: vi.fn(),
+    cancelAgentModelSwitch: vi.fn(),
+    recoverAgentModelSwitch: vi.fn(),
+    getConfig: vi.fn().mockResolvedValue({}),
+    patchConfig: vi.fn().mockResolvedValue({}),
+  };
+
+  let mainFlow!: UseModelSwitchFlowResult;
+  let childFlow!: UseModelSwitchFlowResult;
+  function EffortComparisonProbe() {
+    mainFlow = useModelSwitchFlow({
+      client: dummyClient,
+      sessionId: 'session',
+      agentId: 'main',
+      catalogItems: MODEL_SWITCH_CATALOG,
+      currentModel: 'fixture/kiki-pro',
+      carriedThinking: undefined,
+      switches: emptySwitches,
+      rawConfigModelSwitch: { default_mode: 'direct', confirm: true, rules: [] },
+      profileDefaultEffort: (toModel) => (toModel === 'fixture/other' ? 'high' : undefined),
+    });
+    childFlow = useModelSwitchFlow({
+      client: dummyClient,
+      sessionId: 'session',
+      agentId: 'child',
+      catalogItems: MODEL_SWITCH_CATALOG,
+      currentModel: 'fixture/kiki-pro',
+      carriedThinking: undefined,
+      switches: emptySwitches,
+      rawConfigModelSwitch: { default_mode: 'direct', confirm: true, rules: [] },
+    });
+    return null;
+  }
+
+  await act(async () => root.render(
+    <QueryClientProvider client={queries}>
+      <I18nProvider>
+        <EffortComparisonProbe />
+      </I18nProvider>
+    </QueryClientProvider>,
+  ));
+  await settle();
+  await act(async () => {
+    await mainFlow.open('fixture/other');
+    await childFlow.open('fixture/other');
+  });
+  expect(mainFlow.dialogEffort).toEqual({
+    efforts: ['low', 'medium', 'high'],
+    defaultEffort: 'high',
+    effort: undefined,
+    adjustedFrom: undefined,
+  });
+  expect(childFlow.dialogEffort).toEqual({
+    efforts: ['low', 'medium', 'high'],
+    defaultEffort: 'low',
+    effort: undefined,
+    adjustedFrom: undefined,
+  });
 });
