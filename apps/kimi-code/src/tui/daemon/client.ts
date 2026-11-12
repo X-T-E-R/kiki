@@ -224,6 +224,16 @@ export class DaemonClient implements SessionTransport {
     return this.sessions.submitPrompt(sessionId, body);
   }
 
+  listDurableIngress(sessionId: string, options?: { readonly agentId?: string; readonly cursor?: string }) {
+    return this.klient.rest!.sessions.listPrompts(sessionId, {
+      admission: 'durable', agent_id: options?.agentId, cursor: options?.cursor,
+    });
+  }
+
+  getDurableIngress(sessionId: string, promptId: string, agentId?: string) {
+    return this.klient.rest!.sessions.getPrompt(sessionId, promptId, { admission: 'durable', agent_id: agentId });
+  }
+
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult> {
     return this.sessions.editMessage(sessionId, messageId, body);
   }

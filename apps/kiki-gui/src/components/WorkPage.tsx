@@ -26,7 +26,7 @@ import { Composer } from './Composer';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { Icon, type IconName } from './icons';
-import { isAbsoluteCwdPath, useNewSessionDraft } from './NewSessionDraft';
+import { useNewSessionDraft } from './NewSessionDraft';
 import { WorkModeMenu, type WorkModeMenuProps } from './WorkModeMenu';
 import { useWorkModes, useWindowModeId, workPresetsEnabled } from '../lib/workModeCatalog';
 import { useConnection } from '../state/connection';
@@ -68,10 +68,8 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
   const mode = useMemo(() => catalog.items.find((item) => item.id === modeId), [catalog.items, modeId]);
 
   const cwd = state.cwd.trim();
-  const sendDisabled = cwd !== ''
-    ? !isAbsoluteCwdPath(cwd)
-    : state.effectiveWorkspace === undefined && !state.autoWorkspace;
-  const showTargetHint = sendDisabled && !state.workspacesLoading;
+  const sendDisabled = !state.selectionReady || state.creationPending;
+  const showTargetHint = !state.targetReady && !state.workspacesLoading && state.workspacesError === null;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
 
   const fsSearch = useMemo(() => (
@@ -123,6 +121,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
             onChangeGoalObjective={state.setGoalObjective}
             onChangeEffort={state.setEffortOverride}
             onSend={state.send}
+            onAbort={state.cancelCreation}
             onActivateSkill={state.activateSkill}
           />
         </ContextBreakdownProvider>
@@ -136,7 +135,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
       state.effectiveWorkspace, state.agentProfileCatalogMode, fsSearch, state.attachments,
       state.setAttachments, mentionScopeKey, state.setModelOverride, state.setPermissionMode,
       state.setPlanMode, state.setGoalObjective, state.setEffortOverride, state.send,
-      state.activateSkill, t,
+      state.cancelCreation, state.activateSkill, t,
     ],
   );
   useRegisterSeat(seat);
@@ -165,6 +164,28 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
           {t('workHome.headline')}
         </h2>
         <p className="mt-2.5 max-w-[52ch] text-[13.5px] leading-[1.6] text-ink-soft">{t('workHome.subhead')}</p>
+        {showTargetHint ? <p className="mt-2 text-[12px] text-ink-faint">{t('new.noTargetHint')}</p> : null}
+        {state.workspacesError !== null && cwd === '' ? (
+          <div role="alert" data-work-workspace-failure className="mt-2 text-[12px] text-danger">
+            <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
+            <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+          </div>
+        ) : null}
+        {state.creationNotice !== null || state.hasCreationIntent ? (
+          <div role="status" data-work-creation-recovery className="mt-3 text-[13px] leading-relaxed text-ink-soft">
+            <p>{state.creationNotice}</p>
+            {!state.creationPending ? (
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
+                {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
+                <button type="button" disabled={state.checkingCreation} onClick={state.startNewCreation} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.startAnotherCreation')}</button>
+                <button type="button" disabled={state.checkingCreation} onClick={state.dismissCreationIntent} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.dismissCreation')}</button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {state.hasPreviousCreation && !state.creationPending ? <button type="button" disabled={state.checkingCreation} onClick={state.restorePreviousCreation} className="mt-2 rounded py-1 text-[13px] text-ink-soft underline underline-offset-2">{t('new.restorePreviousCreation')}</button> : null}
+        {state.error !== null ? <p role="alert" className="mt-2 text-[13px] text-danger">{state.error}</p> : null}
 
         <div className="mt-6 flex items-center justify-between border-t border-hairline pt-4">
           <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workHome.startHeading')}</p>

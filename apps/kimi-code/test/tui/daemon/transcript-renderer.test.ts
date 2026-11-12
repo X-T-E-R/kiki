@@ -1,4 +1,5 @@
 import { Container, visibleWidth } from '@kiki/pi-tui';
+import type { PromptItem } from '@kiki/protocol';
 import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -225,6 +226,66 @@ describe('DaemonTranscriptRenderer', () => {
     expect(strip(mounted!.render(80).join('\n'))).not.toContain(label);
   });
 
+  it('projects failed, cancelled, and held durable requests without duplicating canonical user blocks', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const ingress: PromptItem[] = [
+      {
+        prompt_id: 'failed-prompt',
+        user_message_id: 'failed-user',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Failed durable request' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+        admission: 'failed',
+        admission_error: { code: 500, message: 'Provider refused the saved prompt' },
+      },
+      {
+        prompt_id: 'cancelled-prompt',
+        user_message_id: 'cancelled-user',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Cancelled durable request' }],
+        created_at: '2026-01-01T00:00:01.000Z',
+        admission: 'cancelled',
+      },
+      {
+        prompt_id: 'held-prompt',
+        user_message_id: 'held-user',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Held durable request' }],
+        created_at: '2026-01-01T00:00:02.000Z',
+        admission: 'held',
+      },
+    ];
+
+    renderer.sync([], ingress);
+    expect(container.children).toHaveLength(3);
+    const recovered = strip(container.render(100).join('\n'));
+    expect(recovered).toContain('Failed durable request');
+    expect(recovered).toContain('Prompt failed before delivery');
+    expect(recovered).toContain('Provider refused the saved prompt');
+    expect(recovered).toContain('Cancelled durable request');
+    expect(recovered).toContain('Prompt aborted before delivery');
+    expect(recovered).toContain('Held durable request');
+    expect(recovered).toContain('Prompt held · check the saved prompt before retrying');
+
+    const canonical: Block = {
+      kind: 'user',
+      id: 'user-failed',
+      promptId: 'failed-prompt',
+      text: 'Canonical failed request',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      promptOutcome: { status: 'failed', delivered: false, error: 'Canonical admission detail' },
+    };
+    renderer.sync([canonical], ingress);
+    expect(container.children).toHaveLength(3);
+    const withCanonical = strip(container.render(100).join('\n'));
+    expect(withCanonical.match(/Canonical failed request/g)).toHaveLength(1);
+    expect(withCanonical).toContain('Canonical admission detail');
+    expect(withCanonical).not.toContain('Failed durable request');
+    expect(withCanonical).toContain('Cancelled durable request');
+    expect(withCanonical).toContain('Held durable request');
+  });
+
   it('updates steer delivery labels without leaving a success label', () => {
     const container = new Container();
     const renderer = new DaemonTranscriptRenderer(container);
@@ -238,8 +299,14 @@ describe('DaemonTranscriptRenderer', () => {
     expect(strip(container.render(80).join('\n'))).toContain('Sending');
     renderer.sync([{ ...user, steerStatus: 'waiting' }]);
     expect(strip(container.render(80).join('\n'))).toContain('Waiting for delivery');
+    renderer.sync([{ ...user, steerStatus: 'preparing' }]);
+    expect(strip(container.render(80).join('\n'))).toContain('Preparing delivery…');
+    renderer.sync([{ ...user, steerStatus: 'unconfirmed' }]);
+    expect(strip(container.render(80).join('\n'))).toContain('Delivery unconfirmed · check the queue before retrying');
+    renderer.sync([{ ...user, steerStatus: 'held' }]);
+    expect(strip(container.render(80).join('\n'))).toContain('Prompt held · check the saved prompt before retrying');
     renderer.sync([user]);
-    expect(strip(container.render(80).join('\n'))).not.toMatch(/Sending|Waiting|Delivered/);
+    expect(strip(container.render(80).join('\n'))).not.toMatch(/Sending|Waiting|Preparing|unconfirmed|held|Delivered/);
   });
 
   it('renders structured media on user and assistant blocks', () => {

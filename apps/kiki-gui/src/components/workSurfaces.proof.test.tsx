@@ -20,7 +20,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkPresetMutationResponse } from '@kiki/protocol';
 
 import { ConversationShell } from './ConversationShell';
@@ -142,14 +142,14 @@ vi.mock('../state/connection', () => {
   };
 });
 vi.mock('../i18n', () => ({ I18nProvider: ({ children }: { children: ReactNode }) => children, useI18n: () => ({ t: (key: string, params?: Record<string, string>) => (COPY[key] ?? key).replace(/\{(\w+)\}/g, (m, n: string) => params?.[n] ?? m), locale: 'en', time: {} }) }));
-vi.mock('../NewSessionDraft', () => ({
-  useNewSessionDraft: () => DRAFT,
-  isAbsoluteCwdPath: (value: string) => /^\/[A-Za-z]:/.test(value),
+vi.mock('./NewSessionDraft', () => ({ useNewSessionDraft: () => draft }));
+vi.mock('./Composer', () => ({
+  Composer: ({ disabled, sendDisabled, sendDisabledTitle, onAbort }: import('react').ComponentProps<typeof import('./Composer').Composer>) => (
+    <div data-proof-composer data-disabled={disabled} data-send-disabled={sendDisabled} title={sendDisabledTitle}>
+      <button type="button" className="hidden" data-proof-abort onClick={onAbort}>Stop</button>
+    </div>
+  ),
 }));
-vi.mock('./Composer', async () => {
-  const actual = await vi.importActual<Record<string, unknown>>('./Composer');
-  return { ...actual, Composer: () => <div data-proof-composer /> };
-});
 vi.mock('./ContextMeter', () => ({ ContextBreakdownProvider: ({ children }: { children: ReactNode }) => <>{children}</> }) as Record<string, unknown>);
 vi.mock('./host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('./preview/PdfPageView', () => ({
@@ -179,6 +179,13 @@ const COPY: Record<string, string> = {
   'workHome.task.tables': 'Compare two tables',
   'workHome.task.tablesBody': 'Match CSV or .xlsx by key and report what changed.',
   'new.title': 'New session',
+  'new.workspaceLoadFailed': 'Could not load workspaces: {detail}. Retry, choose automatic creation, or enter an absolute folder path.',
+  'new.recoverCreation': 'Check and continue',
+  'new.openCreatedSession': 'Open created session',
+  'new.startAnotherCreation': 'Start another conversation',
+  'new.restorePreviousCreation': 'Restore previous attempt',
+  'new.dismissCreation': 'Dismiss',
+  'common.retry': 'Retry',
   'workMode.aria': 'Window mode',
   'workMode.menu': 'Change window mode',
   'workMode.appliesToWindow': 'Applies to this window. Other windows on this space keep their own mode.',
@@ -232,9 +239,13 @@ const COPY: Record<string, string> = {
 
 const DRAFT = {
   persona: undefined, personaPending: false, selectPersona: () => {}, dailyPersonaId: undefined, dailyPersonaName: undefined,
-  draft: '', attachments: [], busy: false, error: undefined, workspaceId: 'ws-1', cwd: '', permissionMode: 'manual', planMode: false,
+  draft: '', attachments: [], busy: false, error: null, workspaceId: 'ws-1', cwd: '', permissionMode: 'manual', planMode: false,
   goalObjective: '', modelOverride: undefined, agentProfile: undefined, execution: undefined, setExecution: () => {},
-  workspaces: [], workspacesLoading: false, effectiveWorkspace: { id: 'ws-1', name: 'Documents' }, autoWorkspace: false,
+  workspaces: [], workspacesLoading: false, workspacesError: null, retryWorkspaces: vi.fn(), effectiveWorkspace: { id: 'ws-1', name: 'Documents' }, autoWorkspace: false,
+  selectionReady: true, targetReady: true, creationPending: false, cancelCreation: vi.fn(),
+  creationNotice: null, hasCreationIntent: false, createdSessionId: undefined, checkingCreation: false,
+  retryCreation: vi.fn(), openCreatedSession: vi.fn(), startNewCreation: vi.fn(), dismissCreationIntent: vi.fn(),
+  hasPreviousCreation: false, restorePreviousCreation: vi.fn(),
   worktreeAvailability: undefined, worktreeRequested: false, setWorktreeRequested: () => {}, ephemeral: false, setEphemeral: () => {},
   agentProfileCatalogMode: 'global', agentProfileCatalogPending: false, needsProviderSetup: false, sshLabel: null,
   canBrowseForWorkspace: false, browseForWorkspace: () => {}, serverDefaultModel: undefined, inheritedDefault: 'axon/gpt-6.1-sol',
@@ -242,9 +253,11 @@ const DRAFT = {
   selectWorkspace: () => {}, setCwd: () => {}, setPermissionMode: () => {}, setPlanMode: () => {}, setGoalObjective: () => {},
   setModelOverride: () => {}, setAgentProfile: () => {}, setEffortOverride: () => {}, send: () => {}, activateSkill: () => {},
 };
+let draft: import('./NewSessionDraft').NewSessionDraftState;
 
 let root: Root;
 let container: HTMLDivElement;
+const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 /**
  * Renders the mounted markup in a real browser with Kiki's own token CSS, so
@@ -300,8 +313,12 @@ async function mountInShell(node: ReactNode): Promise<void> {
   });
 }
 
-afterEach(() => { act(() => { root.unmount(); }); });
+beforeAll(() => { reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true; });
+afterAll(() => { reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = false; });
+afterEach(() => { act(() => { root.unmount(); }); container.remove(); });
 beforeEach(async () => {
+  vi.clearAllMocks();
+  draft = { ...DRAFT } as unknown as import('./NewSessionDraft').NewSessionDraftState;
   fixture.response = 'office';
   fixture.items = [kikiItem, workItem];
   fixture.enableCalls.length = 0;
@@ -461,6 +478,69 @@ describe('work surfaces — visual proof', () => {
     await shoot('work-home-390', 390, 780);
     expect(container.querySelectorAll('[data-work-task]').length).toBe(4);
     expect(container.querySelector('[data-proof-composer]')).not.toBeNull();
+  });
+
+  it.each([
+    [false, false, true],
+    [true, true, true],
+    [true, false, false],
+  ])('work home gates send for selectionReady=%s and creationPending=%s', async (selectionReady, creationPending, sendDisabled) => {
+    draft = { ...draft, selectionReady, creationPending };
+    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
+    const composer = container.querySelector('[data-proof-composer]');
+    expect(composer?.getAttribute('data-send-disabled')).toBe(String(sendDisabled));
+    expect(composer?.getAttribute('data-disabled')).toBe('false');
+    expect(composer?.getAttribute('title')).toBeNull();
+  });
+
+  it('work home lets the composer cancel a pending creation', async () => {
+    draft = { ...draft, busy: true, creationPending: true };
+    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-proof-abort]')!.click(); });
+    expect(draft.cancelCreation).toHaveBeenCalledOnce();
+  });
+
+  it('work home reports failed workspace reads with retry rather than a missing-target hint', async () => {
+    draft = { ...draft, selectionReady: false, targetReady: false, workspacesError: 'workspace list unavailable' };
+    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
+    const failure = container.querySelector('[data-work-workspace-failure]');
+    expect(failure?.textContent).toContain('workspace list unavailable');
+    expect(container.textContent).not.toContain('new.noTargetHint');
+    expect(container.querySelector('[data-proof-composer]')?.getAttribute('title')).toBeNull();
+    await act(async () => { failure!.querySelector<HTMLButtonElement>('button')!.click(); });
+    expect(draft.retryWorkspaces).toHaveBeenCalledOnce();
+  });
+
+  it('work home offers creation recovery, open, new-attempt, dismiss and previous-attempt actions', async () => {
+    draft = {
+      ...draft,
+      hasCreationIntent: true,
+      creationNotice: 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.',
+      createdSessionId: 'session-example',
+      hasPreviousCreation: true,
+      error: 'Session creation failed.',
+    };
+    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
+    const recovery = container.querySelector('[data-work-creation-recovery]');
+    expect(recovery?.textContent).toContain('Creation is not confirmed yet. Check the result to continue with the same session.');
+    expect(container.textContent).toContain('Session creation failed.');
+    const buttons = [...recovery!.querySelectorAll<HTMLButtonElement>('button')];
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Check and continue', 'Open created session', 'Start another conversation', 'Dismiss',
+    ]);
+    await act(async () => { for (const button of buttons) button.click(); });
+    for (const action of [draft.retryCreation, draft.openCreatedSession, draft.startNewCreation, draft.dismissCreationIntent]) expect(action).toHaveBeenCalledOnce();
+    const restore = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Restore previous attempt');
+    await act(async () => { restore!.click(); });
+    expect(draft.restorePreviousCreation).toHaveBeenCalledOnce();
+    await shoot('work-home-recovery', 780, 900);
+  });
+
+  it('work home keeps recovery actions unavailable while creation is pending', async () => {
+    draft = { ...draft, creationNotice: 'Creating…', hasCreationIntent: true, creationPending: true };
+    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
+    expect(container.querySelector('[data-work-creation-recovery]')?.textContent).toContain('Creating…');
+    expect(container.querySelector('[data-work-creation-recovery] button')).toBeNull();
   });
 
   it('preview: a rendered Office page, with page navigation', async () => {

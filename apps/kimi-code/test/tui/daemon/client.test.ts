@@ -5,6 +5,7 @@ import { DaemonClient } from '#/tui/daemon/client';
 
 function fakeKlient() {
   const sessions = { list: vi.fn(), create: vi.fn() };
+  const durablePrompts = { getPrompt: vi.fn(), listPrompts: vi.fn() };
   const personas = { list: vi.fn() };
   const agent = {
     prompt: vi.fn(),
@@ -23,10 +24,11 @@ function fakeKlient() {
   const session = vi.fn(() => ({ agent: vi.fn(() => agent), interactions, commands, agents: vi.fn() }));
   const klient = {
     global: { sessions, personas, kosong: { listModels: vi.fn() } },
+    rest: { sessions: durablePrompts },
     session,
     close: vi.fn(),
   };
-  return { klient, sessions, personas, agent, interactions, commands };
+  return { klient, sessions, durablePrompts, personas, agent, interactions, commands };
 }
 
 function requestUrl(input: string | URL | Request): string {
@@ -54,6 +56,31 @@ describe('DaemonClient', () => {
 
     expect(fake.sessions.create).toHaveBeenCalledWith({ workDir: 'C:\\repo' });
     expect(fake.agent.runShellCommand).toHaveBeenCalledWith({ command: 'pwd' });
+  });
+
+  it('delegates durable ingress reads through klient REST with admission, agent, and cursor filters', async () => {
+    const fake = fakeKlient();
+    fake.durablePrompts.getPrompt.mockResolvedValue({ prompt_id: 'prompt-1', admission: 'held' });
+    fake.durablePrompts.listPrompts.mockResolvedValue({ ingress: [], ingress_next_cursor: 'next-page' });
+    const client = new DaemonClient({
+      url: 'http://127.0.0.1:57580',
+      token: 'secret',
+      klient: fake.klient as never,
+    });
+
+    await expect(client.getDurableIngress('session-1', 'prompt-1', 'agent-1')).resolves.toEqual({
+      prompt_id: 'prompt-1', admission: 'held',
+    });
+    await expect(client.listDurableIngress('session-1', { agentId: 'agent-2', cursor: 'cursor-1' })).resolves.toEqual({
+      ingress: [], ingress_next_cursor: 'next-page',
+    });
+
+    expect(fake.durablePrompts.getPrompt).toHaveBeenCalledExactlyOnceWith('session-1', 'prompt-1', {
+      admission: 'durable', agent_id: 'agent-1',
+    });
+    expect(fake.durablePrompts.listPrompts).toHaveBeenCalledExactlyOnceWith('session-1', {
+      admission: 'durable', agent_id: 'agent-2', cursor: 'cursor-1',
+    });
   });
 
   it('forwards persona binding and lists global persona summaries through klient facades', async () => {

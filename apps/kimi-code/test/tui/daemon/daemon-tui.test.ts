@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Session, SessionSnapshotResponse } from '@kiki/protocol';
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
 import type { TranscriptOpsCatchupResponse, TranscriptResponse } from '@kiki/transcript';
-import { SessionController } from '@kiki/session-core/session/sessionController';
+import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import { DEFAULT_TUI_CONFIG } from '#/tui/config';
@@ -196,6 +196,12 @@ function driver(
       content: [{ type: 'text', text: 'prompt' }],
       created_at: '2026-01-01T00:00:00.000Z',
     })),
+    sendPromptNow: vi.fn<SessionController['sendPromptNow']>(async (input) => {
+      input.onAcknowledged?.();
+      return { promptId: input.promptId!, outcome: 'accepted' };
+    }),
+    steerQueued: vi.fn<SessionController['steerQueued']>().mockResolvedValue({ outcome: 'accepted' }),
+    getPendingSteers: vi.fn<SessionController['getPendingSteers']>().mockReturnValue([]),
     abortActive: vi.fn(),
     close: vi.fn(),
     handleSessionRecord: vi.fn(),
@@ -246,6 +252,7 @@ function driver(
       close(): Promise<void>;
     };
     handleInput(text: string): Promise<void>;
+    clearAttachments(): Promise<void>;
     handleClipboardPaste(): Promise<boolean>;
     ownInvalidUpload(fileId: string): Promise<void>;
     handleSlash(text: string): Promise<void>;
@@ -288,7 +295,8 @@ function driver(
     promptWithSkills: vi.fn(),
     steer: vi.fn(),
     compact: vi.fn(async () => true),
-    getTasks: vi.fn(async () => []),
+    getTasks: vi.fn<import('@kiki/klient').AgentHandle['getTasks']>().mockResolvedValue([]),
+    detachTask: vi.fn<import('@kiki/klient').AgentHandle['detachTask']>(),
     stopTask: vi.fn(),
     getTaskOutput: vi.fn(async () => 'task output'),
     getUsage: vi.fn(async () => ({ total: {} })),
@@ -442,6 +450,377 @@ afterEach(async () => {
   for (const home of temporaryHomes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
+describe('DaemonTUI steering and background shortcuts', () => {
+  it('sends a busy draft immediately and clears it only when acknowledged', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controllerState.queuedPromptIds = ['parked'];
+    let acknowledge: (() => void) | undefined;
+    let resolve: ((result: Awaited<ReturnType<SessionController['sendPromptNow']>>) => void) | undefined;
+    controller.sendPromptNow.mockImplementationOnce((input) => {
+      acknowledge = input.onAcknowledged;
+      return new Promise((done) => { resolve = done; });
+    });
+    tui.state.editor.setText('change direction');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+    expect(controller.sendPromptNow).toHaveBeenCalledWith(expect.objectContaining({ text: 'change direction', promptId: expect.any(String) }));
+    expect(tui.state.editor.getText()).toBe('change direction');
+    acknowledge!();
+    expect(tui.state.editor.getText()).toBe('');
+    resolve!({ promptId: 'now', outcome: 'accepted' });
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('Prompt steering: accepted.', expect.objectContaining({ transient: true })));
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(controller.steerQueued).not.toHaveBeenCalled();
+  });
+
+  it('blocks repeated Ctrl+S and Enter while send-now is pending but keeps typing enabled', async () => {
+    const { tui, controller, controllerState } = driver();
+    controllerState.busy = true;
+    let acknowledge: (() => void) | undefined;
+    let resolve: ((result: Awaited<ReturnType<SessionController['sendPromptNow']>>) => void) | undefined;
+    controller.sendPromptNow.mockImplementationOnce((input) => {
+      acknowledge = input.onAcknowledged;
+      return new Promise((done) => { resolve = done; });
+    });
+
+    tui.state.editor.setText('change direction');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+    expect(tui.state.editor.disableSubmit).toBe(true);
+
+    tui.state.editor.handleInput('!');
+    expect(tui.state.editor.getText()).toBe('change direction!');
+    tui.state.editor.handleInput('\u0013');
+    tui.state.editor.handleInput('\r');
+    expect(controller.sendPromptNow).toHaveBeenCalledOnce();
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(tui.state.editor.getText()).toBe('change direction!');
+
+    acknowledge!();
+    resolve!({ promptId: 'now', outcome: 'accepted' });
+    await vi.waitFor(() => expect(tui.state.editor.disableSubmit).toBe(false));
+    expect(tui.state.editor.getText()).toBe('change direction!');
+  });
+
+  it('preserves edits made while a send-now acknowledgement is in flight', async () => {
+    const { tui, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controller.sendPromptNow.mockImplementationOnce(async (input) => {
+      tui.state.editor.setText('next draft');
+      input.onAcknowledged?.();
+      return { promptId: input.promptId!, outcome: 'steered' };
+    });
+    tui.state.editor.setText('send this');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+    expect(tui.state.editor.getText()).toBe('next draft');
+  });
+
+  it('steers structured media, file attachments and inline skills through the shared controller', async () => {
+    const { tui, internal, controller, controllerState, agentFacade } = driver();
+    controllerState.busy = true;
+    internal.skillCommands.set('review', { commandName: 'review', name: 'review', description: 'Review changes' });
+    const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'image-upload');
+    internal.fileAttachments.set(1, { id: 1, fileId: 'file-upload', expiresAt: freshUploadExpiry(), sourcePath: 'C:/fixture/input.txt', name: 'input.txt', mediaType: 'text/plain', size: 5, placeholder: '[file #1 input.txt]' });
+    tui.state.editor.setText(`inspect /review ${image.placeholder} [file #1 input.txt]`);
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+    const input = controller.sendPromptNow.mock.calls[0]![0];
+    expect(input.skills).toEqual([{ name: 'review' }]);
+    expect(input.content).toEqual([
+      { type: 'text', text: 'inspect /review ' },
+      { type: 'image', source: { kind: 'file', file_id: 'image-upload' } },
+      { type: 'text', text: ' ' },
+      { type: 'file', file_id: 'file-upload', name: 'input.txt', media_type: 'text/plain', size: 5 },
+    ]);
+    expect(tui.state.editor.getText()).toBe('');
+    expect(internal.imageAttachments.get(image.id)).toBeUndefined();
+    expect(internal.fileAttachments.has(1)).toBe(false);
+    expect(internal.attachmentSettlementLeases.has(`prompt:session-1:${input.promptId}`)).toBe(true);
+    expect(agentFacade.promptWithSkills).not.toHaveBeenCalled();
+  });
+
+  it('retains submitted image and file references when an edited draft keeps their placeholders', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    let acknowledge: (() => void) | undefined;
+    let resolve: ((result: Awaited<ReturnType<SessionController['sendPromptNow']>>) => void) | undefined;
+    controller.sendPromptNow.mockImplementationOnce((input) => {
+      acknowledge = input.onAcknowledged;
+      return new Promise((done) => { resolve = done; });
+    });
+    const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'retained-image');
+    internal.fileAttachments.set(1, { id: 1, fileId: 'retained-file', expiresAt: freshUploadExpiry(), sourcePath: 'C:/fixture/input.txt', name: 'input.txt', mediaType: 'text/plain', size: 5, placeholder: '[file #1 input.txt]' });
+    const submitted = `inspect ${image.placeholder} [file #1 input.txt]`;
+    const edited = `${submitted} with a comparison`;
+    tui.state.editor.setText(submitted);
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+    const sentContent = controller.sendPromptNow.mock.calls[0]![0].content;
+    expect(sentContent).toEqual([
+      { type: 'text', text: 'inspect ' },
+      { type: 'image', source: { kind: 'file', file_id: 'retained-image' } },
+      { type: 'text', text: ' ' },
+      { type: 'file', file_id: 'retained-file', name: 'input.txt', media_type: 'text/plain', size: 5 },
+    ]);
+
+    tui.state.editor.setText(edited);
+    acknowledge!();
+    expect(tui.state.editor.getText()).toBe(edited);
+    resolve!({ promptId: 'first-steer', outcome: 'accepted' });
+    await vi.waitFor(() => expect(tui.state.editor.disableSubmit).toBe(false));
+    expect(internal.imageAttachments.get(image.id)).toBeDefined();
+    expect(internal.fileAttachments.has(1)).toBe(true);
+    expect(internal.attachmentSettlementLeases.size).toBe(0);
+
+    controllerState.busy = false;
+    await internal.handleInput(edited);
+    expect(controller.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      text: edited,
+      content: expect.arrayContaining(sentContent!),
+    }));
+  });
+
+  it.each(['accepted', 'steered', 'started', 'queued'] as const)(
+    'hands staged media off only after the final %s result when acknowledgement emptied the editor',
+    async (outcome) => {
+      const { tui, internal, controller, controllerState } = driver();
+      controllerState.busy = true;
+      let acknowledge: (() => void) | undefined;
+      let resolve: ((result: Awaited<ReturnType<SessionController['sendPromptNow']>>) => void) | undefined;
+      controller.sendPromptNow.mockImplementationOnce((input) => {
+        acknowledge = input.onAcknowledged;
+        return new Promise((done) => { resolve = done; });
+      });
+      const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'handoff-after-result');
+      tui.state.editor.setText(`inspect ${image.placeholder}`);
+      tui.state.editor.handleInput('\u0013');
+      await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+      const promptId = controller.sendPromptNow.mock.calls[0]![0].promptId!;
+
+      acknowledge!();
+      expect(tui.state.editor.getText()).toBe('');
+      expect(internal.imageAttachments.get(image.id)).toBeDefined();
+      expect(internal.attachmentSettlementLeases.size).toBe(0);
+
+      resolve!({ promptId, outcome });
+      await vi.waitFor(() => expect(tui.state.editor.disableSubmit).toBe(false));
+      expect(internal.imageAttachments.get(image.id)).toBeUndefined();
+      expect(internal.attachmentSettlementLeases.has(`prompt:session-1:${promptId}`)).toBe(true);
+    },
+  );
+
+  it.each(['restoring', 'held'] as const)(
+    'keeps draft-owned staged image and file media when send-now is deferred as %s',
+    async (outcome) => {
+      const { tui, internal, controller, controllerState } = driver();
+      controllerState.busy = true;
+      controller.sendPromptNow.mockImplementationOnce(async (input) => {
+        input.onAcknowledged?.();
+        return { promptId: input.promptId!, outcome };
+      });
+      const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'deferred-image');
+      internal.fileAttachments.set(1, { id: 1, fileId: 'deferred-file', expiresAt: freshUploadExpiry(), sourcePath: 'C:/fixture/input.txt', name: 'input.txt', mediaType: 'text/plain', size: 5, placeholder: '[file #1 input.txt]' });
+      tui.state.editor.setText(`inspect ${image.placeholder} [file #1 input.txt]`);
+      tui.state.editor.handleInput('\u0013');
+
+      await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledOnce());
+      expect(internal.imageAttachments.get(image.id)).toBeDefined();
+      expect(internal.fileAttachments.has(1)).toBe(true);
+      expect(internal.attachmentSettlementLeases.size).toBe(0);
+      expect(internal.showStatus).toHaveBeenCalledWith(`Prompt steering: ${outcome}.`, expect.objectContaining({ transient: true }));
+    },
+  );
+
+  it('restores a legacy-refused send-now draft after acknowledgement when the editor is empty', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controller.sendPromptNow.mockImplementationOnce(async (input) => {
+      input.onAcknowledged?.();
+      throw new SendNowError('refused', new Error('legacy server refused the steer'));
+    });
+    tui.state.editor.setText('keep this draft');
+    tui.state.editor.handleInput('\u0013');
+
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('legacy server refused the steer', 'error'));
+    expect(tui.state.editor.getText()).toBe('keep this draft');
+    expect(tui.state.editor.disableSubmit).toBe(false);
+  });
+
+  it('leaves unknown-send uploads for TTL expiry when clearing staged attachments', async () => {
+    const { tui, internal, controller, controllerState, filesFacade } = driver();
+    controllerState.busy = true;
+    const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'unconfirmed-image');
+    internal.fileAttachments.set(1, { id: 1, fileId: 'unconfirmed-file', expiresAt: freshUploadExpiry(), sourcePath: 'C:/fixture/input.txt', name: 'input.txt', mediaType: 'text/plain', size: 5, placeholder: '[file #1 input.txt]' });
+    controller.sendPromptNow.mockRejectedValueOnce(new SendNowError('unknown', new Error('reply lost')));
+    tui.state.editor.setText(`inspect ${image.placeholder} [file #1 input.txt]`);
+    tui.state.editor.handleInput('\u0013');
+
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error'));
+    await internal.clearAttachments();
+
+    expect(internal.imageAttachments.get(image.id)).toBeUndefined();
+    expect(internal.fileAttachments.size).toBe(0);
+    expect(filesFacade.delete).not.toHaveBeenCalledWith('unconfirmed-image');
+    expect(filesFacade.delete).not.toHaveBeenCalledWith('unconfirmed-file');
+  });
+
+  it('keeps an unacknowledged draft and its media after a failed send', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controller.sendPromptNow.mockRejectedValueOnce(new Error('send failed'));
+    const image = internal.imageAttachments.addImage(new Uint8Array([1]), 'image/png', 20, 10, undefined, 'image-upload');
+    const text = `inspect ${image.placeholder}`;
+    tui.state.editor.setText(text);
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('send failed', 'error'));
+    expect(tui.state.editor.getText()).toBe(text);
+    expect(internal.imageAttachments.get(image.id)).toBeDefined();
+    expect(tui.state.editor.disableSubmit).toBe(false);
+
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPromptNow).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not resubmit matching unconfirmed text through Ctrl+S and Enter', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    const text = 'possibly delivered already';
+    controller.getPendingSteers.mockReturnValue([{
+      promptId: 'unconfirmed-steer',
+      text,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      phase: 'unconfirmed',
+    }]);
+    tui.state.editor.setText(text);
+
+    tui.state.editor.handleInput('\u0013');
+    tui.state.editor.handleInput('\r');
+
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error'));
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+    expect(tui.state.editor.getText()).toBe(text);
+  });
+
+  it.each([
+    { outcome: 'accepted' as const },
+    { outcome: 'steered' as const },
+    { outcome: 'started' as const },
+    { outcome: 'queued' as const, reason: 'executor_deferred' as const },
+    { outcome: 'not_pending' as const, reason: 'prompt_no_longer_pending' as const },
+    { outcome: 'unconfirmed' as const },
+    { outcome: 'failed' as const },
+    { outcome: 'cancelled' as const },
+  ])('steers the first parked prompt and reports $outcome accurately', async (result) => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controllerState.queuedPromptIds = ['first', 'second'];
+    controller.steerQueued.mockResolvedValueOnce(result);
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.steerQueued).toHaveBeenCalledExactlyOnceWith('first'));
+    const reason = result.reason === undefined ? '.' : ` (${result.reason.replaceAll('_', ' ')}).`;
+    expect(internal.showStatus).toHaveBeenCalledWith(`Prompt steering: ${result.outcome.replaceAll('_', ' ')}${reason}`, { tone: result.outcome === 'failed' ? 'error' : 'normal', transient: true });
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '!echo hello'])('gives a transient notice when no input is steerable (%s)', async (text) => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    tui.state.editor.setText(text);
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('No prompt to steer.', { transient: true }));
+    expect(tui.state.editor.getText()).toBe(text);
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+  });
+
+  it('steers parked input without submitting or clearing a bash draft', async () => {
+    const { tui, controller, controllerState } = driver();
+    controllerState.busy = true;
+    controllerState.queuedPromptIds = ['parked'];
+    tui.state.editor.setInputMode('bash');
+    tui.state.editor.setText('echo hello');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.steerQueued).toHaveBeenCalledExactlyOnceWith('parked'));
+    expect(tui.state.editor.getText()).toBe('echo hello');
+    expect(tui.state.editor.inputMode).toBe('bash');
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+  });
+
+  it('submits ordinary idle input through the native editor submit path', async () => {
+    const { tui, controller } = driver();
+    tui.state.editor.setText('ordinary input');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(controller.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ text: 'ordinary input' })));
+    expect(tui.state.editor.getText()).toBe('');
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+  });
+
+  it('keeps slash commands on their normal command path while busy', async () => {
+    const { tui, controller, controllerState } = driver();
+    controllerState.busy = true;
+    const focus = vi.spyOn(tui.state.ui, 'setFocus');
+    tui.state.editor.setText('/help');
+    tui.state.editor.handleInput('\u0013');
+    await vi.waitFor(() => expect(focus).toHaveBeenCalled());
+    expect(controller.sendPromptNow).not.toHaveBeenCalled();
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  const foreground = { kind: 'process' as const, taskId: 'foreground', description: 'Task', command: 'example-command', pid: 1, exitCode: null, status: 'running' as const, detached: false, startedAt: 1, endedAt: null };
+
+  it('moves only live foreground tasks to background using their authoritative task receipts', async () => {
+    const { tui, internal, controllerState, agentFacade, sessionFacade } = driver();
+    controllerState.busy = true;
+    agentFacade.getTasks.mockResolvedValueOnce([
+      foreground,
+      { ...foreground, taskId: 'second' },
+      { ...foreground, taskId: 'background', detached: true },
+      { ...foreground, taskId: 'finished', status: 'completed', endedAt: 2 },
+      { ...foreground, taskId: 'unknown', detached: undefined },
+    ]);
+    agentFacade.detachTask.mockImplementation(async (taskId) => ({ ...foreground, taskId, detached: true }));
+    tui.state.editor.handleInput('\u0002');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('Moved 2 foreground tasks to background.', { transient: true }));
+    expect(agentFacade.getTasks).toHaveBeenCalledExactlyOnceWith({ activeOnly: true });
+    expect(sessionFacade.agent).toHaveBeenCalledWith('main');
+    expect(agentFacade.detachTask.mock.calls).toEqual([['foreground'], ['second']]);
+  });
+
+  it('reports pure model streaming without claiming there is a foreground task', async () => {
+    const { tui, internal, controllerState, agentFacade } = driver();
+    controllerState.busy = true;
+    tui.state.editor.handleInput('\u0002');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('No foreground task to move to background.', { transient: true }));
+    expect(agentFacade.detachTask).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a task that finished before detach was moved to background', async () => {
+    const { tui, internal, controllerState, agentFacade } = driver();
+    controllerState.busy = true;
+    agentFacade.getTasks.mockResolvedValueOnce([foreground]);
+    agentFacade.detachTask.mockResolvedValueOnce({ ...foreground, status: 'completed', endedAt: 2 });
+    tui.state.editor.handleInput('\u0002');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('No foreground task to move to background.', { transient: true }));
+  });
+
+  it('reports detach failures without a success notice', async () => {
+    const { tui, internal, controllerState, agentFacade } = driver();
+    controllerState.busy = true;
+    agentFacade.getTasks.mockResolvedValueOnce([foreground]);
+    agentFacade.detachTask.mockRejectedValueOnce(new Error('detach failed'));
+    tui.state.editor.handleInput('\u0002');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('detach failed', 'error'));
+  });
+
+  it('leaves Ctrl+B to the editor when idle', () => {
+    const { tui, agentFacade } = driver();
+    expect(tui.state.editor.onCtrlB?.()).toBe(false);
+    expect(agentFacade.getTasks).not.toHaveBeenCalled();
+  });
+});
+
 describe('DaemonTUI commands', () => {
   it.each([80, 60, 24])('opens readable production help at %s columns and restores the draft', async (width) => {
     const { tui, internal, controllerState } = driver();
@@ -470,6 +849,9 @@ describe('DaemonTUI commands', () => {
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
       'type / in the input box', 'Ctrl+-',
       'press twice over a draft', '/stop',
+      'Send the draft into the running turn',
+      'with empty input, steer the next queued prompt',
+      'Move foreground tasks to background',
     ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
     controllerState.busy = true;
     (tui as unknown as { renderActivityState(view: unknown): void }).renderActivityState({
@@ -2596,6 +2978,7 @@ describe('DaemonTUI commands', () => {
         controllerState.blocks.push({ kind: 'user', id: 'queued-u', promptId: 'queued-p', text: 'next', createdAt: new Date().toISOString() });
         vi.advanceTimersByTime(5_000);
         expect(frame()).toContain('last response 5s ago');
+        expect(tui.state.activityContainer.render(120).join('\n').replaceAll(/\s+/g, ' ')).toContain('Ctrl+S steer queued');
         controllerState.blocks.push({ kind: 'tool', id: 'tool-1', status: 'running', progressText: '10%', startedAt: Date.now() });
         vi.advanceTimersByTime(1_000);
         expect(frame()).toContain('last response 0s ago');

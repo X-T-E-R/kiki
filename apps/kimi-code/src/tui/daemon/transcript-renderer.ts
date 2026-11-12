@@ -1,6 +1,7 @@
 import { Container, Text, type Component, type TUI } from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
+import { projectMessageContent } from '@kiki/session-core/session/transcript';
 import type { Block, MessageBlock, ToolBlock, UserBlock } from '@kiki/session-core/session/transcript/types';
 
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
@@ -25,6 +26,8 @@ export class DaemonTranscriptRenderer {
   /** Client-only notes, each shown after the block that was last when it was added. */
   private readonly notes: { readonly afterBlockId: string | undefined; readonly component: Component }[] = [];
   private lastBlocks: readonly Block[] | undefined;
+  private lastSourceBlocks: readonly Block[] | undefined;
+  private lastIngress: readonly import('@kiki/protocol').PromptItem[] | undefined;
   private expanded = false;
 
   constructor(
@@ -40,17 +43,36 @@ export class DaemonTranscriptRenderer {
    * keep their render caches; nothing here invalidates the whole tree — theme
    * switches do that explicitly through `TUI.invalidate()`.
    */
-  sync(blocks: readonly Block[]): void {
-    if (blocks === this.lastBlocks) return;
-    this.lastBlocks = blocks;
-    const active = new Set(blocks.map((block) => block.id));
+  sync(blocks: readonly Block[], ingress: readonly import('@kiki/protocol').PromptItem[] = []): void {
+    if (blocks === this.lastSourceBlocks && ingress === this.lastIngress) return;
+    this.lastSourceBlocks = blocks;
+    this.lastIngress = ingress;
+    const receipts: UserBlock[] = ingress.filter((item) =>
+      (item.admission === 'failed' || item.admission === 'cancelled' || item.admission === 'held') &&
+      !blocks.some((block) => block.kind === 'user' && block.promptId === item.prompt_id),
+    ).map((item) => ({
+      kind: 'user',
+      id: `ingress-${item.prompt_id}`,
+      promptId: item.prompt_id,
+      createdAt: item.created_at,
+      ...projectMessageContent(item.content),
+      steerStatus: item.admission === 'held' ? 'held' : undefined,
+      promptOutcome: item.admission === 'held' ? undefined : {
+        status: item.admission === 'cancelled' ? 'aborted' : 'failed',
+        delivered: false,
+        error: item.admission_error?.message,
+      },
+    }));
+    const effective = receipts.length === 0 ? blocks : [...blocks, ...receipts];
+    this.lastBlocks = effective;
+    const active = new Set(effective.map((block) => block.id));
     for (const [id, mounted] of this.mounted) {
       if (active.has(id)) continue;
       disposeComponent(mounted.component);
       this.mounted.delete(id);
     }
 
-    for (const block of blocks) this.updateOrCreate(block);
+    for (const block of effective) this.updateOrCreate(block);
     this.mountChildren();
     this.ui?.requestRender();
   }
@@ -91,6 +113,8 @@ export class DaemonTranscriptRenderer {
     this.mounted.clear();
     this.notes.length = 0;
     this.lastBlocks = undefined;
+    this.lastSourceBlocks = undefined;
+    this.lastIngress = undefined;
     this.container.clear();
   }
 
@@ -332,7 +356,10 @@ function formatUserPromptStatus(block: UserBlock, expanded = false): string | un
   if (block.promptStatus === 'queued') return currentTheme.dim('Queued');
   if (block.promptStatus === 'blocked') return currentTheme.fg('warning', 'Blocked');
   if (block.steerStatus === 'sending') return currentTheme.dim('Sending…');
+  if (block.steerStatus === 'preparing') return currentTheme.dim('Preparing delivery…');
   if (block.steerStatus === 'waiting') return currentTheme.dim('Waiting for delivery');
+  if (block.steerStatus === 'unconfirmed') return currentTheme.fg('warning', 'Delivery unconfirmed · check the queue before retrying');
+  if (block.steerStatus === 'held') return currentTheme.fg('warning', 'Prompt held · check the saved prompt before retrying');
   return undefined;
 }
 

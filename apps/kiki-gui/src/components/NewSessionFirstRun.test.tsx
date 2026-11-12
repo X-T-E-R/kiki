@@ -78,7 +78,12 @@ vi.mock('./discovery', async (importOriginal) => ({
   useOptionalDiscovery: () => firstRun.discovery,
 }));
 
-vi.mock('./Composer', () => ({ Composer: () => null }));
+vi.mock('./Composer', () => ({
+  Composer: ({ execution }: { execution: import('@kiki/protocol').ExecutionSelection }) => {
+    const executorInstance = execution.overrides?.executor_instance;
+    return <output data-seat-instance>{typeof executorInstance === 'string' ? executorInstance : 'default'}</output>;
+  },
+}));
 
 // The hero publishes its footer through the shell's slots; a detached node
 // would swallow the portal, so the stub owns a real (body-attached) one.
@@ -107,63 +112,62 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
         firstRun.execution = next;
         setExecutionState(next);
       }, []);
-      return {
+      const [state] = useState(() => ({
         draft: '',
-      attachments: [],
-      busy: false,
-      creationPending: firstRun.creationPending,
-      creationNotice: firstRun.creationNotice,
-      createdSessionId: firstRun.createdSessionId,
-      openCreatedSession: firstRun.openCreatedSession,
-      checkCreation: async () => {},
-      checkingCreation: firstRun.checkingCreation,
-      retryCreation: firstRun.retryCreation,
-      startNewCreation: firstRun.startNewCreation,
-      dismissCreationIntent: firstRun.dismissCreationIntent,
-      hasCreationIntent: firstRun.hasCreationIntent,
-      selectionReady: firstRun.selectionReady,
-      targetReady: true,
-      workspacesFailed: firstRun.workspacesFailed,
-      workspacesError: firstRun.workspacesError,
-      retryWorkspaces: firstRun.retryWorkspaces,
-      cancelCreation: () => {},
-      error: null,
-      workspaceId: firstRun.workspaceId,
-      cwd: '',
-      permissionMode: 'manual',
-      planMode: false,
-      goalObjective: '',
-      modelOverride: undefined,
-      agentProfile: '',
-      workspaces: [],
-      workspacesLoading: false,
-      effectiveWorkspace: firstRun.effectiveWorkspace,
-      autoWorkspace: true,
-      agentProfileCatalogMode: { mode: 'unscoped' },
-      agentProfileCatalogPending: false,
-      needsProviderSetup: firstRun.needsProviderSetup,
-      canBrowseForWorkspace: false,
-      browseForWorkspace: async () => {},
-      serverDefaultModel: undefined,
-      inheritedDefault: undefined,
-      modelSource: undefined,
-      supportedEfforts: [],
-      effectiveEffort: undefined,
-      updateDraft: () => {},
-      setAttachments: () => {},
-      selectWorkspace: () => {},
-      setCwd: () => {},
-      setPermissionMode: () => {},
-      setPlanMode: () => {},
-      setGoalObjective: () => {},
-      setModelOverride: () => {},
-      setAgentProfile: () => {},
-      execution,
-      setExecution,
-      send: () => {},
-      activateSkill: () => {},
-    };
-  },
+        attachments: [],
+        busy: false,
+        creationPending: firstRun.creationPending,
+        creationNotice: firstRun.creationNotice,
+        createdSessionId: firstRun.createdSessionId,
+        openCreatedSession: firstRun.openCreatedSession,
+        checkCreation: async () => {},
+        checkingCreation: firstRun.checkingCreation,
+        retryCreation: firstRun.retryCreation,
+        startNewCreation: firstRun.startNewCreation,
+        dismissCreationIntent: firstRun.dismissCreationIntent,
+        hasCreationIntent: firstRun.hasCreationIntent,
+        selectionReady: firstRun.selectionReady,
+        targetReady: true,
+        workspacesFailed: firstRun.workspacesFailed,
+        workspacesError: firstRun.workspacesError,
+        retryWorkspaces: firstRun.retryWorkspaces,
+        cancelCreation: () => {},
+        error: null,
+        workspaceId: firstRun.workspaceId,
+        cwd: '',
+        permissionMode: 'manual',
+        planMode: false,
+        goalObjective: '',
+        modelOverride: undefined,
+        agentProfile: '',
+        workspaces: [],
+        workspacesLoading: false,
+        effectiveWorkspace: firstRun.effectiveWorkspace,
+        autoWorkspace: true,
+        agentProfileCatalogMode: { mode: 'unscoped' },
+        agentProfileCatalogPending: false,
+        needsProviderSetup: firstRun.needsProviderSetup,
+        canBrowseForWorkspace: false,
+        browseForWorkspace: async () => {},
+        serverDefaultModel: undefined,
+        inheritedDefault: undefined,
+        modelSource: undefined,
+        supportedEfforts: [],
+        effectiveEffort: undefined,
+        updateDraft: () => {},
+        setAttachments: () => {},
+        selectWorkspace: () => {},
+        setCwd: () => {},
+        setPermissionMode: () => {},
+        setPlanMode: () => {},
+        setGoalObjective: () => {},
+        setModelOverride: () => {},
+        setAgentProfile: () => {},
+        send: () => {},
+        activateSkill: () => {},
+      }));
+      return { ...state, execution, setExecution };
+    },
   };
 });
 
@@ -542,6 +546,31 @@ describe('the /new page', () => {
     expect(seat.props.fallback).toBeNull();
     expect(container.querySelector('[data-hero-target]')).toBeNull();
     expect(document.querySelector('#first-run-hero-footer [data-hero-starter]')).toBeNull();
+  });
+
+  it('renders an execution override-only change without another seat dependency changing', async () => {
+    await mountNewSessionPage();
+    const container = document.createElement('div');
+    containers.push(container);
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => { root.render(firstRun.seat!.composer); });
+    expect(container.querySelector('[data-seat-instance]')?.textContent).toBe('default');
+    const composer = firstRun.seat!.composer as import('react').ReactElement<{
+      children: import('react').ReactElement<{
+        execution: import('@kiki/protocol').ExecutionSelection;
+        onChangeExecution: (next: import('@kiki/protocol').ExecutionSelection) => void;
+      }>;
+    }>;
+    await act(async () => {
+      composer.props.children.props.onChangeExecution({
+        ...composer.props.children.props.execution,
+        overrides: { executor_instance: 'auto' },
+      });
+    });
+    await act(async () => { root.render(firstRun.seat!.composer); });
+    expect(container.querySelector('[data-seat-instance]')?.textContent).toBe('auto');
   });
 
   it('states a failed workspace read in the hero instead of asking for another target', async () => {

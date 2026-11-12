@@ -7,7 +7,8 @@ import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
-import { SessionController } from '@kiki/session-core/session/sessionController';
+import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
+import { newSteerPromptId } from '@kiki/session-core/session/transcript/steer';
 import type {
   ApprovalBlock,
   Block,
@@ -196,6 +197,7 @@ export class DaemonTUI {
   private readonly attachmentControllerLeases = new Map<SessionController, AttachmentControllerLease>();
   private readonly attachmentRefreshes = new WeakMap<object, Promise<void>>();
   private readonly invalidUploadCleanups = new Map<string, InvalidUploadCleanup>();
+  private readonly unconfirmedUploadIds = new Set<string>();
   private readonly sideControllers = new Set<SessionController>();
   private readonly temporarySessionIds = new Set<string>();
   private stopped = false;
@@ -367,6 +369,10 @@ export class DaemonTUI {
   private installEditor(): void {
     const editor = this.state.editor;
     editor.onSubmit = (text) => {
+      if (editor.disableSubmit) {
+        editor.setText(text);
+        return;
+      }
       this.clearPendingConfirm();
       const mode = editor.inputMode;
       this.recordInputHistory(text, mode);
@@ -432,16 +438,16 @@ export class DaemonTUI {
       void this.openExternalEditor(command);
     };
     editor.onCtrlS = () => {
-      this.showStatus('Not available in the terminal UI — your message will be queued.', {
-        tone: 'normal',
-        transient: true,
+      void this.steerPrompt().catch((error: unknown) => {
+        this.showStatus(error instanceof SendNowError && error.reason === 'unknown'
+          ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
+          : formatErrorMessage(error), 'error');
       });
     };
     editor.onCtrlB = () => {
       if (this.controller?.getState().busy !== true) return false;
-      this.showStatus('Moving a turn to the background is not available in the terminal UI.', {
-        tone: 'normal',
-        transient: true,
+      void this.detachForegroundTasks().catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
       });
       return true;
     };
@@ -969,7 +975,7 @@ export class DaemonTUI {
       });
     }
     this.wasBusy = view.busy;
-    if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks);
+    if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks, view.durableIngress);
     this.setAppState({
       sessionId: view.sessionId,
       model: view.model ?? this.state.appState.model,
@@ -1101,6 +1107,12 @@ export class DaemonTUI {
         now,
         hasDraft: this.activityHasDraft,
       });
+      if (view.queuedPromptIds.length > 0) {
+        activityLine = {
+          ...activityLine,
+          details: [...activityLine.details, 'Ctrl+S steer queued'],
+        };
+      }
     }
     if (activityLine !== undefined) activityMessage = activityLineText(activityLine);
 
@@ -1144,6 +1156,87 @@ export class DaemonTUI {
     this.showStatus(activityMessage, { tone: activityTone, source: 'activity', activity: activityLine });
   }
 
+  private async steerPrompt(): Promise<void> {
+    this.clearPendingConfirm();
+    const editor = this.state.editor;
+    const text = editor.getExpandedText().trim();
+    const controller = this.controller;
+    if (controller?.getState().busy !== true || (editor.inputMode !== 'bash' && text.startsWith('/'))) {
+      if (text !== '') editor.handleInput('\r');
+      else this.showStatus('No prompt to steer.', { transient: true });
+      return;
+    }
+    let result: Awaited<ReturnType<SessionController['steerQueued']>> | Awaited<ReturnType<SessionController['sendPromptNow']>>;
+    if (text !== '' && editor.inputMode !== 'bash' && !text.startsWith('!')) {
+      if (controller.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+        this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
+        return;
+      }
+      if (editor.disableSubmit) return;
+      editor.disableSubmit = true;
+      try {
+        const draft = editor.getText();
+        const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
+          refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
+          refreshFile: (attachment) => this.refreshFileAttachment(attachment),
+        });
+        const skillMap = new Map<string, string>();
+        for (const skill of this.skillCommands.values()) {
+          skillMap.set(skill.commandName, skill.name);
+          skillMap.set(skill.name, skill.name);
+        }
+        const skills = extractInlineSkillActivations(text, skillMap);
+        const promptId = newSteerPromptId();
+        result = await controller.sendPromptNow({
+          text,
+          content: prepared?.content,
+          promptId,
+          skills: skills.length === 0 ? undefined : skills.map((skill) => ({ name: skill.skillName })),
+          onAcknowledged: () => {
+            this.recordInputHistory(text, editor.inputMode);
+            if (this.controller === controller && editor.getText() === draft) editor.setText('');
+          },
+        }).catch((error: unknown) => {
+          if (error instanceof SendNowError && error.reason === 'unknown' && prepared !== undefined) {
+            for (const id of [...prepared.mediaUploadIds, ...prepared.fileUploadIds]) this.unconfirmedUploadIds.add(id);
+          }
+          if (error instanceof SendNowError && error.reason === 'refused' && this.controller === controller && editor.getText() === '') editor.setText(text);
+          throw error;
+        });
+        if (prepared !== undefined && this.controller === controller && editor.getText() === '' &&
+            (result.outcome === 'accepted' || result.outcome === 'steered' || result.outcome === 'started' || result.outcome === 'queued')) {
+          this.handoffPreparedMedia(prepared, controller, { promptId });
+        }
+      } finally {
+        editor.disableSubmit = false;
+      }
+    } else {
+      const promptId = controller.getState().queuedPromptIds[0];
+      if (promptId === undefined) {
+        this.showStatus('No prompt to steer.', { transient: true });
+        return;
+      }
+      result = await controller.steerQueued(promptId);
+    }
+    this.showStatus(
+      `Prompt steering: ${result.outcome.replaceAll('_', ' ')}${result.reason === undefined ? '.' : ` (${result.reason.replaceAll('_', ' ')}).`}`,
+      { tone: result.outcome === 'failed' ? 'error' : 'normal', transient: true },
+    );
+  }
+
+  private async detachForegroundTasks(): Promise<void> {
+    const controller = this.controller!;
+    const agent = this.client.klient.session(controller.sessionId).agent('main');
+    const tasks = await agent.getTasks({ activeOnly: true });
+    const foreground = tasks.filter((task) => task.status === 'running' && task.detached === false);
+    const results = await Promise.all(foreground.map((task) => agent.detachTask(task.taskId)));
+    const detached = results.filter((task) => task?.status === 'running' && task.detached === true).length;
+    this.showStatus(detached === 0
+      ? 'No foreground task to move to background.'
+      : `Moved ${String(detached)} foreground task${detached === 1 ? '' : 's'} to background.`,
+    { transient: true });
+  }
+
   /** `submission.accepted` turns true once the daemon has taken the input. */
   private async handleInput(raw: string, submission?: { accepted: boolean }): Promise<void> {
     const text = raw.trim();
@@ -1156,6 +1249,12 @@ export class DaemonTUI {
     }
     if (text.startsWith('/')) {
       await this.handleSlash(text);
+      return;
+    }
+    if (this.controller?.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+      if (submission !== undefined) submission.accepted = true;
+      if (this.state.editor.getText() === '') this.state.editor.setText(raw);
+      this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
       return;
     }
     await this.sendPrompt(raw, undefined, submission);
@@ -1593,7 +1692,8 @@ export class DaemonTUI {
     this.fileAttachments.clear();
     this.nextFileAttachmentId = 1;
     await Promise.allSettled(
-      uploadIds.map((fileId) => this.client.klient.global.files.delete(fileId)),
+      uploadIds.filter((fileId) => !this.unconfirmedUploadIds.has(fileId))
+        .map((fileId) => this.client.klient.global.files.delete(fileId)),
     );
   }
 

@@ -74,10 +74,14 @@ While streaming output is active, the input box can still receive input and supp
 | --- | --- |
 | `Esc` | Interrupt the running turn; with a draft in the input box, press it twice |
 | `Ctrl-C` | Clear a nonempty draft first; interrupt the active turn when the input is empty |
+| `Ctrl-S` | Send the draft into the running turn; with empty input, steer the next queued prompt |
+| `Ctrl-B` | Move running foreground tasks to the background |
 
 The line above the input box shows how long the turn has been running and how to interrupt it. While the turn waits for your approval or answer, it says so instead.
 
-Steering a running turn and moving it to the background are available in the desktop app; the TUI queues what you type and sends it when the turn ends.
+`Ctrl-S` includes attachments and inline skill activations with the draft. Shell input (`! …`) is not steered; slash commands follow their normal command path. When idle, `Ctrl-S` submits nonempty input normally. The status reports the prompt's actual delivery outcome. Deferred failures and held requests stay visible with their saved input. If delivery is unconfirmed, check the queue before retrying.
+
+`Ctrl-B` detaches foreground tasks, not the turn itself. If the model is streaming without a foreground task, the TUI reports that there is no task to move. At an idle prompt, the key keeps its normal cursor-left behavior.
 
 ## Tool Output
 

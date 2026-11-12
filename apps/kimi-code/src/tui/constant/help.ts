@@ -17,4 +17,6 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: readonly KeyboardShortcut[] = [
   { keys: 'Ctrl+O', description: 'Expand / collapse tool output (/expand)' },
   { keys: 'Ctrl+T', description: 'Expand / collapse the todo list when truncated (/todos)' },
   { keys: 'Alt+V (Windows) / Ctrl+V (Unix)', description: 'Paste clipboard media' },
+  { keys: 'Ctrl+S', description: 'Send the draft into the running turn; with empty input, steer the next queued prompt' },
+  { keys: 'Ctrl+B (while busy)', description: 'Move foreground tasks to background' },
 ];
