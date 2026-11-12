@@ -1,11 +1,20 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigTarget, IConfigService, IHomeRuntimeService, ISessionManager, IThreadCommunicationService } from '@kiki/agent-core-v2';
+import {
+  ConfigTarget,
+  IConfigService,
+  IHomeRuntimeService,
+  IMcpConfigStore,
+  ISessionManager,
+  IThreadCommunicationService,
+} from '@kiki/agent-core-v2';
 import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import { IMcpRegistryService } from '@kiki/agent-core-v2/app/mcpRegistry/mcpRegistry';
+import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -80,6 +89,51 @@ describe('memory dispatcher specifics', () => {
       expect(resume).not.toHaveBeenCalled();
     } finally {
       await klient.close(); await app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
+  it('reads persisted MCP capabilities for a cold session without creating runtime state', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    try {
+      await app.accessor.get(IMcpConfigStore).add({
+        name: 'passive',
+        transport: 'stdio',
+        command: 'unused-mcp-server',
+      });
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      await app.accessor.get(IAtomicDocumentStore).update('session-mcp-overrides', created.id, () => ({
+        'global:passive': 'off',
+      }));
+      const session = klient.session(created.id);
+      await session.close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      const summary = await app.accessor.get(ISessionIndex).get(created.id);
+      if (summary === undefined) throw new Error('created session missing from the index');
+      const list = vi.spyOn(app.accessor.get(IMcpRegistryService), 'list');
+      const getOrCreate = vi.spyOn(app.accessor.get(IWorkspaceInstanceManager), 'getOrCreate');
+
+      await expect(session.agent('main').listMcpSessionCapabilities()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            locator: { source: 'global', name: 'passive' },
+            runtimeName: 'passive',
+            connection: 'disabled',
+            override: 'off',
+          }),
+        ]),
+      );
+      expect(list).toHaveBeenCalledWith({ cwd: summary.cwd ?? '' });
+      await expect(klient.session('missing-session').agent('main').listMcpSessionCapabilities())
+        .rejects.toMatchObject({ code: 40404 });
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+      expect(getOrCreate).not.toHaveBeenCalled();
+      expect(list).toHaveBeenCalledOnce();
+    } finally {
+      await klient.close();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -245,6 +299,30 @@ describe('memory dispatcher specifics', () => {
     }
   });
 
+  it('reads a live unstarted main plan without creating or resuming main', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const live = getLiveSessionById(app.accessor, created.id);
+      if (live === undefined) throw new Error('created session was not live');
+      const lifecycle = live.accessor.get(IAgentLifecycleService);
+      expect(lifecycle.get('main')).toBeUndefined();
+      const create = vi.spyOn(lifecycle, 'create');
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+
+      await expect(klient.session(created.id).agent('main').getPlan()).resolves.toBeNull();
+      expect(lifecycle.get('main')).toBeUndefined();
+      expect(create).not.toHaveBeenCalled();
+      expect(manager.get(created.id)).toBe(live);
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      await app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
   it('reads a persisted cold plan without resuming and rejects missing agents and cancelled reads', async () => {
     const { homeDir, app } = await makeEngine();
     const klient = createKlient({ scope: app });

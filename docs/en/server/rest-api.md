@@ -354,10 +354,12 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions/{session_id}/children` | List child sessions |
 | `POST /api/sessions/{session_id}/children` | Create a child session (fork with a tag) |
 | `GET /api/sessions/{session_id}/status` | Realtime status rollup |
-| `GET /api/sessions/{session_id}/goal` | Current goal snapshot (`null` when none) |
+| `GET /api/sessions/{session_id}/goal` | Current goal snapshot (`null` when none); never resumes a saved session or creates main |
 | `GET /api/sessions/{session_id}/warnings` | Session-level warnings |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
+
+A cold goal read preserves `goalId`, `controlRevision`, and budget state from saved history. When a checkpoint is unavailable, the request waits across cooperative history-preparation slices and returns the complete snapshot without requiring repeated GETs.
 
 `POST /api/sessions/{session_id}/agents/{agent_id}:promote` accepts optional `title` and `profile` fields; the profile must be enabled for a main agent. It copies the subagent's conversation, todo list, and notes into a new top-level session in the subagent's working directory and returns that session with `promoted_from` provenance. The source session, subagent, and any running work remain unchanged. A running subagent is copied only through its last completed step; the new session records that boundary as cancelled and does not resume work automatically.
 

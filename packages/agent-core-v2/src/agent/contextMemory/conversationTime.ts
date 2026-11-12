@@ -58,6 +58,16 @@ registerUndoableProtocol({
   },
   checkpointBoundaries: [{ event: AgentModelSwitch, shouldClear: (event) => (event as AgentModelSwitch).context !== undefined }],
   anchorStateName: 'contextMemory',
+  undoDepth: (state) => {
+    const messages = state as readonly ContextMessage[];
+    let depth = 0;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]!;
+      if (message.origin?.kind === 'compaction_summary') break;
+      if (isUndoAnchor(message)) depth++;
+    }
+    return depth;
+  },
   isUndoAnchor: (message, previous) => isUndoAnchor(message as ContextMessage) &&
     (previous === undefined || findProviderMessageIndex(previous as readonly ContextMessage[], message as ContextMessage, (entry) => entry) < 0),
   isValidUndoCount,

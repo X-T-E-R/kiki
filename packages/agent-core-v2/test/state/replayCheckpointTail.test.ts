@@ -8,6 +8,9 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { IPluginStateRegistryService } from '#/agent/pluginState/pluginState';
+import { PluginStateRegistryService } from '#/agent/pluginState/pluginStateService';
+import { PluginFactRecorded, pluginConversationStateKey, pluginWorldStateKey } from '#/agent/pluginState/pluginStateKeys';
 import { ContextRebuildPreferenceChanged, contextRebuildControlKey } from '#/agent/contextRebuild/contextRebuildOps';
 import { z } from 'zod';
 import { TurnPrompt } from '#/agent/loop/turnOps';
@@ -41,6 +44,16 @@ import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '#/wire/transcriptReceipt';
 const SCOPE = 'sessions/s/agents/main';
 const CHECKPOINT_SCOPE = `${SCOPE}/replay-checkpoints`;
 const CHECKPOINT_KEY = 'engine-v1';
+const retiredDurableKey = defineState('state.test.retired_durable', () => 0)
+  .replayable({ schema: z.number() })
+  .on(ContextAppendMessage, (state) => state + 1);
+const missingDurableKey = defineState('state.test.missing_durable', () => 0)
+  .replayable({ schema: z.number() })
+  .on(ContextAppendMessage, (state) => state + 1);
+const legacyUndoableKey = defineState('state.test.legacy_undoable', (): string[] => [])
+  .replayable({ schema: z.array(z.string()) })
+  .undoable()
+  .on(ContextAppendMessage, (state) => { state.push('append'); });
 
 class CountingStorage extends InMemoryStorageService {
   streamBytes = 0;
@@ -123,7 +136,11 @@ function prompt(text: string, queueIndex: number) {
   }).serialize();
 }
 
-function harness<T = Record<string, true>>(storage = new InMemoryStorageService(), extraKey?: ReplayableStateKey<T>): Harness {
+function harness<T = Record<string, true>>(
+  storage = new InMemoryStorageService(),
+  extraKey?: ReplayableStateKey<T>,
+  pluginRegistry?: IPluginStateRegistryService,
+): Harness {
   const root = disposables.add(new TestInstantiationService());
   root.stub(IFileSystemStorageService, storage);
   root.stub(ILogService, noopLogger);
@@ -139,6 +156,7 @@ function harness<T = Record<string, true>>(storage = new InMemoryStorageService(
   root.set(IEventBus, new SyncDescriptor(EventBusService));
   root.set(IWireService, new SyncDescriptor(WireService));
   root.set(IAgentStateService, new AgentStateService());
+  if (pluginRegistry !== undefined) root.set(IPluginStateRegistryService, pluginRegistry);
   root.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
   const state = root.get(IAgentStateService);
   state.contributeState(contextMemoryKey);
@@ -382,6 +400,179 @@ describe('replay checkpoint tail', () => {
     expect(oldReads.full).toBe(1);
     expect(texts(old.state)).toEqual(['prefix-user', 'prefix-assistant']);
     expect(queueText(old.state)).toBe('queued-first');
+  });
+
+  it('upgrades a legacy checkpoint with plugin states and keeps conversation undo aligned', async () => {
+    const first = harness(undefined, legacyUndoableKey);
+    await seed(first.wire);
+    await first.dispatcher.restore();
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const saved = await first.docs.get<{ stateNames: string[]; pluginInterpretation?: readonly unknown[] }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.pluginInterpretation).toEqual([]);
+    expect(saved?.stateNames).not.toContain(pluginConversationStateKey.name);
+    expect(saved?.stateNames).not.toContain(pluginWorldStateKey.name);
+    const legacy = structuredClone(saved!);
+    delete legacy.pluginInterpretation;
+    expect(Object.hasOwn(legacy, 'pluginInterpretation')).toBe(false);
+    await first.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, legacy);
+    const storedLegacy = await first.docs.get(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(storedLegacy).not.toHaveProperty('pluginInterpretation');
+
+    const upgraded = harness(first.storage, legacyUndoableKey);
+    upgraded.state.contributeState(pluginConversationStateKey);
+    upgraded.state.contributeState(pluginWorldStateKey);
+    const reads = watchReads(upgraded.wire);
+    await upgraded.dispatcher.restore();
+    expect(reads).toEqual({ full: 0, tails: [] });
+    expect(texts(upgraded.state)).toEqual(['prefix-user', 'prefix-assistant']);
+    expect(upgraded.state.get(pluginConversationStateKey)).toEqual({});
+    expect(upgraded.state.get(pluginWorldStateKey)).toEqual({});
+    expect(upgraded.dispatcher.checkpointDepth(pluginConversationStateKey)).toBe(1);
+    expect(upgraded.dispatcher.checkpointDepth(pluginConversationStateKey)).toBe(upgraded.dispatcher.checkpointDepth(legacyUndoableKey));
+
+    await expect(upgraded.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const refreshed = await upgraded.docs.get<{ stateNames: string[] }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(refreshed?.stateNames).toEqual(expect.arrayContaining([
+      pluginConversationStateKey.name,
+      pluginWorldStateKey.name,
+    ]));
+
+    await upgraded.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(texts(upgraded.state)).toEqual([]);
+    expect(upgraded.state.get(legacyUndoableKey)).toEqual([]);
+    expect(upgraded.state.get(pluginConversationStateKey)).toEqual({});
+    expect(upgraded.state.get(pluginWorldStateKey)).toEqual({});
+    expect(upgraded.dispatcher.checkpointDepth(pluginConversationStateKey)).toBe(0);
+
+    await upgraded.dispatcher.dispatch(new ContextAppendMessage({ message: message('user', 'fresh prompt') }));
+    await upgraded.dispatcher.dispatch(new PluginFactRecorded({
+      pluginId: 'optional-plugin',
+      clock: 'conversation',
+      factType: 'fact-without-reducer',
+      schemaVersion: 1,
+      reducerVersion: 1,
+      payload: { value: 'saved without a reducer' },
+    }));
+    expect(upgraded.state.get(pluginConversationStateKey)).toEqual({
+      'plugin:optional-plugin': { required: false, unresolved: true },
+    });
+    await upgraded.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(texts(upgraded.state)).toEqual([]);
+    expect(upgraded.state.get(pluginConversationStateKey)).toEqual({});
+    expect(upgraded.state.get(pluginWorldStateKey)).toEqual({});
+  });
+
+  it('replays plugin facts after a legacy checkpoint watermark with the current reducer', async () => {
+    const first = harness(undefined, legacyUndoableKey);
+    await seed(first.wire);
+    await first.dispatcher.restore();
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+
+    const saved = await first.docs.get<{
+      stateNames: string[];
+      pluginInterpretation?: readonly unknown[];
+      wire: { size: number };
+    }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.pluginInterpretation).toEqual([]);
+    expect(saved?.stateNames).not.toContain(pluginConversationStateKey.name);
+    expect(saved?.stateNames).not.toContain(pluginWorldStateKey.name);
+    const legacy = structuredClone(saved!);
+    delete legacy.pluginInterpretation;
+    await first.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, legacy);
+    const storedLegacy = await first.docs.get(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(storedLegacy).not.toHaveProperty('pluginInterpretation');
+
+    const registry = new PluginStateRegistryService();
+    disposables.add(registry.registerReducer<{ total: number }>({
+      pluginId: 'tail-plugin',
+      clock: 'conversation',
+      schemaVersion: 1,
+      reducerVersion: 1,
+      initial: () => ({ total: 0 }),
+      reduce: (state, _factType, payload) => ({
+        total: state.total + z.object({ value: z.number() }).parse(payload).value,
+      }),
+    }));
+    first.wire.appendRecord(new PluginFactRecorded({
+      pluginId: 'tail-plugin',
+      clock: 'conversation',
+      factType: 'add',
+      schemaVersion: 1,
+      reducerVersion: 1,
+      payload: { value: 7 },
+    }).serialize());
+    await first.wire.flush();
+
+    const restored = harness(first.storage, legacyUndoableKey, registry);
+    restored.state.contributeState(pluginConversationStateKey);
+    restored.state.contributeState(pluginWorldStateKey);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(0);
+    expect(reads.tails).toEqual([saved!.wire.size]);
+    expect(texts(restored.state)).toEqual(['prefix-user', 'prefix-assistant']);
+    expect(restored.state.get(pluginConversationStateKey)).toEqual({
+      'plugin:tail-plugin': {
+        required: false,
+        unresolved: false,
+        slice: {
+          pluginId: 'tail-plugin',
+          schemaVersion: 1,
+          reducerVersion: 1,
+          updatedAtRevision: 1,
+          data: { total: 7 },
+        },
+      },
+    });
+    expect(restored.state.get(pluginWorldStateKey)).toEqual({});
+    expect(restored.dispatcher.checkpointDepth(pluginConversationStateKey)).toBe(1);
+    expect(restored.dispatcher.checkpointDepth(pluginConversationStateKey)).toBe(restored.dispatcher.checkpointDepth(legacyUndoableKey));
+
+    await restored.dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(texts(restored.state)).toEqual([]);
+    expect(restored.state.get(legacyUndoableKey)).toEqual([]);
+    expect(restored.state.get(pluginConversationStateKey)).toEqual({});
+    expect(restored.state.get(pluginWorldStateKey)).toEqual({});
+  });
+
+  it('ignores a withdrawn old durable key without replaying the journal', async () => {
+    const first = harness();
+    const contribution = first.state.contributeState(retiredDurableKey);
+    await seed(first.wire);
+    await first.dispatcher.restore();
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const saved = await first.docs.get<{ stateNames: string[] }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.stateNames).toContain(retiredDurableKey.name);
+    await contribution.dispose();
+    expect(first.state.has(retiredDurableKey)).toBe(false);
+
+    const restored = harness(first.storage);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads).toEqual({ full: 0, tails: [] });
+    expect(texts(restored.state)).toEqual(['prefix-user', 'prefix-assistant']);
+    expect(restored.state.has(retiredDurableKey)).toBe(false);
+    await expect(restored.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const refreshed = await restored.docs.get<{ stateNames: string[] }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(refreshed?.stateNames).not.toContain(retiredDurableKey.name);
+  });
+
+  it('replays the full journal when an unknown durable key is missing from a legacy checkpoint', async () => {
+    const first = await checkpointed();
+    const saved = await first.docs.get<{ pluginInterpretation?: readonly unknown[] }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.pluginInterpretation).toEqual([]);
+    const legacy = structuredClone(saved!);
+    delete legacy.pluginInterpretation;
+    await first.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, legacy);
+
+    const restored = harness(first.storage, missingDurableKey);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(1);
+    expect(reads.tails).toEqual([]);
+    expect(restored.state.get(missingDurableKey)).toBe(2);
+    expect(texts(restored.state)).toEqual(['prefix-user', 'prefix-assistant']);
   });
 
   it('replays only the verified tail for an append, including duplicate prompts, usage, and undo', async () => {

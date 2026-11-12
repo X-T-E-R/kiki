@@ -1,4 +1,5 @@
-import { applyPatches, produceWithPatches } from 'immer';
+import { applyPatches, produce, produceWithPatches } from 'immer';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
@@ -34,6 +35,7 @@ import {
 } from './replayCheckpointCodec';
 import {
   conversationAppendIsAnchor,
+  conversationUndoDepth,
   keepsUndoCheckpoints,
   type FoldContext,
   type PatchEntry,
@@ -344,11 +346,16 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         const meta = this.ensureMeta(key);
         const ctx = new FoldContextImpl(this, silent, pluginRegistry, anchor);
         let previous = this.agentState.get(key);
-        let [next, patches, inversePatches] = produceWithPatches<any>(
-          previous,
-          (draft: any) => fold(draft, event, ctx) as any,
-        );
-        if (ctx.pendingUndo !== undefined && patches.length > 0) {
+        const tracksPatches = !silent || keepsUndoCheckpoints(key) || meta.checkpoints.length > 0;
+        const recipe = (draft: any) => fold(draft, event, ctx) as any;
+        let [next, patches, inversePatches]: readonly [any, readonly import('immer').Patch[], readonly import('immer').Patch[]] = tracksPatches
+          ? produceWithPatches<any>(previous, recipe)
+          : [produce<any>(previous, recipe), [], []];
+        if (!tracksPatches && ctx.pendingCheckpoint && next !== previous) {
+          patches = [{ op: 'replace', path: [], value: next }];
+          inversePatches = [{ op: 'replace', path: [], value: previous }];
+        }
+        if (ctx.pendingUndo !== undefined && next !== previous) {
           throw new BugIndicatingError(
             `Fold of event '${event.type}' on state '${key.name}' both mutates and undoes to a checkpoint`,
           );
@@ -618,7 +625,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
   }
 
-  private async restoreReplayCheckpoint(): Promise<{ readonly tailByte?: number } | undefined> {
+  private async restoreReplayCheckpoint(): Promise<{ readonly tailByte?: number; readonly upgraded: boolean } | undefined> {
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
@@ -630,17 +637,19 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         REPLAY_CHECKPOINT_KEY,
       );
       if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
-      if (!matchesPluginCheckpointInterpretation(envelope.pluginInterpretation, this.pluginStates.current?.interpretationManifest() ?? [])) return undefined;
+      const names = new Set(envelope.stateNames);
+      if (names.size !== envelope.stateNames.length) return undefined;
+      const legacyPlugins = envelope.pluginInterpretation === undefined &&
+        !names.has(pluginStateKeys.conversation.name) && !names.has(pluginStateKeys.world.name);
+      if (!legacyPlugins && !matchesPluginCheckpointInterpretation(envelope.pluginInterpretation, this.pluginStates.current?.interpretationManifest() ?? [])) return undefined;
       const wire = await this.wire.journalIdentity();
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
-      if (
-        keys.length !== envelope.stateNames.length ||
-        keys.some((key, index) => key.name !== envelope.stateNames[index])
-      ) {
-        return undefined;
-      }
+      const missing = keys.filter((key) => !names.has(key.name));
+      if (missing.some((key) => envelope.pluginInterpretation !== undefined ||
+        key !== pluginStateKeys.conversation && key !== pluginStateKeys.world)) return undefined;
+      const upgraded = missing.length > 0 || keys.length !== names.size;
       const verified = await verifyReplayCheckpointWire(envelope.wire, {
         size: wire.size,
         mtimeMs: wire.mtimeMs,
@@ -653,12 +662,14 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (verified === undefined) return undefined;
       const { tailByte } = verified;
       const payload = await decodeReplayCheckpointGraphAsync(envelope.graph) as ReplayCheckpointPayload;
-      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return undefined;
+      if (!Array.isArray(payload.states) || payload.states.length !== envelope.stateNames.length ||
+        payload.states.some((state, index) => state.name !== envelope.stateNames[index])) return undefined;
+      const savedStates = new Map(payload.states.map((state) => [state.name, state]));
       const restored: { readonly key: ReplayableStateKey<any>; readonly value: unknown; readonly meta: StateMeta }[] = [];
-      for (let index = 0; index < keys.length; index += 1) {
-        const key = keys[index]!;
-        const saved = payload.states[index];
-        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return undefined;
+      for (const key of keys) {
+        const saved = savedStates.get(key.name);
+        if (saved === undefined) continue;
+        if (!isStateMeta(saved.meta)) return undefined;
         const parsed = key.replayable.schema.safeParse(saved.value);
         if (!parsed.success) return undefined;
         for (const clock of ['conversation', 'world'] as const) {
@@ -678,7 +689,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         this.agentState.set(entry.key, Object.freeze(entry.value));
         this.metas.set(entry.key, entry.meta);
       }
-      return { tailByte };
+      for (const key of missing) {
+        const checkpoints: number[] = [];
+        if (keepsUndoCheckpoints(key)) {
+          const depths = restored.filter((entry) => keepsUndoCheckpoints(entry.key)).map((entry) => entry.meta.checkpoints.length);
+          const depth = depths.length > 0 ? Math.min(...depths) : conversationUndoDepth(keys, this.agentState);
+          for (let index = 0; index < depth; index++) checkpoints.push(0);
+        }
+        this.agentState.set(key, key.initial());
+        this.metas.set(key, { history: [], checkpoints, nextPatchId: 1 });
+      }
+      return { tailByte, upgraded };
     } catch {
       this.resetReplayableState();
       return undefined;
@@ -732,7 +753,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       }
       this.restorePhase = 'ready';
       await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
-      if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
+      if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined || checkpointRestored.upgraded) {
         void this.saveReplayCheckpoint().catch(onUnexpectedError);
       }
     } catch (error) {
@@ -745,8 +766,13 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     let recordIndex = 0;
     const signal = restoreSignal();
     const source = this.wire.readJournal({ startByte, signal });
+    let deadline = performance.now() + 4;
     for await (const record of source) {
       signal?.throwIfAborted();
+      if (performance.now() >= deadline) {
+        await yieldToEventLoop(undefined, { signal });
+        deadline = performance.now() + 4;
+      }
       if (record.type === 'metadata') continue;
       const cls = this.folded.events.get(record.type);
       if (cls === undefined) {

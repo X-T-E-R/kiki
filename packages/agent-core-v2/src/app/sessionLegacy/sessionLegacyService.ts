@@ -1,4 +1,10 @@
 import type { GoalSnapshot } from '#/agent/goal/types';
+import { PersistedGoalReader } from '#/agent/goal/goalRead';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import type { SessionStatusResponse } from './sessionProtocol';
 import { LifecycleScope } from '#/app/scopes';
@@ -98,9 +104,21 @@ export class SessionLegacyService implements ISessionLegacyService {
     return false;
   }
 
+  private goalReader: PersistedGoalReader | undefined;
+
   async goal(sessionId: string): Promise<GoalSnapshot | null> {
-    const agent = await this.resolveMainAgent(sessionId);
-    return agent.accessor.get(IAgentGoalService).getGoal().goal;
+    const live = getLiveSessionById(this.services, sessionId);
+    const agent = live?.accessor.get(IAgentLifecycleService).get('main');
+    if (agent !== undefined) return agent.accessor.get(IAgentGoalService).getGoal().goal;
+    const summary = live === undefined ? await this.services.get(ISessionIndex).get(sessionId) : undefined;
+    if (live === undefined && summary === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    const workspaceId = live?.accessor.get(ISessionContext).workspaceId ?? summary!.workspaceId;
+    this.goalReader ??= new PersistedGoalReader(
+      this.services.get(IAppendLogStore), this.services.get(IAtomicDocumentStore), this.services.get(IFileSystemStorageService),
+    );
+    return this.goalReader.readReady(`sessions/${workspaceId}/${sessionId}/agents/main`);
   }
 }
 

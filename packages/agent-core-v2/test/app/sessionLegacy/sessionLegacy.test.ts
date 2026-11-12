@@ -1,9 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { PersistedGoalReader } from '#/agent/goal/goalRead';
+import { goalKey } from '#/agent/goal/goalOps';
+import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
+import { encodeReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
@@ -21,6 +28,14 @@ import { ISessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLi
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 function accessor(
   entries: ReadonlyArray<readonly [ServiceIdentifier<unknown>, unknown]>,
@@ -94,7 +109,45 @@ function stubSessionChain(ix: TestInstantiationService, session: ISessionScopeHa
   } as unknown as ISessionManager);
 }
 
-describe('Session legacy status (best-effort runtime state)', () => {
+function installGoalPersistence(ix: TestInstantiationService): {
+  readonly logs: IAppendLogStore;
+  readonly docs: IAtomicDocumentStore;
+  readonly storage: InMemoryStorageService;
+} {
+  const storage = new InMemoryStorageService();
+  ix.stub(IFileSystemStorageService, storage);
+  ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+  return { logs: ix.get(IAppendLogStore), docs: ix.get(IAtomicDocumentStore), storage };
+}
+
+async function seedPersistedGoal(logs: IAppendLogStore, scope: string): Promise<void> {
+  const now = Date.now();
+  logs.append(scope, AGENT_WIRE_RECORD_KEY, {
+    type: 'goal.create',
+    goalId: 'goal-persisted',
+    objective: 'Read the saved goal',
+    completionCriterion: 'The cold read returns its saved state',
+    status: 'active',
+    followUpTiming: 'tasks_done',
+    controlRevision: 4,
+    wallClockResumedAt: now,
+    time: now,
+  });
+  logs.append(scope, AGENT_WIRE_RECORD_KEY, {
+    type: 'goal.update',
+    goalId: 'goal-persisted',
+    controlRevision: 9,
+    tokensUsed: 125,
+    turnsUsed: 2,
+    wallClockMs: 3_000,
+    budgetLimits: { tokenBudget: 1_000, turnBudget: 6, wallClockBudgetMs: 60_000 },
+    time: now + 1,
+  });
+  await logs.flush(scope, AGENT_WIRE_RECORD_KEY);
+}
+
+describe('Session legacy reads (best-effort runtime state)', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
 
@@ -361,5 +414,233 @@ describe('Session legacy status (best-effort runtime state)', () => {
       max_context_tokens: 100_000,
       context_usage: 1,
     });
+  });
+
+  it('returns a complete cold persisted goal in one call across resumable slices without resuming or acquiring', async () => {
+    const sessionId = 'session-cold-goal';
+    const workspaceId = 'workspace-cold-goal';
+    const restoreError = new Error('cold restore attempted');
+    const manager = {
+      _serviceBrand: undefined,
+      get: vi.fn((_id: string) => undefined),
+      resume: vi.fn(async () => { throw restoreError; }),
+      acquire: vi.fn(async () => { throw restoreError; }),
+    };
+    const index = {
+      get: vi.fn(async (id: string) => id === sessionId ? {
+        id: sessionId,
+        workspaceId,
+        cwd: '/workspace',
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+      } : undefined),
+    };
+    ix.stub(ISessionManager, manager as unknown as ISessionManager);
+    ix.stub(ISessionIndex, index);
+    const { logs, storage } = installGoalPersistence(ix);
+    const agentScope = `sessions/${workspaceId}/${sessionId}/agents/main`;
+    await seedPersistedGoal(logs, agentScope);
+    for (let index = 0; index < 5; index++) {
+      logs.append(agentScope, AGENT_WIRE_RECORD_KEY, { type: 'goal.read.unrelated', index, payload: 'x'.repeat(2 << 20), time: Date.now() });
+    }
+    await logs.flush(agentScope, AGENT_WIRE_RECORD_KEY);
+    expect(await storage.size(agentScope, AGENT_WIRE_RECORD_KEY)).toBeGreaterThan(8 * 1024 * 1024);
+    ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
+
+    const service = ix.get(ISessionLegacyService);
+    const goal = await service.goal(sessionId);
+
+    expect(goal).toMatchObject({
+      goalId: 'goal-persisted',
+      objective: 'Read the saved goal',
+      completionCriterion: 'The cold read returns its saved state',
+      status: 'active',
+      followUpTiming: 'tasks_done',
+      controlRevision: 9,
+      tokensUsed: 125,
+      turnsUsed: 2,
+      budget: {
+        tokenBudget: 1_000,
+        turnBudget: 6,
+        wallClockBudgetMs: 60_000,
+        remainingTokens: 875,
+        remainingTurns: 4,
+        remainingWallClockMs: expect.any(Number),
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    });
+    expect(goal?.wallClockMs).toBeGreaterThanOrEqual(3_000);
+    expect(index.get).toHaveBeenCalledExactlyOnceWith(sessionId);
+    expect(manager.get).toHaveBeenCalledExactlyOnceWith(sessionId);
+    expect(manager.resume).not.toHaveBeenCalled();
+    expect(manager.acquire).not.toHaveBeenCalled();
+  });
+
+  it('reads a live unstarted main goal from session context without creating main', async () => {
+    const sessionId = 'session-live-unstarted-goal';
+    const workspaceId = 'workspace-live-unstarted-goal';
+    const agents = {
+      get: vi.fn(() => undefined),
+      create: vi.fn(),
+    };
+    const session: ISessionScopeHandle = {
+      id: sessionId,
+      kind: LifecycleScope.Session,
+      accessor: accessor([
+        [ISessionContext, { workspaceId }],
+        [IAgentLifecycleService, agents],
+      ]),
+      dispose: () => {},
+    };
+    const restoreError = new Error('cold restore attempted');
+    const manager = {
+      _serviceBrand: undefined,
+      get: vi.fn(() => session),
+      resume: vi.fn(async () => { throw restoreError; }),
+      acquire: vi.fn(async () => { throw restoreError; }),
+    };
+    const index = { get: vi.fn(async () => undefined) };
+    ix.stub(ISessionManager, manager as unknown as ISessionManager);
+    ix.stub(ISessionIndex, index);
+    const { logs } = installGoalPersistence(ix);
+    await seedPersistedGoal(logs, `sessions/${workspaceId}/${sessionId}/agents/main`);
+    ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
+
+    const goal = await ix.get(ISessionLegacyService).goal(sessionId);
+
+    expect(goal).toMatchObject({ goalId: 'goal-persisted', controlRevision: 9, budget: {
+      tokenBudget: 1_000,
+      turnBudget: 6,
+      wallClockBudgetMs: 60_000,
+      remainingTokens: 875,
+      remainingTurns: 4,
+    } });
+    expect(manager.get).toHaveBeenCalledExactlyOnceWith(sessionId);
+    expect(manager.resume).not.toHaveBeenCalled();
+    expect(manager.acquire).not.toHaveBeenCalled();
+    expect(index.get).not.toHaveBeenCalled();
+    expect(agents.get).toHaveBeenCalledExactlyOnceWith('main');
+    expect(agents.create).not.toHaveBeenCalled();
+  });
+
+  it('returns the valid goal prefix when the append log ends with a torn JSON record', async () => {
+    const sessionId = 'session-torn-goal';
+    const workspaceId = 'workspace-torn-goal';
+    const restoreError = new Error('cold restore attempted');
+    const manager = {
+      _serviceBrand: undefined,
+      get: vi.fn(() => undefined),
+      resume: vi.fn(async () => { throw restoreError; }),
+      acquire: vi.fn(async () => { throw restoreError; }),
+    };
+    const index = {
+      get: vi.fn(async () => ({
+        id: sessionId,
+        workspaceId,
+        cwd: '/workspace',
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+      })),
+    };
+    ix.stub(ISessionManager, manager as unknown as ISessionManager);
+    ix.stub(ISessionIndex, index);
+    const { logs, storage } = installGoalPersistence(ix);
+    const agentScope = `sessions/${workspaceId}/${sessionId}/agents/main`;
+    await seedPersistedGoal(logs, agentScope);
+    await storage.append(agentScope, AGENT_WIRE_RECORD_KEY, Buffer.from('{"type":"goal.update","tokensUsed":999'));
+    ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
+
+    const goal = await ix.get(ISessionLegacyService).goal(sessionId);
+
+    expect(goal).toMatchObject({ goalId: 'goal-persisted', controlRevision: 9, tokensUsed: 125 });
+    expect(manager.resume).not.toHaveBeenCalled();
+    expect(manager.acquire).not.toHaveBeenCalled();
+  });
+
+  it('resumes a checkpointed goal over an appended tail without parsing the prefix', async () => {
+    const { logs, docs, storage } = installGoalPersistence(ix);
+    const scope = 'sessions/checkpoint-session/agents/main';
+    logs.append(scope, AGENT_WIRE_RECORD_KEY, {
+      type: 'goal.read.unrelated',
+      payload: 'prefix'.repeat(JOURNAL_HEAD_HASH_BYTES / 6 + 1024),
+      time: 1,
+    });
+    await logs.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const prefix = await storage.read(scope, AGENT_WIRE_RECORD_KEY);
+    if (prefix === undefined) throw new Error('checkpoint prefix was not stored');
+    const checkpointSize = prefix.byteLength;
+    expect(checkpointSize).toBeGreaterThanOrEqual(JOURNAL_HEAD_HASH_BYTES);
+    const mtimeMs = await storage.mtime(scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+    const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+    const headHash = createHash('sha256')
+      .update(prefix.subarray(0, JOURNAL_HEAD_HASH_BYTES))
+      .digest('hex')
+      .slice(0, 32);
+    const boundarySha256 = createHash('sha256')
+      .update(prefix.subarray(Math.max(0, checkpointSize - JOURNAL_BOUNDARY_HASH_BYTES)))
+      .digest('hex');
+    const goalId = 'goal-checkpoint';
+    const graph = encodeReplayCheckpointGraph({
+      states: [
+        {
+          name: goalKey.name,
+          value: {
+            goalId,
+            objective: 'Continue from the checkpoint',
+            completionCriterion: 'Apply the appended control update',
+            status: 'paused',
+            followUpTiming: 'tasks_done',
+            controlRevision: 10,
+            turnsUsed: 3,
+            tokensUsed: 20,
+            wallClockMs: 4_000,
+            budgetLimits: { tokenBudget: 1_000, turnBudget: 10, wallClockBudgetMs: 60_000 },
+          },
+          meta: { history: [], checkpoints: [], nextPatchId: 0 },
+        },
+        {
+          name: 'state.checkpoint.unrelated',
+          value: new Uint8Array(1 << 20),
+          meta: { history: [], checkpoints: [], nextPatchId: 0 },
+        },
+      ],
+    });
+    await docs.set(`${scope}/replay-checkpoints`, 'engine-v1', {
+      format: 1,
+      replayAbi: REPLAY_ABI_VERSION,
+      wire: { size: checkpointSize, mtimeMs, headHash, boundarySha256, storeGeneration: generation },
+      stateNames: [goalKey.name, 'state.checkpoint.unrelated'],
+      pluginInterpretation: [],
+      graph,
+    });
+    logs.append(scope, AGENT_WIRE_RECORD_KEY, {
+      type: 'goal.update',
+      goalId,
+      controlRevision: 11,
+      tokensUsed: 25,
+      turnsUsed: 4,
+      wallClockMs: 5_000,
+      time: 2,
+    });
+    await logs.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const read = vi.spyOn(logs, 'read');
+    const reader = new PersistedGoalReader(logs, docs, storage);
+
+    const goal = await reader.read(scope);
+
+    expect(goal).toMatchObject({
+      goalId,
+      controlRevision: 11,
+      tokensUsed: 25,
+      turnsUsed: 4,
+      budget: { tokenBudget: 1_000, turnBudget: 10, wallClockBudgetMs: 60_000 },
+    });
+    expect(read).toHaveBeenCalledOnce();
+    expect(read.mock.calls[0]?.[2]).toMatchObject({ startOffset: checkpointSize });
   });
 });

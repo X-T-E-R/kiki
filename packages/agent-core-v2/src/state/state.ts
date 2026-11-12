@@ -160,6 +160,7 @@ export interface UndoableProtocol {
     readonly shouldClear: (event: Event2<any>) => boolean;
   }[];
   readonly anchorStateName?: string;
+  readonly undoDepth: (state: unknown) => number;
   readonly isUndoAnchor: (message: unknown, previousState?: unknown) => boolean;
   readonly isValidUndoCount: (count: number) => boolean;
 }
@@ -192,6 +193,16 @@ export function conversationAppendIsAnchor(
     }
   }
   return protocol.isUndoAnchor((event as Event2<any> & { message: unknown }).message, previousState);
+}
+
+export function conversationUndoDepth(
+  keys: readonly ReplayableStateKey<any>[],
+  states: IStateRegistry,
+): number {
+  const protocol = undoableProtocol;
+  const anchor = keys.find((key) => key.name === protocol?.anchorStateName);
+  if (anchor === undefined || protocol === undefined) return 0;
+  return protocol.undoDepth(states.get(anchor));
 }
 
 export function keepsUndoCheckpoints(

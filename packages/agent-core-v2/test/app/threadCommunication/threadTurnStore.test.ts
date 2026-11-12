@@ -1,3 +1,4 @@
+import { createHook } from 'node:async_hooks';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,6 +115,26 @@ describe('ThreadTurnStore', () => {
     read.mockRestore();
   });
 
+  it('does not schedule once per record while replaying many small records', async () => {
+    const parts = Array.from({ length: 3000 }, () => part(0, 'x'));
+    await seed([{ ...prompt(), turnId: 0 }, ...parts, ended(0)]);
+    let immediateCount = 0;
+    const hook = createHook({
+      init(_asyncId, type) {
+        if (type === 'Immediate') immediateCount++;
+      },
+    });
+    hook.enable();
+    try {
+      const page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1);
+      expect(page.preparing).toBe(false);
+      expect(page.turns.map((turn) => [turn.turnId, turn.output])).toEqual([[0, 'x'.repeat(parts.length)]]);
+      expect(immediateCount).toBeLessThan(parts.length);
+    } finally {
+      hook.disable();
+    }
+  }, 30_000);
+
   it('cancels the actual indexed turn page and leaves a later read usable', async () => {
     await seed([prompt(), part(0, 'output'), ended(0)]);
     const first = await ready();
@@ -186,10 +207,15 @@ describe('ThreadTurnStore', () => {
     expect(first.turns).toEqual([]);
     let page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, first.source);
     let slices = 1;
+    const preparedOffsets = [first.source.prepared, page.source.prepared];
     while (page.preparing) {
       expect(++slices).toBeLessThanOrEqual(5);
       page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, page.source);
+      preparedOffsets.push(page.source.prepared);
     }
+    expect(slices).toBeGreaterThan(1);
+    expect(preparedOffsets.every((offset) => offset !== undefined)).toBe(true);
+    expect(new Set(preparedOffsets).size).toBeGreaterThan(1);
     const turn = page.turns[0]!;
     const pieces = [turn.output];
     let ref = turn.contentRefs?.find((value) => value.path[0] === 'output');

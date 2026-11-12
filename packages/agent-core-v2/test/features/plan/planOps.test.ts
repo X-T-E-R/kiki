@@ -86,6 +86,28 @@ async function readRecords(key = KEY): Promise<WireRecord[]> {
 }
 
 describe('plan ops (wire-backed)', () => {
+  it('yields while scanning unrelated saved records and cancels before exhausting history', async () => {
+    const controller = new AbortController();
+    const total = 100_000;
+    let visited = 0;
+    const history = {
+      async *read() {
+        while (visited < total) {
+          visited++;
+          yield { type: 'unknown.saved_record' };
+        }
+      },
+    } as unknown as IAppendLogStore;
+    const context = makeSessionContext({ sessionId: 's', workspaceId: 'w', sessionDir: '/session', sessionScope: 'readonly', cwd: '/workspace' });
+    const wake = setImmediate(() => { controller.abort(); });
+    try {
+      await expect(readPersistedPlan(context, 'main', history, {} as IHostFileSystem, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(visited).toBeLessThan(total);
+    } finally {
+      clearImmediate(wake);
+    }
+  });
+
   it('projects the same current plan after undo without rewriting the persisted journal', async () => {
     await dispatcher.dispatch(new PlanModeEnter({ id: 'before-undo' }));
     await dispatcher.dispatch(new ContextAppendMessage({ message: {

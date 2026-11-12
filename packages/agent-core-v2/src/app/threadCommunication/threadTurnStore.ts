@@ -105,9 +105,22 @@ interface TailPreparation {
 
 const SCAN_BYTES = 4 * 1024 * 1024;
 const SCAN_RECORDS = 10_000;
+const YIELD_BUDGET_MS = 4;
 const SEGMENT_UNITS = 16_384;
 const INLINE_UNITS = 4096;
 const PREVIEW_UNITS = 512;
+
+type YieldBudget = { lastYieldAt: number };
+
+function createYieldBudget(): YieldBudget { return { lastYieldAt: performance.now() }; }
+
+async function yieldIfTimeBudgetExceeded(budget: YieldBudget, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (performance.now() - budget.lastYieldAt < YIELD_BUDGET_MS) return;
+  await yieldToEventLoop(undefined, { signal });
+  signal?.throwIfAborted();
+  budget.lastYieldAt = performance.now();
+}
 
 export class ThreadTurnStore implements IThreadTurnStore {
   declare readonly _serviceBrand: undefined;
@@ -165,10 +178,11 @@ export class ThreadTurnStore implements IThreadTurnStore {
           const operations = new Map<string, WriteOp>();
           const next = structuredClone(head);
           const startedAt = Date.now();
+          const yieldBudget = createYieldBudget();
           let records = 0;
           let consumed = 0;
-          let yielded = 0;
-          for await (const line of lines(pinned, next.offset, selected.watermark, signal)) {
+          for await (const line of lines(pinned, next.offset, selected.watermark, signal, yieldBudget)) {
+            signal?.throwIfAborted();
             const record = await this.decode(line, scope, signal);
             if (record === undefined && line.unterminated) break;
             records++;
@@ -180,10 +194,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
                 record_bytes: line.bytes.byteLength, cancellation_check_bytes: 64 * 1024, duration_ms: Date.now() - startedAt,
               });
             }
-            if (consumed - yielded >= 64 * 1024 || records % 64 === 0) {
-              await yieldToEventLoop(undefined, { signal });
-              yielded = consumed;
-            }
+            await yieldIfTimeBudgetExceeded(yieldBudget, signal);
             if (records >= SCAN_RECORDS || consumed >= SCAN_BYTES) break;
           }
           if (next.offset >= selected.watermark || consumed < SCAN_BYTES && records < SCAN_RECORDS) {
@@ -284,6 +295,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
     let count = page.items.length;
     if (count > limit || tail.complete) return { ready: true, offset: tail.offset };
     const startedAt = Date.now();
+    const yieldBudget = createYieldBudget();
     const operations = new Map<string, WriteOp>();
     let consumed = 0;
     let records = 0;
@@ -291,13 +303,14 @@ export class ThreadTurnStore implements IThreadTurnStore {
     while (available() && count <= limit && !tail.complete && !tail.fallback) {
       if (tail.replay !== undefined) {
         const replay = tail.replay;
-        for await (const line of lines(pinned, replay.head.offset, replay.end, signal)) {
+        for await (const line of lines(pinned, replay.head.offset, replay.end, signal, yieldBudget)) {
+          signal?.throwIfAborted();
           const record = await this.decode(line, scope, signal);
           if (record !== undefined) this.fold(collection, replay.head, record, line, operations);
           replay.head.offset = line.end;
           consumed += line.end - line.start;
           records++;
-          await yieldToEventLoop(undefined, { signal });
+          await yieldIfTimeBudgetExceeded(yieldBudget, signal);
           if (!available()) break;
         }
         if (replay.head.offset < replay.end) break;
@@ -309,7 +322,8 @@ export class ThreadTurnStore implements IThreadTurnStore {
         continue;
       }
       let progressed = false;
-      for await (const line of reverseLines(pinned, tail.offset, signal)) {
+      for await (const line of reverseLines(pinned, tail.offset, signal, yieldBudget)) {
+        signal?.throwIfAborted();
         progressed = true;
         tail.offset = line.start;
         consumed += line.end - line.start;
@@ -352,6 +366,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
           } else if (tail.floor < Number.MAX_SAFE_INTEGER) tail.fallback = true;
           break;
         }
+        await yieldIfTimeBudgetExceeded(yieldBudget, signal);
         if (!available()) break;
       }
       if ((!progressed || tail.offset === 0) && tail.replay === undefined) {
@@ -366,9 +381,12 @@ export class ThreadTurnStore implements IThreadTurnStore {
     await this.validate(scope, pinned, head, source, signal);
     signal?.throwIfAborted();
     const validatedAt = Date.now();
-    const ops: WriteOp[] = [...operations.values()];
-    ops.push(...tails.slice(4).map((value): WriteOp => ({ kind: 'delete', collection, key: `tail:${value}` })),
-      { kind: 'put', collection, key, value: tail }, { kind: 'put', collection, key: 'head', value: nextHead });
+    const ops: WriteOp[] = [
+      ...operations.values(),
+      ...tails.slice(4).map((value): WriteOp => ({ kind: 'delete', collection, key: `tail:${value}` })),
+      { kind: 'put', collection, key, value: tail },
+      { kind: 'put', collection, key: 'head', value: nextHead },
+    ];
     if (this.query.batchIf !== undefined) {
       if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }, { collection, key, value: previous }], ops)) changed();
     } else await this.query.batch(ops);
@@ -510,7 +528,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
 
 interface Line { readonly start: number; readonly end: number; readonly bytes: Uint8Array; readonly unterminated?: boolean }
 
-async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: AbortSignal): AsyncIterable<Line> {
+async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal: AbortSignal | undefined, budget: YieldBudget): AsyncIterable<Line> {
   let position = end;
   let lineEnd = end;
   let parts: Uint8Array[] = [];
@@ -530,7 +548,7 @@ async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: Ab
     }
     if (to > 0) parts.push(chunk.subarray(0, to));
     position = start;
-    await yieldToEventLoop(undefined, { signal });
+    await yieldIfTimeBudgetExceeded(budget, signal);
   }
   if (parts.length > 0) {
     const bytes = Buffer.concat(parts.toReversed());
@@ -538,7 +556,7 @@ async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: Ab
   }
 }
 
-async function* lines(pinned: PinnedLogicalRead, start: number, end: number, signal?: AbortSignal): AsyncIterable<Line> {
+async function* lines(pinned: PinnedLogicalRead, start: number, end: number, signal: AbortSignal | undefined, budget: YieldBudget): AsyncIterable<Line> {
   if (start >= end) return;
   let offset = start;
   let parts: Uint8Array[] = [];
@@ -555,7 +573,7 @@ async function* lines(pinned: PinnedLogicalRead, start: number, end: number, sig
       from = index + 1;
     }
     if (from < chunk.byteLength) parts.push(chunk.subarray(from));
-    await yieldToEventLoop(undefined, { signal });
+    await yieldIfTimeBudgetExceeded(budget, signal);
   }
   if (parts.length > 0) {
     const bytes = Buffer.concat(parts);

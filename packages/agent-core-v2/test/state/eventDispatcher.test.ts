@@ -11,9 +11,10 @@ import {
 } from '#/_base/errors/unexpectedError';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
-import { ContextAppendMessage, ContextAppendLoopEvent, ContextUndo, ContextClear } from '#/agent/contextMemory/contextEvents';
+import { ContextAppendMessage, ContextAppendLoopEvent, ContextApplyCompaction, ContextUndo, ContextClear } from '#/agent/contextMemory/contextEvents';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { withRestoreLifetime } from '#/session/agentLifecycle/restoreTiming';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -25,7 +26,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { CycleError, EventDispatcherService } from '#/state/eventDispatcherService';
 import { defineState, type PatchEntry } from '#/state/state';
 import { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph, encodeReplayCheckpointGraphAsync, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
-import { IWireService } from '#/wire/wire';
+import { IWireService, type WireJournalReadOptions } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 
 const noopBlob: IAgentBlobService = {
@@ -159,6 +160,25 @@ const checkpointedKey = defineState(
       state.items.push(e.item);
     });
   });
+
+const replayCustomUndoKey = defineState('state.test.replay_custom_undo', () => ({ value: 0 }))
+  .replayable({ schema: z.object({ value: z.number() }) })
+  .undoable({ onUndo: (state) => { state.value = 0; } })
+  .on(CounterAdd, (state, event) => { state.value += event.by; });
+
+const replayNonUndoKey = defineState('state.test.replay_non_undo', () => ({ value: 0 }))
+  .replayable({ schema: z.object({ value: z.number() }) })
+  .on(CounterAdd, (state, event) => { state.value += event.by; });
+
+const replayInverseUndoKey = defineState('state.test.replay_inverse_undo', (): string[] => [])
+  .replayable({ schema: z.array(z.string()) })
+  .undoable()
+  .on(ContextAppendMessage, (state, event) => {
+    const part = event.message.content[0];
+    state.push(part !== undefined && 'text' in part ? part.text : '');
+  })
+  .on(ContextClear, () => [])
+  .on(ContextApplyCompaction, () => []);
 
 let disposables: DisposableStore;
 let ix: TestInstantiationService;
@@ -472,6 +492,128 @@ describe('EventDispatcherService', () => {
     await dispatcher.dispatch(new UndoEvent({ count: 1 }));
     expect(agentState.get(checkpointedKey).items).toEqual(['before']);
     expect(dispatcher.checkpointDepth(checkpointedKey)).toBe(0);
+  });
+
+  it('cancels checkpointless replay at an event-loop yield and preserves caller cancellation', async () => {
+    const records: WireRecord[] = Array.from({ length: 20_000 }, (_, time) => ({
+      type: 'state.test.counter.add',
+      by: 1,
+      time,
+    }));
+    let recordsRead = 0;
+    let cancellationDelivered = false;
+    const controller = new AbortController();
+    const cancellation = new Error('caller cancelled replay');
+    const deliverCancellation = () => {
+      cancellationDelivered = true;
+      controller.abort(cancellation);
+    };
+    const wire = stubWireJournal(records);
+    wire.readJournal = async function* (_options?: WireJournalReadOptions) {
+      for (const record of records) {
+        recordsRead++;
+        if (recordsRead === 1) setImmediate(deliverCancellation);
+        yield record;
+      }
+    };
+
+    const replayHost = disposables.add(new TestInstantiationService());
+    replayHost.set(IEventBus, new SyncDescriptor(EventBusService));
+    replayHost.set(IAgentBlobService, noopBlob);
+    replayHost.set(IWireService, wire);
+    replayHost.set(IAgentStateService, new AgentStateService());
+    replayHost.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+    const replayed = replayHost.get(IEventDispatcher);
+    const replayedState = replayHost.get(IAgentStateService);
+    replayedState.contributeState(counterKey);
+
+    await expect(withRestoreLifetime(
+      { ownerManaged: true, signal: controller.signal },
+      () => replayed.restore(),
+    )).rejects.toBe(cancellation);
+    expect(cancellationDelivered).toBe(true);
+    expect(recordsRead).toBeGreaterThan(1);
+    expect(recordsRead).toBeLessThan(records.length);
+    expect(replayedState.get(counterKey).value).toBeGreaterThan(0);
+  });
+
+  it('yields during large silent replay while preserving compaction and undo behavior', async () => {
+    agentState.contributeState(contextMemoryKey);
+    agentState.contributeState(replayCustomUndoKey);
+    agentState.contributeState(replayNonUndoKey);
+    agentState.contributeState(replayInverseUndoKey);
+
+    for (let index = 0; index < 4_000; index++) {
+      await dispatcher.dispatch(new CounterAdd({ by: 1 }));
+    }
+    const contextMessage = (role: 'user' | 'assistant', text: string): ContextMessage => ({
+      role,
+      content: [{ type: 'text', text }],
+      toolCalls: [],
+      origin: { kind: role },
+    } as ContextMessage);
+    await dispatcher.dispatch(new ContextAppendMessage({ message: contextMessage('user', 'before clear') }));
+    await dispatcher.dispatch(new ContextClear({}));
+    await dispatcher.dispatch(new ContextAppendMessage({ message: contextMessage('user', 'before compaction') }));
+    await dispatcher.dispatch(new ContextApplyCompaction({ summary: 'compacted summary', compactedCount: 1 }));
+    await dispatcher.dispatch(new ContextAppendMessage({ message: contextMessage('user', 'after compaction') }));
+    await dispatcher.dispatch(new ContextAppendMessage({ message: contextMessage('assistant', 'assistant continuation') }));
+    expect(agentState.get(replayInverseUndoKey)).toEqual(['after compaction', 'assistant continuation']);
+    await dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(agentState.get(replayInverseUndoKey)).toEqual([]);
+
+    const expected = {
+      counter: structuredClone(agentState.get(counterKey)),
+      other: structuredClone(agentState.get(otherKey)),
+      context: structuredClone(agentState.get(contextMemoryKey)),
+      customUndo: structuredClone(agentState.get(replayCustomUndoKey)),
+      nonUndo: structuredClone(agentState.get(replayNonUndoKey)),
+      inverseUndo: structuredClone(agentState.get(replayInverseUndoKey)),
+    };
+    const records = [...journal];
+    const replayHost = disposables.add(new TestInstantiationService());
+    replayHost.set(IEventBus, new SyncDescriptor(EventBusService));
+    replayHost.set(IAgentBlobService, noopBlob);
+    replayHost.set(IWireService, stubWireJournal(records));
+    replayHost.set(IAgentStateService, new AgentStateService());
+    replayHost.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+    const replayed = replayHost.get(IEventDispatcher);
+    const replayedState = replayHost.get(IAgentStateService);
+    replayedState.contributeState(counterKey);
+    replayedState.contributeState(otherKey);
+    replayedState.contributeState(checkpointedKey);
+    replayedState.contributeState(contextMemoryKey);
+    replayedState.contributeState(replayCustomUndoKey);
+    replayedState.contributeState(replayNonUndoKey);
+    replayedState.contributeState(replayInverseUndoKey);
+
+    let restoreFinished = false;
+    let heartbeatDuringRestore = 0;
+    let heartbeatActive = true;
+    const heartbeat = (): void => {
+      if (!restoreFinished) heartbeatDuringRestore++;
+      if (heartbeatActive) setImmediate(heartbeat);
+    };
+    setImmediate(heartbeat);
+    try {
+      await replayed.restore();
+      restoreFinished = true;
+    } finally {
+      heartbeatActive = false;
+    }
+
+    expect(heartbeatDuringRestore).toBeGreaterThan(0);
+    expect({
+      counter: replayedState.get(counterKey),
+      other: replayedState.get(otherKey),
+      context: replayedState.get(contextMemoryKey),
+      customUndo: replayedState.get(replayCustomUndoKey),
+      nonUndo: replayedState.get(replayNonUndoKey),
+      inverseUndo: replayedState.get(replayInverseUndoKey),
+    }).toEqual(expected);
+    expect(replayed.history(replayCustomUndoKey)).toEqual([]);
+    expect(replayed.history(replayNonUndoKey)).toEqual([]);
+    expect(replayed.history(replayInverseUndoKey).length).toBeGreaterThan(0);
   });
 
   it('restores silently from the journal: folds run, nothing published or appended', async () => {

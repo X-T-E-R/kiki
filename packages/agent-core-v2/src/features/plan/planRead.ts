@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { produce } from 'immer';
 import { join } from 'pathe';
 
@@ -37,8 +38,13 @@ export async function readPersistedPlan(context: ISessionContext, agentId: strin
   let checkpoints: PlanState[] = [];
   let migrations: readonly WireMigration[] = [];
   let first = true;
+  let deadline = performance.now() + 4;
   for await (const candidate of log.read<unknown>(context.scope(`agents/${agentId}`), AGENT_WIRE_RECORD_KEY, { signal })) {
     signal?.throwIfAborted();
+    if (performance.now() >= deadline) {
+      await yieldToEventLoop(undefined, { signal });
+      deadline = performance.now() + 4;
+    }
     if (!isWireRecord(candidate)) throw new StorageError(StorageErrors.codes.STORAGE_CORRUPTED, 'Malformed plan history record');
     if (first) {
       first = false;

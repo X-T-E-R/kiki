@@ -59,6 +59,7 @@ import { defineState } from '#/state/state';
 import { IAgentGoalService, type GoalReasonInput, type ResumeGoalInput } from './goal';
 import { TASK_WAIT_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
 import { IGoalDeadlineScheduler } from './goalDeadlineScheduler';
+import { goalSnapshot } from './goalSnapshot';
 import { MAX_TIMER_DELAY_MS } from '#/_base/utils/timer';
 import {
   GoalClear,
@@ -1364,20 +1365,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   }
 
   private toSnapshot(state: GoalState): GoalSnapshot {
-    const wallClockMs = this.liveWallClockMs(state);
-    return {
-      goalId: state.goalId,
-      objective: state.objective,
-      completionCriterion: state.completionCriterion,
-      status: state.status,
-      followUpTiming: state.followUpTiming ?? 'subagents_done',
-      controlRevision: state.controlRevision ?? 1,
-      turnsUsed: state.turnsUsed,
-      tokensUsed: state.tokensUsed,
-      wallClockMs,
-      budget: computeBudgetReport(state, wallClockMs),
-      terminalReason: state.terminalReason,
-    };
+    return goalSnapshot(state, this.liveWallClockMs(state));
   }
 
   private blockIfBudgetReached(state: GoalState): GoalSnapshot | null {
@@ -1430,30 +1418,6 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       this.loopService.cancel(liveTurnId, cancellation);
     }
   }
-}
-
-function computeBudgetReport(state: GoalState, wallClockMs: number): GoalBudgetReport {
-  const tokenBudget = state.budgetLimits.tokenBudget ?? null;
-  const turnBudget = state.budgetLimits.turnBudget ?? null;
-  const wallClockBudgetMs = state.budgetLimits.wallClockBudgetMs ?? null;
-
-  const tokenBudgetReached = tokenBudget !== null && state.tokensUsed >= tokenBudget;
-  const turnBudgetReached = turnBudget !== null && state.turnsUsed >= turnBudget;
-  const wallClockBudgetReached = wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs;
-
-  return {
-    tokenBudget,
-    turnBudget,
-    wallClockBudgetMs,
-    remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - state.tokensUsed),
-    remainingTurns: turnBudget === null ? null : Math.max(0, turnBudget - state.turnsUsed),
-    remainingWallClockMs:
-      wallClockBudgetMs === null ? null : Math.max(0, wallClockBudgetMs - wallClockMs),
-    tokenBudgetReached,
-    turnBudgetReached,
-    wallClockBudgetReached,
-    overBudget: tokenBudgetReached || turnBudgetReached || wallClockBudgetReached,
-  };
 }
 
 function matchesGoal(state: GoalState, goalId: string | undefined): boolean {

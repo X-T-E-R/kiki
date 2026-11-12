@@ -354,10 +354,12 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/children` | 列出子会话 |
 | `POST /api/sessions/{session_id}/children` | 创建子会话（fork 并打标） |
 | `GET /api/sessions/{session_id}/status` | 实时状态汇总 |
-| `GET /api/sessions/{session_id}/goal` | 当前目标快照（无则 `null`） |
+| `GET /api/sessions/{session_id}/goal` | 当前目标快照（无则 `null`）；不会恢复已保存的会话或创建 main |
 | `GET /api/sessions/{session_id}/warnings` | 会话级告警 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
+
+冷会话的目标读取保留已保存历史中的 `goalId`、`controlRevision` 和预算状态。没有可用检查点时，请求会等待分片准备完成并返回完整快照，无需重复 GET；各分片之间会让出事件循环。
 
 `POST /api/sessions/{session_id}/agents/{agent_id}:promote` 接受可选的 `title` 与 `profile` 字段，profile 必须已启用且可用于主 Agent。该接口把子智能体的对话、待办和笔记复制到其工作目录里的新顶层会话，返回的会话带有 `promoted_from` 来源信息。原会话、子智能体及仍在执行的工作保持不变。复制仍在运行的子智能体时，只保留到最近一个已完成步骤为止的记录，新会话把该边界记为 `cancelled`，不会自动续跑。
 

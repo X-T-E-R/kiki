@@ -836,6 +836,23 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 }
 
+export async function readPersistedSessionMcpCapabilities(
+  sessionId: string,
+  cwd: string,
+  registry: IMcpRegistryService,
+  docs: IAtomicDocumentStore,
+): Promise<readonly McpSessionCapability[]> {
+  const overrides = readSessionOverrides(await docs.get<unknown>(SESSION_MCP_OVERRIDES_SCOPE, sessionId));
+  const catalog = await registry.list({ cwd });
+  const effective = effectiveEntries(catalog);
+  return catalog.map((entry) => projectSessionMcpCapability(
+    entry,
+    effective.get(entry.name),
+    overrides[mcpLocatorKey(toMcpLocator(entry))] ?? 'inherit',
+    undefined,
+  ));
+}
+
 export async function readUnstartedSessionMcpCapabilities(session: ISessionScopeHandle): Promise<readonly McpSessionCapability[]> {
   const context = session.accessor.get(ISessionContext);
   const handle = session.accessor.get(ISessionMcpHandle);

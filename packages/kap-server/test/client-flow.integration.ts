@@ -14,6 +14,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
 import { CompactionCancelled, CompactionCompleted, CompactionStarted } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
+import { GoalCreate, GoalUpdate } from '@kiki/agent-core-v2/agent/goal/goalOps';
 import { IGlobalSearchService } from '../src/search/searchService';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
 import { NotificationService } from '../src/services/notifications/notificationService';
@@ -551,7 +552,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
   }
 
-  it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities'] as const)('keeps main absent after empty session %s reads', async (read) => {
+  it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities', 'goal', 'plan', 'context-rebuild'] as const)('keeps main absent after empty session %s reads', async (read) => {
     if (read === 'mcp-capabilities') {
       await client.klient.global.mcp.add({ server: { name: 'disabled-example', transport: 'stdio', command: 'must-not-start', enabled: false } });
     }
@@ -578,6 +579,13 @@ describe('GUI shared client against an isolated KAP host', () => {
       if (read === 'mcp-capabilities') expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
         runtimeName: 'disabled-example', locator: { source: 'global', name: 'disabled-example' }, connection: 'disabled', override: 'inherit',
       }));
+      if (read === 'goal') {
+        const response = await fetch(`${endpoint}/api/sessions/${id}/goal`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ code: 0, data: null });
+      }
+      if (read === 'plan') expect(await agent.getPlan()).toBeNull();
+      if (read === 'context-rebuild') await agent.contextRebuildControl();
       expect(lifecycle.get('main')).toBeUndefined();
     } finally { subscription.close(); }
   });
@@ -598,6 +606,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       { name: 'optional-capabilities', path: `/api/sessions/${id}/optional-capabilities` },
       { name: 'ssh-hosts', path: `/api/sessions/${id}/ssh/hosts` },
       { name: 'hooks', path: `/api/sessions/${id}/agents/main/hooks` },
+      { name: 'goal', path: `/api/sessions/${id}/goal` },
     ] as const;
     const results: Array<{ name: string; status: number; body: Record<string, unknown> }> = [];
     try {
@@ -616,6 +625,14 @@ describe('GUI shared client against an isolated KAP host', () => {
           ? (error as { code?: unknown }).code ?? 50001 : 50001;
         results.push({ name: 'model-switches', status: 200, body: { code } });
       }
+      try {
+        const data = await client.klient.session(id).agent('main').listMcpSessionCapabilities();
+        results.push({ name: 'mcp-capabilities', status: 200, body: { code: 0, data } });
+      } catch (error) {
+        const code = error !== null && typeof error === 'object' && 'code' in error
+          ? (error as { code?: unknown }).code ?? 50001 : 50001;
+        results.push({ name: 'mcp-capabilities', status: 200, body: { code } });
+      }
       expect({
         responses: results.map(({ name, status, body }) => ({ name, status, code: body['code'] })),
         acquireCalls: acquire.mock.calls.length,
@@ -629,7 +646,9 @@ describe('GUI shared client against an isolated KAP host', () => {
           { name: 'optional-capabilities', status: 200, code: 0 },
           { name: 'ssh-hosts', status: 200, code: 0 },
           { name: 'hooks', status: 200, code: 0 },
+          { name: 'goal', status: 200, code: 0 },
           { name: 'model-switches', status: 200, code: 0 },
+          { name: 'mcp-capabilities', status: 200, code: 0 },
         ],
         acquireCalls: 0,
         resumeCalls: 0,
@@ -641,7 +660,85 @@ describe('GUI shared client against an isolated KAP host', () => {
       expect(results[2]?.body).toMatchObject({ data: { rows: expect.any(Array) } });
       expect(results[3]?.body).toMatchObject({ data: { hosts: [] } });
       expect(results[4]?.body).toMatchObject({ data: { binding: expect.any(Object), rules: expect.any(Array), sources: expect.any(Array) } });
-      expect(results[5]?.body).toMatchObject({ data: [] });
+      expect(results[5]?.body).toMatchObject({ data: null });
+      expect(results[6]?.body).toMatchObject({ data: [] });
+      expect(results[7]?.body).toMatchObject({ data: expect.any(Array) });
+    } finally {
+      acquire.mockRestore();
+      resume.mockRestore();
+    }
+  });
+
+  it('returns an active persisted goal from a cold session without restoring it', async () => {
+    const id = await session();
+    const manager = host.core.accessor.get(ISessionManager);
+    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
+    const live = getLiveSessionById(host.core.accessor, id);
+    if (live === undefined) throw new Error('new session is not live');
+    const main = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    const dispatcher = main.accessor.get(IEventDispatcher);
+    const goalId = 'goal-persisted-http';
+    const wallClockResumedAt = Date.now();
+    await dispatcher.dispatch(new GoalCreate({
+      goalId,
+      objective: 'Read a goal after closing the session',
+      completionCriterion: 'The saved goal response preserves its controls and budget',
+      status: 'active',
+      followUpTiming: 'tasks_done',
+      controlRevision: 3,
+      wallClockResumedAt,
+    }));
+    await dispatcher.dispatch(new GoalUpdate({
+      goalId,
+      controlRevision: 8,
+      tokensUsed: 125,
+      turnsUsed: 2,
+      wallClockMs: 3_000,
+      budgetLimits: { tokenBudget: 1_000, turnBudget: 6, wallClockBudgetMs: 60_000 },
+    }));
+    await manager.close(id);
+    expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+    const restoreError = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(restoreError);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(restoreError);
+    try {
+      const response = await fetch(`${endpoint}/api/sessions/${id}/goal`, {
+        headers: { authorization: `Bearer ${host.localOwnerToken}` },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { code: number; data: Record<string, unknown> };
+      expect(body).toMatchObject({
+        code: 0,
+        data: {
+          goalId,
+          objective: 'Read a goal after closing the session',
+          completionCriterion: 'The saved goal response preserves its controls and budget',
+          status: 'active',
+          followUpTiming: 'tasks_done',
+          controlRevision: 8,
+          tokensUsed: 125,
+          turnsUsed: 2,
+          budget: {
+            tokenBudget: 1_000,
+            turnBudget: 6,
+            wallClockBudgetMs: 60_000,
+            remainingTokens: 875,
+            remainingTurns: 4,
+            remainingWallClockMs: expect.any(Number),
+            tokenBudgetReached: false,
+            turnBudgetReached: false,
+            wallClockBudgetReached: false,
+            overBudget: false,
+          },
+        },
+      });
+      const budget = body.data['budget'] as { remainingWallClockMs: number };
+      expect(budget.remainingWallClockMs).toBeGreaterThan(0);
+      expect(budget.remainingWallClockMs + (body.data['wallClockMs'] as number)).toBe(60_000);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      expect(requests).toHaveLength(0);
     } finally {
       acquire.mockRestore();
       resume.mockRestore();
