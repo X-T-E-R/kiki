@@ -2454,9 +2454,10 @@ function RoomConversationRow({
       // needs_you without a pending interaction is the budget pause.
       : t('activity.reason.budget');
   const failedUnseen = state === 'unread' && item.failed;
+  const visibleLocation = showLocation && location !== undefined ? location : undefined;
   // A room archives the same way a thread does, so it says the same things:
   // the in-flight state and the refusal outrank the row's standing facts.
-  const fact: { kind: 'needs-you' | 'failed' | 'archiving' | 'archive-error' | 'location'; text: string } | undefined =
+  const fact: { kind: 'needs-you' | 'failed' | 'running' | 'archiving' | 'archive-error'; text: string } | undefined =
     archiving
       ? { kind: 'archiving', text: t('sidebar.archiving') }
     : archiveError !== undefined
@@ -2465,9 +2466,10 @@ function RoomConversationRow({
       ? { kind: 'needs-you', text: needsYouText }
       : failedUnseen
         ? { kind: 'failed', text: t('sidebar.rowState.failed') }
-        : showLocation && location !== undefined
-          ? { kind: 'location', text: location }
-          : undefined;
+      : state === 'running'
+        ? { kind: 'running', text: t('sidebar.status.working') }
+        : undefined;
+  const hasFacts = visibleLocation !== undefined || fact !== undefined || archived;
   const markTitle =
     state === 'needs-me'
       ? needsYouText
@@ -2536,22 +2538,26 @@ function RoomConversationRow({
             </span>
           </span>
           {/* Always there on touch: it carries the time the ⋯ covers above. */}
-          <span className={`mt-px min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint ${fact !== undefined || archived ? 'flex' : 'hidden [@media(hover:none)]:flex'}`}>
+          <span className={`mt-px min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint ${hasFacts ? 'flex' : 'hidden [@media(hover:none)]:flex'}`}>
+            {visibleLocation === undefined ? null : (
+              <span data-room-location className="min-w-0 flex-1 truncate" title={location}>{visibleLocation}</span>
+            )}
+            {visibleLocation === undefined || fact === undefined ? null : <span aria-hidden>·</span>}
             {fact === undefined ? null : fact.kind === 'needs-you' ? (
               <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
             ) : fact.kind === 'failed' ? (
               <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
+            ) : fact.kind === 'running' ? (
+              <span data-room-live className="shrink-0 whitespace-nowrap text-ink-soft">{fact.text}</span>
             ) : fact.kind === 'archiving' ? (
               <span data-room-archiving role="status" className="flex min-w-0 items-center gap-1 truncate text-ink-soft">
                 <Spinner label={t('sidebar.archivingAria', { title: item.title })} size={12} />
                 <span className="truncate">{fact.text}</span>
               </span>
-            ) : fact.kind === 'archive-error' ? (
-              <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
             ) : (
-              <span data-room-location className="min-w-0 truncate" title={location}>{fact.text}</span>
+              <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
             )}
-            {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+            {archived ? <span className="shrink-0">{visibleLocation === undefined && fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
             <span data-room-time-touch className="ml-auto hidden shrink-0 pl-1 tabular-nums [@media(hover:none)]:inline">
               <RelativeTime at={item.updated_at} />
             </span>
@@ -3252,12 +3258,9 @@ function searchQueryDisplay(search: SessionSearchState): string {
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
-// The `phone:` sizes are for the bottom sheet these menus become on a phone:
-// the sheet's own rule only resizes plain `menuitem` rows, not the check and
-// radio rows that make up most of these two menus.
 const MENU_HEADING = 'px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]';
 const MENU_ITEM =
-  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper phone:h-12 phone:px-4 phone:text-[15px]';
+  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
 
 /** The selection column: reserved on every row so labels stay aligned. */
 function MenuMark({ on }: { on: boolean }) {
@@ -3388,10 +3391,8 @@ function SidebarViewMenu({
       })}
     </>
   );
-  // No autofocus in the sheet: its first-item focus only knows plain menu
-  // items, and a touch opener has no keyboard to move from there anyway.
   return phone ? (
-    <ActionSheet ariaLabel={t('sidebar.viewMenu')} overlayId="sidebar-view-menu" dataAttribute="data-view-menu" onClose={onClose} autofocus={false}>
+    <ActionSheet ariaLabel={t('sidebar.viewMenu')} overlayId="sidebar-view-menu" dataAttribute="data-view-menu" onClose={onClose}>
       {body}
     </ActionSheet>
   ) : (
@@ -3515,7 +3516,7 @@ function SidebarFilterMenu({
                 onClick={() => { onToggleWorkspacePin(workspace); }}
                 // Without hover the unpinned mark would never show, leaving
                 // an invisible target in the row: touch keeps it faint.
-                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 phone:h-12 phone:w-12 ${
+                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 pointer-coarse:h-10 pointer-coarse:w-10 ${
                   workspace.pinned
                     ? 'text-ink-soft'
                     : 'text-transparent group-focus-within:text-ink-faint group-hover:text-ink-faint hover:!text-ink [@media(hover:none)]:text-ink-faint'
@@ -3551,7 +3552,7 @@ function SidebarFilterMenu({
     </>
   );
   return phone ? (
-    <ActionSheet ariaLabel={t('sidebar.filterMenu')} overlayId="sidebar-filter-menu" dataAttribute="data-filter-menu" onClose={onClose} autofocus={false}>
+    <ActionSheet ariaLabel={t('sidebar.filterMenu')} overlayId="sidebar-filter-menu" dataAttribute="data-filter-menu" onClose={onClose}>
       {body}
     </ActionSheet>
   ) : (

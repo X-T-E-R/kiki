@@ -6,11 +6,14 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useRef } from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { I18nProvider } from '../../i18n';
 import { anyOverlayOpen } from '../../lib/uiBusy';
 import { usePopoverDismiss } from '../ComposerControls';
 import { Dialog } from '../Dialog';
 import { SearchableSelect } from '../SearchableSelect';
+import { ActionSheet } from './ActionSheet';
 import { placeAnchored } from './anchoredPosition';
 import { AnchoredPopover, usePopover } from './AnchoredPopover';
 import { DetailSplit } from './DetailSplit';
@@ -254,5 +257,38 @@ describe('usePanelStack', () => {
     expect([stack!.top, stack!.depth]).toEqual(['form', 2]);
     act(() => { stack!.pop(); stack!.pop(); });
     expect([stack!.top, stack!.depth]).toEqual(['pick', 1]);
+  });
+});
+
+describe('ActionSheet menu item roles', () => {
+  it('focuses and arrow-navigates menuitem, menuitemcheckbox, and menuitemradio rows', async () => {
+    const onClose = vi.fn();
+    act(() => {
+      root.render(
+        <ActionSheet ariaLabel="Actions" overlayId="test-sheet" onClose={onClose}>
+          <button type="button" role="menuitemcheckbox" aria-checked="false" data-item="check">Check</button>
+          <button type="button" role="menuitemradio" aria-checked="true" data-item="radio">Radio</button>
+          <button type="button" role="menuitem" data-item="plain">Plain</button>
+        </ActionSheet>,
+      );
+    });
+    const check = document.body.querySelector<HTMLElement>('[data-item="check"]')!;
+    const radio = document.body.querySelector<HTMLElement>('[data-item="radio"]')!;
+    const plain = document.body.querySelector<HTMLElement>('[data-item="plain"]')!;
+    expect(document.activeElement).toBe(check);
+    await act(async () => { key(check, 'ArrowDown'); });
+    expect(document.activeElement).toBe(radio);
+    await act(async () => { key(radio, 'ArrowDown'); });
+    expect(document.activeElement).toBe(plain);
+    await act(async () => { key(plain, 'Home'); });
+    expect(document.activeElement).toBe(check);
+  });
+
+  it('styles menuitem, menuitemcheckbox, and menuitemradio with the shared 48px touch row rule', () => {
+    const css = readFileSync(resolve(__dirname, '../../index.css'), 'utf8');
+    expect(css).toContain(".kiki-action-sheet [role='menuitem'],");
+    expect(css).toContain(".kiki-action-sheet [role='menuitemcheckbox'],");
+    expect(css).toContain(".kiki-action-sheet [role='menuitemradio'] {");
+    expect(css).toContain('min-height: 48px;');
   });
 });

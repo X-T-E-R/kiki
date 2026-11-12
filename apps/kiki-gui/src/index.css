@@ -1989,7 +1989,9 @@ input[data-add-search]:focus-visible {
 /* Thumb-sized rows: at least 48px at 15px text. Unlayered and keyed on the
  * role, so it also resizes rows a contributor renders into the sheet with its
  * own desktop-sized utilities (plugin message actions). */
-.kiki-action-sheet [role='menuitem'] {
+.kiki-action-sheet [role='menuitem'],
+.kiki-action-sheet [role='menuitemcheckbox'],
+.kiki-action-sheet [role='menuitemradio'] {
   min-height: 48px;
   padding: 12px 16px;
   font-size: 15px;

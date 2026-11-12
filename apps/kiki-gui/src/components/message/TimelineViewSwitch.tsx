@@ -78,7 +78,7 @@ export function TimelineMenuRows({
     <>
       {showView ? (
         <>
-          <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.viewSwitchAria')}</p>
+          <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]">{t('message.viewSwitchAria')}</p>
           {(['message', 'process'] as const).map((value) => (
             <button
               key={value}
@@ -96,7 +96,7 @@ export function TimelineMenuRows({
           <div className="my-1 h-px bg-hairline" />
         </>
       ) : null}
-      <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint">{t('message.deliveryLabel')}</p>
+      <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]">{t('message.deliveryLabel')}</p>
       {(['message', 'reply'] as const).map((value) => (
         <button
           key={value}

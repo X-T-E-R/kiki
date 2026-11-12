@@ -100,6 +100,7 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
     () => (summary === undefined ? undefined : buildPersonaDirectory([summary], [], conversations, seen)[0]),
     [conversations, seen, summary],
   );
+  const narrow = useMediaQuery('(max-width: 639px)');
 
   if (bound === undefined) return null;
   // The session carries its own face; the directory only refines it (a newer
@@ -110,9 +111,8 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
   const isDaily = summary !== undefined && summary.homeSessionId === session.id;
   // One project cue per line: a topic's title element already carries the cwd
   // from `sm` up (that is the path the session runs in), so naming the
-  // workspace again beside it would just repeat it. Below `sm` the cwd is
-  // hidden, and the daily and room lines never carry one.
-  const narrow = useMediaQuery('(max-width: 639px)');
+  // workspace again beside it would just repeat it. Below `sm` the workspace
+  // lives in Session overview instead, so the title line gets the full width.
   const cwd = session.metadata.cwd;
   const titleNamesProject = !isDaily && roomId === undefined && !narrow
     && typeof cwd === 'string' && cwd !== '';
@@ -146,20 +146,20 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
       </div>
       <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
         {isDaily ? (
-          <span data-session-conversation-kind="daily" className="shrink-0">{t('persona.dailyTitle')}</span>
+          <span data-session-conversation-kind="daily" className={narrow ? 'min-w-0 flex-1 truncate' : 'shrink-0'}>{t('persona.dailyTitle')}</span>
         ) : roomId !== undefined ? (
-          <span className="flex min-w-0 items-center gap-1">
+          <span className={`flex min-w-0 items-center gap-1 ${narrow ? 'flex-1' : ''}`}>
             <span aria-hidden className="shrink-0 font-mono">#</span>
             <span data-session-conversation-kind="room" className="min-w-0 truncate">{roomName ?? t('persona.roomSeat')}</span>
           </span>
         ) : (
           // The session's own title element, handed in so in-place renaming
           // keeps working. It carries its own `flex-1` (it grows inside the
-          // plain header on its own); here it must not, or the project that
-          // follows it would be pushed to the far end of the header.
-          <span data-session-identity-title className="flex min-w-0 shrink items-center">{title}</span>
+          // plain header on its own); on wide screens it must not grow past the
+          // project beside it, while below 640px it takes the whole line.
+          <span data-session-identity-title className={`flex min-w-0 items-center ${narrow ? 'flex-1' : 'shrink'}`}>{title}</span>
         )}
-        {workspaceName === undefined || titleNamesProject ? null : (
+        {narrow || workspaceName === undefined || titleNamesProject ? null : (
           <span className="flex min-w-0 shrink-[100] items-center gap-1.5">
             <span aria-hidden className="shrink-0">·</span>
             <span data-session-workspace className="min-w-0 truncate">{workspaceName}</span>

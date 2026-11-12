@@ -1492,6 +1492,29 @@ describe('Sidebar view menu', () => {
     await act(async () => { header?.click(); });
     expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
   });
+
+  it('focuses the first option when View and Filter open as phone bottom sheets', async () => {
+    const media = window as unknown as { matchMedia?: unknown };
+    const originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(pointer: coarse) and (max-width: 639px)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    try {
+      const { container } = await mount(listed());
+      const viewSheet = await openViewMenu(container);
+      expect(document.activeElement).toBe(viewSheet.querySelector('[data-group-by="time"]'));
+      await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+      const filterSheet = await openFilterMenu(container);
+      expect(document.activeElement).toBe(filterSheet.querySelector('[data-status-filter="idle"]'));
+    } finally {
+      if (originalMatchMedia === undefined) delete media.matchMedia;
+      else media.matchMedia = originalMatchMedia;
+    }
+  });
 });
 
 describe('Sidebar filters', () => {
@@ -2823,15 +2846,21 @@ describe('Sidebar room rows', () => {
     expect(nested?.querySelector('[data-session-location]')).toBeNull();
   });
 
-  it('carries the thread row states: unread, needs you (approval and budget)', async () => {
+  it('carries the thread row states: unread, running, and needs you (approval and budget)', async () => {
     const unread = roomSummary({ id: 'room_unread', lastSeq: 3 });
+    const running = roomSummary({ id: 'room_running', busy: true });
     const approval = roomSummary({ id: 'room_approval', needsYou: true, pendingInteraction: 'approval' });
     const budget = roomSummary({ id: 'room_budget', needsYou: true, pendingInteraction: 'none' });
     const { container } = await mount({
-      rooms: [unread, approval, budget],
-      sessionGroups: [{ key: 'today', label: 'Today', items: [roomItem(unread), roomItem(approval), roomItem(budget)] }],
+      rooms: [unread, running, approval, budget],
+      workspaceOptions: [workspace('ws_test', 'app')],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [roomItem(unread), roomItem(running), roomItem(approval), roomItem(budget)] }],
     });
     expect(container.querySelector('[data-room-row="room_unread"]')?.getAttribute('data-room-row-state')).toBe('unread');
+    const runningRow = container.querySelector('[data-room-row="room_running"]');
+    expect(runningRow?.getAttribute('data-room-row-state')).toBe('running');
+    expect(runningRow?.querySelector('[data-room-live]')?.textContent).toBe('Running');
+    expect(runningRow?.querySelector('[data-room-location]')?.textContent).toBe('app');
     const approvalRow = container.querySelector('[data-room-row="room_approval"]');
     expect(approvalRow?.getAttribute('data-room-row-state')).toBe('needs-me');
     expect(approvalRow?.querySelector('[data-room-needs-you]')?.textContent).toBe('Awaiting approval');

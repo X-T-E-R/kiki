@@ -47,6 +47,7 @@ import { useModelSwitches } from './model-switch/useModelSwitches';
 import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
+import { ActionSheet } from './overlays/ActionSheet';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
@@ -175,6 +176,7 @@ import {
 import { API_CODES, ApiError, isSessionNotFoundMessage, isUnconfirmedTransportError, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
 import { invalidatePluginQueries } from '../lib/pluginFreshness';
 import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
+import { activeFindHost } from '../lib/timelineFind';
 import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 import { useTimelineNavigation } from '../lib/useTimelineNavigation';
@@ -878,19 +880,20 @@ export function SessionActionsMenu({
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const terminalChord = actionChordText('terminal-toggle', useShortcutState());
-  // On a phone the back button closes the menu instead of leaving the session.
   const coarse = useCoarsePointer();
-  useLayerHistory('session-actions-menu', open && coarse, () => { setOpen(false); });
   // A phone keyboard has no Ctrl, Tab or arrows, so in phone mode the
   // terminal is offered only once this device opts in (Settings › General).
   // A panel that is already open keeps its row, so the menu can still close it.
   const phoneMode = usePhoneMode();
+  // ActionSheet owns the back-history entry and Escape/scrim dismissal in phoneMode.
+  useLayerHistory('session-actions-menu', open && coarse && !phoneMode, () => { setOpen(false); });
   const showTerminalOnPhone = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot).showTerminalOnPhone;
   const terminalOffered = terminalAvailable && (!phoneMode || showTerminalOnPhone || terminalOpen);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || phoneMode) return;
     const unregister = registerOverlay('session-actions-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
@@ -910,10 +913,12 @@ export function SessionActionsMenu({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [open]);
+  }, [open, phoneMode]);
 
   const itemClass =
     'flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper pointer-coarse:h-11';
+  const sheetItemClass =
+    'flex w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
   const pick = (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
     setOpen(false);
     onAction(action);
@@ -921,6 +926,7 @@ export function SessionActionsMenu({
   return (
     <div className="relative shrink-0" data-session-actions>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => { setOpen((value) => !value); }}
         title={t('sv.actionsAria')}
@@ -931,7 +937,129 @@ export function SessionActionsMenu({
       >
         <MoreIcon className="h-[15px] w-[15px]" />
       </button>
-      {open ? (
+      {open && phoneMode ? (
+        <ActionSheet
+          ariaLabel={t('sv.actionsAria')}
+          overlayId="session-actions-menu"
+          dataAttribute="data-session-actions-sheet"
+          onClose={() => { setOpen(false); }}
+        >
+          {leading !== undefined ? (
+            <>
+              {leading(() => { setOpen(false); })}
+              <div className="my-1 h-px bg-hairline" />
+            </>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            className={sheetItemClass}
+            data-session-rename
+            onClick={() => {
+              setOpen(false);
+              onBeginRename();
+            }}
+          >
+            {t('menu.rename')}
+          </button>
+          {onOpenOverview !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={sheetItemClass}
+              data-session-overview-open
+              onClick={() => { setOpen(false); onOpenOverview(); }}
+            >
+              {t('inspector.overview')}
+            </button>
+          ) : null}
+          {onSideQuestion !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-side-question
+              className={sheetItemClass}
+              onClick={() => {
+                setOpen(false);
+                onSideQuestion();
+              }}
+            >
+              {t('menu.sideQuestion')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            data-session-find
+            className={sheetItemClass}
+            onClick={() => {
+              const returnFocus = triggerRef.current;
+              setOpen(false);
+              activeFindHost(returnFocus)?.open({ returnFocus });
+            }}
+          >
+            {t('find.aria')}
+          </button>
+          <div className="my-1 h-px bg-hairline" />
+          <button type="button" role="menuitem" className={sheetItemClass} onClick={() => { pick('compact'); }}>
+            {t('menu.compact')}
+          </button>
+          {freshContextAvailable ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-session-fresh-context
+              className={sheetItemClass}
+              onClick={() => { pick('fresh-context'); }}
+            >
+              {t('modelSwitch.menuFreshContext')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            className={`${sheetItemClass} text-danger hover:bg-danger/10`}
+            onClick={() => { pick('undo'); }}
+          >
+            {t('menu.undo')}
+          </button>
+          <div className="my-1 h-px bg-hairline" />
+          {canFork ? (
+            <button type="button" role="menuitem" className={sheetItemClass} onClick={() => { pick('fork'); }}>
+              {t('menu.fork')}
+            </button>
+          ) : null}
+          <button type="button" role="menuitem" className={sheetItemClass} onClick={() => { pick('export'); }}>
+            {t('menu.export')}
+          </button>
+          {onPromptDetails !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={sheetItemClass}
+              data-prompt-details-open
+              onClick={() => { setOpen(false); onPromptDetails(); }}
+            >
+              {t('agentPanel.prompt.title')}
+            </button>
+          ) : null}
+          {terminalOffered ? (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={terminalOpen}
+              data-terminal-toggle
+              className={sheetItemClass}
+              onClick={() => {
+                setOpen(false);
+                onToggleTerminal();
+              }}
+            >
+              <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
+            </button>
+          ) : null}
+        </ActionSheet>
+      ) : open ? (
         <div role="menu" className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
           {leading !== undefined ? (
             <>

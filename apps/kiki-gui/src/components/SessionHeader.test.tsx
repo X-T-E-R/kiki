@@ -5,8 +5,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MemoryRouter, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { Session } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { registerFindHost } from '../lib/timelineFind';
+import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import {
   currentDiscoveryScope,
   navigateDiscovery,
@@ -27,7 +31,15 @@ vi.mock('../state/connection', () => ({
   useConnection: () => ({
     scopeId: 'local',
     wsStatus: 'open',
-    client: {},
+    client: {
+      listPersonas: async () => [],
+      listWorkspaceCatalog: async () => ({
+        items: [
+          { id: 'ws_a', name: 'EasyAgent', root: '/a', created_at: '', last_opened_at: '', pinned: false, session_count: 1, isGit: true },
+        ],
+      }),
+      klient: {},
+    },
   }),
   // The title resolver takes the nullable variant, which is null outside a live
   // connection — exactly as it is here, with no provider above the render.
@@ -197,14 +209,65 @@ describe('session header overflow menu on a phone', () => {
   function openMenu(overrides: Partial<React.ComponentProps<typeof SessionActionsMenu>> = {}) {
     const menu = actionsMenu(overrides);
     click(menu.container.querySelector('button[aria-haspopup="menu"]'));
-    return menu;
+    const sheet = document.body.querySelector<HTMLElement>('[data-session-actions-sheet]');
+    return { ...menu, sheet };
   }
 
+  it('opens a grouped bottom sheet without chord hints and orders the three phone groups', () => {
+    writeSettings({ showTerminalOnPhone: true });
+    const { sheet } = openMenu({
+      onOpenOverview: vi.fn(),
+      onSideQuestion: vi.fn(),
+      onPromptDetails: vi.fn(),
+      freshContextAvailable: true,
+    });
+    expect(sheet).not.toBeNull();
+    const labels = [...sheet!.querySelectorAll('[role^="menuitem"]')].map((item) =>
+      (item.textContent ?? '').trim(),
+    );
+    expect(labels).toEqual([
+      'Rename…',
+      'Session overview',
+      'Side question',
+      'Find in this conversation',
+      'Compact context',
+      'Continue with a new context…',
+      'Undo last turn…',
+      'Fork session',
+      'Export archive…',
+      'Effective prompts',
+      'Terminal',
+    ]);
+  });
+
+  it('opens Find in this conversation on the active timeline and hands the ⋯ button as returnFocus', () => {
+    const openFind = vi.fn();
+    const rootNode = document.createElement('div');
+    document.body.append(rootNode);
+    const unregister = registerFindHost({
+      isVisible: () => true,
+      root: () => rootNode,
+      open: openFind,
+      step: vi.fn(),
+      lastUsedAt: 1,
+    });
+    try {
+      const { container, sheet } = openMenu();
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+      click(sheet!.querySelector('[data-session-find]'));
+      expect(document.body.querySelector('[data-session-actions-sheet]')).toBeNull();
+      expect(openFind).toHaveBeenCalledWith({ returnFocus: trigger });
+    } finally {
+      unregister();
+      rootNode.remove();
+    }
+  });
+
   it('offers no terminal until this device turns it on', () => {
-    expect(openMenu().container.querySelector('[data-terminal-toggle]')).toBeNull();
+    expect(openMenu().sheet?.querySelector('[data-terminal-toggle]') ?? null).toBeNull();
 
     writeSettings({ showTerminalOnPhone: true });
-    expect(openMenu().container.querySelector('[data-terminal-toggle]')).not.toBeNull();
+    expect(openMenu().sheet?.querySelector('[data-terminal-toggle]') ?? null).not.toBeNull();
   });
 
   it('leaves a tablet (touch, but wide) with the terminal as before', () => {
@@ -218,9 +281,97 @@ describe('session header overflow menu on a phone', () => {
   });
 
   it('keeps the row for a terminal that is already open, so it can still be closed', () => {
-    const { props, container } = openMenu({ terminalOpen: true });
-    click(container.querySelector('[data-terminal-toggle]'));
+    const { props, sheet } = openMenu({ terminalOpen: true });
+    click(sheet?.querySelector('[data-terminal-toggle]') ?? null);
     expect(props.onToggleTerminal).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('persona session identity on narrow screens', () => {
+  const media = window as unknown as { matchMedia?: unknown };
+  let originalMatchMedia: unknown;
+  let narrow = true;
+  const listeners = new Set<() => void>();
+
+  beforeEach(() => {
+    originalMatchMedia = media.matchMedia;
+    narrow = true;
+    listeners.clear();
+    media.matchMedia = (query: string) => ({
+      get matches() { return query === '(max-width: 639px)' ? narrow : false; },
+      media: query,
+      addEventListener: (_event: string, fn: () => void) => { listeners.add(fn); },
+      removeEventListener: (_event: string, fn: () => void) => { listeners.delete(fn); },
+    });
+  });
+
+  afterEach(() => {
+    if (originalMatchMedia === undefined) delete media.matchMedia;
+    else media.matchMedia = originalMatchMedia;
+  });
+
+  it('gives the title the full second line below 640px and transitions cleanly across persona bindings', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const personaSession = {
+      id: 's-persona',
+      title: 'Fix mobile header wrapping',
+      workspace_id: 'ws_a',
+      created_at: '',
+      updated_at: '',
+      metadata: { cwd: '/a' },
+      busy: false,
+      last_seq: 1,
+      agent_config: { persona: { id: 'nia', name: 'Nia' } },
+    } as unknown as Session;
+    const plainSession = {
+      ...personaSession,
+      id: 's-plain',
+      agent_config: {},
+    } as unknown as Session;
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push({ container, root });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <PersonaSessionIdentity session={personaSession} title={<span>Fix mobile header wrapping</span>} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.querySelector('[data-session-workspace]')).toBeNull();
+    expect(container.querySelector('[data-session-identity-title]')?.className).toContain('flex-1');
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <PersonaSessionIdentity session={plainSession} title={<span>Plain</span>} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(container.querySelector('[data-session-persona-identity]')).toBeNull();
+
+    narrow = false;
+    const noCwdPersona = { ...personaSession, metadata: {} } as unknown as Session;
+    await act(async () => {
+      for (const fn of listeners) fn();
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <PersonaSessionIdentity session={noCwdPersona} title={<span>Topic</span>} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(container.querySelector('[data-session-workspace]')?.textContent).toBe('EasyAgent');
   });
 });
 

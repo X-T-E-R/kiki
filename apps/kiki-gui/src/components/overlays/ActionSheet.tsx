@@ -19,7 +19,8 @@ import { createPortal } from 'react-dom';
 import { useLayerHistory } from '../../lib/layerHistory';
 import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
 
-const ITEM_SELECTOR = '[role="menuitem"]:not([disabled])';
+const ITEM_SELECTOR =
+  '[role="menuitem"]:not([disabled]), [role="menuitemcheckbox"]:not([disabled]), [role="menuitemradio"]:not([disabled])';
 
 /**
  * Focus the first item from `start` (stepping by `step`, wrapping) that

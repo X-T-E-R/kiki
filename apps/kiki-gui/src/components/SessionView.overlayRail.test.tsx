@@ -272,17 +272,18 @@ describe('message-view controls and the persona menu', () => {
         expect(view.host.querySelector('[data-timeline-view-switch]') !== null).toBe(session.message);
         expect(view.host.querySelector('[data-session-persona-identity]') !== null).toBe(session.bound);
         await act(async () => { view.host.querySelector<HTMLButtonElement>('[data-session-actions] > button')!.click(); });
-        expect(view.host.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.message && width === 'narrow' ? 2 : 0);
+        const menu = document.body.querySelector<HTMLElement>('[data-session-actions-sheet]') ?? view.host;
+        expect(menu.querySelectorAll('[data-timeline-view-menu]').length).toBe(session.message && width === 'narrow' ? 2 : 0);
         // The menu carries the reply-mode rows for either reason: a persona's
         // session, or a session whose delivery is the message mode itself.
-        expect(view.host.querySelectorAll('[data-delivery-option]').length).toBe(session.persona || session.message ? 2 : 0);
+        expect(menu.querySelectorAll('[data-delivery-option]').length).toBe(session.persona || session.message ? 2 : 0);
         // Three persona pages plus this conversation's binding-settings drawer.
-        expect([...view.host.querySelectorAll('[data-persona-menu]')].map((entry) => entry.getAttribute('data-persona-menu'))).toEqual(session.persona ? [
+        expect([...menu.querySelectorAll('[data-persona-menu]')].map((entry) => entry.getAttribute('data-persona-menu'))).toEqual(session.persona ? [
           'persona.menu.conversations', 'persona.menu.settings', 'persona.menu.memory', 'persona.menu.binding',
         ] : []);
-        expect(view.host.querySelector('[data-bot-settings-open]')).toBeNull();
-        expect(view.host.querySelector('[data-session-rename]')).not.toBeNull();
-        expect(view.host.querySelector('[data-side-question]')).not.toBeNull();
+        expect(menu.querySelector('[data-bot-settings-open]')).toBeNull();
+        expect(menu.querySelector('[data-session-rename]')).not.toBeNull();
+        expect(menu.querySelector('[data-side-question]')).not.toBeNull();
 
         const shortcut = new KeyboardEvent('keydown', { key: '.', code: 'Period', ctrlKey: true, shiftKey: true, cancelable: true });
         await act(async () => { window.dispatchEvent(shortcut); });
