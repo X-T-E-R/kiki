@@ -6,7 +6,7 @@
  *   Line 2: context: N% (tokens/max)
  */
 
-import type { Component } from '@kiki/pi-tui';
+import type { Component, MouseRoutable, SgrMouseEvent } from '@kiki/pi-tui';
 import { truncateToWidth, visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { effectiveModelAlias, sameWorkDir } from '@kiki/node-sdk';
@@ -171,9 +171,38 @@ export function formatFooterGitBadge(status: GitStatus, colors: ColorPalette): s
   return `${base} ${pullRequest}`;
 }
 
-export class FooterComponent implements Component {
+export type FooterAction =
+  | 'permission'
+  | 'plan'
+  | 'goal'
+  | 'model'
+  | 'effort'
+  | 'tasks'
+  | 'agents'
+  | 'usage'
+  | 'settings';
+
+interface FooterPiece {
+  readonly text: string;
+  readonly action?: FooterAction;
+  readonly subSpans?: ReadonlyArray<{
+    readonly startOffset: number;
+    readonly endOffset: number;
+    readonly action: FooterAction;
+  }>;
+}
+
+interface HitSpan {
+  readonly startCol: number;
+  readonly endCol: number;
+  readonly action: FooterAction;
+}
+
+export class FooterComponent implements Component, MouseRoutable {
   private state: AppState;
   private readonly onRefresh: () => void;
+  private onAction?: (action: FooterAction) => void;
+  private lineHitSpans: [HitSpan[], HitSpan[]] = [[], []];
   private gitCache: GitStatusCache;
   private gitCacheWorkDir: string;
   private transientHint: string | null = null;
@@ -263,11 +292,27 @@ export class FooterComponent implements Component {
     this.backgroundAgentCount = Math.max(0, counts.agentTasks);
   }
 
+  setOnAction(onAction: ((action: FooterAction) => void) | undefined): void {
+    this.onAction = onAction;
+  }
+
+  routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+    if (!event.leftClick || this.onAction === undefined) return false;
+    if (line !== 0 && line !== 1) return false;
+    const spans = this.lineHitSpans[line];
+    const hit = spans.find((s) => col >= s.startCol && col < s.endCol);
+    if (hit === undefined) return false;
+    this.onAction(hit.action);
+    return true;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {
     const colors = currentTheme.palette;
     const state = this.state;
+    const line0Spans: HitSpan[] = [];
+    const line1Spans: HitSpan[] = [];
 
     // ── Line 1: slots composed per status_line.items, or a user command ──
     let line1: string;
@@ -284,13 +329,37 @@ export class FooterComponent implements Component {
       const slots = this.buildSlots(colors);
       const configured = this.state.statusLine?.items ?? null;
       const order: readonly string[] = configured ?? DEFAULT_STATUS_LINE_ITEMS;
-      const left: string[] = [];
+      const leftPieces: FooterPiece[] = [];
       for (const slot of order) {
         const pieces = slots[slot as keyof typeof slots];
-        if (pieces !== undefined) left.push(...pieces);
+        if (pieces !== undefined) leftPieces.push(...pieces);
       }
 
-      const leftLine = left.join('  ');
+      let colCursor = 0;
+      const leftTexts: string[] = [];
+      for (const [idx, piece] of leftPieces.entries()) {
+        if (idx > 0) colCursor += 2;
+        const pieceW = visibleWidth(piece.text);
+        if (piece.subSpans !== undefined) {
+          for (const sub of piece.subSpans) {
+            const startCol = Math.min(width, colCursor + sub.startOffset);
+            const endCol = Math.min(width, colCursor + sub.endOffset);
+            if (endCol > startCol) {
+              line0Spans.push({ startCol, endCol, action: sub.action });
+            }
+          }
+        } else if (piece.action !== undefined) {
+          const startCol = Math.min(width, colCursor);
+          const endCol = Math.min(width, colCursor + pieceW);
+          if (endCol > startCol) {
+            line0Spans.push({ startCol, endCol, action: piece.action });
+          }
+        }
+        colCursor += pieceW;
+        leftTexts.push(piece.text);
+      }
+
+      const leftLine = leftTexts.join('  ');
       const leftWidth = visibleWidth(leftLine);
 
       // Rotating hint tips stay on the right unless they were given an
@@ -328,6 +397,7 @@ export class FooterComponent implements Component {
     );
     const contextWidth = visibleWidth(contextText);
     let line2: string;
+    let contextStartCol = 0;
     const hint = this.transientHint ?? this.warningHint;
     if (hint) {
       const maxHintWidth = Math.max(0, width - contextWidth - 1);
@@ -335,14 +405,22 @@ export class FooterComponent implements Component {
         visibleWidth(hint) <= maxHintWidth ? hint : truncateToWidth(hint, maxHintWidth, '…');
       const hintWidth = visibleWidth(shownHint);
       const pad = Math.max(0, width - hintWidth - contextWidth);
+      contextStartCol = hintWidth + pad;
       line2 =
         chalk.hex(colors.warning).bold(shownHint) +
         ' '.repeat(pad) +
         chalk.hex(colors.text)(contextText);
     } else {
       const leftPad = Math.max(0, width - contextWidth);
+      contextStartCol = leftPad;
       line2 = ' '.repeat(leftPad) + chalk.hex(colors.text)(contextText);
     }
+    const ctxStart = Math.min(width, contextStartCol);
+    const ctxEnd = Math.min(width, contextStartCol + contextWidth);
+    if (ctxEnd > ctxStart) {
+      line1Spans.push({ startCol: ctxStart, endCol: ctxEnd, action: 'usage' });
+    }
+    this.lineHitSpans = [line0Spans, line1Spans];
 
     return [truncateToWidth(line1, width), truncateToWidth(line2, width)];
   }
@@ -351,9 +429,9 @@ export class FooterComponent implements Component {
    * Rendered pieces per status-line slot. Empty-content slots (e.g. no goal,
    * outside a git repo) yield an empty list so composition just skips them.
    */
-  private buildSlots(colors: ColorPalette): Record<string, string[]> {
+  private buildSlots(colors: ColorPalette): Record<string, FooterPiece[]> {
     const state = this.state;
-    const slots: Record<string, string[]> = {
+    const slots: Record<string, FooterPiece[]> = {
       mode: [],
       goal: [],
       model: [],
@@ -366,17 +444,35 @@ export class FooterComponent implements Component {
     {
       const { primary, pair } = tipsForIndex(currentTipIndex());
       const tip = pair ?? primary;
-      if (tip) slots['tips'] = [chalk.hex(colors.textMuted)(tip)];
+      if (tip) slots['tips'] = [{ text: chalk.hex(colors.textMuted)(tip) }];
     }
 
-    const modes: string[] = [];
-    if (state.permissionMode === 'auto') modes.push(chalk.hex(colors.warning).bold('auto'));
-    if (state.permissionMode === 'yolo') modes.push(chalk.hex(colors.warning).bold('yolo'));
-    if (state.planMode) modes.push(chalk.hex(colors.primary).bold('plan'));
-    if (modes.length > 0) slots['mode'] = [modes.join(' ')];
+    const modeParts: Array<{ text: string; action: FooterAction }> = [];
+    if (state.permissionMode === 'auto') {
+      modeParts.push({ text: chalk.hex(colors.warning).bold('auto'), action: 'permission' });
+    }
+    if (state.permissionMode === 'yolo') {
+      modeParts.push({ text: chalk.hex(colors.warning).bold('yolo'), action: 'permission' });
+    }
+    if (state.planMode) {
+      modeParts.push({ text: chalk.hex(colors.primary).bold('plan'), action: 'plan' });
+    }
+    if (modeParts.length > 0) {
+      const subSpans: Array<{ startOffset: number; endOffset: number; action: FooterAction }> = [];
+      let offset = 0;
+      const texts: string[] = [];
+      for (const [idx, part] of modeParts.entries()) {
+        if (idx > 0) offset += 1;
+        const w = visibleWidth(part.text);
+        subSpans.push({ startOffset: offset, endOffset: offset + w, action: part.action });
+        offset += w;
+        texts.push(part.text);
+      }
+      slots['mode'] = [{ text: texts.join(' '), subSpans }];
+    }
 
     const goalBadge = formatGoalBadge(state.goal, colors, this.goalWallClockMs(state.goal));
-    if (goalBadge !== null) slots['goal'] = [goalBadge];
+    if (goalBadge !== null) slots['goal'] = [{ text: goalBadge, action: 'goal' }];
 
     const model = modelDisplayName(state);
     if (model) {
@@ -398,32 +494,48 @@ export class FooterComponent implements Component {
       if (isRainbowDancing()) {
         renderedModelLabel = renderDanceFooterModel(modelLabel);
       }
-      slots['model'] = [renderedModelLabel];
+      const modelWidth = visibleWidth(model);
+      const totalWidth = visibleWidth(modelLabel);
+      if (thinkingLabel.length > 0 && totalWidth > modelWidth) {
+        slots['model'] = [
+          {
+            text: renderedModelLabel,
+            subSpans: [
+              { startOffset: 0, endOffset: modelWidth, action: 'model' },
+              { startOffset: modelWidth + 1, endOffset: totalWidth, action: 'effort' },
+            ],
+          },
+        ];
+      } else {
+        slots['model'] = [{ text: renderedModelLabel, action: 'model' }];
+      }
     }
 
     // Background-task badges. `bash-*` tasks (shell processes) and `agent-*`
     // tasks (background subagents) stay separate so the user can tell them
     // apart at a glance.
-    const taskBadges: string[] = [];
+    const taskBadges: FooterPiece[] = [];
     if (this.backgroundBashTaskCount > 0) {
       const noun = this.backgroundBashTaskCount === 1 ? 'task' : 'tasks';
-      taskBadges.push(
-        chalk.hex(colors.primary)(`[${String(this.backgroundBashTaskCount)} ${noun} running]`),
-      );
+      taskBadges.push({
+        text: chalk.hex(colors.primary)(`[${String(this.backgroundBashTaskCount)} ${noun} running]`),
+        action: 'tasks',
+      });
     }
     if (this.backgroundAgentCount > 0) {
       const noun = this.backgroundAgentCount === 1 ? 'agent' : 'agents';
-      taskBadges.push(
-        chalk.hex(colors.primary)(`[${String(this.backgroundAgentCount)} ${noun} running]`),
-      );
+      taskBadges.push({
+        text: chalk.hex(colors.primary)(`[${String(this.backgroundAgentCount)} ${noun} running]`),
+        action: 'agents',
+      });
     }
     slots['tasks'] = taskBadges;
 
     const cwd = shortenCwd(state.workDir);
-    if (cwd) slots['cwd'] = [chalk.hex(colors.textDim)(cwd)];
+    if (cwd) slots['cwd'] = [{ text: chalk.hex(colors.textDim)(cwd) }];
 
     const git = this.gitCache.getStatus();
-    if (git !== null) slots['git'] = [formatFooterGitBadge(git, colors)];
+    if (git !== null) slots['git'] = [{ text: formatFooterGitBadge(git, colors) }];
 
     return slots;
   }

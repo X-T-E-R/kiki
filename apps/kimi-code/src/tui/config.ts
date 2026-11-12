@@ -19,6 +19,12 @@ export const INVALID_TUI_CONFIG_MESSAGE =
 
 export const TuiThemeSchema = z.string();
 
+export const BusySubmitModeSchema = z.enum(['send_now', 'queue']);
+export type BusySubmitMode = z.infer<typeof BusySubmitModeSchema>;
+
+export const ScreenModeSchema = z.enum(['main', 'alt']);
+export type ScreenMode = z.infer<typeof ScreenModeSchema>;
+
 export const NotificationConditionSchema = z.enum(['unfocused', 'always']);
 
 export const NotificationsConfigSchema = z.object({
@@ -49,6 +55,11 @@ export const DEFAULT_STATUS_LINE_CONFIG: StatusLineConfig = {
 
 export const TuiConfigFileSchema = z.object({
   theme: TuiThemeSchema.optional(),
+  busy_submit: BusySubmitModeSchema.optional(),
+  mouse: z.boolean().optional(),
+  screen_mode: ScreenModeSchema.optional(),
+  show_thinking: z.boolean().optional(),
+  show_timestamps: z.boolean().optional(),
   render_latex: z.boolean().optional(),
   disable_paste_burst: z.boolean().optional(),
   cache_expiry_hint: z.boolean().optional(),
@@ -68,6 +79,16 @@ export const TuiConfigFileSchema = z.object({
 
 export const TuiConfigSchema = z.object({
   theme: TuiThemeSchema,
+  /** Busy Enter behavior in the TUI ('send_now' steers immediately; 'queue' queues for next turn). */
+  busySubmit: BusySubmitModeSchema.optional(),
+  /** SGR mouse click & wheel reporting; optional only so older hand-built test fixtures typecheck. */
+  mouse: z.boolean().optional(),
+  /** Terminal screen mode ('main' native scrollback | 'alt' fullscreen viewport). */
+  screenMode: ScreenModeSchema.optional(),
+  /** Whether thinking traces render in the transcript; defaults to true. */
+  showThinking: z.boolean().optional(),
+  /** Whether prompt timestamps render in the transcript; defaults to false. */
+  showTimestamps: z.boolean().optional(),
   /** LaTeX math rendering in Markdown; optional only so older hand-built test
    * fixtures still typecheck. */
   renderLatex: z.boolean().optional(),
@@ -93,6 +114,11 @@ export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
 
 export const DEFAULT_TUI_CONFIG: TuiConfig = TuiConfigSchema.parse({
   theme: 'auto',
+  busySubmit: 'send_now',
+  mouse: true,
+  screenMode: 'main',
+  showThinking: true,
+  showTimestamps: false,
   renderLatex: true,
   disablePasteBurst: false,
   cacheExpiryHint: true,
@@ -179,6 +205,11 @@ export function normalizeTuiConfig(
       .map((item) => item as StatusLineItem) ?? null;
   return TuiConfigSchema.parse({
     theme: config.theme ?? DEFAULT_TUI_CONFIG.theme,
+    busySubmit: config.busy_submit ?? DEFAULT_TUI_CONFIG.busySubmit,
+    mouse: config.mouse ?? DEFAULT_TUI_CONFIG.mouse,
+    screenMode: config.screen_mode ?? DEFAULT_TUI_CONFIG.screenMode,
+    showThinking: config.show_thinking ?? DEFAULT_TUI_CONFIG.showThinking,
+    showTimestamps: config.show_timestamps ?? DEFAULT_TUI_CONFIG.showTimestamps,
     renderLatex: config.render_latex ?? DEFAULT_TUI_CONFIG.renderLatex,
     disablePasteBurst: config.disable_paste_burst ?? DEFAULT_TUI_CONFIG.disablePasteBurst,
     cacheExpiryHint: config.cache_expiry_hint ?? DEFAULT_TUI_CONFIG.cacheExpiryHint,
@@ -221,11 +252,18 @@ export function renderTuiConfig(config: TuiConfig): string {
 # It receives a JSON snapshot (model, cwd, git, usage, mode) on stdin.
 # command = "~/.kiki/statusline.sh"
 `;
+  const busySubmit = config.busySubmit ?? 'send_now';
+  const screenMode = config.screenMode ?? 'main';
   return `# ~/.kiki/tui.toml
 # Client preferences for kimi-code.
 # Agent/runtime settings stay in ~/.kiki/config.toml.
 
 theme = "${escapeTomlBasicString(config.theme)}" # "auto" | "dark" | "light" | custom theme name
+busy_submit = "${busySubmit}" # "send_now" | "queue" — plain Enter behavior while a turn runs
+mouse = ${String(config.mouse !== false)} # true | false — SGR mouse click & wheel reporting (Alt+M toggles)
+screen_mode = "${screenMode}" # "main" | "alt" — native scrollback vs fullscreen alternate screen
+show_thinking = ${String(config.showThinking !== false)} # true | false — render thinking traces
+show_timestamps = ${String(config.showTimestamps === true)} # true | false — show prompt timestamps
 render_latex = ${String(config.renderLatex !== false)} # false keeps LaTeX math in assistant messages as raw source
 disable_paste_burst = ${String(config.disablePasteBurst)} # true disables non-bracketed paste-burst fallback
 cache_expiry_hint = ${String(config.cacheExpiryHint !== false)} # false disables the "cache expired" dialog on resume / idle submit

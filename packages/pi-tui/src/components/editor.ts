@@ -2,6 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
+import type { MouseRoutable, SgrMouseEvent } from "../mouse.ts";
 import { PasteBurst } from "../paste-burst.ts";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
@@ -14,7 +15,7 @@ import {
 	visibleWidth,
 } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
-import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
+import { type SelectItem, SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
 
 const graphemeSegmenter = getGraphemeSegmenter();
 const wordSegmenter = getWordSegmenter();
@@ -287,7 +288,7 @@ function createScrollBorder(direction: "↑" | "↓", hiddenLineCount: number, w
 	return sliceByColumn(indicator, 0, indicatorWidth, true) + ellipsis;
 }
 
-export class Editor implements Component, Focusable {
+export class Editor implements Component, Focusable, MouseRoutable {
 	private state: EditorState = {
 		lines: [""],
 		cursorLine: 0,
@@ -319,6 +320,8 @@ export class Editor implements Component, Focusable {
 	private autocompleteState: "regular" | "force" | null = null;
 	private autocompletePrefix: string = "";
 	private autocompleteMaxVisible: number = 5;
+	private autocompleteStartRow: number = -1;
+	private autocompleteRowCount: number = 0;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
@@ -684,15 +687,49 @@ export class Editor implements Component, Focusable {
 
 		// Add autocomplete list if active
 		if (this.autocompleteState && this.autocompleteList) {
+			this.autocompleteStartRow = result.length;
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
+			this.autocompleteRowCount = autocompleteResult.length;
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
 				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
 				result.push(`${leftPadding}${line}${linePadding}${rightPadding}`);
 			}
+		} else {
+			this.autocompleteStartRow = -1;
+			this.autocompleteRowCount = 0;
 		}
 
 		return result;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (!this.autocompleteState || !this.autocompleteList) {
+			return false;
+		}
+		if (event.wheel !== null) {
+			return this.autocompleteList.routeMouse(event, line - this.autocompleteStartRow, col - this.paddingX);
+		}
+		if (event.leftClick) {
+			if (
+				this.autocompleteStartRow >= 0 &&
+				line >= this.autocompleteStartRow &&
+				line < this.autocompleteStartRow + this.autocompleteRowCount
+			) {
+				return this.autocompleteList.routeMouse(event, line - this.autocompleteStartRow, col - this.paddingX);
+			}
+			this.cancelAutocomplete();
+			return true;
+		}
+		return false;
+	}
+
+	onOutsideMouseDown(): boolean {
+		if (this.autocompleteState) {
+			this.cancelAutocomplete();
+			return true;
+		}
+		return false;
 	}
 
 	handleInput(data: string): void {
@@ -2483,9 +2520,43 @@ export class Editor implements Component, Focusable {
 		);
 	}
 
+	private confirmAutocompleteItem(selected: SelectItem): void {
+		if (!this.autocompleteProvider) return;
+		const prefix = this.autocompletePrefix;
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		const result = this.autocompleteProvider.applyCompletion(
+			this.state.lines,
+			this.state.cursorLine,
+			this.state.cursorCol,
+			selected,
+			prefix,
+		);
+		this.state.lines = result.lines;
+		this.state.cursorLine = result.cursorLine;
+		this.setCursorCol(result.cursorCol);
+		this.cancelAutocomplete();
+		if (prefix.startsWith("/") && selected.data?.["inlineSkill"] !== true) {
+			if (!this.disableSubmit) {
+				this.submitValue();
+			} else if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			return;
+		}
+		if (this.onChange) this.onChange(this.getText());
+	}
+
 	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
 		this.autocompletePrefix = suggestions.prefix;
-		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		const list = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		list.onSelect = (item) => {
+			this.confirmAutocompleteItem(item);
+		};
+		list.onCancel = () => {
+			this.cancelAutocomplete();
+		};
+		this.autocompleteList = list;
 
 		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
 		if (bestMatchIndex >= 0) {

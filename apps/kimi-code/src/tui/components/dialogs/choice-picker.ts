@@ -15,6 +15,8 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme, type ColorToken } from '#/tui/theme';
@@ -79,10 +81,11 @@ function wrapDescription(text: string, width: number): string[] {
   return lines;
 }
 
-export class ChoicePickerComponent extends Container implements Focusable {
+export class ChoicePickerComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
   private readonly opts: ChoicePickerOptions;
   private readonly list: SearchableList<ChoiceOption>;
+  private renderedItemByRow: Array<number | undefined> = [];
 
   constructor(opts: ChoicePickerOptions) {
     super();
@@ -126,6 +129,28 @@ export class ChoicePickerComponent extends Container implements Focusable {
       return;
     }
     this.list.handleKey(data);
+  }
+
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      if (event.wheel < 0) this.list.moveUp();
+      else this.list.moveDown();
+      return true;
+    }
+    if (event.leftClick) {
+      const targetIndex = this.renderedItemByRow[line];
+      if (targetIndex === undefined) return false;
+      this.list.setSelectedIndex(targetIndex);
+      const chosen = this.list.selected();
+      if (chosen !== undefined) this.opts.onSelect(chosen.value);
+      return true;
+    }
+    return false;
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    this.opts.onCancel();
+    return true;
   }
 
   override render(width: number): string[] {
@@ -180,6 +205,7 @@ export class ChoicePickerComponent extends Container implements Focusable {
     if (options.length === 0) {
       lines.push(currentTheme.fg('textMuted', '   No matches'));
     }
+    const rowMap: Array<number | undefined> = Array.from({ length: lines.length }, () => undefined);
     for (let i = view.page.start; i < view.page.end; i++) {
       const opt = options[i]!;
       const isSelected = i === view.selectedIndex;
@@ -192,12 +218,14 @@ export class ChoicePickerComponent extends Container implements Focusable {
         line += ' ' + currentTheme.fg('success', CURRENT_MARK);
       }
       lines.push(line);
+      rowMap.push(i);
       if (opt.description !== undefined && opt.description.length > 0) {
         const descriptionWidth = Math.max(1, width - 4);
         const descriptionColor =
           isSelected && opt.descriptionTone !== undefined ? opt.descriptionTone : 'textMuted';
         for (const descLine of wrapDescription(opt.description, descriptionWidth)) {
           lines.push(currentTheme.fg(descriptionColor, `    ${descLine}`));
+          rowMap.push(i);
         }
       }
     }
@@ -211,6 +239,7 @@ export class ChoicePickerComponent extends Container implements Focusable {
       );
     }
     lines.push(currentTheme.fg('primary', '─'.repeat(width)));
+    this.renderedItemByRow = rowMap;
     return lines.map((line) => truncateToWidth(line, width));
   }
 }

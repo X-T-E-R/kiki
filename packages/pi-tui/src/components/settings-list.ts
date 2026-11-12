@@ -1,5 +1,6 @@
 import { fuzzyFilter } from "../fuzzy.ts";
 import { getKeybindings } from "../keybindings.ts";
+import { isMouseRoutable, type MouseRoutable, type SgrMouseEvent } from "../mouse.ts";
 import type { Component } from "../tui.ts";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 import { Input } from "./input.ts";
@@ -31,7 +32,7 @@ export interface SettingsListOptions {
 	enableSearch?: boolean;
 }
 
-export class SettingsList implements Component {
+export class SettingsList implements Component, MouseRoutable {
 	private items: SettingItem[];
 	private filteredItems: SettingItem[];
 	private theme: SettingsListTheme;
@@ -41,6 +42,7 @@ export class SettingsList implements Component {
 	private onCancel: () => void;
 	private searchInput?: Input;
 	private searchEnabled: boolean;
+	private hitRows = new Map<number, number>();
 
 	// Submenu state
 	private submenuComponent: Component | null = null;
@@ -89,6 +91,7 @@ export class SettingsList implements Component {
 
 	private renderMainList(width: number): string[] {
 		const lines: string[] = [];
+		this.hitRows.clear();
 
 		if (this.searchEnabled && this.searchInput) {
 			lines.push(...this.searchInput.render(width));
@@ -140,6 +143,7 @@ export class SettingsList implements Component {
 
 			const valueText = this.theme.value(truncateToWidth(item.currentValue, valueMaxWidth, ""), isSelected);
 
+			this.hitRows.set(lines.length, i);
 			lines.push(truncateToWidth(prefix + labelText + separator + valueText, width));
 		}
 
@@ -163,6 +167,39 @@ export class SettingsList implements Component {
 		this.addHintLine(lines, width);
 
 		return lines;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (this.submenuComponent) {
+			if (isMouseRoutable(this.submenuComponent)) {
+				return this.submenuComponent.routeMouse(event, line, col);
+			}
+			return true;
+		}
+		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		if (event.wheel !== null) {
+			if (displayItems.length === 0) return true;
+			this.selectedIndex = Math.max(0, Math.min(this.selectedIndex + event.wheel, displayItems.length - 1));
+			return true;
+		}
+		if (event.leftClick) {
+			const hitIndex = this.hitRows.get(line);
+			if (hitIndex !== undefined) {
+				this.selectedIndex = hitIndex;
+				this.activateItem();
+				return true;
+			}
+		}
+		return false;
+	}
+
+	onOutsideMouseDown(): boolean {
+		if (this.submenuComponent) {
+			this.closeSubmenu();
+			return true;
+		}
+		this.onCancel();
+		return true;
 	}
 
 	handleInput(data: string): void {

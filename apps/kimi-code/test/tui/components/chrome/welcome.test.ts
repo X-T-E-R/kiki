@@ -2,9 +2,21 @@ import { visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { FooterComponent } from '#/tui/components/chrome/footer';
+import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
+import { SettingsDialogComponent } from '#/tui/components/dialogs/settings-dialog';
+import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
+import { WrappingSelectList } from '#/tui/components/editor/wrapping-select-list';
+import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
+import { GoalStatusMessageComponent } from '#/tui/components/messages/goal-panel';
+import { ThinkingComponent } from '#/tui/components/messages/thinking';
+import { UsagePanelComponent, buildUsageReportLines } from '#/tui/components/messages/usage-panel';
+import { UserMessageComponent } from '#/tui/components/messages/user-message';
+import { QueuePaneComponent } from '#/tui/components/panes/queue-pane';
+import { daemonAutocompleteCommands } from '#/tui/daemon/commands';
 import { setRainbowDance, type RainbowDanceController } from '#/tui/easter-eggs/dance';
-import { darkColors } from '#/tui/theme/colors';
+import { currentTheme, darkColors, lightColors } from '#/tui/theme';
 import type { AppState } from '#/tui/types';
 
 const TRUECOLOR_PATTERN = /\u001B\[38;2;(\d+);(\d+);(\d+)m/g;
@@ -213,5 +225,220 @@ describe('WelcomeComponent', () => {
     expect(output).toContain('/ commands');
     expect(output).not.toContain('/login');
     expect(output).not.toContain('Choose a model');
+  });
+
+  it('maintains WCAG AA light-theme contrast and crisp 80/120-column dark and light workspace frames', async () => {
+    const relLuminance = (hex: string): number => {
+      const n = Number.parseInt(hex.slice(1), 16);
+      const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!;
+    };
+    const contrastRatio = (fgHex: string, bgHex: string): number => {
+      const l1 = relLuminance(fgHex);
+      const l2 = relLuminance(bgHex);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+
+    for (const key of [
+      'primary',
+      'accent',
+      'text',
+      'textStrong',
+      'textDim',
+      'textMuted',
+      'success',
+      'warning',
+      'error',
+      'roleUser',
+      'shellMode',
+    ] as const) {
+      expect(contrastRatio(lightColors[key], '#FFFFFF'), key).toBeGreaterThanOrEqual(4.5);
+    }
+    for (const key of ['border', 'borderFocus'] as const) {
+      expect(contrastRatio(lightColors[key], '#FFFFFF'), key).toBeGreaterThanOrEqual(3.0);
+    }
+
+    const commands = daemonAutocompleteCommands(
+      new Map([
+        [
+          'visual-brief',
+          {
+            commandName: 'visual-brief',
+            name: 'visual-brief',
+            description: '[user] Create dual-surface IM visual briefings',
+            argumentHint: '<topic>',
+          },
+        ],
+      ]),
+      new Map([['reviewer', 'reviewer']]),
+    );
+    const provider = new FileMentionProvider(commands, '/workspace/project', null);
+    const ac = new AbortController();
+    const barePopup = await provider.getSuggestions(['/'], 0, 1, { signal: ac.signal });
+    const fuzzyPopup = await provider.getSuggestions(['/rev'], 0, 4, { signal: ac.signal });
+
+    try {
+      for (const themeName of ['dark', 'light'] as const) {
+        currentTheme.setPalette(themeName === 'dark' ? darkColors : lightColors);
+        for (const width of [80, 120] as const) {
+          const state: AppState = {
+            ...appState,
+            sessionId: 'a8f19c20-41be-479a-9f12-001122334455',
+            model: 'kimi-k2.5',
+            thinkingEffort: 'high',
+            permissionMode: 'auto',
+            planMode: true,
+            contextUsage: 0.34,
+            contextTokens: 43_520,
+            maxContextTokens: 128_000,
+            workDir: '/workspace/project',
+            version: '0.5.1',
+            theme: themeName,
+            busySubmit: 'send_now',
+            mouse: true,
+            screenMode: 'main',
+            showThinking: true,
+            goal: {
+              goalId: 'goal-1',
+              status: 'active',
+              objective: 'Transform Kiki TUI into a responsive clickable workspace',
+              completionCriterion: 'All Vitest suites pass and 80/120-col frames look crisp',
+              turnsUsed: 5,
+              tokensUsed: 64_200,
+              wallClockMs: 185_000,
+              budget: {
+                turnBudget: 15,
+                tokenBudget: null,
+                wallClockBudgetMs: null,
+                remainingTokens: null,
+                remainingTurns: 10,
+                remainingWallClockMs: null,
+                tokenBudgetReached: false,
+                turnBudgetReached: false,
+                wallClockBudgetReached: false,
+                overBudget: false,
+              },
+            },
+          };
+
+          const welcome = new WelcomeComponent(state);
+          const userMsg = new UserMessageComponent('Inspect /settings, /usage, /goal, and mouse pills.', []);
+          const thinking = new ThinkingComponent(
+            'Checking SGR mouse hit-testing across TuiMainScreen and TuiAltScreen.\nVerifying light-theme contrast >= 4.5:1.\nEnsuring busy Enter defaults to send_now while Alt+Enter queues.\nLine 4 hidden when collapsed.',
+            true,
+            'finalized',
+          );
+          const assistant = new AssistantMessageComponent();
+          assistant.updateContent('Wired **SGR mouse routing**, interactive `/settings`, and curated `/` autocomplete.');
+          const usagePanel = new UsagePanelComponent(
+            () =>
+              buildUsageReportLines({
+                sessionUsage: {
+                  total: { inputTokens: 38_400, outputTokens: 5_120, cacheReadTokens: 28_000 },
+                  byModel: {
+                    'kimi-k2.5': { inputTokens: 38_400, outputTokens: 5_120, cacheReadTokens: 28_000 },
+                  },
+                },
+                sessionCostUsd: 0.0412,
+                contextUsage: 0.34,
+                contextTokens: 43_520,
+                maxContextTokens: 128_000,
+              }),
+            'primary',
+            ' Usage ',
+          );
+          const goalPanel = new GoalStatusMessageComponent(state.goal!);
+          const queuePane = new QueuePaneComponent({
+            isCompacting: false,
+            isStreaming: true,
+            canSteerImmediately: true,
+            messages: [{ text: 'Add virtual-TTY frame verification next' }],
+          });
+          const listTheme = {
+            selectedPrefix: (t: string) => currentTheme.fg('primary', t),
+            selectedText: (t: string) => currentTheme.boldFg('primary', t),
+            description: (t: string) => currentTheme.fg('textMuted', t),
+            scrollInfo: (t: string) => currentTheme.fg('textMuted', t),
+            noMatch: (t: string) => currentTheme.fg('textMuted', t),
+          };
+          const slashMenu = new WrappingSelectList(barePopup!.items, 8, listTheme);
+          const fuzzyMenu = new WrappingSelectList(fuzzyPopup!.items, 6, listTheme);
+          const settingsDialog = new SettingsDialogComponent({
+            items: [
+              {
+                id: 'busy_submit',
+                label: 'Busy Enter behavior',
+                description: 'Send now steers the running turn; Queue waits for the next turn',
+                getValue: () => 'Send now',
+                getValueTone: () => 'primary',
+                onActivate: () => {},
+              },
+              {
+                id: 'mouse',
+                label: 'Mouse reporting',
+                description: 'Click & wheel navigation (Alt+M toggles for native drag selection)',
+                getValue: () => 'enabled',
+                onActivate: () => {},
+              },
+              {
+                id: 'screen_mode',
+                label: 'Screen mode',
+                description: 'Applies on next launch',
+                getValue: () => 'Main scrollback',
+                getValueTone: () => 'primary',
+                onActivate: () => {},
+              },
+              {
+                id: 'theme',
+                label: 'Theme',
+                description: 'Cycle auto, dark, and light color palettes',
+                getValue: () => themeName,
+                getValueTone: () => 'primary',
+                onActivate: () => {},
+              },
+            ],
+            onCancel: () => {},
+          });
+          const footer = new FooterComponent(state);
+          footer.setBackgroundCounts({ bashTasks: 1, agentTasks: 2 });
+          const footerWrap = new GutterContainer(2, 2);
+          footerWrap.addChild(footer);
+
+          const frameLines = [
+            ...welcome.render(width),
+            ...userMsg.render(width),
+            ...thinking.render(width),
+            '',
+            ...assistant.render(width),
+            ...usagePanel.render(width),
+            ...goalPanel.render(width),
+            ...slashMenu.render(width),
+            ...fuzzyMenu.render(width),
+            ...settingsDialog.render(width),
+            ...queuePane.render(width),
+            ...footerWrap.render(width),
+          ];
+
+          for (const line of frameLines) {
+            expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+            expect(line).not.toContain('✨');
+          }
+          if (process.env['PRINT_TUI_FRAMES'] === '1') {
+            const strip = (s: string) =>
+              s.replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '').replaceAll(/\u001B\]8;;.*?\u0007/g, '');
+            process.stderr.write(
+              `\n=== ${themeName.toUpperCase()} ${String(width)} COLS ===\n${frameLines.map(strip).join('\n')}\n`,
+            );
+          }
+          footer.dispose();
+          thinking.dispose();
+        }
+      }
+    } finally {
+      currentTheme.setPalette(darkColors);
+    }
   });
 });

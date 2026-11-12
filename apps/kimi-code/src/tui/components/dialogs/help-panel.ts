@@ -14,6 +14,8 @@ import {
   matchesKey,
   Key,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -58,12 +60,13 @@ const COMMAND_GROUPS: readonly { readonly title: string; readonly names: readonl
   },
   {
     title: 'Agents & tasks',
-    names: ['agents', 'agent-transcript', 'btw', 'goal', 'stop', 'unqueue', 'tasks', 'todos'],
+    names: ['stop', 'queue', 'unqueue', 'agents', 'agent-transcript', 'tasks', 'todos', 'goal', 'btw'],
   },
   {
     title: 'Settings & integrations',
     names: [
       'settings',
+      'mouse',
       'theme',
       'editor',
       'experiments',
@@ -90,7 +93,7 @@ const MAX_LEFT_COLUMN = 30;
 /** Minimum description width that keeps the inline two-column row readable. */
 const MIN_INLINE_DESCRIPTION = 20;
 
-export class HelpPanelComponent extends Container implements Focusable {
+export class HelpPanelComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
   private readonly opts: HelpPanelOptions;
   private scrollTop = 0;
@@ -98,6 +101,19 @@ export class HelpPanelComponent extends Container implements Focusable {
   constructor(opts: HelpPanelOptions) {
     super();
     this.opts = opts;
+  }
+
+  routeMouse(event: SgrMouseEvent, _line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      this.scrollTop = Math.max(0, this.scrollTop + event.wheel * 3);
+      return true;
+    }
+    return false;
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    this.opts.onClose();
+    return true;
   }
 
   handleInput(data: string): void {

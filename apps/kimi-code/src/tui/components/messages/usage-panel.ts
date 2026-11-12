@@ -7,7 +7,6 @@
 import type { Component } from '@kiki/pi-tui';
 import { truncateToWidth, visibleWidth } from '@kiki/pi-tui';
 import { formatDuration } from '@kiki/oauth';
-import type { SessionUsage, TokenUsage } from '@kiki/node-sdk';
 
 import {
   formatTokenCount,
@@ -73,8 +72,10 @@ export interface ManagedUsageReport {
 }
 
 export interface UsageReportOptions {
-  readonly sessionUsage?: SessionUsage;
+  readonly sessionUsage?: unknown;
   readonly sessionUsageError?: string;
+  readonly sessionCostUsd?: number | null;
+  readonly sessionRequestCount?: number;
   readonly contextUsage: number;
   readonly contextTokens: number;
   readonly maxContextTokens: number;
@@ -91,48 +92,126 @@ function usageNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function usageInputTotal(usage: TokenUsage): number {
+interface NormalizedTokenRow {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheCreation: number;
+}
+
+function normalizeTokenRow(raw: unknown): NormalizedTokenRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const cacheRead = usageNumber(r['inputCacheRead'] ?? r['cacheReadTokens']);
+  const cacheCreation = usageNumber(r['inputCacheCreation'] ?? r['cacheCreationTokens']);
+  const inputOther = usageNumber(r['inputOther']);
+  const explicitInput = usageNumber(r['inputTokens'] ?? r['input']);
+  const input =
+    inputOther > 0 || cacheRead > 0 || cacheCreation > 0
+      ? inputOther + cacheRead + cacheCreation
+      : explicitInput;
+  const output = usageNumber(r['output'] ?? r['outputTokens']);
+  if (input === 0 && output === 0) return null;
+  return { input, output, cacheRead, cacheCreation };
+}
+
+function formatTokenSummaryLine(
+  label: string,
+  row: NormalizedTokenRow,
+  value: Colorize,
+  muted: Colorize,
+): string {
+  const cacheSuffix =
+    row.cacheRead > 0
+      ? `  ${muted('cached')} ${value(formatTokenCount(row.cacheRead))}`
+      : '';
   return (
-    usageNumber(usage.inputOther) +
-    usageNumber(usage.inputCacheRead) +
-    usageNumber(usage.inputCacheCreation)
+    `  ${muted(label)}  input ${value(formatTokenCount(row.input))}  output ${value(
+      formatTokenCount(row.output),
+    )}${cacheSuffix}  total ${value(formatTokenCount(row.input + row.output))}`
   );
 }
 
 function buildSessionUsageSection(
-  usage: SessionUsage | undefined,
+  usage: unknown,
   error: string | undefined,
+  costUsd: number | null | undefined,
+  requestCount: number | undefined,
   value: Colorize,
   muted: Colorize,
   errorStyle: Colorize,
 ): string[] {
   if (error !== undefined) return [errorStyle(`  ${error}`)];
-  const byModel = (usage as { readonly byModel?: Record<string, TokenUsage> } | undefined)
-    ?.byModel;
+  const record =
+    typeof usage === 'object' && usage !== null ? (usage as Record<string, unknown>) : undefined;
+  const byModel =
+    record !== undefined && typeof record['byModel'] === 'object' && record['byModel'] !== null
+      ? (record['byModel'] as Record<string, unknown>)
+      : undefined;
   const entries = Object.entries(byModel ?? {});
-  if (entries.length === 0) return [muted('  No token usage recorded yet.')];
 
   const lines: string[] = [];
-  let totalInput = 0;
-  let totalOutput = 0;
-  for (const [model, row] of entries) {
-    const input = usageInputTotal(row);
-    const output = usageNumber(row.output);
-    totalInput += input;
-    totalOutput += output;
-    lines.push(
-      `  ${muted(model)}  input ${value(formatTokenCount(input))}  output ${value(
-        formatTokenCount(output),
-      )}  total ${value(formatTokenCount(input + output))}`,
-    );
+  if (entries.length > 0) {
+    let totalInput = 0;
+    let totalOutput = 0;
+    let totalCacheRead = 0;
+    let totalCacheCreation = 0;
+    for (const [model, rawRow] of entries) {
+      const row = normalizeTokenRow(rawRow) ?? {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+      };
+      totalInput += row.input;
+      totalOutput += row.output;
+      totalCacheRead += row.cacheRead;
+      totalCacheCreation += row.cacheCreation;
+      lines.push(
+        `  ${muted(model)}  input ${value(formatTokenCount(row.input))}  output ${value(
+          formatTokenCount(row.output),
+        )}  total ${value(formatTokenCount(row.input + row.output))}`,
+      );
+    }
+    if (entries.length > 1) {
+      lines.push(
+        formatTokenSummaryLine(
+          'total',
+          {
+            input: totalInput,
+            output: totalOutput,
+            cacheRead: 0,
+            cacheCreation: totalCacheCreation,
+          },
+          value,
+          muted,
+        ),
+      );
+    } else if (totalCacheRead > 0) {
+      lines.push(`  ${muted('cache read')}  ${value(formatTokenCount(totalCacheRead))}`);
+    }
+  } else {
+    const fallbackTotal =
+      normalizeTokenRow(record?.['total']) ?? normalizeTokenRow(record);
+    if (fallbackTotal !== null) {
+      lines.push(formatTokenSummaryLine('total', fallbackTotal, value, muted));
+    }
+    const currentTurn = normalizeTokenRow(record?.['currentTurn']);
+    if (currentTurn !== null) {
+      lines.push(formatTokenSummaryLine('last turn', currentTurn, value, muted));
+    }
   }
-  if (entries.length > 1) {
-    lines.push(
-      `  ${muted('total')}  input ${value(formatTokenCount(totalInput))}  output ${value(
-        formatTokenCount(totalOutput),
-      )}  total ${value(formatTokenCount(totalInput + totalOutput))}`,
-    );
+
+  if (typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd > 0) {
+    const reqPart =
+      typeof requestCount === 'number' && requestCount > 0
+        ? `  ${muted(`(${String(requestCount)} ${requestCount === 1 ? 'request' : 'requests'})`)}`
+        : '';
+    const formattedCost = costUsd < 0.01 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(2)}`;
+    lines.push(`  ${muted('estimated cost')}  ${value(formattedCost)}${reqPart}`);
   }
+
+  if (lines.length === 0) return [muted('  No token usage recorded yet.')];
   return lines;
 }
 
@@ -287,6 +366,8 @@ export function buildUsageReportLines(options: UsageReportOptions): string[] {
     ...buildSessionUsageSection(
       options.sessionUsage,
       options.sessionUsageError,
+      options.sessionCostUsd,
+      options.sessionRequestCount,
       value,
       muted,
       errorStyle,

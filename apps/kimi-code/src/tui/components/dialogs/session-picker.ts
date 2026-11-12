@@ -9,6 +9,8 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
 import { layoutHintLines } from '#/tui/components/dialogs/hint-lines';
@@ -74,7 +76,7 @@ function sessionSearchText(session: SessionRow): string {
   return singleLine((session.title ?? session.id).trim() || session.id);
 }
 
-export class SessionPickerComponent extends Container implements Focusable {
+export class SessionPickerComponent extends Container implements Focusable, MouseRoutable {
   private sessions: SessionRow[];
   private currentSessionId: string;
   private onSelect: (session: SessionRow) => void | Promise<void>;
@@ -90,6 +92,7 @@ export class SessionPickerComponent extends Container implements Focusable {
   private list: SearchableList<SessionRow>;
   private deleteState?: { session: SessionRow; phase: 'confirm' | 'deleting' };
   private selectInFlight = false;
+  private renderedItemByRow: Array<number | undefined> = [];
 
   focused = false;
 
@@ -268,6 +271,41 @@ export class SessionPickerComponent extends Container implements Focusable {
     }
   }
 
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (this.deleteState !== undefined || this.selectInFlight) return false;
+    if (event.wheel !== null) {
+      const previousQuery = this.list.view().query;
+      if (event.wheel < 0) this.list.moveUp();
+      else this.list.moveDown();
+      this.syncVisibleCount(previousQuery);
+      return true;
+    }
+    if (event.leftClick) {
+      const targetIndex = this.renderedItemByRow[line];
+      if (targetIndex === undefined) return false;
+      this.list.setSelectedIndex(targetIndex);
+      const session = this.list.selected();
+      if (session) {
+        const selection = this.onSelect(session);
+        if (selection !== undefined) {
+          this.selectInFlight = true;
+          const clear = (): void => {
+            this.selectInFlight = false;
+          };
+          void selection.then(clear, clear);
+        }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    if (this.deleteState !== undefined || this.selectInFlight) return true;
+    this.onCancel();
+    return true;
+  }
+
   private handleDeleteInput(data: string): void {
     const state = this.deleteState;
     if (state === undefined || state.phase === 'deleting') return;
@@ -324,6 +362,7 @@ export class SessionPickerComponent extends Container implements Focusable {
   // the clamp in `render()` is what guarantees the renderer's invariant and
   // prevents the "Rendered line exceeds terminal width" crash (issue #240).
   private renderLines(width: number): string[] {
+    this.renderedItemByRow = [];
     const lines: string[] = [currentTheme.fg('primary', '─'.repeat(width))];
     const title = this.scope === 'all' ? 'All sessions' : 'Sessions';
     const scopeHint =
@@ -405,7 +444,11 @@ export class SessionPickerComponent extends Container implements Focusable {
       const isSelected = index === selectedIndex;
       const isCurrent = session.id === this.currentSessionId;
       const card = this.renderSessionCard(width, session, isSelected, isCurrent);
+      const startRow = lines.length;
       lines.push(...card);
+      for (let r = startRow; r < lines.length; r++) {
+        this.renderedItemByRow[r] = index;
+      }
       if (vi < visibleSessions.length - 1) lines.push('');
     }
 

@@ -40,7 +40,7 @@ describe('WrappingSelectList', () => {
     ]).render(80);
 
     expect(lines).toEqual([
-      '[S]→ goal        First command',
+      '[S]❯ goal        First command',
       '  init[D]        Second command',
     ]);
   });
@@ -57,7 +57,7 @@ describe('WrappingSelectList', () => {
     ]).render(80);
 
     expect(lines).toEqual([
-      '[S]→ goal        First command',
+      '[S]❯ goal        First command',
       '  init[D]        lorem ipsum dolor sit amet consectetur adipiscing elit sed do',
       `[D]${DESCRIPTION_INDENT}eiusmod tempor incididunt`,
     ]);
@@ -83,7 +83,7 @@ describe('WrappingSelectList', () => {
       { value: 'init', label: 'init', description: 'Second command' },
     ]).render(80);
 
-    expect(lines[0]).toMatch(/^\[S\]→ goal {8}lorem ipsum/);
+    expect(lines[0]).toMatch(/^\[S\]❯ goal {8}lorem ipsum/);
     expect(lines[1]).toMatch(new RegExp(`^\\[S\\]${DESCRIPTION_INDENT}`));
     expect(lines[2]).toBe('  init[D]        Second command');
   });
@@ -94,7 +94,7 @@ describe('WrappingSelectList', () => {
       { value: 'init', label: 'init', description: 'Second command' },
     ]).render(40);
 
-    expect(lines).toEqual(['[S]→ goal', '  init']);
+    expect(lines).toEqual(['[S]❯ goal', '  init']);
   });
 
   it('keeps the scroll indicator when items overflow maxVisible', () => {

@@ -5,7 +5,14 @@
  * Supports expand/collapse via Ctrl+O (shared with tool output).
  */
 
-import { Text, truncateToWidth, type Component, type TUI } from '@kiki/pi-tui';
+import {
+  Text,
+  truncateToWidth,
+  type Component,
+  type MouseRoutable,
+  type SgrMouseEvent,
+  type TUI,
+} from '@kiki/pi-tui';
 
 import {
   BRAILLE_SPINNER_FRAMES,
@@ -19,7 +26,7 @@ import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 
 export type ThinkingRenderMode = 'live' | 'finalized';
 
-export class ThinkingComponent implements Component {
+export class ThinkingComponent implements Component, MouseRoutable {
   private text: string;
   private showMarker: boolean;
   private mode: ThinkingRenderMode;
@@ -34,6 +41,7 @@ export class ThinkingComponent implements Component {
   private readonly textComponent: Text;
 
   private renderCache: { width: number; lines: string[] } | undefined;
+  private hasTruncationHint = false;
 
   constructor(
     text: string,
@@ -87,6 +95,20 @@ export class ThinkingComponent implements Component {
     this.markRenderDirty();
   }
 
+  isExpanded(): boolean {
+    return this.expanded;
+  }
+
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (!event.leftClick || this.mode !== 'finalized') return false;
+    const isHeaderRow = line === 1;
+    const isHintRow = this.hasTruncationHint && line === 1 + THINKING_PREVIEW_LINES;
+    if (!isHeaderRow && !isHintRow) return false;
+    this.setExpanded(!this.expanded);
+    this.ui?.requestRender();
+    return true;
+  }
+
   render(width: number): string[] {
     if (
       isRenderCacheEnabled() &&
@@ -96,6 +118,7 @@ export class ThinkingComponent implements Component {
       return this.renderCache.lines;
     }
 
+    this.hasTruncationHint = false;
     const contentWidth = Math.max(1, width - MESSAGE_INDENT.length);
     const contentLines = this.text.length > 0 ? this.textComponent.render(contentWidth) : [''];
 
@@ -133,6 +156,7 @@ export class ThinkingComponent implements Component {
         truncated.push(
           ' '.repeat(indentWidth) + currentTheme.dim(truncateToWidth(hint, hintWidth, '…')),
         );
+        this.hasTruncationHint = true;
         rendered = truncated;
       }
     }

@@ -13,7 +13,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from '@kiki/pi-tui';
-import type { Component, TUI } from '@kiki/pi-tui';
+import type { Component, MouseRoutable, SgrMouseEvent, TUI } from '@kiki/pi-tui';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
 import {
@@ -651,8 +651,10 @@ class PrefixedWrappedLine implements Component {
   }
 }
 
-export class ToolCallComponent extends Container {
+export class ToolCallComponent extends Container implements MouseRoutable {
   private expanded = false;
+  private lastHeaderEndRow = 2;
+  private lastRenderedLines: string[] = [];
   private toolCall: ToolCallBlockData;
   private readonly markdownTheme = createMarkdownTheme();
   private result: ToolResultBlockData | undefined;
@@ -806,7 +808,10 @@ export class ToolCallComponent extends Container {
       i++;
     }
 
+    this.lastHeaderEndRow = (childLines[0]?.length ?? 1) + (childLines[1]?.length ?? 1);
+
     if (allReused) {
+      this.lastRenderedLines = cache!.lines;
       return cache!.lines;
     }
 
@@ -814,6 +819,7 @@ export class ToolCallComponent extends Container {
     for (const lines of childLines) {
       for (const line of lines) out.push(line);
     }
+    this.lastRenderedLines = out;
     if (isRenderCacheEnabled()) {
       this.renderCache = { width, lines: out, childRefs, childLines };
     }
@@ -830,12 +836,28 @@ export class ToolCallComponent extends Container {
   setExpanded(expanded: boolean): void {
     if (this.expanded === expanded) return;
     this.expanded = expanded;
+    this.renderCache = undefined;
     // rebuildBody (not rebuildContent) so the args-driven call preview
     // — which is what carries Write content / Edit diff — re-renders
     // with the new line cap. rebuildContent only touches result-driven
     // children and would leave the call preview stuck at its initial
     // collapsed size.
     this.rebuildBody();
+  }
+
+  isExpanded(): boolean {
+    return this.expanded;
+  }
+
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (!event.leftClick) return false;
+    const isHeaderRow = line >= 1 && line < this.lastHeaderEndRow;
+    const rowText = this.lastRenderedLines[line] ?? '';
+    const isExpandHintRow = rowText.includes('Ctrl+O to expand');
+    if (!isHeaderRow && !isExpandHintRow) return false;
+    this.setExpanded(!this.expanded);
+    this.ui?.requestRender();
+    return true;
   }
 
   setResult(result: ToolResultBlockData): void {

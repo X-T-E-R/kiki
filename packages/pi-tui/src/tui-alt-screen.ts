@@ -12,10 +12,18 @@ import {
 	getScrollbarGeometry,
 	getScrollViewBox,
 	getScrollViewsAt,
+	type LayoutBox,
 	type LayoutFrame,
 	renderLayoutFrame,
 	type ScrollbarGeometry,
 } from "./layout.ts";
+import {
+	isMouseRoutable,
+	isPaddedHitContainer,
+	type MouseRoutable,
+	parseSgrMouse,
+	type SgrMouseEvent as DecodedMouseEvent,
+} from "./mouse.ts";
 import type { Terminal } from "./terminal.ts";
 import {
 	deleteAllKittyImages,
@@ -30,6 +38,7 @@ import {
 } from "./terminal-image.ts";
 import {
 	type Component,
+	Container,
 	CURSOR_MARKER,
 	compositeTuiLine,
 	type OverlayHandle,
@@ -187,7 +196,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pressedUrl?: string;
 	private selectionDragged = false;
 	private readonly wheelScrollLines: number;
-	private readonly mouseEnabled: boolean;
+	private mouseEnabled: boolean;
+	private mouseTrackingActive = false;
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly openUrl?: (url: string) => void;
@@ -215,6 +225,39 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.addInputListener((data) => this.handleViewportInput(data));
+	}
+
+	override getMouseReporting(): boolean {
+		return this.mouseEnabled;
+	}
+
+	override setMouseReporting(enabled: boolean): void {
+		if (this.mouseEnabled === enabled) return;
+		this.mouseEnabled = enabled;
+		if (!this.stopped && this.altScreenActive) {
+			if (enabled && !this.mouseTrackingActive) {
+				this.terminal.write(this.resolveAltMouseSequence());
+				this.mouseTrackingActive = true;
+			} else if (!enabled && this.mouseTrackingActive) {
+				this.stopSelectionAutoScroll();
+				this.selectionPressActive = false;
+				this.stopScrollbarHover();
+				this.stopScrollbarDrag();
+				this.terminal.write(DISABLE_MOUSE);
+				this.mouseTrackingActive = false;
+			}
+		}
+	}
+
+	private resolveAltMouseSequence(): string {
+		const term = process.env['TERM']?.toLowerCase() ?? "";
+		return process.env['TMUX'] !== undefined ||
+			process.env['ZELLIJ'] !== undefined ||
+			process.env['STY'] !== undefined ||
+			term.startsWith("tmux") ||
+			term.startsWith("screen")
+			? ENABLE_BUTTON_MOTION_MOUSE
+			: ENABLE_ALL_MOTION_MOUSE;
 	}
 
 	get viewportTop(): number {
@@ -272,17 +315,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.pressedUrl = undefined;
 		this.selectionDragged = false;
 		this.resetRenderState();
-		const term = process.env['TERM']?.toLowerCase() ?? "";
-		// Multiplexers can lag when every pointer movement is forwarded. Button-motion
-		// tracking preserves clicks, wheel events, selections, and scrollbar dragging.
-		const mouseSequence =
-			process.env['TMUX'] !== undefined ||
-			process.env['ZELLIJ'] !== undefined ||
-			process.env['STY'] !== undefined ||
-			term.startsWith("tmux") ||
-			term.startsWith("screen")
-				? ENABLE_BUTTON_MOTION_MOUSE
-				: ENABLE_ALL_MOTION_MOUSE;
+		const mouseSequence = this.resolveAltMouseSequence();
+		this.mouseTrackingActive = this.mouseEnabled;
 		this.terminal.write(
 			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
 		);
@@ -296,8 +330,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.stopScrollbarDrag();
 		this.flashes.dispose();
 		if (!this.altScreenActive) return;
+		const disableMouse = this.mouseTrackingActive ? DISABLE_MOUSE : "";
+		this.mouseTrackingActive = false;
 		this.terminal.write(
-			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
+			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${disableMouse}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
 		);
 		this.uploadedKittyImages.clear();
 	}
@@ -554,6 +590,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		if (data === FOCUS_IN) return undefined;
 
+		const decodedMouse = parseSgrMouse(data);
+		if (decodedMouse) {
+			if (this.routeOverlayMouse(decodedMouse)) {
+				this.requestRender();
+				return { consume: true };
+			}
+			if ((decodedMouse.wheel !== null || decodedMouse.leftClick) && !this.scrollbarDrag) {
+				if (this.routeLayoutMouse(decodedMouse)) {
+					this.requestRender();
+					return { consume: true };
+				}
+			}
+		}
+
 		const wheelEvent = this.parseWheelEvent(data);
 		if (wheelEvent) {
 			this.routeWheel(wheelEvent);
@@ -693,15 +743,121 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private handleRightClickPaste(event: SgrMouseEvent): boolean {
-		if (!this.onRightClickPaste || process.platform !== "win32" || event.release || event.button !== 2) {
+		if (this.onRightClickPaste && process.platform === "win32" && !event.release && event.button === 2) {
+			try {
+				this.onRightClickPaste();
+			} catch {
+				// Clipboard paste is best-effort.
+			}
+			return true;
+		}
+		return false;
+	}
+
+	private routeLayoutMouse(event: DecodedMouseEvent): boolean {
+		if (!this.currentLayout) return false;
+		if (event.leftClick && this.getScrollbarTargetAt(event.col, event.row)) {
 			return false;
 		}
-		try {
-			this.onRightClickPaste();
-		} catch {
-			// Clipboard paste is best-effort.
+		const hit = this.findBoxHitTarget(this.currentLayout.root, event.col, event.row);
+		if (hit) {
+			const consumed = hit.target.routeMouse(event, hit.localLine, hit.localCol);
+			if (consumed) {
+				if (event.leftClick) {
+					this.selectionPressActive = false;
+					this.stopSelectionAutoScroll();
+					const focused = this.getFocusedComponent();
+					if (focused && focused !== hit.target && isMouseRoutable(focused) && focused.onOutsideMouseDown) {
+						focused.onOutsideMouseDown(event);
+					}
+				}
+				return true;
+			}
 		}
-		return true;
+		if (event.leftClick) {
+			const focused = this.getFocusedComponent();
+			if (focused && (!hit || hit.target !== focused) && isMouseRoutable(focused) && focused.onOutsideMouseDown) {
+				if (focused.onOutsideMouseDown(event)) {
+					this.selectionPressActive = false;
+					this.stopSelectionAutoScroll();
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private findBoxHitTarget(
+		box: LayoutBox,
+		screenCol: number,
+		screenRow: number,
+	): { target: Component & MouseRoutable; localLine: number; localCol: number } | undefined {
+		if (
+			screenCol < box.clip.x ||
+			screenCol >= box.clip.x + box.clip.width ||
+			screenRow < box.clip.y ||
+			screenRow >= box.clip.y + box.clip.height
+		) {
+			return undefined;
+		}
+		for (let i = box.children.length - 1; i >= 0; i--) {
+			const nested = this.findBoxHitTarget(box.children[i]!, screenCol, screenRow);
+			if (nested) return nested;
+		}
+		if (
+			screenCol < box.rect.x ||
+			screenCol >= box.rect.x + box.rect.width ||
+			screenRow < box.rect.y ||
+			screenRow >= box.rect.y + box.rect.height
+		) {
+			return undefined;
+		}
+		const localLine = (box.lineOffset ?? 0) + (screenRow - box.rect.y);
+		const localCol = screenCol - box.rect.x;
+		if (box.component instanceof Container) {
+			const innerWidth = isPaddedHitContainer(box.component)
+				? box.component.getInnerWidth(box.rect.width)
+				: box.rect.width;
+			const innerColOffset = box.rect.x + (isPaddedHitContainer(box.component) ? box.component.getInnerColOffset() : 0);
+			const nested = this.findContainerHitTarget(box.component.children, innerWidth, innerColOffset, localLine, screenCol);
+			if (nested) return nested;
+		}
+		if (isMouseRoutable(box.component)) {
+			return { target: box.component, localLine, localCol };
+		}
+		return undefined;
+	}
+
+	private findContainerHitTarget(
+		children: readonly Component[],
+		width: number,
+		colOffset: number,
+		targetRow: number,
+		screenCol: number,
+	): { target: Component & MouseRoutable; localLine: number; localCol: number } | undefined {
+		let currentRow = 0;
+		for (const child of children) {
+			const height = child.render(width).length;
+			if (targetRow >= currentRow && targetRow < currentRow + height) {
+				const localLine = targetRow - currentRow;
+				if (child instanceof Container) {
+					const innerWidth = isPaddedHitContainer(child) ? child.getInnerWidth(width) : width;
+					const innerColOffset = colOffset + (isPaddedHitContainer(child) ? child.getInnerColOffset() : 0);
+					const nested = this.findContainerHitTarget(child.children, innerWidth, innerColOffset, localLine, screenCol);
+					if (nested) return nested;
+				}
+				if (isMouseRoutable(child)) {
+					return {
+						target: child,
+						localLine,
+						localCol: Math.max(0, screenCol - colOffset),
+					};
+				}
+				return undefined;
+			}
+			currentRow += height;
+		}
+		return undefined;
 	}
 
 	private getScrollbarTargetAt(x: number, y: number): ScrollbarTarget | undefined {

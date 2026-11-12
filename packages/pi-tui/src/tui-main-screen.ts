@@ -1,7 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+	isMouseRoutable,
+	isPaddedHitContainer,
+	MOUSE_TRACKING_OFF,
+	MOUSE_TRACKING_ON,
+	type SgrMouseEvent,
+} from "./mouse.ts";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { SEGMENT_RESET, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import { type Component, Container, SEGMENT_RESET, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { asciiVisibleWidth, normalizeTerminalOutput, sliceByColumn, visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -52,6 +59,13 @@ export interface TuiMainScreenRenderState {
 	previousViewportTop: number;
 }
 
+export interface TuiMainScreenOptions {
+	/** Enable SGR mouse button + wheel reporting (`?1000h?1006h`). Defaults to false. */
+	mouse?: boolean;
+	/** Handle secondary-button press for clipboard paste on Windows. */
+	onRightClickPaste?: () => void;
+}
+
 /** TUI implementation that renders into the terminal's main screen and scrollback. */
 export class TuiMainScreen extends TuiBase implements TUI {
 	readonly mode = "regular" as const;
@@ -73,6 +87,45 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private hardwareCursorRow = 0;
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
+	private mouseEnabled: boolean;
+	private mouseTrackingActive = false;
+	private readonly onRightClickPaste?: () => void;
+
+	constructor(
+		terminal: import("./terminal.ts").Terminal,
+		showHardwareCursor?: boolean,
+		logDirectory?: string,
+		options: TuiMainScreenOptions = {},
+	) {
+		super(terminal, showHardwareCursor, logDirectory);
+		this.mouseEnabled = options.mouse ?? false;
+		this.onRightClickPaste = options.onRightClickPaste;
+	}
+
+	override getMouseReporting(): boolean {
+		return this.mouseEnabled;
+	}
+
+	override setMouseReporting(enabled: boolean): void {
+		if (this.mouseEnabled === enabled) return;
+		this.mouseEnabled = enabled;
+		if (!this.stopped) {
+			if (enabled && !this.mouseTrackingActive) {
+				this.terminal.write(MOUSE_TRACKING_ON);
+				this.mouseTrackingActive = true;
+			} else if (!enabled && this.mouseTrackingActive) {
+				this.terminal.write(MOUSE_TRACKING_OFF);
+				this.mouseTrackingActive = false;
+			}
+		}
+	}
+
+	protected override afterTerminalStart(): void {
+		if (this.mouseEnabled && !this.mouseTrackingActive) {
+			this.terminal.write(MOUSE_TRACKING_ON);
+			this.mouseTrackingActive = true;
+		}
+	}
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -112,6 +165,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	protected override beforeTerminalStop(options: TuiStopOptions): void {
+		if (this.mouseTrackingActive) {
+			this.terminal.write(MOUSE_TRACKING_OFF);
+			this.mouseTrackingActive = false;
+		}
 		if (options.preserveScreen || this.previousLines.length === 0) return;
 		this.terminal.write(" ");
 		const targetRow = this.previousLines.length;
@@ -119,6 +176,90 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (lineDiff > 0) this.terminal.write(`\x1b[${lineDiff}B`);
 		else if (lineDiff < 0) this.terminal.write(`\x1b[${-lineDiff}A`);
 		this.terminal.write("\r\n");
+	}
+
+	protected override handleMouseEvent(event: SgrMouseEvent): boolean {
+		if (event.rightClick && this.onRightClickPaste && process.platform === "win32") {
+			try {
+				this.onRightClickPaste();
+			} catch {
+				// Clipboard paste is best-effort.
+			}
+			return true;
+		}
+		if (this.routeOverlayMouse(event)) {
+			return true;
+		}
+		const width = Math.max(1, this.terminal.columns);
+		const height = Math.max(1, this.terminal.rows);
+		const totalLines = this.previousLines.length;
+		// When content is shorter than the terminal viewport on a fresh screen,
+		// lines begin at row 0; once content exceeds height, the visible viewport
+		// starts at previousViewportTop.
+		const viewportTop = totalLines > height ? this.previousViewportTop : 0;
+		const bufferRow = viewportTop + event.row;
+		const hit = this.findHitTarget(this.children, width, 0, bufferRow, event.col);
+		if (hit) {
+			const consumed = hit.target.routeMouse(event, hit.localLine, hit.localCol);
+			if (consumed) {
+				if (event.leftClick) {
+					const focused = this.getFocusedComponent();
+					if (focused && focused !== hit.target && isMouseRoutable(focused) && focused.onOutsideMouseDown) {
+						focused.onOutsideMouseDown(event);
+					}
+				}
+				return true;
+			}
+		}
+
+		if (event.wheel !== null) {
+			const focused = this.getFocusedComponent();
+			if (focused && isMouseRoutable(focused)) {
+				return focused.routeMouse(event, -1, event.col);
+			}
+			return false;
+		}
+
+		if (event.leftClick) {
+			const focused = this.getFocusedComponent();
+			if (focused && (!hit || hit.target !== focused) && isMouseRoutable(focused) && focused.onOutsideMouseDown) {
+				return focused.onOutsideMouseDown(event);
+			}
+		}
+		return false;
+	}
+
+	private findHitTarget(
+		children: readonly Component[],
+		width: number,
+		colOffset: number,
+		targetRow: number,
+		screenCol: number,
+	): { target: Component & import("./mouse.ts").MouseRoutable; localLine: number; localCol: number } | undefined {
+		let currentRow = 0;
+		for (const child of children) {
+			const childLines = child.render(width);
+			const height = childLines.length;
+			if (targetRow >= currentRow && targetRow < currentRow + height) {
+				const localLine = targetRow - currentRow;
+				if (child instanceof Container) {
+					const innerWidth = isPaddedHitContainer(child) ? child.getInnerWidth(width) : width;
+					const innerColOffset = colOffset + (isPaddedHitContainer(child) ? child.getInnerColOffset() : 0);
+					const nested = this.findHitTarget(child.children, innerWidth, innerColOffset, localLine, screenCol);
+					if (nested) return nested;
+				}
+				if (isMouseRoutable(child)) {
+					return {
+						target: child,
+						localLine,
+						localCol: Math.max(0, screenCol - colOffset),
+					};
+				}
+				return undefined;
+			}
+			currentRow += height;
+		}
+		return undefined;
 	}
 
 	private unionKittyImageIds(lineImageIds: ReadonlyArray<number>[]): Set<number> {

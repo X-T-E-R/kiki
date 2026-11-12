@@ -74,6 +74,18 @@ export {
 } from "./keys.ts";
 // LaTeX rendering
 export { type RenderLatexOptions, renderLatex } from "./latex.ts";
+// Mouse input parsing and component hit-testing
+export {
+	isMouseRoutable,
+	isMouseSequence,
+	isPaddedHitContainer,
+	MOUSE_TRACKING_OFF,
+	MOUSE_TRACKING_ON,
+	type MouseRoutable,
+	type PaddedHitContainer,
+	parseSgrMouse,
+	type SgrMouseEvent,
+} from "./mouse.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
@@ -135,7 +147,7 @@ export {
 	type ViewportTUI,
 } from "./tui.ts";
 export { TuiAltScreen, type TuiAltScreenOptions } from "./tui-alt-screen.ts";
-export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.ts";
+export { TuiMainScreen, type TuiMainScreenOptions, type TuiMainScreenRenderState } from "./tui-main-screen.ts";
 // Utilities
 export {
 	getOsc8LinkAtColumn,

@@ -41,6 +41,9 @@ const FALLBACK_UNSCANNED_DIRS = new Set([
 
 export interface SlashAutocompleteCommand extends SlashCommand {
   readonly aliases?: readonly string[];
+  readonly kind?: 'command' | 'skill' | 'agent';
+  readonly primary?: boolean;
+  readonly primaryOrder?: number;
 }
 
 interface FsMentionCandidate {
@@ -167,6 +170,20 @@ export class FileMentionProvider implements AutocompleteProvider {
           .trim()
           .split(/\s+/)
           .filter((t) => t.length > 0);
+
+        if (tokens.length === 0 && this.slashCommands.some((c) => c.primary === true)) {
+          const curated = this.slashCommands
+            .filter((c) => c.primary === true)
+            .sort((a, b) => (a.primaryOrder ?? 999) - (b.primaryOrder ?? 999));
+          return {
+            items: curated.map((cmd) => ({
+              value: cmd.name,
+              label: cmd.name,
+              description: formatSlashCommandDescription(cmd),
+            })),
+            prefix: textBeforeCursor,
+          };
+        }
 
         type SlashMatch = {
           cmd: SlashAutocompleteCommand;
@@ -703,7 +720,14 @@ function scoreTokens(tokens: readonly string[], text: string): number | null {
  * intercepted name completion keeps showing the argument hint.
  */
 function formatSlashCommandDescription(cmd: SlashAutocompleteCommand): string | undefined {
-  const desc = cmd.description ?? '';
+  const rawDesc = cmd.description ?? '';
+  const badge =
+    cmd.kind === 'skill' && !rawDesc.startsWith('[skill')
+      ? '[skill] '
+      : cmd.kind === 'agent' && !rawDesc.startsWith('[agent')
+        ? '[agent] '
+        : '';
+  const desc = `${badge}${rawDesc}`;
   const full = cmd.argumentHint
     ? desc
       ? `${cmd.argumentHint} — ${desc}`

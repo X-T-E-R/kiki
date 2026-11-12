@@ -6,7 +6,9 @@ import {
   type SelectItem,
   type SelectListLayoutOptions,
   type SelectListTheme,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
+import { SELECT_POINTER } from '#/tui/constant/symbols';
 
 // Mirror pi-tui's private select-list layout constants
 // (dist/components/select-list.js); keep in sync when bumping pi-tui.
@@ -49,8 +51,35 @@ interface SelectListInternals {
  * internals.
  */
 export class WrappingSelectList extends SelectList {
+  private renderedItemByRow: number[] = [];
+
+  override routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    const { filteredItems } = this.internals();
+    if (filteredItems.length === 0) return false;
+    if (event.wheel !== null) {
+      this.setSelectedIndex(
+        (this.internals().selectedIndex + event.wheel + filteredItems.length) % filteredItems.length,
+      );
+      return true;
+    }
+    if (event.leftClick) {
+      const targetIndex = this.renderedItemByRow[line];
+      if (targetIndex === undefined || targetIndex < 0 || targetIndex >= filteredItems.length) {
+        return false;
+      }
+      this.setSelectedIndex(targetIndex);
+      const item = filteredItems[targetIndex];
+      if (item && this.onSelect) {
+        this.onSelect(item);
+      }
+      return true;
+    }
+    return false;
+  }
+
   override render(width: number): string[] {
     const { filteredItems, selectedIndex, maxVisible, theme } = this.internals();
+    this.renderedItemByRow = [];
     if (filteredItems.length === 0) {
       return [theme.noMatch('  No matching commands')];
     }
@@ -66,7 +95,11 @@ export class WrappingSelectList extends SelectList {
     for (let i = startIndex; i < endIndex; i++) {
       const item = filteredItems[i];
       if (!item) continue;
-      lines.push(...this.renderItemLines(item, i === selectedIndex, width, primaryColumnWidth));
+      const itemLines = this.renderItemLines(item, i === selectedIndex, width, primaryColumnWidth);
+      for (let r = 0; r < itemLines.length; r++) {
+        this.renderedItemByRow.push(i);
+      }
+      lines.push(...itemLines);
     }
 
     if (startIndex > 0 || endIndex < filteredItems.length) {
@@ -83,7 +116,7 @@ export class WrappingSelectList extends SelectList {
     primaryColumnWidth: number,
   ): string[] {
     const { theme } = this.internals();
-    const prefix = isSelected ? '→ ' : '  ';
+    const prefix = isSelected ? `${SELECT_POINTER} ` : '  ';
     const prefixWidth = visibleWidth(prefix);
     const description = item.description
       ? item.description.replaceAll(/[\r\n]+/g, ' ').trim()

@@ -13,9 +13,11 @@
  * path must never throw.
  */
 
-// Show cursor (`?25h`), disable bracketed paste (`?2004l`), pop the Kitty
+// Show cursor (`?25h`), disable bracketed paste (`?2004l`), disable SGR/X10
+// mouse & focus tracking (`?1006l?1004l?1003l?1002l?1000l`), pop the Kitty
 // keyboard protocol (`<u`), and reset modifyOtherKeys (`>4;0m`).
-const TERMINAL_RESTORE_SEQUENCE = '\u001B[?25h\u001B[?2004l\u001B[<u\u001B[>4;0m';
+const TERMINAL_RESTORE_SEQUENCE =
+  '\u001B[?25h\u001B[?2004l\u001B[?1006l\u001B[?1004l\u001B[?1003l\u001B[?1002l\u001B[?1000l\u001B[<u\u001B[>4;0m';
 
 export function restoreTerminalModes(): void {
   try {

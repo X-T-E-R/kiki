@@ -180,6 +180,7 @@ export class WelcomeComponent implements Component {
       ];
     }
 
+    const mutedStyle = chalk.hex(colors.textMuted);
     const infoLines = [labelStyle('Directory: ') + this.state.workDir];
     if (this.state.sessionId) {
       infoLines.push(labelStyle('Session:   ') + this.state.sessionId);
@@ -190,7 +191,7 @@ export class WelcomeComponent implements Component {
     );
 
     if (this.state.mcpServersSummary) {
-      infoLines.push(labelStyle('MCP:       ') + this.state.mcpServersSummary);
+      infoLines.push(labelStyle('MCP        ') + mutedStyle(this.state.mcpServersSummary));
     }
 
     const contentLines: string[] = [...renderedHeaderLines, '', ...infoLines];

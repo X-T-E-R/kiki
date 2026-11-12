@@ -12,6 +12,8 @@ import {
   Key,
   decodeKittyPrintable,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -100,7 +102,7 @@ function layoutHintLines(parts: string[], width: number): string[] {
   return lines;
 }
 
-export class QuestionDialogComponent extends Container implements Focusable {
+export class QuestionDialogComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
 
   private readonly request: PendingQuestion;
@@ -118,6 +120,12 @@ export class QuestionDialogComponent extends Container implements Focusable {
   private confirmingDiscard = false;
   /** True while an answer promise returned by the host is pending. */
   private responding = false;
+  private renderedRowTargets: Array<
+    | { readonly kind: 'option'; readonly index: number }
+    | { readonly kind: 'submit'; readonly index: number }
+    | { readonly kind: 'tabs'; readonly spans: Array<{ readonly tab: number; readonly startCol: number; readonly endCol: number }> }
+    | undefined
+  > = [];
 
   /** Per-question cursor position. */
   private readonly cursors: number[];
@@ -506,7 +514,63 @@ export class QuestionDialogComponent extends Container implements Focusable {
 
   // ── Render ────────────────────────────────────────────────────────
 
+  routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+    if (this.responding) return false;
+    if (event.wheel !== null) {
+      if (this.isEditingOther()) {
+        const questionIdx = this.currentQuestionIndex();
+        if (questionIdx !== undefined) this.syncOtherDraft(questionIdx);
+        this.editingOther = false;
+      }
+      if (this.isSubmitTab()) {
+        this.submitActionIdx =
+          event.wheel < 0
+            ? (this.submitActionIdx - 1 + SUBMIT_ACTIONS.length) % SUBMIT_ACTIONS.length
+            : (this.submitActionIdx + 1) % SUBMIT_ACTIONS.length;
+        this.reviewMessage = undefined;
+        return true;
+      }
+      this.moveQuestionCursor(event.wheel < 0 ? -1 : 1);
+      return true;
+    }
+    if (event.leftClick) {
+      const target = this.renderedRowTargets[line];
+      if (target === undefined) return false;
+      if (target.kind === 'tabs') {
+        const span = target.spans.find((s) => col >= s.startCol && col < s.endCol);
+        if (span === undefined) return false;
+        if (this.isEditingOther()) {
+          const questionIdx = this.currentQuestionIndex();
+          if (questionIdx !== undefined) this.syncOtherDraft(questionIdx);
+          this.editingOther = false;
+        }
+        this.gotoTab(span.tab);
+        return true;
+      }
+      if (!this.arming.isArmed()) return true;
+      if (target.kind === 'option') {
+        if (this.isEditingOther()) {
+          const questionIdx = this.currentQuestionIndex();
+          if (questionIdx !== undefined && target.index === this.otherOptionIndex(questionIdx)) {
+            return true;
+          }
+          if (questionIdx !== undefined) this.syncOtherDraft(questionIdx);
+          this.editingOther = false;
+        }
+        this.activateQuestionOption(target.index, 'enter');
+        return true;
+      }
+      if (target.kind === 'submit') {
+        this.submitActionIdx = target.index;
+        this.executeSubmitAction(target.index, 'enter');
+        return true;
+      }
+    }
+    return false;
+  }
+
   override render(width: number): string[] {
+    this.renderedRowTargets = [];
     this.otherInput.focused = this.focused && this.isEditingOther();
     return this.isSubmitTab() ? this.renderSubmitTab(width) : this.renderQuestionTab(width);
   }
@@ -561,8 +625,12 @@ export class QuestionDialogComponent extends Container implements Focusable {
       const isOther = option.kind === 'other';
       const isSelected = question.multi_select ? multiSet.has(i) : singleSelection === i;
 
+      const startRow = lines.length;
       if (this.isEditingOther() && isCursor && isOther) {
         lines.push(this.renderEditingOtherLine(renderWidth, questionIdx, option, num, isSelected));
+        for (let r = startRow; r < lines.length; r++) {
+          this.renderedRowTargets[r] = { kind: 'option', index: i };
+        }
         continue;
       }
 
@@ -598,6 +666,9 @@ export class QuestionDialogComponent extends Container implements Focusable {
         !(this.isEditingOther() && isCursor && isOther)
       ) {
         appendWrapped(lines, '        ', '        ', option.description, renderWidth, dim);
+      }
+      for (let r = startRow; r < lines.length; r++) {
+        this.renderedRowTargets[r] = { kind: 'option', index: i };
       }
     }
 
@@ -669,6 +740,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
       const label = SUBMIT_ACTIONS[i];
       if (label === undefined) continue;
       const num = i + 1;
+      const row = lines.length;
       if (!this.arming.isArmed()) {
         const pointer = i === this.submitActionIdx ? SELECT_POINTER : ' ';
         lines.push(dim(`  ${pointer} [${String(num)}] ${label}`));
@@ -677,6 +749,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
       } else {
         lines.push(dim(`    [${String(num)}] ${label}`));
       }
+      this.renderedRowTargets[row] = { kind: 'submit', index: i };
     }
 
     lines.push('');
@@ -694,6 +767,12 @@ export class QuestionDialogComponent extends Container implements Focusable {
       currentTheme.bg('primary', currentTheme.boldFg('text', text));
 
     const tabs: string[] = [];
+    const spans: Array<{
+      readonly tab: number;
+      readonly startCol: number;
+      readonly endCol: number;
+    }> = [];
+    let colCursor = 1; // leading ' '
     for (let i = 0; i < this.request.data.questions.length; i++) {
       const question = this.request.data.questions[i];
       if (question === undefined) continue;
@@ -701,16 +780,27 @@ export class QuestionDialogComponent extends Container implements Focusable {
         question.header !== undefined && question.header.length > 0
           ? question.header
           : `Q${String(i + 1)}`;
-      if (i === this.currentTab) tabs.push(active(` ${label} `));
-      else if (this.isAnswered(i)) tabs.push(currentTheme.fg('success', `(✓) ${label}`));
-      else tabs.push(dim(`(○) ${label}`));
+      let tabText: string;
+      if (i === this.currentTab) tabText = active(` ${label} `);
+      else if (this.isAnswered(i)) tabText = currentTheme.fg('success', `(✓) ${label}`);
+      else tabText = dim(`(○) ${label}`);
+      const w = visibleWidth(tabText);
+      if (tabs.length > 0) colCursor += 2;
+      spans.push({ tab: i, startCol: colCursor, endCol: colCursor + w });
+      colCursor += w;
+      tabs.push(tabText);
     }
 
     const submitLabel = 'Submit';
-    if (this.isSubmitTab()) tabs.push(active(` ${submitLabel} `));
-    else tabs.push(dim(` ${submitLabel} `));
+    const submitTabText = this.isSubmitTab() ? active(` ${submitLabel} `) : dim(` ${submitLabel} `);
+    const submitW = visibleWidth(submitTabText);
+    if (tabs.length > 0) colCursor += 2;
+    spans.push({ tab: this.submitTabIndex(), startCol: colCursor, endCol: colCursor + submitW });
+    tabs.push(submitTabText);
 
+    const row = lines.length;
     lines.push(` ${tabs.join('  ')}`);
+    this.renderedRowTargets[row] = { kind: 'tabs', spans };
   }
 
   private questionHintParts(questionIdx: number): string[] {

@@ -5,7 +5,8 @@ import { flushDiagnosticLogsSync, log } from '@kiki/node-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
-import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
+import { getTuiConfigPath, loadTuiConfig, TuiConfigParseError } from '#/tui/config';
+import { setMarkdownRenderLatex } from '#/tui/utils/markdown-options';
 import { DAEMON_STARTING_MESSAGE } from '#/tui/constant/kimi-tui';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { DISABLE_TERMINAL_FOCUS_REPORTING } from '#/tui/constant/terminal';
@@ -37,6 +38,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   // Initialise the global Theme singleton before pi-tui grabs stdin.
   const palette = await getColorPalette(tuiConfig.theme);
   currentTheme.setPalette(palette);
+  setMarkdownRenderLatex(tuiConfig.renderLatex !== false);
 
   const workDir = process.cwd();
   const homeDir = resolveDaemonHome();
@@ -61,6 +63,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     agentProfile,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     tuiConfig,
+    tuiConfigPath: getTuiConfigPath(),
     version,
     workDir,
     startupNotice: configWarning,

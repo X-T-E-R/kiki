@@ -1,9 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { Container, Spacer, Text, TuiAltScreen, type Terminal } from '@kiki/pi-tui';
+import { Container, Spacer, Text, TuiAltScreen, type Component, type Terminal } from '@kiki/pi-tui';
 import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
-import type { MessageContent, PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
+import type { ManagedUsageResult, MessageContent, PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
@@ -18,6 +18,7 @@ import type {
 } from '@kiki/session-core/session/transcript/types';
 
 import { ActivityLineComponent, type ActivityLineParts } from '#/tui/components/chrome/activity-line';
+import type { FooterAction } from '#/tui/components/chrome/footer';
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import {
@@ -30,8 +31,15 @@ import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission
 import { HelpPanelComponent } from '#/tui/components/dialogs/help-panel';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
+import { SettingsDialogComponent } from '#/tui/components/dialogs/settings-dialog';
 import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
-import type { TuiConfig } from '#/tui/config';
+import { GoalStatusMessageComponent } from '#/tui/components/messages/goal-panel';
+import {
+  buildUsageReportLines,
+  UsagePanelComponent,
+  type ManagedUsageReport,
+} from '#/tui/components/messages/usage-panel';
+import { saveTuiConfig, type TuiConfig } from '#/tui/config';
 import {
   CTRL_C_HINT,
   CTRL_D_HINT,
@@ -60,6 +68,7 @@ import { createTUIState, type TUIState } from '#/tui/tui-state';
 import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
+import { setMarkdownRenderLatex } from '#/tui/utils/markdown-options';
 import { installTerminalFocusTracking } from '#/tui/utils/terminal-focus';
 import { notifyTerminalOnce } from '#/tui/utils/terminal-notification';
 import { buildExportMarkdown } from '#/tui/utils/export-markdown';
@@ -126,6 +135,7 @@ export interface DaemonTUIStartupInput {
   readonly agentProfile?: string;
   readonly additionalDirs?: readonly string[];
   readonly tuiConfig: TuiConfig;
+  readonly tuiConfigPath?: string;
   readonly version: string;
   readonly workDir: string;
   readonly startupNotice?: string;
@@ -167,6 +177,7 @@ export class DaemonTUI {
   private readonly client: DaemonClient;
   private readonly renderer: DaemonTranscriptRenderer;
   private readonly startup: DaemonTUIStartupInput;
+  private currentTuiConfig: TuiConfig;
   private controller: SessionController | undefined;
   private mainControllerDispose: (() => void) | undefined;
   private focusedControllerDispose: (() => void) | undefined;
@@ -227,10 +238,19 @@ export class DaemonTUI {
 
   constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput, terminal?: Terminal) {
     this.startup = startup;
+    this.currentTuiConfig = { ...startup.tuiConfig };
     this.state = createTUIState(createOptions(startup), terminal);
     this.client = new DaemonClient(connection);
     this.state.transcriptContainer.addChild(this.transcriptBody);
-    this.renderer = new DaemonTranscriptRenderer(this.transcriptBody, this.state.ui, startup.workDir);
+    this.renderer = new DaemonTranscriptRenderer(
+      this.transcriptBody,
+      this.state.ui,
+      startup.workDir,
+      {
+        showThinking: startup.tuiConfig.showThinking !== false,
+        showTimestamps: startup.tuiConfig.showTimestamps === true,
+      },
+    );
     this.buildLayout();
     this.installEditor();
     this.setupAutocomplete();
@@ -358,12 +378,57 @@ export class DaemonTUI {
   }
 
   private mountFooter(): void {
+    this.state.footer.setOnAction((action) => {
+      this.handleFooterAction(action);
+    });
     const wrap = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
     wrap.addChild(this.state.footer);
     if (this.state.dockContainer !== undefined) {
       this.state.dockContainer.addChild(wrap, { shrink: 1, minSize: 1 });
     } else {
       this.state.ui.addChild(wrap);
+    }
+  }
+
+  private handleFooterAction(action: FooterAction): void {
+    // Do not interrupt a pending approval/question or user dialog with a footer click.
+    if (this.activeInteractionId !== undefined) return;
+    if (this.state.editorContainer.children[0] !== this.state.editor) {
+      this.restoreEditor();
+    }
+    const run = (promise: Promise<void>): void => {
+      void promise.catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    switch (action) {
+      case 'permission':
+        this.showPermissionPicker();
+        return;
+      case 'plan':
+        run(this.applyPlanMode(!this.state.appState.planMode));
+        return;
+      case 'goal':
+        run(this.handleGoalCommand(''));
+        return;
+      case 'model':
+        run(this.showModelPicker());
+        return;
+      case 'effort':
+        run(this.showThinkingPicker());
+        return;
+      case 'tasks':
+        run(this.handleTasksCommand(''));
+        return;
+      case 'agents':
+        run(this.showAgentRoster());
+        return;
+      case 'usage':
+        run(this.showUsage());
+        return;
+      case 'settings':
+        this.showSettingsDialog();
+        return;
     }
   }
 
@@ -376,6 +441,29 @@ export class DaemonTUI {
       }
       this.clearPendingConfirm();
       const mode = editor.inputMode;
+      const trimmed = text.trim();
+      // When a turn is running and busy_submit is 'send_now' (the default),
+      // plain Enter steers the active turn immediately (`sendPromptNow`).
+      // Slash commands, shell commands (`!`), and active goals keep their normal paths.
+      if (
+        this.controller?.getState().busy === true &&
+        this.controller.getState().goal?.status !== 'active' &&
+        mode !== 'bash' &&
+        trimmed !== '' &&
+        !trimmed.startsWith('/') &&
+        !trimmed.startsWith('!') &&
+        (this.state.appState.busySubmit ?? 'send_now') === 'send_now'
+      ) {
+        void this.steerSubmittedText(text, mode).catch((error: unknown) => {
+          this.showStatus(
+            error instanceof SendNowError && error.reason === 'unknown'
+              ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
+              : formatErrorMessage(error),
+            'error',
+          );
+        });
+        return;
+      }
       this.recordInputHistory(text, mode);
       const submission = { accepted: false };
       void this.handleInput(text, submission).catch((error: unknown) => {
@@ -444,6 +532,34 @@ export class DaemonTUI {
           ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
           : formatErrorMessage(error), 'error');
       });
+    };
+    editor.onAltEnter = () => {
+      const raw = editor.getExpandedText();
+      const trimmed = raw.trim();
+      if (trimmed === '') return;
+      this.clearPendingConfirm();
+      const mode = editor.inputMode;
+      editor.setText('');
+      this.recordInputHistory(raw, mode);
+      const submission = { accepted: false };
+      void this.handleInput(raw, submission).catch((error: unknown) => {
+        if (!submission.accepted && editor.getText() === '') {
+          editor.setInputMode(mode);
+          editor.setText(raw);
+        }
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    editor.onAltS = () => {
+      if (editor.getExpandedText().trim() !== '') return;
+      void this.steerPrompt().catch((error: unknown) => {
+        this.showStatus(error instanceof SendNowError && error.reason === 'unknown'
+          ? 'Prompt delivery is unconfirmed. Check the queue before retrying.'
+          : formatErrorMessage(error), 'error');
+      });
+    };
+    editor.onToggleMouse = () => {
+      this.applyMouseReporting(this.state.appState.mouse === false);
     };
     editor.onCtrlB = () => {
       if (this.controller?.getState().busy !== true) return false;
@@ -1176,7 +1292,7 @@ export class DaemonTUI {
       if (view.queuedPromptIds.length > 0) {
         activityLine = {
           ...activityLine,
-          details: [...activityLine.details, 'Ctrl+S steer queued'],
+          details: [...activityLine.details, 'Ctrl+Enter/Ctrl+S steer queued'],
         };
       }
     }
@@ -1220,6 +1336,81 @@ export class DaemonTUI {
     }
 
     this.showStatus(activityMessage, { tone: activityTone, source: 'activity', activity: activityLine });
+  }
+
+  private async steerSubmittedText(raw: string, mode: 'prompt' | 'bash'): Promise<void> {
+    const editor = this.state.editor;
+    const text = raw.trim();
+    const controller = this.controller;
+    if (controller === undefined || text === '') return;
+    if (controller.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+      if (editor.getText() === '') {
+        editor.setInputMode(mode);
+        editor.setText(raw);
+      }
+      this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
+      return;
+    }
+    editor.disableSubmit = true;
+    try {
+      const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
+        refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
+        refreshFile: (attachment) => this.refreshFileAttachment(attachment),
+      });
+      const skillMap = new Map<string, string>();
+      for (const skill of this.skillCommands.values()) {
+        skillMap.set(skill.commandName, skill.name);
+        skillMap.set(skill.name, skill.name);
+      }
+      const skills = extractInlineSkillActivations(text, skillMap);
+      const promptId = newSteerPromptId();
+      let acknowledged = false;
+      const result = await controller
+        .sendPromptNow({
+          text,
+          content: prepared?.content,
+          promptId,
+          skills: skills.length === 0 ? undefined : skills.map((skill) => ({ name: skill.skillName })),
+          onAcknowledged: () => {
+            acknowledged = true;
+            this.recordInputHistory(text, mode);
+          },
+        })
+        .catch((error: unknown) => {
+          if (error instanceof SendNowError && error.reason === 'unknown' && prepared !== undefined) {
+            for (const id of [...prepared.mediaUploadIds, ...prepared.fileUploadIds]) {
+              this.unconfirmedUploadIds.add(id);
+            }
+          }
+          if (!acknowledged && this.controller === controller && editor.getText() === '') {
+            editor.setInputMode(mode);
+            editor.setText(raw);
+          }
+          throw error;
+        });
+      if (
+        prepared !== undefined &&
+        this.controller === controller &&
+        (result.outcome === 'accepted' ||
+          result.outcome === 'steered' ||
+          result.outcome === 'started' ||
+          result.outcome === 'queued')
+      ) {
+        this.handoffPreparedMedia(prepared, controller, { promptId });
+      }
+      this.showStatus(
+        `Prompt steering: ${result.outcome.replaceAll('_', ' ')}${result.reason === undefined ? '.' : ` (${result.reason.replaceAll('_', ' ')}).`}`,
+        { tone: result.outcome === 'failed' ? 'error' : 'normal', transient: true },
+      );
+    } catch (error) {
+      if (this.controller === controller && editor.getText() === '') {
+        editor.setInputMode(mode);
+        editor.setText(raw);
+      }
+      throw error;
+    } finally {
+      editor.disableSubmit = false;
+    }
   }
 
   private async steerPrompt(): Promise<void> {
@@ -1808,7 +1999,10 @@ export class DaemonTUI {
       return;
     }
     if ('status' in resolved) {
-      this.showStatus(`/${resolved.name} is not available in the terminal UI.`, 'error');
+      this.showStatus(
+        `/${resolved.name} is not available in the terminal UI — ${resolved.description}`,
+        'error',
+      );
       return;
     }
     const argumentError = validateDaemonCommandArgs(resolved);
@@ -1829,6 +2023,17 @@ export class DaemonTUI {
         return;
       case 'unqueue':
         await this.unqueuePrompt();
+        return;
+      case 'queue':
+        if (args === '') {
+          this.showStatus('/queue requires a prompt.', 'error');
+          return;
+        }
+        await this.sendPrompt(args);
+        this.showStatus('Prompt queued.', { transient: true });
+        return;
+      case 'mouse':
+        this.handleMouseCommand(args);
         return;
       case 'expand':
         this.toggleToolOutput();
@@ -2076,7 +2281,35 @@ export class DaemonTUI {
       return;
     }
     const usage = await this.client.klient.session(controller.sessionId).agent('main').getUsage();
-    this.showResult(JSON.stringify(usage, undefined, 2));
+    const rest = this.client.klient.rest as
+      | Partial<typeof this.client.klient.rest>
+      | undefined;
+    const [accounting, managedRaw] = await Promise.all([
+      rest?.sessionUsageAccounting?.(controller.sessionId).catch(() => undefined) ??
+        Promise.resolve(undefined),
+      rest?.oauth?.usage?.().catch(() => undefined) ?? Promise.resolve(undefined),
+    ]);
+    const sessionCostUsd =
+      accounting !== undefined && accounting.cost_unknown !== true
+        ? accounting.cost_usd_estimated
+        : undefined;
+    const managed = mapManagedUsageResult(managedRaw);
+    const state = this.state.appState;
+    const panel = new UsagePanelComponent(
+      () =>
+        buildUsageReportLines({
+          sessionUsage: usage,
+          sessionCostUsd,
+          contextUsage: state.contextUsage,
+          contextTokens: state.contextTokens,
+          maxContextTokens: state.maxContextTokens,
+          managedUsage: managed.report,
+          managedUsageError: managed.error,
+        }),
+      'primary',
+      ' Usage ',
+    );
+    this.renderer.addNote(new PanelNoteComponent(panel));
   }
 
   private async compactSession(instruction: string): Promise<void> {
@@ -2273,7 +2506,12 @@ export class DaemonTUI {
     }
     const controller = await this.ensureSession();
     if (parsed.kind === 'status') {
-      this.showResult(JSON.stringify(await this.client.getGoal(controller.sessionId), undefined, 2));
+      const goal = await this.client.getGoal(controller.sessionId);
+      if (goal === null) {
+        this.showResult('No active goal. Start one with /goal <objective>.');
+        return;
+      }
+      this.renderer.addNote(new GoalStatusMessageComponent(goal));
       return;
     }
     if (parsed.kind === 'create') {
@@ -2300,10 +2538,255 @@ export class DaemonTUI {
     await controller.resync();
   }
 
+  private persistTuiConfigPatch(patch: Partial<TuiConfig>): void {
+    this.currentTuiConfig = { ...this.currentTuiConfig, ...patch };
+    if (this.startup.tuiConfigPath !== undefined) {
+      void saveTuiConfig(this.currentTuiConfig, this.startup.tuiConfigPath).catch((error: unknown) => {
+        this.showStatus(`Failed to save tui.toml: ${formatErrorMessage(error)}`, 'error');
+      });
+    }
+  }
+
+  private applyMouseReporting(enabled: boolean): void {
+    this.state.ui.setMouseReporting(enabled);
+    this.setAppState({ mouse: enabled });
+    this.persistTuiConfigPatch({ mouse: enabled });
+    this.showStatus(
+      enabled ? 'Mouse reporting on' : 'Mouse reporting off — drag to select text',
+      { transient: true },
+    );
+  }
+
+  private handleMouseCommand(args: string): void {
+    const normalized = args.trim().toLowerCase();
+    if (normalized === '') {
+      this.applyMouseReporting(this.state.appState.mouse === false);
+      return;
+    }
+    if (normalized === 'on' || normalized === 'true' || normalized === 'enable') {
+      this.applyMouseReporting(true);
+      return;
+    }
+    if (normalized === 'off' || normalized === 'false' || normalized === 'disable') {
+      this.applyMouseReporting(false);
+      return;
+    }
+    this.showStatus('/mouse expects on, off, or no arguments.', 'error');
+  }
+
+  private showSettingsDialog(): void {
+    const runAsync = (promise: Promise<void>): void => {
+      void promise.catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+    };
+    const dialog = new SettingsDialogComponent({
+      items: [
+        {
+          id: 'busy_submit',
+          label: 'Busy Enter behavior',
+          description: 'Send now steers the running turn; Queue waits for the next turn',
+          getValue: () =>
+            (this.state.appState.busySubmit ?? 'send_now') === 'send_now' ? 'Send now' : 'Queue',
+          getValueTone: () => 'primary',
+          onActivate: () => {
+            const next =
+              (this.state.appState.busySubmit ?? 'send_now') === 'send_now' ? 'queue' : 'send_now';
+            this.setAppState({ busySubmit: next });
+            this.persistTuiConfigPatch({ busySubmit: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'mouse',
+          label: 'Mouse reporting',
+          description: 'Click & wheel navigation (Alt+M toggles for native drag selection)',
+          getValue: () => (this.state.appState.mouse !== false ? 'enabled' : 'disabled'),
+          onActivate: () => {
+            const next = this.state.appState.mouse === false;
+            this.state.ui.setMouseReporting(next);
+            this.setAppState({ mouse: next });
+            this.persistTuiConfigPatch({ mouse: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'screen_mode',
+          label: 'Screen mode',
+          description: 'Applies on next launch',
+          getValue: () =>
+            (this.state.appState.screenMode ?? 'main') === 'alt'
+              ? 'Fullscreen alt'
+              : 'Main scrollback',
+          getValueTone: () => 'primary',
+          onActivate: () => {
+            const next = (this.state.appState.screenMode ?? 'main') === 'alt' ? 'main' : 'alt';
+            this.setAppState({ screenMode: next });
+            this.persistTuiConfigPatch({ screenMode: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'show_thinking',
+          label: 'Show thinking',
+          description: 'Render model reasoning traces in the transcript',
+          getValue: () => (this.state.appState.showThinking !== false ? 'enabled' : 'disabled'),
+          onActivate: () => {
+            const next = this.state.appState.showThinking === false;
+            this.renderer.setShowThinking(next);
+            this.setAppState({ showThinking: next });
+            this.persistTuiConfigPatch({ showThinking: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'show_timestamps',
+          label: 'Prompt timestamps',
+          description: 'Show HH:MM:SS above user prompts',
+          getValue: () => (this.state.appState.showTimestamps === true ? 'enabled' : 'disabled'),
+          onActivate: () => {
+            const next = this.state.appState.showTimestamps !== true;
+            this.renderer.setShowTimestamps(next);
+            this.setAppState({ showTimestamps: next });
+            this.persistTuiConfigPatch({ showTimestamps: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'render_latex',
+          label: 'LaTeX math',
+          description: 'Format inline and block LaTeX equations in assistant replies',
+          getValue: () => (this.state.appState.renderLatex !== false ? 'enabled' : 'disabled'),
+          onActivate: () => {
+            const next = this.state.appState.renderLatex === false;
+            setMarkdownRenderLatex(next);
+            this.setAppState({ renderLatex: next });
+            this.persistTuiConfigPatch({ renderLatex: next });
+            this.state.ui.invalidate();
+            this.state.ui.requestRender(true);
+          },
+        },
+        {
+          id: 'notifications',
+          label: 'Notifications',
+          description: 'Terminal bell / desktop notification when turns finish or need input',
+          getValue: () => {
+            const n = this.state.appState.notifications;
+            if (!n.enabled) return 'disabled';
+            return n.condition === 'always' ? 'Always' : 'Unfocused';
+          },
+          getValueTone: () =>
+            this.state.appState.notifications.enabled ? 'success' : 'textDim',
+          onActivate: () => {
+            const cur = this.state.appState.notifications;
+            const next = !cur.enabled
+              ? { enabled: true, condition: 'unfocused' as const }
+              : cur.condition === 'unfocused'
+                ? { enabled: true, condition: 'always' as const }
+                : { enabled: false, condition: cur.condition };
+            this.setAppState({ notifications: next });
+            this.persistTuiConfigPatch({ notifications: next });
+            this.state.ui.requestRender();
+          },
+        },
+        {
+          id: 'theme',
+          label: 'Theme',
+          description: 'Cycle auto, dark, and light color palettes',
+          getValue: () => this.state.appState.theme,
+          getValueTone: () => 'primary',
+          onActivate: () => {
+            const order = ['auto', 'dark', 'light'] as const;
+            const curIdx = order.indexOf(this.state.appState.theme as (typeof order)[number]);
+            const next = order[(curIdx + 1) % order.length]!;
+            this.persistTuiConfigPatch({ theme: next });
+            runAsync(this.applyTheme(next));
+          },
+        },
+        {
+          id: 'permission',
+          label: 'Permission mode',
+          description: 'Open permission selector (or Space to cycle)',
+          getValue: () => this.state.appState.permissionMode,
+          getValueTone: () => 'primary',
+          onActivate: (trigger) => {
+            if (trigger === 'space') {
+              const modes: readonly PermissionMode[] = ['manual', 'auto', 'review', 'yolo'];
+              const idx = modes.indexOf(this.state.appState.permissionMode);
+              const next = modes[(idx + 1) % modes.length]!;
+              runAsync(this.applyPermission(next));
+              return;
+            }
+            this.restoreEditor();
+            this.showPermissionPicker();
+          },
+        },
+        {
+          id: 'plan',
+          label: 'Plan mode',
+          description: 'Read-only planning mode (Shift+Tab)',
+          getValue: () => (this.state.appState.planMode ? 'enabled' : 'disabled'),
+          onActivate: () => {
+            runAsync(this.applyPlanMode(!this.state.appState.planMode));
+          },
+        },
+        {
+          id: 'model',
+          label: 'Model',
+          description: 'Switch active LLM model',
+          getValue: () =>
+            this.state.appState.model === '' ? 'not selected' : this.state.appState.model,
+          getValueTone: () => (this.state.appState.model === '' ? 'textDim' : 'primary'),
+          onActivate: () => {
+            this.restoreEditor();
+            runAsync(this.showModelPicker());
+          },
+        },
+        {
+          id: 'effort',
+          label: 'Thinking effort',
+          description: 'Adjust model reasoning budget',
+          getValue: () => this.state.appState.thinkingEffort,
+          getValueTone: () =>
+            this.state.appState.thinkingEffort === 'off' ? 'textDim' : 'primary',
+          onActivate: () => {
+            this.restoreEditor();
+            runAsync(this.showThinkingPicker());
+          },
+        },
+        {
+          id: 'config_json',
+          label: 'View redacted daemon config',
+          description: 'Print redacted config JSON to the transcript (/settings json)',
+          getValue: () => 'open',
+          getValueTone: () => 'textMuted',
+          onActivate: () => {
+            this.restoreEditor();
+            runAsync(this.handleSettingsCommand('json'));
+          },
+        },
+      ],
+      onCancel: () => {
+        this.restoreEditor();
+      },
+      onCtrlC: () => {
+        this.restoreEditor();
+      },
+      onCtrlD: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(dialog);
+  }
+
   private async handleSettingsCommand(args: string): Promise<void> {
     const config = this.client.klient.global.config;
     const [domain, json] = splitFirst(args);
     if (domain === '') {
+      this.showSettingsDialog();
+      return;
+    }
+    if (domain === 'json' && json === '') {
       this.showResult(JSON.stringify(redactSensitive(await config.getAll()), undefined, 2));
       return;
     }
@@ -3288,6 +3771,49 @@ function fileMediaType(name: string): string {
   }
 }
 
+class PanelNoteComponent implements Component {
+  constructor(private readonly inner: Component) {}
+
+  invalidate(): void {
+    this.inner.invalidate();
+  }
+
+  render(width: number): string[] {
+    return ['', ...this.inner.render(width)];
+  }
+}
+
+function mapManagedUsageResult(
+  raw: ManagedUsageResult | undefined,
+): { readonly report?: ManagedUsageReport; readonly error?: string } {
+  if (raw === undefined) return {};
+  if (raw.kind === 'error') return { error: raw.message };
+  const mapRow = (row: NonNullable<typeof raw.summary>) => ({
+    name: row.name,
+    window: row.window,
+    used: row.used,
+    limit: row.limit,
+    resetAt: row.reset_at,
+  });
+  return {
+    report: {
+      summary: raw.summary === null ? null : mapRow(raw.summary),
+      limits: raw.limits.map(mapRow),
+      extraUsage:
+        raw.extra_usage === null
+          ? null
+          : {
+              balanceCents: raw.extra_usage.balance_cents,
+              totalCents: raw.extra_usage.total_cents,
+              monthlyChargeLimitEnabled: raw.extra_usage.monthly_charge_limit_enabled,
+              monthlyChargeLimitCents: raw.extra_usage.monthly_charge_limit_cents,
+              monthlyUsedCents: raw.extra_usage.monthly_used_cents,
+              currency: raw.extra_usage.currency,
+            },
+    },
+  };
+}
+
 function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
   const permissionMode: PermissionMode = input.cliOptions.auto
     ? 'auto'
@@ -3315,6 +3841,11 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       streamingStartTime: 0,
       stepRetry: null,
       theme: input.tuiConfig.theme,
+      busySubmit: input.tuiConfig.busySubmit ?? 'send_now',
+      mouse: input.tuiConfig.mouse ?? true,
+      screenMode: input.tuiConfig.screenMode ?? 'main',
+      showThinking: input.tuiConfig.showThinking ?? true,
+      showTimestamps: input.tuiConfig.showTimestamps ?? false,
       version: input.version,
       editorCommand: input.tuiConfig.editorCommand,
       disablePasteBurst: input.tuiConfig.disablePasteBurst,

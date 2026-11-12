@@ -35,12 +35,22 @@ export class DaemonTranscriptRenderer {
   private context: TranscriptContext = {};
   private readonly summaries = new Map<string, TranscriptSummary>();
   private expanded = false;
+  private showThinking = true;
+  private showTimestamps = false;
 
   constructor(
     private readonly container: Container,
     private readonly ui?: TUI,
     private readonly workDir?: string,
-  ) {}
+    options?: { readonly showThinking?: boolean; readonly showTimestamps?: boolean },
+  ) {
+    if (options?.showThinking !== undefined) {
+      this.showThinking = options.showThinking;
+    }
+    if (options?.showTimestamps !== undefined) {
+      this.showTimestamps = options.showTimestamps;
+    }
+  }
 
   /**
    * Project blocks onto mounted components. session-core returns the same
@@ -112,11 +122,37 @@ export class DaemonTranscriptRenderer {
     if (this.expanded === expanded) return;
     this.expanded = expanded;
     for (const { component } of this.mounted.values()) {
-      if (component instanceof ToolCallComponent || component instanceof DaemonUserMessageComponent ||
-        component instanceof ThinkingComponent || component instanceof ProcessDetail) component.setExpanded(expanded);
+      if (
+        component instanceof ToolCallComponent ||
+        component instanceof DaemonUserMessageComponent ||
+        component instanceof ThinkingComponent ||
+        component instanceof ProcessDetail
+      ) {
+        component.setExpanded(expanded);
+      }
     }
     this.mountChildren();
     this.ui?.requestRender();
+  }
+
+  setShowThinking(showThinking: boolean): void {
+    if (this.showThinking === showThinking) return;
+    this.showThinking = showThinking;
+    this.mountChildren();
+    this.container.invalidate();
+    this.ui?.requestRender(true);
+  }
+
+  setShowTimestamps(showTimestamps: boolean): void {
+    if (this.showTimestamps === showTimestamps) return;
+    this.showTimestamps = showTimestamps;
+    for (const mounted of this.mounted.values()) {
+      if (mounted.kind === 'user') {
+        (mounted.component as DaemonUserMessageComponent).setShowTimestamp(showTimestamps);
+      }
+    }
+    this.container.invalidate();
+    this.ui?.requestRender(true);
   }
 
   dispose(): void {
@@ -134,7 +170,9 @@ export class DaemonTranscriptRenderer {
     const components = this.notes
       .filter((note) => note.afterBlockId === undefined)
       .map((note) => note.component);
-    const blocks = this.lastBlocks ?? [];
+    const blocks = (this.lastBlocks ?? []).filter(
+      (block) => this.showThinking || block.kind !== 'thinking',
+    );
     const nodes = this.expanded ? blocks : foldHistory(
       readSubagentEndings(groupBlocks(blocks), this.context.tasks ?? []),
       this.context.liveTurnId,
@@ -210,8 +248,17 @@ export class DaemonTranscriptRenderer {
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
     const component = createBlockComponent(block, this.ui, this.workDir);
-    if (component instanceof ToolCallComponent || component instanceof DaemonUserMessageComponent ||
-      component instanceof ThinkingComponent || component instanceof ProcessDetail) component.setExpanded(this.expanded);
+    if (
+      component instanceof ToolCallComponent ||
+      component instanceof DaemonUserMessageComponent ||
+      component instanceof ThinkingComponent ||
+      component instanceof ProcessDetail
+    ) {
+      component.setExpanded(this.expanded);
+    }
+    if (component instanceof DaemonUserMessageComponent) {
+      component.setShowTimestamp(this.showTimestamps);
+    }
     const next = {
       kind: block.kind,
       component,
@@ -432,10 +479,11 @@ class RenderCachedContainer extends Container {
 }
 
 class DaemonUserMessageComponent extends RenderCachedContainer {
-  private readonly message: UserMessageComponent;
+  private message: UserMessageComponent;
   private readonly status = new Text('', 2, 0);
   private statusText: string | undefined;
   private expanded = false;
+  private showTimestamp = false;
 
   constructor(private block: UserBlock) {
     super();
@@ -457,6 +505,17 @@ class DaemonUserMessageComponent extends RenderCachedContainer {
     this.syncStatus();
   }
 
+  setShowTimestamp(showTimestamp: boolean): void {
+    if (this.showTimestamp === showTimestamp) return;
+    this.showTimestamp = showTimestamp;
+    const label = showTimestamp ? formatPromptTimestamp(this.block.createdAt) : undefined;
+    const nextMessage = new UserMessageComponent(this.block.text, undefined, undefined, label);
+    const idx = this.children.indexOf(this.message);
+    if (idx >= 0) this.children[idx] = nextMessage;
+    this.message = nextMessage;
+    this.invalidate();
+  }
+
   override invalidate(): void {
     super.invalidate();
     this.syncStatus();
@@ -470,6 +529,17 @@ class DaemonUserMessageComponent extends RenderCachedContainer {
       this.status.setText(status);
     }
   }
+}
+
+function formatPromptTimestamp(createdAt: string | number | undefined): string | undefined {
+  if (createdAt === undefined) return undefined;
+  const ms = typeof createdAt === 'number' ? createdAt : Date.parse(createdAt);
+  if (!Number.isFinite(ms)) return undefined;
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
 }
 
 function formatUserPromptStatus(block: UserBlock, expanded = false): string | undefined {

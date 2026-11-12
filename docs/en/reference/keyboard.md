@@ -18,13 +18,17 @@ The following keys are always available in the input box:
 
 | Shortcut | Function |
 | --- | --- |
-| `Enter` | Submit the current input |
+| `Enter` | Submit the current input (while a turn runs, sends immediately by default; configurable via `busy_submit` in `~/.kiki/tui.toml` or `/settings`) |
+| `Ctrl-Enter` / `Ctrl-S` | Send the current draft immediately into the running turn; with an empty input box, steer the next queued prompt |
+| `Alt-Enter` | Queue the current input for the next turn without interrupting |
+| `Alt-S` | Steer the next queued prompt immediately when the input box is empty |
 | `Shift-Enter` / `Ctrl-J` | Insert a newline in the input (or end the line with `\` and press `Enter`) |
 | `↑` / `↓` | Browse input history |
 | `Esc` | Close the completion menu, leave an empty shell mode, or leave history browsing; while a turn is running, interrupt it (see below) |
 | `Ctrl-C` | Clear a draft; with the input box empty, interrupt the running turn, or press twice to exit when idle |
 | `Ctrl-D` | Press twice to exit when the input box is empty; otherwise delete the character after the cursor |
 | `Ctrl-T` | Expand or collapse the todo list when it is truncated |
+| `Alt-M` | Toggle SGR mouse reporting on or off (turn off to drag-select text natively in the terminal) |
 
 `Esc` while a turn is running: with an empty input box, it interrupts the turn. With a draft in the input box, the first press only shows "Press Esc again to interrupt" in the footer, and a second `Esc` within 1.5 seconds interrupts and leaves the draft in place; any other key cancels. While idle, `Esc` does nothing to the draft. Leaving history browsing with `Esc` puts back the draft you had before pressing `↑`.
 
@@ -72,14 +76,17 @@ While streaming output is active, the input box can still receive input and supp
 
 | Shortcut | Function |
 | --- | --- |
+| `Enter` | Send the draft immediately into the running turn when `busy_submit = "send_now"` (default), or queue it for the next turn when `busy_submit = "queue"` |
+| `Ctrl-Enter` / `Ctrl-S` | Always send the draft immediately into the running turn regardless of `busy_submit`; with empty input, steer the next queued prompt |
+| `Alt-Enter` | Queue the draft for the next turn (same as `/queue <prompt>`) |
+| `Alt-S` | Steer the next queued prompt immediately when the input box is empty |
 | `Esc` | Interrupt the running turn; with a draft in the input box, press it twice |
 | `Ctrl-C` | Clear a nonempty draft first; interrupt the active turn when the input is empty |
-| `Ctrl-S` | Send the draft into the running turn; with empty input, steer the next queued prompt |
 | `Ctrl-B` | Move running foreground tasks to the background |
 
 The line above the input box shows how long the turn has been running and how to interrupt it. While the turn waits for your approval or answer, it says so instead.
 
-`Ctrl-S` includes attachments and inline skill activations with the draft; [`/unqueue`](./slash-commands.md) takes the last queued message back. Shell input (`! …`) is not steered; slash commands follow their normal command path. When idle, `Ctrl-S` submits nonempty input normally. The status reports the prompt's actual delivery outcome. Deferred failures and held requests stay visible with their saved input. If delivery is unconfirmed, check the queue before retrying.
+`Ctrl-Enter` and `Ctrl-S` include attachments and inline skill activations with the draft (`Ctrl-S` works in legacy terminals that do not distinguish `Ctrl-Enter` from `Enter`); [`/unqueue`](./slash-commands.md) takes the last queued message back. Shell input (`! …`) is not steered; slash commands follow their normal command path. When idle, `Ctrl-Enter` and `Ctrl-S` submit nonempty input normally. The status reports the prompt's actual delivery outcome. Deferred failures and held requests stay visible with their saved input. If delivery is unconfirmed, check the queue before retrying.
 
 `Ctrl-B` detaches foreground tasks, not the turn itself. If the model is streaming without a foreground task, the TUI reports that there is no task to move. At an idle prompt, the key keeps its normal cursor-left behavior.
 
@@ -88,8 +95,10 @@ The line above the input box shows how long the turn has been running and how to
 | Shortcut | Function |
 | --- | --- |
 | `Ctrl-O` | Expand or collapse tool output, thinking, completed work and reminders |
+| Left-click header | Toggle an individual tool call or thinking block |
+| `Alt-M` | Toggle mouse click and wheel reporting (or use `/mouse [on\|off]`) |
 
-Completed work and reminders are collapsed by default. Press `Ctrl-O` or run `/expand` to read their details; running and failed work stays visible.
+Completed work and reminders are collapsed by default; running and failed work stays visible. Press `Ctrl-O` or run `/expand` to read details globally, or click an individual block header to inspect just that block. Clicking status badges in the footer opens `/model`, `/effort`, `/permission`, `/plan`, `/tasks`, `/agents`, `/goal`, or `/usage`.
 
 ## Approval Panel
 

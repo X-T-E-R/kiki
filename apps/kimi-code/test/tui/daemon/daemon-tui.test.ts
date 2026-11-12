@@ -183,6 +183,8 @@ function driver(
     resyncing: false,
     resyncFailed: false,
     blocks: [] as Array<Record<string, unknown>>,
+    durableIngress: [] as Array<Record<string, unknown>>,
+    todos: [] as Array<{ title: string; status: string }>,
     activePromptId: undefined as string | undefined,
     queuedPromptIds: [] as string[],
     turnStartedAt: undefined as number | undefined,
@@ -869,8 +871,8 @@ describe('DaemonTUI commands', () => {
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
       'type / in the input box', 'Ctrl+-',
       'press twice over a draft', '/stop',
-      'Send the draft into the running turn',
-      'with empty input, steer the next queued prompt',
+      'Send draft immediately into the running turn',
+      'steer next queued prompt',
       'Move foreground tasks to background',
     ]) expect(frames.some((frame) => frame.replaceAll(/\s+/g, ' ').includes(text)), text).toBe(true);
     controllerState.busy = true;
@@ -933,8 +935,11 @@ describe('DaemonTUI commands', () => {
     agentFacade.getUsage.mockResolvedValue({ total: { inputTokens: 12 } } as never);
     await internal.handleSlash('/usage');
     expect(agentFacade.getUsage).toHaveBeenCalledTimes(1);
-    expect(transcriptText(tui)).toContain('"inputTokens": 12');
-    expect(transcriptText(tui)).not.toContain('No token usage');
+    const output = transcriptText(tui);
+    expect(output).toContain('Usage');
+    expect(output).toContain('total  input 12  output 0  total 12');
+    expect(output).not.toContain('"inputTokens"');
+    expect(output).not.toContain('No token usage');
     expect(internal.client.createSession).not.toHaveBeenCalled();
   });
 
@@ -1349,8 +1354,10 @@ describe('DaemonTUI commands', () => {
     expect(controller.resync).toHaveBeenCalled();
   });
 
-  it('redacts settings output and rejects plaintext provider secrets', async () => {
+  it('opens interactive settings by default, redacts /settings json output, and rejects plaintext provider secrets', async () => {
     const { tui, internal, configFacade, providerFacade } = driver();
+    const focus = vi.spyOn(tui.state.ui, 'setFocus');
+    vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
     configFacade.getAll.mockResolvedValue({
       provider: {
         apiKey: 'settings-secret',
@@ -1360,6 +1367,19 @@ describe('DaemonTUI commands', () => {
     });
 
     await internal.handleSlash('/settings');
+    const dialog = focus.mock.lastCall?.[0];
+    expect(dialog).toBeDefined();
+    expect(dialog).not.toBe(tui.state.editor);
+    const dialogFrame = tui.state.editorContainer.render(100).join('\n').replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+    expect(dialogFrame).toContain('Settings');
+    expect(dialogFrame).toContain('Busy Enter behavior');
+    expect(dialogFrame).toContain('Mouse reporting');
+    expect(transcriptText(tui)).not.toContain('settings-secret');
+    expect(configFacade.getAll).not.toHaveBeenCalled();
+    dialog?.handleInput?.('\u001B');
+    expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
+
+    await internal.handleSlash('/settings json');
     const rendered = transcriptText(tui);
     expect(rendered).not.toContain('settings-secret');
     expect(rendered).not.toContain('settings-token');
@@ -2425,6 +2445,13 @@ describe('DaemonTUI commands', () => {
     help.handleInput?.('\u001B');
     expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
     await internal.handleSlash('/config');
+    const configDialog = focus.mock.lastCall?.[0];
+    expect(configDialog).toBeDefined();
+    expect(configDialog).not.toBe(tui.state.editor);
+    expect(tui.state.editorContainer.render(90).join('\n')).toContain('Busy Enter behavior');
+    configDialog?.handleInput?.('\u001B');
+    expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
+    await internal.handleSlash('/config json');
     await internal.handleSlash('/experimental');
     await internal.handleSlash('/custom value');
 
@@ -3516,6 +3543,377 @@ describe('DaemonTUI commands', () => {
       } finally {
         internal.clearActivityTickTimer();
         internal.clearStatusNotice();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('busy_submit, steering shortcuts, SGR mouse routing, and clean panels', () => {
+    it('steers on plain Enter by default when busy while Alt+Enter and /queue queue for the next turn', async () => {
+      const { tui, internal, controller, controllerState } = driver();
+      controllerState.busy = true;
+
+      // Default busySubmit === 'send_now': plain Enter steers immediately.
+      tui.state.editor.setText('steer into active turn');
+      tui.state.editor.handleInput('\r');
+      await vi.waitFor(() =>
+        expect(controller.sendPromptNow).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'steer into active turn' }),
+        ),
+      );
+      expect(controller.sendPrompt).not.toHaveBeenCalled();
+
+      // Alt+Enter explicitly queues even when busySubmit === 'send_now'.
+      tui.state.editor.setText('queue for next turn');
+      tui.state.editor.handleInput('\u001B\r');
+      await vi.waitFor(() =>
+        expect(controller.sendPrompt).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'queue for next turn' }),
+        ),
+      );
+      expect(tui.state.editor.getText()).toBe('');
+
+      // /queue <prompt> also queues explicitly.
+      await internal.handleSlash('/queue follow up after turn');
+      expect(controller.sendPrompt).toHaveBeenLastCalledWith(
+        expect.objectContaining({ text: 'follow up after turn' }),
+      );
+    });
+
+    it('queues on plain Enter when busy_submit is queue, while Ctrl+Enter and Ctrl+S always steer immediately', async () => {
+      const { tui, controller, controllerState } = driver();
+      controllerState.busy = true;
+      tui.state.appState.busySubmit = 'queue';
+
+      // Plain Enter queues when busySubmit === 'queue'.
+      tui.state.editor.setText('queued via enter');
+      tui.state.editor.handleInput('\r');
+      await vi.waitFor(() =>
+        expect(controller.sendPrompt).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'queued via enter' }),
+        ),
+      );
+      expect(controller.sendPromptNow).not.toHaveBeenCalled();
+
+      // Ctrl+Enter (CSI-u `\x1b[13;5u`) ALWAYS steers immediately.
+      tui.state.editor.setText('steered via ctrl-enter csi-u');
+      tui.state.editor.handleInput('\u001B[13;5u');
+      await vi.waitFor(() =>
+        expect(controller.sendPromptNow).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'steered via ctrl-enter csi-u' }),
+        ),
+      );
+      expect(tui.state.editor.getText()).toBe('');
+
+      // Ctrl+Enter (modifyOtherKeys `\x1b[27;5;13~`) ALSO steers immediately.
+      tui.state.editor.setText('steered via ctrl-enter modifyOtherKeys');
+      tui.state.editor.handleInput('\u001B[27;5;13~');
+      await vi.waitFor(() =>
+        expect(controller.sendPromptNow).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'steered via ctrl-enter modifyOtherKeys' }),
+        ),
+      );
+      expect(tui.state.editor.getText()).toBe('');
+
+      // Ctrl+S (`\x13`) ALSO steers immediately.
+      tui.state.editor.setText('steered via ctrl-s');
+      tui.state.editor.handleInput('\u0013');
+      await vi.waitFor(() =>
+        expect(controller.sendPromptNow).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'steered via ctrl-s' }),
+        ),
+      );
+      expect(tui.state.editor.getText()).toBe('');
+    });
+
+    it('steers the first queued prompt with Ctrl+Enter, Ctrl+S, and Alt+S when the input box is empty', async () => {
+      const { tui, controller, controllerState } = driver();
+      controllerState.busy = true;
+
+      controllerState.queuedPromptIds = ['queued-1', 'queued-2'];
+      tui.state.editor.setText('');
+      tui.state.editor.handleInput('\u001B[13;5u');
+      await vi.waitFor(() =>
+        expect(controller.steerQueued).toHaveBeenCalledWith('queued-1'),
+      );
+
+      controllerState.queuedPromptIds = ['queued-2'];
+      tui.state.editor.handleInput('\u0013');
+      await vi.waitFor(() =>
+        expect(controller.steerQueued).toHaveBeenCalledWith('queued-2'),
+      );
+
+      controllerState.queuedPromptIds = ['queued-3'];
+      tui.state.editor.handleInput('\u001Bs');
+      await vi.waitFor(() =>
+        expect(controller.steerQueued).toHaveBeenCalledWith('queued-3'),
+      );
+    });
+
+    it('renders /goal status as a formatted panel without raw JSON and handles empty goals cleanly', async () => {
+      const { tui, internal } = driver();
+      internal.client.getGoal.mockResolvedValueOnce(null);
+      await internal.handleSlash('/goal');
+      expect(transcriptText(tui)).toContain('No active goal. Start one with /goal <objective>.');
+
+      internal.client.getGoal.mockResolvedValueOnce({
+        id: 'goal-1',
+        status: 'active',
+        objective: 'Ship responsive TUI mouse and steering UX',
+        completionCriterion: 'All Vitest suites pass with zero raw JSON walls',
+        turnsUsed: 4,
+        tokensUsed: 48_200,
+        wallClockMs: 125_000,
+        budget: {
+          turnBudget: 12,
+          tokenBudget: null,
+          wallClockBudgetMs: null,
+        },
+      });
+      await internal.handleSlash('/goal');
+      const output = transcriptText(tui, 100);
+      expect(output).toContain('Goal · active');
+      expect(output).toContain('Ship responsive TUI mouse and steering UX');
+      expect(output).toContain('✓ All Vitest suites pass with zero raw JSON walls');
+      expect(output).toContain('after 12 turns (4/12)');
+      expect(output).not.toContain('"completionCriterion"');
+    });
+
+    it('curates bare / autocomplete, hides disabled commands, and fuzzy-matches skills and agents with badges', async () => {
+      const { tui, internal } = driver();
+      internal.client.listSkills.mockResolvedValue({
+        skills: [
+          {
+            name: 'visual-brief',
+            description: 'Create visual briefings',
+            source: 'user',
+          },
+        ],
+      });
+      await internal.refreshSkillCommands('session-1');
+      await internal.refreshAgentCommands();
+
+      const provider = (tui.state.editor as unknown as {
+        autocompleteProvider: {
+          getSuggestions(
+            lines: string[],
+            cursorLine: number,
+            cursorCol: number,
+            options: { signal: AbortSignal; force?: boolean },
+          ): Promise<{ items: Array<{ value: string; label: string; description?: string }> } | null>;
+        };
+      }).autocompleteProvider;
+      const ac = new AbortController();
+
+      // Bare `/` returns curated primary workflow commands and excludes disabled commands.
+      const bare = await provider.getSuggestions(['/'], 0, 1, { signal: ac.signal });
+      expect(bare).not.toBeNull();
+      expect(bare!.items.length).toBeGreaterThanOrEqual(15);
+      expect(bare!.items.length).toBeLessThanOrEqual(20);
+      const bareValues = bare!.items.map((item) => item.value);
+      expect(bareValues).toContain('model');
+      expect(bareValues).toContain('settings');
+      expect(bareValues).not.toContain('add-dir');
+      expect(bareValues).not.toContain('export-md');
+      expect(bareValues).not.toContain('skill:visual-brief');
+
+      // Typing `/<query>` fuzzy-matches skills and agent profiles with kind badges.
+      const skillMatch = await provider.getSuggestions(['/visual'], 0, 7, { signal: ac.signal });
+      expect(
+        skillMatch?.items.some(
+          (item) => item.value === 'visual-brief' && item.description?.includes('[skill]'),
+        ),
+      ).toBe(true);
+
+      const agentMatch = await provider.getSuggestions(['/review'], 0, 7, { signal: ac.signal });
+      expect(agentMatch?.items.some((item) => item.value === 'reviewer' && item.description?.includes('[agent]'))).toBe(true);
+
+      // Explicitly typing a disabled command still intercepts with a clear explanation.
+      await internal.handleSlash('/add-dir C:/extra');
+      expect(internal.showStatus).toHaveBeenCalledWith(
+        expect.stringContaining('/add-dir is not available in the terminal UI'),
+        'error',
+      );
+    });
+
+    it('routes SGR mouse clicks and wheel across transcript blocks, footer pills, settings, and protected approvals, and toggles mouse reporting', async () => {
+      vi.useFakeTimers();
+      try {
+        const { tui, internal, controllerState } = driver();
+        const writes: string[] = [];
+        let inputHandler: ((data: string) => void) | undefined;
+        vi.spyOn(tui.state.terminal, 'columns', 'get').mockReturnValue(100);
+        vi.spyOn(tui.state.terminal, 'rows', 'get').mockReturnValue(45);
+        vi.spyOn(tui.state.terminal, 'start').mockImplementation((onInput) => {
+          inputHandler = onInput;
+        });
+        vi.spyOn(tui.state.terminal, 'stop').mockImplementation(() => {
+          inputHandler = undefined;
+        });
+        vi.spyOn(tui.state.terminal, 'write').mockImplementation((chunk: string) => {
+          writes.push(chunk);
+        });
+
+        tui.state.editorContainer.addChild(tui.state.editor);
+        tui.state.ui.setFocus(tui.state.editor);
+        (internal as unknown as { mountFooter(): void }).mountFooter();
+        tui.state.ui.start();
+
+        // Starting TUI with default mouse=true enables SGR mouse reporting (`?1000h?1006h`).
+        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1006h');
+
+        // Render transcript with multi-line Thinking + Bash ToolCall blocks.
+        controllerState.blocks = [
+          {
+            kind: 'thinking',
+            id: 'think-1',
+            text: Array.from({ length: 10 }, (_, idx) => `Reasoning step ${String(idx + 1)}`).join('\n'),
+            streaming: false,
+          },
+          {
+            kind: 'tool',
+            id: 'tool-1',
+            toolCallId: 'call-1',
+            name: 'Bash',
+            args: { command: 'pnpm test' },
+            argsText: '{"command":"pnpm test"}',
+            status: 'done',
+            output: Array.from({ length: 20 }, (_, idx) => `output line ${String(idx + 1)}`).join('\n'),
+          },
+        ];
+        internal.renderSession(controllerState);
+        tui.state.ui.renderNow(true);
+
+        const strip = (s: string) => s.replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '').replaceAll(/\u001B\]8;;.*?\u0007/g, '');
+        const getFrameLines = () => {
+          const state = (tui.state.ui as unknown as {
+            captureRenderState(): { previousLines: string[]; previousViewportTop: number };
+          }).captureRenderState();
+          const all = state.previousLines.map(strip);
+          return all.length > 45 ? all.slice(state.previousViewportTop) : all;
+        };
+
+        let lines = getFrameLines();
+        const thinkingRow = lines.findIndex((line) => line.includes('Reasoning step 1'));
+        expect(thinkingRow).toBeGreaterThanOrEqual(0);
+        expect(lines.some((line) => line.includes('Reasoning step 9'))).toBe(false);
+        expect(tui.state.toolOutputExpanded).toBe(false);
+
+        // Left-click Thinking header row (1-indexed SGR col=5, row=thinkingRow+1) expands ONLY that block!
+        inputHandler?.(`\u001B[<0;5;${String(thinkingRow + 1)}M`);
+        tui.state.ui.renderNow();
+        lines = getFrameLines();
+        expect(lines.some((line) => line.includes('Reasoning step 9'))).toBe(true);
+        expect(lines.some((line) => line.includes('output line 18'))).toBe(false);
+        expect(tui.state.toolOutputExpanded).toBe(false);
+
+        // Global Ctrl+O (`\x0f`) expands both ToolCall and Thinking blocks together.
+        inputHandler?.('\u000F');
+        tui.state.ui.renderNow();
+        lines = getFrameLines();
+        expect(tui.state.toolOutputExpanded).toBe(true);
+        expect(lines.some((line) => line.includes('output line 18'))).toBe(true);
+
+        // Left-clicking the model pill in the Footer opens the `/model` ChoicePicker.
+        const footerRow = lines.findIndex((line) => line.includes('model-a'));
+        expect(footerRow).toBeGreaterThanOrEqual(0);
+        const modelCol = lines[footerRow]!.indexOf('model-a') + 2; // 1-indexed inside `model-a`
+        inputHandler?.(`\u001B[<0;${String(modelCol)};${String(footerRow + 1)}M`);
+        await vi.waitFor(() =>
+          expect(tui.state.editorContainer.render(100).join('\n')).toContain('Model'),
+        );
+        expect(tui.state.ui.getFocusedComponent()).not.toBe(tui.state.editor);
+
+        // Outside click above the picker dismisses ChoicePicker back to editor.
+        inputHandler?.('\u001B[<0;2;1M');
+        expect(tui.state.ui.getFocusedComponent()).toBe(tui.state.editor);
+
+        // Open `/settings` dialog, click `Busy Enter behavior` to toggle to `Queue`, then outside-click to close.
+        await internal.handleSlash('/settings');
+        tui.state.ui.renderNow();
+        lines = getFrameLines();
+        const busySettingRow = lines.findIndex((line) => line.includes('Busy Enter behavior'));
+        expect(busySettingRow).toBeGreaterThanOrEqual(0);
+        expect(tui.state.appState.busySubmit).toBe('send_now');
+        inputHandler?.(`\u001B[<0;6;${String(busySettingRow + 1)}M`);
+        expect(tui.state.appState.busySubmit).toBe('queue');
+
+        // Wheel down inside `/settings` moves selection without closing.
+        inputHandler?.(`\u001B[<65;6;${String(busySettingRow + 1)}M`);
+        expect(tui.state.ui.getFocusedComponent()).not.toBe(tui.state.editor);
+
+        // Outside click dismisses `/settings`.
+        inputHandler?.('\u001B[<0;2;1M');
+        expect(tui.state.ui.getFocusedComponent()).toBe(tui.state.editor);
+
+        // Mount an ApprovalPanel and verify outside click does NOT accidentally dismiss it,
+        // while clicking an option after arming resolves the approval.
+        const sync = internal as unknown as { syncInteractionBlocks(blocks: unknown[]): void };
+        controllerState.busy = true;
+        controllerState.blocks = [
+          {
+            kind: 'approval',
+            id: 'approval-mouse',
+            request: {
+              approval_id: 'approval-mouse',
+              session_id: 'session-1',
+              tool_call_id: 'tool-mouse',
+              tool_name: 'Bash',
+              action: 'run command',
+              tool_input_display: { kind: 'generic' },
+              created_at: '2026-01-01T00:00:00.000Z',
+              expires_at: '2026-01-01T00:01:00.000Z',
+            },
+            resolution: undefined,
+          },
+        ];
+        sync.syncInteractionBlocks(controllerState.blocks);
+        tui.state.ui.renderNow();
+        const approvalPanel = tui.state.ui.getFocusedComponent();
+        expect(approvalPanel).not.toBe(tui.state.editor);
+
+        // Outside click on row 1 must NOT dismiss ApprovalPanel!
+        inputHandler?.('\u001B[<0;2;1M');
+        expect(tui.state.ui.getFocusedComponent()).toBe(approvalPanel);
+        expect(internal.client.resolveApproval).not.toHaveBeenCalled();
+
+        // Advance past arming window and click option 1 inside ApprovalPanel.
+        vi.advanceTimersByTime(500);
+        tui.state.ui.renderNow();
+        lines = getFrameLines();
+        const approveRow = lines.findIndex((line) => line.includes('1. Approve once'));
+        expect(approveRow).toBeGreaterThanOrEqual(0);
+        inputHandler?.(`\u001B[<0;6;${String(approveRow + 1)}M`);
+        await vi.waitFor(() =>
+          expect(internal.client.resolveApproval).toHaveBeenCalledWith(
+            'session-1',
+            'approval-mouse',
+            expect.objectContaining({ decision: 'approved' }),
+          ),
+        );
+
+        // Toggle mouse reporting off via Alt+M (`\x1bm`), verifying escape sequence & status, then back on via `/mouse on`.
+        writes.length = 0;
+        inputHandler?.('\u001Bm');
+        expect(tui.state.appState.mouse).toBe(false);
+        expect(writes.join('')).toContain('\u001B[?1006l');
+        expect(writes.join('')).toContain('\u001B[?1000l');
+        expect(internal.showStatus).toHaveBeenCalledWith(
+          'Mouse reporting off — drag to select text',
+          { transient: true },
+        );
+
+        writes.length = 0;
+        await internal.handleSlash('/mouse on');
+        expect(tui.state.appState.mouse).toBe(true);
+        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1006h');
+        expect(internal.showStatus).toHaveBeenCalledWith(
+          'Mouse reporting on',
+          { transient: true },
+        );
+
+        tui.state.ui.stop({ preserveScreen: true });
+      } finally {
         vi.useRealTimers();
       }
     });

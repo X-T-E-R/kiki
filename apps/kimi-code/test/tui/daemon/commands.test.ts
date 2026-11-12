@@ -90,7 +90,7 @@ describe('daemon command registry', () => {
     expect(menu.filter((item) => item.name === 'plan')).toHaveLength(1);
   });
 
-  it('installs supported, disabled, skill, and agent commands in autocomplete', () => {
+  it('installs supported, skill, and agent commands in autocomplete while omitting disabled commands', () => {
     const commands = daemonAutocompleteCommands(
       new Map([
         [
@@ -107,26 +107,29 @@ describe('daemon command registry', () => {
 
     expect(commands).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'help', aliases: ['h', '?'] }),
-        // Supported commands carry their plain description — no status badge.
+        expect.objectContaining({ name: 'help', aliases: ['h', '?'], primary: true }),
         expect.objectContaining({
           name: 'settings',
           aliases: ['config'],
           description: 'Inspect or update daemon configuration',
+          primary: true,
         }),
         expect.objectContaining({
           name: 'export-view',
           description: 'Export loaded user and assistant text as Markdown',
+          primary: false,
         }),
-        // Only disabled entries are marked, so the status signal stands out.
         expect.objectContaining({
-          name: 'add-dir',
-          description: expect.stringMatching(/^\[disabled\] /),
+          name: 'skill:ReviewSkill',
+          description: 'Review changes',
+          kind: 'skill',
         }),
-        expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
-        expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
+        expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>', kind: 'agent' }),
       ]),
     );
+    expect(commands.find((item) => item.name === 'add-dir')).toBeUndefined();
+    expect(commands.find((item) => item.name === 'export-md')).toBeUndefined();
+    expect(commands.filter((item) => item.primary === true)).toHaveLength(18);
     const supported = commands.filter((item) =>
       DAEMON_COMMANDS.some(
         (definition) => definition.name === item.name && definition.status === 'supported',

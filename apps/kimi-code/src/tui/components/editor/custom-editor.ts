@@ -132,6 +132,9 @@ export class CustomEditor extends Editor {
   public onToggleToolExpand?: () => void;
   public onOpenExternalEditor?: () => void;
   public onCtrlS?: () => void;
+  public onAltEnter?: () => void;
+  public onAltS?: () => void;
+  public onToggleMouse?: () => void;
   /** Return `true` to consume Ctrl+B; return `false`/`undefined` to fall through to the editor default (cursor-left). */
   public onCtrlB?: () => boolean;
   /** Return `true` to consume Ctrl+T (the todo list had overflow to toggle); return `false`/`undefined` to fall through to the editor default. */
@@ -479,8 +482,23 @@ export class CustomEditor extends Editor {
       return;
     }
 
-    if (matchesKey(normalized, Key.ctrl('s'))) {
+    if (matchesKey(normalized, Key.ctrl('s')) || matchesKey(normalized, 'ctrl+enter')) {
       this.onCtrlS?.();
+      return;
+    }
+
+    if (matchesKey(normalized, 'alt+enter') && this.onAltEnter !== undefined) {
+      this.onAltEnter();
+      return;
+    }
+
+    if (matchesKey(normalized, Key.alt('s')) && this.onAltS !== undefined) {
+      this.onAltS();
+      return;
+    }
+
+    if (matchesKey(normalized, Key.alt('m')) && this.onToggleMouse !== undefined) {
+      this.onToggleMouse();
       return;
     }
 

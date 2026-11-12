@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.ts";
+import { isMouseRoutable, isMouseSequence, parseSgrMouse, type SgrMouseEvent } from "./mouse.ts";
 import type { Terminal } from "./terminal.ts";
 import {
 	isOsc11BackgroundColorResponse,
@@ -304,6 +305,9 @@ export interface TUI extends Component {
 	setShowHardwareCursor(enabled: boolean): void;
 	getClearOnShrink(): boolean;
 	setClearOnShrink(enabled: boolean): void;
+	getMouseReporting(): boolean;
+	setMouseReporting(enabled: boolean): void;
+	getFocusedComponent(): Component | null;
 	setFocus(component: Component | null): void;
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
 	hideOverlay(): void;
@@ -413,6 +417,12 @@ export abstract class TuiBase extends Container implements TUI {
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
 	}
+
+	getMouseReporting(): boolean {
+		return false;
+	}
+
+	setMouseReporting(_enabled: boolean): void {}
 
 	getFocusedComponent(): Component | null {
 		return this.focusedComponent;
@@ -849,6 +859,17 @@ export abstract class TuiBase extends Container implements TUI {
 			return;
 		}
 
+		const mouseEvent = parseSgrMouse(data);
+		if (mouseEvent) {
+			if (this.handleMouseEvent(mouseEvent)) {
+				this.requestImmediateRender();
+			}
+			return;
+		}
+		if (isMouseSequence(data)) {
+			return;
+		}
+
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
 			this.onDebug();
@@ -951,6 +972,48 @@ export abstract class TuiBase extends Container implements TUI {
 		this.invalidate();
 		this.requestRender();
 		return true;
+	}
+
+	protected handleMouseEvent(event: SgrMouseEvent): boolean {
+		return this.routeOverlayMouse(event);
+	}
+
+	protected routeOverlayMouse(event: SgrMouseEvent): boolean {
+		if (this.overlayStack.length === 0) return false;
+		const termWidth = Math.max(1, this.terminal.columns);
+		const termHeight = Math.max(1, this.terminal.rows);
+		const visibleEntries = this.overlayStack.filter((e) => this.isOverlayVisible(e));
+		if (visibleEntries.length === 0) return false;
+		visibleEntries.sort((a, b) => b.focusOrder - a.focusOrder);
+
+		for (const entry of visibleEntries) {
+			const { component, options } = entry;
+			const { width, maxHeight } = this.resolveOverlayLayout(options, 0, termWidth, termHeight);
+			const rawHeight = component.render(width).length;
+			const height = maxHeight !== undefined ? Math.min(rawHeight, maxHeight) : rawHeight;
+			const { row, col } = this.resolveOverlayLayout(options, height, termWidth, termHeight);
+
+			if (event.col >= col && event.col < col + width && event.row >= row && event.row < row + height) {
+				if (isMouseRoutable(component)) {
+					return component.routeMouse(event, event.row - row, event.col - col);
+				}
+				if (event.wheel !== null) return false;
+				return !options?.nonCapturing;
+			}
+
+			if (!options?.nonCapturing) {
+				if (event.wheel !== null) {
+					return isMouseRoutable(component)
+						? component.routeMouse(event, event.row - row, event.col - col)
+						: false;
+				}
+				if (event.leftClick && isMouseRoutable(component) && component.onOutsideMouseDown) {
+					return component.onOutsideMouseDown(event);
+				}
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

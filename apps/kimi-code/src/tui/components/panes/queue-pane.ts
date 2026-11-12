@@ -30,7 +30,7 @@ export class QueuePaneComponent extends Container {
         options.isCompacting && !options.isStreaming
           ? '  ↑ to edit · will send after compaction'
           : canSteer
-            ? '  ↑ to edit · Ctrl+S to steer immediately'
+            ? '  ↑ to edit · Ctrl+Enter / Ctrl+S to steer now'
             : '  ↑ to edit · will send after current task';
     }
   }

@@ -15,8 +15,7 @@
  * style changes that genuinely dirty every child (e.g. theme switches).
  */
 
-import { Container } from '@kiki/pi-tui';
-import type { Component } from '@kiki/pi-tui';
+import { Container, type Component, type PaddedHitContainer } from '@kiki/pi-tui';
 
 import { prefixPreservingOsc133Zone } from '#/tui/utils/osc133';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
@@ -29,13 +28,21 @@ interface TranscriptRenderCache {
   out: string[];
 }
 
-export class GutterContainer extends Container {
+export class GutterContainer extends Container implements PaddedHitContainer {
   private renderCache: TranscriptRenderCache | undefined;
   constructor(
     private readonly leftPad: number,
     private readonly rightPad: number,
   ) {
     super();
+  }
+
+  getInnerWidth(outerWidth: number): number {
+    return Math.max(1, outerWidth - this.leftPad - this.rightPad);
+  }
+
+  getInnerColOffset(): number {
+    return this.leftPad;
   }
 
   override invalidate(): void {

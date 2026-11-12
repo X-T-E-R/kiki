@@ -9,7 +9,12 @@ import type {
   ToolInputDisplay,
 } from '@kiki/node-sdk';
 
-import type { NotificationsConfig, StatusLineConfig } from './config';
+import type {
+  BusySubmitMode,
+  NotificationsConfig,
+  ScreenMode,
+  StatusLineConfig,
+} from './config';
 import type { PendingApproval, PendingQuestion } from './interactions/types';
 import type { ColorToken, ThemeName } from './theme';
 
@@ -68,6 +73,16 @@ export interface AppState {
   theme: ThemeName;
   version: string;
   editorCommand: string | null;
+  /** Busy Enter behavior in TUI ('send_now' steers immediately; 'queue' queues for next turn). */
+  busySubmit?: BusySubmitMode;
+  /** SGR mouse reporting toggle; defaults to true when absent from older fixtures. */
+  mouse?: boolean;
+  /** Terminal screen mode ('main' native scrollback | 'alt' fullscreen viewport). */
+  screenMode?: ScreenMode;
+  /** Whether thinking blocks render in transcript; defaults to true. */
+  showThinking?: boolean;
+  /** Whether prompt timestamps render in transcript; defaults to false. */
+  showTimestamps?: boolean;
   /** Mirrors the TUI config toggle; defaults to false when absent from older fixtures. */
   disablePasteBurst?: boolean;
   /** LaTeX math rendering in Markdown; defaults to true when absent from older fixtures. */

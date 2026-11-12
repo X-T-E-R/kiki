@@ -11,6 +11,8 @@ import {
   Key,
   decodeKittyPrintable,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -230,7 +232,7 @@ function headerFor(toolName: string): string {
   }
 }
 
-export class ApprovalPanelComponent extends Container implements Focusable {
+export class ApprovalPanelComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
   private selectedIndex: number;
   private feedbackMode = false;
@@ -244,6 +246,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
   private readonly arming: ArmingWindow;
   /** True while a response promise returned by the host is pending. */
   private responding = false;
+  private renderedChoiceByRow: Array<number | undefined> = [];
 
   /**
    * `onResponse` may return a promise; the panel then ignores every key until
@@ -389,8 +392,31 @@ export class ApprovalPanelComponent extends Container implements Focusable {
     }
   }
 
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (this.responding) return false;
+    if (event.wheel !== null) {
+      const count = this.choiceCount();
+      if (count <= 0) return false;
+      this.feedbackMode = false;
+      this.selectedIndex =
+        event.wheel < 0
+          ? (this.selectedIndex - 1 + count) % count
+          : (this.selectedIndex + 1) % count;
+      return true;
+    }
+    if (event.leftClick) {
+      if (!this.arming.isArmed()) return true;
+      const targetIndex = this.renderedChoiceByRow[line];
+      if (targetIndex === undefined) return false;
+      this.selectAndSubmit(targetIndex);
+      return true;
+    }
+    return false;
+  }
+
   override render(width: number): string[] {
     this.clear();
+    this.renderedChoiceByRow = [];
     this.ensureValidSelection();
     this.feedbackInput.focused = this.focused && this.feedbackMode;
     const { data } = this.request;
@@ -447,6 +473,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
       const isSelected = idx === this.selectedIndex;
       const num = idx + 1;
 
+      const startRow = lines.length;
       const labelWithNum = `${String(num)}. ${option.label}`;
       if (this.feedbackMode && option.requires_feedback === true && isSelected) {
         lines.push(indent(this.renderInlineFeedbackLine(width - 2, labelWithNum)));
@@ -468,6 +495,9 @@ export class ApprovalPanelComponent extends Container implements Focusable {
         for (const descLine of wrapTextWithAnsi(option.description, Math.max(20, width - 7))) {
           lines.push(indent(`     ${dim(descLine)}`));
         }
+      }
+      for (let r = startRow; r < lines.length; r++) {
+        this.renderedChoiceByRow[r] = idx;
       }
     }
 

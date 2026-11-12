@@ -5,7 +5,9 @@ import type { SlashAutocompleteCommand } from '#/tui/components/editor/file-ment
 export type DaemonCommandName =
   | 'exit'
   | 'stop'
+  | 'queue'
   | 'unqueue'
+  | 'mouse'
   | 'expand'
   | 'todos'
   | 'sessions'
@@ -97,7 +99,9 @@ const SUPPORTED_COMMANDS = [
   // Keyboard-free equivalents of Esc, Ctrl+O and Ctrl+T, for phone keyboards
   // and terminals without Esc or Ctrl keys.
   command('stop', ['interrupt'], 'Interrupt the running turn (same as Esc)', 'none'),
+  command('queue', [], 'Queue a prompt for the next turn without interrupting', 'optional-rest', '<prompt>'),
   command('unqueue', [], 'Withdraw the last queued message and put it back in the input box', 'none'),
+  command('mouse', [], 'Toggle SGR mouse reporting or set on/off (same as Alt+M)', 'optional-one', '[on|off]'),
   command('expand', ['output'], 'Expand or collapse tool output (same as Ctrl+O)', 'none'),
   command('todos', [], 'Expand or collapse a truncated todo list (same as Ctrl+T)', 'none'),
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
@@ -202,20 +206,50 @@ export function validateDaemonCommandArgs(command: ResolvedDaemonCommand): strin
   }
 }
 
+/**
+ * High-frequency workflow commands surfaced in bare `/` autocomplete, in workflow
+ * order (18 commands). Typing any query after `/` searches the full catalog
+ * (all supported commands, skills, and agent profiles).
+ */
+const PRIMARY_COMMAND_ORDER: readonly DaemonCommandName[] = [
+  'model',
+  'effort',
+  'plan',
+  'permission',
+  'sessions',
+  'new',
+  'compact',
+  'undo',
+  'stop',
+  'queue',
+  'tasks',
+  'agents',
+  'goal',
+  'usage',
+  'status',
+  'settings',
+  'mouse',
+  'help',
+];
+const PRIMARY_ORDER_MAP = new Map<string, number>(
+  PRIMARY_COMMAND_ORDER.map((name, index) => [name, index]),
+);
+
 export function daemonAutocompleteCommands(
   skills: ReadonlyMap<string, DaemonSkillCommand>,
   agentProfiles: ReadonlyMap<string, string>,
 ): SlashAutocompleteCommand[] {
-  // Supported commands are the norm and carry no badge; only disabled entries
-  // are marked so the status signal is not drowned in uniform noise.
-  const builtins = DAEMON_COMMANDS.map((definition) => ({
+  // Disabled entries stay in `DAEMON_COMMANDS` / `resolveDaemonCommand` (so
+  // typing one explicitly yields a clear explanation and `/help` still lists
+  // them), while the interactive `/` popup only surfaces usable commands.
+  const builtins = SUPPORTED_COMMANDS.map((definition) => ({
     name: definition.name,
     aliases: [...definition.aliases],
-    description:
-      definition.status === 'disabled'
-        ? `[disabled] ${definition.description}`
-        : definition.description,
+    description: definition.description,
     argumentHint: definition.argumentHint,
+    kind: 'command' as const,
+    primary: PRIMARY_ORDER_MAP.has(definition.name),
+    primaryOrder: PRIMARY_ORDER_MAP.get(definition.name),
   }));
   const dynamic = [
     ...[...skills.values()].map((skill) => ({
@@ -223,12 +257,14 @@ export function daemonAutocompleteCommands(
       aliases: [],
       description: skill.description,
       argumentHint: skill.argumentHint ?? '[arguments]',
+      kind: 'skill' as const,
     })),
     ...[...agentProfiles.values()].map((name) => ({
       name,
       aliases: [],
       description: `Run a prompt with the ${name} agent profile`,
       argumentHint: '<prompt>',
+      kind: 'agent' as const,
     })),
   ].filter((command) => !COMMAND_BY_TOKEN.has(command.name.toLowerCase()));
   return [...builtins, ...dynamic];

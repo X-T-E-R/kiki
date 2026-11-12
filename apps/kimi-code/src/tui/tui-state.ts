@@ -89,11 +89,16 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
   const theme = currentTheme;
 
   setMarkdownRenderLatex(initialAppState.renderLatex ?? DEFAULT_TUI_CONFIG.renderLatex ?? true);
-  // Fullscreen is experimental and env-gated for now: KIKI_TUI_FULL_SCREEN=1.
-  const fullscreen = process.env['KIKI_TUI_FULL_SCREEN'] === '1';
+  const envFullScreen = process.env['KIKI_TUI_FULL_SCREEN'];
+  const fullscreen =
+    envFullScreen !== undefined
+      ? envFullScreen === '1'
+      : initialAppState.screenMode === 'alt';
+  const mouseEnabled = initialAppState.mouse ?? DEFAULT_TUI_CONFIG.mouse ?? true;
   const ui =
     fullscreen
       ? new TuiAltScreen(terminal, undefined, undefined, {
+          mouse: mouseEnabled,
           // Mouse capture takes over the terminal's native link activation, so
           // route OSC 8 clicks through our own opener.
           openUrl,
@@ -113,7 +118,9 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
               .catch(() => {});
           },
         })
-      : new TuiMainScreen(terminal);
+      : new TuiMainScreen(terminal, false, undefined, {
+          mouse: mouseEnabled,
+        });
 
   const transcriptContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const activityContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);

@@ -1,4 +1,5 @@
 import { getKeybindings } from "../keybindings.ts";
+import type { MouseRoutable, SgrMouseEvent } from "../mouse.ts";
 import type { Component } from "../tui.ts";
 import { truncateToWidth, visibleWidth } from "../utils.ts";
 
@@ -39,13 +40,14 @@ export interface SelectListLayoutOptions {
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
 }
 
-export class SelectList implements Component {
+export class SelectList implements Component, MouseRoutable {
 	private items: SelectItem[] = [];
 	private filteredItems: SelectItem[] = [];
 	private selectedIndex: number = 0;
 	private maxVisible: number = 5;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
+	private hitRows: number[] = [];
 
 	public onSelect?: (item: SelectItem) => void;
 	public onCancel?: () => void;
@@ -75,6 +77,7 @@ export class SelectList implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
+		this.hitRows = [];
 
 		// If no items match filter, show message
 		if (this.filteredItems.length === 0) {
@@ -99,6 +102,7 @@ export class SelectList implements Component {
 			const isSelected = i === this.selectedIndex;
 			const descriptionSingleLine = item.description ? normalizeToSingleLine(item.description) : undefined;
 			lines.push(this.renderItem(item, isSelected, width, descriptionSingleLine, primaryColumnWidth));
+			this.hitRows.push(i);
 		}
 
 		// Add scroll indicators if needed
@@ -109,6 +113,41 @@ export class SelectList implements Component {
 		}
 
 		return lines;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+		if (event.wheel !== null) {
+			if (this.filteredItems.length === 0) return true;
+			const next = clamp(this.selectedIndex + event.wheel, 0, this.filteredItems.length - 1);
+			if (next !== this.selectedIndex) {
+				this.selectedIndex = next;
+				this.notifySelectionChange();
+			}
+			return true;
+		}
+		if (event.leftClick) {
+			const index = this.hitRows[line];
+			if (index !== undefined) {
+				if (index !== this.selectedIndex) {
+					this.selectedIndex = index;
+					this.notifySelectionChange();
+				}
+				const selectedItem = this.filteredItems[this.selectedIndex];
+				if (selectedItem && this.onSelect) {
+					this.onSelect(selectedItem);
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
+	onOutsideMouseDown(): boolean {
+		if (this.onCancel) {
+			this.onCancel();
+			return true;
+		}
+		return false;
 	}
 
 	handleInput(keyData: string): void {

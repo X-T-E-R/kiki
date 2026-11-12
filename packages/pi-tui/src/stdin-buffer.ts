@@ -105,22 +105,19 @@ function isCompleteCsiSequence(data: string): "complete" | "incomplete" {
 		// Format: ESC[<B;X;Ym or ESC[<B;X;YM
 		if (payload.startsWith("<")) {
 			// Must have format: <digits;digits;digits[Mm]
-			const mouseMatch = /^<\d+;\d+;\d+[Mm]$/.test(payload);
-			if (mouseMatch) {
+			if (/^<\d+;\d+;\d+[Mm]$/.test(payload)) {
 				return "complete";
 			}
-			// If it ends with M or m but doesn't match the pattern, still incomplete
-			if (lastChar === "M" || lastChar === "m") {
-				// Check if we have the right structure
-				const parts = payload.slice(1, -1).split(";");
-				if (parts.length === 3 && parts.every((p) => /^\d+$/.test(p))) {
-					return "complete";
-				}
+			if (/^<[\d;]*$/.test(payload)) {
+				return "incomplete";
 			}
-
-			return "incomplete";
+			return "complete";
 		}
 
+		return "complete";
+	}
+
+	if (payload.startsWith("<") && !/^<[\d;]*$/.test(payload)) {
 		return "complete";
 	}
 

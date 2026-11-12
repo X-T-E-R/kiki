@@ -55,6 +55,11 @@ notification_condition = "always"
 
     expect(config).toEqual({
       theme: 'light',
+      busySubmit: 'send_now',
+      mouse: true,
+      screenMode: 'main',
+      showThinking: true,
+      showTimestamps: false,
       renderLatex: true,
       disablePasteBurst: false,
       cacheExpiryHint: true,
@@ -100,6 +105,11 @@ command = "   "
 
     expect(config).toEqual({
       theme: 'auto',
+      busySubmit: 'send_now',
+      mouse: true,
+      screenMode: 'main',
+      showThinking: true,
+      showTimestamps: false,
       renderLatex: true,
       disablePasteBurst: false,
       cacheExpiryHint: true,
@@ -144,6 +154,11 @@ command = "   "
 
     expect(await loadTuiConfig(filePath)).toEqual({
       theme: 'light',
+      busySubmit: 'send_now',
+      mouse: true,
+      screenMode: 'main',
+      showThinking: true,
+      showTimestamps: false,
       renderLatex: true,
       disablePasteBurst: false,
       cacheExpiryHint: true,
@@ -151,6 +166,27 @@ command = "   "
       notifications: { enabled: false, condition: 'always' },
       statusLine: { items: null, command: null },
     });
+  });
+
+  it('parses and round-trips busy_submit, mouse, screen_mode, show_thinking, and show_timestamps', async () => {
+    await saveTuiConfig(
+      {
+        ...DEFAULT_TUI_CONFIG,
+        busySubmit: 'queue',
+        mouse: false,
+        screenMode: 'alt',
+        showThinking: false,
+        showTimestamps: true,
+      },
+      filePath,
+    );
+
+    const loaded = await loadTuiConfig(filePath);
+    expect(loaded.busySubmit).toBe('queue');
+    expect(loaded.mouse).toBe(false);
+    expect(loaded.screenMode).toBe('alt');
+    expect(loaded.showThinking).toBe(false);
+    expect(loaded.showTimestamps).toBe(true);
   });
 
   it('escapes special characters in a custom theme name so the TOML round-trips', async () => {
