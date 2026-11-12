@@ -86,6 +86,7 @@ import { copyTextToClipboard } from '../lib/clipboard';
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
+import { unzoomedPoint, unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { readExternalClientMark } from '../lib/externalClients';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
@@ -2660,11 +2661,12 @@ function RoomPointerMenu(props: RoomMenuProps) {
     if (trigger === null || trigger === document.body || !trigger.isConnected) return;
     trigger.focus();
   };
+  const point = unzoomedPoint(x, y);
   const position = clampOverlayPosition(
-    x,
-    y,
+    point.x,
+    point.y,
     size ?? { width: 176, height: 0 },
-    { width: window.innerWidth, height: window.innerHeight },
+    unzoomedViewport(),
   );
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -3783,11 +3785,12 @@ function SessionPointerMenu(props: SessionMenuProps) {
     if (trigger === null || trigger === document.body || !trigger.isConnected) return;
     trigger.focus();
   };
+  const point = unzoomedPoint(x, y);
   const position = clampOverlayPosition(
-    x,
-    y,
+    point.x,
+    point.y,
     size ?? { width: 176, height: 0 },
-    { width: window.innerWidth, height: window.innerHeight },
+    unzoomedViewport(),
   );
   // Latest onClose via ref: the parent passes inline closures and the sidebar
   // re-renders on its poll interval, so a deps-keyed listener would churn and
@@ -4002,7 +4005,7 @@ function SidebarRenameEditor({
       : `[data-session-row="${item.id}"] [data-session-title]`;
     const target = document.querySelector<HTMLElement>(selector);
     if (target === null) { onClose(); return; }
-    const rect = target.getBoundingClientRect();
+    const rect = unzoomedRect(target.getBoundingClientRect());
     setAnchor({ left: rect.left - 4, top: rect.top - 4, width: Math.max(rect.width + 32, 200) });
   }, [item, onClose]);
 

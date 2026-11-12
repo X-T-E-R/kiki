@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../../../lib/overlayPosition';
 import { floatingSurfaceZIndex, registerOverlay } from '../../../lib/uiBusy';
+import { unzoomedRect, unzoomedViewport } from '../../../lib/uiZoom';
 
 export interface SpaceMenuItem {
   readonly key: string;
@@ -67,7 +68,8 @@ export function SpaceRowMenu({ anchor, anchorElement, items, ariaLabel, onClose 
     };
   }, []);
 
-  const position = clampOverlayPosition(anchor.right - size.width, anchor.bottom + 4, size, { width: window.innerWidth, height: window.innerHeight });
+  const box = unzoomedRect(anchor);
+  const position = clampOverlayPosition(box.right - size.width, box.bottom + 4, size, unzoomedViewport());
   return createPortal(
     <div ref={ref} role="menu" aria-label={ariaLabel} data-space-row-menu
       className="anim-enter fixed w-60 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"

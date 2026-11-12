@@ -142,9 +142,18 @@ export function createSteerWalker({ page, shot, control, view, webUrl, fixtureUr
     const input = page.locator('[data-composer-variant="subagent"] [data-composer-input]');
     await input.waitFor({ timeout: 10_000 });
     await page.locator('[data-composer-variant="subagent"] button[aria-label]').first().waitFor({ timeout: 5000 });
+    const send = page.locator('[data-composer-variant="subagent"] button[aria-label="Send into this turn"], [data-composer-variant="subagent"] button[aria-label="送入当前轮次"]');
     await proveSteer('child', scope, 'session_fixture_steer_child', async () => {
       await input.fill(STEER_TEXT);
-      await input.press('Control+Enter');
+      await send.waitFor({ timeout: 5000 });
+      await send.hover();
+      const menu = page.locator('[data-composer-variant="subagent"] [data-send-timing-menu]');
+      await menu.waitFor({ timeout: 5000 });
+      for (const timing of ['now', 'agent_idle', 'subagents_done', 'tasks_done']) {
+        await menu.locator(`[data-send-timing="${timing}"]`).waitFor({ timeout: 5000 });
+      }
+      await shot(name('child-timing-menu'));
+      await input.press('Enter');
     });
   }
 

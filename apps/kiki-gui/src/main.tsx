@@ -99,6 +99,7 @@ async function start(): Promise<void> {
     { ConnectionProvider },
     { startThemeSync },
     { startSkinSync },
+    { startZoomSync },
     { NavScopeBoundary },
   ] = await Promise.all([
     import('./App'),
@@ -107,6 +108,7 @@ async function start(): Promise<void> {
     import('./state/connection'),
     import('./lib/theme'),
     import('./lib/skins'),
+    import('./lib/uiZoom'),
     import('./components/NavScopeBoundary'),
   ]);
 
@@ -115,6 +117,8 @@ async function start(): Promise<void> {
   startThemeSync(hostAdapter);
   // The skin rides on top of the resolved theme and follows it from here on.
   startSkinSync();
+  // Apply device interface zoom (native WebView zoom on desktop, CSS root zoom on web).
+  startZoomSync(hostAdapter);
 
   // ConnectionProvider consumes/scrubs deep-link credentials before mounting
   // its children. Create history afterwards so that scrub cannot erase the

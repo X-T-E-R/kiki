@@ -51,6 +51,7 @@ import { useI18n } from '../../i18n';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection, type ModelSwitchMode } from '../../lib/client';
+import { fsSearchRequestBody, type FsSearchPageArgs } from '../../lib/fsSearchFeed';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from '../model-switch/ModelSwitchNotice';
 import { resolveSwitchEffort } from '../model-switch/switchEffort';
@@ -933,6 +934,11 @@ function ChildAgentWorkspace({
   };
   const agentReadUnavailable = controller !== null && agentLiveState.transcriptReady && !agentKnown;
   const composerDisabled = !agentKnown || executorId === undefined;
+  const handleFsSearch = useCallback(
+    (query: string, page?: FsSearchPageArgs) =>
+      client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
+    [client, sessionId],
+  );
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -1566,6 +1572,20 @@ function ChildAgentWorkspace({
     () => (composerWorking ? { lastResponseAt } : undefined),
     [composerWorking, lastResponseAt],
   );
+  // A busy child with a live controller steers on plain send unless a pending
+  // submission retry or queued model switch must hold the prompt on the queue.
+  const canSteerChildNow =
+    controller !== null && typeof controller.sendPromptNow === 'function';
+  const canSteerBusyPlain =
+    headerBusy && canSteerChildNow && modelSwitches.dependency === undefined && pendingSendRef.current === null;
+  const handleComposerSendBusy: ComponentProps<typeof Composer>['onSend'] = (
+    text,
+    composerAttachments,
+    options,
+  ) =>
+    options?.appendTiming !== undefined || pendingSendRef.current !== null
+      ? handleComposerSend(text, composerAttachments, options)
+      : handleComposerSendNow(text, composerAttachments, options?.presentation, options?.skills);
 
   const chrome = (
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
@@ -1643,13 +1663,16 @@ function ChildAgentWorkspace({
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
           contextAutoCompact={contextAutoCompact}
           sessionUsage={composerUsage} sessionId={sessionId} agentId={agentId} agentProfileCatalogMode={{ mode: 'disabled' }}
+          fsSearch={agentKnown ? handleFsSearch : undefined}
+          mentionScopeKey={`${scopeId}:${sessionId}`}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={handlePermissionChange}
           onChangePlanMode={handlePlanChange}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-          onSend={handleComposerSend}
+          onSend={canSteerBusyPlain ? handleComposerSendBusy : handleComposerSend}
           onActivateSkill={externalExecutor ? undefined : handleActivateSkill}
-          onSendNow={controller === null ? undefined : handleComposerSendNow}
+          onSendNow={canSteerChildNow ? handleComposerSendNow : undefined}
+          busySendsNow={canSteerBusyPlain}
           sendTimingDefault={externalExecutor ? undefined : liveSettings.defaultAppendTiming}
           working={composerWorkingInfo}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}

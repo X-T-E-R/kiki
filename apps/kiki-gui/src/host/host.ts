@@ -238,6 +238,8 @@ interface HostCapabilities {
   mutateDesktopUpdateState?: (mutation: DesktopUpdateMutation) => Promise<DesktopUpdateState>;
   onTrayNewSession?: (callback: () => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;
+  /** Apply native webview zoom (`1` is 100%); returns `true` when applied natively. */
+  setZoom?: (factor: number) => Promise<boolean>;
 }
 
 export interface BrowserHostAdapter extends HostCapabilities {

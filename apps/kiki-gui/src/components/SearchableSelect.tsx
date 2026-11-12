@@ -22,6 +22,7 @@ import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
 import { isCoarsePointer } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
+import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import {
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
@@ -106,9 +107,8 @@ function useViewportPlacement(
     const place = () => {
       const trigger = triggerRef.current;
       if (trigger === null) return;
-      const rect = trigger.getBoundingClientRect();
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+      const rect = unzoomedRect(trigger.getBoundingClientRect());
+      const { width: viewportWidth, height: viewportHeight } = unzoomedViewport();
       const width = Math.min(Math.max(rect.width, PANEL_MIN_WIDTH), viewportWidth - VIEWPORT_MARGIN * 2);
       const preferredLeft = align === 'end' ? rect.right - width : rect.left;
       const left = Math.max(VIEWPORT_MARGIN, Math.min(preferredLeft, viewportWidth - width - VIEWPORT_MARGIN));

@@ -7,6 +7,8 @@ import {
   type LayoutPreferences,
 } from '@kiki/session-core/settings';
 
+import { cssZoomFactor, KIKI_ZOOM_CHANGE_EVENT } from './uiZoom';
+
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
@@ -89,7 +91,8 @@ export function useVisualViewportHeightVar(): void {
       // It is not one: keep the last unzoomed measurements instead of laying
       // the whole app out into the zoomed-in window.
       if (viewport.scale > 1.01) return;
-      const height = Math.max(0, Math.round(viewport.height));
+      const zoom = cssZoomFactor();
+      const height = Math.max(0, Math.round(viewport.height / zoom));
       // On coarse pointers the app's height chain already follows
       // --kiki-visual-height (index.css), so the keyboard is accounted for
       // once there. Reporting it again as an inset would lift the composer a
@@ -97,7 +100,7 @@ export function useVisualViewportHeightVar(): void {
       // spans the unshrunk layout viewport.
       const imeInset = coarse?.matches === true
         ? 0
-        : Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+        : Math.max(0, Math.round((window.innerHeight - viewport.height - viewport.offsetTop) / zoom));
       root.style.setProperty('--kiki-visual-height', `${height}px`);
       root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };
@@ -108,11 +111,13 @@ export function useVisualViewportHeightVar(): void {
     viewport.addEventListener('resize', schedule);
     viewport.addEventListener('scroll', schedule);
     window.addEventListener('orientationchange', schedule);
+    window.addEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
     return () => {
       if (frame !== 0) cancelAnimationFrame(frame);
       viewport.removeEventListener('resize', schedule);
       viewport.removeEventListener('scroll', schedule);
       window.removeEventListener('orientationchange', schedule);
+      window.removeEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
       root.style.removeProperty('--kiki-visual-height');
       root.style.removeProperty('--kiki-ime-offset');
     };
@@ -159,7 +164,7 @@ export function usePaneResize(options: {
       let valueRef = startValue;
       const trackedMove = (moveEvent: Event) => {
         const clientX = (moveEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + (clientX - startX) * direction, min, max);
+        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, min, max);
         onChange(valueRef, false);
       };
       handle.addEventListener('pointermove', trackedMove);

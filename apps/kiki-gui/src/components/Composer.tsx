@@ -632,9 +632,8 @@ export function Composer({
   /**
    * The session's configured default queue timing. When set, hovering the
    * send button of a BUSY composer floats a menu that sends once with the
-   * picked timing (plain / now / after subagents / after tasks) without
-   * changing the default; the plain row names this value as what a normal
-   * send does. Omit to drop the menu (e.g. where busy sends steer anyway).
+   * picked timing (plain / now / deferred queue timings) without changing the
+   * default. Omit to drop the menu.
    */
   sendTimingDefault?: DeferredAppendTiming;
   /**
@@ -2451,11 +2450,13 @@ export function Composer({
   // ---- send-timing menu (busy only) ----
   // While the agent is working, hovering the send button floats a small menu
   // above it: the plain send (its hint names the session's configured default
-  // timing), send-now into the running turn, and the two deferred queue
-  // timings. A pick fires ONCE — it never rewrites the configured default.
-  // The menu stays closed while idle (every timing starts immediately, so the
-  // choice would be noise), in queue-edit mode (the button is the edit's
-  // confirm), and where a busy plain send already steers (busySendsNow).
+  // timing), send-now into the running turn, and the deferred queue timings.
+  // Where a busy plain send already steers (`busySendsNow`), the menu leads
+  // with Send now and offers all three deferred queue timings (`agent_idle`,
+  // `subagents_done`, `tasks_done`). A pick fires ONCE — it never rewrites the
+  // configured default. The menu stays closed while idle (every timing starts
+  // immediately, so the choice would be noise) and in queue-edit mode (the
+  // button is the edit's confirm).
   const sendTimingRootRef = useRef<HTMLDivElement | null>(null);
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
   const sendTimingMenuId = useId();
@@ -2465,7 +2466,7 @@ export function Composer({
   /** Where keyboard-opened focus lands once the menu renders. */
   const sendTimingFocusRef = useRef<'first' | 'last' | null>(null);
   const sendTimingAvailable =
-    sendTimingDefault !== undefined && busy && !busySendsNow && !queueEditing && canSend && !takenOver;
+    sendTimingDefault !== undefined && busy && !queueEditing && canSend && !takenOver;
   // A pending engine/profile switch cannot join the running turn (the active
   // turn cannot rebind), so "send now" silently degrades to an ordinary queue
   // entry. While one is pending, name the real result where the choice is
@@ -3649,6 +3650,7 @@ export function Composer({
               timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
                 defaultTiming: sendTimingDefault,
                 canSendNow: onSendNow !== undefined && !sendNowDegrades,
+                busySendsNow,
                 onPick: (choice: SendTimingChoice) => {
                   if (choice === 'default') send();
                   else if (choice === 'now') send(true);
@@ -3883,6 +3885,7 @@ export function Composer({
                     <SendTimingRows
                       defaultTiming={sendTimingDefault}
                       canSendNow={onSendNow !== undefined && !sendNowDegrades}
+                      busySendsNow={busySendsNow}
                       onPick={(choice) => {
                         closeSendTiming();
                         if (choice === 'default') send();

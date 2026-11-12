@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   isPermissionGranted,
@@ -458,6 +459,14 @@ export const tauriHost: TauriHostAdapter = {
       await getCurrentWindow().setTheme(readSettings().theme === 'system' ? null : resolved);
     } catch {
       return;
+    }
+  },
+  async setZoom(factor) {
+    try {
+      await getCurrentWebview().setZoom(factor);
+      return true;
+    } catch {
+      return false;
     }
   },
 };

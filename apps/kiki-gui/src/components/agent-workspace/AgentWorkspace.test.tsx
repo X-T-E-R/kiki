@@ -52,6 +52,8 @@ const harness = vi.hoisted(() => ({
   getConfig: vi.fn(),
   patchConfig: vi.fn(),
   readCapabilities: vi.fn(),
+  fsSearch: vi.fn(),
+  referenceCandidates: vi.fn(),
   listSessionSkills: vi.fn(),
   activateSkill: vi.fn(),
   pushToast: vi.fn(),
@@ -70,6 +72,7 @@ vi.mock('../../state/connection', () => {
   const client = {
       listModels: harness.listModels,
       getAgentCapabilities: harness.readCapabilities,
+      fsSearch: harness.fsSearch,
       listSessionSkills: harness.listSessionSkills,
       activateSkill: harness.activateSkill,
       sendAgentMessage: harness.sendAgentMessage,
@@ -88,7 +91,7 @@ vi.mock('../../state/connection', () => {
       patchConfig: harness.patchConfig,
       get promoteAgent() { return harness.promoteAvailable ? harness.promoteAgent : undefined; },
       get sessions() { return harness.promoteAvailable ? { promoteAgent: harness.promoteAgent } : {}; },
-      klient: { rest: { executors: { getModels: harness.getExecutorModels } } },
+      klient: { rest: { executors: { getModels: harness.getExecutorModels }, agents: { referenceCandidates: harness.referenceCandidates } } },
   };
   const connection = () => ({ scopeId: harness.scopeId, client,
     klient: {
@@ -216,6 +219,8 @@ beforeEach(() => {
   harness.host = { kind: 'browser' };
   harness.mediaProviderProps.length = 0;
   harness.listSessionSkills.mockResolvedValue({ skills: [] });
+  harness.fsSearch.mockResolvedValue({ items: [], sort_scope: 'page' });
+  harness.referenceCandidates.mockResolvedValue({ items: [], delegation_available: true });
   harness.activateSkill.mockResolvedValue({});
   // The child workspace mounts the model-switch surface: an empty list, an
   // attachable event pair, and the config reads behind the preferences.
@@ -535,12 +540,12 @@ async function sendNowToBusyChild(
   const textarea = composerInput(dock);
   await typeText(textarea, 'look at the tests too');
   await settle();
-  await sendNowFromComposer();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
   await settle();
   return textarea;
 }
 
-it('steers a busy native child through the shared send-now ledger, not its mailbox', async () => {
+it('steers a busy native child on plain send (button and Enter) through the shared send-now ledger, not its mailbox', async () => {
   const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
   const textarea = await sendNowToBusyChild(sendPromptNow);
   expect(sendPromptNow).toHaveBeenCalledWith({
@@ -549,41 +554,76 @@ it('steers a busy native child through the shared send-now ledger, not its mailb
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(textarea.value).toBe('');
   expect(harness.pushToast).not.toHaveBeenCalled();
+
+  await typeText(textarea, 'enter steers too');
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await settle();
+  expect(sendPromptNow).toHaveBeenCalledTimes(2);
+  expect(sendPromptNow).toHaveBeenLastCalledWith({
+    agentId: 'child', text: 'enter steers too', content: [{ type: 'text', text: 'enter steers too' }],
+  });
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });
 
-it('sends a busy native child timing pick once, then returns to the configured default', async () => {
+it('sends a busy native child timing pick once, then returns to steering on the next plain send', async () => {
   harness.sendAgentMessage.mockResolvedValue(null);
-  await renderWorkspace({ forest: testForest('running', true) });
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
+  const forest = testForest('running', true);
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
   await settle();
   const textarea = composerInput(dock);
   await typeText(textarea, 'defer this child prompt');
+  expect(dock.querySelector('[aria-label="Send into this turn"]')).not.toBeNull();
   await act(async () => {
     dock.querySelector('[data-send-timing-root]')!
       .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
   });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  expect(dock.querySelector('[data-send-timing="default"]')).toBeNull();
+  expect(dock.querySelector('[data-send-timing="agent_idle"]')).not.toBeNull();
   const pick = dock.querySelector<HTMLButtonElement>('[data-send-timing="subagents_done"]');
   expect(pick).not.toBeNull();
   await act(async () => { pick!.click(); });
   await settle();
+  expect(sendPromptNow).not.toHaveBeenCalled();
   expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
   expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'defer this child prompt', [
     { type: 'text', text: 'defer this child prompt' },
   ], expect.any(String), undefined, 'subagents_done');
 
+  await typeText(textarea, 'defer until turn ends');
+  await act(async () => {
+    dock.querySelector('[data-send-timing-root]')!
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-send-timing="agent_idle"]')!.click(); });
+  await settle();
+  expect(sendPromptNow).not.toHaveBeenCalled();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
+  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'defer until turn ends', [
+    { type: 'text', text: 'defer until turn ends' },
+  ], expect.any(String), undefined);
+
   await typeText(textarea, 'plain child prompt');
   await clickComposerSend();
   expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
-  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'plain child prompt', [
-    { type: 'text', text: 'plain child prompt' },
-  ], expect.any(String), undefined);
+  expect(sendPromptNow).toHaveBeenCalledExactlyOnceWith({
+    agentId: 'child', text: 'plain child prompt', content: [{ type: 'text', text: 'plain child prompt' }],
+  });
 });
 
-it('keeps the original key and timing on an unconfirmed same-draft retry, then resets after acceptance', async () => {
+it('keeps the original key and timing on an unconfirmed same-draft retry, then returns to steering after acceptance', async () => {
   harness.sendAgentMessage
     .mockRejectedValueOnce(new NativeChildPromptSendError(new Error('response lost')))
     .mockResolvedValue(null);
-  await renderWorkspace({ forest: testForest('running', true) });
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
+  const forest = testForest('running', true);
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
   await settle();
   const textarea = composerInput(dock);
   await typeText(textarea, 'defer this unconfirmed prompt');
@@ -594,12 +634,14 @@ it('keeps the original key and timing on an unconfirmed same-draft retry, then r
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
   await act(async () => { dock.querySelector<HTMLButtonElement>('[data-send-timing="subagents_done"]')!.click(); });
   await settle();
+  expect(sendPromptNow).not.toHaveBeenCalled();
   expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
   const originalKey = harness.sendAgentMessage.mock.calls[0]?.[4];
   expect(harness.sendAgentMessage.mock.calls[0]?.[6]).toBe('subagents_done');
   expect(textarea.value).toBe('defer this unconfirmed prompt');
 
   await clickComposerSend();
+  expect(sendPromptNow).not.toHaveBeenCalled();
   expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
   expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(originalKey);
   expect(harness.sendAgentMessage.mock.calls[1]?.[6]).toBe('subagents_done');
@@ -607,11 +649,37 @@ it('keeps the original key and timing on an unconfirmed same-draft retry, then r
 
   await typeText(textarea, 'next plain prompt');
   await clickComposerSend();
-  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(3);
-  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(originalKey);
-  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'next plain prompt', [
-    { type: 'text', text: 'next plain prompt' },
-  ], expect.any(String), undefined);
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
+  expect(sendPromptNow).toHaveBeenCalledExactlyOnceWith({
+    agentId: 'child', text: 'next plain prompt', content: [{ type: 'text', text: 'next plain prompt' }],
+  });
+});
+
+it('searches session files from @ mentions in a known child composer and chips the picked file', async () => {
+  harness.fsSearch.mockResolvedValue({
+    items: [{ path: 'src/agent.ts', name: 'agent.ts', kind: 'file', score: 1, match_positions: [] }],
+    sort_scope: 'page',
+  });
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
+  const forest = testForest('running', true);
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
+  await settle();
+  const textarea = composerInput(dock);
+  await typeText(textarea, '@agent');
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 280)); });
+  await settle();
+  expect(harness.fsSearch).toHaveBeenCalledWith(
+    'session',
+    { query: 'agent', limit: 30 },
+    expect.any(AbortSignal),
+  );
+  const option = dock.querySelector<HTMLElement>('[data-mention-file-list] [role="option"]');
+  expect(option?.textContent).toContain('agent.ts');
+  await act(async () => { option!.click(); });
+  await settle();
+  expect(textarea.value).toBe('');
+  expect(dock.querySelector('[data-attachment-chips]')?.textContent).toContain('agent.ts');
 });
 
 it('hands a refused child send-now back to the composer with the reason', async () => {
@@ -681,10 +749,24 @@ it('does not overwrite a newer draft written by a remounted child before send-no
   expect(remounted.value).toBe('newer mounted draft');
 });
 
-it('uses the executor steer contract for an external child Send now instead of its ordinary mailbox', async () => {
+it('uses the executor steer contract for an external child plain send while withholding deferred timing menus', async () => {
   harness.isNativeAgent.mockResolvedValue(false);
   const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
-  await sendNowToBusyChild(sendPromptNow);
+  const forest = testForest('running', true, { executorId: 'example-acp', model: 'gemini-3.8-flash-medium' });
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
+  await settle();
+  const textarea = composerInput(dock);
+  await typeText(textarea, 'look at the tests too');
+  await settle();
+  await act(async () => {
+    dock.querySelector('[data-send-timing-root]')!
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  expect(dock.querySelector('[data-send-timing-menu]')).toBeNull();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
   expect(sendPromptNow).toHaveBeenCalledWith({
     agentId: 'child', text: 'look at the tests too', content: [{ type: 'text', text: 'look at the tests too' }],
   });
@@ -824,7 +906,9 @@ async function sendFromComposer(text: string): Promise<ComposerInputElement> {
   await typeText(textarea, text);
   await settle();
   await act(async () => {
-    dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]')?.click();
+    dock.querySelector<HTMLButtonElement>(
+      '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+    )?.click();
   });
   await settle();
   return textarea;
@@ -1036,7 +1120,9 @@ it('forwards inline skills on a native child prompt and skips skill activation o
 
 async function clickComposerSend() {
   await act(async () => {
-    dock.querySelector<HTMLButtonElement>('[aria-label="Send message"], [aria-label="Queue prompt"]')?.click();
+    dock.querySelector<HTMLButtonElement>(
+      '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+    )?.click();
   });
   await settle();
 }
@@ -2227,16 +2313,28 @@ it('sends after the second pending switch and freezes that execution payload acr
 });
 
 it.each(['native', 'external'])(
-  'keeps pending switch dependencies out of Send now execution for %s', async (executor) => {
+  'queues busy plain sends behind a pending switch while keeping explicit Send now free of switch dependencies for %s', async (executor) => {
     harness.listAgentModelSwitches.mockResolvedValue([pendingSwitch('tail-operation', 2)]);
     harness.isNativeAgent.mockResolvedValue(executor === 'native');
-    const sendPromptNow = vi.fn().mockResolvedValue({ outcome: 'steered' });
-    const forest = testForest('running', true);
+    harness.sendAgentMessage.mockResolvedValue(executor === 'native' ? null : mailboxReceipt({ delivery: 'queued' }));
+    const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'steered' });
+    const forest = testForest('running', true, executor === 'native' ? {} : { executorId: 'example-acp', model: 'gemini-3.8-flash-medium' });
     const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
     await renderWorkspace({ forest, controller }); await settle();
     const textarea = composerInput(dock);
+    await typeText(textarea, 'queue after switch');
+    expect(dock.querySelector('[aria-label="Queue prompt"]')).not.toBeNull();
+    expect(dock.querySelector('[aria-label="Send into this turn"]')).toBeNull();
+    await clickComposerSend();
+    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+      'session', 'child', 'queue after switch', [{ type: 'text', text: 'queue after switch' }], expect.any(String), 'tail-operation',
+    );
+
+    harness.sendAgentMessage.mockClear();
     await typeText(textarea, 'send on current binding');
     await sendNowFromComposer();
+    await settle();
     expect(sendPromptNow).toHaveBeenCalledWith({ agentId: 'child', text: 'send on current binding', content: [{ type: 'text', text: 'send on current binding' }] });
     expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   },

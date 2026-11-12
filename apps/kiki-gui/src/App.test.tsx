@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App, SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
-import { HostProvider, browserHost } from './host';
+import { HostProvider, browserHost, tauriHost } from './host';
 import { I18nProvider } from './i18n';
 import { PageHeader } from './components/PageChrome';
 import { canAbortActiveTurn, shouldHandleGlobalAbortOnEscape } from './components/SessionView';
@@ -674,5 +674,57 @@ describe('App sidebar Escape wiring', () => {
       conn.client.listSessions = originalListSessions;
       conn.client.getStorageMigration = originalGetStorageMigration;
     }
+  });
+
+  it('steps uiZoom on desktop Ctrl+=/Ctrl+-/Ctrl+0 and Ctrl+wheel while leaving browser mode untouched', async () => {
+    const { readSettings } = await import('@kiki/session-core/settings');
+
+    // Browser mode leaves zoom keys to the browser.
+    await mountApp();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '=', code: 'Equal', ctrlKey: true, cancelable: true }));
+    });
+    expect(readSettings().uiZoom).toBe(100);
+
+    // Desktop Tauri mode handles keyboard and Ctrl+wheel zoom.
+    const desktopHost = {
+      ...tauriHost,
+      readDesktopPrefs: async () => null,
+      writeDesktopPrefs: async () => {},
+      onTrayNewSession: () => () => {},
+    };
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={desktopHost}>
+              <MemoryRouter initialEntries={['/usage']}>
+                <App />
+              </MemoryRouter>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '=', code: 'Equal', ctrlKey: true, cancelable: true }));
+    });
+    expect(readSettings().uiZoom).toBe(110);
+
+    await act(async () => {
+      window.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, cancelable: true }));
+    });
+    expect(readSettings().uiZoom).toBe(125);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '-', code: 'Minus', ctrlKey: true, cancelable: true }));
+    });
+    expect(readSettings().uiZoom).toBe(110);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '0', code: 'Digit0', ctrlKey: true, cancelable: true }));
+    });
+    expect(readSettings().uiZoom).toBe(100);
   });
 });

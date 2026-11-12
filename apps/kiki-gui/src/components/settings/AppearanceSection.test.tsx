@@ -152,6 +152,37 @@ describe('AppearanceSection', () => {
     const motionField = container.querySelector('[data-motion-choice]')?.closest('[data-settings-field]');
     expect(motionField?.textContent).toContain(translate('en', 'st.scope.device'));
     expect(motionField?.textContent).not.toContain(translate('en', 'st.scope.appliesTo'));
+
+    const zoomField = container.querySelector('[data-ui-zoom-control]')?.closest('[data-settings-field]');
+    expect(zoomField?.textContent).toContain(translate('en', 'st.scope.device'));
+  });
+
+  it('steps interface scale, offers reset away from 100%, and folds into Restore defaults + Undo', async () => {
+    expect(container.querySelector('[data-ui-zoom-value]')?.textContent).toBe('100%');
+    expect(container.querySelector('[data-ui-zoom-reset]')).toBeNull();
+
+    await act(async () => { button('[data-ui-zoom-in]').click(); });
+    expect(readSettings().uiZoom).toBe(110);
+    expect(container.querySelector('[data-ui-zoom-value]')?.textContent).toBe('110%');
+    expect(container.querySelector('[data-ui-zoom-reset]')).not.toBeNull();
+    expect(container.querySelector('[data-appearance-restore]')).not.toBeNull();
+
+    await act(async () => { button('[data-ui-zoom-in]').click(); });
+    expect(readSettings().uiZoom).toBe(125);
+    expect(container.querySelector('[data-ui-zoom-value]')?.textContent).toBe('125%');
+
+    await act(async () => { button('[data-appearance-restore]').click(); });
+    expect(readSettings().uiZoom).toBe(100);
+    expect(container.querySelector('[data-ui-zoom-value]')?.textContent).toBe('100%');
+    expect(container.querySelector('[data-ui-zoom-reset]')).toBeNull();
+
+    const undo = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Undo')!;
+    await act(async () => { undo.click(); });
+    expect(readSettings().uiZoom).toBe(125);
+    expect(container.querySelector('[data-ui-zoom-value]')?.textContent).toBe('125%');
+
+    await act(async () => { button('[data-ui-zoom-reset]').click(); });
+    expect(readSettings().uiZoom).toBe(100);
   });
 
   it('applies motion and prose choices at once and mirrors them onto <html>', async () => {

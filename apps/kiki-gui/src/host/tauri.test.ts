@@ -15,7 +15,8 @@ const {
   openUrl: openExternalUrl,
 } = tauriHost;
 
-const { getCurrentWindow, invoke, listen, open, readFile, readSettings, stat } = vi.hoisted(() => ({
+const { getCurrentWebview, getCurrentWindow, invoke, listen, open, readFile, readSettings, stat } = vi.hoisted(() => ({
+  getCurrentWebview: vi.fn(),
   getCurrentWindow: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@kiki/session-core/settings', async (importOriginal) => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile, stat }));
@@ -42,6 +44,7 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
 
 describe('native desktop bridge', () => {
   beforeEach(() => {
+    getCurrentWebview.mockReset();
     getCurrentWindow.mockReset();
     invoke.mockReset();
     listen.mockReset();
@@ -431,5 +434,13 @@ describe('native desktop bridge', () => {
     await Promise.resolve();
 
     expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies native webview zoom and reports false on failure', async () => {
+    const setZoom = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('webview unavailable'));
+    getCurrentWebview.mockReturnValue({ setZoom });
+    await expect(tauriHost.setZoom(1.25)).resolves.toBe(true);
+    expect(setZoom).toHaveBeenCalledWith(1.25);
+    await expect(tauriHost.setZoom(1.5)).resolves.toBe(false);
   });
 });
