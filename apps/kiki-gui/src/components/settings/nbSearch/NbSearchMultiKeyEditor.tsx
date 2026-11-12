@@ -91,6 +91,7 @@ export function NbSearchMultiKeyEditor({
   onChange,
   read,
   disabled = false,
+  focusToken = 0,
 }: {
   instanceId: string;
   source: SecretSource;
@@ -100,6 +101,7 @@ export function NbSearchMultiKeyEditor({
   /** Reveals the effective stored value, on explicit request only. */
   read: (instanceId: string, reveal: boolean) => Promise<NbSearchManagedCredentialView>;
   disabled?: boolean;
+  focusToken?: number;
 }) {
   const { t } = useI18n();
   const [revealed, setRevealed] = useState<readonly string[] | null>(null);
@@ -110,6 +112,11 @@ export function NbSearchMultiKeyEditor({
   const [copied, setCopied] = useState<number | null>(null);
   const request = useRef(0);
   const observedBase = useRef<KeyDraftBase | undefined>(undefined);
+  const keyInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (focusToken > 0) keyInputRef.current?.focus();
+  }, [focusToken]);
 
   const validation = useKeyValidation(draft);
 
@@ -327,6 +334,7 @@ export function NbSearchMultiKeyEditor({
         canAdd ? (
           <div className="flex min-w-0 items-center gap-2">
             <input
+              ref={keyInputRef}
               type="password"
               autoComplete="off"
               spellCheck={false}

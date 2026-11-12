@@ -1,36 +1,16 @@
-/**
- * Settings → Extensions → Plugins: the plugins on this server.
- *
- * One row per plugin, the same frame as every other managed list: icon, name,
- * origin as a quiet tag, and one line that says what the plugin does for a new
- * session right now. The row body opens the plugin's own page; the switch on
- * the right is the only control here, and it only starts or stops the plugin —
- * the plugin's default for new sessions is kept as it is.
- *
- * Finding a new plugin is a different job, so the market is one link on the
- * card heading. The list reads the installed query the Capabilities page
- * reads, so a change on either surface is what the other one shows.
- */
-
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useContext, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
-import { pluginSettingsPath } from '@kiki/session-core/settings';
-
+import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../../i18n';
-import type { PluginSummary } from '../../../lib/client';
-import { pluginOrigin, type PluginOrigin } from '../../../lib/pluginCatalog';
+import { pickWorkspace } from '../../../lib/capabilities';
+import type { PluginOrigin } from '../../../lib/pluginCatalog';
 import { useConnection } from '../../../state/connection';
-import { LINK_CLASS } from '../../capabilities/CapabilityLink';
-import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
-import { Tag } from '../../capabilities/primitives';
-import { useInstalledPlugins, useInvalidatePlugins, usePluginMarketplace } from '../../capabilities/usePlugins';
-import { FeedbackLine, InlineError, Toggle } from '../../controls';
-import { Icon } from '../../icons';
-import { SECONDARY_BUTTON } from '../../ui';
-import { SectionCard } from '../SectionCard';
-import { pluginDefaultOn, pluginStatusKey, usePluginContributions } from './pluginState';
+import { useInstalledPlugins } from '../../capabilities/usePlugins';
+import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
+import { SettingsLoadFailure, TEXT_BUTTON } from '../SettingsPrimitives';
 
 export const ORIGIN_KEYS = {
   official: 'cap.origin.official',
@@ -40,116 +20,89 @@ export const ORIGIN_KEYS = {
   zip: 'cap.origin.zip',
 } as const satisfies Record<PluginOrigin, string>;
 
-export function InstalledPluginsList() {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const query = useInstalledPlugins();
-  // Only used to tell an official or catalogued plugin from a local one; its
-  // failure is not this page's to report.
-  const entriesQuery = usePluginMarketplace();
-  const plugins = query.data?.plugins ?? [];
+const ZOD_ISSUE_SHAPE = /"code"\s*:\s*"(invalid_type|too_small|too_big|invalid_enum_value|unrecognized_keys?)"/;
 
-  return (
-    <SectionCard
-      id="st-card-plugins"
-      title={t('st.plugins.installedTitle')}
-      actions={(
-        <Link to="/capabilities?view=market" className={LINK_CLASS} data-plugins-market-link>
-          {t('st.plugins.browseMarket')}
-          <Icon name="arrowRight" size={14} />
-        </Link>
-      )}
-    >
-      {query.isPending ? (
-        <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>
-      ) : query.isError ? (
-        <ListFailure error={query.error} onRetry={() => { void query.refetch(); }} />
-      ) : plugins.length === 0 ? (
-        <p className="py-3 text-[13px] text-ink-soft" data-plugins-installed-empty>{t('st.plugins.noneInstalledBody')}</p>
-      ) : (
-        <ul className="overflow-hidden rounded-lg border border-hairline bg-panel" data-plugins-installed-list>
-          {plugins.map((plugin) => (
-            <InstalledPluginRow
-              key={plugin.id}
-              plugin={plugin}
-              origin={pluginOrigin(plugin, entriesQuery.data?.entries ?? [])}
-              onOpen={() => { void navigate(pluginSettingsPath(plugin.id)); }}
-            />
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
+function parseFailureDetail(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'ZodError' && Array.isArray((error as { issues?: unknown }).issues)) {
+    const first = ((error as { issues: readonly { path?: readonly unknown[]; message?: string }[] }).issues)[0];
+    const path = first?.path !== undefined && first.path.length > 0 ? first.path.map(String).join('.') : undefined;
+    if (path !== undefined && first?.message !== undefined) return `${path}: ${first.message}`;
+    return first?.message ?? path ?? 'ZodError';
+  }
+  if (error instanceof SyntaxError) return error.message || 'SyntaxError';
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (ZOD_ISSUE_SHAPE.test(raw)) return raw.slice(0, 140);
+  return undefined;
 }
 
-function InstalledPluginRow({ plugin, origin, onOpen }: {
-  readonly plugin: PluginSummary;
-  readonly origin: PluginOrigin;
-  readonly onOpen: () => void;
-}) {
+/**
+ * Extensions & tools summary line (`#st-card-plugins`): counts installed
+ * plugins and skills and links once to `/capabilities`, where installed objects
+ * live. Announces `st-card-plugins` to `SettingsCardMountContext` so settings
+ * search hits and `#st-card-plugins` / `#st-card-skill-catalog` bookmarks land
+ * here cleanly.
+ */
+export function InstalledPluginsList() {
   const { t, locale } = useI18n();
   const { client } = useConnection();
-  const invalidate = useInvalidatePlugins();
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<unknown>(null);
-  const broken = plugin.state === 'error' || plugin.hasErrors;
-  const contributions = usePluginContributions(plugin);
-  const status = t(pluginStatusKey(plugin));
+  const [searchParams] = useSearchParams();
+  const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
 
-  const toggle = async (enabled: boolean) => {
-    setBusy(true);
-    setFailure(null);
-    try {
-      if (plugin.defaultEnabled === undefined) await client.setPluginEnabled(plugin.id, enabled);
-      else await client.setPluginState(plugin.id, { enabled, defaultEnabled: plugin.defaultEnabled });
-      await invalidate();
-    } catch (error) {
-      setFailure(error);
-    } finally {
-      setBusy(false);
-    }
-  };
+  useEffect(() => {
+    onCardMount?.('st-card-plugins');
+  }, [onCardMount]);
 
-  return (
-    <li className="border-b border-hairline last:border-b-0" data-plugin-row={plugin.id}
-      data-plugin-enabled={plugin.enabled ? 'true' : 'false'} data-plugin-state={plugin.state}>
-      <div className="flex min-w-0 items-center gap-3 pr-3">
-        <button
-          type="button"
-          onClick={onOpen}
-          aria-label={t('st.plugins.openSettings', { name: plugin.displayName })}
-          className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-3 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-selected-ink"
-          data-plugin-open-settings={plugin.id}
-        >
-          <span className={plugin.enabled ? '' : 'opacity-50 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
-          <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 items-center gap-2">
-              <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>{plugin.displayName}</span>
-              <Tag>{t(ORIGIN_KEYS[origin])}</Tag>
-              {broken ? <Tag tone="danger">{t('cap.state.error')}</Tag> : null}
-            </span>
-            <span className="mt-0.5 block truncate text-[12px] leading-4 text-ink-faint" data-plugin-status={pluginDefaultOn(plugin) && plugin.enabled ? 'default-on' : plugin.enabled ? 'on-demand' : 'off'}>
-              {contributions === '' ? status : `${status} · ${contributions}`}
-            </span>
-          </span>
-          <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
-        </button>
-        <span className="shrink-0" data-plugin-row-switch={plugin.id}>
-          <Toggle layout="bare" label={t('st.plugins.enableNamed', { name: plugin.displayName })}
-            checked={plugin.enabled} disabled={busy} onChange={(checked) => { void toggle(checked); }} />
-        </span>
-      </div>
-      {failure !== null ? <div className="px-3 pb-2"><FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /></div> : null}
-    </li>
+  const pluginsQuery = useInstalledPlugins();
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
+    staleTime: 30_000,
+  });
+  const sorted = useMemo(
+    () => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []),
+    [workspacesQuery.data],
   );
-}
+  const workspace = pickWorkspace(sorted, searchParams.get('workspace') ?? undefined);
+  const workspaceId = workspace?.id ?? '';
+  const skillsQuery = useQuery({
+    queryKey: ['workspace-skills', workspaceId],
+    queryFn: () => client.listWorkspaceSkills(workspaceId),
+    enabled: workspaceId !== '',
+    staleTime: 60_000,
+  });
 
-function ListFailure({ error, onRetry }: { readonly error: unknown; readonly onRetry: () => void }) {
-  const { t } = useI18n();
+  const pluginCount = pluginsQuery.data?.plugins.length ?? 0;
+  const skillCount = skillsQuery.data?.skills.length ?? 0;
+  const parseDetail = pluginsQuery.isError ? parseFailureDetail(pluginsQuery.error) : undefined;
+
   return (
-    <div className="space-y-2 py-2" data-plugins-installed-error>
-      <InlineError error={error} />
-      <button type="button" className={SECONDARY_BUTTON} onClick={onRetry}>{t('common.retry')}</button>
+    <div
+      id="st-card-plugins"
+      data-settings-card="st-card-plugins"
+      data-extensions-summary
+      className={`scroll-mt-4 ${flashId === 'st-card-plugins' ? 'settings-card-flash' : ''}`}
+    >
+      {pluginsQuery.isError ? (
+        <div data-plugins-installed-error>
+          <SettingsLoadFailure
+            message={parseDetail !== undefined
+              ? t('st.plugins.loadInvalid', { detail: parseDetail })
+              : t('st.plugins.loadFailed', { detail: errorText(locale, pluginsQuery.error) })}
+            retrying={pluginsQuery.isFetching}
+            onRetry={() => { void pluginsQuery.refetch(); }}
+          />
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] text-ink-soft">
+          <span data-extensions-installed-counts>
+            {t('st.extensions.installedSummary', { plugins: pluginCount, skills: skillCount })}
+          </span>
+          <Link to="/capabilities" className={TEXT_BUTTON} data-extensions-open-capabilities>
+            {t('st.extensions.openCapabilities')}
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

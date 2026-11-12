@@ -154,18 +154,20 @@ export function WorktreesCard() {
           </ul>
         ) : null}
         {notice !== null ? <WorktreeNotice notice={notice} /> : null}
-        <div className="flex flex-wrap items-start gap-x-3 gap-y-2 pt-1">
-          <button
-            type="button"
-            data-worktrees-cleanup
-            disabled={gcBusy || !list.isSuccess}
-            onClick={planCleanup}
-            className={`${SECONDARY_BUTTON} shrink-0`}
-          >
-            {gcBusy ? t('st.worktrees.cleanupChecking') : t('st.worktrees.cleanup')}
-          </button>
-          <SettingHelp className="self-center">{t('st.worktrees.cleanupRule', { days: afterDays })}</SettingHelp>
-        </div>
+        {records.length > 0 ? (
+          <div className="flex flex-wrap items-start gap-x-3 gap-y-2 pt-1">
+            <button
+              type="button"
+              data-worktrees-cleanup
+              disabled={gcBusy || !list.isSuccess}
+              onClick={planCleanup}
+              className={`${SECONDARY_BUTTON} shrink-0`}
+            >
+              {gcBusy ? t('st.worktrees.cleanupChecking') : t('st.worktrees.cleanup')}
+            </button>
+            <SettingHelp className="self-center">{t('st.worktrees.cleanupRule', { days: afterDays })}</SettingHelp>
+          </div>
+        ) : null}
         <div className="pt-4">
           <WorktreePolicy />
         </div>

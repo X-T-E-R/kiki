@@ -21,7 +21,7 @@ import { Hint, Toggle } from '../../controls';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { ExternalLink } from '../../../host/ExternalLink';
 import { AdvancedDetails, SettingField } from '../fields';
-import { FieldIssue, SettingsSelect } from '../SettingsPrimitives';
+import { FieldIssue, SettingsSelect, TEXT_BUTTON } from '../SettingsPrimitives';
 import { RowFrame } from '../RowFrame';
 import { Tag } from '../../capabilities/primitives';
 import { NbSearchMultiKeyEditor, type KeyDraft } from './NbSearchMultiKeyEditor';
@@ -201,6 +201,7 @@ export function NbSearchServiceCard({
   const state = serviceCardState(info, instance);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [envTouched, setEnvTouched] = useState(false);
+  const [keyFocusToken, setKeyFocusToken] = useState(0);
 
   const baseUrlProblem = useMemo(
     () => baseUrlIssue(t, providerDraft?.baseUrl ?? ''),
@@ -300,6 +301,7 @@ export function NbSearchServiceCard({
             onChange={onKeyDraftChange}
             read={readCredential}
             disabled={saving}
+            focusToken={keyFocusToken}
           />
         </div>
       ) : null}
@@ -518,6 +520,20 @@ export function NbSearchServiceCard({
                   <span aria-hidden className="text-[12px]">×</span>
                 </button>
               </span>
+            ) : null}
+            {state.key === 'needsKey' ? (
+              <button
+                type="button"
+                className={TEXT_BUTTON}
+                disabled={saving}
+                data-nb-search-add-key={card.id}
+                onClick={() => {
+                  setOpen(true);
+                  setKeyFocusToken((current) => current + 1);
+                }}
+              >
+                {t('st.ai.fix.key')}
+              </button>
             ) : null}
             {info !== null && editableInstanceId !== undefined ? (
               <span data-nb-search-service-enabled={card.id} className="contents">

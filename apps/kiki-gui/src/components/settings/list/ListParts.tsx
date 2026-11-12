@@ -288,9 +288,14 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
  * them, and a way out. Sticky under the toolbar; the destructive verb goes
  * through the page's own confirmation.
  */
-export function ListBulkBar({ count, onClear, children }: { count: number; onClear: () => void; children: ReactNode }) {
+export function ListBulkBar({ count, onClear, active = false, children }: {
+  count: number;
+  onClear: () => void;
+  active?: boolean;
+  children: ReactNode;
+}) {
   const { t } = useI18n();
-  if (count === 0) return null;
+  if (!active && count === 0) return null;
   return (
     <div data-list-bulk role="region" aria-label={t('st.list.bulkAria')}
       className="anim-enter mb-2 flex min-h-10 flex-wrap items-center gap-2 rounded-lg bg-panel px-3 py-1.5 shadow-[var(--kiki-sheet-shadow)]">

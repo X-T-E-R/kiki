@@ -227,7 +227,11 @@ function BrowserSection() {
         </CapabilityHeader>
       </SectionCard>
 
-      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')} actions={<AddBrowserAction onOpen={() => { setAdding(true); }} />}>
+      <SectionCard
+        id="st-card-browser-connections"
+        title={t('st.browser.connectionsTitle')}
+        actions={allowance.connections.length > 0 ? <AddBrowserAction onOpen={() => { setAdding(true); }} /> : undefined}
+      >
         <BrowserConnectionCard adding={adding} onAddingChange={setAdding} />
         <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced-fold>
           <div className="space-y-4 pt-1">

@@ -278,21 +278,10 @@ describe('PlanSettings plan gate defaults', () => {
     expect(permissions.querySelector('#st-card-permission-defaults [data-settings-effect="newSessions"]')).not.toBeNull();
   });
 
-  it('renders the sidebar tools card and pins an item from it', async () => {
-    writeLayoutPreferences({ pinnedNavItems: ['usage', 'memory', 'personas', 'discover'] });
+  it('removes the sidebar tools card from Settings › General (managed only in the sidebar View menu)', async () => {
     const app = await renderSection('general');
-    const navCard = app.querySelector('#st-card-sidebar-nav');
-    expect(navCard).not.toBeNull();
-
-    expect(navCard?.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
-    const cronWrapper = navCard?.querySelector('[data-nav-item-toggle="cron"]');
-    expect(cronWrapper).not.toBeNull();
-    const cronSwitch = cronWrapper?.querySelector<HTMLElement>('[role="switch"]');
-    expect(cronSwitch?.getAttribute('aria-checked')).toBe('false');
-
-    await click(cronWrapper?.querySelector('label') ?? cronSwitch!);
-    expect(readLayoutPreferences().pinnedNavItems).toContain('cron');
-    expect(readLayoutPreferences().pinnedNavItems).not.toContain('board');
+    expect(app.querySelector('#st-card-sidebar-nav')).toBeNull();
+    expect(app.querySelector('[data-sidebar-nav-toggles]')).toBeNull();
   });
 
   it('offers four permission defaults, saving review immediately', async () => {

@@ -14,6 +14,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { InlineEditor } from '../InlineEditor';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingsLoadFailure, TEXT_BUTTON } from './SettingsPrimitives';
 import { WorktreesCard } from './WorktreesCard';
 import { Icon } from '../icons';
 import { MiniContextMenu } from '../MiniContextMenu';
@@ -60,7 +61,11 @@ function WorkspacesList() {
   const [bulkRemoving, setBulkRemoving] = useState<readonly Workspace[] | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pinBusy, setPinBusy] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
   const items = useMemo(() => query.data?.items ?? [], [query.data]);
+  useEffect(() => {
+    if (items.length === 0) setSelecting(false);
+  }, [items.length]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
@@ -108,7 +113,14 @@ function WorkspacesList() {
     {/* The page intro already says what unregistering keeps; the card names
         only which machine's folders these are. */}
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}
-      aside={sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}>
+      aside={sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}
+      actions={items.length > 0 ? (
+        <button type="button" data-list-select data-workspaces-select aria-pressed={selecting}
+          onClick={() => { setSelecting((current) => !current); }}
+          className={`h-7 shrink-0 px-1.5 pointer-coarse:h-11 ${TEXT_BUTTON}`}>
+          {selecting ? t('common.cancel') : t('st.workspaces.select')}
+        </button>
+      ) : undefined}>
       <div className="space-y-2">
         {scopeId.startsWith('ssh:') ? (
           <button type="button" onClick={activateLocal} className={SECONDARY_BUTTON}>
@@ -118,6 +130,8 @@ function WorkspacesList() {
         {items.length > 0 ? (
           <WorkspaceList
             items={items}
+            selecting={selecting}
+            onSelectingChange={setSelecting}
             pinBusy={pinBusy}
             onPin={togglePinned}
             onBulkPin={bulkPin}
@@ -231,8 +245,10 @@ export function workspaceDisplayName(workspace: Workspace): string {
  * Each row keeps one visible verb (New session) and the pin mark; rename
  * and unregister live in the row's ⋯ menu so 80 rows are not 320 buttons.
  */
-function WorkspaceList({ items, pinBusy, onPin, onBulkPin, renamingId, onRename, onRenameDone, onRenameCancel, onRemove, onBulkRemove, onNewSession, onOpenDetail }: {
+function WorkspaceList({ items, selecting, onSelectingChange, pinBusy, onPin, onBulkPin, renamingId, onRename, onRenameDone, onRenameCancel, onRemove, onBulkRemove, onNewSession, onOpenDetail }: {
   items: readonly Workspace[];
+  selecting: boolean;
+  onSelectingChange: (selecting: boolean) => void;
   pinBusy: string | null;
   onPin: (workspace: Workspace) => void;
   onBulkPin: (targets: readonly Workspace[], pinned: boolean) => void;
@@ -257,6 +273,10 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, renamingId, onRename,
   const keyOf = useCallback((ws: Workspace) => ws.id, []);
   const textOf = useCallback((ws: Workspace) => [ws.name, ws.root], []);
   const view = useListView({ listId: 'workspaces', items, keyOf, textOf, filters, sorts });
+  useEffect(() => {
+    if (!selecting && view.selected.size > 0) view.setSelected(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selecting]);
   // Group only when sorted by recency; a name sort is one flat list.
   const [now] = useState(() => Date.now());
   const groups = useMemo(() => {
@@ -273,7 +293,7 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, renamingId, onRename,
   const allShownSelected = view.visible.length > 0 && view.visible.every((ws) => view.selected.has(ws.id));
 
   const renderRow = (ws: Workspace) => (
-    <WorkspaceRow workspace={ws} density={view.density} selecting={view.selected.size > 0} checked={view.selected.has(ws.id)}
+    <WorkspaceRow workspace={ws} density={view.density} selecting={selecting} checked={view.selected.has(ws.id)}
       onCheck={() => { view.toggleSelected(ws.id); }} pinBusy={pinBusy === ws.id || pinBusy === 'bulk'}
       renaming={renamingId === ws.id}
       onPin={() => { onPin(ws); }} onRename={() => { onRename(ws); }} onRenameDone={onRenameDone} onRenameCancel={onRenameCancel}
@@ -284,20 +304,20 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, renamingId, onRename,
   return (
     <div data-workspace-list className="space-y-2">
       <ListToolbar view={view} total={items.length} filters={filters} sorts={sorts}
-        searchLabel={t('st.workspaces.search')} searchPlaceholder={t('st.workspaces.searchPlaceholder')}
-        actions={(
-          <label className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink" title={t('st.list.selectAll')}>
-            <input type="checkbox" checked={allShownSelected} aria-label={t('st.list.selectAll')}
-              onChange={() => { view.setSelected(allShownSelected ? new Set() : new Set(view.visible.map(keyOf))); }}
-              className="h-3.5 w-3.5 cursor-pointer accent-[var(--color-ink)]" />
-          </label>
-        )} />
-      <ListBulkBar count={selectedItems.length} onClear={() => { view.setSelected(new Set()); }}>
-        <button type="button" data-bulk-pin disabled={pinBusy !== null} className={SECONDARY_BUTTON}
+        searchLabel={t('st.workspaces.search')} searchPlaceholder={t('st.workspaces.searchPlaceholder')} />
+      <ListBulkBar active={selecting} count={selectedItems.length}
+        onClear={() => { view.setSelected(new Set()); onSelectingChange(false); }}>
+        <label className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink pointer-coarse:h-9" title={t('st.list.selectAll')}>
+          <input type="checkbox" checked={allShownSelected} aria-label={t('st.list.selectAll')}
+            onChange={() => { view.setSelected(allShownSelected ? new Set() : new Set(view.visible.map(keyOf))); }}
+            className="h-3.5 w-3.5 cursor-pointer accent-[var(--color-ink)]" />
+        </label>
+        <button type="button" data-bulk-pin disabled={pinBusy !== null || selectedItems.length === 0} className={SECONDARY_BUTTON}
           onClick={() => { onBulkPin(selectedItems, !allPinned); }}>
           {allPinned ? t('st.workspaces.bulkUnpin') : t('st.workspaces.bulkPin')}
         </button>
-        <button type="button" data-bulk-remove className="rounded-md border border-danger/40 bg-paper px-3 py-1.5 text-[12px] text-danger transition-colors hover:bg-danger/5"
+        <button type="button" data-bulk-remove disabled={selectedItems.length === 0}
+          className="rounded-md border border-danger/40 bg-paper px-3 py-1.5 text-[12px] text-danger transition-colors hover:bg-danger/5 disabled:cursor-not-allowed disabled:opacity-50"
           onClick={() => { onBulkRemove(selectedItems); }}>
           {t('st.workspaces.bulkRemove')}
         </button>
@@ -360,8 +380,10 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
     <div data-workspace-row={workspace.id} data-selected={checked ? '' : undefined}
       style={{ minHeight: LIST_ROW_HEIGHT[density] }}
       className={`group/row transition-colors ${checked ? 'bg-ink/[0.035]' : 'hover:bg-ink/[0.02]'}`}>
-    <div className="flex h-full items-center gap-1 pr-1.5 pl-1">
-      <RowCheck quiet={!selecting} checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: displayName })} />
+    <div className="flex h-full items-center gap-1 pr-1.5 pl-3">
+      {selecting ? (
+        <RowCheck checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: displayName })} />
+      ) : null}
       <div className="min-w-0 flex-1 py-1">
         <div className="flex min-w-0 items-baseline gap-2">
           {/* The name is the way into the workspace's own page: one move,
@@ -378,8 +400,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
             {displayName}
           </button>
           {/* Trust is the exception here: an untrusted row is the common case
-              and says nothing, a trusted row carries the one tag that matters,
-              and a read that failed says 未知 rather than guessing a state. */}
+              and says nothing; a trusted row carries the one tag that matters. */}
           {isTrusted ? (
             <span
               data-workspace-trust-badge={workspace.id}
@@ -387,14 +408,6 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
               title={t('st.workspaces.trustHint')}
             >
               {t('st.workspaces.trusted')}
-            </span>
-          ) : trustQuery.isError ? (
-            <span
-              data-workspace-trust-unknown={workspace.id}
-              className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10.5px] font-medium leading-none text-ink-faint"
-              title={t('st.workspaces.trustReadFailed')}
-            >
-              {t('st.workspaces.trustUnknown')}
             </span>
           ) : null}
           {compact ? (
@@ -412,18 +425,6 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
         )}
       </div>
       {compact ? <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">{time.relativeTime(workspace.last_opened_at)}</span> : null}
-      <button
-        type="button"
-        data-workspace-pin={workspace.id}
-        disabled={pinBusy}
-        aria-pressed={workspace.pinned}
-        onClick={onPin}
-        aria-label={workspace.pinned ? t('st.workspaces.unpinAria', { name: workspace.name }) : t('st.workspaces.pinAria', { name: workspace.name })}
-        title={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
-        className={`${ROW_ICON} ${workspace.pinned ? 'text-ink' : 'text-ink-faint opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'}`}
-      >
-        <Icon name="pin" size={14} />
-      </button>
       <button type="button" onClick={onNewSession}
         className="h-8 shrink-0 rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11">
         {t('st.workspaces.newSession')}
@@ -442,6 +443,12 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           overlayId={`workspace-menu:${workspace.id}`} dataAttribute="data-workspace-menu"
           onClose={() => { setMenu(null); }}
           entries={[
+            {
+              key: 'pin',
+              label: workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin'),
+              disabled: pinBusy,
+              run: onPin,
+            },
             { key: 'rename', label: t('st.workspaces.rename'), run: onRename },
             { separator: true },
             { key: 'remove', label: `${t('st.workspaces.remove')}…`, danger: true, run: onRemove },
@@ -517,31 +524,34 @@ function WorkspaceRenameEditor({ workspace, onDone, onCancel }: {
  * re-renders this sibling, so it tracks the trust queries itself.
  */
 function TrustReadFailure({ items }: { readonly items: readonly Workspace[] }) {
-  const { t } = useI18n();
+  const { tp } = useI18n();
   const queryClient = useQueryClient();
   // The line appears only after a row's trust read has settled into a
   // failure. No row settling re-renders this sibling, so it recounts on every
   // cache event; the id list decides whether the state actually changed.
-  const [failingIds, setFailingIds] = useState('');
+  const [failingKey, setFailingKey] = useState('');
   useEffect(() => {
     const recount = () => {
       const ids = items.filter((workspace) =>
         queryClient.getQueryState(['workspace-trust', workspace.id])?.status === 'error'
-      ).map((workspace) => workspace.id).join('');
-      setFailingIds((current) => (current === ids ? current : ids));
+      ).map((workspace) => workspace.id).join('\u0001');
+      setFailingKey((current) => (current === ids ? current : ids));
     };
     recount();
     return queryClient.getQueryCache().subscribe(recount);
   }, [items, queryClient]);
-  if (failingIds === '') return null;
+  if (failingKey === '') return null;
+  const failingCount = failingKey.split('\u0001').length;
   return (
-    <div data-workspace-trust-failure className="flex flex-wrap items-center gap-2">
-      <FeedbackLine feedback={{ tone: 'error', text: t('st.workspaces.trustReadFailed') }} />
-      <button type="button" className={SECONDARY_BUTTON} onClick={() => {
-        void queryClient.invalidateQueries({
-          predicate: (entry) => entry.queryKey[0] === 'workspace-trust' && entry.state.status === 'error',
-        });
-      }}>{t('common.retry')}</button>
+    <div data-workspace-trust-failure>
+      <SettingsLoadFailure
+        message={tp('st.workspaces.trustReadFailed', failingCount)}
+        onRetry={() => {
+          void queryClient.invalidateQueries({
+            predicate: (entry) => entry.queryKey[0] === 'workspace-trust' && entry.state.status === 'error',
+          });
+        }}
+      />
     </div>
   );
 }

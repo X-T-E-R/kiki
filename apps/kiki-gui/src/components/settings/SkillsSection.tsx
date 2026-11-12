@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
-import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
   appendExtraSkillDirs,
   markRestartRequired,
@@ -11,12 +9,8 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { pickWorkspace } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
-import { LINK_CLASS } from '../capabilities/CapabilityLink';
-import { SkillsView } from '../capabilities/SkillsView';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
@@ -150,31 +144,9 @@ function SkillsDefaultsCard() {
 }
 
 /**
- * Skills leaf: the catalog itself, managed in place. The list is the one the
- * Capabilities page shows for the same workspace, so a skill found here is
- * the same object there; the Capabilities page remains the discovery view and
- * stays one click away as a secondary link. Loading defaults (merge, builtin,
- * extra directories) sit below the list.
+ * Skills tab of Extensions & tools: sources and defaults only (merge rules,
+ * built-in skills, extra directories). Installed skills live on Capabilities.
  */
 export function SkillsSection() {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const [searchParams] = useSearchParams();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
-  const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
-  const workspace = pickWorkspace(sorted, searchParams.get('workspace') ?? undefined);
-  return (
-    <div className="space-y-6">
-      <SectionCard id="st-card-skill-catalog" title={t('st.skills.catalogTitle')}
-        actions={(
-          <Link to="/capabilities?tab=skills" className={LINK_CLASS} data-skills-browse-link>
-            {t('st.skills.browseLink')}
-            <Icon name="arrowRight" size={14} />
-          </Link>
-        )}>
-        <SkillsView workspaceId={workspace?.id ?? ''} />
-      </SectionCard>
-      <SkillsDefaultsCard />
-    </div>
-  );
+  return <SkillsDefaultsCard />;
 }

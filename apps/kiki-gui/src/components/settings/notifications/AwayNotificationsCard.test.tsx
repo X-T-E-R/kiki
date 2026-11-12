@@ -9,9 +9,24 @@ import { readDesktopPrefs, readSettings, writeDesktopPrefs, writeSettings, DEFAU
 import { I18nProvider } from '../../../i18n';
 import { AwayNotificationsCard } from './AwayNotificationsCard';
 
-const hostState: { notify: (() => Promise<void>) | undefined } = { notify: async () => undefined };
+const tauriPermission = vi.hoisted(() => vi.fn(async (): Promise<'granted' | 'default' | 'denied'> => 'granted'));
+vi.mock('../../../host/tauri', () => ({
+  tauriNotificationPermission: () => tauriPermission(),
+}));
+
+const hostState: {
+  kind: 'browser' | 'tauri';
+  notify: (() => Promise<void>) | undefined;
+  readDesktopPrefs: () => Promise<{ closeToTray: boolean; notifications: boolean } | null>;
+  writeDesktopPrefs: (prefs: { closeToTray?: boolean; notifications?: boolean }) => Promise<void>;
+} = {
+  kind: 'browser',
+  notify: async () => undefined,
+  readDesktopPrefs: async () => null,
+  writeDesktopPrefs: async () => undefined,
+};
 vi.mock('../../../host', () => ({
-  useHost: () => ({ kind: 'browser', notify: hostState.notify }),
+  useHost: () => hostState,
 }));
 
 const mounts: { container: HTMLDivElement; root: Root }[] = [];
@@ -23,7 +38,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
+  hostState.kind = 'browser';
   hostState.notify = vi.fn(async () => undefined);
+  hostState.readDesktopPrefs = vi.fn(async () => null);
+  hostState.writeDesktopPrefs = vi.fn(async () => undefined);
+  tauriPermission.mockReset();
+  tauriPermission.mockResolvedValue('granted');
   writeDesktopPrefs({ notifications: true });
   writeSettings({ awayNotifications: DEFAULT_AWAY_NOTIFICATION_KINDS });
 });
@@ -68,9 +88,13 @@ describe('AwayNotificationsCard', () => {
     expect(card.querySelector('[data-notify-away-kinds]')).toBeNull();
   });
 
-  it('explains the master scope and denied permission without changing preferences or sending a notification', async () => {
+  it.each([
+    ['granted', 'System notifications: allowed'],
+    ['default', 'System notifications: not asked yet'],
+    ['denied', 'System notifications: blocked. You can turn them on in system settings.'],
+  ] as const)('states %s browser permission in words and refreshes on focus without asking', async (permission, expectedLine) => {
     const notification = Object.assign(vi.fn(), {
-      permission: 'denied' as NotificationPermission,
+      permission: permission as NotificationPermission,
       requestPermission: vi.fn(),
     });
     vi.stubGlobal('Notification', notification);
@@ -79,25 +103,32 @@ describe('AwayNotificationsCard', () => {
     const card = await render();
     expect(card.textContent).toContain('Allow system notifications');
     expect(card.textContent).toContain('other spaces');
-    expect(card.textContent).toContain('Your browser has blocked notifications');
-    expect(card.textContent).toContain('site permissions');
+    const line = card.querySelector('[data-notify-os-permission]')!;
+    expect(line.getAttribute('data-notify-os-permission')).toBe(permission);
+    expect(line.textContent).toBe(expectedLine);
+    expect(card.textContent).not.toContain('Your browser has blocked notifications');
     expect(kindToggle(card, 'completed').checked).toBe(true);
     expect(readDesktopPrefs()).toEqual(prefs);
     expect(readSettings().awayNotifications).toEqual(kinds);
 
-    notification.permission = 'granted';
-    await act(async () => { window.dispatchEvent(new Event('focus')); });
-    expect(card.textContent).not.toContain('Your browser has blocked notifications');
+    if (permission === 'denied') {
+      notification.permission = 'granted';
+      await act(async () => { window.dispatchEvent(new Event('focus')); });
+      expect(card.querySelector('[data-notify-os-permission]')?.textContent).toBe('System notifications: allowed');
+    }
     expect(notification).not.toHaveBeenCalled();
     expect(notification.requestPermission).not.toHaveBeenCalled();
     expect(hostState.notify).not.toHaveBeenCalled();
   });
 
-  it.each(['default', 'granted'] as const)('does not show a refusal warning for %s permission', async (permission) => {
-    vi.stubGlobal('Notification', Object.assign(vi.fn(), { permission }));
+  it('reads desktop permission through tauriNotificationPermission and refreshes on focus', async () => {
+    hostState.kind = 'tauri';
+    tauriPermission.mockResolvedValueOnce('default').mockResolvedValueOnce('granted');
     const card = await render();
-    expect(card.textContent).not.toContain('Your browser has blocked notifications');
-    expect(card.querySelector('[data-notify-away]')).not.toBeNull();
+    await act(async () => { await Promise.resolve(); });
+    expect(card.querySelector('[data-notify-os-permission="default"]')?.textContent).toBe('System notifications: not asked yet');
+    await act(async () => { window.dispatchEvent(new Event('focus')); await Promise.resolve(); });
+    expect(card.querySelector('[data-notify-os-permission="granted"]')?.textContent).toBe('System notifications: allowed');
   });
 
   it('says why nothing can be switched on a host without notifications', async () => {

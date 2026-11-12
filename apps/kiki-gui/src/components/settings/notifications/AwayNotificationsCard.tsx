@@ -11,6 +11,9 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useHost } from '../../../host';
+import { browserNotificationPermission } from '../../../host/browser';
+import type { SystemNotificationPermission } from '../../../host/notificationPermission';
+import { tauriNotificationPermission } from '../../../host/tauri';
 import { useI18n } from '../../../i18n';
 import { Toggle } from '../../controls';
 import { SettingField, SettingsBox } from '../fields';
@@ -26,8 +29,9 @@ const KINDS: readonly { kind: AttentionKind; labelKey: 'st.away.completed' | 'st
 /**
  * System notifications on this device while Kiki is in the background: the
  * master switch (the desktop `notifications` preference, which the native
- * side also reads for other spaces) and one switch per kind. Instant apply,
- * device-local. Hosts that cannot raise a notification get one line instead.
+ * side also reads for other spaces), one status line stating the OS/browser
+ * permission in words, and one switch per kind. Instant apply, device-local.
+ * Hosts that cannot raise a notification get one line instead.
  */
 export function AwayNotificationsCard() {
   const host = useHost();
@@ -35,14 +39,32 @@ export function AwayNotificationsCard() {
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [enabled, setEnabled] = useState(() => readDesktopPrefs().notifications);
   const supported = host.notify !== undefined;
-  const [permission, setPermission] = useState(() => typeof window === 'undefined' ? undefined : window.Notification?.permission);
+  const [permission, setPermission] = useState<SystemNotificationPermission | undefined>(() =>
+    host.kind === 'browser' && supported ? browserNotificationPermission() : undefined,
+  );
 
   useEffect(() => {
-    if (host.kind !== 'browser' || !supported) return;
-    const refreshPermission = () => setPermission(window.Notification?.permission);
+    if (!supported) {
+      setPermission(undefined);
+      return undefined;
+    }
+    let live = true;
+    const refreshPermission = () => {
+      if (host.kind === 'tauri') {
+        void tauriNotificationPermission()
+          .then((next) => { if (live) setPermission(next); })
+          .catch(() => { if (live) setPermission(undefined); });
+        return;
+      }
+      if (host.kind === 'browser') {
+        setPermission(browserNotificationPermission());
+      }
+    };
+    refreshPermission();
     window.addEventListener('focus', refreshPermission);
     document.addEventListener('visibilitychange', refreshPermission);
     return () => {
+      live = false;
       window.removeEventListener('focus', refreshPermission);
       document.removeEventListener('visibilitychange', refreshPermission);
     };
@@ -66,15 +88,25 @@ export function AwayNotificationsCard() {
       id="st-card-notify-away"
       title={t('st.away.title')}
       scope="app"
-      aside={!supported ? t('st.away.browserHint') : host.kind === 'browser' && permission === 'denied' ? t('st.away.permissionDenied') : undefined}
+      aside={!supported ? t('st.away.browserHint') : undefined}
     >
       {supported ? (
         <div className="min-w-0 space-y-4" data-notify-away>
-          <SettingsBox>
-            <SettingField label={t('st.away.enabled')} htmlFor="notify-away-enabled" help={t('st.away.hint')}>
-              <Toggle id="notify-away-enabled" layout="bare" label={t('st.away.enabled')} checked={enabled} onChange={setMaster} />
-            </SettingField>
-          </SettingsBox>
+          <div className="space-y-1.5">
+            <SettingsBox>
+              <SettingField label={t('st.away.enabled')} htmlFor="notify-away-enabled" help={t('st.away.hint')}>
+                <Toggle id="notify-away-enabled" layout="bare" label={t('st.away.enabled')} checked={enabled} onChange={setMaster} />
+              </SettingField>
+            </SettingsBox>
+            {permission !== undefined ? (
+              <p
+                data-notify-os-permission={permission}
+                className={`text-[12px] leading-snug ${permission === 'denied' ? 'text-amber-ink' : 'text-ink-soft'}`}
+              >
+                {t(`st.notifications.osPermission.${permission}`)}
+              </p>
+            ) : null}
+          </div>
           {enabled ? (
             <fieldset data-notify-away-kinds className="min-w-0 space-y-1">
               <legend className="px-0 pb-1 text-[13px] font-medium text-ink">{t('st.away.kindsLabel')}</legend>

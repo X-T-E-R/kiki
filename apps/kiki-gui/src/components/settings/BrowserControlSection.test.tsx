@@ -1562,8 +1562,18 @@ describe('BrowserControlSection', () => {
     expect(revealSecret).toHaveBeenCalledWith({ kind: 'browser_endpoint', browser_id: 'preview' });
   });
 
-  it('opens the add panel from the heading button, walks into a route and back, and closes', async () => {
+  it('hides the heading add button while empty and opens the add panel from it once a browser exists', async () => {
     await render();
+    await settleUntil('[data-browser-empty]');
+    expect(query('[data-browser-add-heading]')).toBeNull();
+    expect(document.querySelectorAll('[data-browser-add]')).toHaveLength(1);
+
+    list.mockResolvedValue({ connections: [profileRow()] });
+    queries.clear();
+    await render();
+    await settleUntil('[data-browser-row="research"]');
+    expect(query('[data-browser-empty]')).toBeNull();
+    expect(query('[data-browser-add-heading]')).not.toBeNull();
     expect(query('[data-browser-add-panel]')).toBeNull();
     await click('[data-browser-add-heading]');
     await settleUntil('[data-browser-pick="independent-browser"]');

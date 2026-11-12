@@ -575,4 +575,18 @@ describe('handing a new hook rule to Kiki', () => {
     expect(client.createSession).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
+
+  it('shows Add rule and Ask Kiki only inside the empty state while empty, then restores heading actions once a rule exists', async () => {
+    await mount();
+    expect(container.querySelector('[data-hooks-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-card-actions]')).toBeNull();
+    expect(container.querySelectorAll('[data-hooks-add]')).toHaveLength(1);
+    expect(container.querySelector('[data-hooks-empty] [data-hooks-add]')).not.toBeNull();
+    expect(container.querySelector('[data-hooks-empty] [data-hooks-ask-kiki]')).not.toBeNull();
+
+    await click('Add rule');
+    expect(container.querySelector('[data-hooks-empty]')).toBeNull();
+    expect(container.querySelector('[data-settings-card-actions] [data-hooks-add]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-card-actions] [data-hooks-ask-kiki]')).not.toBeNull();
+  });
 });

@@ -2140,6 +2140,24 @@ describe('NbSearchSection S2 mounted surfaces', () => {
     expect(readNbSearchKeyUsage).toHaveBeenLastCalledWith('exa.default', true);
   });
 
+  it('shows Add key next to a service that is on with no key, and focuses its key field on click', async () => {
+    getNbSearchCapabilities.mockResolvedValueOnce(PROJECTED_CAPABILITIES);
+    getConfig.mockResolvedValueOnce(CONFIGURED_EXA);
+    const container = await renderSection('/settings/search?tab=search');
+    const row = container.querySelector('[data-nb-search-service-card="exa.search"]')!;
+    expect(row.querySelector('[data-nb-search-service-state]')?.getAttribute('data-nb-search-service-state')).toBe('needsKey');
+    const addKey = row.querySelector<HTMLButtonElement>('[data-nb-search-add-key="exa.search"]')!;
+    expect(addKey).not.toBeNull();
+    expect(addKey.textContent).toBe('Add key');
+    expect(container.querySelector('[data-nb-search-add-key="example.documents"]')).toBeNull();
+
+    await click(addKey);
+    await flush();
+    const input = row.querySelector<HTMLInputElement>('[data-key-input]')!;
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
   it('keeps the key-status read out of the save path', async () => {
     getConfig.mockResolvedValueOnce(CONFIGURED_EXA);
     const container = await renderSection('/settings/search?tab=search');

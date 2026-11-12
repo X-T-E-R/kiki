@@ -11,7 +11,7 @@ import { FeedbackLine, Hint } from '../controls';
 import { RelativeTime } from '../RelativeTime';
 import { SECONDARY_BUTTON } from '../ui';
 import { SettingField } from './fields';
-import { SettingsSelect } from './SettingsPrimitives';
+import { SettingsSelect, TEXT_BUTTON } from './SettingsPrimitives';
 
 const TONE_TEXT = { muted: 'text-ink-soft', ok: 'text-ink', caution: 'text-amber-ink', danger: 'text-danger' } as const;
 
@@ -64,7 +64,7 @@ export function MemoryAdvisorRuntime({ workspaceId, config }: {
         <p data-memory-advisor-runtime-sessions-error className="flex flex-wrap items-center gap-x-2 py-1 text-[12px] text-danger">
           <span>{errorText(locale, sessionsQuery.error)}</span>
           <button type="button" data-memory-advisor-runtime-sessions-retry
-            className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            className={TEXT_BUTTON}
             onClick={() => { void sessionsQuery.refetch(); }}>
             {t('common.retry')}
           </button>

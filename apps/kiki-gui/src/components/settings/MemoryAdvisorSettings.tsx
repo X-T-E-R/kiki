@@ -19,13 +19,12 @@ import { DecisionSourceSummary } from './DecisionSources';
 import { MemoryAdvisorTuning } from './MemoryAdvisorTuning';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingsGroup } from './fields';
+import { TEXT_BUTTON } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 /** Which write a save status belongs to, so only that row says "Saved". */
 type WriteSlot = 'switch' | 'remove';
 
-/** Quiet text action, the same weight as the summary row's 更改. */
-const LINK = 'text-[12px] font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:text-ink-faint disabled:no-underline';
 const SUBTLE_DESTRUCTIVE = 'text-[12px] text-ink-faint transition-colors hover:text-danger hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 disabled:no-underline';
 
 /**
@@ -108,7 +107,7 @@ export function MemoryAdvisorSettingsCard() {
             {destination !== undefined || config !== undefined ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 {destination !== undefined ? (
-                  <button type="button" data-memory-advisor-test className={LINK} disabled={probe.isPending}
+                  <button type="button" data-memory-advisor-test className={TEXT_BUTTON} disabled={probe.isPending}
                     onClick={() => { probe.mutate(destination); }}>
                     {probe.isPending ? t('memory.advisor.testing') : t('memory.advisor.test')}
                   </button>

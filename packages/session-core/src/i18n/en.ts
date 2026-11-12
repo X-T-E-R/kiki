@@ -3835,6 +3835,7 @@ export const en = {
   'st.workspaces.select': 'Select',
   'st.extensions.installedSummary': '{plugins} plugins and {skills} skills installed',
   'st.extensions.openCapabilities': 'View on the Capabilities page',
+  'st.plugins.loadFailed': "Couldn't load installed plugins: {detail}",
   'st.plugins.loadInvalid': "Couldn't load installed plugins: the server's reply wasn't in the expected format ({detail})",
   'st.modelMigration.title': 'Legacy model parameter migration',
   'st.modelMigration.hint': 'Preview model parameters to migrate. They apply after you confirm.',

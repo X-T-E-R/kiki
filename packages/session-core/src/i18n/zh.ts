@@ -3807,6 +3807,7 @@ export const zh = {
   'st.workspaces.select': '选择',
   'st.extensions.installedSummary': '已安装 {plugins} 个插件、{skills} 个技能',
   'st.extensions.openCapabilities': '在能力页查看',
+  'st.plugins.loadFailed': '没能读取已安装的插件：{detail}',
   'st.plugins.loadInvalid': '没能读取已安装的插件：服务器返回的格式不对（{detail}）',
   'st.modelMigration.title': '旧版模型参数迁移',
   'st.modelMigration.hint': '预览可迁移的模型参数，确认后生效。',

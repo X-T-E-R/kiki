@@ -2249,7 +2249,6 @@ export const EXTENSIONS_SETTINGS_DEFAULT_TAB: ExtensionsSettingsTab = 'plugins';
 const EXTENSIONS_TAB_BY_CARD: Readonly<Record<string, ExtensionsSettingsTab>> = {
   'st-card-plugins': 'plugins',
   'st-card-caps': 'skills',
-  'st-card-skill-catalog': 'skills',
   'st-card-mcp': 'mcp',
   'st-card-mcp-timeouts': 'mcp',
 };
@@ -2743,7 +2742,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'providers', cardId: 'st-card-engines', titleKey: 'st.engines.title', keywordKeys: ['st.engines.intro', 'st.engines.check'], synonyms: ['外部引擎', 'executor', 'harness', 'Codex', 'Claude Code', 'Grok Build', 'ACP'] },
   { section: 'extensions', tab: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'connection-services', cardId: 'st-card-host-skill', tab: 'clients', titleKey: 'st.hostSkill.title', keywordKeys: ['st.hostSkill.host.claude', 'st.hostSkill.host.codex', 'st.hostSkill.host.grok'], synonyms: ['kiki-as-subagent', 'subagent', '子智能体', 'Claude Code', 'Codex', 'Grok'] },
-  { section: 'extensions', tab: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
   { section: 'developer', tab: 'engine', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.maxRunningTasks', 'st.taskPolicy.fileToolHints', 'st.taskPolicy.advanced', 'st.taskPolicy.killGrace'], synonyms: ['runtime', '运行时', 'max running tasks', 'kill grace', 'kimi -p'] },
   { section: 'sessions', cardId: 'st-card-background-work', titleKey: 'st.sessions.card.background', keywordKeys: ['st.taskPolicy.autoBackground', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive'], synonyms: ['background tasks', '后台任务', 'timeout', '超时'] },
   { section: 'developer', tab: 'overview', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
@@ -2753,7 +2751,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'defaults', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.dev.tokenHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-concurrency', titleKey: 'usage.governance.limitsTitle', keywordKeys: ['usage.governance.addRule', 'usage.governance.emptyBody', 'usage.governance.models'], synonyms: ['concurrency', 'concurrency limits', 'concurrency rules', 'queue', 'rate limit', '并发', '并发限制', '并发规则', '排队'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
-  { section: 'general', cardId: 'st-card-sidebar-nav', titleKey: 'st.sidebarNav.title', keywordKeys: ['st.sidebarNav.hint'], synonyms: ['sidebar tools', 'sidebar nav', 'pinned nav', '侧栏', '导航', '常用工具'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-retry', titleKey: 'st.retry.title', keywordKeys: ['st.retry.maxAttempts', 'st.retry.partialResponses', 'st.retry.partialResponsesHint', 'st.retry.policies', 'st.retry.backoff'], synonyms: ['retry', 'partial output', 'extra charges', 'backoff', 'rate limit', '限流', '部分输出', '额外计费', '重试策略'] },
   { section: 'developer', tab: 'engine', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
   { section: 'developer', tab: 'engine', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
@@ -2783,7 +2780,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-diagnostics', titleKey: 'st.nbSearch.diagnosticsTitle', keywordKeys: ['st.nbSearch.diagnosticsHint'], synonyms: ['搜索诊断', 'search diagnostics', 'test'] },
   { section: 'extensions', tab: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace', 'st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['能力', 'mcp 服务器', 'mcp server', 'mcp 状态', 'mcp status'] },
   { section: 'extensions', tab: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
-  { section: 'extensions', tab: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.installedTitle', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
+  { section: 'extensions', tab: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.installedTitle', keywordKeys: ['st.plugins.hint', 'st.skills.catalogTitle', 'st.extensions.openCapabilities'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件', '能力', 'capabilities', '技能目录', 'skill catalog'] },
   // The WebBridge readiness card answers "is browser control working", so it
   // lives on the browser page with the rest of that answer. Its old bookmark
   // follows the card there (LEGACY_CARD_ALIASES).
@@ -2957,6 +2954,8 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-webbridge': { section: 'browser-control', cardId: 'st-card-webbridge' },
   // Recipes became a tab of Models; its flag row joined Models' own rows.
   'st-card-exp-recipes': { section: 'ai', cardId: 'st-card-exp-ai' },
+  // Installed skills and plugins live on Capabilities; Extensions holds one summary line.
+  'st-card-skill-catalog': { section: 'extensions', cardId: 'st-card-plugins' },
 };
 
 /** Which tab a legacy section bookmark maps to. */

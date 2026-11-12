@@ -439,17 +439,21 @@ export function HooksSection() {
     );
   })();
 
+  const askKikiAction = (
+    <AskKikiButton
+      label={t('st.hooks.askKiki')}
+      labelAria={t('st.hooks.askKikiAria')}
+      busy={askingKiki}
+      disabled={!kikiWorkspace.resolved}
+      testId="data-hooks-ask-kiki"
+      onAsk={() => { void askKiki({ skill: 'kiki-hooks', promptKey: 'st.hooks.askKiki.prompt', location: kikiWorkspace.location }); }}
+    />
+  );
+
   return (
-    <SectionCard id="st-card-hooks" title={t('st.hooks.title')} actions={mode === 'form' ? (
+    <SectionCard id="st-card-hooks" title={t('st.hooks.title')} actions={mode === 'form' && !isEmpty ? (
       <>
-        <AskKikiButton
-          label={t('st.hooks.askKiki')}
-          labelAria={t('st.hooks.askKikiAria')}
-          busy={askingKiki}
-          disabled={!kikiWorkspace.resolved}
-          testId="data-hooks-ask-kiki"
-          onAsk={() => { void askKiki({ skill: 'kiki-hooks', promptKey: 'st.hooks.askKiki.prompt', location: kikiWorkspace.location }); }}
-        />
+        {askKikiAction}
         <button type="button" className={SECONDARY_BUTTON} data-hooks-add disabled={saving || configQuery.data === undefined} onClick={addRule}>{t('st.hooks.addRule')}</button>
       </>
     ) : undefined}>
@@ -468,13 +472,12 @@ export function HooksSection() {
           ) : (
             <>
               {isEmpty ? (
-                // The empty state teaches the two kinds, then hands over the
-                // one way to start.
-                <div className="space-y-2 py-2" data-hooks-empty>
+                <div className="space-y-2.5 py-2" data-hooks-empty>
                   <Hint>{t('st.hooks.empty')}</Hint>
                   <Hint>{t('st.hooks.emptyBody')}</Hint>
-                  <div>
+                  <div className="flex flex-wrap items-center gap-2">
                     <button type="button" className={SECONDARY_BUTTON} data-hooks-add disabled={saving || configQuery.data === undefined} onClick={addRule}>{t('st.hooks.addRule')}</button>
+                    {askKikiAction}
                   </div>
                 </div>
               ) : (

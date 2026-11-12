@@ -39,6 +39,12 @@ const PLUGIN = {
 };
 
 const listPlugins = vi.fn(async (): Promise<{ plugins: readonly (typeof PLUGIN | Record<string, unknown>)[] }> => ({ plugins: [PLUGIN] }));
+const listWorkspaceCatalog = vi.fn(async () => ({
+  items: [{ id: 'ws-notes', root: '/tmp/notes', name: 'Notes', pinned: false, created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z' }],
+}));
+const listWorkspaceSkills = vi.fn(async () => ({
+  skills: [{ name: 'notes-skill', description: 'Skill', path: '/tmp/notes/SKILL.md', source: 'plugin' }],
+}));
 const checkPluginUpdates = vi.fn(async (): Promise<readonly unknown[]> => []);
 const listPluginMarketplace = vi.fn(async (): Promise<PluginMarketplaceResponse> => ({
   configured: false,
@@ -152,6 +158,8 @@ vi.mock('../../host', () => ({
 // Fill the hoisted client now that every mock function exists.
 Object.assign(mocks.client, {
   listPlugins,
+  listWorkspaceCatalog,
+  listWorkspaceSkills,
   checkPluginUpdates,
   listPluginMarketplace,
   getPlugin,
@@ -195,7 +203,10 @@ beforeAll(() => {
 afterEach(() => {
   for (const root of roots.splice(0)) root.unmount();
   for (const container of containers.splice(0)) container.remove();
-  listPlugins.mockClear();
+  listPlugins.mockReset();
+  listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
+  listWorkspaceCatalog.mockClear();
+  listWorkspaceSkills.mockClear();
   checkPluginUpdates.mockReset();
   checkPluginUpdates.mockResolvedValue([]);
   listPluginMarketplace.mockClear();
@@ -408,25 +419,9 @@ describe('PluginsSection', () => {
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('says what a plugin does for new sessions, and changes the default only on its own page', async () => {
-    // A plugin installed with "decide later" is enabled but not on by default.
-    // The row says so in words; it has one switch, and that switch never moves
-    // the default. The default is its own switch on the plugin's page.
+  it('changes a plugin\'s default for new sessions on its own settings page', async () => {
     const later = { ...PLUGIN, globalEnabled: false, defaultEnabled: false };
     listPlugins.mockResolvedValue({ plugins: [later] });
-    const container = await renderLeafAt('/settings/plugins');
-    await flush();
-    const row = container.querySelector('[data-plugin-row="notes"]')!;
-    expect(row.querySelector('[data-plugin-status]')!.getAttribute('data-plugin-status')).toBe('on-demand');
-    expect(row.textContent).toContain('On when you turn it on');
-    expect(row.querySelectorAll('[role="switch"]')).toHaveLength(1);
-    await click(row.querySelector('input[type="checkbox"]')!);
-    await flush();
-    expect(setPluginState).toHaveBeenCalledExactlyOnceWith('notes', { enabled: false, defaultEnabled: false });
-    expect(setPluginEnabled).not.toHaveBeenCalled();
-    expect(locationOf(container)).toBe('/settings/plugins');
-
-    setPluginState.mockClear();
     const page = await renderPlugin('notes');
     const defaultSwitch = page.querySelector('[data-plugin-default-switch] input[type="checkbox"]') as HTMLInputElement;
     expect(defaultSwitch.checked).toBe(false);
@@ -437,15 +432,12 @@ describe('PluginsSection', () => {
   });
 
   it.each([
-    { surface: 'list', enabled: true },
-    { surface: 'list', enabled: false },
-    { surface: 'page', enabled: true },
-    { surface: 'page', enabled: false },
-  ])('toggles an older server plugin from $enabled on the $surface without sending defaultEnabled', async ({ surface, enabled }) => {
+    { enabled: true },
+    { enabled: false },
+  ])('toggles an older server plugin from $enabled on its own page without sending defaultEnabled', async ({ enabled }) => {
     listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, enabled, globalEnabled: enabled }] });
-    const container = surface === 'list' ? await renderLeaf() : await renderPlugin('notes');
-    const selector = surface === 'list' ? '[data-plugin-row-switch="notes"]' : '[data-plugin-settings-switch]';
-    await click(container.querySelector(`${selector} input[type="checkbox"]`)!);
+    const container = await renderPlugin('notes');
+    await click(container.querySelector('[data-plugin-settings-switch] input[type="checkbox"]')!);
     await flush();
     expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', !enabled);
     expect(setPluginState).not.toHaveBeenCalled();
@@ -691,77 +683,44 @@ describe('PluginsSection', () => {
     expect(container.querySelector('#plugins-shelf-official [data-catalog-row="kiki-extract"]')).not.toBeNull();
   });
 
-  it('lists the installed plugins as the settings leaf, with no form to edit in place', async () => {
+  it('renders the Extensions installed summary line with a link to Capabilities instead of listing installed plugins', async () => {
     const container = await renderLeaf();
-    const row = container.querySelector('[data-plugin-row="notes"]')!;
-    expect(row.textContent).toContain('Notes');
-    expect(row.textContent).toContain('Local folder');
-    expect(row.textContent).toContain('On in new sessions');
-    expect(row.textContent).toContain('1 skill');
-    expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
-    // The market stays in Capabilities: this leaf links there once, and offers
-    // no catalog address of its own.
-    expect(container.querySelector('[data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities?view=market');
-    expect(container.querySelector('[data-catalog-source]')).toBeNull();
-    // Configuration happens on the plugin's own page, never inside this list.
+    await flush();
+    const card = container.querySelector('#st-card-plugins')!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('1 plugins and 1 skills installed');
+    const link = card.querySelector<HTMLAnchorElement>('[data-extensions-open-capabilities]')!;
+    expect(link.getAttribute('href')).toBe('/capabilities');
+    expect(link.textContent).toBe('View on the Capabilities page');
+    expect(container.querySelector('[data-plugin-row]')).toBeNull();
+    expect(container.querySelector('[data-plugins-installed-list]')).toBeNull();
     expect(container.querySelector('[data-plugin-settings]')).toBeNull();
   });
 
-  it('puts the one marketplace action at the top of the card, never below the list', async () => {
-    // Skills and MCP put theirs in the first card at the top; this leaf does
-    // the same so the way into the market reads the same on all three. One
-    // action, one place: a second copy under the list would be the same move
-    // offered twice, and the reader would not know which one is canonical.
-    const container = await renderLeaf();
-    const card = container.querySelector('#st-card-plugins')!;
-    expect(card.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
-    const list = card.querySelector('[data-plugins-installed-list]')!;
-    const link = card.querySelector('[data-plugins-market-link]')!;
-    // Ahead of the list it acts on, and reachable from the card's first screen.
-    expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(link.getAttribute('href')).toBe('/capabilities?view=market');
-    // Labelled as finding a plugin, which is not this page's own job of
-    // managing the installed ones.
-    expect(link.textContent).toContain('Find plugins in the market');
-    expect(card.textContent).not.toContain('Manage plugins');
-  });
-
-  it('keeps the marketplace action reachable before, and without, the installed list', async () => {
-    const entry = () => document.querySelector('[data-plugins-market-link]');
-    // Nothing installed: the state where finding one is the only thing to do.
-    listPlugins.mockResolvedValue({ plugins: [] });
-    const empty = await renderLeaf();
+  it('reports parse failures and server errors on the Extensions summary line with Retry', async () => {
+    const zodError = Object.assign(new Error('invalid payload'), {
+      name: 'ZodError',
+      issues: [{ path: ['plugins', 0, 'state'], message: 'Invalid enum value' }],
+    });
+    listPlugins.mockRejectedValueOnce(zodError);
+    const invalid = await renderLeaf();
     await flush();
-    expect(empty.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
-    expect(empty.querySelector('[data-plugins-installed-empty]')).not.toBeNull();
+    expect(invalid.querySelector('[data-plugins-installed-error]')?.textContent).toContain(
+      "Couldn't load installed plugins: the server's reply wasn't in the expected format (plugins.0.state: Invalid enum value)",
+    );
+    expect(invalid.querySelector('[data-settings-retry]')?.textContent).toBe('Retry');
 
-    // Still loading: the action must not wait on a query it does not need.
-    listPlugins.mockImplementation(() => new Promise(() => {}));
-    const pending = await renderLeaf();
-    await flush();
-    expect(pending.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
-    // Still the card's own busy line, with the action above it rather than a
-    // page that has nothing to offer yet.
-    expect(pending.textContent).toContain('Loading…');
-
-    // And when the list fails to load, the way out is still there.
-    listPlugins.mockRejectedValue(new Error('list failed'));
+    listPlugins.mockRejectedValueOnce(new Error('list failed'));
     const failed = await renderLeaf();
     await flush();
-    expect(failed.querySelectorAll('[data-plugins-market-link]')).toHaveLength(1);
-    expect(failed.querySelector('[data-plugins-installed-error]')).not.toBeNull();
-
-    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
-    listPlugins.mockClear();
+    expect(failed.querySelector('[data-plugins-installed-error]')?.textContent).toContain("Couldn't load installed plugins: list failed");
+    await click(failed.querySelector('[data-settings-retry]')!);
+    await flush();
+    expect(failed.querySelector('[data-plugins-installed-error]')).toBeNull();
+    expect(failed.querySelector('#st-card-plugins')?.textContent).toContain('1 plugins and 1 skills installed');
   });
 
-
-
-  it('sends a plugin row to that plugin\'s own settings page', async () => {
-    // The row navigates and the route decides what renders, so the leaf is
-    // mounted through the same route the row points to — which is what a copied
-    // link, a refresh and the back button do too.
+  it('opens a plugin\'s own settings page at ?plugin=<id> and returns to the summary leaf on Back', async () => {
     const container = await renderLeafAt('/settings/plugins?plugin=notes');
     expect(container.querySelector('[data-plugin-settings-page="notes"]')).not.toBeNull();
     expect(container.querySelector('[data-plugin-settings-page="notes"]')?.textContent).toContain('Notes');
@@ -769,25 +728,8 @@ describe('PluginsSection', () => {
     await click(container.querySelector('[data-plugin-settings-back]')!);
     await flush();
     expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
-    expect(container.querySelector('[data-plugin-row="notes"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
     expect(locationOf(container)).toBe('/settings/plugins');
-  });
-
-  it('reaches a plugin\'s page from the list, and back, in one visit', async () => {
-    const container = await renderLeafAt('/settings/plugins');
-    await click(container.querySelector('[data-plugin-open-settings="notes"]')!);
-    await flush();
-    expect(locationOf(container)).toBe('/settings/plugins?plugin=notes');
-    expect(container.querySelector('[data-plugin-settings-page="notes"]')).not.toBeNull();
-  });
-
-  it('toggles a plugin from the installed list without opening its settings', async () => {
-    const container = await renderLeaf();
-    await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
-    await flush();
-    expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
-    expect(setPluginState).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
   });
 
   it('gives an installed plugin its own page: name, a way back, its switch and its form', async () => {
@@ -831,27 +773,14 @@ describe('PluginsSection', () => {
   });
 
   it('keeps the navigation and an open page in step with the installed list as it changes', async () => {
-    // The flattened tree never lists installed plugins — a plugin's own page
-    // names itself in the header breadcrumb instead, and both read the one
-    // installed-plugins query. So that query is what the header must follow:
-    // it names what the server has reported, and stops naming it once the
-    // list moves on — without an unrelated re-render happening to re-read
-    // the cache.
     listPlugins.mockResolvedValue({
       plugins: [PLUGIN, { ...PLUGIN, id: 'later', displayName: 'Later', enabled: false }],
     });
-    const container = await renderLeafAt('/settings/plugins');
-    // The list is a query of its own, so it lands a tick after the page does.
+    const container = await renderLeafAt('/settings/plugins?plugin=notes');
     await flush();
     await flush();
     expect(container.querySelector('[data-settings-nav-plugin]')).toBeNull();
-    expect(container.querySelector('[data-settings-plugin-title]')).toBeNull();
-
-    // Open a plugin's own page the way a reader does, by clicking its row.
-    await click(container.querySelector('[data-plugin-open-settings="notes"]')!);
-    await flush();
     expect(locationOf(container)).toBe('/settings/plugins?plugin=notes');
-    // The page names the open plugin in the breadcrumb.
     expect(container.querySelector('[data-settings-plugin-title]')?.textContent).toBe('Notes');
 
     // The list changes while that page is open — the crumb follows it
@@ -863,7 +792,6 @@ describe('PluginsSection', () => {
       container.querySelector('[data-settings-plugin-title]')?.textContent,
       'a plugin gone from the list must leave the breadcrumb',
     ).toBe('notes');
-    // Hand the shared mock back the way the rest of the file expects to find it.
     listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
 

@@ -895,15 +895,12 @@ describe('SettingsPage memory advisor', () => {
 });
 
 describe('SettingsPage batch-3 leaves', () => {
-  it('mounts the skills leaf with discovery defaults and the catalog managed in place', async () => {
+  it('mounts the skills leaf with discovery defaults and the Extensions summary line', async () => {
     const container = await renderSettings('/settings/skills');
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
     expect(container.querySelector('#st-card-caps [data-settings-panel-scope]')?.textContent).toContain('connected server');
-    // Batch X: the catalog is managed on the leaf itself; the Capabilities
-    // page stays one click away as a plain secondary link.
-    expect(container.querySelector('#st-card-skill-catalog [data-skills-view]')).not.toBeNull();
-    expect(container.querySelector('#st-card-skill-catalog [data-skills-browse-link]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
-    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')).toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-extensions-open-capabilities]')?.getAttribute('href')).toBe('/capabilities');
   });
 
   it('renders and saves the GUI request timeout in seconds', async () => {
@@ -1441,7 +1438,8 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/capabilities');
     await flush();
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
-    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).toBeNull();
   });
 
   it('follows a legacy capabilities card hash to its new leaf', async () => {
@@ -1458,14 +1456,13 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-sidecar')).toBeNull();
   });
 
-  it('mounts the plugins leaf with the installed-plugins card', async () => {
+  it('mounts the plugins leaf with the Extensions summary line and link to Capabilities', async () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    // The list is the leaf's subject; the market is reached by one link, and no
-    // configuration form opens in place.
-    expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities?view=market');
+    expect(container.querySelector('#st-card-plugins [data-extensions-installed-counts]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-extensions-open-capabilities]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugins-installed-list]')).toBeNull();
     expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
     // The browser runtime card is a browser fact, not a plugin one.
     expect(container.querySelector('#st-card-webbridge')).toBeNull();
@@ -1477,7 +1474,8 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(container.querySelector('[data-capabilities-shim-note]')).toBeNull();
     expect(container.textContent).not.toContain('split into dedicated settings pages');
-    expect(container.querySelector('#st-card-skill-catalog')).not.toBeNull();
+    expect(container.querySelector('#st-card-caps')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog')).toBeNull();
   });
 
   it('saves tool policy with the narrow patch and invalidates only the tools query', async () => {
@@ -1519,7 +1517,8 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=skills');
     expect(extensions.querySelector('#st-card-caps')).not.toBeNull();
-    expect(extensions.querySelector('#st-card-skill-catalog')).not.toBeNull();
+    expect(extensions.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(extensions.querySelector('#st-card-skill-catalog')).toBeNull();
 
     await click(extensions.querySelector('[data-extensions-tab="mcp"]')!);
     await flush();
@@ -2159,5 +2158,27 @@ describe('SettingsPage object links survive an address hash', () => {
     await flush();
     expect(container.querySelector('#st-card-workspaces')).not.toBeNull();
     expect(container.querySelector('[data-workspace-detail-name]')).toBeNull();
+  });
+
+  it('redirects #st-card-skill-catalog to the Extensions summary line and hides Worktrees Clean up when empty', async () => {
+    const skillsLink = await renderSettings('/settings/extensions?tab=skills#st-card-skill-catalog', { guarded: true });
+    await flush();
+    expect(skillsLink.querySelector('#st-card-plugins')).not.toBeNull();
+
+    client.klient.rest = {
+      worktrees: {
+        list: async () => ({ worktrees: [] }),
+        getPolicy: async () => ({ cleanup: { afterDays: 7 } }),
+      },
+    } as never;
+    try {
+      const emptyWorktrees = await renderSettings('/settings/workspaces');
+      await flush();
+      expect(emptyWorktrees.querySelector('#st-card-worktrees')).not.toBeNull();
+      expect(emptyWorktrees.querySelector('[data-worktrees-empty]')).not.toBeNull();
+      expect(emptyWorktrees.querySelector('[data-worktrees-cleanup]')).toBeNull();
+    } finally {
+      client.klient.rest = undefined;
+    }
   });
 });

@@ -11,13 +11,14 @@ import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { McpSection } from './McpSection';
 import { PluginsSection } from './PluginsSection';
+import { InstalledPluginsList } from './plugins/InstalledPluginsList';
 import { SkillsSection } from './SkillsSection';
 
 /**
- * Extensions & tools: one navigation leaf unifying Plugins, Skills, and MCP.
- * When `?plugin=<id>` is present, the plugin's dedicated settings page renders
- * directly; otherwise the reader switches between Plugins, Skills, and MCP via
- * top tabs while preserving `?workspace=` context.
+ * Extensions & tools: sources and defaults for Skills and MCP, with one
+ * summary line above the tabs linking to the Capabilities page where installed
+ * plugins and skills are listed. When `?plugin=<id>` is present, that plugin's
+ * own settings page renders directly.
  */
 export function ExtensionsSection({ pluginId }: { readonly pluginId: string | null }) {
   const { t } = useI18n();
@@ -40,6 +41,7 @@ export function ExtensionsSection({ pluginId }: { readonly pluginId: string | nu
 
   return (
     <div className="space-y-4">
+      <InstalledPluginsList />
       <div role="tablist" aria-label={t('st.section.extensions')} className="flex flex-wrap gap-1 border-b border-hairline">
         {EXTENSIONS_SETTINGS_TABS.map((candidate) => {
           const active = candidate === tab;
@@ -64,7 +66,7 @@ export function ExtensionsSection({ pluginId }: { readonly pluginId: string | nu
       </div>
       {tab === 'skills' ? <SkillsSection />
         : tab === 'mcp' ? <McpSection />
-        : <PluginsSection pluginId={null} />}
+        : null}
     </div>
   );
 }

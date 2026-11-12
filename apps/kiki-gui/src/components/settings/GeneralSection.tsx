@@ -3,9 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { clearStoredDrafts } from '@kiki/session-core/composer';
 import type { Locale } from '@kiki/session-core/i18n';
 import {
-  ALL_SIDEBAR_NAV_KEYS,
   readDesktopPrefs,
-  shownPinnedNavItems,
   writeDesktopPrefs,
   writeLayoutPreferences,
   writeSettings,
@@ -16,7 +14,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { useCoarsePointer, useLayoutPreferences, usePhoneMode } from '../../lib/layoutHooks';
+import { useCoarsePointer, usePhoneMode } from '../../lib/layoutHooks';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Toggle } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -37,16 +35,13 @@ export function GeneralSection() {
   const host = useHost();
   const { t, locale, setLocale } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
-  const layoutPrefs = useLayoutPreferences();
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
   const isDesktop = host.kind === 'tauri';
   // Touch: Enter is always the newline key there, so the send-key choice has
-  // nothing to choose. Phone mode: the terminal's opt-in, and the tools the
-  // drawer shows when this phone never picked any.
+  // nothing to choose. Phone mode: the terminal's opt-in.
   const coarsePointer = useCoarsePointer();
   const phoneMode = usePhoneMode();
-  const pinnedNavItems = shownPinnedNavItems(layoutPrefs, phoneMode);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -180,36 +175,6 @@ export function GeneralSection() {
             </SettingField>
             <SpacePrefOrigin item="worktreeSkipConfirm" label={t('st.composer.worktreeConfirm')} />
           </div>
-        </SettingsBox>
-      </SectionCard>
-
-      <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
-        <SettingsBox data-sidebar-nav-toggles>
-          {ALL_SIDEBAR_NAV_KEYS.map((key) => {
-            const isPinned = pinnedNavItems.includes(key);
-            const label = key === 'personas'
-              ? t('persona.nav')
-              : key === 'discover'
-                ? t('discovery.title')
-                : t(`nav.${key}`);
-            return (
-              <SettingField key={key} label={label}>
-                <span data-nav-item-toggle={key} className="contents">
-                  <Toggle
-                    layout="bare"
-                    label={label}
-                    checked={isPinned}
-                    onChange={(checked) => {
-                      const next = checked
-                        ? Array.from(new Set([...pinnedNavItems, key]))
-                        : pinnedNavItems.filter((k) => k !== key);
-                      writeLayoutPreferences({ pinnedNavItems: next });
-                    }}
-                  />
-                </span>
-              </SettingField>
-            );
-          })}
         </SettingsBox>
       </SectionCard>
 

@@ -158,19 +158,35 @@ describe('workspace trust consumers', () => {
     expect(container.textContent).not.toContain('Loading workspaces');
   });
 
-  it('pins a row through the scoped catalog write, and reads the pin back', async () => {
-    catalogEntries = [catalogEntry('/work/project', 'Example'), catalogEntry('/work/other', 'Other', 'wd_other_000000000000')];
+  it('pins a row from its ⋯ menu through the scoped catalog write, and hides selection controls until Select is pressed', async () => {
+    catalogEntries = [
+      catalogEntry('/work/project', 'Example'),
+      catalogEntry('/work/other', 'Other', 'wd_other_000000000000'),
+      catalogEntry('/work/third', 'Third', 'wd_third_000000000000'),
+    ];
     const container = await mount(<WorkspacesSection />);
-    const pin = container.querySelector<HTMLButtonElement>('[data-workspace-pin="wd_example_000000000000"]')!;
-    expect(pin.getAttribute('aria-pressed')).toBe('false');
-    await act(async () => { pin.click(); });
+    expect(container.querySelector('[data-list-toolbar]')).toBeNull();
+    expect(container.querySelector('[data-list-search]')).toBeNull();
+    expect(container.querySelector('[data-list-filters]')).toBeNull();
+    expect(container.querySelector('[data-list-sort]')).toBeNull();
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    expect(container.querySelector('[data-workspace-pin]')).toBeNull();
+
+    await click('[data-workspace-more="wd_example_000000000000"]', container);
+    const pinItem = document.querySelector<HTMLButtonElement>('[data-workspace-menu] [data-menu-item="pin"]')!;
+    expect(pinItem.textContent).toContain('Pin to the top');
+    await act(async () => { pinItem.click(); });
     await flush(); await flush();
     expect(client.setWorkspacePinnedCatalog).toHaveBeenCalledExactlyOnceWith('wd_example_000000000000', true);
-    // A row's pin is a fact about one workspace: the full-projection write,
-    // whose response waits on a count and a Git probe, is not what this does.
     expect(client.setWorkspacePinned).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-workspace-pin="wd_example_000000000000"]')!.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('[data-workspace-pin="wd_other_000000000000"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelector('[data-list-group="pinned"]')).not.toBeNull();
+
+    await click('[data-workspaces-select]', container);
+    expect(container.querySelector('[data-list-bulk]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-workspace-row] input[type="checkbox"]')).toHaveLength(3);
+    await click('[data-workspaces-select]', container);
+    expect(container.querySelector('[data-list-bulk]')).toBeNull();
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
   });
 
   it('offers a pinned filter for a long catalog list without inventing session counts or sort controls', async () => {
@@ -222,21 +238,27 @@ describe('workspace trust consumers', () => {
     expect(client.trustWorkspace).not.toHaveBeenCalled();
     expect(client.untrustWorkspace).not.toHaveBeenCalled();
   });
-  it('folds failed trust reads into one page-level line instead of one raw error per row', async () => {
+  it('folds failed trust reads into one counted page-level line with Retry and no Unknown row tags', async () => {
     client.listWorkspaceCatalog.mockResolvedValue({
       items: [catalogEntry('/work/project', 'Example'), catalogEntry('/work/other', 'Other', 'wd_other_000000000000')],
     });
     client.getWorkspaceTrust.mockRejectedValue(new Error('workspace not found: wd_example_000000000000 (code 40410)'));
     const container = await mount(<WorkspacesSection />);
-    // No raw server text anywhere: the aggregate line says what failed, and
-    // no row prints the server's English under itself.
     expect(container.querySelectorAll('[data-workspace-trust-failure]')).toHaveLength(1);
-    expect(container.querySelector('[data-workspace-trust-failure]')!.textContent).toContain('Could not read trust state for some workspaces');
+    expect(container.querySelector('[data-workspace-trust-failure]')!.textContent).toContain("Couldn't read the trust status of 2 workspaces");
+    expect(container.querySelector('[data-workspace-trust-failure] [data-settings-retry]')!.textContent).toBe('Retry');
     expect(container.textContent).not.toContain('workspace not found');
     expect(container.textContent).not.toContain('40410');
-    // A failed read hides the tag rather than guessing a state.
     expect(container.querySelector('[data-workspace-trust-badge]')).toBeNull();
+    expect(container.querySelector('[data-workspace-trust-unknown]')).toBeNull();
+    expect(container.textContent).not.toContain('Unknown');
     expect(client.trustWorkspace).not.toHaveBeenCalled();
+
+    client.getWorkspaceTrust.mockResolvedValue({ trusted: true });
+    await click('[data-workspace-trust-failure] [data-settings-retry]', container);
+    await flush();
+    expect(container.querySelector('[data-workspace-trust-failure]')).toBeNull();
+    expect(container.querySelectorAll('[data-workspace-trust-badge]')).toHaveLength(2);
   });
   it('shows an accurate error and retry action in MCP view when reading trust fails', async () => {
     client.listWorkspaceCatalog.mockResolvedValue({ items: [

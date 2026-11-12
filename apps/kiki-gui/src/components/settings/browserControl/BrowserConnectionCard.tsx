@@ -819,7 +819,7 @@ export function BrowserConnectionCard({ adding, onAddingChange }: {
             <div data-browser-empty className="space-y-2.5 py-2">
               <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
               <Hint>{t('st.browser.emptyBody')}</Hint>
-              <button type="button" className={PRIMARY_BUTTON} data-browser-empty-add onClick={() => { onAddingChange(true); }}>
+              <button type="button" className={PRIMARY_BUTTON} data-browser-add data-browser-empty-add onClick={() => { onAddingChange(true); }}>
                 {t('st.browser.add')}
               </button>
             </div>
