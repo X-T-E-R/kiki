@@ -30,7 +30,7 @@ import type {
 import { I18nProvider } from '../../i18n';
 import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
-import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
+import { OptionalCapabilityRows, type OptionalCapabilityId } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
 import { ActivityFeed, CapabilitiesBlock, ProfileHead, profileEffortDisplay } from './DefaultSections';
 
@@ -807,6 +807,85 @@ describe('OptionalCapabilityRows', () => {
     expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+  });
+
+  it('grows to a 44px whole-row touch target on coarse pointers while keeping blocked rows inert and Restore independent', async () => {
+    let coarse = false;
+    const originalMatchMedia = window.matchMedia;
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(pointer: coarse)' && coarse,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })));
+
+    try {
+      getSessionCaps.mockResolvedValue(buildSessionCapabilities({
+        memory: { allowed: false, effective: false, source: 'off', reason: 'allowed_off' },
+      }));
+      setSessionCap.mockImplementation(async (_sessionId: string, body: { id: OptionalCapabilityId; choice: 'inherit' | 'on' | 'off' }) =>
+        buildSessionCapabilities({
+          memory: { allowed: false, effective: false, source: 'off', reason: 'allowed_off' },
+          [body.id]: {
+            choice: body.choice,
+            effective: body.choice === 'on',
+            source: body.choice === 'inherit' ? 'default' : 'session',
+            reason: body.choice === 'off' ? 'session_off' : 'admitted',
+          },
+        }),
+      );
+
+      queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <OptionalCapabilityRows sessionId="sess-touch" />
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await settle();
+
+      const browserRow = container.querySelector<HTMLElement>('[data-optional-capability="browser"]')!;
+      const memoryRow = container.querySelector<HTMLElement>('[data-optional-capability="memory"]')!;
+      expect(browserRow.className).toContain('min-h-7');
+      expect(browserRow.className).toContain('pointer-coarse:min-h-11');
+
+      // On fine pointer (mouse), clicking the label does NOT flip the switch.
+      const browserLabel = browserRow.querySelector<HTMLElement>('span')!;
+      await act(async () => { browserLabel.click(); });
+      expect(setSessionCap).not.toHaveBeenCalled();
+
+      // On coarse pointer (touch), tapping the label part flips the switch.
+      coarse = true;
+      await act(async () => { browserLabel.click(); });
+      await settle();
+      expect(setSessionCap).toHaveBeenLastCalledWith('sess-touch', { id: 'browser', choice: 'on' });
+      expect(browserRow.getAttribute('data-optional-effective')).toBe('true');
+
+      // Tapping Restore restores inheritance without flipping.
+      const restore = browserRow.querySelector<HTMLButtonElement>('[data-optional-restore="browser"]')!;
+      expect(restore).not.toBeNull();
+      setSessionCap.mockClear();
+      await act(async () => { restore.click(); });
+      await settle();
+      expect(setSessionCap).toHaveBeenCalledTimes(1);
+      expect(setSessionCap).toHaveBeenCalledWith('sess-touch', { id: 'browser', choice: 'inherit' });
+      expect(browserRow.getAttribute('data-optional-choice')).toBe('inherit');
+
+      // Tapping a blocked row does nothing.
+      setSessionCap.mockClear();
+      const memoryLabel = memoryRow.querySelector<HTMLElement>('span')!;
+      await act(async () => { memoryLabel.click(); });
+      expect(setSessionCap).not.toHaveBeenCalled();
+    } finally {
+      vi.stubGlobal('matchMedia', originalMatchMedia);
+    }
   });
 });
 

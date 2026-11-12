@@ -126,6 +126,11 @@ describe('SubagentEndedRow trailing actions', () => {
       expect(tile.className).not.toContain('border');
       expect(tile.className).not.toContain('px-2');
     }
+
+    // ActivityRow itself keeps 26px on desktop and grows to at least 40px on touch.
+    const shell = container.querySelector('[data-activity-toggle]')!;
+    expect(shell.className).toContain('min-h-[26px]');
+    expect(shell.className).toContain('pointer-coarse:min-h-10');
   });
 
   it('keeps both click targets wired to their entries', async () => {

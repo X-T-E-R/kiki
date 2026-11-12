@@ -7,6 +7,9 @@
  * so the tests drive the menus without opening real previews.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
@@ -642,5 +645,14 @@ describe('mobile reading & containment', () => {
       trigger.click();
     });
     expect(openImage).toHaveBeenCalledOnce();
+  });
+
+  it('extends .kiki-md link tap area into the line leading on coarse pointers without altering line-height', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../index.css'), 'utf8');
+    const coarseBlock = css.match(/@media \(pointer: coarse\) \{\s*\.kiki-md a \{[\s\S]*?\}\s*\}/);
+    expect(coarseBlock).not.toBeNull();
+    expect(coarseBlock![0]).toContain('padding-block: 0.25em;');
+    expect(coarseBlock![0]).toContain('margin-block: -0.25em;');
+    expect(coarseBlock![0]).not.toContain('line-height');
   });
 });

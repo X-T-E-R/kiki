@@ -6,6 +6,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
+import { isCoarsePointer } from '../../lib/layoutHooks';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
 import { FOCUS_RING } from '../rail-variants/shell';
@@ -269,6 +270,7 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
         const fact = t(factKey(row));
         const nextChoice: Choice = row.effective ? 'off' : 'on';
         return (
+          /* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- touch extends the tap area to the whole row while keyboard/AT use the checkbox and Restore button */
           <div
             key={row.id}
             data-optional-capability={row.id}
@@ -276,7 +278,21 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
             data-optional-effective={row.effective ? 'true' : 'false'}
             data-optional-reason={row.reason}
             title={`${t(LABEL[row.id])} · ${fact} · ${appliesText}`}
-            className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
+            onClick={(event) => {
+              if (!isCoarsePointer()) return;
+              const target = event.target;
+              if (
+                target instanceof Element
+                && target.closest('button, label, input, [data-optional-toggle], [data-optional-restore]') !== null
+              ) {
+                return;
+              }
+              if (blocked) return;
+              choose(row.id, nextChoice);
+            }}
+            className={`flex min-h-7 pointer-coarse:min-h-11 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0 ${
+              blocked ? 'pointer-coarse:cursor-not-allowed' : 'pointer-coarse:cursor-pointer'
+            }`}
           >
             <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <span
@@ -299,8 +315,11 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
                     type="button"
                     data-optional-restore={row.id}
                     data-optional-set="inherit"
-                    onClick={() => { choose(row.id, 'inherit'); }}
-                    className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink ${FOCUS_RING}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      choose(row.id, 'inherit');
+                    }}
+                    className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink pointer-coarse:min-h-10 pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:px-1.5 ${FOCUS_RING}`}
                   >
                     {t('rail.plugins.restore')}
                   </button>

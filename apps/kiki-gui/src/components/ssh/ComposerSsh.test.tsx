@@ -170,6 +170,16 @@ describe('ComposerSsh', () => {
     expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
     // Expand/collapse button must not appear for <= 3 hosts
     expect(container.querySelector('[data-composer-ssh-expand]')).toBeNull();
+    // Desktop keeps 20x20 remove button on a 24px chip; touch grows remove to 40x40 separated from name
+    const chip = container.querySelector('[data-composer-ssh-chip="h1"]')!;
+    const removeBtn = chip.querySelector('[data-composer-ssh-chip-remove]')!;
+    expect(chip.className).toContain('h-6');
+    expect(chip.className).toContain('pointer-coarse:min-h-10');
+    expect(removeBtn.className).toContain('h-5');
+    expect(removeBtn.className).toContain('w-5');
+    expect(removeBtn.className).toContain('pointer-coarse:h-10');
+    expect(removeBtn.className).toContain('pointer-coarse:w-10');
+    expect(removeBtn.className).toContain('pointer-coarse:ml-1.5');
   });
 
   it('3 hosts: still directly shows all chips without folding', async () => {

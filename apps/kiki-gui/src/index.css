@@ -1760,6 +1760,14 @@ input[data-add-search]:focus-visible {
   text-decoration-color: var(--color-hairline-strong);
   transition: color 150ms ease-out, text-decoration-color 150ms ease-out;
 }
+@media (pointer: coarse) {
+  .kiki-md a {
+    padding-block: 0.25em;
+    margin-block: -0.25em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+}
 .kiki-md a:hover {
   color: var(--color-selected-ink);
   text-decoration-color: var(--color-selected-ink);

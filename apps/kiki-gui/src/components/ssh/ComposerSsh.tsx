@@ -362,7 +362,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
               title={t('composer.ssh.removeChip', { name: host.name })}
               disabled={pending.has(host.id)}
               onClick={() => void toggle(host, false)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:h-8 pointer-coarse:w-8"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1.5 pointer-coarse:min-h-10 pointer-coarse:min-w-10 pointer-coarse:h-10 pointer-coarse:w-10"
             >
               <Icon name="close" size={12} />
             </button>
