@@ -18,8 +18,16 @@ import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import {
   browsableRemote, connectionAddress, connectionsApi, hasGuiPurpose,
-  remoteConnectionKeys, purposeKeys, remoteSummaryView, useRemoteConnections,
+  remoteConnectionKeys, remoteSummaryView, useRemoteConnections,
 } from '../../lib/remoteConnections';
+import {
+  hasThreadBridgesApi,
+  remoteThreadMessageDirection,
+  threadBridgeKeys,
+  threadMessageFactKey,
+  useThreadBridges,
+  type ThreadMessageFact,
+} from '../../lib/threadBridges';
 import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
 import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
 import { useConnection } from '../../state/connection';
@@ -33,6 +41,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SpaceRowMenu } from './spaces/SpaceRowMenu';
 import { AddConnectionDialog } from './remote/AddConnectionDialog';
+import { ThreadMessagesPanel } from './remote/ThreadMessagesPanel';
 import { RemoteStateChip, connectionFailureText } from './remote/parts';
 import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
 
@@ -44,11 +53,14 @@ export function RemoteConnectionsSection() {
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
   const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const connections = useRemoteConnections(control);
+  const threadBridges = useThreadBridges(control);
+  const bridgesAvailable = hasThreadBridgesApi(control);
   const controlTarget = useSpaceSettingsTarget(control);
   const [sshProfiles, setSshProfiles] = useState<SshProfile[]>([]);
   const [dialog, setDialog] = useState<
     | { kind: 'add' }
     | { kind: 'remove'; record: RemoteConnection }
+    | { kind: 'thread-messages'; record: RemoteConnection }
     | { kind: 'ssh'; profile?: SshProfile }
     | null
   >(null);
@@ -58,7 +70,10 @@ export function RemoteConnectionsSection() {
   const records = connections.data ?? [];
   const api = control === null ? null : connectionsApi(control);
   const enterRemoteSpace = useRemoteSpaceEntry();
-  const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all }); };
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+    void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+  };
 
   const listSshProfiles = host.connection?.listSshProfiles;
 
@@ -136,11 +151,23 @@ export function RemoteConnectionsSection() {
 
         {records.length > 0 || sshProfiles.length > 0 ? (
           <div role="list" aria-label={t('st.remote.outboundTitle')} className="space-y-1.5" data-remote-list>
-            {records.map((record) => (
-              <RemoteConnectionRow key={record.id} record={record} busy={busyId === record.id}
-                onEnter={() => { enterRemoteSpace(record.id, record.label); }}
-                onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }} />
-            ))}
+            {records.map((record) => {
+              const threadFact: ThreadMessageFact | null = !bridgesAvailable || threadBridges.isLoading
+                ? (!bridgesAvailable ? 'unreadable' : null)
+                : threadBridges.isError || threadBridges.data === undefined
+                  ? 'unreadable'
+                  : remoteThreadMessageDirection(record, threadBridges.data);
+              return (
+                <RemoteConnectionRow
+                  key={record.id}
+                  record={record}
+                  busy={busyId === record.id}
+                  threadFact={threadFact}
+                  onEnter={() => { enterRemoteSpace(record.id, record.label); }}
+                  onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }}
+                />
+              );
+            })}
             {sshProfiles.map((profile) => (
               <OwnerSshProfileRow key={profile.id} profile={profile}
                 onConnect={() => { setDialog({ kind: 'ssh', profile }); }} />
@@ -165,6 +192,12 @@ export function RemoteConnectionsSection() {
         <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} ariaLabel={t('st.remote.menuAria', { name: menu.record.label })}
           onClose={() => { setMenu(null); }}
           items={[
+            {
+              key: 'thread-messages',
+              label: t('st.remote.threadMessages.menu'),
+              blockedReason: bridgesAvailable ? undefined : t('st.remote.controlUnavailable'),
+              run: () => { setDialog({ kind: 'thread-messages', record: menu.record }); },
+            },
             ...(hasGuiPurpose(menu.record) ? [{
               key: 'retry',
               label: t('st.remote.retry'),
@@ -187,6 +220,14 @@ export function RemoteConnectionsSection() {
               run: () => { setDialog({ kind: 'remove', record: menu.record }); },
             },
           ]} />
+      ) : null}
+
+      {dialog?.kind === 'thread-messages' && control !== null ? (
+        <ThreadMessagesPanel
+          client={control}
+          subject={{ kind: 'outbound', record: dialog.record }}
+          onClose={() => { setDialog(null); }}
+        />
       ) : null}
 
       {dialog?.kind === 'add' && control !== null ? (
@@ -269,20 +310,22 @@ function OwnerSshProfileRow({ profile, onConnect }: {
   );
 }
 
-function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
+function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
   record: RemoteConnection;
   busy: boolean;
+  threadFact: ThreadMessageFact | null;
   onEnter: () => void;
   onMenu: (anchor: DOMRect, element: HTMLElement) => void;
 }) {
   const { t, locale } = useI18n();
   const summary = remoteSummaryView(record);
+  const canOpen = hasGuiPurpose(record) && record.enabled;
   const enterable = browsableRemote(record);
-  const bridgeOnly = !hasGuiPurpose(record) && record.purposes.includes('bridge');
   const staleLabel = summary !== null && summary.stale && summary.asOf !== undefined
     ? t('st.remote.asOf', { time: relativeTime(new Date(summary.asOf).toISOString(), locale) })
     : undefined;
   const failure = record.lastError === undefined ? null : connectionFailureText(record.lastError);
+  const hasCounts = summary !== null && (summary.busy > 0 || summary.needsYou > 0);
   return (
     <div role="listitem" data-remote-connection={record.id} data-remote-purpose={record.purposes.join('+')}
       data-remote-stale={summary !== null && summary.stale ? '' : undefined}
@@ -292,22 +335,35 @@ function RemoteConnectionRow({ record, busy, onEnter, onMenu }: {
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={record.label}>{record.label}</span>
           <RemoteStateChip state={record.state} staleLabel={staleLabel} />
-          {purposeKeys(record).map((key) => (
-            <span key={key} className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft">{t(key)}</span>
-          ))}
         </div>
         <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" data-remote-address title={record.endpoint}>
           {connectionAddress(record.endpoint)}
           {record.lastConnectedAt !== undefined ? ` · ${relativeTime(new Date(record.lastConnectedAt).toISOString(), locale)}` : ''}
         </p>
-        {summary !== null && (summary.busy > 0 || summary.needsYou > 0) ? (
-          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11.5px] text-ink-faint" data-remote-summary>
-            {summary.busy > 0 ? <span className="tabular-nums">{t('st.remote.busy', { count: summary.busy })}</span> : null}
-            {summary.busy > 0 && summary.needsYou > 0 ? <span aria-hidden>·</span> : null}
-            {summary.needsYou > 0 ? <span className="tabular-nums text-attention">{t('st.remote.needsYou', { count: summary.needsYou })}</span> : null}
-          </p>
-        ) : null}
-        {bridgeOnly ? <p className="mt-0.5 text-[11.5px] text-ink-faint" data-remote-bridge-only>{t('st.remote.bridgeOnly')}</p> : null}
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-ink-faint" data-remote-facts>
+          <span data-remote-openable={canOpen ? 'yes' : 'no'}>
+            {t(canOpen ? 'st.remote.canOpen' : 'st.remote.cantOpen')}
+          </span>
+          {threadFact !== null ? (
+            <>
+              <span aria-hidden>·</span>
+              <span
+                className={threadFact === 'unreadable' ? 'text-amber-ink' : undefined}
+                data-remote-thread-messages={threadFact}
+              >
+                {t(threadMessageFactKey(threadFact))}
+              </span>
+            </>
+          ) : null}
+          {hasCounts ? (
+            <span className="inline-flex flex-wrap items-center gap-x-2" data-remote-summary>
+              <span aria-hidden>·</span>
+              {summary.busy > 0 ? <span className="tabular-nums">{t('st.remote.busy', { count: summary.busy })}</span> : null}
+              {summary.busy > 0 && summary.needsYou > 0 ? <span aria-hidden>·</span> : null}
+              {summary.needsYou > 0 ? <span className="tabular-nums text-attention">{t('st.remote.needsYou', { count: summary.needsYou })}</span> : null}
+            </span>
+          ) : null}
+        </p>
         {failure !== null && record.state !== 'online' ? (
           <p className="mt-0.5 truncate text-[11.5px] text-amber-ink" data-remote-error title={record.lastError}>
             {t(failure)}

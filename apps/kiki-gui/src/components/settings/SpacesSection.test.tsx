@@ -44,6 +44,14 @@ const connections = {
   retry: vi.fn(),
   setEnabled: vi.fn(),
 };
+const threadBridges = {
+  status: vi.fn(),
+  setEnabled: vi.fn(),
+  revoke: vi.fn(),
+  receipts: vi.fn(),
+  retry: vi.fn(),
+};
+const listWorkspaceCatalog = vi.fn();
 const config = { removeOverride: vi.fn() };
 const ssh = { list: vi.fn(), copySharedCredentialsToIsolated: vi.fn() };
 const getConfig = vi.fn();
@@ -68,7 +76,13 @@ const host = {
 };
 
 const localMeta = vi.fn();
-const client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes, connections, config, ssh } }, getConfig, meta: localMeta };
+const client = {
+  baseUrl: 'http://127.0.0.1:58627',
+  klient: { rest: { homes, connections, threadBridges, config, ssh } },
+  getConfig,
+  listWorkspaceCatalog,
+  meta: localMeta,
+};
 const connection = vi.hoisted(() => ({
   remoteClient: null as unknown,
   connectionId: null as string | null,
@@ -117,16 +131,25 @@ beforeEach(() => {
   for (const fn of [
     ...Object.values(homes),
     ...Object.values(connections),
+    ...Object.values(threadBridges),
     ...Object.values(config),
     ...Object.values(ssh),
     ...Object.values(hostConnection),
     getConfig,
+    listWorkspaceCatalog,
     host.spaceStatuses,
     connection.activateSshProfile,
   ]) fn.mockReset();
   homes.list.mockResolvedValue(LIST);
   homes.inspect.mockResolvedValue({ state: 'missing' });
   connections.list.mockResolvedValue([]);
+  threadBridges.status.mockResolvedValue({
+    identity: { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 },
+    inboundEnabled: false,
+    inbound: [],
+    outbound: [],
+  });
+  listWorkspaceCatalog.mockResolvedValue({ items: [] });
   connections.inbound.mockResolvedValue({
     enabled: false,
     configuredEnabled: false,
@@ -897,5 +920,197 @@ describe('Spaces & Access IA (#16)', () => {
     expect(fold.querySelector('code')).toBeNull();
     expect(fold.querySelector('[data-remote-self-identity] [data-copy-field="self"]')).not.toBeNull();
     expect(fold.textContent).not.toContain('homeId');
+  });
+});
+
+describe('Thread-message permissions on pairing rows (#20)', () => {
+  const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 };
+  const targetB = { homeId: '0f4c6e1a-2b7d-4a3e-9c11-7d0a51b2c301', hostId: 'gpu-box', protocol: 1 };
+  const targetWriter = { homeId: '5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d', hostId: 'writer-box', protocol: 1 };
+  const futureExpiry = Date.now() + 365 * 24 * 3600 * 1000;
+
+  it('shows openable + direction facts, renders "Can’t be opened" without Switch for bridge-only rows, and revokes one permission alone', async () => {
+    listWorkspaceCatalog.mockResolvedValue({
+      items: [
+        { id: 'wd_localapp_abcdef012345', name: 'Kiki Monorepo', root: 'D:\\kiki', created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-02T00:00:00Z', pinned: false },
+      ],
+    });
+    connections.list.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        label: 'Workstation B',
+        endpoint: 'https://b.example.test',
+        target: targetB,
+        credentialRef: 'pair-b',
+        purposes: ['gui', 'bridge'],
+        enabled: true,
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 1,
+        summary: {
+          value: { busy_sessions: 3, needs_you_sessions: 2 },
+          lastSeen: Date.now(),
+          stale: false,
+        },
+      },
+      {
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        label: 'Writer space link',
+        endpoint: 'https://writer.example.test',
+        target: targetWriter,
+        credentialRef: 'pair-writer',
+        purposes: ['bridge'],
+        enabled: true,
+        backgroundSummary: false,
+        state: 'offline',
+        activeLeases: 0,
+      },
+    ]);
+
+    const outboundB = {
+      connectionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      enabled: true,
+      grant: {
+        id: '11111111-1111-4111-8111-111111111111',
+        revision: 1,
+        enabled: true,
+        revoked: false,
+        createdAt: Date.now() - 60_000,
+        source: localIdentity,
+        target: targetB,
+        sourceScope: { workspaceId: 'wd_localapp_abcdef012345' },
+        targetScope: { workspaceId: 'wd_remote-research_0123456789ab' },
+        operations: ['read', 'send', 'wait'] as const,
+        expiresAt: futureExpiry,
+        pendingLimit: 20,
+        messagesPerMinute: 60,
+        location: 'network' as const,
+        label: 'Workstation B',
+      },
+    };
+    const inboundB = {
+      id: '22222222-2222-4222-8222-222222222222',
+      revision: 1,
+      enabled: true,
+      revoked: false,
+      createdAt: Date.now() - 60_000,
+      source: targetB,
+      target: localIdentity,
+      sourceScope: { workspaceId: 'wd_remote-research_0123456789ab' },
+      targetScope: { workspaceId: 'wd_localapp_abcdef012345' },
+      operations: ['read', 'send', 'wait', 'wake'] as const,
+      expiresAt: futureExpiry,
+      pendingLimit: 20,
+      messagesPerMinute: 60,
+      location: 'network' as const,
+      label: 'Workstation B',
+    };
+    const outboundWriter = {
+      connectionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      enabled: true,
+      grant: {
+        ...outboundB.grant,
+        id: '33333333-3333-4333-8333-333333333333',
+        target: targetWriter,
+        label: 'Writer space link',
+      },
+    };
+
+    threadBridges.status.mockResolvedValue({
+      identity: localIdentity,
+      inboundEnabled: true,
+      inbound: [inboundB],
+      outbound: [outboundB, outboundWriter],
+    });
+
+    await render(<SpacesSection />);
+
+    const rowB = document.querySelector('[data-remote-connection="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')!;
+    expect(rowB.textContent).toContain('Can be opened');
+    expect(rowB.textContent).toContain('Thread messages: both ways');
+    expect(rowB.textContent).toContain('3 working');
+    expect(rowB.textContent).toContain('2 waiting on you');
+    expect(rowB.querySelector('[data-remote-enter="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')).not.toBeNull();
+
+    const rowWriter = document.querySelector('[data-remote-connection="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')!;
+    expect(rowWriter.textContent).toContain('Can’t be opened');
+    expect(rowWriter.textContent).toContain('Thread messages: outgoing only');
+    expect(rowWriter.querySelector('[data-remote-enter="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')).toBeNull();
+
+    // Open Thread messages… from Workstation B's row menu.
+    await click('[data-remote-menu="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]');
+    await click('[data-space-menu-item="thread-messages"]');
+
+    const panel = document.querySelector('[data-thread-messages-panel="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain('This space → Workstation B');
+    expect(panel.textContent).toContain('Workstation B → this space');
+    // Local workspace resolved by name; remote workspace sanitized without raw wd_ hash.
+    expect(panel.textContent).toContain('Kiki Monorepo');
+    expect(panel.textContent).toContain('remote-research');
+    expect(panel.textContent).not.toContain('wd_localapp_abcdef012345');
+    expect(panel.textContent).not.toContain('0123456789ab');
+    // Outbound entry lacks wake -> shows pending note.
+    expect(panel.querySelector('[data-thread-message-entry="11111111-1111-4111-8111-111111111111"] [data-thread-message-no-wake]')).not.toBeNull();
+    // Inbound entry has wake -> no pending note on that card.
+    expect(panel.querySelector('[data-thread-message-entry="22222222-2222-4222-8222-222222222222"] [data-thread-message-no-wake]')).toBeNull();
+
+    // Revoke outbound permission alone -> calls revoke('outbound', id), updates row to incoming only, keeps pairing openable.
+    const nextStatus = {
+      identity: localIdentity,
+      inboundEnabled: true,
+      inbound: [inboundB],
+      outbound: [{ ...outboundB, enabled: false, grant: { ...outboundB.grant, revoked: true, enabled: false } }, outboundWriter],
+    };
+    threadBridges.revoke.mockResolvedValueOnce(nextStatus);
+    threadBridges.status.mockResolvedValue(nextStatus);
+
+    await click('[data-thread-message-revoke="11111111-1111-4111-8111-111111111111"]');
+    await click('[data-confirm-action="confirm"]');
+
+    expect(threadBridges.revoke).toHaveBeenCalledExactlyOnceWith('outbound', '11111111-1111-4111-8111-111111111111');
+    expect(connections.remove).not.toHaveBeenCalled();
+    expect(rowB.textContent).toContain('Can be opened');
+    expect(rowB.textContent).toContain('Thread messages: incoming only');
+    expect(rowB.querySelector('[data-remote-enter="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')).not.toBeNull();
+  });
+
+  it('shows "Thread messages: can’t read" and never "none" when the status call fails', async () => {
+    connections.list.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        label: 'Workstation B',
+        endpoint: 'https://b.example.test',
+        target: targetB,
+        credentialRef: 'pair-b',
+        purposes: ['gui'],
+        enabled: true,
+        backgroundSummary: false,
+        state: 'online',
+        activeLeases: 0,
+      },
+      {
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        label: 'Writer space link',
+        endpoint: 'https://writer.example.test',
+        target: targetWriter,
+        credentialRef: 'pair-writer',
+        purposes: ['bridge'],
+        enabled: true,
+        backgroundSummary: false,
+        state: 'offline',
+        activeLeases: 0,
+      },
+    ]);
+    threadBridges.status.mockRejectedValue(new Error('500 thread bridge store offline'));
+
+    await render(<SpacesSection />);
+
+    const rowB = document.querySelector('[data-remote-connection="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')!;
+    const rowWriter = document.querySelector('[data-remote-connection="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')!;
+    expect(rowB.textContent).toContain('Thread messages: can’t read');
+    expect(rowWriter.textContent).toContain('Thread messages: can’t read');
+    expect(rowB.textContent).not.toContain('Thread messages: none');
+    expect(rowWriter.textContent).not.toContain('Thread messages: none');
   });
 });
