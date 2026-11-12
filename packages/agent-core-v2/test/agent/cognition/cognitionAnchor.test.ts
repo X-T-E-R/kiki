@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -19,6 +18,7 @@ import {
   homeDirServices,
   type TestAgentContext,
 } from '../../harness';
+import { createTestTempDir } from '../../helpers/temp';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -33,7 +33,7 @@ describe('cognition first-turn anchor', () => {
   let homeDir: string;
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-cognition-anchor-'));
+    homeDir = await createTestTempDir();
     await mkdir(join(homeDir, 'cognition'));
     await writeFile(join(homeDir, 'cognition/anchor.md'), `${ANCHOR_TEXT}\n`);
     await writeFile(join(homeDir, 'cognition/overlay.md'), `${OVERLAY_TEXT}\n`);

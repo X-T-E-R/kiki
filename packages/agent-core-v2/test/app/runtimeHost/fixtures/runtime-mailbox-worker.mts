@@ -1,4 +1,3 @@
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { LockError } from '@kiki/minidb';
@@ -7,6 +6,7 @@ import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
 import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
+import { testTempRoot } from '../../../helpers/temp';
 
 const [homeDir = '', writer = '0', countText = '1'] = process.argv.slice(2);
 const count = Number.parseInt(countText, 10);
@@ -17,7 +17,7 @@ const bootstrap: IBootstrapService = {
   platform: process.platform,
   arch: process.arch,
   cwd: process.cwd(),
-  osHomeDir: tmpdir(),
+  osHomeDir: testTempRoot(),
   homeDir,
   configPath: join(homeDir, 'config.toml'),
   configReadOnly: false,

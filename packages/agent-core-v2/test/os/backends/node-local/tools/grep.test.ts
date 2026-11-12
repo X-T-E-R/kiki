@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../../../helpers/temp';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { createServices } from '#/_base/di/test';
@@ -2402,7 +2402,7 @@ describe('GrepTool with real ripgrep', () => {
   });
 
   async function realTool(): Promise<GrepTool> {
-    dir = await mkdtemp(join(tmpdir(), 'grep-rg-'));
+    dir = await createTestTempDir();
     await mkdir(join(dir, 'pkg', 'src'), { recursive: true });
     await mkdir(join(dir, 'other'), { recursive: true });
     await writeFile(join(dir, 'pkg', 'src', 'a.ts'), 'foo(1)\n');
@@ -2411,6 +2411,7 @@ describe('GrepTool with real ripgrep', () => {
     const processService = new HostProcessService();
     return new GrepTool(
       createFakeKaos({
+        pathClass: () => process.platform === 'win32' ? 'win32' : 'posix',
         stat: (path) => fs.stat(path),
         spawn: (_command, args, options) => processService.spawn(realRg!, args, options),
       }),

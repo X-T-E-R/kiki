@@ -1,9 +1,9 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, normalize, basename, dirname } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../helpers/temp';
 import { Emitter } from '#/_base/event';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
@@ -82,8 +82,8 @@ let workDir: string;
 
 beforeEach(async () => {
   disposables = new DisposableStore();
-  homeDir = await mkdtemp(join(tmpdir(), 'kimi-reminder-home-'));
-  workDir = await mkdtemp(join(tmpdir(), 'kimi-reminder-work-'));
+  homeDir = await createTestTempDir();
+  workDir = await createTestTempDir();
   await mkdir(join(workDir, '.git'));
 });
 
@@ -1066,7 +1066,7 @@ describe('agentsMdReminder probing boundaries', () => {
   it('discovers rules beside an already admitted external access rather than using the unrelated session root', async () => {
     const h = createHarness();
     const rootAgentsMd = await writeAgentsMd(workDir, 'workspace instructions');
-    const outside = await mkdtemp(join(tmpdir(), 'kimi-reminder-outside-'));
+    const outside = await createTestTempDir();
     const outsideAgentsMd = await writeAgentsMd(outside, 'outside instructions');
 
     try {
@@ -1084,7 +1084,7 @@ describe('agentsMdReminder probing boundaries', () => {
   it('discovers rules at the admitted symlink target rather than at its unrelated lexical root', async () => {
     const h = createHarness();
     const rootAgentsMd = await writeAgentsMd(workDir, 'workspace instructions');
-    const target = await mkdtemp(join(tmpdir(), 'kimi-reminder-target-'));
+    const target = await createTestTempDir();
     const targetAgentsMd = await writeAgentsMd(target, 'target instructions');
     await symlinkDir(target, join(workDir, 'link'));
 

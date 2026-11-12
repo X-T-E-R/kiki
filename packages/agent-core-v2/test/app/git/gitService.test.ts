@@ -1,12 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { platform, tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { platform } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
+import { createTestTempDirSync } from '../../helpers/temp';
 import { IGitService } from '#/app/git/git';
 import { GitService } from '#/app/git/gitService';
 import { IWorktreeService } from '#/app/git/worktreeModel';
@@ -40,7 +41,7 @@ describe('GitService', () => {
 
   beforeEach(() => {
     managedWorktreePath = undefined;
-    repo = mkdtempSync(join(tmpdir(), 'git-service-'));
+    repo = createTestTempDirSync();
     git(repo, 'init');
     git(repo, 'config', 'user.email', 'test@example.com');
     git(repo, 'config', 'user.name', 'Test');
@@ -147,7 +148,7 @@ describe('GitService', () => {
     });
 
     it('throws FS_GIT_UNAVAILABLE when not a repo', async () => {
-      const notRepo = mkdtempSync(join(tmpdir(), 'not-repo-'));
+      const notRepo = createTestTempDirSync();
       try {
         await expect(service.status(notRepo)).rejects.toMatchObject({
           code: ErrorCodes.FS_GIT_UNAVAILABLE,
@@ -204,7 +205,7 @@ describe('GitService', () => {
     });
 
     it('returns null when no ancestor holds a .git entry', async () => {
-      const plain = mkdtempSync(join(tmpdir(), 'git-service-plain-'));
+      const plain = createTestTempDirSync();
       try {
         await expect(service.findWorkTree(plain)).resolves.toBeNull();
       } finally {
@@ -213,7 +214,7 @@ describe('GitService', () => {
     });
 
     it('resolves an absolute gitdir pointer in a .git file', async () => {
-      const wt = mkdtempSync(join(tmpdir(), 'git-service-wt-'));
+      const wt = createTestTempDirSync();
       try {
         const control = join(repo, '.git', 'worktrees', 'wt');
         writeFileSync(join(wt, '.git'), `gitdir: ${control}\n`);
@@ -229,7 +230,7 @@ describe('GitService', () => {
     });
 
     it('resolves a relative gitdir pointer against the marker parent', async () => {
-      const wt = mkdtempSync(join(tmpdir(), 'git-service-wt-'));
+      const wt = createTestTempDirSync();
       try {
         writeFileSync(join(wt, '.git'), 'gitdir: ../gitdir-target\n');
 
@@ -242,7 +243,7 @@ describe('GitService', () => {
     });
 
     it('parses a BOM-prefixed gitdir pointer', async () => {
-      const wt = mkdtempSync(join(tmpdir(), 'git-service-wt-'));
+      const wt = createTestTempDirSync();
       try {
         writeFileSync(join(wt, '.git'), '\uFEFFgitdir: ../target\n');
 

@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../helpers/temp';
 import { Event } from '#/_base/event';
 import { IEventBus } from '#/app/event/eventBus';
 import { ILogService } from '#/_base/log/log';
@@ -67,7 +67,7 @@ describe('per-model cognition overlay', () => {
   let homeDir: string;
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-cognition-bind-'));
+    homeDir = await createTestTempDir();
     await mkdir(join(homeDir, 'cognition'));
     await writeFile(join(homeDir, 'cognition/overlay.md'), 'FLASH OVERLAY');
     await writeFile(join(homeDir, 'cognition/steering.md'), 'FLASH STEERING');

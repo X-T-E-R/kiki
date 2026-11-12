@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -15,6 +14,7 @@ import { createMailboxMigrationService } from '#/persistence/backends/sqliteMail
 import type { MailboxOwner } from '#/persistence/backends/sqliteMailbox/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir, testTempRoot } from '../../helpers/temp';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -64,7 +64,7 @@ function bootstrap(homeDir: string): IBootstrapService {
     platform: process.platform,
     arch: process.arch,
     cwd: process.cwd(),
-    osHomeDir: tmpdir(),
+    osHomeDir: testTempRoot(),
     homeDir,
     configPath: join(homeDir, 'config.toml'),
     configReadOnly: false,
@@ -280,7 +280,7 @@ describe('runtime thread mailbox', () => {
   const open: Harness[] = [];
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'runtime-mailbox-'));
+    homeDir = await createTestTempDir();
   });
 
   afterEach(async () => {

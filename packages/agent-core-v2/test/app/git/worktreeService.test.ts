@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
+import { createTestTempDirSync, testTempRoot } from '../../helpers/temp';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
@@ -24,14 +24,14 @@ function git(cwd: string, ...args: string[]): string {
 
 describe('worktree outcome persistence', () => {
   it('propagates retained-outcome persistence failure without retrying it as a removal failure', async () => {
-    const record: WorktreeRecord = { id: 'fixture', version: 1, path: tmpdir(), branch: 'fixture', branchCreated: false,
-      repo: { fingerprint: 'fixture', commonDir: tmpdir(), sourceRoot: tmpdir(), workspaceId: 'fixture' },
+    const record: WorktreeRecord = { id: 'fixture', version: 1, path: testTempRoot(), branch: 'fixture', branchCreated: false,
+      repo: { fingerprint: 'fixture', commonDir: testTempRoot(), sourceRoot: testTempRoot(), workspaceId: 'fixture' },
       base: { mode: 'head', ref: 'HEAD', commit: 'fixture' }, owner: { kind: 'session', sessionId: 'fixture' }, state: 'ready', createdAt: 1, updatedAt: 1 };
     const failure = new Error('outcome persistence unavailable');
     const update = vi.fn(async () => { throw failure; });
     const disposables = new DisposableStore();
     const ix = createServices(disposables, { additionalServices: (reg) => {
-      reg.definePartialInstance(IBootstrapService, { homeDir: tmpdir() });
+      reg.definePartialInstance(IBootstrapService, { homeDir: testTempRoot() });
       reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: <T>() => undefined as T });
       reg.definePartialInstance(IAtomicDocumentStore, { get: async <T>() => ({ version: 1, records: { fixture: record } }) as T, update });
       reg.definePartialInstance(IRuntimeResolver, {});
@@ -56,7 +56,7 @@ describe('managed worktree removal', () => {
   let archived: boolean;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'kiki-worktree-test-'));
+    root = createTestTempDirSync();
     source = join(root, 'source');
     mkdirSync(source);
     git(source, 'init');

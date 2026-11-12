@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 
 import { extract as extractTar } from 'tar';
 import { ZipFile } from 'yazl';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDirSync } from '../../../../helpers/temp';
 import {
   detectTarget,
   ensureRgPath,
@@ -49,7 +49,7 @@ describe('findExistingRg', () => {
   let fakeShare: string;
   let savedPath: string | undefined;
   beforeEach(() => {
-    fakeShare = join(tmpdir(), `kimi-rg-${String(Date.now())}-${String(Math.random()).slice(2)}`);
+    fakeShare = createTestTempDirSync();
     mkdirSync(join(fakeShare, 'bin'), { recursive: true });
     savedPath = process.env['PATH'];
     process.env['PATH'] = '';
@@ -157,7 +157,7 @@ describe('rgUnavailableMessage', () => {
 describe('verifyArchiveChecksum', () => {
   let fakeDir: string;
   beforeEach(() => {
-    fakeDir = join(tmpdir(), `kimi-rg-sha-${String(Date.now())}-${String(Math.random()).slice(2)}`);
+    fakeDir = createTestTempDirSync();
     mkdirSync(fakeDir, { recursive: true });
   });
   afterEach(() => {
@@ -190,10 +190,7 @@ describe('ensureRgPath download branch', () => {
   let savedFetch: typeof globalThis.fetch | undefined;
   let savedPath: string | undefined;
   beforeEach(() => {
-    fakeShare = join(
-      tmpdir(),
-      `kimi-rg-dl-${String(Date.now())}-${String(Math.random()).slice(2)}`,
-    );
+    fakeShare = createTestTempDirSync();
     mkdirSync(join(fakeShare, 'bin'), { recursive: true });
     savedFetch = globalThis.fetch;
     savedPath = process.env['PATH'];
@@ -430,10 +427,7 @@ describe('ensureRgPath Windows download branch', () => {
   let savedPlatform: string;
   let savedPath: string | undefined;
   beforeEach(() => {
-    fakeShare = join(
-      tmpdir(),
-      `kimi-rg-win-${String(Date.now())}-${String(Math.random()).slice(2)}`,
-    );
+    fakeShare = createTestTempDirSync();
     mkdirSync(join(fakeShare, 'bin'), { recursive: true });
     savedFetch = globalThis.fetch;
     savedPath = process.env['PATH'];
@@ -533,8 +527,8 @@ describe('findExistingRg inherited share dirs', () => {
   let savedPath: string | undefined;
 
   beforeEach(() => {
-    fakeShare = join(tmpdir(), `kimi-rg-space-${String(Date.now())}-${String(Math.random()).slice(2)}`);
-    baseShare = join(tmpdir(), `kimi-rg-base-${String(Date.now())}-${String(Math.random()).slice(2)}`);
+    fakeShare = createTestTempDirSync();
+    baseShare = createTestTempDirSync();
     mkdirSync(join(fakeShare, 'bin'), { recursive: true });
     mkdirSync(join(baseShare, 'bin'), { recursive: true });
     savedPath = process.env['PATH'];

@@ -1,9 +1,9 @@
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
+import { testTempRoot } from '../../../helpers/temp';
 
 const [homeDir = ''] = process.argv.slice(2);
 const bootstrap: IBootstrapService = {
@@ -11,7 +11,7 @@ const bootstrap: IBootstrapService = {
   platform: process.platform,
   arch: process.arch,
   cwd: process.cwd(),
-  osHomeDir: tmpdir(),
+  osHomeDir: testTempRoot(),
   homeDir,
   configPath: join(homeDir, 'config.toml'),
   configReadOnly: false,

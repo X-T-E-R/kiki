@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'pathe';
 
+import { createTestTempDir } from '../../helpers/temp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
@@ -46,7 +46,7 @@ describe('AgentModelSteeringService', () => {
   let homeDir: string;
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-cognition-steer-'));
+    homeDir = await createTestTempDir();
     await mkdir(join(homeDir, 'cognition'));
     await writeFile(join(homeDir, 'cognition/steering.md'), 'CLASSIFY THEN ACT');
   });

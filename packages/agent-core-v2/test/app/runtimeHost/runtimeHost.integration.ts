@@ -1,14 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createConnection } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { createTestTempDir, testTempRoot } from '../../helpers/temp';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -47,7 +47,7 @@ function bootstrap(homeDir: string): IBootstrapService {
     platform: process.platform,
     arch: process.arch,
     cwd: process.cwd(),
-    osHomeDir: tmpdir(),
+    osHomeDir: testTempRoot(),
     homeDir,
     configPath: join(homeDir, 'config.toml'),
     configReadOnly: false,
@@ -241,9 +241,7 @@ describe('home runtime broker', () => {
   const workers: RuntimeWorker[] = [];
 
   beforeEach(async () => {
-    const scratch = fileURLToPath(new URL('../../../../../.tmp/', import.meta.url));
-    await mkdir(scratch, { recursive: true });
-    homeDir = await mkdtemp(join(scratch, 'rh-'));
+    homeDir = await createTestTempDir();
   });
 
   afterEach(async () => {

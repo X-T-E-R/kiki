@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,19 +13,31 @@ import {
   resolveCognitionPath,
 } from '#/agent/cognition/cognitionFiles';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { createTestTempDir } from '../../helpers/temp';
 
 describe('cognition file paths', () => {
   const pathClass = process.platform === 'win32' ? 'win32' : 'posix';
   let homeDir: string;
+  const extraDirs: string[] = [];
   const fs = new HostFileSystem();
 
   beforeEach(async () => {
-    homeDir = await mkdtemp(join(tmpdir(), 'kimi-cognition-files-'));
+    homeDir = await createTestTempDir();
   });
 
   afterEach(async () => {
+    await Promise.all(extraDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
+
+  async function linkDirectory(target: string, destination: string): Promise<void> {
+    try {
+      await symlink(target, destination, 'dir');
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      await symlink(target, destination, 'junction');
+    }
+  }
 
   it('resolves a relative path under the Kiki home', () => {
     const resolved = resolveCognitionPath(homeDir, 'cognition/overlay.md', pathClass);
@@ -64,10 +75,35 @@ describe('cognition file paths', () => {
     await expect(readCognitionFiles(fs, homeDir, 'overlay', ['author.md'], pathClass, 4)).rejects.toThrow('editor limit');
     await expect(readCognitionContent(fs, homeDir, 'overlay', { text }, pathClass)).resolves.toBe(text);
     await expect(readCognitionContent(fs, homeDir, 'overlay', { text: '' }, pathClass)).resolves.toBeUndefined();
-    class EscapingFs extends HostFileSystem {
-      override async realpath(): Promise<string> { return join(homeDir, '../outside.md'); }
+  });
+
+  it('reads cognition files when Kiki home is reached through a directory link', async () => {
+    const text = 'linked cognition';
+    await writeFile(join(homeDir, 'author.md'), text);
+    const aliasParent = await createTestTempDir();
+    extraDirs.push(aliasParent);
+    const linkedHomeDir = join(aliasParent, 'home');
+    await linkDirectory(homeDir, linkedHomeDir);
+
+    await expect(readCognitionFiles(fs, linkedHomeDir, 'overlay', ['author.md'], pathClass)).resolves.toEqual([
+      { path: 'author.md', text },
+    ]);
+  });
+
+  it('rejects cognition file links that resolve outside Kiki home', async () => {
+    const outsideDir = await createTestTempDir();
+    extraDirs.push(outsideDir);
+    await writeFile(join(outsideDir, 'outside.md'), 'outside');
+    let ref = 'escape.md';
+    try {
+      await symlink(join(outsideDir, 'outside.md'), join(homeDir, ref), 'file');
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      await linkDirectory(outsideDir, join(homeDir, 'escape'));
+      ref = 'escape/outside.md';
     }
-    await expect(readCognitionFiles(new EscapingFs(), homeDir, 'overlay', ['author.md'], pathClass, 1024)).rejects.toMatchObject({ reason: 'escape' });
+
+    await expect(readCognitionFiles(fs, homeDir, 'overlay', [ref], pathClass)).rejects.toMatchObject({ reason: 'escape' });
   });
 
   it('appends overlay after the profile prompt', () => {

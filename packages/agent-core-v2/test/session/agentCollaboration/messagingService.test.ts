@@ -1,5 +1,4 @@
-import { lstatSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { lstatSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { AcpClientError } from '@kiki/acp-client';
@@ -12,6 +11,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
+import { createTestTempDirSync, testTempRoot } from '../../helpers/temp';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
@@ -4126,7 +4126,7 @@ function blockFirstTargetBatch(): {
 }
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'agent-message-mailbox-'));
+  const dir = createTestTempDirSync();
   tempDirs.push(dir);
   return dir;
 }
@@ -4152,7 +4152,7 @@ function bootstrap(homeDir: string): IBootstrapService {
     platform: process.platform,
     arch: process.arch,
     cwd: process.cwd(),
-    osHomeDir: tmpdir(),
+    osHomeDir: testTempRoot(),
     homeDir,
     configPath: join(homeDir, 'config.toml'),
     configReadOnly: false,

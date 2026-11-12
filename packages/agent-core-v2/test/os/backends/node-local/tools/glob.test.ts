@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../../../helpers/temp';
 import { ensureRgPath, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
 import { PathSecurityError, type PathClass } from '#/tool/path-access';
 import { noopTelemetryService } from '#/app/telemetry/telemetry';
@@ -1014,7 +1014,7 @@ describe('GlobTool integration (real ripgrep)', () => {
 
   beforeEach(async (testCtx) => {
     if (!runRealRg) testCtx.skip();
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'glob-rg-'));
+    tmpDir = await createTestTempDir();
     const info = await probeHostEnvironmentFromNode();
     realEnv = {
       _serviceBrand: undefined,
@@ -1135,7 +1135,7 @@ describe('GlobTool integration (real ripgrep)', () => {
   });
 
   it('returns absolute paths when the search root is outside the workspace', async () => {
-    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'glob-ext-'));
+    const externalDir = await createTestTempDir();
     try {
       const extFile = path.join(externalDir, 'pkg.ts');
       await fs.writeFile(extFile, '');

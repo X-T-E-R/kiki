@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as posixPath from 'node:path/posix';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../../helpers/temp';
 import { PathSecurityError } from '#/tool/path-access';
 import { stubWorkspaceContext } from '../../../session/workspaceContext/stub-workspace-context';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -735,7 +735,7 @@ describe('EditTool', () => {
   });
 
   it('rejects editing a non-UTF-8 file and leaves its bytes untouched', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'edit-strict-'));
+    const dir = await createTestTempDir();
     const file = join(dir, 'sample.txt');
     const original = Buffer.from([0x68, 0x69, 0x20, 0xff, 0x0a, 0x66, 0x6f, 0x6f]);
     await writeFile(file, original);

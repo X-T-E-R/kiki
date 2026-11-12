@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createTestTempDir } from '../../helpers/temp';
 import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ConfigUpdate, profileKey } from '#/agent/profile/profileOps';
@@ -30,7 +31,7 @@ const hosts: TestAgentContext[] = [];
 const homes: string[] = [];
 
 async function createHost() {
-  const home = await mkdtemp(join(tmpdir(), 'model-switch-integration-'));
+  const home = await createTestTempDir();
   homes.push(home);
   await mkdir(join(home, 'cognition'));
   await writeFile(join(home, 'cognition/old.md'), 'OLD COGNITION');

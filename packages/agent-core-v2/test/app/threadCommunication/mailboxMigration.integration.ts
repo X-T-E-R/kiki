@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +11,7 @@ import { ClusterDb, shardDirName } from '@kiki/minidb/cluster';
 import type { MailboxRow } from '#/persistence/backends/sqliteMailbox/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createTestTempDir } from '../../helpers/temp';
 import { createMailboxMigrationService } from '#/persistence/backends/sqliteMailbox/migration';
 import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
 import { assertMailboxStartupReady, assertMailboxStartupReadySync, authorityPath, migrationPath, readMailboxAuthority } from '#/persistence/backends/sqliteMailbox/authority';
@@ -19,7 +19,7 @@ import { assertMailboxStartupReady, assertMailboxStartupReadySync, authorityPath
 let home: string;
 const handles: Array<{ close(): Promise<void> }> = [];
 
-beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'kiki-mailbox-sqlite-')); });
+beforeEach(async () => { home = await createTestTempDir(); });
 afterEach(async () => { for (const handle of handles.splice(0).reverse()) await handle.close(); await rm(home, { recursive: true, force: true }); });
 
 async function source(rows = 3): Promise<ClusterDb<Record<string, unknown>>> {
@@ -307,7 +307,7 @@ describe('canonical mailbox SQLite migration', () => {
     expect(preview.preserveBytes).toBeGreaterThan(0);
     expect(preview.removeBytes).toBe(preview.preserveBytes);
     await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(home, 'bad.sqlite') })).rejects.toThrow('outside this Kiki home');
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const snapshot = join(external, 'mailbox.sqlite');
       const cleaned = await migration.cleanupRecovery({ confirm: true, backupDestination: snapshot });
@@ -355,7 +355,7 @@ describe('canonical mailbox SQLite migration', () => {
     const original = join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!, 'originals/thread-mailbox-v3');
     const lock = new LockFile(join(original, shardDirName(0, 2), 'db.lock'));
     expect(await lock.acquire()).toBe(true);
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const destination = join(external, 'mailbox.sqlite');
       await expect(migration.cleanupRecovery({ confirm: true, backupDestination: destination })).rejects.toThrow('legacy writer still holds');
@@ -373,7 +373,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const snapshot = join(external, 'mailbox.sqlite');
       await migration.backup(snapshot);
@@ -402,7 +402,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.claimOwner({ hostId: 'first-writer', epoch: 1_000 });
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/first', value: { kind: 'workspace_override', workspaceId: 'first', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const snapshot = join(external, 'old.sqlite');
       await migration.backup(snapshot);
@@ -433,7 +433,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-link-'));
+    const external = await createTestTempDir();
     const alias = join(external, 'linked-home');
     try {
       await symlink(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
@@ -453,7 +453,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-link-'));
+    const external = await createTestTempDir();
     const parent = join(external, 'backup-parent');
     const moved = join(external, 'original-parent');
     await mkdir(parent);
@@ -480,7 +480,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const destination = join(external, 'backup.sqlite');
       const replacement = join(external, 'replacement.sqlite');
@@ -511,7 +511,7 @@ describe('canonical mailbox SQLite migration', () => {
     const first = manifest.files.find((file: { source: string }) => file.source === 'thread-mailbox-v3');
     const frozen = join(result.backupPath!, first.source, first.relative);
     const original = await readFile(frozen);
-    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    const external = await createTestTempDir();
     try {
       const realBackup = migration.backup.bind(migration);
       vi.spyOn(migration, 'backup').mockImplementation(async (destination, options) => {

@@ -106,12 +106,14 @@ export async function readCognitionFiles(
 ): Promise<Array<{ path: string; text: string }>> {
   const files: Array<{ path: string; text: string }> = [];
   let size = 0;
-  const home = normalize(homeDir);
   for (const ref of refs) {
     const lexical = resolveCognitionPath(homeDir, ref, pathClass, slot);
+    let realHome: string;
     let real: string;
     try {
-      real = normalize(await fs.realpath(lexical));
+      [realHome, real] = await Promise.all([fs.realpath(homeDir), fs.realpath(lexical)]);
+      realHome = normalize(realHome);
+      real = normalize(real);
     } catch {
       throw new CognitionFileError(
         'missing',
@@ -120,7 +122,7 @@ export async function readCognitionFiles(
         `cognition.${slot} file "${ref}" was not found under the Kiki home directory`,
       );
     }
-    if (!isWithinDirectory(real, home, pathClass)) {
+    if (!isWithinDirectory(real, realHome, pathClass)) {
       throw new CognitionFileError(
         'escape',
         slot,
