@@ -49,6 +49,16 @@ import {
   type HostFileEditorSnapshot,
 } from '../state/hostFileEditor';
 import {
+  classifyResource,
+  isKikiComputer,
+  resourceActions,
+  resourceMutability,
+  type PreviewEnvironment,
+  type PreviewReadState,
+  type PreviewResource,
+  type ResourceActionId,
+} from '../state/previewResource';
+import {
   normalizeTabInput,
   previewTabKey,
   type PreviewTab as PreviewTabModel,
@@ -59,7 +69,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
-import { imageDownloadFailureText, isRemoteConnection, saveMediaToDisk } from './imageActions';
+import { imageDownloadFailureText, saveMediaToDisk } from './imageActions';
 import { safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { ImageViewport } from './ImageViewport';
@@ -155,6 +165,89 @@ function mentionTokenFor(path: string, cwd: string | undefined): string {
   });
 }
 
+function isLocalKikiComputer(connection: ReturnType<typeof useOptionalConnection>): boolean {
+  const pageUrl = typeof window !== 'undefined' ? window.location.href : undefined;
+  return isKikiComputer(connection, { pageUrl });
+}
+
+function usePreviewEnvironment(sessionId: string | undefined): PreviewEnvironment {
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const phoneForm = usePhoneMode();
+  return useMemo<PreviewEnvironment>(
+    () => ({
+      isKikiComputer: isLocalKikiComputer(connection),
+      hasSession: sessionId !== undefined,
+      phoneForm,
+      capabilities: {
+        reveal: host.revealPath !== undefined,
+        open: host.openPath !== undefined,
+        write: host.writeFileText !== undefined,
+        saveDialog: host.saveBlob !== undefined,
+      },
+    }),
+    [connection, host.openPath, host.revealPath, host.saveBlob, host.writeFileText, phoneForm, sessionId],
+  );
+}
+
+function buildFileTabResource(path: string, cwd: string | undefined): PreviewResource {
+  const resolved = resolveHostPath(path, cwd);
+  const name = basenameOf(resolved);
+  return {
+    source: { kind: 'host-file', path: resolved },
+    origin: { path: resolved, trusted: true },
+    type: classifyResource({ name }),
+    name,
+  };
+}
+
+function buildAttachmentTabResource(
+  item: MediaRef,
+  sessionId: string | undefined,
+  tabOrigin: { readonly path: string; readonly trusted: true } | undefined,
+  cwd: string | undefined,
+  fallbackName: string,
+): PreviewResource {
+  const name = attachmentName(item, undefined, fallbackName);
+  const origin = tabOrigin ?? item.origin;
+  const resolvedOrigin =
+    origin !== undefined && origin.trusted
+      ? { path: resolveHostPath(origin.path, cwd), trusted: true as const }
+      : undefined;
+  const type = classifyResource({ name, mime: item.mime });
+  if (item.fileId !== undefined) {
+    return {
+      source: {
+        kind: 'session-copy',
+        sessionId: sessionId ?? '',
+        fileId: item.fileId,
+        sourceId: item.sourceId,
+      },
+      origin: resolvedOrigin,
+      type,
+      name,
+      mime: item.mime,
+    };
+  }
+  if (item.path !== undefined) {
+    const resolved = resolveHostPath(item.path, cwd);
+    return {
+      source: { kind: 'host-file', path: resolved },
+      origin: resolvedOrigin ?? { path: resolved, trusted: true },
+      type,
+      name,
+      mime: item.mime,
+    };
+  }
+  return {
+    source: { kind: 'url', url: item.url ?? '' },
+    origin: resolvedOrigin,
+    type,
+    name,
+    mime: item.mime,
+  };
+}
+
 export function PreviewWorkspace({
   tabs,
   active,
@@ -213,6 +306,42 @@ export function PreviewWorkspace({
   const nextSeen = new Set([...seenTabs].filter((key) => openTabKeys.has(key)));
   if (!hidden && active !== null && active !== '' && openTabKeys.has(active)) nextSeen.add(active);
   if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
+
+  const [tabReadStates, setTabReadStates] = useState<Readonly<Record<string, PreviewReadState>>>({});
+  const reportTabReadState = useCallback((key: string, state: PreviewReadState) => {
+    setTabReadStates((previous) => {
+      const current = previous[key];
+      if (
+        current !== undefined &&
+        current.status === state.status &&
+        current.readableFromDevice === state.readableFromDevice &&
+        current.originalReadable === state.originalReadable &&
+        current.losslessUtf8 === state.losslessUtf8 &&
+        current.truncated === state.truncated &&
+        current.failureReason === state.failureReason
+      ) {
+        return previous;
+      }
+      return { ...previous, [key]: state };
+    });
+  }, []);
+  const preview = useMediaPreview();
+  const openLiveFile = useCallback(
+    (targetPath: string) => {
+      if (preview !== null) {
+        preview.openFile(targetPath);
+        return;
+      }
+      const identity = (value: string) =>
+        /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
+      const resolved = resolveHostPath(targetPath, cwd);
+      const existing = normalizedTabs.find(
+        (candidate) => candidate.kind === 'file' && identity(resolveHostPath(candidate.path, cwd)) === identity(resolved),
+      );
+      if (existing !== undefined) onActivate(previewTabKey(existing));
+    },
+    [cwd, normalizedTabs, onActivate, preview],
+  );
 
   // The shared rail owns the first Escape even if this listener runs before
   // SessionView's rail closer. The next unclaimed Escape exits fullscreen.
@@ -303,6 +432,8 @@ export function PreviewWorkspace({
           {normalizedTabs.map((tab, index) => {
             const key = previewTabKey(tab);
             const isTabActive = key === active;
+            const tabReadState = tabReadStates[key];
+            const readFailed = tabReadState?.status === 'failed';
             return tab.kind === 'file' ? (
               <PreviewFileTab
                 key={key}
@@ -310,9 +441,9 @@ export function PreviewWorkspace({
                 path={tab.path}
                 active={isTabActive}
                 dirty={dirtyPaths.has(tab.path)}
-                mentionable={sessionId !== undefined}
+                mentionable={sessionId !== undefined && !readFailed}
                 onMention={
-                  sessionId === undefined
+                  sessionId === undefined || readFailed
                     ? undefined
                     : () => { appendToDraft(sessionId, mentionTokenFor(tab.path, cwd)); }
                 }
@@ -327,21 +458,37 @@ export function PreviewWorkspace({
                 }}
               />
             ) : tab.kind === 'attachment' ? (
-              <PreviewAttachmentTab
-                key={key}
-                tabKey={key}
-                item={tab.item}
-                active={isTabActive}
-                onActivate={() => { onActivate(key); }}
-                onClose={() => { onClose(key); }}
-                onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
-                onDragStart={() => { dragKeyRef.current = key; }}
-                onDrop={() => {
-                  const dragged = dragKeyRef.current;
-                  dragKeyRef.current = null;
-                  if (dragged !== null && dragged !== key) onMove(dragged, index);
-                }}
-              />
+              (() => {
+                const origin = tab.origin ?? tab.item.origin;
+                const trustedPath = origin !== undefined && origin.trusted ? resolveHostPath(origin.path, cwd) : undefined;
+                const isCopy = tab.item.fileId !== undefined;
+                const canMention = sessionId !== undefined && trustedPath !== undefined && !readFailed;
+                return (
+                  <PreviewAttachmentTab
+                    key={key}
+                    tabKey={key}
+                    item={tab.item}
+                    isCopy={isCopy}
+                    trustedPath={trustedPath}
+                    mentionable={canMention}
+                    onMention={
+                      canMention
+                        ? () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, cwd)); }
+                        : undefined
+                    }
+                    active={isTabActive}
+                    onActivate={() => { onActivate(key); }}
+                    onClose={() => { onClose(key); }}
+                    onContextMenu={(x, y) => { setMenu({ tab, x, y }); }}
+                    onDragStart={() => { dragKeyRef.current = key; }}
+                    onDrop={() => {
+                      const dragged = dragKeyRef.current;
+                      dragKeyRef.current = null;
+                      if (dragged !== null && dragged !== key) onMove(dragged, index);
+                    }}
+                  />
+                );
+              })()
             ) : tab.kind === 'web' ? (
               <PreviewWebTab
                 key={key}
@@ -456,7 +603,7 @@ export function PreviewWorkspace({
                 />
               ) : (
                 <div className="overflow-auto p-4 text-center text-[12px] text-ink-faint">
-                  Agent: {tab.title ?? tab.agentId}
+                  {t('preview.agentFallback', { name: tab.title ?? tab.agentId })}
                 </div>
               )}
             </div>
@@ -474,10 +621,13 @@ export function PreviewWorkspace({
               key={key}
               tabKey={key}
               item={tab.item}
+              origin={tab.origin ?? tab.item.origin}
               sessionId={tab.sessionId ?? sessionId}
               workspaceRoot={cwd}
               visible={isTabActive && !hidden}
               onOpenImage={onOpenImage}
+              onOpenCurrentFile={openLiveFile}
+              onReadStateChange={(state) => { reportTabReadState(key, state); }}
               position={scrollPositions?.[key]}
               onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             />
@@ -499,12 +649,14 @@ export function PreviewWorkspace({
         return (
           <PreviewTabView
             key={key}
+            tabKey={key}
             path={tab.path}
             workspaceRoot={cwd}
             visible={isTabActive && !hidden}
             navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
             onOpenImage={onOpenImage}
             reportDirty={reportDirty}
+            onReadStateChange={(state) => { reportTabReadState(key, state); }}
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
             sessionId={sessionId}
@@ -515,7 +667,10 @@ export function PreviewWorkspace({
         <TabContextMenu
           menu={menu}
           cwd={cwd}
+          sessionId={sessionId}
+          readState={tabReadStates[previewTabKey(menu.tab)]}
           workspaceNavigation={workspaceNavigation}
+          onOpenCurrentFile={openLiveFile}
           onCloseMenu={() => { setMenu(null); }}
           onCloseTab={() => { onClose(previewTabKey(menu.tab)); }}
           onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab)); }}
@@ -814,6 +969,10 @@ function PreviewSkillTab({
 function PreviewAttachmentTab({
   tabKey,
   item,
+  isCopy,
+  trustedPath,
+  mentionable,
+  onMention,
   active,
   onActivate,
   onClose,
@@ -823,6 +982,10 @@ function PreviewAttachmentTab({
 }: {
   readonly tabKey: string;
   readonly item: MediaRef;
+  readonly isCopy: boolean;
+  readonly trustedPath?: string;
+  readonly mentionable: boolean;
+  readonly onMention: (() => void) | undefined;
   readonly active: boolean;
   readonly onActivate: () => void;
   readonly onClose: () => void;
@@ -837,7 +1000,7 @@ function PreviewAttachmentTab({
       role="tab"
       tabIndex={0}
       aria-selected={active}
-      title={item.path ?? name}
+      title={trustedPath ?? item.path ?? name}
       draggable
       data-preview-tab={item.fileId ?? item.path ?? name}
       data-preview-tab-key={tabKey}
@@ -866,11 +1029,36 @@ function PreviewAttachmentTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+      className={`group flex h-7 max-w-52 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
       }`}
     >
       <span className="min-w-0 truncate">{name}</span>
+      {isCopy ? (
+        <span
+          data-preview-copy-badge
+          className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1 py-0.5 text-[10px] leading-none font-normal text-ink-faint"
+        >
+          {t('preview.sentCopyBadge')}
+        </span>
+      ) : null}
+      {mentionable && onMention !== undefined && trustedPath !== undefined ? (
+        <button
+          type="button"
+          data-mention-file={trustedPath}
+          aria-label={t('preview.addToChat')}
+          title={t('preview.addToChat')}
+          onClick={(event) => {
+            event.stopPropagation();
+            onMention();
+          }}
+          className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-ink ${
+            active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+          }`}
+        >
+          @
+        </button>
+      ) : null}
       <button
         type="button"
         aria-label={`${t('common.close')} ${name}`}
@@ -1003,7 +1191,7 @@ function PreviewPanelTab({
       role="tab"
       tabIndex={0}
       aria-selected={active}
-      title={`Agent: ${name} (${tab.agentId})`}
+      title={t('preview.agentTabTitle', { name, id: tab.agentId })}
       draggable
       data-preview-tab={tabKey}
       data-preview-tab-key={tabKey}
@@ -1064,7 +1252,10 @@ function PreviewPanelTab({
 function TabContextMenu({
   menu,
   cwd,
+  sessionId,
+  readState,
   workspaceNavigation,
+  onOpenCurrentFile,
   onCloseMenu,
   onCloseTab,
   onCloseOthers,
@@ -1072,7 +1263,10 @@ function TabContextMenu({
 }: {
   readonly menu: { tab: PreviewTabModel; x: number; y: number };
   readonly cwd: string | undefined;
+  readonly sessionId: string | undefined;
+  readonly readState: PreviewReadState | undefined;
   readonly workspaceNavigation: AgentWorkspaceNavigation | undefined;
+  readonly onOpenCurrentFile: (path: string) => void;
   readonly onCloseMenu: () => void;
   readonly onCloseTab: () => void;
   readonly onCloseOthers: () => void;
@@ -1080,26 +1274,114 @@ function TabContextMenu({
 }) {
   const host = useHost();
   const { t } = useI18n();
-  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const environment = usePreviewEnvironment(sessionId);
   const tab = menu.tab;
-  const fileOps = host.revealPath !== undefined && host.openPath !== undefined;
   const entries: MiniMenuEntry[] = [
     { key: 'close-tab', label: t('preview.closeTab'), run: onCloseTab },
     { key: 'close-others', label: t('preview.closeOthers'), run: onCloseOthers },
     { key: 'close-all', label: t('preview.closeAll'), run: onCloseAll },
   ];
-  if (tab.kind === 'file') {
-    const filePath = resolveHostPath(tab.path, cwd);
-    entries.push(
-      { separator: true },
-      { key: 'copy-relative', label: t('file.copyRelativePath'), run: () => copyTextToClipboard(relativeToCwd(filePath, cwd)) },
-      { key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(filePath) },
-    );
-    if (!remoteScope && fileOps) {
-      entries.push(
-        { key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath!(filePath) },
-        { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath!(filePath) },
-      );
+  if (tab.kind === 'file' || tab.kind === 'attachment') {
+    const resource =
+      tab.kind === 'file'
+        ? buildFileTabResource(tab.path, cwd)
+        : buildAttachmentTabResource(
+            tab.item,
+            tab.sessionId ?? sessionId,
+            tab.origin,
+            cwd,
+            tab.item.kind === 'image' ? t('media.image') : t('media.attachment'),
+          );
+    const effectiveReadState: PreviewReadState = readState ?? {
+      status: 'ready',
+      readableFromDevice: true,
+      originalReadable: true,
+    };
+    const actions = resourceActions(resource, environment, effectiveReadState);
+    const isCopy = resourceMutability(resource) === 'copy';
+    const trustedPath =
+      resource.origin !== undefined && resource.origin.trusted
+        ? resource.origin.path
+        : resource.source.kind === 'host-file'
+          ? resource.source.path
+          : undefined;
+    const actionEntries: MiniMenuEntry[] = [];
+    for (const action of actions) {
+      if (action.id === 'open-current-file' && trustedPath !== undefined) {
+        actionEntries.push({
+          key: 'open-current-file',
+          label: t('preview.openCurrentFile'),
+          run: () => { onOpenCurrentFile(trustedPath); },
+        });
+      } else if (action.id === 'download') {
+        if (tab.kind === 'file') {
+          const filePath = resolveHostPath(tab.path, cwd);
+          actionEntries.push({
+            key: 'download',
+            label: t('media.download'),
+            run: () => {
+              if (client !== undefined) return downloadHostFile(host, client, filePath, basenameOf(filePath));
+            },
+          });
+        } else {
+          const name = resource.name ?? t('media.attachment');
+          const downloadName = safeImagePreviewName({ name: tab.item.name, path: tab.item.path }) ?? name;
+          actionEntries.push({
+            key: 'download',
+            label: t('media.download'),
+            run: async () => {
+              await saveMediaToDisk(
+                {
+                  url: tab.item.url,
+                  path: tab.item.fileId !== undefined ? undefined : tab.item.path,
+                  fileId: tab.item.fileId,
+                },
+                downloadName,
+                host,
+                client as Parameters<typeof saveMediaToDisk>[3],
+                tab.sessionId ?? sessionId,
+              );
+            },
+          });
+        }
+      } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+        actionEntries.push({
+          key: 'add-to-chat',
+          label: t('preview.addToChat'),
+          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, cwd)); },
+        });
+      } else if (action.id === 'copy-path' && trustedPath !== undefined) {
+        const relativePath = relativeToCwd(trustedPath, cwd);
+        if (tab.kind === 'file' || relativePath !== trustedPath) {
+          actionEntries.push({
+            key: 'copy-relative',
+            label: t('file.copyRelativePath'),
+            run: () => copyTextToClipboard(relativePath),
+          });
+        }
+        actionEntries.push({
+          key: 'copy-absolute',
+          label: tab.kind === 'file' ? t('file.copyAbsolutePath') : t('file.copyPath'),
+          run: () => copyTextToClipboard(trustedPath),
+        });
+      } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
+        actionEntries.push({
+          key: 'show-in-folder',
+          label: isCopy ? t('preview.showOnThisComputer') : t('file.showInFolder'),
+          run: () => host.revealPath!(trustedPath),
+        });
+      } else if (action.id === 'open-with-default-app' && trustedPath !== undefined && host.openPath !== undefined) {
+        actionEntries.push({
+          key: 'open-default-app',
+          label: isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+          run: () => host.openPath!(trustedPath),
+        });
+      }
+    }
+    if (actionEntries.length > 0) {
+      entries.push({ separator: true }, ...actionEntries);
     }
   } else if (tab.kind === 'web') {
     entries.push(
@@ -1158,24 +1440,38 @@ async function downloadHostFile(
 }
 
 /**
- * Desktop opener pair (reveal in the file manager / open with the default
- * app), gated exactly like the tab context menu's entries: local scope plus a
- * host implementing both. Failures surface as toasts, same as the menu items.
+ * Desktop openers (reveal in the file manager / open with the default app),
+ * gated by `isKikiComputer` and the host's individual opener capabilities.
+ * Failures surface as toasts, same as the menu items.
  */
-function useFileOpeners(): { readonly reveal: (path: string) => void; readonly open: (path: string) => void } | null {
+function useFileOpeners(): {
+  readonly reveal?: (path: string) => void;
+  readonly open?: (path: string) => void;
+} | null {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const connection = useOptionalConnection();
+  const localComputer = isLocalKikiComputer(connection);
   const { revealPath, openPath } = host;
   const cwd = preview?.cwd;
   return useMemo(() => {
-    if (remoteScope || revealPath === undefined || openPath === undefined) return null;
+    if (!localComputer || (revealPath === undefined && openPath === undefined)) return null;
     return {
-      reveal: (path: string) => { runToastAction(t('file.showInFolder'), () => revealPath(resolveHostPath(path, cwd))); },
-      open: (path: string) => { runToastAction(t('file.openDefaultApp'), () => openPath(resolveHostPath(path, cwd))); },
+      reveal:
+        revealPath === undefined
+          ? undefined
+          : (path: string) => {
+              runToastAction(t('file.showInFolder'), () => revealPath(resolveHostPath(path, cwd)));
+            },
+      open:
+        openPath === undefined
+          ? undefined
+          : (path: string) => {
+              runToastAction(t('file.openDefaultApp'), () => openPath(resolveHostPath(path, cwd)));
+            },
     };
-  }, [cwd, remoteScope, revealPath, openPath, t]);
+  }, [cwd, localComputer, revealPath, openPath, t]);
 }
 
 // The text/video header pill idiom, shared by the download anchor and its
@@ -1193,52 +1489,61 @@ const BODY_ACTION_CLASS =
   'rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 /**
- * The header action trio: the download anchor plus, where the desktop opener
- * pair exists, "open with default app" and "reveal in file manager" sitting
- * directly beside it. The opener pair never appears without the download
- * anchor or on its own.
+ * The header action trio: the download anchor (omitted when the read failed)
+ * plus, where desktop openers exist, "open with default app" and "reveal in
+ * file manager" sitting beside it.
  */
-function HeaderFileActions({ path, name }: { readonly path: string; readonly name: string }) {
+function HeaderFileActions({
+  path,
+  name,
+  canDownload = true,
+}: {
+  readonly path: string;
+  readonly name: string;
+  readonly canDownload?: boolean;
+}) {
   const host = useHost();
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const openers = useFileOpeners();
   return (
     <>
-      <button
-        type="button"
-        title={t('media.download')}
-        aria-label={t('media.download')}
-        data-download-file
-        onClick={() => {
-          if (client !== undefined) void downloadHostFile(host, client, path, name);
-        }}
-        className={HEADER_ACTION_CLASS}
-      >
-        <Icon name="arrowDown" size={12} />
-      </button>
-      {openers !== null ? (
-        <>
-          <button
-            type="button"
-            title={t('file.openDefaultApp')}
-            data-open-default-app
-            onClick={() => { openers.open(path); }}
-            className={HEADER_ACTION_CLASS}
-          >
-            {t('file.open')}
-          </button>
-          <button
-            type="button"
-            title={t('file.showInFolder')}
-            aria-label={t('file.showInFolder')}
-            data-reveal-file
-            onClick={() => { openers.reveal(path); }}
-            className={HEADER_ACTION_CLASS}
-          >
-            <Icon name="folder" size={12} />
-          </button>
-        </>
+      {canDownload ? (
+        <button
+          type="button"
+          title={t('media.download')}
+          aria-label={t('media.download')}
+          data-download-file
+          onClick={() => {
+            if (client !== undefined) void downloadHostFile(host, client, path, name);
+          }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="arrowDown" size={12} />
+        </button>
+      ) : null}
+      {openers?.open !== undefined ? (
+        <button
+          type="button"
+          title={t('file.openDefaultApp')}
+          data-open-default-app
+          onClick={() => { openers.open!(path); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          {t('file.open')}
+        </button>
+      ) : null}
+      {openers?.reveal !== undefined ? (
+        <button
+          type="button"
+          title={t('file.showInFolder')}
+          aria-label={t('file.showInFolder')}
+          data-reveal-file
+          onClick={() => { openers.reveal!(path); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="folder" size={12} />
+        </button>
       ) : null}
     </>
   );
@@ -1400,16 +1705,19 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
 }
 
 function PreviewTabView({
+  tabKey: _tabKey,
   path,
   workspaceRoot,
   visible,
   navigation,
   onOpenImage,
   reportDirty,
+  onReadStateChange,
   position,
   onScrollPosition,
   sessionId,
 }: {
+  readonly tabKey?: string;
   readonly path: string;
   /** Session workspace cwd, used as a resource-resolution hint for HTML preview. */
   readonly workspaceRoot?: string;
@@ -1417,6 +1725,7 @@ function PreviewTabView({
   readonly navigation?: FileReference;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
   /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
@@ -1438,18 +1747,29 @@ function PreviewTabView({
       data-preview-tabpanel={path}
     >
       {kind === 'image' ? (
-        <ImageTabView path={filePath} onOpenImage={onOpenImage} />
+        <ImageTabView path={filePath} onOpenImage={onOpenImage} onReadStateChange={onReadStateChange} />
       ) : kind === 'video' ? (
-        <VideoTabView path={filePath} />
+        <VideoTabView path={filePath} onReadStateChange={onReadStateChange} />
       ) : kind === 'audio' ? (
-        <AudioTabView path={filePath} scopeId={connection?.scopeId} />
+        <AudioTabView path={filePath} scopeId={connection?.scopeId} onReadStateChange={onReadStateChange} />
       ) : kind === 'pdf' || kind === 'office' ? (
         <DocumentTabView
           source={{ kind: 'workspace', path: filePath }}
           sessionId={sessionId}
           client={connection?.client}
           active={visible}
-          onOpenLocally={openers === null ? undefined : () => { openers.open(filePath); }}
+          onReadStateChange={
+            onReadStateChange === undefined
+              ? undefined
+              : (status) => {
+                  onReadStateChange({
+                    status,
+                    readableFromDevice: status !== 'failed',
+                    originalReadable: status !== 'failed',
+                  });
+                }
+          }
+          onOpenLocally={openers?.open === undefined ? undefined : () => { openers.open!(filePath); }}
           onDownload={() => {
             const target = connection?.client;
             if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath));
@@ -1458,7 +1778,16 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={filePath} />
       ) : (
-        <TextTabView path={filePath} workspaceRoot={workspaceRoot} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView
+          path={filePath}
+          workspaceRoot={workspaceRoot}
+          visible={visible}
+          markdown={kind === 'markdown'}
+          navigation={navigation}
+          reportDirty={reportDirty}
+          onReadStateChange={onReadStateChange}
+          onReadingReady={onReadingReady}
+        />
       )}
     </div>
   );
@@ -1475,9 +1804,11 @@ function TabPathCaption({ path }: { readonly path: string }) {
 function ImageTabView({
   path,
   onOpenImage,
+  onReadStateChange,
 }: {
   readonly path: string;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
@@ -1488,6 +1819,15 @@ function ImageTabView({
     | { readonly status: 'ready'; readonly url: string; readonly size: number }
   >({ status: 'loading' });
   const imageMenu = useMessageImageMenu({ kind: 'image', path, name }, state.status === 'ready' ? state.url : undefined, name);
+
+  useEffect(() => {
+    const status = state.status === 'error' ? 'failed' : state.status;
+    onReadStateChange?.({
+      status,
+      readableFromDevice: status !== 'failed',
+      originalReadable: status !== 'failed',
+    });
+  }, [state.status, onReadStateChange]);
 
   // The tab shows the original bytes: a downscaled preview thumbnail here is
   // what made full-size screenshots unreadable.
@@ -1568,13 +1908,13 @@ function BinaryTabView({ path }: { readonly path: string }) {
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
           {path}
         </span>
-        {openers !== null ? (
+        {openers?.reveal !== undefined ? (
           <button
             type="button"
             title={t('file.showInFolder')}
             aria-label={t('file.showInFolder')}
             data-reveal-file
-            onClick={() => { openers.reveal(path); }}
+            onClick={() => { openers.reveal!(path); }}
             className={CAPTION_ACTION_CLASS}
           >
             <Icon name="folder" size={14} />
@@ -1595,26 +1935,26 @@ function BinaryTabView({ path }: { readonly path: string }) {
           >
             {t('media.download')}
           </button>
-          {openers !== null ? (
-            <>
-              <button
-                type="button"
-                title={t('file.openDefaultApp')}
-                data-open-default-app
-                onClick={() => { openers.open(path); }}
-                className={BODY_ACTION_CLASS}
-              >
-                {t('file.open')}
-              </button>
-              <button
-                type="button"
-                data-reveal-file
-                onClick={() => { openers.reveal(path); }}
-                className={BODY_ACTION_CLASS}
-              >
-                {t('file.showInFolder')}
-              </button>
-            </>
+          {openers?.open !== undefined ? (
+            <button
+              type="button"
+              title={t('file.openDefaultApp')}
+              data-open-default-app
+              onClick={() => { openers.open!(path); }}
+              className={BODY_ACTION_CLASS}
+            >
+              {t('file.open')}
+            </button>
+          ) : null}
+          {openers?.reveal !== undefined ? (
+            <button
+              type="button"
+              data-reveal-file
+              onClick={() => { openers.reveal!(path); }}
+              className={BODY_ACTION_CLASS}
+            >
+              {t('file.showInFolder')}
+            </button>
           ) : null}
         </div>
       </div>
@@ -1671,7 +2011,15 @@ function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal
  * stays actionable so the same tab can retry; a browser decode failure uses
  * the ordinary file fallback.
  */
-function AudioTabView({ path, scopeId }: { readonly path: string; readonly scopeId?: string }) {
+function AudioTabView({
+  path,
+  scopeId,
+  onReadStateChange,
+}: {
+  readonly path: string;
+  readonly scopeId?: string;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
+}) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
@@ -1692,6 +2040,15 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
       readonly via: 'capability' | 'blob';
     }
   >({ status: 'loading' });
+
+  useEffect(() => {
+    const status = state.status === 'error' ? 'failed' : state.status;
+    onReadStateChange?.({
+      status,
+      readableFromDevice: status !== 'failed',
+      originalReadable: status !== 'failed',
+    });
+  }, [state.status, onReadStateChange]);
 
   useEffect(() => {
     setUnplayable(false);
@@ -1736,7 +2093,7 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
             {formatBytes(readyState.size)}
           </span>
         ) : null}
-        <HeaderFileActions path={path} name={name} />
+        <HeaderFileActions path={path} name={name} canDownload={state.status !== 'error'} />
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
         {readyState === undefined && state.status === 'loading' ? (
@@ -1775,7 +2132,13 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
   );
 }
 
-function VideoTabView({ path }: { readonly path: string }) {
+function VideoTabView({
+  path,
+  onReadStateChange,
+}: {
+  readonly path: string;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
+}) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
@@ -1786,6 +2149,15 @@ function VideoTabView({ path }: { readonly path: string }) {
     | { readonly status: 'error' }
     | { readonly status: 'ready'; readonly url: string; readonly size: number; readonly via: 'capability' | 'blob' }
   >({ status: 'loading' });
+
+  useEffect(() => {
+    const status = state.status === 'error' ? 'failed' : state.status;
+    onReadStateChange?.({
+      status,
+      readableFromDevice: status !== 'failed',
+      originalReadable: status !== 'failed',
+    });
+  }, [state.status, onReadStateChange]);
 
   useEffect(() => {
     setBlobFallback(false);
@@ -1831,7 +2203,7 @@ function VideoTabView({ path }: { readonly path: string }) {
             {formatBytes(state.size)}
           </span>
         ) : null}
-        <HeaderFileActions path={path} name={name} />
+        <HeaderFileActions path={path} name={name} canDownload={state.status !== 'error'} />
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
         {state.status === 'loading' ? (
@@ -1945,6 +2317,7 @@ function TextTabView({
   markdown,
   navigation,
   reportDirty,
+  onReadStateChange,
   onReadingReady,
 }: {
   readonly path: string;
@@ -1953,13 +2326,14 @@ function TextTabView({
   readonly markdown: boolean;
   readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
   readonly onReadingReady: () => void;
 }) {
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const remoteScope = connection?.connectionSource === 'remote';
+  const remoteBrokerHtmlScope = connection?.connectionSource === 'remote';
   const html = isHtmlPreviewPath(path);
   const hasRenderedMode = markdown || html;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
@@ -2003,7 +2377,7 @@ function TextTabView({
     let cancelled = false;
     let activePreviewId: string | null = null;
     setHtmlPreviewState({ status: 'loading' });
-    const request = remoteScope && htmlRootOverride !== undefined
+    const request = remoteBrokerHtmlScope && htmlRootOverride !== undefined
       ? { path, root: htmlRootOverride }
       : { path, workspace_root: workspaceRoot };
     client.openHtmlPreview(request).then(
@@ -2042,7 +2416,7 @@ function TextTabView({
         activePreviewId = null;
       }
     };
-  }, [client, html, path, reloadKey, remoteScope, htmlRootOverride, workspaceRoot]);
+  }, [client, html, path, reloadKey, remoteBrokerHtmlScope, htmlRootOverride, workspaceRoot]);
 
   useEffect(() => {
     if (client === undefined) {
@@ -2073,6 +2447,22 @@ function TextTabView({
     [controller],
   );
   const snap = useSyncExternalStore(subscribe, getState);
+  const textReadFailed = html
+    ? snap.status === 'error' && htmlPreviewState.status === 'error'
+    : snap.status === 'error';
+  useEffect(() => {
+    const status = textReadFailed
+      ? 'failed'
+      : snap.status === 'ready' || (html && htmlPreviewState.status === 'ready')
+        ? 'ready'
+        : 'loading';
+    onReadStateChange?.({
+      status,
+      truncated: snap.oversized,
+      readableFromDevice: status !== 'failed',
+      originalReadable: status !== 'failed',
+    });
+  }, [textReadFailed, snap.status, snap.oversized, html, htmlPreviewState.status, onReadStateChange]);
   useEffect(() => {
     setLoadingFull(false);
     setFullError(false);
@@ -2166,7 +2556,7 @@ function TextTabView({
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center" data-html-preview-error={kind}>
         <p className="max-w-md text-[13px] text-danger" role="alert">{message}</p>
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          {kind === 'path_outside_root' && remoteScope ? (
+          {kind === 'path_outside_root' && remoteBrokerHtmlScope ? (
             <form
               data-html-root-form
               className="flex min-w-0 w-full max-w-xl flex-wrap items-end justify-center gap-2"
@@ -2273,7 +2663,7 @@ function TextTabView({
             {t('preview.save')}
           </button>
         ) : null}
-        <HeaderFileActions path={path} name={name} />
+        <HeaderFileActions path={path} name={name} canDownload={!textReadFailed} />
       </div>
       {snap.conflict ? (
         <div
@@ -2432,19 +2822,25 @@ function isAttachmentDocument(mime: string, name: string): boolean {
 function PreviewAttachmentView({
   tabKey,
   item,
+  origin,
   sessionId,
   workspaceRoot,
   visible,
   onOpenImage,
+  onOpenCurrentFile,
+  onReadStateChange,
   position,
   onScrollPosition,
 }: {
   readonly tabKey: string;
   readonly item: MediaRef;
+  readonly origin?: { readonly path: string; readonly trusted: true };
   readonly sessionId?: string;
   readonly workspaceRoot?: string;
   readonly visible: boolean;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
+  readonly onOpenCurrentFile?: (path: string) => void;
+  readonly onReadStateChange?: (state: PreviewReadState) => void;
   readonly position?: PreviewScrollPosition;
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
 }) {
@@ -2452,8 +2848,26 @@ function PreviewAttachmentView({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const remoteScope = isRemoteConnection(connection);
-  const name = attachmentName(item, undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  const remoteScope = !isLocalKikiComputer(connection);
+  const environment = usePreviewEnvironment(sessionId);
+  const fallbackName = item.kind === 'image' ? t('media.image') : t('media.attachment');
+  const name = attachmentName(item, undefined, fallbackName);
+  const resource = useMemo(
+    () => buildAttachmentTabResource(item, sessionId, origin, workspaceRoot, fallbackName),
+    [item, sessionId, origin, workspaceRoot, fallbackName],
+  );
+  const isCopy = resourceMutability(resource) === 'copy';
+  const trustedPath =
+    resource.origin !== undefined && resource.origin.trusted
+      ? resource.origin.path
+      : resource.source.kind === 'host-file'
+        ? resource.source.path
+        : undefined;
+  const trustedDirectory = useMemo(() => {
+    if (trustedPath === undefined) return undefined;
+    const normalized = trustedPath.replaceAll('\\', '/');
+    return normalized.slice(0, normalized.lastIndexOf('/')) || '/';
+  }, [trustedPath]);
   const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
   const mime = (item.mime ?? '').toLowerCase();
   const html = isAttachmentHtml(mime, name);
@@ -2470,6 +2884,8 @@ function PreviewAttachmentView({
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [attempt, setAttempt] = useState(0);
   const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
+  const [docReadStatus, setDocReadStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null);
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const canonicalItem = useMemo<MediaRef>(
@@ -2484,6 +2900,48 @@ function PreviewAttachmentView({
     (!html || mode === 'source' || htmlPreviewState.status === 'error');
   const load = useSessionMedia(canonicalItem, sessionId, shouldLoadBytes, false, attempt);
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+
+  const readState = useMemo<PreviewReadState>(() => {
+    let status: 'loading' | 'ready' | 'failed';
+    if (documentPreview) {
+      status = docReadStatus;
+    } else if (!viewable) {
+      status = 'ready';
+    } else if (html && mode === 'rendered') {
+      if (htmlPreviewState.status === 'ready') status = 'ready';
+      else if (htmlPreviewState.status === 'error') {
+        status = load.status === 'failed' ? 'failed' : load.status === 'ready' ? 'ready' : 'loading';
+      } else {
+        status = 'loading';
+      }
+    } else if (playback.status === 'ready') {
+      status = 'ready';
+    } else if (playback.status === 'failed' || load.status === 'failed') {
+      status = 'failed';
+    } else if (load.status === 'ready') {
+      status = 'ready';
+    } else {
+      status = 'loading';
+    }
+    return {
+      status,
+      readableFromDevice: status !== 'failed',
+      originalReadable: trustedPath !== undefined && status !== 'failed',
+    };
+  }, [documentPreview, docReadStatus, viewable, html, mode, htmlPreviewState.status, playback.status, load.status, trustedPath]);
+
+  useEffect(() => {
+    onReadStateChange?.(readState);
+  }, [readState, onReadStateChange]);
+
+  const actions = useMemo(
+    () => resourceActions(resource, environment, readState),
+    [resource, environment, readState],
+  );
+  const actionIds = useMemo<ReadonlySet<ResourceActionId>>(
+    () => new Set(actions.map((action) => action.id)),
+    [actions],
+  );
 
   useEffect(() => {
     if (load.status === 'ready' || htmlPreviewState.status === 'ready') onReadingReady();
@@ -2572,8 +3030,99 @@ function PreviewAttachmentView({
     }
   }, [item.url, item.path, item.fileId, load, downloadName, host, client, sessionId, t]);
 
+  const decodedText = useMemo(
+    () => (load.status === 'ready' && (textPreview || html) ? new TextDecoder().decode(load.bytes) : undefined),
+    [load, textPreview, html],
+  );
+
+  const moreEntries = useMemo<readonly MiniMenuEntry[]>(() => {
+    const list: MiniMenuEntry[] = [];
+    for (const action of actions) {
+      if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+        list.push({
+          key: 'add-to-chat',
+          label: t('preview.addToChat'),
+          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, workspaceRoot)); },
+        });
+      } else if (action.id === 'copy-content' && decodedText !== undefined) {
+        list.push({
+          key: 'copy-content',
+          label: t('preview.copyContent'),
+          run: () => copyTextToClipboard(decodedText),
+        });
+      } else if (action.id === 'copy-path' && trustedPath !== undefined) {
+        const relativePath = relativeToCwd(trustedPath, workspaceRoot);
+        if (relativePath !== trustedPath) {
+          list.push({
+            key: 'copy-relative',
+            label: t('file.copyRelativePath'),
+            run: () => copyTextToClipboard(relativePath),
+          });
+        }
+        list.push({
+          key: 'copy-absolute',
+          label: t('file.copyPath'),
+          run: () => copyTextToClipboard(trustedPath),
+        });
+      } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
+        list.push({
+          key: 'show-in-folder',
+          label: isCopy ? t('preview.showOnThisComputer') : t('file.showInFolder'),
+          run: () => { runToastAction(t('preview.showOnThisComputer'), () => host.revealPath!(trustedPath)); },
+        });
+      } else if (action.id === 'open-with-default-app' && trustedPath !== undefined && host.openPath !== undefined) {
+        list.push({
+          key: 'open-default-app',
+          label: isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+          run: () => {
+            runToastAction(
+              isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+              () => host.openPath!(trustedPath),
+            );
+          },
+        });
+      }
+    }
+    return list;
+  }, [actions, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t]);
+
   const hasRenderedToggle = html || markdown;
   const sizeBytes = load.status === 'ready' ? load.bytes.byteLength : item.size;
+  const canOpenCurrent = actionIds.has('open-current-file') && trustedPath !== undefined && onOpenCurrentFile !== undefined;
+  const canDownload = actionIds.has('download');
+
+  const copyNoticeNode = isCopy ? (
+    <span className="shrink-0 text-[11px] text-ink-faint" data-preview-copy-notice>
+      {t('preview.sentCopyNotice')}
+    </span>
+  ) : null;
+
+  const openCurrentButton = canOpenCurrent ? (
+    <button
+      type="button"
+      data-open-current-file
+      onClick={() => { onOpenCurrentFile(trustedPath); }}
+      className={HEADER_ACTION_CLASS}
+    >
+      {t('preview.openCurrentFile')}
+    </button>
+  ) : null;
+
+  const moreButton = moreEntries.length > 0 ? (
+    <button
+      type="button"
+      title={t('preview.moreActions')}
+      aria-label={t('preview.moreActions')}
+      data-attachment-more
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
+      }}
+      className={HEADER_ACTION_CLASS}
+    >
+      <Icon name="more" size={12} />
+    </button>
+  ) : null;
 
   return (
     <div
@@ -2595,20 +3144,50 @@ function PreviewAttachmentView({
           sessionId={sessionId}
           client={client}
           active={visible}
-          onDownload={() => { void downloadAttachment(); }}
+          headerSubtitle={
+            isCopy ? (
+              <span className="block truncate text-[10.5px] text-ink-faint" data-preview-copy-notice>
+                {t('preview.sentCopyNotice')}
+              </span>
+            ) : undefined
+          }
+          headerActions={
+            openCurrentButton !== null || moreButton !== null ? (
+              <>
+                {openCurrentButton}
+                {moreButton}
+              </>
+            ) : undefined
+          }
+          onReadStateChange={setDocReadStatus}
+          onOpenLocally={
+            actionIds.has('open-with-default-app') && trustedPath !== undefined && host.openPath !== undefined
+              ? () => {
+                  runToastAction(
+                    isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+                    () => host.openPath!(trustedPath),
+                  );
+                }
+              : undefined
+          }
+          onDownload={canDownload ? () => { void downloadAttachment(); } : undefined}
         />
       ) : (
         <>
           <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={item.path ?? name}>
-              {name}
-            </span>
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={trustedPath ?? item.path ?? name}>
+                {name}
+              </span>
+              {copyNoticeNode}
+            </div>
             {sizeBytes !== undefined ? (
               <span className="shrink-0 font-mono text-[11px] text-ink-faint">
                 {formatBytes(sizeBytes)}
               </span>
             ) : null}
-            {hasRenderedToggle ? (
+            {openCurrentButton}
+            {hasRenderedToggle && actionIds.has('rendered-source') ? (
               <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
                 {(['rendered', 'source'] as const).map((option) => (
                   <button
@@ -2630,16 +3209,19 @@ function PreviewAttachmentView({
                 ))}
               </span>
             ) : null}
-            <button
-              type="button"
-              title={t('media.download')}
-              aria-label={t('media.download')}
-              data-download-file
-              onClick={() => { void downloadAttachment(); }}
-              className={HEADER_ACTION_CLASS}
-            >
-              <Icon name="arrowDown" size={12} />
-            </button>
+            {canDownload ? (
+              <button
+                type="button"
+                title={t('media.download')}
+                aria-label={t('media.download')}
+                data-download-file
+                onClick={() => { void downloadAttachment(); }}
+                className={HEADER_ACTION_CLASS}
+              >
+                <Icon name="arrowDown" size={12} />
+              </button>
+            ) : null}
+            {moreButton}
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             {html && mode === 'rendered' ? (
@@ -2710,12 +3292,12 @@ function PreviewAttachmentView({
           <ImageViewport
             src={load.url}
             alt={name}
-            caption={<span title={name}>{name}</span>}
+            caption={<span title={trustedPath ?? name}>{name}</span>}
             meta={formatBytes(load.bytes.byteLength)}
             actions={
               <button
                 type="button"
-                onClick={() => { onOpenImage(load.url, name); }}
+                onClick={() => { onOpenImage(load.url, name, trustedPath); }}
                 title={t('media.viewImage')}
                 aria-label={t('media.viewImage')}
                 className={CAPTION_ACTION_CLASS}
@@ -2734,11 +3316,16 @@ function PreviewAttachmentView({
           </div>
         ) : textPreview || html ? (
           (() => {
-            const text = new TextDecoder().decode(load.bytes);
+            const text = decodedText ?? new TextDecoder().decode(load.bytes);
             if (markdown && mode === 'rendered') {
               return (
                 <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-                  <Markdown mode="static" text={text} />
+                  <Markdown
+                    mode="static"
+                    text={text}
+                    documentDirectory={trustedDirectory}
+                    documentPath={trustedPath}
+                  />
                 </div>
               );
             }
@@ -2772,6 +3359,17 @@ function PreviewAttachmentView({
           </div>
         </>
       )}
+      {moreAnchor !== null && moreEntries.length > 0 ? (
+        <MiniContextMenu
+          x={moreAnchor.x}
+          y={moreAnchor.y}
+          entries={moreEntries}
+          onClose={() => { setMoreAnchor(null); }}
+          ariaLabel={t('preview.moreActions')}
+          overlayId="preview-attachment-more-menu"
+          dataAttribute="data-attachment-more-menu"
+        />
+      ) : null}
     </div>
   );
 }

@@ -13368,4 +13368,13 @@ export const en = {
   'transcript.task.commandCompleted': 'Background command completed',
   'transcript.task.exitCode': 'exit {code}',
   'transcript.task.neutralNotification': 'Task notification',
+  'preview.sentCopyBadge': 'Sent copy',
+  'preview.sentCopyNotice': 'Copy as it was sent',
+  'preview.openCurrentFile': 'Open current file',
+  'preview.openOriginalFile': 'Open original file',
+  'preview.showOnThisComputer': 'Show on this computer',
+  'preview.copyContent': 'Copy content',
+  'preview.moreActions': 'More actions',
+  'preview.agentFallback': 'Agent: {name}',
+  'preview.agentTabTitle': 'Agent: {name} ({id})',
 } as const;

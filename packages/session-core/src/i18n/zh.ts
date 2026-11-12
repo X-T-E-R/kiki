@@ -13274,4 +13274,13 @@ export const zh = {
   'transcript.task.commandCompleted': '后台命令完成',
   'transcript.task.exitCode': '退出码 {code}',
   'transcript.task.neutralNotification': '任务通知',
+  'preview.sentCopyBadge': '副本',
+  'preview.sentCopyNotice': '发送时的副本',
+  'preview.openCurrentFile': '打开现在的文件',
+  'preview.openOriginalFile': '打开原文件',
+  'preview.showOnThisComputer': '在这台电脑上显示',
+  'preview.copyContent': '复制内容',
+  'preview.moreActions': '更多操作',
+  'preview.agentFallback': 'Agent：{name}',
+  'preview.agentTabTitle': 'Agent：{name} ({id})',
 };

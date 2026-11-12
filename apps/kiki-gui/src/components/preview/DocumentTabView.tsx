@@ -9,7 +9,7 @@
  * through this home's Work setup, not a second install flow.
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 
 import type { DocumentPreviewResponse } from '@kiki/protocol';
 import { basenameOf } from '@kiki/session-core/composer/media';
@@ -28,6 +28,8 @@ export type DocumentTabSource =
   | { readonly kind: 'session-media'; readonly fileId: string; readonly name?: string; readonly mediaType?: string };
 
 const CAPTION = 'flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5';
+const HEADER_DOWNLOAD_BUTTON =
+  'shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 export interface DocumentTabViewProps {
   readonly source: DocumentTabSource;
@@ -47,6 +49,10 @@ export interface DocumentTabViewProps {
    */
   readonly onOpenLocally?: () => void;
   readonly onDownload?: () => void;
+  /** Extra header controls (such as copy badge / open current file / more menu). */
+  readonly headerSubtitle?: ReactNode;
+  readonly headerActions?: ReactNode;
+  readonly onReadStateChange?: (status: 'loading' | 'ready' | 'failed') => void;
   /** False while the tab is hidden. An in-flight render is cancelled; a finished page stays. */
   readonly active?: boolean;
 }
@@ -124,7 +130,18 @@ function PageControl({ controller, response }: { controller: DocumentPreviewCont
   );
 }
 
-export function DocumentTabView({ source, sessionId, client: clientProp, onOpenPluginSettings, onOpenLocally, onDownload, active = true }: DocumentTabViewProps) {
+export function DocumentTabView({
+  source,
+  sessionId,
+  client: clientProp,
+  onOpenPluginSettings,
+  onOpenLocally,
+  onDownload,
+  headerSubtitle,
+  headerActions,
+  onReadStateChange,
+  active = true,
+}: DocumentTabViewProps) {
   const { t, locale } = useI18n();
   // The client is a prop, not a context read: the tab already knows which
   // session owns the file, and a caller outside the live connection (a test, a
@@ -137,6 +154,9 @@ export function DocumentTabView({ source, sessionId, client: clientProp, onOpenP
   ), [source]);
   const controller = useDocumentPreview(client, sessionId, documentSource, {}, active);
   const { state } = controller;
+  useEffect(() => {
+    onReadStateChange?.(state.kind);
+  }, [state.kind, onReadStateChange]);
   // The caption names what the user recognises. A session attachment's
   // file id is an internal handle, never something to put in front of them.
   const name = source.kind === 'workspace'
@@ -146,13 +166,29 @@ export function DocumentTabView({ source, sessionId, client: clientProp, onOpenP
 
   const header = (
     <div className={CAPTION}>
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>{path}</span>
+      <div className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-[11px] text-ink-faint" title={path}>{path}</span>
+        {headerSubtitle}
+      </div>
       {state.kind === 'ready' && state.response.kind === 'ready' ? <PageControl controller={controller} response={state.response} /> : null}
       {state.kind === 'ready' && state.response.kind === 'text' ? (
         <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-soft" data-preview-fidelity="source">
           {t('preview.fidelitySource')}
         </span>
       ) : null}
+      {state.kind === 'ready' && onDownload !== undefined ? (
+        <button
+          type="button"
+          title={t('media.download')}
+          aria-label={t('media.download')}
+          data-download-file
+          onClick={onDownload}
+          className={HEADER_DOWNLOAD_BUTTON}
+        >
+          <Icon name="arrowDown" size={12} />
+        </button>
+      ) : null}
+      {headerActions}
     </div>
   );
 

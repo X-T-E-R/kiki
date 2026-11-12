@@ -44,9 +44,14 @@ const writeMock = vi.fn(async (path: string, text: string) => {
 const connectionMock = vi.hoisted(() => ({
   activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
   connectionSource: 'desktop' as 'desktop' | 'remote' | 'ssh' | null,
+  config: null as { readonly url?: string } | null,
 }));
 const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
 const htmlPreviewMock = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn() }));
+const sessionMediaMock = vi.hoisted(() => ({
+  bytesById: {} as Record<string, { bytes: Uint8Array; mime: string; name?: string }>,
+  documentPreview: vi.fn(),
+}));
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
@@ -64,12 +69,24 @@ vi.mock('../state/connection', async (importOriginal) => {
       if (path in FILES) return Promise.resolve({ bytes: new TextEncoder().encode(FILES[path]), mime: 'text/plain' });
       const file = {
         '/work/shots/screen.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
+        '/work/docs/sub/diagram.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
         '/work/clips/intro.mp4': { bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), mime: 'video/mp4' },
         '/work/audio/sample.mp3': { bytes: new Uint8Array([73, 68, 51, 3]), mime: 'audio/mpeg' },
         '/work/bundles/release.zip': { bytes: new Uint8Array([80, 75, 3, 4]), mime: 'application/zip' },
       }[path];
       return file === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(file);
     },
+    readHostMediaPreviewBytes: (path: string) => fakeClient.readHostFileBytes(path),
+    readSessionMediaBytes: (_sessionId: string, fileId: string) => {
+      const entry = sessionMediaMock.bytesById[fileId];
+      return entry === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(entry);
+    },
+    readSessionMediaPreviewBytes: (_sessionId: string, fileId: string) => {
+      const entry = sessionMediaMock.bytesById[fileId];
+      return entry === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(entry);
+    },
+    documentPreview: (sessionId: string, request: unknown, signal?: AbortSignal) =>
+      sessionMediaMock.documentPreview(sessionId, request, signal),
     baseUrl: 'http://127.0.0.1:5177',
     openHtmlPreview: htmlPreviewMock.open,
     closeHtmlPreview: htmlPreviewMock.close,
@@ -78,7 +95,12 @@ vi.mock('../state/connection', async (importOriginal) => {
   connectionMock.defaultClient = fakeClient;
   return {
     ...original,
-    useOptionalConnection: () => ({ client: connectionMock.activeClient, scopeId: connectionMock.scopeId, connectionSource: connectionMock.connectionSource }),
+    useOptionalConnection: () => ({
+      client: connectionMock.activeClient,
+      scopeId: connectionMock.scopeId,
+      connectionSource: connectionMock.connectionSource,
+      config: connectionMock.config,
+    }),
   };
 });
 
@@ -921,6 +943,13 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   });
   beforeEach(() => {
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.config = null;
+    hostMock.desktop = false;
+    hostMock.revealPath.mockClear();
+    hostMock.openPath.mockClear();
     writeText.mockClear();
     resetDraftMemoryForTests();
     // Drafts persist to localStorage; without clearing it the next readDraft
@@ -968,10 +997,15 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     expect(writeText).toHaveBeenCalledWith('src/server.ts');
   });
 
-  it.each([['local', true], ['ssh:remote-1', false]] as const)(
-    'only offers local file openers in the local scope (%s)', async (scopeId, expected) => {
+  it.each([
+    ['local', 'desktop' as const, true],
+    ['ssh:remote-1', 'ssh' as const, false],
+    ['remote:space-1', 'remote' as const, false],
+  ])(
+    'only offers local file openers on the computer running Kiki (%s)', async (scopeId, source, expected) => {
       hostMock.desktop = true;
       connectionMock.scopeId = scopeId;
+      connectionMock.connectionSource = source;
       const probe = makeRoot();
       await renderSettled(probe.root,
         <MediaPreviewProvider cwd="/work"><OpenButton path="/work/src/server.ts" /></MediaPreviewProvider>,
@@ -1280,6 +1314,8 @@ describe('PreviewWorkspace media tabs', () => {
   beforeEach(() => {
     connectionMock.activeClient = connectionMock.defaultClient;
     connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.config = null;
     hostMock.desktop = false;
     hostMock.revealPath.mockClear();
     hostMock.openPath.mockClear();
@@ -1391,11 +1427,16 @@ describe('PreviewWorkspace media tabs', () => {
     expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
   });
 
-  it.each([['local', true], ['ssh:remote-1', false]] as const)(
+  it.each([
+    ['local', 'desktop' as const, true],
+    ['ssh:remote-1', 'ssh' as const, false],
+    ['remote:space-1', 'remote' as const, false],
+  ])(
     'gates the video tab opener pair by scope, beside the download anchor (%s)',
-    async (scopeId, expected) => {
+    async (scopeId, source, expected) => {
       hostMock.desktop = true;
       connectionMock.scopeId = scopeId;
+      connectionMock.connectionSource = source;
       const probe = makeRoot();
       await renderSettled(
         probe.root,
@@ -2320,5 +2361,333 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups');
     expect(webFrame?.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(workspace().querySelector('[data-web-open-external]')).not.toBeNull();
+  });
+});
+
+describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
+  const writeText = vi.fn(async () => {});
+
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    FILES['/work/docs/sub/notes.md'] = '# Notes\n\nLive version.\n';
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.config = null;
+    hostMock.desktop = false;
+    hostMock.revealPath.mockClear();
+    hostMock.openPath.mockClear();
+    sessionMediaMock.bytesById = {};
+    sessionMediaMock.documentPreview.mockReset();
+    writeText.mockClear();
+    resetDraftMemoryForTests();
+    clearStoredDrafts();
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:attachment-mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+    localStorage.removeItem('kiki.locale');
+    vi.restoreAllMocks();
+  });
+
+  async function settle() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  function AttachmentHarness({
+    item,
+  }: {
+    item: {
+      readonly kind: 'file' | 'image';
+      readonly fileId?: string;
+      readonly sourceId?: string;
+      readonly path?: string;
+      readonly name?: string;
+      readonly mime?: string;
+      readonly origin?: { readonly path: string; readonly trusted: true };
+    };
+  }) {
+    const preview = useMediaPreview()!;
+    return (
+      <div>
+        <button
+          type="button"
+          data-open-attachment
+          onClick={() => { preview.openAttachmentInWorkspace?.(item); }}
+        >
+          open attachment
+        </button>
+        <button
+          type="button"
+          data-open-live
+          onClick={() => { preview.openFile('/work/docs/sub/notes.md'); }}
+        >
+          open live
+        </button>
+      </div>
+    );
+  }
+
+  it('offers copy path, show on this computer, open original file and @ on local desktop with trusted origin; only copy path in remote space; none without source_id', async () => {
+    sessionMediaMock.bytesById['blobref:main:notes1'] = {
+      bytes: new TextEncoder().encode('# Sent copy\n'),
+      mime: 'text/markdown',
+      name: 'notes.md',
+    };
+    const trustedOrigin = { path: '/work/docs/sub/notes.md', trusted: true as const };
+    const sentWithOrigin = {
+      kind: 'file' as const,
+      fileId: 'blobref:main:notes1',
+      sourceId: 'b'.repeat(64),
+      name: 'notes.md',
+      mime: 'text/markdown',
+      origin: trustedOrigin,
+    };
+
+    // 1. Local desktop with source_id + trusted origin
+    hostMock.desktop = true;
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.scopeId = 'local';
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-29">
+        <AttachmentHarness item={sentWithOrigin} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+
+    const tab = workspace().querySelector<HTMLElement>('[data-preview-tab="blobref:main:notes1"]')!;
+    expect(tab.querySelector('[data-preview-copy-badge]')?.textContent).toBe('Sent copy');
+    const mentionBtn = tab.querySelector<HTMLButtonElement>('[data-mention-file="/work/docs/sub/notes.md"]');
+    expect(mentionBtn).not.toBeNull();
+    await act(async () => { mentionBtn!.click(); });
+    expect(readDraft('sess-29')).toContain('@docs/sub/notes.md');
+
+    await act(async () => {
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const tabMenu = document.querySelector<HTMLElement>('[data-preview-tab-menu]')!;
+    expect(tabMenu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+    expect(tabMenu.querySelector('[data-menu-item="show-in-folder"]')?.textContent).toBe('Show on this computer');
+    expect(tabMenu.querySelector('[data-menu-item="open-default-app"]')?.textContent).toBe('Open original file');
+    await act(async () => {
+      tabMenu.querySelector<HTMLButtonElement>('[data-menu-item="open-default-app"]')!.click();
+    });
+    expect(hostMock.openPath).toHaveBeenCalledWith('/work/docs/sub/notes.md');
+
+    const moreBtn = workspace().querySelector<HTMLButtonElement>('[data-attachment-more]')!;
+    expect(moreBtn).not.toBeNull();
+    await act(async () => { moreBtn.click(); });
+    const moreMenu = document.querySelector<HTMLElement>('[data-attachment-more-menu]')!;
+    expect(moreMenu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+    expect(moreMenu.querySelector('[data-menu-item="show-in-folder"]')?.textContent).toBe('Show on this computer');
+    expect(moreMenu.querySelector('[data-menu-item="open-default-app"]')?.textContent).toBe('Open original file');
+    await act(async () => {
+      moreMenu.querySelector<HTMLButtonElement>('[data-menu-item="show-in-folder"]')!.click();
+    });
+    expect(hostMock.revealPath).toHaveBeenCalledWith('/work/docs/sub/notes.md');
+
+    // 2. Remote space with trusted origin: copy path stays, desktop openers disappear
+    connectionMock.connectionSource = 'remote';
+    connectionMock.scopeId = 'remote:space-29';
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-29">
+        <AttachmentHarness item={sentWithOrigin} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      workspace().querySelector<HTMLElement>('[data-preview-tab="blobref:main:notes1"]')!
+        .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const remoteMenu = document.querySelector<HTMLElement>('[data-preview-tab-menu]')!;
+    expect(remoteMenu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
+    expect(remoteMenu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(remoteMenu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+
+    // 3. Without source_id / trusted origin: none of copy path, show, open, or @
+    connectionMock.connectionSource = 'desktop';
+    connectionMock.scopeId = 'local';
+    const probeNoOrigin = makeRoot();
+    const sentWithoutOrigin = {
+      kind: 'file' as const,
+      fileId: 'blobref:main:notes1',
+      name: 'notes.md',
+      mime: 'text/markdown',
+    };
+    await renderSettled(
+      probeNoOrigin.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-29">
+        <AttachmentHarness item={sentWithoutOrigin} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      probeNoOrigin.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+    const untrustedTab = probeNoOrigin.container.querySelector<HTMLElement>('[data-preview-tab="blobref:main:notes1"]')!;
+    expect(untrustedTab.querySelector('[data-mention-file]')).toBeNull();
+    await act(async () => {
+      untrustedTab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const untrustedMenu = document.querySelector<HTMLElement>('[data-preview-tab-menu]')!;
+    expect(untrustedMenu.querySelector('[data-menu-item="copy-absolute"]')).toBeNull();
+    expect(untrustedMenu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
+    expect(untrustedMenu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
+  });
+
+  it('keeps live file and sent copy as two tabs, labels the copy in zh, and Open current file activates the live tab', async () => {
+    sessionMediaMock.bytesById['blobref:main:notes2'] = {
+      bytes: new TextEncoder().encode('# Sent snapshot\n'),
+      mime: 'text/markdown',
+      name: 'notes.md',
+    };
+    const trustedOrigin = { path: '/work/docs/sub/notes.md', trusted: true as const };
+    const sentItem = {
+      kind: 'file' as const,
+      fileId: 'blobref:main:notes2',
+      sourceId: 'c'.repeat(64),
+      name: 'notes.md',
+      mime: 'text/markdown',
+      origin: trustedOrigin,
+    };
+    localStorage.setItem('kiki.locale', 'zh');
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-zh">
+        <AttachmentHarness item={sentItem} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-live]')!.click();
+      probe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+
+    const allTabs = probe.container.querySelectorAll('[role="tab"]');
+    expect(allTabs).toHaveLength(2);
+    const copyTab = probe.container.querySelector<HTMLElement>('[data-preview-tab="blobref:main:notes2"]')!;
+    expect(copyTab.querySelector('[data-preview-copy-badge]')?.textContent).toBe('副本');
+    expect(probe.container.querySelector('[data-preview-copy-notice]')?.textContent).toBe('发送时的副本');
+
+    const openCurrentBtn = probe.container.querySelector<HTMLButtonElement>('[data-open-current-file]')!;
+    expect(openCurrentBtn.textContent).toBe('打开现在的文件');
+    await act(async () => { openCurrentBtn.click(); });
+    const liveTab = probe.container.querySelector<HTMLElement>('[data-preview-tab="/work/docs/sub/notes.md"]')!;
+    expect(liveTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('resolves relative Markdown images against the trusted origin directory and renders header download on document attachments', async () => {
+    sessionMediaMock.bytesById['blobref:main:mdimg'] = {
+      bytes: new TextEncoder().encode('# Doc\n\n![Diagram](./diagram.png)\n'),
+      mime: 'text/markdown',
+      name: 'notes.md',
+    };
+    const trustedOrigin = { path: '/work/docs/sub/notes.md', trusted: true as const };
+    const mdItem = {
+      kind: 'file' as const,
+      fileId: 'blobref:main:mdimg',
+      sourceId: 'd'.repeat(64),
+      name: 'notes.md',
+      mime: 'text/markdown',
+      origin: trustedOrigin,
+    };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-md">
+        <AttachmentHarness item={mdItem} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+    const img = probe.container.querySelector<HTMLImageElement>('img[alt="Diagram"]');
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute('src')).toBe('blob:attachment-mock');
+
+    // Document attachment (CSV / Office / PDF) shows download button in ready header
+    sessionMediaMock.documentPreview.mockResolvedValue({
+      kind: 'text',
+      fidelity: 'source',
+      format: 'csv',
+      source: { kind: 'session-media', name: 'report.csv', media_type: 'text/csv', size: 12 },
+      content: 'col1,col2\n1,2\n',
+      offset: 0,
+      truncated: false,
+      read_only: true,
+    });
+    const csvProbe = makeRoot();
+    await renderSettled(
+      csvProbe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-doc">
+        <AttachmentHarness
+          item={{
+            kind: 'file',
+            fileId: 'blobref:main:csv1',
+            sourceId: 'e'.repeat(64),
+            name: 'report.csv',
+            mime: 'text/csv',
+          }}
+        />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      csvProbe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+    expect(csvProbe.container.querySelector('[data-download-file]')).not.toBeNull();
+  });
+
+  it('omits download and @ when reading an attachment or file fails', async () => {
+    const trustedOrigin = { path: '/work/docs/sub/notes.md', trusted: true as const };
+    const missingAttachment = {
+      kind: 'file' as const,
+      fileId: 'blobref:main:missing',
+      sourceId: 'f'.repeat(64),
+      name: 'notes.md',
+      mime: 'text/markdown',
+      origin: trustedOrigin,
+    };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-fail">
+        <AttachmentHarness item={missingAttachment} />
+      </MediaPreviewProvider>,
+    );
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+
+    expect(probe.container.querySelector('[data-preview-attachment-error]')).not.toBeNull();
+    expect(probe.container.querySelector('[data-download-file]')).toBeNull();
+    expect(probe.container.querySelector('[data-mention-file]')).toBeNull();
   });
 });
