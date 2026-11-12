@@ -12,6 +12,7 @@ import { registerSeatCommand } from './seat';
 import { registerServeCommand } from './serve';
 import { registerRuntimeCommand } from './runtime';
 import { registerConnectionsCommand } from './connections';
+import { registerSessionAccessCommand } from './sessionAccess';
 import { registerThreadBridgesCommand } from './thread-bridges';
 import { registerUsageExportCommand } from './usage-export';
 
@@ -19,6 +20,7 @@ export function registerKikiCommands(program: Command): void {
   registerServeCommand(program);
   registerRuntimeCommand(program);
   registerConnectionsCommand(program);
+  registerSessionAccessCommand(program);
   registerThreadBridgesCommand(program);
   registerUsageExportCommand(program);
   const seat = registerSeatCommand(program);

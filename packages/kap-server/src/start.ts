@@ -62,6 +62,9 @@ import { registerRequestLogging } from './requestLogging';
 import { registerEventLoopDiagnostics } from './services/eventLoopDiagnostics';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
+import { registerSessionAccessRoutes } from './routes/sessionAccess';
+import { isSessionAccessLoopback, registerSessionAccessAdmission, sessionAccessToken } from './services/sessionAccess/access';
+import { SessionAccessStore, type SessionAccessToken } from './services/sessionAccess/store';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import {
   createServerLogger,
@@ -244,6 +247,7 @@ export interface ServerStartOptions {
   readonly externalDelegation?: ExternalDelegationAuthorityConfig;
   readonly idleExitMs?: number;
   readonly leaseTtlMs?: number;
+  readonly sessionAccessClock?: () => number;
   readonly mcpSeatResolver?: SeatResolver;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
@@ -656,6 +660,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   app.addHook('preClose', () => usageExport.close());
   const webRequests = new WeakSet<IncomingMessage>();
   const peerRequests = new WeakSet<IncomingMessage>();
+  const sessionAccess = new SessionAccessStore(core, opts.sessionAccessClock);
+  registerSessionAccessAdmission(app, sessionAccess, localOwnerToken, webRequests, peerRequests);
+  app.addHook('preClose', async () => { sessionAccess.close(); });
+  registerSessionAccessRoutes(app, core, sessionAccess, registration.serverId, serverVersion);
   let peerListeners: PeerListeners | undefined;
   let peerAdmissionHook: { dispose(): void } | undefined;
   const web = new WebAccess(homeDir, serverHomeId, (input) => {
@@ -717,6 +725,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     },
   });
   app.addHook('onRequest', async (request, reply) => {
+    if (sessionAccessToken(request) !== undefined) return;
     let path: string;
     try { path = decodeURIComponent(request.url.split('?', 1)[0]!); } catch { return authHook(request, reply); }
     if (request.method === 'POST' && path === '/api/remote-connections/pair/claim') {
@@ -746,7 +755,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
     if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown|sessions\/[^/]+\/terminals)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|storage)(?:\/|$)/.test(path);
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined || peerRequests.has(request.raw)) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {
@@ -1254,7 +1263,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const spaceSummary = new SpaceSummaryProjection(core);
   app.get('/api/space-summary', async (_request, reply) => reply.send({ code: 0, msg: 'OK', data: spaceSummary.read() }));
   app.addHook('onClose', async () => { spaceSummary.dispose(); await spaceSummary.disposeAsync(); });
+  const scopedSockets = new WeakMap<IncomingMessage, SessionAccessToken>();
   const wssV1 = registerWsV1(core, {
+    sessionAccess: (request) => scopedSockets.get(request),
     validateCredential: (token) => audience.authorizeSocket(token, { url: WS_PATH_V1, headers: {} } as IncomingMessage).then(() => true, () => false),
     registry: connectionRegistry,
     broadcaster,
@@ -1286,7 +1297,20 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const isV1 = url === WS_PATH_V1 || url.startsWith(`${WS_PATH_V1}?`);
     const isKlient = url === KLIENT_EVENTS_PATH || url.startsWith(`${KLIENT_EVENTS_PATH}?`);
     const isBroker = CONNECTION_BROKER_WS.test(url);
-    if (!isV1 && !isKlient && !isBroker) {
+    const header = req.headers.authorization;
+    const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
+    const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
+    const candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
+    let scoped: SessionAccessToken | undefined;
+    if (candidate?.startsWith('ksa_')) {
+      scoped = sessionAccess.lookup(candidate);
+      const invalid = scoped === undefined || !sessionAccess.config().enabled || !isSessionAccessLoopback(req, webRequests, peerRequests);
+      if (invalid || !isV1 || req.method !== 'GET' || !scoped!.scopes.includes('read')) {
+        const body = JSON.stringify({ code: 40101, msg: invalid ? 'Unauthorized' : 'session_access_scope' });
+        socket.end(`HTTP/1.1 ${invalid ? '401 Unauthorized' : '403 Forbidden'}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+        return;
+      }
+    } else if (!isV1 && !isKlient && !isBroker) {
       socket.destroy();
       return;
     }
@@ -1313,12 +1337,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const admittedGeneration = managedTokenStore?.generation();
     let admitted: Awaited<ReturnType<ConnectionAudience['authorizeSocket']>> = 'local';
     let browser: WebPrincipal | undefined;
-    let candidate: string | null = null;
-    if (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined || peerRequests.has(req)) {
-      const header = req.headers.authorization;
-      const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
-      const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
-      candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (scoped === undefined && (opts.disableAuth !== true || isBroker || peerGrant(req.headers) !== undefined || peerRequests.has(req))) {
       try {
         if (header === undefined && !hasBearerProtocol) {
           if (peerRequests.has(req)) throw new AdmissionError(401, 'connection_not_approved');
@@ -1359,6 +1378,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
           const authorized = admission.authorize(peerGrant(req.headers) ?? candidate ?? undefined);
           if (authorized.id !== admitted.grantId || authorized.revision !== admitted.revision) throw new AdmissionError(401, 'connection_not_approved');
         } catch { ws.close(4001, 'connection revoked'); return; }
+      }
+      if (scoped !== undefined) {
+        scopedSockets.set(req, scoped);
+        ws.once('close', sessionAccess.attach(scoped, () => ws.close(4001, 'session access revoked')));
       }
       wss.emit('connection', ws, req);
     });

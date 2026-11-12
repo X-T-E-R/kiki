@@ -33,6 +33,7 @@ Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保�
 | 设置 | 生效时机 |
 | --- | --- |
 | [`request_governance`](#request-governance) | 修改加载后立即重新判断等待中的请求和 Agent 启动；在飞工作正常结束 |
+| [`session_access`](#session-access) | 立即生效；将 `enabled` 设为 `false` 会撤销现有令牌并拒绝后续令牌请求 |
 | [`cpu_workers`](#cpu-workers) | 下次启动进程；创建 App 服务时读取本节配置 |
 | [`session_residency`](#session-residency) | 下一次恢复或回收决策；修改恢复限额会唤醒排队中的恢复，但不会中断正在恢复的会话。回收 sweep 的定时器间隔在服务启动时设置 |
 | [`transcript_memory`](#transcript-memory) | 下一次缓存准入、淘汰或驻留维护；不会取消已经开始的读取 |
@@ -314,6 +315,7 @@ api_key = "YOUR_API_KEY"
 | `nb_search` | `table` | — | `WebSearch` 与 `FetchURL` 背后的内置搜索与抓取模块 → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | 权限规则与审查者 → [`permission`](#permission) |
 | `interaction` | `table` | — | Agent 提问是否阻塞当前轮 → [`interaction`](#interaction) |
+| `session_access` | `table` | 两项均默认为 `true` | 会话访问令牌及 `terminal_handoff` 状态 → [`[session_access]`](#session-access) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
@@ -1318,6 +1320,21 @@ prompt_overrides:
 :::
 
 桌面 GUI 中，请进入「设置 → 智能体 → 提示词字段」编辑本节；该卡片默认折叠，展开后再编辑。
+
+## `[session_access]`
+
+`[session_access]` 控制本地所有者签发的会话访问令牌，让本地程序按已授予的权限范围访问一个会话。配置加载后立即生效；将 `enabled` 设为 `false` 会撤销所有现有令牌并拒绝后续令牌请求。本地所有者仍可通过 `GET /api/session-access` 查看状态。令牌仅保存在内存中，服务重启后失效。路由见 [会话访问令牌](../server/rest-api.md#会话访问令牌)，命令用法见 [`kiki session-access`](../reference/command.md#kiki-session-access)。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | 是否接受会话访问令牌；设为 `false` 后拒绝令牌请求并撤销现有令牌 |
+| `terminal_handoff` | `boolean` | `true` | 由 `GET /api/session-access` 返回；不改变本地所有者签发的会话访问令牌行为 |
+
+```toml
+[session_access]
+enabled = true
+terminal_handoff = true
+```
 
 ## `[request_governance]`
 

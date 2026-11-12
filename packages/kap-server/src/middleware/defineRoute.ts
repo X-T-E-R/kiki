@@ -1,5 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { withRestoreLifetime } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
+import { sessionAccessSignal } from '../services/sessionAccess/access';
 
 import { jsonSchema, openApiDocumentJsonSchema } from './schema';
 import { validateBody, validateParams, validateQuery } from './validate';
@@ -236,7 +238,9 @@ export function defineRoute<
     path: toFastifyPath(options.path),
     options: { preHandler, schema },
     handler: async (req, reply) => {
-      await handler(req, reply);
+      const signal = sessionAccessSignal(req);
+      if (signal === undefined) await handler(req, reply);
+      else await withRestoreLifetime({ ownerManaged: false, signal }, async () => handler(req, reply));
       await reply;
     },
   };

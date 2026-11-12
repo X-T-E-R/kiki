@@ -53,6 +53,7 @@ export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
 export interface UserPromptOrigin {
   readonly kind: 'user';
+  readonly via?: { readonly client: string; readonly channel: 'owner' | 'terminal' };
   /**
    * Skill activations bundled into this prompt: the rendered skill blocks
    * precede the caller's parts in the message content, and every activation
@@ -1307,6 +1308,7 @@ export const bundledSkillActivationSchema = z.object({
 
 export const userPromptOriginSchema = z.object({
   kind: z.literal('user'),
+  via: z.object({ client: z.string(), channel: z.enum(['owner', 'terminal']) }).optional(),
   skillActivations: z.array(bundledSkillActivationSchema).optional(),
 }) satisfies z.ZodType<UserPromptOrigin>;
 

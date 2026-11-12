@@ -42,6 +42,7 @@ import {
   buildServerHello,
 } from './protocol';
 import {
+  isGlobalEvent,
   type AgentFilter,
   type BroadcastDelivery,
   type BroadcastTarget,
@@ -91,6 +92,7 @@ export interface WsConnectionV1Options {
    * the bearer at the upgrade and no token in `client_hello`).
    */
   readonly validateCredential?: CredentialValidator;
+  readonly sessionAccessId?: string;
   readonly remoteAddress: string | null;
   readonly userAgent: string | null;
   readonly logger?: JournalLogger;
@@ -123,6 +125,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly terminalCore?: Scope;
   private readonly enableTerminals: boolean;
   private readonly validateCredential?: CredentialValidator;
+  private readonly sessionAccessId?: string;
   private readonly maxBufferSize: number;
   private readonly flushIntervalMs: number;
   private readonly maxBatchSize: number;
@@ -177,6 +180,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.terminalCore = opts.terminalCore;
     this.enableTerminals = opts.enableTerminals === true && opts.terminalCore !== undefined;
     this.validateCredential = opts.validateCredential;
+    this.sessionAccessId = opts.sessionAccessId;
     this.logger = opts.logger;
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
@@ -234,6 +238,9 @@ export class WsConnectionV1 implements BroadcastTarget {
   /** BroadcastTarget — buffer subscription traffic; public traffic is a FIFO barrier. */
   send(envelope: EventEnvelope, delivery: BroadcastDelivery = 'subscription'): void {
     const sessionId = envelope.session_id;
+    if (this.sessionAccessId !== undefined && (sessionId !== this.sessionAccessId ||
+      envelope.type === 'event.plugin.topic' || /^event\.room\./.test(envelope.type) ||
+      (delivery === 'immediate' || isGlobalEvent(envelope.type)) && !/^(?:event\.session\.(?:work_changed|history_rewritten)|session\.meta\.updated|event\.(?:approval|question)\.[^.]+)$/.test(envelope.type))) return;
     if (delivery !== 'immediate' && sessionId !== undefined && this.replayHolds.has(sessionId)) {
       this.holdReplayFrame(envelope);
       return;
@@ -350,39 +357,38 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
     if (typeof frame?.type !== 'string') return;
 
+    if (this.sessionAccessId !== undefined) {
+      const payload = frame.payload ?? {};
+      const sessions = frame.type === 'client_hello' ? asStringArray(payload['subscriptions']) : asStringArray(payload['session_ids']);
+      if (!['client_hello', 'subscribe', 'subscribe_v2', 'unsubscribe', 'unsubscribe_v2', 'ping', 'pong'].includes(frame.type) ||
+          sessions.some((id) => id !== this.sessionAccessId) ||
+          (payload['session_id'] !== undefined && payload['session_id'] !== this.sessionAccessId)) {
+        this.sendImmediateFrame(buildAck(frame.id ?? '', 40101, 'session_access_scope', {}));
+        return;
+      }
+    }
+    this.enqueueControl(() => this.handleFrame(frame));
+  }
+
+  private async handleFrame(frame: InboundFrame): Promise<void> {
+    if (this.closed) return;
+    if (this.sessionAccessId !== undefined && frame.type !== 'client_hello' && !(await this.authorize(frame))) return;
     switch (frame.type) {
-      case 'pong':
+      case 'ping':
+        if (this.sessionAccessId !== undefined) this.sendImmediateFrame({ type: 'pong', id: frame.id, payload: { nonce: frame.payload?.['nonce'] } });
         return;
-      case 'client_hello':
-        this.enqueueControl(() => this.onClientHello(frame));
-        return;
-      case 'subscribe':
-        this.enqueueControl(() => this.onSubscribe(frame));
-        return;
-      case 'subscribe_v2':
-        this.enqueueControl(() => this.onSubscribeV2(frame));
-        return;
-      case 'unsubscribe_v2':
-        this.enqueueControl(() => this.onUnsubscribeV2(frame));
-        return;
-      case 'unsubscribe':
-        this.enqueueControl(() => this.onUnsubscribe(frame));
-        return;
-      case 'watch_fs_add':
-        this.enqueueControl(() => this.onWatchFs(frame, true));
-        return;
-      case 'watch_fs_remove':
-        this.enqueueControl(() => this.onWatchFs(frame, false));
-        return;
+      case 'client_hello': return this.onClientHello(frame);
+      case 'subscribe': return this.onSubscribe(frame);
+      case 'subscribe_v2': return this.onSubscribeV2(frame);
+      case 'unsubscribe_v2': return this.onUnsubscribeV2(frame);
+      case 'unsubscribe': return this.onUnsubscribe(frame);
+      case 'watch_fs_add': return this.onWatchFs(frame, true);
+      case 'watch_fs_remove': return this.onWatchFs(frame, false);
       case 'terminal_attach':
       case 'terminal_detach':
       case 'terminal_input':
       case 'terminal_resize':
-      case 'terminal_close':
-        this.enqueueControl(() => this.onTerminalControl(frame));
-        return;
-      default:
-        return;
+      case 'terminal_close': return this.onTerminalControl(frame);
     }
   }
 
@@ -866,7 +872,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       resyncRequired.push(sid);
     } else {
       const deliver = (envelope: EventEnvelope): void => {
-        this.sendSubscribedFrame(envelope);
+        this.send(envelope);
         if (envelope.volatile !== true && envelope.seq > seq) seq = envelope.seq;
       };
       for (const { envelope } of result.events) deliver(envelope);

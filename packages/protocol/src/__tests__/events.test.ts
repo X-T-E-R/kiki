@@ -11,6 +11,7 @@ import {
   shellCompletedEventSchema,
   thinkingDeltaEventSchema,
   toolCallStartedEventSchema,
+  userPromptOriginSchema,
 } from '../events';
 import type { Event } from '../events';
 import type { ToolInputDisplay } from '../display';
@@ -56,6 +57,14 @@ describe('events / display re-exports', () => {
 
   it('ToolInputDisplay re-export is non-never (12-arm union preserved)', () => {
     expect(_assertDisplay).toBe(true);
+  });
+
+  it('keeps session access attribution on user origins', () => {
+    for (const channel of ['owner', 'terminal']) {
+      const origin = { kind: 'user', via: { client: 'example-client', channel } };
+      expect(userPromptOriginSchema.parse(origin)).toEqual(origin);
+    }
+    expect(userPromptOriginSchema.parse({ kind: 'user' })).toEqual({ kind: 'user' });
   });
 
   it('validates concrete agent event payloads with Zod schemas', () => {

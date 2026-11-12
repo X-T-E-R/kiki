@@ -1,4 +1,6 @@
+import type { IncomingMessage } from 'node:http';
 import type { Scope } from '@kiki/agent-core-v2';
+import { digest, type SessionAccessToken } from '../../../services/sessionAccess/store';
 import { WebSocketServer } from 'ws';
 
 import type { CredentialValidator } from '../../../services/auth/credentials';
@@ -16,6 +18,7 @@ export const WS_V1_MAX_PAYLOAD_BYTES = 8 << 20;
 export interface RegisterWsV1Options {
   /** Present-only credential validator forwarded to {@link WsConnectionV1}. */
   readonly validateCredential?: CredentialValidator;
+  readonly sessionAccess?: (request: IncomingMessage) => SessionAccessToken | undefined;
   readonly registry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
   readonly fsWatchBridge: FsWatchBridge;
@@ -42,6 +45,7 @@ const wss = new WebSocketServer({
   const { registry, broadcaster } = opts;
 
   wss.on('connection', (socket, req) => {
+    const scoped = opts.sessionAccess?.(req);
     const conn = new WsConnectionV1({
       socket,
       broadcaster,
@@ -49,7 +53,8 @@ const wss = new WebSocketServer({
       terminalCore: core,
       enableTerminals: opts.enableTerminals,
       connectionRegistry: registry,
-      validateCredential: opts.validateCredential,
+      sessionAccessId: scoped?.session_id,
+      validateCredential: scoped === undefined ? opts.validateCredential : async (token) => digest(token) === scoped.digest,
       remoteAddress: req.socket.remoteAddress ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       logger: opts.logger,

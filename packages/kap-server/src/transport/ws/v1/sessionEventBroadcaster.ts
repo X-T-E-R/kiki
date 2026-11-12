@@ -2121,7 +2121,7 @@ function legacyTaskEvent(event: Event2<any>, agentId: string, sessionId: string)
   return Object.assign({}, event, { type: legacyType, agentId, sessionId }) as unknown as Event;
 }
 
-function isGlobalEvent(type: string): boolean {
+export function isGlobalEvent(type: string): boolean {
   return (
     type === 'session.meta.updated' ||
     type === 'session.worktree.changed' ||

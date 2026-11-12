@@ -69,6 +69,7 @@ export async function acquireSessionOperation(
       });
     throw error;
   });
+  if (signal?.aborted) { await lease?.dispose(); signal.throwIfAborted(); }
   if (lease === undefined) return { handle: undefined, dispose: async () => {} };
   const session = lease;
   let released = false;

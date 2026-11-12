@@ -149,7 +149,7 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `pair` (pair two Kikis with a single-use code), `connections` (manage remote connections and SSH links), `bridges` (manage thread bridges), `seat` (manage external-caller seats), [`tools`](../server/script-tools.md) (call shared tools and download saved results as JSON), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `session-access` (issue, list, and revoke session access tokens), `pair` (pair two Kikis with a single-use code), `connections` (manage remote connections and SSH links), `bridges` (manage thread bridges), `seat` (manage external-caller seats), [`tools`](../server/script-tools.md) (call shared tools and download saved results as JSON), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki session`
 
@@ -228,6 +228,19 @@ kiki serve --stop
 ```
 
 Kiki resolves its home directory in this order: an explicit `--home` where supported, `KIKI_HOME`, then `~/.kiki`. Trusted local clients attach with the private `<home>/server.local-owner` capability; remote connections use separate credentials described under [Authentication](../server/local-server.md#authentication). `--idle-exit` defaults to `30m`; active client leases and running dispatches keep the daemon alive. Set `--idle-exit 0ms` to keep a newly started daemon running until explicitly stopped. Client leases are renewed through `POST /api/leases`. The interactive TUI performs the same attach-or-start behavior after workspace trust. Use [`kiki web`](#kiki-web) for a compatible foreground server and browser UI.
+
+### `kiki session-access` {#kiki-session-access}
+
+Manage session access tokens using the selected home’s local-owner credential. `list` shows token metadata without secrets; `issue` creates a token and prints its secret once; `revoke` removes one token by public id or all tokens with `--all`.
+
+```sh
+kiki session-access list
+kiki session-access issue --session <session_id> --scope read,prompt,abort --name example-client --ttl 1h
+kiki session-access revoke sat_01JZX4A6E7M8V0R3Q0N2K2M5Q9
+kiki session-access revoke --all
+```
+
+`--session` selects the one session the token can access. `--scope` accepts one or more comma-separated scopes: `read`, `prompt`, and `abort`; do not repeat a scope. `--name` labels the client and must contain 1–64 printable ASCII characters. `--ttl` accepts a whole-second duration from `60s` through `24h` and defaults to `1h`. Use `--home <dir>` to manage another local Kiki home; otherwise the command uses `KIKI_HOME` or `~/.kiki`. The command attaches to or starts that home’s shared server. `issue` prints the bearer secret once; capture and store it privately, and do not put it in another command’s arguments. `list` shows the public `sat_` id and metadata without the secret; pass that id to `revoke` later. See [Session access tokens](../server/rest-api.md#session-access-tokens) for authentication, revocation, and the route allowlist.
 
 ### `kiki pair` and `kiki connections` {#kiki-pair}
 

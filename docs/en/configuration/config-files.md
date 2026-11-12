@@ -33,6 +33,7 @@ Reloading a file and applying a setting have different timing:
 | Setting | When it takes effect |
 | --- | --- |
 | [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
+| [`session_access`](#session-access) | Applies immediately; setting `enabled = false` revokes active tokens and rejects token requests |
 | [`cpu_workers`](#cpu-workers) | Next process start; the pool reads the section when the App service is created |
 | [`session_residency`](#session-residency) | The next restore or eviction decision; changing restore limits wakes queued restores, but does not interrupt an active restore. The sweep timer interval is set when the service starts |
 | [`transcript_memory`](#transcript-memory) | The next cache admission, eviction, or residency-maintenance pass; an in-progress read is not canceled |
@@ -314,6 +315,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `nb_search` | `table` | — | Built-in search and retrieval module behind `WebSearch` and `FetchURL` → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | Permission rules and reviewer → [`permission`](#permission) |
 | `interaction` | `table` | — | Whether agent questions block the turn → [`interaction`](#interaction) |
+| `session_access` | `table` | Both settings default to `true` | Session access tokens and their terminal-handoff status → [`[session_access]`](#session-access) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
@@ -1332,6 +1334,21 @@ The old `[prompt] shared` and `[prompt.tools]` keys have been removed and now fa
 :::
 
 In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this section. The card is collapsed by default — expand it before editing.
+
+## `[session_access]`
+
+`[session_access]` controls owner-issued tokens that grant a local program fixed access to one session. These settings reload immediately; switching `enabled` off revokes every active token. `GET /api/session-access` remains available to the local owner to inspect the setting, but token requests are refused while it is off. Tokens are held in memory and become invalid after a server restart. See [Session access tokens](../server/rest-api.md#session-access-tokens) for the routes and [kiki session-access](../reference/command.md#kiki-session-access) for CLI management.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | Whether session access tokens can be used; `false` refuses token requests and revokes active tokens |
+| `terminal_handoff` | `boolean` | `true` | Reported by `GET /api/session-access`; does not change owner-issued token behavior |
+
+```toml
+[session_access]
+enabled = true
+terminal_handoff = true
+```
 
 ## `[request_governance]`
 

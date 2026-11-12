@@ -9,6 +9,7 @@ export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
 export interface UserPromptOrigin {
   readonly kind: 'user';
+  readonly via?: { readonly client: string; readonly channel: 'owner' | 'terminal' };
   readonly skillActivations?: readonly BundledSkillActivation[];
   readonly originalInput?: readonly ContentPart[];
   readonly im?: import('@kiki/protocol').ImMessageMetadata;

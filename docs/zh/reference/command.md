@@ -149,7 +149,7 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`pair`（用一次性短码配对两台 Kiki）、`connections`（管理远端连接与 SSH 链路）、`bridges`（管理 thread bridge）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`session-access`（签发、列出和撤销会话访问令牌）、`pair`（用一次性短码配对两台 Kiki）、`connections`（管理远端连接与 SSH 链路）、`bridges`（管理 thread bridge）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki session`
 
@@ -228,6 +228,19 @@ kiki serve --stop
 ```
 
 Kiki 按以下优先级解析 home 目录：支持该选项的命令中显式指定的 `--home`、`KIKI_HOME`、`~/.kiki`。可信本地客户端使用私有的 `<home>/server.local-owner` 凭据连接；远端连接使用独立凭据，见[鉴权](../server/local-server.md#鉴权)。`--idle-exit` 默认是 `30m`；活跃客户端 lease 和运行中的派遣会让 daemon 保持运行。设置 `--idle-exit 0ms` 后，新启动的 daemon 会持续运行到显式停止。客户端通过 `POST /api/leases` 续期 lease。交互式 TUI 在工作区信任后自动执行同样的连接或启动逻辑。需要兼容的前台服务和浏览器 UI 时，请用 [`kiki web`](#kiki-web)。
+
+### `kiki session-access` {#kiki-session-access}
+
+使用所选 home 的 `server.local-owner` 凭据管理会话访问令牌。`list` 显示令牌元数据但不含密钥；`issue` 创建令牌并只打印一次令牌密钥；`revoke` 按公开 ID 撤销一个令牌，或用 `--all` 撤销全部。
+
+```sh
+kiki session-access list
+kiki session-access issue --session <session_id> --scope read,prompt,abort --name example-client --ttl 1h
+kiki session-access revoke sat_01JZX4A6E7M8V0R3Q0N2K2M5Q9
+kiki session-access revoke --all
+```
+
+`--session` 指定令牌可访问的单个会话。`--scope` 接受 `read`、`prompt`、`abort` 中一个或多个逗号分隔值，不得重复填写。`--name` 标记接收令牌的客户端，须为 1–64 个可打印 ASCII 字符。`--ttl` 接受整秒时长，范围为 `60s`–`24h`，默认 `1h`。使用 `--home <dir>` 选择其他本机 Kiki home；否则使用 `KIKI_HOME` 或 `~/.kiki`。命令会连接该 home 的共享服务，不存在时先启动。`issue` 的输出含一次性令牌密钥；请妥善保存，不要把密钥放进其他命令的参数。`list` 只显示以 `sat_` 开头的公开 ID 和元数据；撤销时把该 ID 传给 `revoke`。认证、撤销方式和允许的路由见 [服务 API](../server/rest-api.md#会话访问令牌)。
 
 ### `kiki pair` 与 `kiki connections` {#kiki-pair}
 

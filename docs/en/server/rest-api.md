@@ -26,6 +26,8 @@ Trusted local clients use the private `server.local-owner` capability. REST carr
 
 Failed authentication returns HTTP 401 with envelope code `40101`. On non-loopback binds, a source that fails authentication 10 times within 60 seconds is banned for 60 seconds, during which every request gets HTTP 429 (code `42901`).
 
+Owner-issued session access tokens (`ksa_…`) are bearer credentials limited to one session. They work only for loopback socket requests that are not from Web access or a peer and have no `Origin` header. A missing, invalid, expired, or revoked token, or a token used outside that loopback rule, returns HTTP 401 with envelope code `40101`. A valid token used outside its scope or on another session returns HTTP 403 with envelope code `40101` and `msg: "session_access_scope"`. See [Session access tokens](#session-access-tokens) for the route allowlist and [Authentication](./local-server.md#authentication) for the loopback limit.
+
 ### Response envelope
 
 Every JSON response is wrapped in a uniform envelope:
@@ -48,6 +50,7 @@ The HTTP status is almost always 200; the business outcome lives in `code`. Exce
 | Situation | HTTP status |
 | --- | --- |
 | Authentication failure / rate limit | 401 / 429 |
+| Session-access scope denied or management disabled | 403 |
 | Provider created, provider catalog imported | 201 |
 | Provider deleted | 204 |
 | Binary/streaming endpoints | 206 (Range) / 304 (ETag unchanged) where supported — capabilities differ per endpoint, see [Binary and streaming endpoints](#binary-and-streaming-endpoints) |
@@ -62,10 +65,10 @@ Error codes are grouped by band:
 | Band | Meaning | Examples |
 | --- | --- | --- |
 | `0` | Success | |
-| `400xx` | Bad request | `40001` validation failed (`details` lists each field), `40003` provider is OAuth-managed |
-| `401xx` | Auth and readiness | `40101` unauthorized, `40110` no provider configured, `40113` model not resolved |
+| `400xx` | Bad request | `40001` validation failed (`details` lists each field); session-access prompt validation names the rejected field, `40003` provider is OAuth-managed |
+| `401xx` | Auth and readiness | `40101` unauthorized; invalid session-access credentials use this code, `40110` no provider configured, `40113` model not resolved |
 | `404xx` | Not found | `40401` session, `40408` MCP server, `40409` file path |
-| `409xx` | State conflict | `40901` session busy, `40902` approval already resolved, `40922` page conditions mismatch `page_token` |
+| `409xx` | State conflict | `40901` session busy, `40902` approval already resolved, `40922` page conditions mismatch `page_token`, `40950` work admission fenced |
 | `410xx` | Expired | `41001` approval timed out, `41002` question timed out, `41003` temporary file expired |
 | `413xx` | Size or boundary exceeded | `41302` file read over 10 MB, `41304` path escapes the session directory |
 | `429xx` | Rate limited | `42901` auth-failure ban, `42902` too many fs watches |
@@ -82,6 +85,29 @@ List endpoints come in two styles:
 ## REST endpoints
 
 Endpoints are grouped by resource below. A `:{action}` suffix in a path is the action convention — POST to `path:action` on a single resource for non-CRUD operations (such as `:fork` and `:archive` on a session).
+
+### Session access tokens
+
+The local owner issues, lists, and revokes session access tokens. These management routes always require the local-owner credential, including with `--dangerous-bypass-auth`; peer, Web access, external-client (`kec_`), seat-delegation, and session-access (`ksa_`) credentials cannot use them.
+
+| Method and path | Request | Response data |
+| --- | --- | --- |
+| `GET /api/session-access` | — | `{ version: 1, enabled, terminal_handoff, server_id, tokens }`; each token lists `id`, `session_id`, `scopes`, `client`, `channel`, `issued_at`, and `expires_at`, never its secret |
+| `POST /api/session-access/tokens` | `{ session_id, scopes, client: { name, version? }, ttl_seconds? }` | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }`; an owner token's secret is returned once |
+| `DELETE /api/session-access/tokens/{token_id}` | — | `{ revoked: n }` |
+| `DELETE /api/session-access/tokens` | — | `{ revoked: n }` |
+
+An owner-issued secret begins with `ksa_`; its public id begins with `sat_` and is safe to use when revoking it later. Issue at least one of `read`, `prompt`, or `abort`. The session must exist; an unknown session returns the HTTP 200 envelope with code `40401`. `client.name` is 1–64 printable ASCII characters; `client.version` is at most 32 characters. `ttl_seconds` defaults to 3600 and accepts 60–86400 seconds. Invalid fields return the usual HTTP 200 envelope with code `40001` and the offending field. When `[session_access].enabled` is false, `GET /api/session-access` still reports the setting and token requests return HTTP 401 with code `40101`; POST and DELETE management routes return HTTP 403 with envelope code `40101` and `msg: "session_access_disabled"`, and active tokens are revoked.
+
+| Scope | Allowed operations |
+| --- | --- |
+| `read` | `GET /api/sessions/{session_id}` and its `/status`, `/snapshot`, `/messages`, `/messages/{message_id}`, `/transcript`, `/transcript/ops`, `/transcript/detail`, `/transcript/details`, `/transcript/plan`, `/transcript/user-messages`, `/prompts`, `/approvals`, and `/questions` reads; `POST /api/klient/session-view/{session_id}/transcript/content`; and WebSocket `/api/ws` with the scoped frames and event delivery described below |
+| `prompt` | `POST /api/sessions/{session_id}/prompts`; `?receipt=true` is allowed; see [prompt restrictions](#session-access-prompts) |
+| `abort` | `POST /api/sessions/{session_id}:abort` only |
+
+Every session id in a request path must match the token's bound session. For the large-field transcript read, the `session_id` in the Klient route binds the `contentRef` to that session; the reference cannot resolve into another session. On `/api/ws`, a token can send `client_hello`, `subscribe`, `subscribe_v2`, `unsubscribe`, `unsubscribe_v2`, and `ping`/`pong` frames. Subscriptions are limited to the bound session. Immediate delivery is limited to that session's `event.session.work_changed`, `event.session.history_rewritten`, `session.meta.updated`, `event.approval.*`, and `event.question.*` events; plugin topics and room changes are not delivered. A token connection cannot authenticate again with a different token.
+
+Unlisted operations are refused even when they appear session-scoped. This includes batch session routes, prompt and message action routes, other session actions, approval and question answers, `/api/klient/call`, `/api/klient/events`, and every non-session route. Token requests also reject `HEAD`, percent-encoded paths, repeated slashes, `.` or `..` path segments, and trailing slashes. Revocation closes the token's open WebSocket connections and aborts its in-flight REST requests; tokens are also revoked on expiry, session deletion, disabling `[session_access].enabled`, and server shutdown or restart.
 
 ### Server and metadata
 
@@ -525,7 +551,7 @@ When an older-page request is still locating its anchor in saved history, it can
 
 A session already covered in memory returns the live tool call directly, with `read.source` `live` and `readiness` `ready`. A located cold session reports `cold` and `ready`, and replays the body from that source history. Legacy message and part `provenance` carries an absolute `recordOrdinal` when known. A bounded cold window without a verified prefix instead carries `recordSpan: { startByteOffset, endByteOffset }`, measured in logical-wire bytes, and omits `recordOrdinal`. Do not interpret a missing ordinal as zero or infer it from the page position. Entity IDs remain opaque; send returned references unchanged when navigation becomes ready.
 
-A transcript page keeps large fields as `contentRefs`. Each reference carries `source`, `revision`, `path`, `kind` (`text`, `array`, or `object`), `offset`, and `total`. Continue it with `POST /api/klient/session-view/{session_id}/transcript/content` and JSON `{ "agentId", "ref" }`. Send the reference unchanged. The HTTP status stays 200 and the envelope carries the result. `code: 0` returns `value` and, when more of the field remains, `next`. Submit that `next` unchanged as the next `ref`, until `next` is absent. The same `ref` again returns the same part; `"range": true` does not advance `offset`. On a text ref it only limits the slice that already starts at `offset` (about 4096 characters, inside the field budget), and a snapshot ref ignores `range`. A page is budgeted at 64 KiB, and each field slice aims at half of that, 32 KiB.
+A transcript page keeps large fields as `contentRefs`. Each reference carries `source`, `revision`, `path`, `kind` (`text`, `array`, or `object`), `offset`, and `total`. Continue it with the existing `POST /api/klient/session-view/{session_id}/transcript/content` route and JSON `{ "agentId", "ref" }`. With a session access token, the route's `session_id` must match the token-bound session; the `contentRef` cannot resolve into another session. Send the reference unchanged. The HTTP status stays 200 and the envelope carries the result. `code: 0` returns `value` and, when more of the field remains, `next`. Submit that `next` unchanged as the next `ref`, until `next` is absent. The same `ref` again returns the same part; `"range": true` does not advance `offset`. On a text ref it only limits the slice that already starts at `offset` (about 4096 characters, inside the field budget), and a snapshot ref ignores `range`. A page is budgeted at 64 KiB, and each field slice aims at half of that, 32 KiB.
 
 `GET /api/sessions/{session_id}/transcript/user-messages` and `GET /api/sessions/{session_id}/transcript/plan` use that same continuation. Optional `cursor` is the previous response's `next_cursor` and walks toward older history. With `agent_id`, user-messages reads that agent and the cursor requires the same `agent_id`. Without `agent_id`, one response is a single 64 KiB page shared across the roster; send its `next_cursor` alone, because that cursor names the agent to resume. Each page stays in chronological order. `has_more` and `next_cursor` are omitted when the returned window is complete, so a short session keeps the previous shape. Assemble the full list by prepending older pages, or by sorting user messages on `ordinal`. A plan page that stops inside one turn resumes at the next older plan in that turn. A long `prompt`, `plan`, or `review` is a preview plus `contentRefs`; continue those refs with the POST above until `next` is absent. `tool_call_id` on the plan route still returns that one plan, or `40416` when it is missing or not an ExitPlanMode call.
 
@@ -546,6 +572,12 @@ The transcript response's `agents` descriptors use camelCase: `{ agentId, type?,
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | Retry a held or failed saved request |
 
 A REST prompt is an ordinary user message in the transcript, just like input sent from the UI. While a turn is running, ordinary submissions return `status: "queued"` and start automatically after it ends. A compact `?receipt=true` response can also report `queued` before an idle agent has started the turn. Correlate execution using `turn.started.payload.promptId`; `turn.ended.payload.reason` is `completed`, `cancelled`, `failed`, or `blocked`.
+
+#### Prompts with session access tokens {#session-access-prompts}
+
+With a session access token, `POST /api/sessions/{session_id}/prompts` accepts `content` made only of text blocks without `presentation`, optional `prompt_id` and `metadata`, and `agent_id` omitted or set to `main`. No other top-level body field is accepted. In particular, `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode`, and `admission` return HTTP 200 with code `40001` naming the field. A token prompt cannot use durable admission; when a server-switch fence blocks submission, it returns HTTP 200 with code `40950` (`work.admission_fenced`) instead of entering the waiting-switch fallback.
+
+A token-submitted prompt remains a user message and records `metadata.origin.via = { client, channel: "owner" }`. Read `via` through `GET /api/sessions/{session_id}/messages`; this version does not add it to the transcript projection. If a multi-prompt `:steer` merges queued prompts, the merged message gets a plain user origin and loses `via`.
 
 Add `?observe=true` to the prompt list for a read-only view of the current main agent's active and queued prompts. An inactive saved session or an unstarted main returns `{ active: null, queued: [] }` without restoring or creating an agent. This view does not enumerate saved prompt requests; use `admission=durable` for those.
 

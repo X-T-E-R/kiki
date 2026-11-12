@@ -170,7 +170,7 @@ export function projectPeerBusEvent(scope: KlientFrame['scope'], event: unknown)
 
 export function isWebPathAllowed(method: string, path: string): boolean {
   if (path === '/api/runtime-switch' && method !== 'GET') return false;
-  if (/^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|shutdown)(?:\/|$)/.test(path) || path === '/mcp') return false;
+  if (/^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)/.test(path) || path === '/mcp') return false;
   if (path.startsWith('/api/web-access')) return ['/api/web-access/session', '/api/web-access/logout', '/api/web-access/exchange'].includes(path);
   if (path.startsWith('/api/remote-connections')) return (method === 'GET' && path === '/api/remote-connections') || /^\/api\/remote-connections\/[0-9a-f-]{36}\/(?:call|download|upload|events|html-preview)$/.test(path);
   return true;

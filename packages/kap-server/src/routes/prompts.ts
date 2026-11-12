@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { sessionAccessToken } from '../services/sessionAccess/access';
 
 import {
   DEFAULT_AGENT_PROFILE_NAME,
@@ -583,7 +584,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       if (ingressExecution !== undefined) throw error;
       const bootstrap = core.accessor.get(IBootstrapService);
       const outboxManaged = bootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1' || bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1';
-      if (isError2(error) && error.code === ErrorCodes.WORK_ADMISSION_FENCED && req.body.prompt_id !== undefined && outboxManaged) {
+      if (sessionAccessToken(req) === undefined && isError2(error) && error.code === ErrorCodes.WORK_ADMISSION_FENCED && req.body.prompt_id !== undefined && outboxManaged) {
         try {
           const body = { ...req.body, admission: undefined };
           const live = core.accessor.get(ISessionManager).get(req.params.session_id);
@@ -786,11 +787,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
               revision: result.revision,
             };
           }
+          signal?.throwIfAborted();
+          const token = sessionAccessToken(req);
           const handle = await admission.reservation.submit({
             role: 'user',
             content: parts,
             toolCalls: [],
-            origin: { kind: 'user' },
+            origin: token === undefined ? { kind: 'user' } : { kind: 'user', via: { client: token.client.name, channel: token.channel } },
           }, execution, deferredDisabledTools, req.body.append_timing);
           enqueued = true;
           const staging = preparedMedia;

@@ -1247,11 +1247,12 @@ export function registerSessionsRoutes(
         }
 
         if (parsed.action === 'abort') {
-          await withMainAgent(core, parsed.id, async (agent) => {
+          await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => withMainAgent(core, parsed.id, async (agent) => {
+            signal.throwIfAborted();
             agent.accessor.get(IAgentLoopService).cancelFromUser();
             requestLog(req)?.info({ session_id: parsed.id, action: 'abort' }, 'session action completed');
             reply.send(okEnvelope({ aborted: true }, req.id));
-          });
+          }, signal), req);
           return;
         }
 
@@ -2003,11 +2004,12 @@ function readSessionUsage(
   }
 }
 
-async function withMainAgent<T>(core: Scope, sessionId: string, work: (agent: IAgentScopeHandle) => Promise<T>): Promise<T> {
+async function withMainAgent<T>(core: Scope, sessionId: string, work: (agent: IAgentScopeHandle) => Promise<T>, signal?: AbortSignal): Promise<T> {
   return withSessionOperation(core, sessionId, async (session) => {
+    signal?.throwIfAborted();
     if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     return work(await ensureMainAgent(session));
-  });
+  }, signal);
 }
 
 function normalizeOptional(value: string | undefined): string | undefined {

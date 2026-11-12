@@ -1148,6 +1148,10 @@ export interface AgentStateSnapshot {
         readonly acceptedAt: number;
       } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'user';
+        readonly via?: {
+          readonly client: string;
+          readonly channel: 'owner' | 'terminal';
+        };
         readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly activationId: string;
           readonly skillName: string;
@@ -1529,6 +1533,10 @@ export interface AgentStateSnapshot {
       readonly acceptedAt: number;
     } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'user';
+      readonly via?: {
+        readonly client: string;
+        readonly channel: 'owner' | 'terminal';
+      };
       readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly activationId: string;
         readonly skillName: string;
@@ -1838,6 +1846,10 @@ export interface AgentStateSnapshot {
         readonly acceptedAt: number;
       } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'user';
+        readonly via?: {
+          readonly client: string;
+          readonly channel: 'owner' | 'terminal';
+        };
         readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly activationId: string;
           readonly skillName: string;
@@ -2271,6 +2283,10 @@ export interface AgentStateSnapshot {
       readonly acceptedAt: number;
     } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'user';
+      readonly via?: {
+        readonly client: string;
+        readonly channel: 'owner' | 'terminal';
+      };
       readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly activationId: string;
         readonly skillName: string;
@@ -4831,7 +4847,7 @@ export interface AgentStateSnapshot {
             readonly mergeStderr?: boolean;
             readonly timeout?: number;
             readonly ownedProcessTree?: boolean;
-            readonly ownedProcessLifetime?: 'process' | 'owner';
+            readonly ownedProcessLifetime?: 'owner' | 'process';
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;
@@ -8391,6 +8407,10 @@ export interface AgentStateSnapshot {
           readonly acceptedAt: number;
         } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'user';
+          readonly via?: {
+            readonly client: string;
+            readonly channel: 'owner' | 'terminal';
+          };
           readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
             readonly activationId: string;
             readonly skillName: string;
@@ -8841,7 +8861,7 @@ export interface AgentStateSnapshot {
       readonly userMessageId?: string;
     };
     readonly promptId: string;
-    readonly phase: 'pending' | 'terminal' | 'launched';
+    readonly phase: 'terminal' | 'pending' | 'launched';
     readonly turnId?: number;
     readonly steerAccepted?: true;
     readonly steered?: true;
