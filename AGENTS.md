@@ -41,7 +41,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
   - `pnpm-workspace.yaml` uses globs (`packages/*`, `apps/*`), so most packages land there automatically; `flake.nix` is fully manual and is where omissions happen.
   - Missing a path in `flake.nix`'s `workspacePaths` will silently drop files from the Nix build's `src` fileset.
   - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
-- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Keep it green on every add/remove, but still update both files by hand in the same change — the check only runs in CI.
+- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Run `node scripts/check-nix-workspace.mjs` locally whenever you add or remove a package and update both files by hand in the same change.
 
 ## Upstream Synchronization
 
@@ -49,7 +49,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - Review upstream at every release tag or every four weeks, whichever comes first. Filter candidates by commit title and touched paths before reading full diffs.
 - Review security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes as soon as they appear rather than waiting for the regular review.
 - Exclude UI changes, cloud features, secondary-model work, and runtime-to-DI/actor migrations in the first filter unless a separate Kiki decision explicitly reopens that area.
-- Record every accepted, rejected, or deferred upstream commit in `handoffs/2026-08-31-kiki-parallel-campaigns/merge-log.md` using the existing date / source / local HEAD / notes table format.
+- Record every accepted, adapted, deferred, rejected, or already-covered upstream commit in `docs/maintainer/upstream-merge-log.md` using its date / upstream commit / disposition / local HEAD / notes table format.
 
 ## General Coding Rules
 
@@ -87,11 +87,11 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - When creating a PR, the PR title must follow Conventional Commit style, e.g. `chore: remove legacy format commands`.
 - When an AI agent opens or updates a PR, fill in `.github/pull_request_template.md` — link the related issue or explain the problem, then describe what changed. Do not leave placeholder text or submit a generic summary of the diff.
 - Do not submit vague AI-generated PR text. The human author must understand the change well enough to explain the code, edge cases, and why the approach fits this repository.
-- After finishing a task and before submitting a PR, you must run the `gen-changesets` skill (see `.agents/skills/gen-changesets/SKILL.md`) and generate a changeset under `.changeset/` according to its rules.
-- Changesets must strictly follow the rules in `.agents/skills/gen-changesets/SKILL.md`: write one short user-facing sentence that states only what changed, and skip any change users cannot perceive.
-- When generating a changeset, **never** decide on a `major` bump on your own — stop, explain, and get explicit user confirmation first; default to `minor`, fall back to `patch`. See `.agents/skills/gen-changesets/SKILL.md`.
+- Before opening a PR or finalizing a user-facing change, evaluate changeset impact with the `gen-changesets` skill (see `.agents/skills/gen-changesets/SKILL.md`): generate a changeset under `.changeset/` only when the change is user-perceivable, and skip internal, test-only, or docs-only changes that users cannot perceive.
+- Changesets must strictly follow `.agents/skills/gen-changesets/SKILL.md`: write one short user-facing sentence that states only what changed.
+- When generating a changeset, **never** decide on a `major` bump on your own — stop, explain, and get explicit user confirmation first; use `patch` for fixes and small additions or `minor` for new user-facing capabilities. See `.agents/skills/gen-changesets/SKILL.md`.
 - Prefer importing via `import ... from '#/...'`, which serves the same purpose as `import ... from '@/...'`.
 - Do not commit throwaway scratch or exploratory files. Never stage:
   - Agent working notes or handoff/summary documents (e.g. `HANDOVER-*.md`, `HANDOFF-*.md`, `handoff.md`).
-  - Throwaway UI/UX prototypes or design mockups (e.g. `*-designs.html`, `*-mockup.html`, `*-demo(s).html`) at the repo root or under a `design/` folder. The only tracked `.html` files should be Vite `index.html` entrypoints.
+  - Throwaway UI/UX prototypes or design mockups (e.g. `*-designs.html`, `*-mockup.html`, `*-demo(s).html`) at the repo root or under a `design/` folder. Tracked `.html` files are limited to real Vite/launcher entrypoints (`apps/kiki-gui/index.html`, `apps/kiki-gui/mobile/launcher/index.html`), GUI proof harness mounts (`apps/kiki-gui/proof/*-mount.html`), and dedicated test fixtures.
   Before committing or opening a PR, run `git status` and `git diff --staged --stat` and remove anything matching these patterns. Put scratch work under `.tmp/` (gitignored) instead of the repo root or the source tree.

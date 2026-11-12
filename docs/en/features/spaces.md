@@ -36,7 +36,7 @@ For scripted or step-by-step control, the explicit invitation and SSH planning c
 
 If the target is temporarily unreachable, the mobile app reconnects automatically and keeps your open conversation and draft in place. You can also retry or switch computers. If the target closes inbound access, ordinary reads recover when its owner reopens it. A refused operation does not sign you out, and Kiki does not automatically repeat refused or unconfirmed writes. If your token is invalid or the grant is revoked, pair again or update the connection's authorization before retrying.
 
-See [`kiki pair`](/en/reference/command#kiki-pair), [`kiki connections`](/en/reference/command#kiki-connections), and [`kiki bridges`](/en/reference/command#kiki-bridges) for the command reference behind these settings.
+See [`kiki pair`](/en/reference/command#kiki-pair), [`kiki connections`](/en/reference/command#kiki-pair), and [`kiki bridges`](/en/reference/command#kiki-bridges) for the command reference behind these settings.
 
 ![The remote connections list: one row per peer Kiki, each with its own state and the moment its last reading was taken.](/shots/spaces/ps-20261005-spaces-remote.en.png)
 
@@ -82,6 +82,6 @@ See [Interface overview](/en/guides/interface#input-box) for the SSH control and
 
 ## Next steps
 
-- [`kiki connections`](/en/reference/command#kiki-connections) and [`kiki bridges`](/en/reference/command#kiki-bridges) — the command reference behind these settings
+- [`kiki pair` and `kiki connections`](/en/reference/command#kiki-pair) and [`kiki bridges`](/en/reference/command#kiki-bridges) — the command reference behind these settings
 - [Use Kiki in a browser](/en/server/local-server#use-kiki-in-a-browser) — Web access in detail
 - [Settings pages](/en/guides/settings) — the rest of the dialog, including Connections

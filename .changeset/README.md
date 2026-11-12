@@ -34,11 +34,12 @@ Docs deploy separately through `.github/workflows/docs-deploy.yml` whenever
 ## Changesets
 
 Changeset files record user-visible changes. They do not trigger a PR on
-every push, and the repository still holds older unconsumed changesets. Before
-running `pnpm run version:release` or `pnpm changeset version`, reconcile those
-leftover entries against versions already shipped — running either command
-over the whole backlog consumes historical files and produces a misleading
-changelog and version bump. The tag procedure above runs neither command.
+every push. Shipped changesets through `kiki-v0.5.1` have been pruned so only
+post-`0.5.1` unreleased entries remain under `.changeset/`. Before running
+`pnpm run version:release` or `pnpm changeset version`, reconcile any entries
+that already shipped via a `kiki-v<version>` tag — running either command over
+already-shipped files produces a misleading changelog and version bump. The tag
+procedure above runs neither command.
 
 For a user-visible change that needs a changeset, run `pnpm changeset`, pick
 the affected publishable package and bump level, and commit the generated
