@@ -21,6 +21,14 @@ import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { connectionsApi, identityBlock, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
+import {
+  hasThreadBridgesApi,
+  inboundGrantThreadMessageDirection,
+  threadBridgeKeys,
+  threadMessageFactKey,
+  useThreadBridges,
+  type ThreadMessageFact,
+} from '../../lib/threadBridges';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
@@ -30,7 +38,8 @@ import { AdvancedDetails } from './fields';
 import { RowFrame } from './RowFrame';
 import { SectionCard } from './SectionCard';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
-import { InviteSourceDialog } from './remote/InviteSourceDialog';
+import { PairSheet } from './remote/PairSheet';
+import { ThreadMessagesPanel } from './remote/ThreadMessagesPanel';
 import { connectionFailureText } from './remote/parts';
 
 const GRANT_STATUS_TONE: Readonly<Record<ConnectionGrant['status'], { dot: string; text: string }>> = {
@@ -39,9 +48,13 @@ const GRANT_STATUS_TONE: Readonly<Record<ConnectionGrant['status'], { dot: strin
   revoked: { dot: 'bg-hairline-strong', text: 'text-ink-faint' },
 };
 
-/** One peer Kiki: a row whose ⋯ holds its revoke. */
-function InboundGrantRow({ grant, onRevoke }: {
+/** One peer space: a row whose ⋯ holds Thread messages… and Revoke…. */
+function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onOpenThreadMessages, onRevoke }: {
   readonly grant: ConnectionGrant;
+  readonly gateEnabled: boolean;
+  readonly threadFact: ThreadMessageFact | null;
+  readonly bridgesAvailable: boolean;
+  readonly onOpenThreadMessages: () => void;
   readonly onRevoke: () => void;
 }) {
   const { t, locale } = useI18n();
@@ -49,11 +62,19 @@ function InboundGrantRow({ grant, onRevoke }: {
   const anchorRef = useRef<HTMLButtonElement>(null);
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
   const tone = GRANT_STATUS_TONE[grant.status];
+  const canOpenHere = gateEnabled && grant.status === 'approved' && grant.purpose === 'gui';
   const items: SpaceMenuItem[] = [
+    {
+      key: 'thread-messages',
+      label: t('st.remote.threadMessages.menu'),
+      blockedReason: bridgesAvailable ? undefined : t('st.remote.controlUnavailable'),
+      run: onOpenThreadMessages,
+    },
     {
       key: 'revoke',
       label: t('st.inbound.revoke'),
       danger: true,
+      separatorBefore: true,
       blockedReason: grant.status === 'revoked' ? t('st.inbound.status.revoked') : undefined,
       run: onRevoke,
     },
@@ -77,7 +98,20 @@ function InboundGrantRow({ grant, onRevoke }: {
       )}
       subtitle={(
         <>
-          <span>{t('st.remote.purpose.gui')}</span>
+          <span data-inbound-openable={canOpenHere ? 'yes' : 'no'}>
+            {t(canOpenHere ? 'st.inbound.canOpen' : 'st.inbound.cantOpen')}
+          </span>
+          {threadFact !== null ? (
+            <>
+              <span aria-hidden>·</span>
+              <span
+                className={threadFact === 'unreadable' ? 'text-amber-ink' : undefined}
+                data-inbound-thread-messages={threadFact}
+              >
+                {t(threadMessageFactKey(threadFact))}
+              </span>
+            </>
+          ) : null}
           <span aria-hidden>·</span>
           <span data-inbound-activity>
             {grant.lastConnectedAt === undefined
@@ -164,11 +198,21 @@ export function InboundConnectionsSection() {
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
   const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useInboundStatus(control);
+  const threadBridges = useThreadBridges(control);
+  const bridgesAvailable = hasThreadBridgesApi(control);
   const api = control === null ? null : connectionsApi(control);
-  const [dialog, setDialog] = useState<{ kind: 'invite' } | { kind: 'revoke'; grantId: string; name: string } | null>(null);
+  const [dialog, setDialog] = useState<
+    | { kind: 'invite' }
+    | { kind: 'thread-messages'; grant: ConnectionGrant }
+    | { kind: 'revoke'; grantId: string; name: string }
+    | null
+  >(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [saving, setSaving] = useState(false);
-  const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all }); };
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+    void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+  };
   const grants = status.data?.grants ?? [];
   const effective = status.data?.enabled ?? false;
   const configured = status.data?.configuredEnabled ?? false;
@@ -227,10 +271,24 @@ export function InboundConnectionsSection() {
               <p className="text-[13px] text-ink-soft" data-inbound-empty>{t('st.inbound.emptyLine')}</p>
             ) : grants.length > 0 ? (
               <div aria-label={t('st.inbound.listTitle')} data-inbound-list>
-                {grants.map((grant) => (
-                  <InboundGrantRow key={grant.id} grant={grant}
-                    onRevoke={() => { setDialog({ kind: 'revoke', grantId: grant.id, name: grant.label }); }} />
-                ))}
+                {grants.map((grant) => {
+                  const threadFact: ThreadMessageFact | null = !bridgesAvailable || threadBridges.isLoading
+                    ? (!bridgesAvailable ? 'unreadable' : null)
+                    : threadBridges.isError || threadBridges.data === undefined
+                      ? 'unreadable'
+                      : inboundGrantThreadMessageDirection(grant, threadBridges.data);
+                  return (
+                    <InboundGrantRow
+                      key={grant.id}
+                      grant={grant}
+                      gateEnabled={effective}
+                      threadFact={threadFact}
+                      bridgesAvailable={bridgesAvailable}
+                      onOpenThreadMessages={() => { setDialog({ kind: 'thread-messages', grant }); }}
+                      onRevoke={() => { setDialog({ kind: 'revoke', grantId: grant.id, name: grant.label }); }}
+                    />
+                  );
+                })}
               </div>
             ) : null}
 
@@ -254,13 +312,21 @@ export function InboundConnectionsSection() {
       </div>
 
       {dialog?.kind === 'invite' && control !== null ? (
-        <InviteSourceDialog client={control} onClose={() => { setDialog(null); }} onInvited={refresh} />
+        <PairSheet client={control} direction="inbound" onClose={() => { setDialog(null); }} onInvited={refresh} />
+      ) : null}
+
+      {dialog?.kind === 'thread-messages' && control !== null ? (
+        <ThreadMessagesPanel
+          client={control}
+          subject={{ kind: 'inbound', grant: dialog.grant }}
+          onClose={() => { setDialog(null); }}
+        />
       ) : null}
 
       {dialog?.kind === 'revoke' && api !== null ? (
         <ConfirmDialog open overlayId="inbound-revoke-confirm" tone="danger"
           title={t('st.inbound.revokeTitle', { name: dialog.name })}
-          body={t('st.inbound.revokeBody')}
+          body={t('st.inbound.revokeBody', { name: dialog.name })}
           confirmLabel={t('st.inbound.revokeConfirm')}
           onCancel={() => { setDialog(null); }}
           onConfirm={() => {

@@ -30,6 +30,7 @@ import {
 } from '../../lib/threadBridges';
 import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
 import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
+import { pushToast, UNDO_TOAST_MS } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import type { SshProfile } from '../../state/connectionConfig';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -40,7 +41,7 @@ import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SpaceRowMenu } from './spaces/SpaceRowMenu';
-import { AddConnectionDialog } from './remote/AddConnectionDialog';
+import { PairSheet } from './remote/PairSheet';
 import { ThreadMessagesPanel } from './remote/ThreadMessagesPanel';
 import { RemoteStateChip, connectionFailureText } from './remote/parts';
 import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
@@ -231,12 +232,23 @@ export function RemoteConnectionsSection() {
       ) : null}
 
       {dialog?.kind === 'add' && control !== null ? (
-        <AddConnectionDialog client={control} onClose={() => { setDialog(null); }}
-          onAdded={(record) => {
+        <PairSheet
+          client={control}
+          direction="outbound"
+          onClose={() => { setDialog(null); }}
+          onPaired={(record) => {
             setDialog(null);
             refresh();
-            setFeedback({ tone: 'success', text: t('st.remote.added', { name: record.label }) });
-          }} />
+            pushToast({
+              tone: 'success',
+              text: t('st.remote.added', { name: record.label }),
+              durationMs: UNDO_TOAST_MS,
+              action: browsableRemote(record)
+                ? { label: t('st.remote.enter'), run: () => { void enterRemoteSpace(record.id, record.label); } }
+                : undefined,
+            });
+          }}
+        />
       ) : null}
 
       {dialog?.kind === 'ssh' && activateSshProfile !== undefined ? (
@@ -265,7 +277,7 @@ export function RemoteConnectionsSection() {
       {dialog?.kind === 'remove' && control !== null ? (
         <ConfirmDialog open overlayId="remote-connection-remove" tone="danger"
           title={t('st.remote.removeTitle', { name: dialog.record.label })}
-          body={t('st.remote.removeBody')}
+          body={t('st.remote.removeBody', { name: dialog.record.label })}
           confirmLabel={t('st.remote.removeConfirm')}
           onCancel={() => { setDialog(null); }}
           onConfirm={() => {

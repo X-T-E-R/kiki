@@ -24,10 +24,12 @@ import {
   type SpaceListItem,
 } from '../lib/spaces';
 import { readHomeViewRoute } from '../lib/spaceViewState';
-import { pushToast } from '../lib/toasts';
+import { pushToast, UNDO_TOAST_MS } from '../lib/toasts';
+import { threadBridgeKeys } from '../lib/threadBridges';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
+import { PairSheet } from './settings/remote/PairSheet';
 import { useRemoteSpaceEntry, useReturnToLocalSpace } from './settings/remote/useRemoteSpaceEntry';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { SpaceSwitchSheet, classifyRemoteSwitchError, type SpaceRowFailure } from './SpaceSwitchSheet';
@@ -48,6 +50,7 @@ export function SpaceSwitcher() {
   const { t, tp } = useI18n();
 
   const [open, setOpen] = useState(false);
+  const [pairSheetOpen, setPairSheetOpen] = useState(false);
   const [entering, setEntering] = useState<string | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
   const [failure, setFailure] = useState<SpaceRowFailure | null>(null);
@@ -363,11 +366,45 @@ export function SpaceSwitcher() {
           onSelectRemote={(record) => { enterRemoteFromPanel(record, false); }}
           onTurnOnRemote={handleTurnOnRemote}
           onRemoveRemote={handleRemoveRemote}
-          onPairAgain={() => { openSettings('/settings/spaces#st-card-remote-connections'); }}
+          onPairAgain={() => {
+            if (remoteClient !== null && hasRemoteConnectionsApi) {
+              closePanel();
+              setPairSheetOpen(true);
+            } else {
+              openSettings('/settings/spaces#st-card-remote-connections');
+            }
+          }}
           onViewLog={desktop && host.openDesktopLogDirectory !== undefined ? () => { void host.openDesktopLogDirectory?.(); } : undefined}
-          onPairRemote={() => { openSettings('/settings/spaces#st-card-remote-connections'); }}
+          onPairRemote={() => {
+            if (remoteClient !== null && hasRemoteConnectionsApi) {
+              closePanel();
+              setPairSheetOpen(true);
+            } else {
+              openSettings('/settings/spaces#st-card-remote-connections');
+            }
+          }}
           onNewSpace={desktop && here === null ? () => { openSettings('/settings/spaces?new=1'); } : undefined}
           onManageSpaces={() => { openSettings('/settings/spaces'); }}
+        />
+      ) : null}
+      {pairSheetOpen && remoteClient !== null ? (
+        <PairSheet
+          client={remoteClient}
+          direction="outbound"
+          onClose={() => { setPairSheetOpen(false); }}
+          onPaired={(record) => {
+            setPairSheetOpen(false);
+            void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+            void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+            pushToast({
+              tone: 'success',
+              text: t('st.remote.added', { name: record.label }),
+              durationMs: UNDO_TOAST_MS,
+              action: browsableRemote(record)
+                ? { label: t('st.remote.enter'), run: () => { void enterRemoteSpace(record.id, record.label); } }
+                : undefined,
+            });
+          }}
         />
       ) : null}
     </>

@@ -162,7 +162,71 @@ describe('the SSH way into the add-connection form', () => {
       setValue(code, 'k9f27x4m');
     });
     await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
-    expect(pair).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'http://192.168.1.40:5523', code: 'K9F2-7X4M', backgroundSummary: true }));
+    expect(pair).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'http://192.168.1.40:5523',
+      code: 'K9F2-7X4M',
+      backgroundSummary: true,
+      requestBridge: false,
+    }));
+    expect(onAdded).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends requestBridge: true when the thread-message checkbox is ticked and maps each pairing failure reason', async () => {
+    const pair = vi.fn()
+      .mockRejectedValueOnce(new Error('invalid_pairing_code'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new Error('inbound_disabled'))
+      .mockRejectedValueOnce(new Error('identity_changed'))
+      .mockResolvedValueOnce({ id: 'c1', label: 'B' } as RemoteConnection);
+    const clientWithPair = {
+      ...(client(true) as unknown as { klient: { rest: Record<string, unknown> } }),
+      klient: {
+        rest: {
+          homes: { list: listSpaces },
+          ssh: { list: listHosts },
+          connections: { list: vi.fn().mockResolvedValue([]), pair },
+        },
+      },
+    } as never;
+    const onAdded = vi.fn();
+    const { document } = await render(
+      <AddConnectionDialog client={clientWithPair} onClose={vi.fn()} onAdded={onAdded} />,
+    );
+    const setValue = (element: HTMLInputElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(element, value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const endpoint = document.querySelector('[data-remote-endpoint]') as HTMLInputElement;
+    const code = document.querySelector('[data-remote-code]') as HTMLInputElement;
+    const requestBridgeBox = document.querySelector('[data-remote-request-bridge]') as HTMLInputElement;
+    expect(requestBridgeBox.checked).toBe(false);
+    await act(async () => {
+      setValue(endpoint, 'http://192.168.1.40:5523');
+      setValue(code, 'k9f27x4m');
+      requestBridgeBox.click();
+    });
+    const submit = document.querySelector('[data-remote-add-submit]') as HTMLButtonElement;
+
+    await act(async () => { submit.click(); });
+    expect(document.body.textContent).toContain('That pairing code is wrong or has expired.');
+
+    await act(async () => { submit.click(); });
+    expect(document.body.textContent).toContain('Can’t reach that address.');
+
+    await act(async () => { submit.click(); });
+    expect(document.body.textContent).toContain('The other side hasn’t turned on “Allow other spaces to connect”.');
+
+    await act(async () => { submit.click(); });
+    expect(document.body.textContent).toContain('That address is this very space.');
+
+    await act(async () => { submit.click(); });
+    expect(pair).toHaveBeenLastCalledWith(expect.objectContaining({
+      endpoint: 'http://192.168.1.40:5523',
+      code: 'K9F2-7X4M',
+      backgroundSummary: true,
+      requestBridge: true,
+    }));
     expect(onAdded).toHaveBeenCalledTimes(1);
   });
 });

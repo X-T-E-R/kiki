@@ -22,6 +22,11 @@ export interface ToastRetry {
   readonly label?: string;
 }
 
+export interface ToastAction {
+  readonly label: string;
+  readonly run: () => void | Promise<void>;
+}
+
 export interface ToastInput {
   readonly tone: ToastTone;
   readonly text: string;
@@ -31,6 +36,8 @@ export interface ToastInput {
   readonly requestId?: string;
   /** Errors only: an optional retry action rendered beside the close button. */
   readonly retry?: ToastRetry;
+  /** Optional follow-up action on a success/info toast (e.g. "Switch" after pairing). */
+  readonly action?: ToastAction;
   /**
    * The one action of an undo toast (see `pushUndoToast`). It runs the inverse
    * of a change that already happened; it never commits a deferred one.

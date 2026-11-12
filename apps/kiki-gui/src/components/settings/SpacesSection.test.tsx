@@ -1114,3 +1114,156 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
     expect(rowWriter.textContent).not.toContain('Thread messages: none');
   });
 });
+
+describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#21)', () => {
+  const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 };
+  const peerSource = { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'laptop-b', protocol: 1 };
+
+  it('sends no createPairCode request until "Turn on and generate code" is pressed, and sends allowBridge: false by default', async () => {
+    connections.inbound.mockResolvedValue({
+      enabled: false,
+      configuredEnabled: false,
+      identity: localIdentity,
+      grants: [],
+    });
+    connections.createPairCode.mockResolvedValue({
+      code: 'K9F2-7X4M',
+      expiresAt: Date.now() + 600_000,
+      target: localIdentity,
+      suggestedEndpoints: ['http://192.168.1.20:58627'],
+    });
+
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+    await click('[data-inbound-invite]');
+
+    // Pre-consent screen is open; no request sent on mount!
+    expect(document.querySelector('[data-pair-sheet="inbound"]')).not.toBeNull();
+    expect(document.querySelector('[data-inbound-consent]')).not.toBeNull();
+    expect(connections.createPairCode).not.toHaveBeenCalled();
+
+    const openCheck = document.querySelector<HTMLInputElement>('[data-inbound-consent-open]')!;
+    const bridgeCheck = document.querySelector<HTMLInputElement>('[data-inbound-consent-bridge]')!;
+    expect(openCheck.checked).toBe(true);
+    expect(openCheck.disabled).toBe(true);
+    expect(bridgeCheck.checked).toBe(false);
+    expect(document.querySelector('[data-inbound-gate-consequence]')?.textContent)
+      .toContain('Allow other spaces to connect');
+
+    const generateBtn = document.querySelector<HTMLButtonElement>('[data-inbound-generate-code]')!;
+    expect(generateBtn.textContent).toBe('Turn on and generate code');
+
+    await click('[data-inbound-generate-code]');
+    expect(connections.createPairCode).toHaveBeenCalledExactlyOnceWith({ allowBridge: false });
+    expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
+  });
+
+  it('shows "Generate code" without gate warning when gate is already on, and sends wake when thread messages is checked', async () => {
+    connections.inbound.mockResolvedValue({
+      enabled: true,
+      configuredEnabled: true,
+      identity: localIdentity,
+      grants: [
+        {
+          id: 'grant-1',
+          source: peerSource,
+          target: localIdentity,
+          purpose: 'gui',
+          revision: 1,
+          status: 'approved',
+          label: 'Laptop B',
+          createdAt: Date.now() - 60_000,
+          activeLeases: 1,
+        },
+      ],
+    });
+    threadBridges.status.mockResolvedValue({
+      identity: localIdentity,
+      inboundEnabled: true,
+      inbound: [
+        {
+          id: '44444444-4444-4444-8444-444444444444',
+          revision: 1,
+          enabled: true,
+          revoked: false,
+          createdAt: Date.now() - 30_000,
+          source: peerSource,
+          target: localIdentity,
+          sourceScope: { workspaceId: 'wd_laptop_0123456789ab' },
+          targetScope: { workspaceId: 'wd_local_abcdef012345' },
+          operations: ['read', 'send', 'wait', 'wake'],
+          expiresAt: Date.now() + 365 * 24 * 3600 * 1000,
+          pendingLimit: 20,
+          messagesPerMinute: 60,
+          location: 'network',
+          label: 'Laptop B',
+        },
+      ],
+      outbound: [],
+    });
+    connections.createPairCode.mockResolvedValue({
+      code: 'ABCD-2345',
+      expiresAt: Date.now() + 600_000,
+      target: localIdentity,
+      suggestedEndpoints: ['http://192.168.1.20:58627'],
+    });
+
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+    const grantRow = document.querySelector('[data-inbound-grant="grant-1"]')!;
+    expect(grantRow.textContent).toContain('Can open this space');
+    expect(grantRow.textContent).toContain('Thread messages: incoming only');
+
+    await click('[data-inbound-invite]');
+    expect(document.querySelector('[data-inbound-gate-consequence]')).toBeNull();
+    expect(document.querySelector('[data-inbound-generate-code]')?.textContent).toBe('Generate code');
+
+    await click('[data-inbound-consent-bridge]');
+    await click('[data-inbound-generate-code]');
+    expect(connections.createPairCode).toHaveBeenCalledExactlyOnceWith({
+      allowBridge: true,
+      bridgeOperations: ['read', 'send', 'wait', 'wake'],
+    });
+  });
+
+  it('keeps the window in its current space after pairing from Spaces and pushes a toast offering "Switch"', async () => {
+    const scopeSpy = vi.fn();
+    const unregister = registerScopeNavigation(scopeSpy);
+    try {
+      const pairedRecord = {
+        id: '99999999-9999-4999-8999-999999999999',
+        label: 'Studio Mac',
+        endpoint: 'http://192.168.1.40:58627',
+        target: peerSource,
+        credentialRef: 'pair-studio',
+        purposes: ['gui'] as ('gui' | 'bridge')[],
+        enabled: true,
+        backgroundSummary: true,
+        state: 'online' as const,
+        activeLeases: 0,
+      };
+      connections.pair.mockResolvedValue(pairedRecord);
+
+      await render(<SpacesSection />);
+      await click('[data-remote-add]');
+      expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
+
+      await type('[data-remote-endpoint]', 'http://192.168.1.40:58627');
+      await type('[data-remote-code]', 'K9F27X4M');
+      await click('[data-remote-add-submit]');
+
+      expect(connections.pair).toHaveBeenCalledWith({
+        endpoint: 'http://192.168.1.40:58627',
+        code: 'K9F2-7X4M',
+        backgroundSummary: true,
+        requestBridge: false,
+      });
+      // Sheet closed, window did NOT auto-switch, and toast offers Switch!
+      expect(document.querySelector('[data-pair-sheet="outbound"]')).toBeNull();
+      expect(scopeSpy).not.toHaveBeenCalled();
+      const toast = getToasts().at(-1)!;
+      expect(toast.text).toBe('Paired Studio Mac.');
+      expect(toast.action?.label).toBe('Switch');
+    } finally {
+      unregister();
+    }
+  });
+});

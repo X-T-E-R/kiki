@@ -223,7 +223,7 @@ export function NavScopeRecovery({ state, retry, cancel, remote, exitSpaceName }
         // The removal is confirmed in place, in the words the settings row
         // uses, rather than in a dialog stacked over this whole-window surface.
         <div className="mt-6" data-nav-scope-remove-confirm>
-          <p className="text-[13px] leading-relaxed text-ink-soft">{t('st.remote.removeBody')}</p>
+          <p className="text-[13px] leading-relaxed text-ink-soft">{t('st.remote.removeBodyGeneric')}</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button type="button" className={DANGER_BUTTON} disabled={acting}
               onClick={() => { act(() => remote.remove()); }}>

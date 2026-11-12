@@ -681,7 +681,8 @@ describe('SpaceSwitcher', () => {
       await clickRemote(connNotApproved);
       expect(document.querySelector('[data-space-row-failure="remote-not-approved"]')?.textContent).toContain('That side no longer accepts this pairing.');
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-row-action="pair-again"]')!.click(); });
-      expect(navigate).toHaveBeenCalledWith('/settings/spaces#st-card-remote-connections');
+      expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
+      await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(); });
 
       // Local space start failure shows inline error + Retry + View log…
       await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
@@ -719,5 +720,22 @@ describe('SpaceSwitcher', () => {
     } finally {
       window.matchMedia = originalMatchMedia;
     }
+  });
+
+  it('opens the outbound PairSheet directly from "+ Pair a space on another computer…"', async () => {
+    list.mockResolvedValue({ items: [TWO.items[0]] });
+    connection.localClient = {
+      klient: {
+        rest: {
+          homes: { list },
+          connections: { list: vi.fn().mockResolvedValue([]), pair: vi.fn() },
+        },
+      },
+    };
+    await render();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-pair-entry]')!.click(); });
+    expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
+    expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
   });
 });

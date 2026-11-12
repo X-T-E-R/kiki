@@ -104,6 +104,19 @@ function ToastCard({ toast }: { toast: ToastItem }) {
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
+          {toast.action !== undefined ? (
+            <button
+              type="button"
+              data-toast-action
+              onClick={() => {
+                dismissToast(toast.id);
+                void toast.action?.run();
+              }}
+              className="rounded-md px-2 py-0.5 text-[12px] font-semibold text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
+            >
+              {toast.action.label}
+            </button>
+          ) : null}
           {toast.undo !== undefined ? (
             <button
               type="button"
