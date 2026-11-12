@@ -20,7 +20,11 @@ copy rules.
 | 智能体档案 | agent profile | 「怎么干活」：模型、思考强度、工具、权限、指令——和 persona 是两件事，别都译成「角色」。首选「智能体档案」（composer 与 `profile.switch*` 面向用户的那一侧用词），诊断类文案里的「配置档」「配置目录」逐步归一。 |
 | 房间 | room | 2–6 个参与讨论的房间：成员 member、主持人 host、静音 mute（`room.*`）。不要用「群」指 room（「群」只出现在通知的团队群聊文案里），也不要写「会话」。 |
 | 工作区 | workspace | 一个被登记的项目目录。不要用「空间」指工作区；worktree 是工作区里的检出目录，不等于工作区。 |
-| 空间 | space | Kiki 空间：有自己的对话、记忆和工作区（`st.section.spaces`、`st.purpose.spaces`）。大写 Space 只指这个产品概念；`st.compact.reserveHint` 里的「保留的空间」是字面余量，en 用 room/space、小写。 |
+| 空间 | space | 一套独立的对话、记忆和工作区（`st.section.spaces`、`st.purpose.spaces`）。「主空间」/ "Main space" 是每台电脑默认空间的名字，像普通名称一样展示。界面文案里不把 `Kiki` 当作可数名词（不写「远端 Kiki」「其他 Kiki」「这台 Kiki」）；大写 Space 只指这个产品概念，`st.compact.reserveHint` 里的「保留的空间」是字面余量，en 用 room/space、小写。 |
+| 电脑 | computer | 运行服务的机器。「这台电脑」/ "this computer" 只在桌面应用里、且确指运行服务器的那台机器时用；手机或浏览器接入另一台电脑时，一律写「运行 Kiki 的电脑」/ "the computer running Kiki"（`firstRun.lane.localRemote*`、`memory.status.on`）。不要写「本机」「本地」指服务器所在的机器：在手机上有歧义。 |
+| 设备 | device | 浏览器、手机或当前桌面窗口本身（`st.section.connection`「当前设备的连接 / This device's connection」、`st.remoteTab.web`「设备 / Devices」）。 |
+| 配对 | pairing | 两边互相同意后建立的按对端授权（`pair.*`、`st.remote.*`）。不要写 invitation / 邀请、inbound / 入站、outbound / 出站、peer。 |
+| 线程消息 | thread messages | 配对附带或单独授予的跨空间消息权限（`pair.perm.*`、`st.remote.fact.tm.*`、`st.remote.tmPanel.*`）。GUI 文案统一写「线程消息 / thread messages」，不写 `bridge` /「桥」。 |
 | 技能 | skill | 来自 skills 目录的能力包（`agentPanel.*Skill*`、`st.skills.*`）。不要译成「工具」。 |
 | 插件 | plugin | 安装并启用的扩展；插件里的 skill 仍叫「技能」。 |
 | 工具 | tool | 智能体调用的工具。工具调用 = tool call：注意 `subagent.tools` 的 en 是 "{count} tools"、zh 是「{count} 次工具调用」，改文案时把量词对齐。 |
@@ -39,7 +43,6 @@ copy rules.
 | 复刻 | fork | 从一个会话或一条消息复制出新会话（`menu.fork`、`transcript.fork`）。统一「复刻」，不要「分叉」。 |
 | 导览 | tour | 首次启动后唯一的引导形式：可选的一分钟导览（`firstRun.tour.*`、`discovery.hub.*`）。「引导」「向导」不作为产品词。 |
 | 连接 / 模型连接 | connection / model connection | 设置和首次启动里用户面对的对象：一个账号登录或一个 API 密钥（`st.ai.status.*`、`firstRun.*`）。「提供商」只指厂商本身。分区名「模型与提供商 / Models & providers」随设置改版改为「模型 / Models」。 |
-| 这台电脑 / 运行 Kiki 的电脑 | this computer / the computer running Kiki | 「这台电脑」只在桌面应用里、且确指运行服务器的那台机器时用。手机或浏览器接入另一台电脑上的 Kiki 时，一律写「运行 Kiki 的电脑」（`firstRun.lane.localRemote*`、`memory.status.on`）。不要写「本机」「本地」指服务器所在的机器：在手机上有歧义。 |
 | 默认（{value}） | Default ({value}) | 凡显示「默认」，必须带上它解析到的值（`common.defaultWithValue`）；解析不出时写「默认（未知）」（`common.defaultUnknown`）。不要只写「默认」。 |
 | 自动（权限模式） | Auto | 标准解释句：「工作区里的读写和常规命令 Kiki 自己做；敏感文件、外部链接和危险命令先问你。」/ "Kiki handles reads, writes and routine commands in the workspace itself, and asks you before sensitive files, external links or risky commands." 权限页、第一张审批卡（`firstRun.auto.explain`）、输入框芯片的说明都用这一句；`composer.perm.autoHint` 是它的短形。 |
 

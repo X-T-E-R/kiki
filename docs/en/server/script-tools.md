@@ -4,7 +4,7 @@ Call Kiki's shared tools from Python, Node.js, a shell, or another local program
 
 ## Prepare a connection
 
-In **Settings → Connection & remote → Access from elsewhere → External clients**, create a connection and allow the tools you need. Create a conversation for that connection in Kiki and choose its workspace and permission mode. Plugin tools must also be installed, configured and enabled for that conversation. The connection's permission ceiling, tool allowlist, workspace boundaries and normal approvals still apply. Media tools that declare unrestricted access also require the connection's local-command access permission.
+In **Settings → Spaces & devices → Access → External clients**, create a connection and allow the tools you need. Create a conversation for that connection in Kiki and choose its workspace and permission mode. Plugin tools must also be installed, configured and enabled for that conversation. The connection's permission ceiling, tool allowlist, workspace boundaries and normal approvals still apply. Media tools that declare unrestricted access also require the connection's local-command access permission.
 
 In the connection's **Pick tools** list, enabled plugin tools appear grouped by plugin. Select `plugin__kiki_media__generate` and `plugin__kiki_media__media`, and enable **Allow commands on this machine** for their unrestricted access. Saving is blocked until you enable that permission or deselect those tools. Enabling it, in the GUI or with `--allow-commands`, also grants `Bash`, allowing the client to run shell commands as you. The local owner can also add these grants from the terminal; existing grants are retained, and changing a grant stops the connection's running work:
 

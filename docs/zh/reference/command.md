@@ -149,7 +149,7 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`session-access`（签发、列出和撤销会话访问令牌）、`pair`（用一次性短码配对两台 Kiki）、`connections`（管理远端连接与 SSH 链路）、`bridges`（管理 thread bridge）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`session-access`（签发、列出和撤销会话访问令牌）、`pair`（用一次性短码配对两个空间）、`connections`（管理远端连接与 SSH 链路）、`bridges`（管理 thread bridge）、`seat`（管理外部调用方席位）、[`tools`](../server/script-tools.md)（以 JSON 调用共享工具并下载已保存结果）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki session`
 
@@ -253,7 +253,7 @@ kiki pair --home /path/to/target
 kiki pair http://192.168.1.40:58627 K9F2-7X4M --home /path/to/source
 ```
 
-在目标端不带位置参数运行 `kiki pair`（或 `kiki connections pair`），会自动开启入站访问、在本机可达的局域网和 Tailscale IPv4 地址上启用直连对等监听，并打印十分钟内有效的一次性 `XXXX-XXXX` 配对码及建议直连地址。在来源端运行 `kiki pair <endpoint> <code>` 即可用配对码兑换每条连接独立的对等凭据（不暴露目标的全局 `server.token`），并在两端都有工作区时自动建立从来源主工作区到目标最近工作区的默认 thread bridge。回环地址、RFC1918 局域网、Tailscale（`100.64.0.0/10` 与 `.ts.net`）及 `.local` 地址支持明文 `http://`；公网地址必须使用 `https://`。
+在目标端不带位置参数运行 `kiki pair`（或 `kiki connections pair`），会自动开启入站访问、在本机可达的局域网和 Tailscale IPv4 地址上启用直连对等监听，并打印十分钟内有效的一次性 `XXXX-XXXX` 配对码及建议直连地址。在来源端运行 `kiki pair <endpoint> <code>` 即可用配对码兑换每条连接独立的对等凭据（不暴露目标的全局 `server.token`），并在两端都有工作区时自动建立从来源主工作区到目标最近工作区的默认线程消息权限（含 `read`、`send` 与 `wait`，默认不含 `wake`；GUI 配对面板默认不勾选线程消息，REST 侧的 `POST /api/remote-connections/pair` 可传 `requestBridge: false` 跳过线程消息请求）。回环地址、RFC1918 局域网、Tailscale（`100.64.0.0/10` 与 `.ts.net`）及 `.local` 地址支持明文 `http://`；公网地址必须使用 `https://`。
 
 通过 SSH 一步连接：
 
@@ -517,7 +517,7 @@ kiki web --revoke [session-id]  # 注销一个浏览器；不带 id 注销全部
 | `--json` | 以 JSON 输出结果（开启时含 `link`） |
 | `--no-open` | 不在本机默认浏览器里打开链接 |
 
-`--status`、`--off`、`--revoke` 三者一次只能选一个，`--temporary` 与 `--persistent` 也不能同时给。一次性链接十分钟内有效，只能登录一个浏览器；Web 访问是对这台 Kiki 的完整访问入口，不是只读分享。会话与撤销模型见[在浏览器里使用 Kiki](../server/local-server.md#在浏览器里使用-kiki)。同样的操作在交互式 TUI 中是 `/web temporary|persistent|status|off|link|revoke [id]`，在 GUI 中位于**设置 → 连接与远程 → 外部接入 → 网页访问**。
+`--status`、`--off`、`--revoke` 三者一次只能选一个，`--temporary` 与 `--persistent` 也不能同时给。一次性链接十分钟内有效，只能登录一个浏览器；Web 访问是对当前空间的完整访问入口，不是只读分享。会话与撤销模型见[在浏览器里使用 Kiki](../server/local-server.md#在浏览器里使用-kiki)。同样的操作在交互式 TUI 中是 `/web temporary|persistent|status|off|link|revoke [id]`，在 GUI 中位于**设置 → 空间与设备 → 接入 → 设备**。
 
 daemon 本身的生命周期用 [`kiki serve`](#kiki-serve) 控制。daemon 运行时，`GET /openapi.json` 返回 REST OpenAPI 文档，`GET /asyncapi.json` 返回本地 WebSocket 协议的 AsyncAPI 文档；用 API 驱动会话见[本地服务与 API](../server/local-server.md)，协议细节见[服务 API](../server/rest-api.md)。旧的 `kiki server …` 命令已不再支持。
 

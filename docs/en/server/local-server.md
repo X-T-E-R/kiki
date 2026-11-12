@@ -66,7 +66,7 @@ Binding the Web access listener to a non-loopback address (`--host`, including b
 
 Web access is a door into **this** Kiki from a browser on another device. Whoever holds a link can use the Kiki in full, with the same access you have — it is not a read-only share, and a temporary entry is temporary only in how long it stays open.
 
-Turn it on from the GUI under **Settings → Connection & remote → Access from elsewhere → Web access**, or from the terminal:
+Turn it on from the GUI under **Settings → Spaces & devices → Access → Devices**, or from the terminal:
 
 ```sh
 kiki web --temporary            # the default: open for eight hours, then close by itself
@@ -88,9 +88,9 @@ Turning Web access off revokes every link and every browser session, and closes 
 Plain LAN HTTP (`--insecure-no-tls`) is not encrypted: anyone on the same network can read what is sent. For anything beyond a network you trust, put a TLS-terminating reverse proxy in front and pass `--public-url <https://…>`; Web access then works over that origin.
 :::
 
-Web access and remote Kiki connections are different objects. A remote Kiki is another Kiki with its own identity and a per-source grant you approve; a web link is access to this one, owned by whoever owns this machine. Web access does not change peer authorization, and turning it on does not admit any Kiki.
+Web access and space pairings are different objects. A paired space on another computer has its own identity and a per-source grant you approve; a web link is device access to this space, owned by whoever owns this computer. Web access does not change peer authorization, and turning it on does not admit any other space.
 
-Signed-in browsers can also switch into connected remote Kikis that the local owner explicitly shares. New Web access openings default to an empty selection (`sharedConnectionIds: []`), so no connected remote Kiki is exposed to browsers until you choose it. Under **Settings → Connection & remote → Access from elsewhere → Web access**, check the connected Kikis you want to expose under **Connected Kikis available in browsers** and click **Save shared Kikis**; unchecking a connection and saving revokes browser access to it immediately, closing active streams and event sockets on that remote connection while keeping browsers signed in to this Kiki. Over REST, `GET /api/web-access` reports `sharedConnectionIds`, `PUT /api/web-access` accepts optional `sharedConnectionIds`, and `PUT /api/web-access/shared-connections` with `{ "connectionIds": ["<uuid>"] }` updates the shared set (local-owner only).
+Signed-in browsers can also switch into paired spaces that the local owner explicitly shares. New Web access openings default to an empty selection (`sharedConnectionIds: []`), so no paired space is exposed to browsers until you choose it. Under **Settings → Spaces & devices → Access → Devices**, check the paired spaces you want to expose under **Other spaces allowed for these devices** and click **Save allowed spaces**; unchecking a space and saving revokes browser access to it immediately, closing active streams and event sockets on that paired connection while keeping browsers signed in to this space. Over REST, `GET /api/web-access` reports `sharedConnectionIds`, `PUT /api/web-access` accepts optional `sharedConnectionIds`, and `PUT /api/web-access/shared-connections` with `{ "connectionIds": ["<uuid>"] }` updates the shared set (local-owner only).
 
 ## Drive a session over the API
 

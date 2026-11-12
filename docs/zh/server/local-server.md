@@ -66,7 +66,7 @@ Web 访问的监听要绑定非本机地址（`--host`，包括裸 `--host`，�
 
 Web 访问是另一台设备的浏览器进入**这台** Kiki 的入口。拿到链接的人可以完整使用这台 Kiki，权限和你相同——它不是只读分享；「临时」只表示门开着多久，不表示能做什么。
 
-可以在 GUI 的**设置 → 连接与远程 → 外部接入 → 网页访问**里开启，也可以在终端里：
+可以在 GUI 的**设置 → 空间与设备 → 接入 → 设备**里开启，也可以在终端里：
 
 ```sh
 kiki web --temporary            # 默认：临时开启八小时，之后自己关闭
@@ -88,9 +88,9 @@ TUI 里对应的是 `/web temporary|persistent|status|off|link|revoke [id]`，�
 明文 LAN HTTP（`--insecure-no-tls`）没有加密，同一网络里的其他人可以读到传输的内容。超出你信任的网络时，请在前面放一个终结 TLS 的反向代理并传入 `--public-url <https://…>`，此时 Web 访问走该来源。
 :::
 
-Web 访问与远端 Kiki 连接是两种不同的对象。远端 Kiki 是另一台 Kiki，有自己的身份和需要你审批的按来源 grant；Web 链接是对**这台** Kiki 的访问，由本机 owner 掌控。Web 访问不改变 peer 授权，开启它也不会让任何 Kiki 进入。
+Web 访问与空间配对是两种不同的对象。另一台电脑上已配对的空间有自己的身份和需要你审批的按来源 grant；Web 链接是对**当前**空间的设备接入，由这台电脑的 owner 掌控。Web 访问不改变 peer 授权，开启它也不会放任何其他空间进入。
 
-已登录的浏览器也可以切换到本机 owner 明确勾选共享的已连接远端 Kiki。新开启的 Web 访问默认不勾选任何远端连接（`sharedConnectionIds: []`），未勾选的远端不会向浏览器暴露。在**设置 → 连接与远程 → 外部接入 → 网页访问**的**允许在浏览器切换的已连接远端 Kiki** 下勾选要开放的远端并点击**保存共享远端**；取消勾选并保存会立即撤销浏览器对该远端的访问，并断开该远端连接上活跃的数据流与事件连接，同时保留浏览器在这台 Kiki 上的登录态。REST 侧由 `GET /api/web-access` 返回 `sharedConnectionIds`，`PUT /api/web-access` 接受可选的 `sharedConnectionIds`，`PUT /api/web-access/shared-connections` 接受 `{ "connectionIds": ["<uuid>"] }` 更新共享集合（仅限 local-owner）。
+已登录的浏览器也可以切换到本机 owner 明确勾选共享的已配对空间。新开启的 Web 访问默认不勾选任何远端连接（`sharedConnectionIds: []`），未勾选的空间不会向浏览器暴露。在**设置 → 空间与设备 → 接入 → 设备**的**允许这些设备打开的其他空间**下勾选要开放的空间并点击**保存允许的空间**；取消勾选并保存会立即撤销浏览器对该空间的访问，并断开该配对连接上活跃的数据流与事件连接，同时保留浏览器在当前空间上的登录态。REST 侧由 `GET /api/web-access` 返回 `sharedConnectionIds`，`PUT /api/web-access` 接受可选的 `sharedConnectionIds`，`PUT /api/web-access/shared-connections` 接受 `{ "connectionIds": ["<uuid>"] }` 更新共享集合（仅限 local-owner）。
 
 ## 用 API 驱动一个会话
 

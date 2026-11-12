@@ -2,7 +2,7 @@
 
 The Kiki desktop app exposes preferences in the **Settings** dialog and activity on separate pages such as **Usage** in the sidebar. This page helps you find each control and what it changes; the linked pages hold the full reference.
 
-The settings sidebar groups twenty entries under seven headings: **App**, **Models & agents**, **Sessions & work**, **Capabilities**, **Permissions & rules**, **Connection & remote**, and **Advanced**. Four of them merge what used to be separate pages and are switched by tab — **Models & providers**, **Agents**, **Extensions & tools**, and **Browser & computer** — so a path below that ends in a tab name is one click inside the entry.
+The settings sidebar groups twenty entries under seven headings: **App**, **Models & agents**, **Sessions & work**, **Capabilities**, **Permissions & rules**, **Spaces & devices**, and **Advanced**. Four of them merge what used to be separate pages and are switched by tab — **Models & providers**, **Agents**, **Extensions & tools**, and **Browser & computer** — so a path below that ends in a tab name is one click inside the entry.
 
 **"I want to change X" quick lookup:**
 
@@ -57,7 +57,7 @@ For either path, use **Add model** inside the connection form, then choose **Sav
 
 **② Account sign-in (subscription)** lists the subscription accounts already connected: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account that is not connected yet has **Sign in** in this block. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
 
-**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Access from elsewhere → External clients** (`/settings/connection-services?tab=clients`). `/settings/external-clients` opens the same tab. The **Browser** tab holds web access and the Cloudflare tunnel; **Other Kiki** holds the Kikis allowed to connect to you.
+**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Spaces & devices → Access → External clients** (`/settings/connection-services?tab=clients`). `/settings/external-clients` opens the same tab. The **Devices** tab holds web access and the Cloudflare tunnel; **Other spaces** holds the spaces allowed to connect here.
 
 An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 
@@ -84,7 +84,7 @@ If the machine cannot be used, the page says why in terms you can act on — no 
 
 ### Timeouts
 
-Open **Settings → Connection & remote → Server connection**, then **Current connection** and **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the provider connections above:
+Open **Settings → Spaces & devices → This device's connection**, then **Current connection** and **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the provider connections above:
 
 - **Request timeout (seconds)** — the default deadline for ordinary requests this interface makes to the Kiki server.
 - **Reading timeout (seconds)** — how long a history or content read may wait before Kiki gives up on it. The default is `0`, meaning no deadline: a large or slow conversation loads as long as it takes. Set a number of seconds if you would rather a stalled read fail quickly.
