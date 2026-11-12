@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { resetMediaOutcomes } from './imageActions';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { agentTranscriptToBlocks, type MediaRun, type SessionViewState, type ToolBlock } from '@kiki/session-core/session';
@@ -34,9 +35,10 @@ function showRemoteImages(container: ParentNode): void {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal('IntersectionObserver', undefined);
+  await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
 });
 
 afterEach(async () => {

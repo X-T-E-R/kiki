@@ -29,6 +29,7 @@ import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPrevi
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { ConversationShell, useRegisterSeat } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
@@ -266,8 +267,9 @@ async function pressPreviewControl(selector: string) {
 }
 
 describe('PreviewWorkspace', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
   });
   afterAll(() => {
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;

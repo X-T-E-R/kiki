@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { resetMediaOutcomes } from './imageActions';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { LazyMediaLightbox } from './preview/PreviewLoadBoundary';
 import { MediaGalleryOrder } from './mediaPreviewContext';
 
 const fixture = vi.hoisted(() => {
@@ -36,8 +37,9 @@ let container: HTMLDivElement;
 let blobs = 0;
 let brokenPreviews = 0;
 
-beforeEach(() => {
+beforeEach(async () => {
   resetMediaOutcomes();
+  await LazyMediaLightbox.preload();
   blobs = 0;
   brokenPreviews = 0;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

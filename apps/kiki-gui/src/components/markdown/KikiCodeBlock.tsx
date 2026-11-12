@@ -18,6 +18,7 @@ import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { usePhoneMode } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
 import { useMermaidEngine } from './streamdown-plugins';
@@ -89,6 +90,7 @@ export function KikiMarkdownPre(props: PreProps) {
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();
+  const phoneMode = usePhoneMode();
   // The open/closed decision is taken once, when the block first renders: a
   // fence still streaming in is never clamped (the reader is watching it
   // grow), and once it settles it stays open rather than snapping shut under
@@ -98,9 +100,11 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { code, language } = extractCode(children);
-  const totalLines = code === '' ? 0 : code.split('\n').length;
+  const lines = code === '' ? [] : code.split('\n');
+  const totalLines = lines.length;
   const canCollapse = isIncomplete !== true && totalLines > COLLAPSE_AFTER_LINES;
   const collapsed = canCollapse && !expanded;
+  const plainPhonePreview = collapsed && phoneMode;
 
   useEffect(() => () => {
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
@@ -156,9 +160,15 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           overflowY: collapsed ? 'hidden' : undefined,
         }}
       >
-        {hasAnnotation(children)
-          ? <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre">{children}</pre></div>
-          : <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />}
+        {hasAnnotation(children) ? (
+          <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre">{children}</pre></div>
+        ) : plainPhonePreview ? (
+          <div data-streamdown="code-block-body" data-plain-preview>
+            <pre className="font-mono whitespace-pre">{lines.slice(0, PREVIEW_LINES).join('\n')}</pre>
+          </div>
+        ) : (
+          <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />
+        )}
       </div>
 
       {canCollapse ? (

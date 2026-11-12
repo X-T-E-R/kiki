@@ -9,7 +9,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { ApiError } from '@kiki/session-core/transport';
-import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { FilePathLink, MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { ImageTile } from './ContextChips';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { previewThumbnail } from './imageThumbnail';
 import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { ToolCard } from './ToolCard';
@@ -111,7 +113,7 @@ function makeToolBlock(overrides: Partial<ToolBlock> & { id: string; name: strin
   };
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   originalCreateObjectUrl = URL.createObjectURL;
   originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -123,6 +125,7 @@ beforeAll(() => {
     configurable: true,
     value: vi.fn(),
   });
+  await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
 });
 
 afterEach(async () => {
@@ -1682,5 +1685,85 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
     const msg1 = container.querySelector('[data-media-delivery-item="1"]');
     expect(msg1?.querySelector('[data-media-delivery-item-status="pending"]')).not.toBeNull();
     expect(msg1?.textContent).toContain('Sending');
+  });
+});
+
+describe('lazy preview and lightbox chunk boundaries (#34)', () => {
+  afterEach(async () => {
+    LazyPreviewWorkspace.setLoaderForTest(undefined);
+    LazyMediaLightbox.setLoaderForTest(undefined);
+    await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
+  });
+
+  it('keeps conversation and composer usable when PreviewWorkspace chunk fails to load, and offers Reload', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    LazyPreviewWorkspace.setLoaderForTest(() =>
+      Promise.reject(new TypeError('Failed to fetch dynamically imported module: PreviewWorkspace-hash.js')),
+    );
+    try {
+      const { root, container } = makeRoot();
+      await renderSettled(
+        root,
+        <MediaPreviewProvider cwd="/work" sessionId="session_chunk_err">
+          <aside data-test-sidebar>Sidebar</aside>
+          <div data-test-conversation>
+            <FilePathLink path="/work/README.md" />
+          </div>
+          <textarea data-test-composer defaultValue="still typing" />
+        </MediaPreviewProvider>,
+      );
+
+      await act(async () => {
+        container.querySelector<HTMLElement>('[role="link"]')!.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const failedPanel = document.querySelector('[data-preview-load-failed]');
+      expect(failedPanel).not.toBeNull();
+      expect(failedPanel?.textContent).toContain('This preview could not be loaded.');
+      expect(failedPanel?.textContent).toContain('PreviewWorkspace-hash.js');
+      expect(failedPanel?.querySelector('[data-preview-chunk-reload]')?.textContent).toBe('Reload');
+      expect(container.querySelector('[data-test-sidebar]')?.textContent).toBe('Sidebar');
+      expect(container.querySelector<HTMLTextAreaElement>('[data-test-composer]')?.value).toBe('still typing');
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('opens a context-chip image in the lazy lightbox and isolates a failed lightbox chunk download', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <ImageTile src="data:image/png;base64,iVBORw0KGgo=" name="sketch.png" />,
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button.context-image')!.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[role="dialog"] [data-lightbox-viewport]')).not.toBeNull();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click();
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    LazyMediaLightbox.setLoaderForTest(() =>
+      Promise.reject(new TypeError('Failed to fetch dynamically imported module: MediaLightbox-hash.js')),
+    );
+    try {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('button.context-image')!.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const failedLightbox = document.querySelector('[data-lightbox-load-failed]');
+      expect(failedLightbox).not.toBeNull();
+      expect(failedLightbox?.textContent).toContain('This preview could not be loaded.');
+      expect(failedLightbox?.querySelector('[data-preview-chunk-reload]')?.textContent).toBe('Reload');
+      expect(container.querySelector('[data-image-tile]')).not.toBeNull();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

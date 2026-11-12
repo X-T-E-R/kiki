@@ -13299,4 +13299,5 @@ export const zh = {
   'preview.reloadFile': '重新读取',
   'preview.webFailed': '没能打开这个网页，可以在浏览器里打开',
   'preview.readFileTooLarge': '这个文件太大，无法通过当前连接读取。',
+  'preview.loadFailed': '无法加载预览组件。',
 };

@@ -13393,4 +13393,5 @@ export const en = {
   'preview.reloadFile': 'Reload',
   'preview.webFailed': 'This page could not be opened here; open it in the browser',
   'preview.readFileTooLarge': 'This file is too large to read over this connection.',
+  'preview.loadFailed': 'This preview could not be loaded.',
 } as const;

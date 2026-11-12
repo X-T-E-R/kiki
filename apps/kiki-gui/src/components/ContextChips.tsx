@@ -11,12 +11,17 @@
  * Remove buttons are optional: the composer passes them, the bubble does not.
  */
 
-import { useState, type ReactNode } from 'react';
+import { Suspense, useState, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
-import { MediaLightbox } from './MediaLightbox';
 import { useMessageImageMenu } from './mediaParts';
+import {
+  LazyMediaLightbox,
+  LightboxLoadFailure,
+  LightboxLoadingShell,
+  PreviewLoadBoundary,
+} from './preview/PreviewLoadBoundary';
 
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
 
@@ -87,7 +92,22 @@ export function ImageTile({
         <img src={src} alt={name} referrerPolicy="no-referrer" className="h-full w-full object-cover" draggable={false} />
       </button>
       {imageMenu.menuElement}
-      {viewing ? <MediaLightbox src={src} name={name} onClose={() => { setViewing(false); }} /> : null}
+      {viewing ? (
+        <PreviewLoadBoundary
+          resetKey={src}
+          renderFailure={(error) => (
+            <LightboxLoadFailure
+              error={error}
+              label={name}
+              onClose={() => { setViewing(false); }}
+            />
+          )}
+        >
+          <Suspense fallback={<LightboxLoadingShell label={name} onClose={() => { setViewing(false); }} />}>
+            <LazyMediaLightbox src={src} name={name} onClose={() => { setViewing(false); }} />
+          </Suspense>
+        </PreviewLoadBoundary>
+      ) : null}
       {onRemove !== undefined ? (
         <button
           type="button"

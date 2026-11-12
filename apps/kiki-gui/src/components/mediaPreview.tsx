@@ -15,12 +15,12 @@
  * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
-import { resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import { basenameOf, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { useOptionalConnection } from '../state/connection';
 import type { PreviewResource } from '../state/previewResource';
 import {
@@ -29,6 +29,7 @@ import {
   closePreviewTab,
   EMPTY_PREVIEW_TABS,
   hostFileResource,
+  mediaRefResource,
   movePreviewTab,
   openPreviewTab,
   previewTabKey,
@@ -37,6 +38,7 @@ import {
 } from '../state/previewWorkspace';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import type { AgentWorkspaceNavigation } from './agent-workspace';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
@@ -46,11 +48,19 @@ import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } f
 import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { httpImageLink, isRemoteConnection, mediaOutcomeKey, resolveImageMime } from './imageActions';
-import { MediaLightbox } from './MediaLightbox';
+import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
+import { attachmentName, useSessionMedia } from './mediaParts';
 import { remoteImageUrl } from './RemoteImageGate';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
-import { buildAttachmentTabResource } from './preview/shared';
-import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
+import {
+  LazyMediaLightbox,
+  LazyPreviewWorkspace,
+  LightboxLoadFailure,
+  LightboxLoadingShell,
+  PreviewLoadBoundary,
+  PreviewPanelLoadFailure,
+  PreviewPanelLoadingShell,
+} from './preview/PreviewLoadBoundary';
 import {
   MediaPreviewContext,
   useMediaPreview,
@@ -280,7 +290,12 @@ export function MediaPreviewProvider({
   const openAttachmentInWorkspace = useCallback(
     (item: MediaRef) => {
       const fallbackName = item.kind === 'image' ? t('media.image') : t('media.attachment');
-      const resource = buildAttachmentTabResource(item, sessionId, item.origin, cwd, fallbackName);
+      const resource = mediaRefResource(item, {
+        sessionId,
+        origin: item.origin,
+        cwd,
+        name: attachmentName(item, undefined, fallbackName),
+      });
       openResource(resource, undefined, item.size);
     },
     [cwd, openResource, sessionId, t],
@@ -434,41 +449,58 @@ export function MediaPreviewProvider({
     }
   }, [api, apiRef]);
 
+  const panelHidden = !panelOpen || cockpit;
+  const panelOverlay = shell?.slots.preview === null || shell?.slots.preview === undefined;
   const panel = tabsState.tabs.length > 0 ? (
-    <PreviewWorkspace
-      tabs={tabsState.tabs}
-      active={tabsState.active}
-      navigation={navigation}
-      dirtyPaths={dirtyPaths}
-      width={width}
-      hidden={!panelOpen || cockpit}
-      sessionViewState={workspaceSessionState ?? sessionViewState}
-      agentForest={agentForest}
-      onOpenSubagent={onOpenSubagent}
-      controller={controller}
-      workspaceNavigation={workspaceNavigation}
-      onCancelTask={onCancelTask}
-      onStopAgentTask={onStopAgentTask}
-      onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
-      onClose={(key) => { requestClose({ kind: 'tab', key }); }}
-      onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
-      onCloseAll={() => { requestClose({ kind: 'all' }); }}
-      onMove={handleMove}
-      onCollapse={() => { setPanelOpen(false); }}
-      onOpenCockpit={shell?.slots.preview !== null && shell?.slots.preview !== undefined && workspaceNavigation?.sharedRail !== undefined ? () => {
-        const sharedRail = workspaceNavigation.sharedRail;
-        if (sharedRail !== undefined && !sharedRail.open) sharedRail.toggle();
-        chooseMode('cockpit');
-      } : undefined}
-      onWidthChange={handleWidthChange}
-      onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
-      reportDirty={reportDirty}
-      scrollPositions={positions}
-      onScrollPosition={reportPosition}
-      overlay={shell?.slots.preview === null || shell?.slots.preview === undefined}
-      cwd={cwd}
-      sessionId={sessionId}
-    />
+    <PreviewLoadBoundary
+      resetKey={previewKey}
+      renderFailure={(error) => (
+        <PreviewPanelLoadFailure
+          error={error}
+          width={width}
+          hidden={panelHidden}
+          overlay={panelOverlay}
+          onCollapse={() => { setPanelOpen(false); }}
+        />
+      )}
+    >
+      <Suspense fallback={<PreviewPanelLoadingShell width={width} hidden={panelHidden} overlay={panelOverlay} />}>
+        <LazyPreviewWorkspace
+          tabs={tabsState.tabs}
+          active={tabsState.active}
+          navigation={navigation}
+          dirtyPaths={dirtyPaths}
+          width={width}
+          hidden={panelHidden}
+          sessionViewState={workspaceSessionState ?? sessionViewState}
+          agentForest={agentForest}
+          onOpenSubagent={onOpenSubagent}
+          controller={controller}
+          workspaceNavigation={workspaceNavigation}
+          onCancelTask={onCancelTask}
+          onStopAgentTask={onStopAgentTask}
+          onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
+          onClose={(key) => { requestClose({ kind: 'tab', key }); }}
+          onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
+          onCloseAll={() => { requestClose({ kind: 'all' }); }}
+          onMove={handleMove}
+          onCollapse={() => { setPanelOpen(false); }}
+          onOpenCockpit={shell?.slots.preview !== null && shell?.slots.preview !== undefined && workspaceNavigation?.sharedRail !== undefined ? () => {
+            const sharedRail = workspaceNavigation.sharedRail;
+            if (sharedRail !== undefined && !sharedRail.open) sharedRail.toggle();
+            chooseMode('cockpit');
+          } : undefined}
+          onWidthChange={handleWidthChange}
+          onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
+          reportDirty={reportDirty}
+          scrollPositions={positions}
+          onScrollPosition={reportPosition}
+          overlay={panelOverlay}
+          cwd={cwd}
+          sessionId={sessionId}
+        />
+      </Suspense>
+    </PreviewLoadBoundary>
   ) : null;
 
   return (
@@ -478,8 +510,17 @@ export function MediaPreviewProvider({
         ? createPortal(panel, shell.slots.preview)
         : panel}
       {confirmClose !== null ? (
-        <PreviewCloseConfirm
-          paths={confirmClose.dirty}
+        <ConfirmDialog
+          open
+          overlayId="preview-close-dirty"
+          title={t('preview.discardTitle')}
+          body={
+            confirmClose.dirty.length === 1
+              ? t('preview.discardBody', { name: basenameOf(confirmClose.dirty[0] ?? '') })
+              : t('preview.discardBodyMany', { count: confirmClose.dirty.length })
+          }
+          confirmLabel={t('preview.discard')}
+          tone="danger"
           onConfirm={confirmCloseRun}
           onCancel={() => { setConfirmClose(null); }}
         />
@@ -497,15 +538,35 @@ export function MediaPreviewProvider({
         />
       ) : null}
       {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
-        <MediaLightbox
-          src={image.src}
-          name={image.name}
-          sourcePath={image.sourcePath}
-          linkUrl={httpImageLink(image.src)}
-          outcomeKey={mediaOutcomeKey({ url: image.src })}
-          remote={remoteScope}
-          onClose={() => { setImage(null); }}
-        />
+        <PreviewLoadBoundary
+          resetKey={image.src}
+          renderFailure={(error) => (
+            <LightboxLoadFailure
+              error={error}
+              label={imagePreviewLabel({ name: image.name }, t('media.image'))}
+              onClose={() => { setImage(null); }}
+            />
+          )}
+        >
+          <Suspense
+            fallback={
+              <LightboxLoadingShell
+                label={imagePreviewLabel({ name: image.name }, t('media.image'))}
+                onClose={() => { setImage(null); }}
+              />
+            }
+          >
+            <LazyMediaLightbox
+              src={image.src}
+              name={image.name}
+              sourcePath={image.sourcePath}
+              linkUrl={httpImageLink(image.src)}
+              outcomeKey={mediaOutcomeKey({ url: image.src })}
+              remote={remoteScope}
+              onClose={() => { setImage(null); }}
+            />
+          </Suspense>
+        </PreviewLoadBoundary>
       ) : null}
     </MediaPreviewContext.Provider>
   );
@@ -514,9 +575,6 @@ export function MediaPreviewProvider({
 export { PreviewToggleButton } from './PreviewToggleButton';
 
 // ---------------------------------------------------------------------------
-
-import { useSessionMedia } from './mediaParts';
-import { safeImagePreviewName } from './imagePreviewName';
 
 /**
  * A media store answers saved tool results under a generic type, and a decoder
@@ -541,6 +599,7 @@ function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | unde
 }
 
 function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
+  const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
   const preview = useMediaPreview();
@@ -567,26 +626,40 @@ function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, c
     };
   }, [client, sessionId, hostPath, image.item.fileId]);
 
+  const resolvedName = safeImagePreviewName({
+    name: image.item.name,
+    metadataName: load.status === 'ready' ? load.name : undefined,
+    path: image.item.path,
+  });
+  const fallbackLabel = imagePreviewLabel({ name: resolvedName }, t('media.image'));
+
   return (
-    <MediaLightbox
-      src={src}
-      identity={image.id}
-      name={safeImagePreviewName({ name: image.item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: image.item.path })}
-      sourcePath={hostPath}
-      linkUrl={httpImageLink(image.item.url)}
-      outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })}
-      remote={remote}
-      mime={mime}
-      size={size}
-      loading={canonical && load.status === 'loading'}
-      failed={canonical && load.status === 'failed'}
-      onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
-      onSaveOriginal={onSaveOriginal}
-      index={index}
-      count={count}
-      onSelect={onSelect}
-      onClose={onClose}
-    />
+    <PreviewLoadBoundary
+      resetKey={image.id}
+      renderFailure={(error) => <LightboxLoadFailure error={error} label={fallbackLabel} onClose={onClose} />}
+    >
+      <Suspense fallback={<LightboxLoadingShell label={fallbackLabel} onClose={onClose} />}>
+        <LazyMediaLightbox
+          src={src}
+          identity={image.id}
+          name={resolvedName}
+          sourcePath={hostPath}
+          linkUrl={httpImageLink(image.item.url)}
+          outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })}
+          remote={remote}
+          mime={mime}
+          size={size}
+          loading={canonical && load.status === 'loading'}
+          failed={canonical && load.status === 'failed'}
+          onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
+          onSaveOriginal={onSaveOriginal}
+          index={index}
+          count={count}
+          onSelect={onSelect}
+          onClose={onClose}
+        />
+      </Suspense>
+    </PreviewLoadBoundary>
   );
 }
 

@@ -26,6 +26,7 @@ import {
   type PreviewReadFailureReason,
   type PreviewResource,
 } from '#/state/previewResource';
+import { mediaRefResource } from '#/state/previewWorkspace';
 import { imageDownloadFailureText, saveMediaToDisk } from '../imageActions';
 import { attachmentName } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
@@ -287,47 +288,12 @@ export function buildAttachmentTabResource(
   cwd: string | undefined,
   fallbackName: string,
 ): PreviewResource {
-  const name = attachmentName(item, undefined, fallbackName);
-  const origin = tabOrigin ?? item.origin;
-  const resolvedOrigin =
-    origin !== undefined && origin.trusted
-      ? { path: normalizeHostFilePath(origin.path, cwd), trusted: true as const }
-      : undefined;
-  const fallbackType: PreviewResource['type'] =
-    item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : item.kind === 'image' ? 'image' : 'unsupported';
-  const rawType = classifyResource({ name, mime: item.mime });
-  const type = rawType === 'unsupported' && fallbackType !== 'unsupported' ? fallbackType : rawType;
-  if (item.fileId !== undefined) {
-    return {
-      source: {
-        kind: 'session-copy',
-        sessionId: sessionId ?? '',
-        fileId: item.fileId,
-        sourceId: item.sourceId,
-      },
-      origin: resolvedOrigin,
-      type,
-      name,
-      mime: item.mime,
-    };
-  }
-  if (item.path !== undefined) {
-    const resolved = normalizeHostFilePath(item.path, cwd);
-    return {
-      source: { kind: 'host-file', path: resolved },
-      origin: resolvedOrigin ?? { path: resolved, trusted: true },
-      type,
-      name,
-      mime: item.mime,
-    };
-  }
-  return {
-    source: { kind: 'url', url: item.url ?? '' },
-    origin: resolvedOrigin,
-    type,
-    name,
-    mime: item.mime,
-  };
+  return mediaRefResource(item, {
+    sessionId,
+    origin: tabOrigin,
+    cwd,
+    name: attachmentName(item, undefined, fallbackName),
+  });
 }
 
 export function webUrlDisplayLabel(url: string, title?: string): string {

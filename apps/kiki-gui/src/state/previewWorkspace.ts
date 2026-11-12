@@ -7,7 +7,7 @@
  * are unit-testable without a DOM.
  */
 
-import { basenameOf, resolveHostPath } from '@kiki/session-core/composer/media';
+import { basenameOf, resolveHostPath, type MediaRef } from '@kiki/session-core/composer/media';
 
 import {
   classifyResource,
@@ -62,6 +62,58 @@ export function hostFileResource(rawPath: string, cwd?: string): PreviewResource
     origin: { path, trusted: true },
     type: classifyResource({ name }),
     name,
+  };
+}
+
+export function mediaRefResource(
+  item: MediaRef,
+  options: {
+    readonly sessionId?: string;
+    readonly origin?: { readonly path: string; readonly trusted: true };
+    readonly cwd?: string;
+    readonly name: string;
+  },
+): PreviewResource {
+  const { sessionId, cwd, name } = options;
+  const origin = options.origin ?? item.origin;
+  const resolvedOrigin =
+    origin !== undefined && origin.trusted
+      ? { path: normalizeHostFilePath(origin.path, cwd), trusted: true as const }
+      : undefined;
+  const fallbackType: PreviewResource['type'] =
+    item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : item.kind === 'image' ? 'image' : 'unsupported';
+  const rawType = classifyResource({ name, mime: item.mime });
+  const type = rawType === 'unsupported' && fallbackType !== 'unsupported' ? fallbackType : rawType;
+  if (item.fileId !== undefined) {
+    return {
+      source: {
+        kind: 'session-copy',
+        sessionId: sessionId ?? '',
+        fileId: item.fileId,
+        sourceId: item.sourceId,
+      },
+      origin: resolvedOrigin,
+      type,
+      name,
+      mime: item.mime,
+    };
+  }
+  if (item.path !== undefined) {
+    const resolved = normalizeHostFilePath(item.path, cwd);
+    return {
+      source: { kind: 'host-file', path: resolved },
+      origin: resolvedOrigin ?? { path: resolved, trusted: true },
+      type,
+      name,
+      mime: item.mime,
+    };
+  }
+  return {
+    source: { kind: 'url', url: item.url ?? '' },
+    origin: resolvedOrigin,
+    type,
+    name,
+    mime: item.mime,
   };
 }
 

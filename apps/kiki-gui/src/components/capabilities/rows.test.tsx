@@ -7,6 +7,7 @@ import type { SkillDescriptor, Workspace } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 import { I18nProvider } from '../../i18n';
 import { MediaPreviewProvider } from '../mediaPreview';
+import { LazyPreviewWorkspace } from '../preview/PreviewLoadBoundary';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SkillCard } from './rows';
@@ -44,7 +45,8 @@ const sampleSkill: SkillDescriptor = {
   argument_hint: '--strict',
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await LazyPreviewWorkspace.preload();
   client.previewHostFile.mockReset();
   client.readBuiltinSkill.mockReset();
   client.readHostFile.mockReset();

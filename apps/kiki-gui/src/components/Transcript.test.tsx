@@ -93,6 +93,7 @@ import { Markdown } from './Markdown';
 import { InteractionPlacementContext } from './Interactions';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
 import {
@@ -792,6 +793,10 @@ describe('completed reply gap integration', () => {
 });
 
 describe('media preview wiring', () => {
+  beforeAll(async () => {
+    await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
+  });
+
   it('renders message image refs as thumbnails that open the lightbox', async () => {
     const probe = makeRoot();
     await renderSettled(
@@ -856,7 +861,7 @@ describe('media preview wiring', () => {
     expect(probe.container.textContent).toContain('4.0 KB');
   });
 
-  it('opens file-id attachments through the session preview dialog', async () => {
+  it('opens file-id attachments as resource tabs in the preview workspace', async () => {
     const probe = makeRoot();
     await renderSettled(
       probe.root,
@@ -873,9 +878,10 @@ describe('media preview wiring', () => {
     await act(async () => {
       chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    const preview = document.body.querySelector('[data-attachment-preview]');
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    const preview = document.body.querySelector('[data-preview-workspace] [data-attachment-preview]');
     expect(preview).not.toBeNull();
-    expect(preview?.closest('[role="dialog"]')?.getAttribute('aria-label')).toContain('report.pdf');
+    expect(document.body.querySelector('[data-preview-tab]')?.textContent).toContain('report.pdf');
     await act(async () => {
       flushSync(() => {
         probe.root.unmount();

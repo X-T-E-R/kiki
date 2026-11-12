@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
 import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 
 const hostMocks = vi.hoisted(() => ({ revealPath: vi.fn(), openPath: vi.fn(), openUrl: vi.fn(), desktop: false }));
@@ -66,8 +67,9 @@ async function rightClick(element: Element): Promise<void> {
   });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
 });
 
 afterAll(() => {
@@ -564,6 +566,53 @@ describe('mobile reading & containment', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain('Show less');
     expect(body.style.maxHeight).toBe('');
+  });
+
+  it('renders plain 12-line preview when collapsed in phone mode, highlights on expand, and keeps desktop highlighted (#34)', async () => {
+    const lines = Array.from({ length: 48 }, (_, index) => `const row_${index + 1} = ${index + 1};`).join('\n');
+    const originalMatchMedia = window.matchMedia;
+
+    const desktopProbe = makeRoot();
+    await renderSettled(desktopProbe.root, <Markdown mode="static" text={`\`\`\`ts\n${lines}\n\`\`\``} />);
+    expect(desktopProbe.container.querySelector('[data-plain-preview]')).toBeNull();
+    expect(desktopProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('(pointer: coarse)') && query.includes('(max-width: 639px)'),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+    try {
+      const phoneProbe = makeRoot();
+      await renderSettled(phoneProbe.root, <Markdown mode="static" text={`\`\`\`ts\n${lines}\n\`\`\``} />);
+      const plainPreview = phoneProbe.container.querySelector<HTMLElement>('[data-plain-preview]');
+      expect(plainPreview).not.toBeNull();
+      expect(phoneProbe.container.querySelector('[data-streamdown="code-block"]')).toBeNull();
+      expect(plainPreview?.textContent?.split('\n')).toHaveLength(12);
+      expect(plainPreview?.textContent).toContain('const row_12 = 12;');
+      expect(plainPreview?.textContent).not.toContain('const row_13 = 13;');
+
+      const toggle = phoneProbe.container.querySelector<HTMLButtonElement>('.kiki-cb-toggle')!;
+      await act(async () => {
+        toggle.click();
+      });
+      expect(phoneProbe.container.querySelector('[data-plain-preview]')).toBeNull();
+      expect(phoneProbe.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+      expect(phoneProbe.container.querySelector('.kiki-cb-body')?.textContent).toContain('const row_48 = 48;');
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
   });
 
   it('tracks horizontal overflow and directional scroll edges on wide tables', async () => {

@@ -15,6 +15,7 @@ import { I18nProvider } from '../i18n';
 import { KikiClient } from '../lib/client';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { MediaLightbox } from './MediaLightbox';
+import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 
 const fixture = vi.hoisted(() => ({ client: null as unknown, openSaveSink: vi.fn(), saveBlob: undefined as ((blob: Blob, name: string) => Promise<boolean>) | undefined }));
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: fixture.client, scopeId: 'fixture' }) }));
@@ -86,6 +87,7 @@ beforeEach(async () => {
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
+  await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
 });
 
 afterEach(async () => {
