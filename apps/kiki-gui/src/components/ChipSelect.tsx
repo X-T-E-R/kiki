@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { normalizeTags } from '@kiki/session-core/settings';
 
 import { Icon } from './icons';
+import { isImeKeyEvent } from '../lib/shortcuts';
 
 export interface ChipSelectProps {
   readonly values: readonly string[];
@@ -98,6 +99,7 @@ export function ChipSelect({
         className="w-32 min-w-24 max-w-full flex-1 basis-32 sm:basis-40 rounded-full border border-dashed border-hairline bg-paper px-3 py-0.5 text-[11px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
         onChange={(event) => { setCustom(event.target.value); }}
         onKeyDown={(event) => {
+          if (isImeKeyEvent(event)) return;
           if (event.key === 'Enter' || event.key === ',') {
             event.preventDefault();
             commitCustom();

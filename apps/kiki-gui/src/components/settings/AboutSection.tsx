@@ -13,7 +13,6 @@ import { checkForUpdateNow, hydrateUpdatePrefs, persistUpdatePreference, resetUp
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
-import { requestOnboardingOpen } from '../OnboardingWizard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, DependentField, SettingField, SettingsBox } from './fields';
@@ -240,16 +239,6 @@ export function AboutSection() {
             ) : null}
           </>
         ) : null}
-
-        <SettingField label={t('onboarding.reenter')} help={t('onboarding.reenterHint')}>
-          <button
-            type="button"
-            onClick={() => { requestOnboardingOpen(); }}
-            className={SECONDARY_BUTTON}
-          >
-            {t('onboarding.reenter')}
-          </button>
-        </SettingField>
       </SettingsBox>
 
       {/* Bug-report facts, out of the first read — below the box, so the box

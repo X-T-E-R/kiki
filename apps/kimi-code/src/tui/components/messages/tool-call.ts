@@ -5,7 +5,14 @@
 
 import { isAbsolute, relative, sep } from 'node:path';
 
-import { Container, sliceByColumn, Spacer, Text, truncateToWidth, visibleWidth } from '@kiki/pi-tui';
+import {
+  Container,
+  sliceByColumn,
+  Text,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from '@kiki/pi-tui';
 import type { Component, TUI } from '@kiki/pi-tui';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
@@ -30,8 +37,10 @@ import { decodeMcpToolName } from '#/tui/utils/mcp-tool-name';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 import { formatTokenCount } from '#/utils/usage/usage-format';
 import { PlanBoxComponent } from './plan-box';
+import { BlankLine } from './blank-line';
+import { ellipsizePathMiddle } from './path-ellipsis';
 import { ShellExecutionComponent } from './shell-execution';
-import { countNonEmptyLines, pickChip } from './tool-renderers/chip';
+import { countNonEmptyLines, editHunks, pickChip } from './tool-renderers/chip';
 import { buildGoalToolHeader } from './tool-renderers/goal';
 import { isGenericToolResult, pickResultRenderer } from './tool-renderers/registry';
 import { isAgentRunTool, isTaskWaitTool } from '#/tui/tool-names';
@@ -381,14 +390,13 @@ function truncateSummaryWidth(value: string, maxWidth: number): string {
   return sliceByColumn(value, 0, maxWidth - 1, true) + '…';
 }
 
-function truncateArgValue(key: string, value: string): string {
-  const width = visibleWidth(value);
-  if (width <= MAX_ARG_WIDTH) return value;
+function truncateArgValue(key: string, value: string, pathMaxWidth = MAX_ARG_WIDTH): string {
   if (PATH_KEYS.has(key)) {
-    // Preserve the tail (filename) — drop the prefix so the user can
-    // still tell which file is being touched.
-    return '…' + sliceByColumn(value, width - (MAX_ARG_WIDTH - 1), MAX_ARG_WIDTH - 1, true);
+    // Drop whole middle segments so the file name stays visible and no
+    // directory name is cut in half.
+    return ellipsizePathMiddle(value, Math.min(pathMaxWidth, MAX_ARG_WIDTH));
   }
+  if (visibleWidth(value) <= MAX_ARG_WIDTH) return value;
   return truncateSummaryWidth(value, MAX_ARG_WIDTH);
 }
 
@@ -408,17 +416,20 @@ function makeWorkspaceRelativePath(filePath: string, workspaceDir: string | unde
   return relativePath;
 }
 
+const WORKSPACE_RELATIVE_PATH_TOOLS = new Set(['Read', 'Write', 'Edit']);
+
 function formatKeyArgument(
   toolName: string,
   key: string,
   value: string,
   workspaceDir: string | undefined,
+  pathMaxWidth: number,
 ): string {
   const displayValue =
-    toolName === 'Read' && PATH_KEYS.has(key)
+    WORKSPACE_RELATIVE_PATH_TOOLS.has(toolName) && PATH_KEYS.has(key)
       ? makeWorkspaceRelativePath(value, workspaceDir)
       : value;
-  return truncateArgValue(key, displayValue);
+  return truncateArgValue(key, displayValue, pathMaxWidth);
 }
 
 export function extractKeyArgument(
@@ -426,6 +437,16 @@ export function extractKeyArgument(
   args: Record<string, unknown>,
   workspaceDir?: string,
 ): string | null {
+  return resolveKeyArgument(toolName, args, workspaceDir, MAX_ARG_WIDTH)?.value ?? null;
+}
+
+/** The header's key argument, and whether it is a path the header may shorten further. */
+function resolveKeyArgument(
+  toolName: string,
+  args: Record<string, unknown>,
+  workspaceDir: string | undefined,
+  pathMaxWidth: number,
+): { value: string; isPath: boolean } | null {
   const keyMap: Record<string, string[]> = {
     Bash: ['command'],
     Read: ['path', 'file_path'],
@@ -454,7 +475,7 @@ export function extractKeyArgument(
     if (args['include_ignored'] === true) {
       summary += ' · include ignored';
     }
-    return truncateArgValue('pattern', summary);
+    return { value: truncateArgValue('pattern', summary), isPath: false };
   }
 
   const candidates = keyMap[toolName] ?? Object.keys(args);
@@ -464,7 +485,10 @@ export function extractKeyArgument(
       const firstLine = val.split('\n')[0] ?? val;
       const displayValue =
         toolName === 'Bash' && val.includes('\n') ? `${firstLine}…` : firstLine;
-      return formatKeyArgument(toolName, key, displayValue, workspaceDir);
+      return {
+        value: formatKeyArgument(toolName, key, displayValue, workspaceDir, pathMaxWidth),
+        isPath: PATH_KEYS.has(key),
+      };
     }
   }
   return null;
@@ -489,6 +513,88 @@ function tailNonEmptyLines(text: string, maxLines: number): string[] {
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0)
     .slice(-maxLines);
+}
+
+// Transcript body column: the header bullet occupies the two cells before it,
+// and wrapped header rows hang here so they read as part of the same card.
+const HEADER_HANGING_INDENT = '  ';
+// Leading spaces (after any SGR codes) of a wrapped continuation row.
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match SGR codes
+const LEADING_SPACES_AFTER_SGR = /^((?:\u001B\[[0-9;]*m)*) +/;
+
+/**
+ * A one-row line that carries a path: the tool-card header, or the Edit diff
+ * caption. It renders on one row whenever it fits. Otherwise the path is
+ * first shortened in the middle (see `ellipsizePathMiddle`) — to keep the
+ * line on one row when the file name still fits, else just enough for the
+ * path to sit whole on a row of its own — and the line wraps with a hanging
+ * indent at the body column instead of restarting at column 0.
+ */
+class PathHeaderLine implements Component {
+  private renderCache: { width: number; text: string; lines: string[] } | undefined;
+
+  constructor(
+    private text: string,
+    private readonly rebuild: (pathMaxWidth: number) => string,
+    /** The path as `text` shows it, or undefined when the line has no path. */
+    private readonly pathArgument: () => string | undefined,
+    /** Blank columns on each side, like pi-tui Text's `paddingX`. */
+    private readonly padX = 0,
+  ) { }
+
+  setText(text: string): void {
+    this.text = text;
+    this.renderCache = undefined;
+  }
+
+  invalidate(): void {
+    this.renderCache = undefined;
+  }
+
+  render(width: number): string[] {
+    const cache = this.renderCache;
+    if (isRenderCacheEnabled() && cache?.width === width && cache.text === this.text) {
+      return cache.lines;
+    }
+    const margin = ' '.repeat(this.padX);
+    const lines = this.layout(Math.max(1, width - this.padX * 2)).map((line) => {
+      const row = `${margin}${line}`;
+      return row + ' '.repeat(Math.max(0, width - visibleWidth(row)));
+    });
+    if (isRenderCacheEnabled()) this.renderCache = { width, text: this.text, lines };
+    return lines;
+  }
+
+  private layout(width: number): string[] {
+    if (this.text.trim().length === 0) return [];
+    let text = this.text;
+    const fullWidth = visibleWidth(text);
+    const path = fullWidth > width ? this.pathArgument() : undefined;
+    if (path !== undefined) {
+      const pathWidth = visibleWidth(path);
+      const oneRowBudget = pathWidth - (fullWidth - width);
+      // `…/name.ts` is the least a one-row path may keep; below that, wrap
+      // and give the path (with its parentheses) a row of its own.
+      const fileNameWidth = visibleWidth(path.split(/[\\/]/).at(-1) ?? path);
+      text =
+        oneRowBudget >= fileNameWidth + 2
+          ? this.rebuild(oneRowBudget)
+          : this.rebuild(Math.min(pathWidth, width - HEADER_HANGING_INDENT.length - 2));
+    }
+    // Same tab expansion as pi-tui's Text, which this replaces.
+    text = text.replace(/\t/g, '   ');
+    if (visibleWidth(text) <= width) return [text];
+    // A terminal too narrow to spare the indent wraps flush, as before.
+    const indent = width > HEADER_HANGING_INDENT.length * 2 ? HEADER_HANGING_INDENT : '';
+    const wrapped = wrapTextWithAnsi(text, Math.max(1, width - indent.length));
+    return wrapped.map((line, index) =>
+      truncateToWidth(
+        index === 0 ? line : `${indent}${line.replace(LEADING_SPACES_AFTER_SGR, '$1')}`,
+        width,
+        '…',
+      ),
+    );
+  }
 }
 
 class PrefixedWrappedLine implements Component {
@@ -560,7 +666,7 @@ export class ToolCallComponent extends Container {
    * the plan body even without a `## Approved Plan:` marker.
    */
   private currentPlan: string | undefined;
-  private headerText: Text;
+  private headerText: PathHeaderLine;
   private callPreviewEndIndex = 0;
 
   // ── Subagent state ───────────────────────────────────────────────
@@ -656,8 +762,12 @@ export class ToolCallComponent extends Container {
     this.ui = ui;
     this.applySubagentReplay(toolCall.subagent);
 
-    this.addChild(new Spacer(1));
-    this.headerText = new Text(this.buildHeader(), 0, 0);
+    this.addChild(new BlankLine());
+    this.headerText = new PathHeaderLine(
+      this.buildHeader(),
+      (pathMaxWidth) => this.buildHeader(pathMaxWidth),
+      () => this.headerPathArgument(),
+    );
     this.addChild(this.headerText);
     this.buildCallPreview();
     this.callPreviewEndIndex = this.children.length;
@@ -1400,7 +1510,22 @@ export class ToolCallComponent extends Container {
     this.ui?.requestRender();
   }
 
-  private buildHeader(): string {
+  /**
+   * The header's path argument as built by default, or undefined when the key
+   * argument is not a path. Lets the header line shorten that path when the
+   * terminal is too narrow.
+   */
+  private headerPathArgument(): string | undefined {
+    const keyArg = resolveKeyArgument(
+      this.toolCall.name,
+      this.toolCall.args,
+      this.workspaceDir,
+      MAX_ARG_WIDTH,
+    );
+    return keyArg?.isPath === true ? keyArg.value : undefined;
+  }
+
+  private buildHeader(pathMaxWidth = MAX_ARG_WIDTH): string {
     const { toolCall, result } = this;
     const isFinished = result !== undefined;
     const isError = result?.is_error ?? false;
@@ -1488,7 +1613,9 @@ export class ToolCallComponent extends Container {
     }
 
     const verb = isFinished ? 'Used' : isTruncated ? 'Truncated' : 'Using';
-    const keyArg = extractKeyArgument(toolCall.name, toolCall.args, this.workspaceDir);
+    const keyArg =
+      resolveKeyArgument(toolCall.name, toolCall.args, this.workspaceDir, pathMaxWidth)?.value ??
+      null;
     const decoded = decodeMcpToolName(toolCall.name);
     const verbStyled = isTruncated
       ? currentTheme.fg('error', verb)
@@ -1985,16 +2112,48 @@ export class ToolCallComponent extends Container {
         );
       }
     } else if (name === 'Edit') {
-      const oldStr = str(this.toolCall.args['old_string']);
-      const newStr = str(this.toolCall.args['new_string']);
-      if (oldStr.length === 0 && newStr.length === 0) return;
-      const filePath = str(this.toolCall.args['file_path'] ?? this.toolCall.args['path']);
-      const lines = renderDiffLinesClustered(oldStr, newStr, filePath, {
-        contextLines: 3,
-        ...(shouldCap ? { maxLines: COMMAND_PREVIEW_LINES } : {}),
-      });
-      for (const line of lines) {
-        this.addChild(new Text(line, 2, 0));
+      const hunks = editHunks(this.toolCall.args);
+      if (hunks.length === 0) return;
+      const filePath = makeWorkspaceRelativePath(
+        str(this.toolCall.args['file_path'] ?? this.toolCall.args['path']),
+        this.workspaceDir,
+      );
+      // An `edits` call renders one diff per replacement, in order. When
+      // collapsed, all of them share the single-edit row budget so the
+      // transcript height does not grow with the number of replacements.
+      let budget = COMMAND_PREVIEW_LINES;
+      for (const [index, hunk] of hunks.entries()) {
+        if (shouldCap && budget <= 0) {
+          const hidden = hunks.length - index;
+          this.addChild(
+            new Text(
+              currentTheme.dim(
+                `... (${String(hidden)} more edit${hidden > 1 ? 's' : ''}, ${String(hunks.length)} total, Ctrl+O to expand)`,
+              ),
+              2,
+              0,
+            ),
+          );
+          break;
+        }
+        // The caption (`+N -M path`) is built here so its path can be shortened
+        // in the middle on a narrow terminal instead of breaking mid-segment.
+        const [counts = '', ...rows] = renderDiffLinesClustered(hunk.oldText, hunk.newText, '', {
+          contextLines: 3,
+          ...(shouldCap ? { maxLines: budget } : {}),
+        });
+        this.addChild(
+          new PathHeaderLine(
+            `${counts}${filePath}`,
+            (pathMaxWidth) => `${counts}${ellipsizePathMiddle(filePath, pathMaxWidth)}`,
+            () => (filePath.length > 0 ? filePath : undefined),
+            2,
+          ),
+        );
+        for (const line of rows) {
+          this.addChild(new Text(line, 2, 0));
+        }
+        budget -= Math.max(1, rows.length);
       }
     } else if (name === 'Bash') {
       // Surface the command in the body across the whole lifecycle — while

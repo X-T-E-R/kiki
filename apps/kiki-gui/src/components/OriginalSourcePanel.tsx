@@ -36,7 +36,7 @@ import {
 } from './useOriginalOAuthSource';
 
 /** The vendor's app whose sign-in can be reused, and where it keeps it. */
-const ORIGINAL_APP: Readonly<Record<OriginalProvider, { name: string; home: string }>> = {
+export const ORIGINAL_APP: Readonly<Record<OriginalProvider, { name: string; home: string }>> = {
   'openai-codex': { name: 'Codex', home: '~/.codex' },
   'grok-build': { name: 'Grok', home: '~/.grok' },
   'kimi-code': { name: 'Kimi Code', home: '~/.kimi-code' },
@@ -61,7 +61,7 @@ function storageKey(backend: 'file' | 'keyring' | 'encrypted' | 'ephemeral' | nu
 }
 
 /** The one sentence that says what the person can do about a blocked check. */
-const BLOCK_KEY = {
+export const BLOCK_KEY = {
   noAccount: 'st.source.blockNoAccount',
   unsupported: 'st.source.blockUnsupported',
   unreadable: 'st.source.blockUnreadable',

@@ -12,7 +12,7 @@
  * nothing agent-scoped to read, and the panel reports "not reported" instead of
  * borrowing the routed agent's data.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -80,7 +80,7 @@ function countingMetric(metrics: AgentPanelMetrics): AgentPanelMetrics {
 
 function sourceRevisionFor(controller: SessionController | undefined, forest: AgentForest, id: string, usageRevision?: number): string {
   const main = controller?.getState();
-  const state = id === MAIN_AGENT_ID ? main : controller?.getAgentState(id);
+  const state = controller?.getAgentState(id);
   return panelMetricsSourceRevision({
     cursorSeq: state?.cursor.seq,
     cursorEpoch: state?.cursor.epoch ?? main?.cursor.epoch,
@@ -134,9 +134,12 @@ const noopToggleBranch = () => {};
  * Live view state of the agent this panel belongs to, or `undefined` when no
  * controller owns the session (no live connection) — i.e. no per-agent data
  * exists at all. A subagent without its own state reads as an unloaded empty
- * state, never as the session's main agent.
+ * state, never as the session's main agent. While the panel is shown it
+ * holds a `turn` lease on the agent: todos, notes, plan mode, run state,
+ * model and context all arrive at `turn`, and listening alone asks for none
+ * of them.
  */
-function useAgentViewState(sessionId: string, agentId: string): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
+function useAgentViewState(sessionId: string, agentId: string, visible: boolean): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
   const registry = useOptionalControllerRegistry();
   const subscribeRegistry = useCallback(
     (listener: () => void) => (registry === null ? noopSubscribe() : registry.subscribe(listener)),
@@ -159,24 +162,21 @@ function useAgentViewState(sessionId: string, agentId: string): { controller: Se
     return found;
   }, [registry, registryGeneration, sessionId]);
   const subscribeAgent = useCallback(
-    (listener: () => void) => {
-      if (controller === undefined) return noopSubscribe();
-      return agentId === MAIN_AGENT_ID
-        ? controller.subscribe(listener)
-        : controller.subscribeAgent(agentId, listener);
-    },
+    (listener: () => void) => controller === undefined ? noopSubscribe() : controller.subscribeAgent(agentId, listener),
     [controller, agentId],
   );
   const readAgentState = useCallback(
-    (): SessionViewState | undefined =>
-      controller === undefined
-        ? undefined
-        : agentId === MAIN_AGENT_ID
-          ? controller.getState()
-          : controller.getAgentState(agentId),
+    (): SessionViewState | undefined => controller?.getAgentState(agentId),
     [controller, agentId],
   );
   const agentState = useSyncExternalStore(subscribeAgent, readAgentState);
+  const leaseId = useId();
+  useEffect(() => {
+    if (controller === undefined || !visible || typeof controller.retainAgentView !== 'function') return;
+    const viewId = `agent-panel:${agentId}:${leaseId}`;
+    controller.retainAgentView(viewId, agentId, 'turn');
+    return () => { controller.releaseAgentView(viewId); };
+  }, [controller, agentId, visible, leaseId]);
   return { controller, agentState };
 }
 
@@ -219,7 +219,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const navigate = useNavigate();
   const query = { session_id: state.sessionId, agent_id: agentId, metrics_only: true };
   const node = forest.byId[agentId];
-  const { controller, agentState } = useAgentViewState(state.sessionId, agentId);
+  const { controller, agentState } = useAgentViewState(state.sessionId, agentId, visible);
 
   if (agentState !== undefined && (agentState.loaded || agentState.todoNotes !== undefined || agentState.todoNotesMeta !== undefined)) {
     if (retainedNotesRef.current.size > 50) {

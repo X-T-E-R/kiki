@@ -141,4 +141,14 @@ describe('computeEditStats', () => {
     expect(stats.added).toBe(3);
     expect(stats.removed).toBe(0);
   });
+
+  it('sums every replacement of an edits list', () => {
+    const stats = computeEditStats({
+      edits: [
+        { old_string: 'a', new_string: 'b' },
+        { old_string: '', new_string: 'x\ny' },
+      ],
+    });
+    expect(stats).toEqual({ added: 3, removed: 1 });
+  });
 });

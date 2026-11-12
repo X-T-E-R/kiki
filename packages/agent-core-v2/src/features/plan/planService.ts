@@ -150,17 +150,6 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
-    if (toolName === 'TaskStop') {
-      event.veto(
-        denyToolExecution(
-          this.toolApproval.formatDenyMessage(
-            'TaskStop is not available in plan mode. Call ExitPlanMode to exit plan mode before stopping a background task.',
-          ),
-        ),
-      );
-      return;
-    }
-
     const resume = (event.args as { readonly resume?: unknown }).resume;
     if (
       (toolName === 'AgentRun' && typeof resume === 'string' && resume.trim() !== '') ||

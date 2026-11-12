@@ -16,6 +16,7 @@ import {
 import { currentTheme } from '#/tui/theme';
 import { createEditorTheme } from '#/tui/theme/pi-tui-theme';
 import { printableChar } from '#/tui/utils/printable-key';
+import { readClipboardText as readSystemClipboardText } from '#/utils/clipboard/clipboard-text';
 
 import { extractAtPrefix } from './file-mention-provider';
 import { findInlineSkillTokens } from '../../utils/inline-skill-tokens';
@@ -121,8 +122,9 @@ interface CustomEditorOptions {
 export class CustomEditor extends Editor {
   public onEscape?: () => void;
   /**
-   * Fired for every input that is not a lone Escape. Used to disarm a pending
-   * double-Esc so only two consecutive Escape presses trigger the shortcut.
+   * Fired for every input that is not a lone Escape, Ctrl-C, or Ctrl-D on an
+   * empty editor. Used to disarm a pending double-Esc so only two consecutive
+   * Escape presses trigger the shortcut.
    */
   public onNonEscapeInput?: () => void;
   public onCtrlD?: () => void;
@@ -159,6 +161,8 @@ export class CustomEditor extends Editor {
    * it settles before dispatching them.
    */
   public onPasteImage?: () => Promise<boolean>;
+  /** Clipboard text source for Ctrl-V when no image was pasted; replaceable in tests. */
+  public readClipboardText: () => Promise<string | undefined> = () => readSystemClipboardText();
 
   private consumingPaste = false;
   private consumeBuffer = '';
@@ -222,6 +226,27 @@ export class CustomEditor extends Editor {
 
   override setDisablePasteBurst(disabled: boolean): void {
     super.setDisablePasteBurst(disabled);
+  }
+
+  /**
+   * While browsing input history, go back to the draft that was in the box
+   * before browsing began and return true; otherwise do nothing and return
+   * false. pi-tui keeps the browse state private, so this steps its own
+   * history navigation down to the draft.
+   */
+  public restoreHistoryDraft(): boolean {
+    const history = this as unknown as {
+      historyIndex: number;
+      navigateHistory(direction: 1 | -1): void;
+    };
+    if (history.historyIndex < 0) return false;
+    while (history.historyIndex >= 0) {
+      const before = history.historyIndex;
+      history.navigateHistory(1);
+      // Each step moves toward the draft; stop if one ever does not.
+      if (history.historyIndex >= before) break;
+    }
+    return true;
   }
 
   public setInputMode(mode: 'prompt' | 'bash'): void {
@@ -377,8 +402,14 @@ export class CustomEditor extends Editor {
     }
 
     // Any input other than a lone Escape breaks a pending double-Esc sequence,
-    // so the shortcut only fires for two consecutive Escape presses.
-    if (!matchesKey(normalized, Key.escape)) {
+    // so the shortcut only fires for two consecutive Escape presses. Ctrl-C,
+    // and Ctrl-D on an empty editor, are excluded: they are themselves the
+    // second press of the double-press exit, and disarming the pending state
+    // here made that second press a no-op.
+    const isExitKey =
+      matchesKey(normalized, Key.ctrl('c')) ||
+      (matchesKey(normalized, Key.ctrl('d')) && this.getText().length === 0);
+    if (!matchesKey(normalized, Key.escape) && !isExitKey) {
       this.onNonEscapeInput?.();
     }
 
@@ -402,38 +433,26 @@ export class CustomEditor extends Editor {
       return;
     }
 
+    // A terminal paste (Cmd-V) with an image on the clipboard arrives as an
+    // empty bracketed paste: the terminal had no text to send. Try the image.
+    if (normalized === `${BRACKET_PASTE_START}${BRACKET_PASTE_END}` && this.onPasteImage !== undefined) {
+      this.runPasteImage(this.onPasteImage, false);
+      return;
+    }
+
     // Paste image binding — platform-aware:
     //   Windows terminals reserve Ctrl-V for their own paste handling
     //   (e.g. Windows Terminal's Ctrl+V shortcut), so we listen for
     //   Alt-V there. Everywhere else Ctrl-V pastes. When the host
-    //   reports no image available, we fall through to pi-tui's
-    //   normal paste path so text from the clipboard still works.
+    //   reports no image available, the clipboard's text is pasted
+    //   instead (the raw Ctrl-V byte itself inserts nothing).
     const pasteKey = process.platform === 'win32' ? 'alt+v' : Key.ctrl('v');
     if (matchesKey(normalized, pasteKey)) {
       if (this.expandPasteMarkerAtCursor()) {
         return;
       }
       if (this.onPasteImage !== undefined) {
-        const handler = this.onPasteImage;
-        const pasteAsText = (): void => {
-          this.onTextPaste?.();
-          super.handleInput.call(this, normalized);
-        };
-        this.pasteInFlight = true;
-        void handler()
-          .then((handled) => {
-            if (!handled) pasteAsText();
-          })
-          .catch(() => {
-            // A rejecting image-paste handler must not leak an unhandled
-            // rejection (the CLI turns those into a silent exit) — treat it
-            // the same as "no image available" and fall back to text paste.
-            pasteAsText();
-          })
-          .finally(() => {
-            this.pasteInFlight = false;
-            this.flushPasteInputQueue();
-          });
+        this.runPasteImage(this.onPasteImage, true);
         return;
       }
     }
@@ -557,6 +576,32 @@ export class CustomEditor extends Editor {
     }
 
     this.reopenAutocompleteAfterInput();
+  }
+
+  /**
+   * Runs the host's image paste with later keys queued behind it. When no
+   * image was taken and `textFallback` is set, the clipboard's text is fed
+   * back through `handleInput` as a bracketed paste, ahead of anything typed
+   * meanwhile, so it gets the normal paste handling (markers, `!` mode).
+   */
+  private runPasteImage(handler: () => Promise<boolean>, textFallback: boolean): void {
+    this.pasteInFlight = true;
+    // A rejecting image-paste handler must not leak an unhandled rejection
+    // (the CLI turns those into a silent exit) — treat it as "no image".
+    void handler()
+      .catch(() => false)
+      .then(async (handled) => {
+        if (handled || !textFallback) return;
+        this.onTextPaste?.();
+        const text = await this.readClipboardText().catch(() => undefined);
+        if (text !== undefined && text.length > 0) {
+          this.pasteInputQueue.unshift(`${BRACKET_PASTE_START}${text}${BRACKET_PASTE_END}`);
+        }
+      })
+      .finally(() => {
+        this.pasteInFlight = false;
+        this.flushPasteInputQueue();
+      });
   }
 
   private flushPasteInputQueue(): void {

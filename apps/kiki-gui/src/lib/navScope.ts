@@ -1,7 +1,15 @@
 import { clearNavHistory, cloneNavScope, createVisitId, getVisitForLocation, isCrossScopeNavigation, type NavScopeIdentity } from './navHistory';
 import { isSpaceViewRoute } from './spaceViewState';
 
-export type ScopeRestoreFailure = 'offline' | 'auth-required' | 'scope-invalid' | 'identity-mismatch' | 'target-missing';
+/**
+ * Why a scope could not be (re)entered. The `remote-*` reasons belong to a
+ * space reached through a pairing (`remote:<connectionId>`): it never takes a
+ * typed token, so none of them asks for one; `remote-unreachable` is the
+ * fallback for every pairing failure that cannot be told apart.
+ */
+export type ScopeRestoreFailure = 'offline' | 'auth-required' | 'scope-invalid' | 'identity-mismatch' | 'target-missing'
+  | 'remote-unreachable' | 'remote-closed' | 'remote-paused' | 'remote-not-approved' | 'remote-identity-changed'
+  | 'remote-not-running' | 'remote-protocol';
 export interface ScopeDestination {
   readonly scope: NavScopeIdentity;
   readonly route: string;

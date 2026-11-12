@@ -21,11 +21,14 @@ import { highlightLines, langFromPath } from '#/tui/components/media/code-highli
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
 import type {
   ApprovalPanelChoice,
+  ApprovalPanelData,
   DiffDisplayBlock,
   DisplayBlock,
   FileContentDisplayBlock,
   PendingApproval,
 } from '#/tui/interactions/types';
+
+import { ArmingWindow, type ArmingOptions } from './arming-window';
 
 export interface ApprovalPanelResponse {
   readonly response: 'approved' | 'approved_for_session' | 'rejected' | 'cancelled';
@@ -107,6 +110,7 @@ function renderDisplayBlock(
   block: DisplayBlock,
   s: BlockStyles,
   contentWidth: number,
+  canPreview: boolean,
 ): string[] {
   switch (block.type) {
     case 'diff':
@@ -125,9 +129,10 @@ function renderDisplayBlock(
       }
       const remaining = allLines.length - shown.length;
       if (remaining > 0) {
+        const previewHint = canPreview ? ' (Ctrl+E to preview)' : '';
         lines.push(
           s.dim(
-            `     … ${String(remaining)} more line${remaining > 1 ? 's' : ''} hidden (Ctrl+E to preview)`,
+            `     … ${String(remaining)} more line${remaining > 1 ? 's' : ''} hidden${previewHint}`,
           ),
         );
       }
@@ -191,6 +196,23 @@ function isDuplicateBriefBlock(block: DisplayBlock, description: string): boolea
   return normalizeApprovalText(blockLines.slice(1).join('\n')) === normalizedDescription;
 }
 
+/**
+ * A request flagged dangerous starts on the plain reject choice, so Enter
+ * pressed without reading cannot approve it (DESIGN.md, "打断式对话框").
+ */
+function defaultChoiceIndex(data: ApprovalPanelData): number {
+  const dangerous = data.display.some(
+    (block) => block.type === 'shell' && block.danger !== undefined,
+  );
+  if (!dangerous) return 0;
+  const reject = data.choices.findIndex(
+    (choice) =>
+      (choice.response === 'rejected' || choice.response === 'cancelled') &&
+      choice.requires_feedback !== true,
+  );
+  return Math.max(0, reject);
+}
+
 function headerFor(toolName: string): string {
   switch (toolName) {
     case 'Bash':
@@ -210,40 +232,65 @@ function headerFor(toolName: string): string {
 
 export class ApprovalPanelComponent extends Container implements Focusable {
   focused = false;
-  private selectedIndex = 0;
+  private selectedIndex: number;
   private feedbackMode = false;
   private readonly feedbackInput = new Input();
-  private onResponse: (response: ApprovalPanelResponse) => void;
+  private onResponse: (response: ApprovalPanelResponse) => void | Promise<unknown>;
   private request: PendingApproval;
   private readonly onToggleToolOutput: (() => void) | undefined;
   private readonly onOpenPreview:
     | ((block: DiffDisplayBlock | FileContentDisplayBlock) => void)
     | undefined;
+  private readonly arming: ArmingWindow;
+  /** True while a response promise returned by the host is pending. */
+  private responding = false;
 
+  /**
+   * `onResponse` may return a promise; the panel then ignores every key until
+   * it settles, so a second press cannot send a second response. A host that
+   * keeps the panel mounted after a failed response gets a usable panel back.
+   */
   constructor(
     request: PendingApproval,
-    onResponse: (response: ApprovalPanelResponse) => void,
+    onResponse: (response: ApprovalPanelResponse) => void | Promise<unknown>,
     onToggleToolOutput?: () => void,
     onOpenPreview?: (block: DiffDisplayBlock | FileContentDisplayBlock) => void,
+    arming: ArmingOptions = {},
   ) {
     super();
     this.request = request;
     this.onResponse = onResponse;
     this.onToggleToolOutput = onToggleToolOutput;
     this.onOpenPreview = onOpenPreview;
+    this.arming = new ArmingWindow(arming);
+    this.selectedIndex = defaultChoiceIndex(request.data);
     this.feedbackInput.onSubmit = (value) => {
       this.submit(this.selectedIndex, value);
     };
     this.feedbackInput.onEscape = () => {
-      this.feedbackMode = false;
-      this.feedbackInput.setValue('');
+      this.leaveFeedbackMode();
     };
+  }
+
+  private respond(response: ApprovalPanelResponse): void {
+    const pending = this.onResponse(response);
+    if (!(pending instanceof Promise)) return;
+    this.responding = true;
+    const settle = (): void => {
+      this.responding = false;
+    };
+    void pending.then(settle, settle);
+  }
+
+  private leaveFeedbackMode(): void {
+    this.feedbackMode = false;
+    this.feedbackInput.setValue('');
   }
 
   private submit(index: number, feedback: string = ''): void {
     const option = this.choiceAt(index);
     if (!option) return;
-    this.onResponse({
+    this.respond({
       response: option.response,
       feedback: feedback || undefined,
       selected_label: option.selected_label,
@@ -263,12 +310,21 @@ export class ApprovalPanelComponent extends Container implements Focusable {
   }
 
   handleInput(data: string): void {
+    if (this.responding) return;
+
+    // Esc acts on the current level only: inside the feedback input it goes
+    // back to the choice list and keeps the request open.
+    if (matchesKey(data, Key.escape) && this.feedbackMode) {
+      this.leaveFeedbackMode();
+      return;
+    }
+
     if (
       matchesKey(data, Key.escape) ||
       matchesKey(data, Key.ctrl('c')) ||
       matchesKey(data, Key.ctrl('d'))
     ) {
-      this.onResponse({ response: 'rejected' });
+      this.respond({ response: 'rejected' });
       return;
     }
 
@@ -282,6 +338,18 @@ export class ApprovalPanelComponent extends Container implements Focusable {
 
     if (matchesKey(data, Key.ctrl('o'))) {
       this.onToggleToolOutput?.();
+      return;
+    }
+
+    // Until armed, a key may still be one meant for the input box the panel
+    // just replaced: it can move the pointer but never choose.
+    if (!this.arming.admitKey()) {
+      if (this.choiceCount() === 0) return;
+      if (matchesKey(data, Key.up)) {
+        this.selectedIndex = (this.selectedIndex - 1 + this.choiceCount()) % this.choiceCount();
+      } else if (matchesKey(data, Key.down)) {
+        this.selectedIndex = (this.selectedIndex + 1) % this.choiceCount();
+      }
       return;
     }
 
@@ -344,9 +412,11 @@ export class ApprovalPanelComponent extends Container implements Focusable {
       (block) => !isDuplicateBriefBlock(block, data.description),
     );
     const visibleBlocks = dedupedBlocks.slice(0, 5);
-    const hasPreviewable = visibleBlocks.some(
-      (block) => block.type === 'diff' || block.type === 'file_content',
-    );
+    // Advertise Ctrl+E only when the host can open a preview.
+    const canPreview = this.onOpenPreview !== undefined;
+    const hasPreviewable =
+      canPreview &&
+      visibleBlocks.some((block) => block.type === 'diff' || block.type === 'file_content');
 
     if (visibleBlocks.length > 0) {
       lines.push('');
@@ -355,6 +425,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
           block,
           blockStyles,
           Math.max(1, width - 2),
+          canPreview,
         );
         for (const line of blockLines) {
           lines.push(indent(line));
@@ -368,6 +439,8 @@ export class ApprovalPanelComponent extends Container implements Focusable {
     }
 
     lines.push('');
+    // Unarmed choices render dim: the panel is visible but not yet taking a choice.
+    const armed = this.arming.isArmed();
     for (let idx = 0; idx < data.choices.length; idx++) {
       const option = data.choices[idx];
       if (option === undefined) continue;
@@ -377,6 +450,8 @@ export class ApprovalPanelComponent extends Container implements Focusable {
       const labelWithNum = `${String(num)}. ${option.label}`;
       if (this.feedbackMode && option.requires_feedback === true && isSelected) {
         lines.push(indent(this.renderInlineFeedbackLine(width - 2, labelWithNum)));
+      } else if (!armed) {
+        lines.push(indent(dim(`${isSelected ? SELECT_POINTER : ' '} ${labelWithNum}`)));
       } else if (isSelected) {
         lines.push(indent(`${selectColor(SELECT_POINTER)} ${selectColorBold(labelWithNum)}`));
       } else {
@@ -399,7 +474,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
     lines.push('');
     const numeric = buildNumericHint(data.choices.length);
     const hintParts = this.feedbackMode
-      ? ['type feedback', 'Enter submit', 'Esc reject']
+      ? ['type feedback', 'Enter submit', 'Esc back']
       : [
           '↑↓ navigate',
           numeric.length > 0 ? `${numeric}/Enter confirm` : 'Enter confirm',

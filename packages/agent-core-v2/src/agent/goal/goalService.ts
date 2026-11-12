@@ -339,7 +339,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this._register(
       toolExecutor.onBeforeExecuteTool((event) => {
         if (
-          event.toolCall.name !== 'CreateGoal' ||
+          !isGoalCreateTool(event.toolCall.name, event.args) ||
           this.permissionMode.mode === 'auto' ||
           event.execution.display?.kind !== 'goal_start'
         ) {
@@ -1469,6 +1469,10 @@ function isGoalMutationTool(toolName: string, args: unknown): boolean {
   if (toolName !== 'Goal' || !isPlainRecord(args)) return false;
   const action = args['action'];
   return action === 'create' || action === 'update' || action === 'set_budget';
+}
+
+function isGoalCreateTool(toolName: string, args: unknown): boolean {
+  return toolName === 'CreateGoal' || (toolName === 'Goal' && isPlainRecord(args) && args['action'] === 'create');
 }
 
 function toGoalStartReviewPermissionMode(label: string | undefined): PermissionMode | undefined {

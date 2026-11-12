@@ -116,7 +116,7 @@ Users can invoke a Skill manually with a slash command:
 /skill:git-commits fix concurrency issue in login endpoint
 ```
 
-The model can also invoke a Skill on its own from `description` and `whenToUse`, unless `disableModelInvocation` is `true` or `type` is `flow`. A Skill can invoke another Skill, up to three levels deep.
+The model can also invoke a Skill on its own from `description` and `whenToUse`, unless `disableModelInvocation` is `true` or `type` is `flow`. A Skill's instructions can lead the model to load another Skill; each load is its own `Skill` call.
 
 ## Complete Example
 

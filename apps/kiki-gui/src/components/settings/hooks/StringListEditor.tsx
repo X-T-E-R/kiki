@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { useI18n } from '../../../i18n';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 /**
  * One-line string collection (rule files, disabled rule ids): mono rows with
@@ -52,7 +53,7 @@ export function StringListEditor({ items, onChange, addLabel, placeholder, dataA
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); add(); } }}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); add(); } }}
         />
         <button type="button" className={`${SECONDARY_BUTTON} shrink-0`} disabled={text.trim() === '' || items.includes(text.trim())} onClick={add}>
           {addLabel}

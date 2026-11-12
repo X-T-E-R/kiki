@@ -46,6 +46,7 @@ import {
 } from '#/session/approval/approval';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { ToolAccesses } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
 import { stubPermissionModeService } from '../permissionMode/stubs';
@@ -697,6 +698,18 @@ describe('AgentToolApprovalService', () => {
       useBroker(async () => ({ decision: 'approved', scope: 'session' }));
       await make().requestToolApproval(makeContext('Bash', { command: 'printf first; printf second' }, { approvalRule: 'Bash(printf first; printf second)' }), ask(), 'fallback-ask');
       expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'local', '/workspace', 'printf first; printf second']));
+    });
+
+    it('binds a session approval to the sensitive and external targets of the approved call', async () => {
+      useBroker(async () => ({ decision: 'approved', scope: 'session' }));
+      const context = makeContext('SendMessage', { text: 'hi' });
+      await make().requestToolApproval({ ...context, execution: { ...context.execution, accesses: [
+        ...ToolAccesses.readFile('/workspace/notes.md'),
+        ...ToolAccesses.readFile('/workspace/.env'),
+        ...ToolAccesses.readFile('/outside/link.txt', true),
+        ...ToolAccesses.all(),
+      ] } }, ask(), 'sensitive-file-access-ask');
+      expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['SendMessage', 'read:/outside/link.txt', 'read:/workspace/.env']));
     });
 
     it('keeps approved-once responses out of the session cache', async () => {

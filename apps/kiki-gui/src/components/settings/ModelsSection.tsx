@@ -123,6 +123,7 @@ import { selectGlobalDefaultModel } from './defaultModelSelection';
 import { OriginBadge } from './spaces/OriginBadge';
 import { DetailBack, DetailRailGroup, DetailRailItem, DetailSplit, useDetailParam } from '../overlays';
 import { LIST_ROW_HEIGHT, ListBody, type ListDensity } from './list';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -638,6 +639,7 @@ export function ThinkingCard() {
               onChange={(event) => { setEffort(event.target.value); }}
               onBlur={() => void saveThinking(thinkingEnabled, effort)}
               onKeyDown={(event) => {
+                if (isImeKeyEvent(event)) return;
                 if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
               }}
               placeholder={t('st.thinking.placeholder')}

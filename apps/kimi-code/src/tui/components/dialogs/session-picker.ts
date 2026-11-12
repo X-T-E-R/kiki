@@ -360,13 +360,14 @@ export class SessionPickerComponent extends Container implements Focusable {
     const view = this.list.view();
     const titleSuffix =
       view.query.length === 0 ? currentTheme.fg('textMuted', '  (type to search)') : '';
+    // With a query, Esc clears it first (two-stage Esc); Backspace only
+    // deletes one character, so it is not advertised.
     const hintParts = [
-      ...(view.query.length > 0 ? ['Backspace clear'] : []),
       '↑↓ navigate',
       scopeHint,
       ...(this.onDeleteRequest !== undefined ? ['Ctrl+X delete'] : []),
       'Enter select',
-      'Esc cancel',
+      view.query.length > 0 ? 'Esc clear' : 'Esc cancel',
     ].filter((item): item is string => item !== undefined);
 
     lines.push(currentTheme.boldFg('primary', title) + titleSuffix);

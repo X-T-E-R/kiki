@@ -20,7 +20,7 @@
  * instead of repeating the same line under every heading.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
@@ -29,9 +29,11 @@ import type { PersonaSummary } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
-import { Icon } from '../icons';
-import { PAGE_WIDTH, PageHeader } from '../PageChrome';
-import { InlineError, Toggle } from '../controls';
+import { DisclosureChevron, Icon } from '../icons';
+import { PAGE_WIDTH, PageHeader, PageMoreMenu } from '../PageChrome';
+import { usePhoneMode } from '../../lib/layoutHooks';
+import { LIST_TOOLS_MIN_ITEMS } from '../settings/list';
+import { InlineError } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { segmentClass } from '../WorkspaceScopeControl';
 import { SettingsPageScopeContext } from '../settings/SectionCard';
@@ -42,7 +44,7 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [showArchived, setShowArchived] = useState(false);
@@ -52,6 +54,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   // Personas are server-scoped, but the conversation still runs somewhere: the
   // same workspace a plain New conversation here would use.
   const kikiWorkspace = useAskKikiWorkspace();
+  const askKiki = () => { void ask({ skill: 'kiki-persona', promptKey: 'persona.askKiki.prompt', location: kikiWorkspace.location }); };
+  const phone = usePhoneMode();
 
   const selectedId = params.get('persona') ?? undefined;
   const creating = params.get('new') === '1';
@@ -65,7 +69,11 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   });
 
   const all = useMemo(() => sortPersonas(listQuery.data ?? []), [listQuery.data]);
-  const visible = all.filter((item) => (showArchived || !item.archived || item.id === selectedId) && matchesPersona(item, search));
+  // Search is a list tool: it appears once the roster is long enough to need
+  // it, and a query typed before it went away stops narrowing the list.
+  const searchable = all.length >= LIST_TOOLS_MIN_ITEMS;
+  const query = searchable ? search.trim() : '';
+  const visible = all.filter((item) => (showArchived || !item.archived || item.id === selectedId) && matchesPersona(item, query));
   const archivedCount = all.filter((item) => item.archived).length;
   const selected = all.find((item) => item.id === selectedId);
 
@@ -90,22 +98,37 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   return (
     <div data-personas-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('persona.title')} onToggleSidebar={onToggleSidebar} width="split">
-        <AskKikiButton
-          label={t('persona.askKiki')}
-          labelAria={t('persona.askKikiAria')}
-          busy={askingKiki}
-          // Disabled until the workspace list answers: pressing it blind would
-          // land the session in a fresh folder the user never asked for.
-          disabled={!kikiWorkspace.resolved}
-          testId="data-persona-ask-kiki"
-          onAsk={() => { void ask({ skill: 'kiki-persona', promptKey: 'persona.askKiki.prompt', location: kikiWorkspace.location }); }}
-        />
-        <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
-          {t('persona.import')}
-        </button>
+        {/* A phone header keeps the title and one action; asking Kiki and
+            importing a card go behind the ⋯, so the title is not squeezed. */}
+        {phone ? null : (
+          <AskKikiButton
+            label={t('persona.askKiki')}
+            labelAria={t('persona.askKikiAria')}
+            busy={askingKiki}
+            // Disabled until the workspace list answers: pressing it blind would
+            // land the session in a fresh folder the user never asked for.
+            disabled={!kikiWorkspace.resolved}
+            testId="data-persona-ask-kiki"
+            onAsk={askKiki}
+          />
+        )}
+        {phone ? null : (
+          <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
+            {t('persona.import')}
+          </button>
+        )}
         <button type="button" data-persona-new onClick={() => { select(undefined, { creating: true }); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
           {t('persona.new')}
         </button>
+        {phone ? (
+          <PageMoreMenu
+            menuId="persona-more"
+            entries={[
+              { key: 'ask-kiki', label: t('persona.askKiki'), disabled: askingKiki || !kikiWorkspace.resolved, run: askKiki },
+              { key: 'import', label: t('persona.import'), run: () => { setImporting(true); } },
+            ]}
+          />
+        ) : null}
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
         <div className={`mx-auto ${PAGE_WIDTH.split}`}>
@@ -123,27 +146,38 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
               </button>
             </div>
           ) : all.length === 0 && !creating ? (
-            /* The page header already carries the handoff, so the empty state
-               offers only the two actions that act here. */
-            <PersonasEmpty onCreate={() => { select(undefined, { creating: true }); }} onImport={() => { setImporting(true); }} />
+            <PersonasEmpty
+              onCreate={() => { select(undefined, { creating: true }); }}
+              askKiki={(
+                <AskKikiButton
+                  label={t('persona.askKiki')}
+                  labelAria={t('persona.askKikiAria')}
+                  busy={askingKiki}
+                  disabled={!kikiWorkspace.resolved}
+                  testId="data-persona-empty-ask-kiki"
+                  onAsk={askKiki}
+                />
+              )}
+            />
           ) : (
             <SettingsPageScopeContext.Provider value="server">
             <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(248px,0.8fr)_minmax(0,1.7fr)]" data-persona-list-detail>
               <div className={`min-w-0 ${detailOpen ? 'max-md:hidden' : ''}`}>
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <input
-                    type="search"
-                    data-persona-search
-                    value={search}
-                    onChange={(event) => { setSearch(event.target.value); }}
-                    placeholder={t('persona.searchPlaceholder')}
-                    aria-label={t('persona.searchAria')}
-                    className="h-8 w-full rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
-                  />
-                  {archivedCount > 0 ? <Toggle label={t('persona.showArchived')} checked={showArchived} onChange={setShowArchived} /> : null}
-                </div>
-                {visible.length === 0 ? (
-                  <p className="py-6 text-[13px] text-ink-soft">{t('persona.noMatches', { query: search.trim() })}</p>
+                {searchable ? (
+                  <div className="mb-3">
+                    <input
+                      type="search"
+                      data-persona-search
+                      value={search}
+                      onChange={(event) => { setSearch(event.target.value); }}
+                      placeholder={t('persona.searchPlaceholder')}
+                      aria-label={t('persona.searchAria')}
+                      className="h-8 w-full rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
+                    />
+                  </div>
+                ) : null}
+                {visible.length === 0 && query !== '' ? (
+                  <p className="py-6 text-[13px] text-ink-soft">{t('persona.noMatches', { query })}</p>
                 ) : (
                   <ul aria-label={t('persona.listAria')} data-persona-list className="-mx-2 flex min-w-0 flex-col gap-0.5">
                     {visible.map((persona) => (
@@ -153,6 +187,20 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                     ))}
                   </ul>
                 )}
+                {/* Archived personas stay out of the roster until asked for:
+                    one quiet row at the end says how many there are. */}
+                {archivedCount > 0 ? (
+                  <button
+                    type="button"
+                    data-persona-show-archived
+                    aria-expanded={showArchived}
+                    onClick={() => { setShowArchived((shown) => !shown); }}
+                    className="mt-2 inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                  >
+                    {tp('persona.archivedRow', archivedCount)}
+                    <DisclosureChevron open={showArchived} className="text-ink-faint" />
+                  </button>
+                ) : null}
               </div>
               <div className={`min-w-0 md:border-l md:border-hairline md:pl-6 ${detailOpen ? '' : 'max-md:hidden'}`}>
                 {detailOpen ? (
@@ -265,24 +313,22 @@ function PersonaRow({ persona, active, onOpen }: { readonly persona: PersonaSumm
   );
 }
 
-function PersonasEmpty({ onCreate, onImport }: {
+/**
+ * No personas at all: one sentence on what a persona is, and the two ways to
+ * get the first one — write it, or let Kiki write it. Importing a card stays
+ * in the header (or its ⋯ on a phone).
+ */
+function PersonasEmpty({ onCreate, askKiki }: {
   readonly onCreate: () => void;
-  readonly onImport: () => void;
+  readonly askKiki: ReactNode;
 }) {
   const { t } = useI18n();
   return (
     <div data-persona-empty className="py-10">
-      {/* Three blank faces, one lit: what the roster will look like. */}
-      <div aria-hidden className="flex items-center gap-2">
-        {['a', 'b', 'c'].map((key, index) => (
-          <span key={key} className={`h-9 w-9 rounded-[10px] ring-1 ring-inset ring-hairline-strong ${index === 1 ? 'bg-ink/[0.06]' : 'bg-panel'}`} />
-        ))}
-      </div>
-      <p className="mt-4 font-display text-[18px] text-ink">{t('persona.empty')}</p>
-      <p className="mt-2 max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('persona.lede')}</p>
+      <p className="max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('persona.emptyIntro')}</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" onClick={onCreate} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>{t('persona.new')}</button>
-        <button type="button" onClick={onImport} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>{t('persona.import')}</button>
+        {askKiki}
       </div>
     </div>
   );

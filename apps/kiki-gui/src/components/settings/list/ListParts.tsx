@@ -4,14 +4,18 @@
  *
  *   ListToolbar   search (with the live "12 of 84" count), filter chips,
  *                 sort and density — one row, sticky at the top of the
- *                 settings pane so it stays in reach while scrolling.
+ *                 settings pane so it stays in reach while scrolling. Each
+ *                 tool appears only once the list earns it
+ *                 (`LIST_TOOLS_MIN_ITEMS`, `listToolsFor`); the page's own
+ *                 verbs and the "Select" action stay regardless.
  *   ListBulkBar   replaces nothing; it slides in under the toolbar while
  *                 rows are selected and names the verbs that apply to all.
  *   ListGroup     a foldable group header with its count; the rows follow.
  *   ListBody      the row container (the one bordered surface), windowed
  *                 once the list is long enough for it to matter.
- *   ListEmpty     nothing yet (what it means + how to get some) vs. nothing
- *                 matches (what narrowed it + one way back).
+ *   ListEmpty     nothing yet (one sentence on what will appear + the one
+ *                 action that fills it) vs. nothing matches (what narrowed it
+ *                 + one way back).
  *
  * Chosen tabs are paper chips lifted off a light ink ground — the same
  * vocabulary as the selected nav row — never an accent fill.
@@ -22,7 +26,8 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { useI18n } from '../../../i18n';
 import { DisclosureChevron, Icon } from '../../icons';
-import type { ListDensity, ListFilterSpec, ListSortSpec, ListView } from './listState';
+import { TEXT_BUTTON } from '../SettingsPrimitives';
+import { VIRTUALIZE_AFTER, type ListDensity, type ListFilterSpec, type ListSortSpec, type ListView } from './listState';
 
 const CHIP = 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9';
 const CHIP_ON = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
@@ -32,11 +37,8 @@ const ICON_BUTTON = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-m
 /** Row heights per density, shared by the page rows and the windowing estimate. */
 export const LIST_ROW_HEIGHT: Record<ListDensity, number> = { comfortable: 56, compact: 36 };
 
-/** Above this many rows a list windows its body; below it every row stays mounted. */
-export const VIRTUALIZE_AFTER = 60;
-
 export function ListToolbar<T>({
-  view, total, searchLabel, searchPlaceholder, filters = [], sorts = [], showDensity = true, actions,
+  view, total, searchLabel, searchPlaceholder, filters = [], sorts = [], showDensity = true, actions, selectLabel,
 }: {
   view: ListView<T>;
   /** Items before any narrowing, for the "n of total" count. */
@@ -48,15 +50,34 @@ export function ListToolbar<T>({
   showDensity?: boolean;
   /** The page's own verbs (Add …) at the right end. */
   actions?: ReactNode;
+  /**
+   * The list supports picking several rows: the toolbar offers this "Select"
+   * action, which turns on `view.selecting`; rows show their boxes only then.
+   */
+  selectLabel?: string;
 }) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const shown = view.visible.length;
+  const { tools } = view;
+  const showFilters = tools.filters && filters.length > 0;
+  const showSort = tools.sort && sorts.length > 1;
+  const selectToggle = selectLabel === undefined ? null : (
+    <button type="button" data-list-select aria-pressed={view.selecting}
+      onClick={() => { view.setSelecting(!view.selecting); }}
+      className={`h-7 shrink-0 px-1.5 pointer-coarse:h-9 ${TEXT_BUTTON}`}>
+      {view.selecting ? t('common.cancel') : selectLabel}
+    </button>
+  );
+  const hasVerbs = selectToggle !== null || (actions !== undefined && actions !== null && actions !== false);
+  if (!tools.search && !showFilters && !showSort && !hasVerbs) return null;
   return (
+    // Sticky only while there is a search to keep in reach; a short list's
+    // toolbar is just its verbs and scrolls away with the list.
     <div data-list-toolbar
-      className="sticky -top-6 z-[3] -mx-2 flex flex-col gap-2 bg-paper/95 px-2 pt-2 pb-2 backdrop-blur-[6px] lg:-top-8">
+      className={`${tools.search ? 'sticky -top-6 z-[3] bg-paper/95 backdrop-blur-[6px] lg:-top-8' : ''} -mx-2 flex flex-col gap-2 px-2 pt-2 pb-2`}>
       <div className="flex min-w-0 items-center gap-2">
-        <label className="relative flex h-8 min-w-0 flex-1 items-center">
+        {tools.search ? <label className="relative flex h-8 min-w-0 flex-1 items-center">
           <Icon name="search" size={14} className="pointer-events-none absolute left-2.5 text-ink-faint" />
           <input
             ref={inputRef}
@@ -78,16 +99,22 @@ export function ListToolbar<T>({
             className="pointer-events-none absolute right-2.5 text-[12px] text-ink-faint tabular-nums">
             {view.narrowed ? t('st.list.countOf', { shown, total }) : t('st.list.count', { total })}
           </span>
-        </label>
-        {showDensity ? <DensityToggle density={view.density} onChange={view.setDensity} /> : null}
-        {actions}
+        </label> : null}
+        {tools.search && showDensity ? <DensityToggle density={view.density} onChange={view.setDensity} /> : null}
+        {/* Without a search field the verbs keep the right edge they have beside it. */}
+        {hasVerbs ? (
+          <div className={`flex shrink-0 items-center gap-2 ${tools.search ? '' : 'ml-auto'}`}>
+            {selectToggle}
+            {actions}
+          </div>
+        ) : null}
       </div>
-      {filters.length > 0 || sorts.length > 1 ? (
+      {showFilters || showSort ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-          {filters.length > 0 ? (
+          {showFilters ? (
             <div role="group" aria-label={t('st.list.filterAria')} data-list-filters
               className="inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5">
-              {[{ id: 'all', label: t('st.list.all'), tone: undefined }, ...filters].map((chip) => {
+              {[{ id: 'all', label: t('st.list.all'), tone: undefined }, ...filters.filter((spec) => tools.filterIds.includes(spec.id))].map((chip) => {
                 const on = view.filter === chip.id;
                 const count = view.counts[chip.id] ?? 0;
                 return (
@@ -101,7 +128,7 @@ export function ListToolbar<T>({
               })}
             </div>
           ) : null}
-          {sorts.length > 1 ? (
+          {showSort ? (
             <SortSwitch sorts={sorts} value={view.sort} onChange={view.setSort} />
           ) : null}
         </div>
@@ -276,26 +303,46 @@ export function ListBulkBar({ count, onClear, children }: { count: number; onCle
   );
 }
 
-/** Nothing to list, or nothing left after narrowing; the two never share copy. */
-export function ListEmpty({ kind, title, body, action, onClear }: {
+/**
+ * Nothing to list, or nothing left after narrowing; the two never share copy.
+ *
+ * The everyday form is one line: the sentence (`title`, with `body` read as
+ * its continuation) and the one action beside it (settings conventions §3.6).
+ * The dashed box with a centred title, paragraph and button is `standalone`
+ * only: for a page whose sole content is this empty state.
+ */
+export function ListEmpty({ kind, title, body, action, onClear, standalone = false }: {
   kind: 'none' | 'no-match';
   title: string;
   body?: string;
   action?: ReactNode;
   onClear?: () => void;
+  standalone?: boolean;
 }) {
   const { t } = useI18n();
+  const clear = kind === 'no-match' && onClear !== undefined ? (
+    <button type="button" onClick={onClear} className={`h-8 shrink-0 pointer-coarse:h-11 ${TEXT_BUTTON}`}>
+      {t('st.list.clearFilters')}
+    </button>
+  ) : null;
+  if (standalone) {
+    return (
+      <div data-list-empty={kind} className="rounded-lg border border-dashed border-hairline-strong px-4 py-6 text-center">
+        <p className="text-[13px] font-medium text-ink">{title}</p>
+        {body !== undefined ? <p className="mx-auto mt-1 max-w-[52ch] text-[12px] leading-4 text-ink-faint">{body}</p> : null}
+        {clear !== null ? <div className="mt-3 flex justify-center">{clear}</div> : null}
+        {action !== undefined ? <div className="mt-3 flex justify-center">{action}</div> : null}
+      </div>
+    );
+  }
   return (
-    <div data-list-empty={kind} className="rounded-lg border border-dashed border-hairline-strong px-4 py-6 text-center">
-      <p className="text-[13px] font-medium text-ink">{title}</p>
-      {body !== undefined ? <p className="mx-auto mt-1 max-w-[52ch] text-[12px] leading-4 text-ink-faint">{body}</p> : null}
-      {kind === 'no-match' && onClear !== undefined ? (
-        <button type="button" onClick={onClear}
-          className="mt-3 h-8 rounded-md px-3 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
-          {t('st.list.clearFilters')}
-        </button>
-      ) : null}
-      {action !== undefined ? <div className="mt-3 flex justify-center">{action}</div> : null}
+    <div data-list-empty={kind} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-1">
+      <p className="min-w-0 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
+        {title}
+        {body !== undefined ? <> <span className="text-ink-faint">{body}</span></> : null}
+      </p>
+      {clear}
+      {action !== undefined ? <div className="flex shrink-0 items-center">{action}</div> : null}
     </div>
   );
 }

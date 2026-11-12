@@ -61,7 +61,7 @@ describe('ToolResultTruncationService', () => {
   const bulk = (ch: string, n: number) => `${ch.repeat(99)}\n`.repeat(n);
 
   it('persists oversized string output and renders a bounded model preview', async () => {
-    const fullOutput = `HEAD_MARKER\n${bulk('x', 500)}MIDDLE_MARKER\n${bulk('y', 20)}TAIL_MARKER\n`;
+    const fullOutput = `HEAD_MARKER\n${bulk('x', 500)}MIDDLE_MARKER\n${bulk('y', 200)}TAIL_MARKER\n`;
 
     const result = await truncation.truncateForModel<ExecutableToolResult>({
       toolName: 'Lookup Tool',
@@ -81,7 +81,7 @@ describe('ToolResultTruncationService', () => {
     expect(rendered).toContain('HEAD_MARKER');
     expect(rendered).toContain('TAIL_MARKER');
     expect(rendered).not.toContain('MIDDLE_MARKER');
-    expect(rendered).toMatch(/\[elided: chars \[4096, \d+\)\]/);
+    expect(rendered).toMatch(/\[elided: chars \[6000, \d+\)\]/);
 
     const outputPath = renderedOutputPath(rendered);
     expect(outputPath).toContain(
@@ -175,15 +175,15 @@ describe('ToolResultTruncationService', () => {
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps head and tail previews well formed and reports the adjusted coordinates', async () => {
-    const full = `${'x'.repeat(4_095)}🛰\n${bulk('y', 600)}🛰${'z'.repeat(1_023)}`;
+    const full = `${'x'.repeat(5_999)}🛰\n${bulk('y', 600)}🛰${'z'.repeat(17_999)}`;
     const result = await truncation.truncateForModel({
       toolName: 'Lookup', toolCallId: 'call_unicode_previews', result: { output: full },
     });
 
     expect(result.output.isWellFormed()).toBe(true);
     expect(result.output.length).toBeLessThanOrEqual(50_000);
-    expect(result.output).toContain(`[preview: chars [0, 4095)]\n${'x'.repeat(4_095)}`);
-    expect(result.output).toContain(`[preview: chars [${full.length - 1_023}, ${full.length})]\n${'z'.repeat(1_023)}`);
+    expect(result.output).toContain(`[preview: chars [0, 5999)]\n${'x'.repeat(5_999)}`);
+    expect(result.output).toContain(`[preview: chars [${full.length - 17_999}, ${full.length})]\n${'z'.repeat(17_999)}`);
     await expect(readFile(renderedOutputPath(result.output), 'utf8')).resolves.toBe(full);
   });
 
@@ -310,7 +310,7 @@ describe('ToolResultTruncationService', () => {
     expect(rendered).toContain('Tool output formatting failed after execution');
     expect(rendered).toContain('Inspect output_path before rerunning the tool');
     expect(rendered).toContain('search complete');
-    expect(rendered.length).toBeLessThan(10_000);
+    expect(rendered.length).toBeLessThan(25_000);
     expect(result.output.slice(1)).toEqual([image]);
     await expect(readFile(renderedOutputPath(rendered), 'utf8')).resolves.toBe(full);
     expect(logEntries).toEqual([expect.objectContaining({
@@ -436,18 +436,6 @@ describe('ToolResultTruncationService', () => {
     ).resolves.toBe(exempt);
   });
 
-  it('identifies paths inside the agent spill directory', () => {
-    const dir = spillDir();
-    expect(truncation.isSpillFilePath(join(dir, 'Bash-call-1.txt'))).toBe(true);
-    expect(truncation.isSpillFilePath(dir)).toBe(true);
-    expect(
-      truncation.isSpillFilePath(
-        join(homeDir, 'sessions/workspace/session/agents/main/other/file.txt'),
-      ),
-    ).toBe(false);
-    expect(truncation.isSpillFilePath(join(homeDir, 'tool-results-evil/file.txt'))).toBe(false);
-  });
-
   it('persists oversized text content parts as one complete text file', async () => {
     const output: ContentPart[] = [
       { type: 'text', text: 'first\n' },
@@ -539,7 +527,7 @@ describe('ToolResultTruncationService', () => {
     expect(renderedLongLine.isWellFormed()).toBe(true);
     expect(renderedLongLine).not.toContain('output_path:');
     expect(renderedLongLine).toContain('could not be saved to a file');
-    expect(renderedLongLine.length).toBeLessThan(10_000);
+    expect(renderedLongLine.length).toBeLessThan(25_000);
 
     const shortLines = await failing.truncateForModel<ExecutableToolResult>({
       toolName: 'Lookup',
@@ -552,7 +540,7 @@ describe('ToolResultTruncationService', () => {
     if (typeof renderedShortLines !== 'string') throw new Error('expected string output');
     expect(renderedShortLines).not.toContain('output_path:');
     expect(renderedShortLines).toContain('could not be saved to a file');
-    expect(renderedShortLines.length).toBeLessThan(10_000);
+    expect(renderedShortLines.length).toBeLessThan(25_000);
   });
 });
 

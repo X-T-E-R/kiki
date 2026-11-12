@@ -97,7 +97,7 @@ export function ThreadConversationDialog({
       onClose={onClose}
       ariaLabel={title}
       overlayId="comms-thread-conversation"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[min(86vh,760px)] flex-col !p-0`}
+      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[min(86dvh,760px)] flex-col !p-0`}
     >
       <header data-comms-pair-head className="flex shrink-0 items-start gap-3 border-b border-hairline px-5 pt-4 pb-3">
         <div className="min-w-0 flex-1">

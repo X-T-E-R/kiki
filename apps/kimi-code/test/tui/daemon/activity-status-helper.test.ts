@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest';
 import type { Block } from '@kiki/session-core/session';
 
 import {
+  activityLineText,
   agentOutputSignature,
-  formatBusyActivityMessage,
+  formatBusyActivityLine,
   formatElapsedDuration,
   getCurrentTurnBlocks,
   isQueuedUserBlock,
   latestAgentTimestamp,
   TurnActivityTracker,
 } from '#/tui/daemon/activity-status-helper';
+
+function formatBusyActivityMessage(
+  input: Omit<Parameters<typeof formatBusyActivityLine>[0], 'hasDraft'> & { hasDraft?: boolean },
+): string {
+  return activityLineText(formatBusyActivityLine({ ...input, hasDraft: input.hasDraft ?? false }));
+}
 
 describe('activity-status-helper', () => {
   describe('formatElapsedDuration', () => {
@@ -106,7 +113,7 @@ describe('activity-status-helper', () => {
         lastResponseAt: res.lastResponseAt,
         now: baseNow + 4_000,
       });
-      expect(msg).toBe('Working · waited 4s');
+      expect(msg).toBe('Working 4s · Esc to interrupt');
     });
 
     it('handles cold-open with unknown turnStartedAt (Counter-example 2)', () => {
@@ -127,9 +134,8 @@ describe('activity-status-helper', () => {
         lastResponseAt: res.lastResponseAt,
         now: baseNow + 10_000,
       });
-      expect(msg).toBe('Working…');
+      expect(msg).toBe('Working… · Esc to interrupt');
       expect(msg).not.toContain('ago');
-      expect(msg).not.toContain('waited');
     });
 
     it('handles subagent without timestamp without continuing waited or faking ago (Counter-example 3)', () => {
@@ -159,7 +165,7 @@ describe('activity-status-helper', () => {
       expect(res.hasResponded).toBe(true);
       expect(res.lastResponseAt).toBeUndefined();
 
-      // Formatted message: agent responded so NO waited, and no timestamp so NO fake ago
+      // Formatted message: no timestamp, so NO fake "last response … ago"
       const msg = formatBusyActivityMessage({
         runningTasks: 0,
         turnStartedAt,
@@ -167,8 +173,7 @@ describe('activity-status-helper', () => {
         lastResponseAt: res.lastResponseAt,
         now: baseNow + 10_000,
       });
-      expect(msg).toBe('Working…');
-      expect(msg).not.toContain('waited');
+      expect(msg).toBe('Working 10s · Esc to interrupt');
       expect(msg).not.toContain('last response');
     });
 
@@ -263,41 +268,29 @@ describe('activity-status-helper', () => {
     });
   });
 
-  describe('formatBusyActivityMessage', () => {
+  describe('formatBusyActivityLine', () => {
     const baseNow = 1_700_000_000_000;
 
-    it('Window 1: returns pure Working… when elapsed < 3000ms', () => {
+    it('shows elapsed time from the first second, background tasks and how to interrupt', () => {
       expect(
         formatBusyActivityMessage({
           runningTasks: 0,
-          turnStartedAt: baseNow - 2_500,
+          turnStartedAt: baseNow,
           hasResponded: false,
           lastResponseAt: undefined,
           now: baseNow,
         }),
-      ).toBe('Working…');
+      ).toBe('Working 0s · Esc to interrupt');
 
       expect(
         formatBusyActivityMessage({
           runningTasks: 1,
-          turnStartedAt: baseNow - 1_000,
+          turnStartedAt: baseNow - 2_000,
           hasResponded: false,
           lastResponseAt: undefined,
           now: baseNow,
         }),
-      ).toBe('Working · 1 tasks running');
-    });
-
-    it('Window 1: appends waited suffix when elapsed >= 3000ms', () => {
-      expect(
-        formatBusyActivityMessage({
-          runningTasks: 0,
-          turnStartedAt: baseNow - 3_000,
-          hasResponded: false,
-          lastResponseAt: undefined,
-          now: baseNow,
-        }),
-      ).toBe('Working · waited 3s');
+      ).toBe('Working 2s · 1 task running · Esc to interrupt');
 
       expect(
         formatBusyActivityMessage({
@@ -306,11 +299,12 @@ describe('activity-status-helper', () => {
           hasResponded: false,
           lastResponseAt: undefined,
           now: baseNow,
+          hasDraft: true,
         }),
-      ).toBe('Working · 2 tasks running · waited 18s');
+      ).toBe('Working 18s · 2 tasks running · Esc twice to interrupt');
     });
 
-    it('Window 2: hands off to last response ago when hasResponded is true', () => {
+    it('adds the time since the last response once the agent has responded', () => {
       expect(
         formatBusyActivityMessage({
           runningTasks: 0,
@@ -319,7 +313,7 @@ describe('activity-status-helper', () => {
           lastResponseAt: baseNow - 5_000,
           now: baseNow,
         }),
-      ).toBe('Working · last response 5s ago');
+      ).toBe('Working 30s · last response 5s ago · Esc to interrupt');
 
       expect(
         formatBusyActivityMessage({
@@ -329,7 +323,7 @@ describe('activity-status-helper', () => {
           lastResponseAt: baseNow - 12_000,
           now: baseNow,
         }),
-      ).toBe('Working · 2 tasks running · last response 12s ago');
+      ).toBe('Working 30s · 2 tasks running · last response 12s ago · Esc to interrupt');
     });
 
     it('handles clock skew gracefully when now < turnStartedAt', () => {
@@ -341,7 +335,7 @@ describe('activity-status-helper', () => {
           lastResponseAt: undefined,
           now: baseNow,
         }),
-      ).toBe('Working…');
+      ).toBe('Working… · Esc to interrupt');
     });
   });
 });

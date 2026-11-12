@@ -8,6 +8,7 @@
  */
 
 import { useI18n } from '../../i18n';
+import { shortcutState } from '../../lib/shortcuts';
 import type { TimelineView } from './messageViewMode';
 
 const SEGMENT =
@@ -39,7 +40,7 @@ export function TimelineViewSwitch({
     <div
       role="radiogroup"
       aria-label={t('message.viewSwitchAria')}
-      title="Ctrl+Shift+."
+      title={shortcutState().platform === 'macos' ? '⇧⌘.' : 'Ctrl+Shift+.'}
       data-timeline-view-switch={view}
       className={`flex shrink-0 items-center gap-0.5 rounded-lg bg-ink/[0.05] p-0.5 ${className}`}
     >

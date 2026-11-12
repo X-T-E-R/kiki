@@ -41,6 +41,8 @@ import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
+import { useLayerHistory } from '../lib/layerHistory';
+import { useMediaQuery } from '../lib/layoutHooks';
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
 import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
@@ -235,6 +237,14 @@ export function MediaPreviewProvider({
   });
   const [, chooseMode] = useRailMode();
   const cockpit = shell?.cockpit === true;
+  // Below lg the workspace is a fixed layer over the page (the whole screen on
+  // a phone; index.css), docked or not, so the device back collapses it before
+  // it navigates the route underneath — the session rail's seam. Collapse, not
+  // close: every tab and draft survives, as with the panel's own collapse. Wide,
+  // the docked panel is part of the page and back keeps navigating.
+  const overlayStage = useMediaQuery('(max-width: 1023px)');
+  const collapsePanel = useCallback(() => { setPanelOpen(false); }, []);
+  useLayerHistory('preview-workspace', panelOpen && !cockpit && tabsState.tabs.length > 0 && overlayStage, collapsePanel);
   const revealPreview = useCallback(() => {
     if (cockpit) chooseMode('default');
     setPanelOpen(true);

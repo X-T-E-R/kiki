@@ -140,18 +140,20 @@ export function setOlderError(state: SessionViewState, error: string | undefined
   return bump(state, { olderError: error, loadingOlder: false });
 }
 
-export function setResyncing(state: SessionViewState, resyncing: boolean): SessionViewState {
+// The resync and load-error setters take any versioned record that carries
+// their fields: a whole session view, or the controller's session shell.
+export function setResyncing<T extends Pick<SessionViewState, 'version' | 'resyncing'>>(state: T, resyncing: boolean): T {
   if (state.resyncing === resyncing) return state;
-  return bump(state, { resyncing });
+  return { ...state, resyncing, version: state.version + 1 };
 }
 
-export function setResyncFailed(state: SessionViewState, failed: boolean, attempt: number): SessionViewState {
+export function setResyncFailed<T extends Pick<SessionViewState, 'version' | 'resyncFailed' | 'resyncAttempt'>>(state: T, failed: boolean, attempt: number): T {
   if (state.resyncFailed === failed && state.resyncAttempt === attempt) return state;
-  return bump(state, { resyncFailed: failed, resyncAttempt: attempt });
+  return { ...state, resyncFailed: failed, resyncAttempt: attempt, version: state.version + 1 };
 }
 
-export function setLoadError(state: SessionViewState, error: string | undefined): SessionViewState {
-  return bump(state, { loadError: error, loaded: error === undefined ? state.loaded : false });
+export function setLoadError<T extends Pick<SessionViewState, 'version' | 'loaded' | 'loadError'>>(state: T, error: string | undefined): T {
+  return { ...state, loadError: error, loaded: error === undefined ? state.loaded : false, version: state.version + 1 };
 }
 
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {

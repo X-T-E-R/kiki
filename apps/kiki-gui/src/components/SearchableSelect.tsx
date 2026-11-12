@@ -20,6 +20,8 @@ import { createPortal } from 'react-dom';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
+import { isCoarsePointer } from '../lib/layoutHooks';
+import { isImeKeyEvent } from '../lib/shortcuts';
 import {
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
@@ -385,6 +387,9 @@ export function SearchableSelect({
   };
 
   const onSearchKeyDown = (event: React.KeyboardEvent) => {
+    // Enter, Escape and the arrows belong to an open IME candidate window:
+    // committing a candidate must not commit the highlighted row.
+    if (isImeKeyEvent(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex((index) => nextEnabledIndex(index, 1));
@@ -415,7 +420,10 @@ export function SearchableSelect({
         <input
           type="text"
           data-autofocus
-          ref={(input) => { input?.focus(); }}
+          // A touch tap on the trigger is a request to see the list. Focusing
+          // the filter there would raise the keyboard over it; the field
+          // still filters once it is tapped.
+          ref={(input) => { if (!isCoarsePointer()) input?.focus(); }}
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -580,7 +588,7 @@ export function SearchableSelect({
       data-searchable-select
       // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape for the open panel, which can hold slot rows outside the filter input
       onKeyDown={(event) => {
-        if (!open || event.key !== 'Escape') return;
+        if (!open || event.key !== 'Escape' || isImeKeyEvent(event)) return;
         event.preventDefault();
         // Keep the global Escape handler (turn abort) out of a panel dismissal.
         event.stopPropagation();
@@ -640,7 +648,7 @@ export function SearchableSelect({
                 [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
               }}
               onKeyDown={(event) => {
-                if (event.key !== 'Escape' || event.defaultPrevented) return;
+                if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
                 event.preventDefault();
                 // Keep the global Escape handler (turn abort) and the dialog's
                 // own close-out of a panel dismissal.

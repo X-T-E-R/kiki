@@ -66,7 +66,7 @@ function ResidencyRow({ field, stored }: { field: (typeof FIELDS)[number]; store
 }
 
 /**
- * Sessions › Background work → Session residency: how many sessions stay
+ * Developer & labs › Engine parameters → Session residency: how many sessions stay
  * loaded in memory and when idle ones are unloaded. Each number saves on its
  * own, in one row per value.
  */

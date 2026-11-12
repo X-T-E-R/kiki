@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useI18n } from '../../../i18n';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../SecretField';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 /**
  * One credential slot on the shared secret field, instant apply: a typed
@@ -40,6 +41,7 @@ export function SlotSecretField({ label, configured, optional, disabled, reveal,
         if (draft.mode === 'set') void commit(draft);
       }}
       onKeyDown={(event) => {
+        if (isImeKeyEvent(event)) return;
         if (event.key === 'Enter' && draft.mode === 'set') { event.preventDefault(); void commit(draft); }
         if (event.key === 'Escape' && draft.mode === 'set') setDraft(KEEP_SECRET);
       }}

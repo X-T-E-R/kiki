@@ -23,6 +23,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IBashTool } from '#/agent/tools/os/bash/bash';
 import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
+import { compileToolArgsValidator, validateToolArgs, type JsonType } from '#/tool/args-validator';
 import { compactProfileDescriptions } from '#/agent/tools/agent/subagentDescription';
 import { GENERIC_SUBAGENT_PROFILE } from '#/session/subagent/genericProfile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -500,6 +501,10 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
     publishedEvents,
   };
   return lifecycle;
+}
+
+function validateAgentArgs(tool: ExecutableTool<SubagentToolInput>, args: Record<string, unknown>): string | undefined {
+  return validateToolArgs(compileToolArgsValidator(tool.parameters ?? {}), args as JsonType) ?? undefined;
 }
 
 function agentTool(ctx: TestAgentContext): ExecutableTool<SubagentToolInput> {
@@ -1241,7 +1246,7 @@ describe('AgentRun tool description', () => {
     expect(description).toContain('otherwise omit model_alias to use the target default');
     expect(description).not.toContain('Set model_alias to inherit explicitly');
     expect(description).toContain('do not assume they copy your model or effort');
-    expect(description).toContain('not by repeating them in `prompt`');
+    expect(description).toContain('Choose model, route and tools through the parameters, not in the prompt');
     const properties = agentParameters()['properties'] as Record<string, { description?: string }>;
     expect(properties['model_alias']?.description).toContain('the receipt reports actual_model');
     expect(properties['prompt']?.description).toContain('not model, route or tool choices');
@@ -1276,7 +1281,7 @@ describe('AgentRun tool description', () => {
     );
     expect((properties['effort'] as { description?: string }).description).not.toContain('inherit');
     expect((properties['allow_model_change'] as { description?: string }).description).toContain(
-      'Mutually exclusive with context_mode',
+      'mutually exclusive with context_mode',
     );
     expect((properties['resume'] as { description?: string }).description).toContain(
       'Do not pass name, profile, profile_file, or route',
@@ -2038,7 +2043,7 @@ describe('AgentRun tool execution contract', () => {
     expect(lifecycle.create).not.toHaveBeenCalled();
   });
 
-  it('returns an error when continuing with a profile', async () => {
+  it('returns a named error when continuing with a different profile and ignores the child\'s own profile', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(lifecycle);
     lifecycle.addHandle('agent-existing', 'explore');
@@ -2047,14 +2052,36 @@ describe('AgentRun tool execution contract', () => {
       prompt: 'Continue',
       description: 'Continue work',
       resume: 'agent-existing',
-      profile: 'explore',
+      profile: 'general',
     });
 
     expect(result).toMatchObject({
       isError: true,
-      output: 'Cannot set profile when continuing an existing agent. Pass only resume with the name or agent id.',
+      output: 'Cannot set profile, profile_file, or route when continuing an existing agent; pass only resume with the name or agent id.',
     });
     expect(lifecycle.run).not.toHaveBeenCalled();
+    const same = await agentTool(context).resolveExecution({
+      prompt: 'Continue', description: 'Continue work', resume: 'agent-existing', profile: 'explore',
+    });
+    expect('execute' in same).toBe(true);
+  });
+
+  it.each([
+    [{ new_window: false }, undefined],
+    [{ allow_model_change: false }, undefined],
+    [{ resume: 'agent-existing', context_mode: 'direct', new_window: false, allow_model_change: false }, undefined],
+    [{ new_window: true }, 'new_window requires resume; it continues an existing child with fresh context.'],
+    [{ context_mode: 'fresh' }, 'context_mode requires resume; it chooses how an existing child continues.'],
+    [{ resume: 'agent-existing', context_mode: 'fresh', new_window: true }, 'context_mode replaces new_window and allow_model_change; send context_mode without them.'],
+    [{ resume: 'agent-existing', name: 'other_name' }, 'Cannot set name when continuing an existing agent; the name was fixed at creation.'],
+  ] as const)('reports named cross-field conflicts and ignores false legacy flags: %j', async (extra, message) => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(lifecycle);
+    lifecycle.addHandle('agent-existing', 'explore');
+    expect(validateAgentArgs(agentTool(context), { prompt: 'Go', description: 'Go', ...extra })).toBeUndefined();
+    const execution = await agentTool(context).resolveExecution({ prompt: 'Go', description: 'Go', ...extra });
+    if (message === undefined) expect('execute' in execution).toBe(true);
+    else expect(execution).toMatchObject({ isError: true, output: message });
   });
 
   it('spawns a foreground subagent and returns its summary', async () => {
@@ -2935,7 +2962,7 @@ describe('AgentRun tool execution contract', () => {
       prompt: 'Continue',
       description: 'Continue work',
       resume: 'agent-existing',
-      profile: 'explore',
+      profile: 'coder',
       background: true,
     });
     const valid = await executeAgentTool(context, {
@@ -2946,7 +2973,7 @@ describe('AgentRun tool execution contract', () => {
 
     expect(invalid).toMatchObject({
       isError: true,
-      output: 'Cannot set profile when continuing an existing agent. Pass only resume with the name or agent id.',
+      output: 'Cannot set profile, profile_file, or route when continuing an existing agent; pass only resume with the name or agent id.',
     });
     expect(valid.output).toContain('status: running');
     expect(lifecycle.create).toHaveBeenCalledTimes(1);
@@ -3231,10 +3258,10 @@ describe('AgentRun tool execution contract', () => {
     expect(result.output).toMatch(/^actual_model: \S+$/m);
     expect(result.output).toContain('status: running');
     expect(result.output).toContain('automatic_notification: true');
-    expect(result.output).toContain('parent_notify: enabled');
+    expect(result.output).not.toContain('parent_notify:');
+    expect(result.output).not.toContain('selection_kind:');
     expect(result.output).not.toContain('next_step:');
     expect(result.output).not.toContain('resume_hint:');
-    expect(result.output.split('\n')).toHaveLength(8);
     completion.resolve({ summary: 'finished later' });
   });
 
@@ -3984,9 +4011,9 @@ describe('Agent tools', () => {
       });
 
       const fullOutput =
-        `${'x'.repeat(99)}\n`.repeat(500) +
+        `${'x'.repeat(99)}\n`.repeat(250) +
         'middle elided from preview\n' +
-        `${'x'.repeat(99)}\n`.repeat(10);
+        `${'x'.repeat(99)}\n`.repeat(250);
       ctx.mockNextResponse({ type: 'text', text: 'I will look it up.' }, lookupCall);
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Look up moon' }] });
       await ctx.untilToolCall({

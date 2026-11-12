@@ -5,7 +5,7 @@
  * ConversationShell composer seat across /new → /s/:id.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
@@ -48,7 +48,6 @@ import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
-import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
@@ -160,6 +159,7 @@ import {
   settingsSnapshot,
   subscribeSettings,
   writeLastSessionId,
+  writeLayoutPreferences,
   writeTerminalPanelPrefs,
   type ComposerModelSource,
 } from '@kiki/session-core/settings';
@@ -193,12 +193,17 @@ import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { useLayerHistory } from '../lib/layerHistory';
+import { useCoarsePointer, useLayoutPreferences, usePhoneMode } from '../lib/layoutHooks';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import {
   activeTerminalManager,
   terminalCapabilityAvailable,
   TerminalManager,
 } from '../state/terminalManager';
+
+// The embedded terminal brings xterm.js and its addons; it renders only once
+// the panel is open, so it loads then instead of with the app.
+const TerminalPanel = lazy(() => import('./TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
 
 /** Renew cadence for a queue-edit hold (the server lets it lapse after 5 minutes). */
 export const QUEUE_EDIT_HOLD_RENEW_MS = 60_000;
@@ -548,6 +553,10 @@ function Header({
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
             onPromptDetails={() => { setPromptDetailsOpen(true); }}
+            // Below lg the header has no rail toggle (and on a phone the cwd
+            // that also opens it is hidden), so the overview's way in is here.
+            // The same toggle opens the overlay layer the back button closes.
+            onOpenOverview={railAvailable && !railToggleVisible ? onToggleRail : undefined}
             onAction={onSessionAction}
             freshContextAvailable={freshContextAvailable}
             canFork={!harnessDenies(harness, 'fork')}
@@ -670,36 +679,54 @@ export function SessionTitle({
   promotedFrom?: Session['promoted_from'];
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
+  /** Rejects when the rename did not land; the caller has already reported why. */
   onRename: (title: string) => Promise<void>;
   onOpenRail?: () => void;
 }) {
   const { t } = useI18n();
-  const [draft, setDraft] = useState(title);
+  // The committed name shows at once: the list refetch that brings it back
+  // as `title` waits on the patch, and the old name used to flash back in
+  // between. It holds only while `title` is still the name it replaced, and
+  // drops when the rename fails (the caller has already said why).
+  const [renamed, setRenamed] = useState<{ readonly from: string; readonly to: string } | undefined>(undefined);
+  const current = renamed !== undefined && renamed.from === title ? renamed.to : title;
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const [draft, setDraft] = useState(current);
   const inputRef = useRef<HTMLInputElement>(null);
   // Guards the blur handler: Esc and a committed Enter both blur the input,
   // and neither should submit a second time.
   const settledRef = useRef(false);
 
+  // Seeded once per edit: a title that lands while the user types (the
+  // auto-title of a fresh session) must not replace the draft and select it.
   useEffect(() => {
     if (!editing) return;
     settledRef.current = false;
-    setDraft(title);
+    setDraft(currentRef.current);
     const input = inputRef.current;
     if (input === null) return;
     input.focus();
     input.select();
-  }, [editing, title]);
+  }, [editing]);
 
   const commit = () => {
     if (settledRef.current) return;
     settledRef.current = true;
     const next = draft.trim();
     onEditingChange(false);
-    if (next === '' || next === title) return;
-    void onRename(next);
+    if (next === '' || next === current) return;
+    const attempt = { from: title, to: next };
+    setRenamed(attempt);
+    onRename(next).catch(() => {
+      setRenamed((value) => (value === attempt ? undefined : value));
+    });
   };
 
-  const shown = useThreadTitle(title !== '' ? title : t('sidebar.untitled'));
+  const shown = useThreadTitle(current !== '' ? current : t('sidebar.untitled'));
+  // On a phone the title fills the top of the screen, where a stray tap would
+  // open the rename field and its keyboard; there rename is the ⋯ menu's row.
+  const phoneMode = usePhoneMode();
   // Title keeps its width; the cwd beside it yields first (shrink-[100]) so a
   // roomy header never truncates the name to make space for the path.
   return (
@@ -712,6 +739,9 @@ export function SessionTitle({
           value={draft}
           onChange={(event) => { setDraft(event.target.value); }}
           onKeyDown={(event) => {
+            // Enter / Escape that confirm or cancel an IME candidate belong to
+            // the IME, not to the rename.
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             if (event.key === 'Enter') {
               event.preventDefault();
               commit();
@@ -727,16 +757,25 @@ export function SessionTitle({
         />
       ) : (
         <h1 className="-ml-1.5 min-w-0 max-w-full">
-          <button
-            type="button"
-            data-session-title
-            onClick={() => { onEditingChange(true); }}
-            title={t('sv.renameAria')}
-            aria-label={`${shown} — ${t('sv.renameAria')}`}
-            className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[15px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
-          >
-            {shown}
-          </button>
+          {phoneMode ? (
+            <span
+              data-session-title
+              className="block max-w-full truncate px-1.5 py-0.5 font-display text-[15px] leading-tight font-semibold tracking-tight text-ink"
+            >
+              {shown}
+            </span>
+          ) : (
+            <button
+              type="button"
+              data-session-title
+              onClick={() => { onEditingChange(true); }}
+              title={t('sv.renameAria')}
+              aria-label={`${shown} — ${t('sv.renameAria')}`}
+              className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-display text-[15px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:bg-canvas"
+            >
+              {shown}
+            </button>
+          )}
         </h1>
       )}
       {cwd !== undefined && cwd !== '' && !editing ? (
@@ -809,6 +848,7 @@ export function SessionActionsMenu({
   onAction,
   onSideQuestion,
   onPromptDetails,
+  onOpenOverview,
   freshContextAvailable = false,
   leading,
   canFork = true,
@@ -819,6 +859,11 @@ export function SessionActionsMenu({
   terminalOpen: boolean;
   onToggleTerminal: () => void;
   onBeginRename: () => void;
+  /**
+   * Opens the session overview (the right rail) where the header has no
+   * rail toggle of its own; the row is hidden without it.
+   */
+  onOpenOverview?: () => void;
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   /**
    * True once the conversation holds something to carry over: starts a fresh
@@ -834,6 +879,15 @@ export function SessionActionsMenu({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const terminalChord = actionChordText('terminal-toggle', useShortcutState());
+  // On a phone the back button closes the menu instead of leaving the session.
+  const coarse = useCoarsePointer();
+  useLayerHistory('session-actions-menu', open && coarse, () => { setOpen(false); });
+  // A phone keyboard has no Ctrl, Tab or arrows, so in phone mode the
+  // terminal is offered only once this device opts in (Settings › General).
+  // A panel that is already open keeps its row, so the menu can still close it.
+  const phoneMode = usePhoneMode();
+  const showTerminalOnPhone = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot).showTerminalOnPhone;
+  const terminalOffered = terminalAvailable && (!phoneMode || showTerminalOnPhone || terminalOpen);
 
   useEffect(() => {
     if (!open) return;
@@ -859,7 +913,7 @@ export function SessionActionsMenu({
   }, [open]);
 
   const itemClass =
-    'flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+    'flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper pointer-coarse:h-11';
   const pick = (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
     setOpen(false);
     onAction(action);
@@ -899,7 +953,18 @@ export function SessionActionsMenu({
           </button>
           {onPromptDetails !== undefined ? <button type="button" role="menuitem" className={itemClass} data-prompt-details-open
             onClick={() => { setOpen(false); onPromptDetails(); }}>{t('agentPanel.prompt.title')}</button> : null}
-          {terminalAvailable ? (
+          {onOpenOverview !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={itemClass}
+              data-session-overview-open
+              onClick={() => { setOpen(false); onOpenOverview(); }}
+            >
+              {t('inspector.overview')}
+            </button>
+          ) : null}
+          {terminalOffered ? (
             <button
               type="button"
               role="menuitemcheckbox"
@@ -912,7 +977,7 @@ export function SessionActionsMenu({
               }}
             >
               <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
-              {terminalChord !== undefined ? <span className="text-[12px] text-ink-faint">{terminalChord}</span> : null}
+              {terminalChord !== undefined ? <span className="text-[12px] text-ink-faint pointer-coarse:hidden">{terminalChord}</span> : null}
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
@@ -1636,18 +1701,39 @@ export function isTerminalEscapeTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Global Escape closer for rail / terminal. Overlay and PTY own the key first;
- * abort stays in the other listener and must not double-fire.
+ * Escape in a text field — an input, a select, a textarea, or a contenteditable
+ * surface, which includes the composer's editor — belongs to that field. It
+ * never stops the running turn.
+ */
+export function isFormFieldEscapeTarget(target: EventTarget | null): boolean {
+  if (target === null || typeof HTMLElement === 'undefined' || !(target instanceof HTMLElement)) return false;
+  return target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' ||
+    target.isContentEditable === true;
+}
+
+/**
+ * Session Escape, in order: an open overlay, then the focused PTY, own the key;
+ * then an open terminal panel or rail closes; only then does the turn stop.
+ * The closer and the abort are two window listeners whose order changes as
+ * their effects re-run, so each one checks the full order itself: the abort
+ * stands down whenever there is chrome to close, and the closer acts only then.
+ *
+ * `railOpen` here means the rail as a layer over the conversation (narrow
+ * screens). The docked rail on a wide screen is part of the layout, open by
+ * default and remembered once closed — Escape passing through it would hide
+ * the panel for every session when the user meant "stop".
  */
 export function shouldCloseSessionChromeOnEscape(input: {
   key: string;
   defaultPrevented: boolean;
   overlayOpen: boolean;
   terminalFocused: boolean;
+  terminalOpen: boolean;
+  railOpen: boolean;
 }): boolean {
   if (input.key !== 'Escape') return false;
   if (input.defaultPrevented || input.overlayOpen || input.terminalFocused) return false;
-  return true;
+  return input.terminalOpen || input.railOpen;
 }
 
 export function shouldHandleGlobalAbortOnEscape(input: {
@@ -1656,12 +1742,33 @@ export function shouldHandleGlobalAbortOnEscape(input: {
   overlayOpen: boolean;
   terminalFocused: boolean;
   terminalOpen: boolean;
+  railOpen: boolean;
   inFormField: boolean;
   fullscreenPreviewOpen?: boolean;
 }): boolean {
   if (input.key !== 'Escape') return false;
   return !input.defaultPrevented && !input.overlayOpen && !input.terminalFocused &&
-    !input.terminalOpen && !input.inFormField && !input.fullscreenPreviewOpen;
+    !input.terminalOpen && !input.railOpen && !input.inFormField && !input.fullscreenPreviewOpen;
+}
+
+/**
+ * Stop is pending from the press until the abort settles, or until the turn
+ * ends on its own, whichever is first: the abort waits on a request and a
+ * refresh, and without this the button did nothing visible on a slow link and
+ * invited a second press. `busy` ending always clears it, so Stop is never
+ * left disabled.
+ */
+export function useAbortPending(busy: boolean): readonly [boolean, (abort: Promise<unknown>) => void] {
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    if (!busy) setPending(false);
+  }, [busy]);
+  const track = useCallback((abort: Promise<unknown>) => {
+    setPending(true);
+    const settle = () => { setPending(false); };
+    void abort.then(settle, settle);
+  }, []);
+  return [pending, track] as const;
 }
 
 export function canAbortActiveTurn(
@@ -1922,16 +2029,18 @@ export function SessionView({
   // only): attachment chips and pill overrides restore instead of vanishing
   // on every session switch. The /new hand-off state wins on first mount.
   const restoredComposer = useMemo(() => readComposerState(sessionId), [sessionId]);
-  // The right rail disappears when horizontal space is constrained (<1024px, lg breakpoint)
-  // rather than showing as a floating overlay drawer. When the window widens (>=1024px),
-  // it restores inline following the user's explicit preference (defaults to railOpenByDefault).
   // Whether the user moved the approval mode for this session's messages, as
   // opposed to the mode merely being the session's current value. A bare
   // external engine is run as it is, so an untouched mode is not sent.
   const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
 
-  const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
+  // The inline rail (lg and up) keeps the user's last open/closed choice in
+  // the layout preferences, like the sidebar's collapse and the rail's width:
+  // this view is keyed per session, so local state reset it on every switch.
+  // Until the user picks, the Settings default decides.
+  const layoutPrefs = useLayoutPreferences();
+  const userRailOpen = layoutPrefs.railOpen ?? defaults.railOpenByDefault;
   // Below lg the rail is an overlay layer (full-screen on a phone): it opens
   // only from an explicit toggle this visit, never from the saved default —
   // a deep link must land on the conversation, not under a drawer. The wide
@@ -1944,13 +2053,13 @@ export function SessionView({
   const railAvailable = true;
   const toggleRail = useCallback(() => {
     // Wide and narrow remember separately: the overlay layer's open state is
-    // per-visit, the inline rail keeps the saved preference.
+    // per-visit, the inline rail writes the saved preference.
     if (isNarrowScreen) setNarrowRailOpen((value) => !value);
-    else setUserRailOpen((value) => !value);
-  }, [isNarrowScreen]);
+    else writeLayoutPreferences({ railOpen: !userRailOpen });
+  }, [isNarrowScreen, userRailOpen]);
   const closeRail = useCallback(() => {
     if (isNarrowScreen) setNarrowRailOpen(false);
-    else setUserRailOpen(false);
+    else writeLayoutPreferences({ railOpen: false });
   }, [isNarrowScreen]);
   // The phone's back closes the rail layer before route navigation. The
   // session shell's rail never opens below lg, so the layer only arms where
@@ -1959,6 +2068,7 @@ export function SessionView({
   useLayerHistory('session-rail', narrowRailOpen && isNarrowScreen, closeRail);
   const cockpit = railOpen && railMode === 'cockpit';
   const railIsOverlay = isNarrowScreen;
+  const overlayRailOpen = railIsOverlay && railOpen;
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
   // rail's owner when the user is looking at an embedded subagent view — the
@@ -2203,9 +2313,10 @@ export function SessionView({
     writeLastSessionId(sessionId);
   }, [sessionId]);
 
-  // Close the inline rail on Escape (the app-level sidebar closes itself).
-  // Overlays / PTY own the key first; abort lives in the other listener and
-  // skips when the terminal panel is open so the two cannot double-fire.
+  // Close the overlay rail and the terminal panel on Escape (the app-level sidebar
+  // closes itself). Overlays / PTY own the key first; the abort lives in the
+  // other listener and stands down while either is open, so whichever of the
+  // two runs first, one Escape does one thing.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
@@ -2214,18 +2325,19 @@ export function SessionView({
           defaultPrevented: event.defaultPrevented,
           overlayOpen: anyOverlayOpen(),
           terminalFocused: isTerminalEscapeTarget(event.target),
+          terminalOpen,
+          railOpen: overlayRailOpen,
         })
       ) {
         return;
       }
-      if (!railOpen && !terminalOpen) return;
       event.preventDefault();
-      closeRail();
+      if (overlayRailOpen) closeRail();
       if (terminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [railOpen, terminalOpen, closeRail, toggleTerminalPanel]);
+  }, [overlayRailOpen, terminalOpen, closeRail, toggleTerminalPanel]);
 
   // Per-session composer drafts + chrome. Attachments and pill overrides are
   // seeded by the initializers on first mount (the /new hand-off wins, then
@@ -2356,6 +2468,7 @@ export function SessionView({
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
+  const [abortPending, trackAbort] = useAbortPending(state.busy);
   const sessionSendReady = resolveSessionSendReady({
     controllerAvailable: controller !== null,
     leaseReady,
@@ -2519,9 +2632,20 @@ export function SessionView({
     return () => { clearTimeout(timer); };
   }, [loadError, sessionId, navigate, t, sessionStillListed]);
 
+  // Demand for what this page shows. Focus is the routed timeline's `delta`
+  // lease: main's on the main page, the agent's on an agent page (whose
+  // workspace also holds its own). Moving it leaves main on the session's
+  // `turn` lease, so coming back raises main once instead of reloading it
+  // from nothing. The rail retargeted at a panel tab's agent reads that
+  // agent's run state, tasks and pending interactions: `turn` carries them.
   useEffect(() => {
-    controller?.setFocusedAgent(selectedAgentId);
+    controller?.setFocusedAgent(selectedAgentId ?? MAIN_AGENT_ID);
   }, [controller, selectedAgentId]);
+  useEffect(() => {
+    if (controller === null || panelFocusAgent === undefined || typeof controller.retainAgentView !== 'function') return;
+    controller.retainAgentView('session-rail-focus', panelFocusAgent, 'turn');
+    return () => { controller.releaseAgentView('session-rail-focus'); };
+  }, [controller, panelFocusAgent]);
 
   // The sessions list lives in App (single owner, page-1 polling); this view
   // only merges the polled record for ITS session into the live controller.
@@ -3166,24 +3290,21 @@ export function SessionView({
       if (controller === null) return;
       const target = event.target as HTMLElement | null;
       if (event.key === 'Escape') {
+        // Escape that dismisses an IME candidate window belongs to the IME.
+        if (event.isComposing || event.keyCode === 229) return;
         // A child route or a focused preview tab owns its own keyboard surface.
         // Escape there must never abort the main agent behind the panel.
         if (selectedAgentId !== undefined ||
           (target?.closest('[data-preview-workspace]') as HTMLElement | null)?.hidden === false ||
           (railIsOverlay && document.querySelector('[data-preview-workspace]:not([hidden])') !== null)) return;
-        const inFormField =
-          target !== null &&
-          (target.tagName === 'INPUT' ||
-            target.tagName === 'SELECT' ||
-            target.isContentEditable ||
-            (target.tagName === 'TEXTAREA' && !Object.hasOwn(target.dataset, 'composer')));
         if (!shouldHandleGlobalAbortOnEscape({
           key: event.key,
           defaultPrevented: event.defaultPrevented,
           overlayOpen: anyOverlayOpen(),
           terminalFocused: isTerminalEscapeTarget(event.target),
           terminalOpen,
-          inFormField,
+          railOpen: overlayRailOpen,
+          inFormField: isFormFieldEscapeTarget(event.target),
           // Focus falls back to body when Hide panel unmounts its button. The
           // visible fullscreen preview still owns Escape at desktop widths.
           fullscreenPreviewOpen: document.querySelector('[data-preview-workspace][data-preview-fullscreen]:not([hidden])') !== null,
@@ -3191,14 +3312,14 @@ export function SessionView({
         const current = controller.getState();
         if (canAbortActiveTurn(current)) {
           event.preventDefault();
-          void controller
+          trackAbort(controller
             .abortActive()
             .catch((error: unknown) => {
               pushAbortFailureToast(
                 controller,
                 error instanceof Error ? error.message : t('sv.abortMaybeRunning'),
               );
-            });
+            }));
         }
         return;
       }
@@ -3252,7 +3373,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [controller, t, terminalOpen, selectedAgentId, railIsOverlay]);
+  }, [controller, t, terminalOpen, overlayRailOpen, selectedAgentId, railIsOverlay, trackAbort]);
 
   const skillSelection = skillControlSelectionKey({ pendingProfile, pendingExecution, modelOverride, effortOverride,
     modelChoice, effortChoice, modelSwitchMode, permissionOverride });
@@ -3889,6 +4010,8 @@ boundExecution,
           tone: 'error',
           text: error instanceof Error ? error.message : String(error),
         });
+        // Reported above; rethrown so the header drops the name it showed early.
+        throw error;
       }
     },
     [client, sessionId, actionContext],
@@ -4714,10 +4837,23 @@ boundExecution,
       client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
     [client, sessionId],
   );
+  // A message the user just sent from this composer is brought into view: the
+  // timeline follows new rows only for a reader already at the end, so a
+  // reader scrolled up into history never saw it go out. Only these three
+  // composer handlers do it — the first-message hand-off, retries and queue
+  // edits go through `actions` directly — and only when the message starts or
+  // joins the turn now: one sent into a running turn waits in the queue strip
+  // above the composer, so the reader stays where they are.
+  const revealOwnSend = useCallback((joinsNow: boolean) => {
+    if (!joinsNow && controller?.getState().busy !== false) return;
+    void locateInTimeline({ kind: 'latest' }, { sessionId, agentId: MAIN_AGENT_ID, notify: false });
+  }, [controller, sessionId]);
   const handleActivateSkill = useCallback(
-    (name: string, args: string, skillAttachments: readonly ComposerAttachment[], userInput: string) =>
-      actions?.activateSkill(name, args, skillAttachments, undefined, userInput),
-    [actions],
+    (name: string, args: string, skillAttachments: readonly ComposerAttachment[], userInput: string) => {
+      revealOwnSend(false);
+      return actions?.activateSkill(name, args, skillAttachments, undefined, userInput);
+    },
+    [actions, revealOwnSend],
   );
   const handleCompactContext = useCallback(() => { runSessionAction('compact'); }, [runSessionAction]);
   const handleComposerSend = useCallback(
@@ -4730,8 +4866,11 @@ boundExecution,
         readonly presentation?: import('@kiki/transcript').TextPresentation;
         readonly skills?: readonly PromptSkillActivation[];
       },
-    ) => actions?.send(text, composerAttachments, options),
-    [actions],
+    ) => {
+      revealOwnSend(false);
+      return actions?.send(text, composerAttachments, options);
+    },
+    [actions, revealOwnSend],
   );
   const handleComposerSendNow = useCallback(
     (
@@ -4739,10 +4878,15 @@ boundExecution,
       composerAttachments: readonly ComposerAttachment[],
       presentation?: import('@kiki/transcript').TextPresentation,
       skills?: readonly PromptSkillActivation[],
-    ) => actions?.send(text, composerAttachments, { now: true, presentation, skills }),
-    [actions],
+    ) => {
+      revealOwnSend(true);
+      return actions?.send(text, composerAttachments, { now: true, presentation, skills });
+    },
+    [actions, revealOwnSend],
   );
-  const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);
+  const handleComposerAbort = useCallback(() => {
+    if (actions !== null) trackAbort(actions.abort());
+  }, [actions, trackAbort]);
 
   // ---- goal card + recovered-queue gate (main view dock) ----
   const handleGoalRefresh = useCallback(
@@ -4873,6 +5017,9 @@ boundExecution,
     ),
     [state.blocks, forest, pendingSubmission, state.durableIngress],
   );
+  // One object per (state, blocks) pair, so the memoized timeline skips the
+  // renders this component does for its own reasons (draft edits, clocks).
+  const timelineState = useMemo(() => ({ ...state, blocks: mainTranscriptBlocks }), [state, mainTranscriptBlocks]);
   const retryOwnPending = useCallback((promptId: string) => {
     const pending = pendingRetryRef.current;
     if (pending?.id !== promptId || pendingSubmissionRef.current?.id !== promptId) return false;
@@ -4917,7 +5064,13 @@ boundExecution,
     trayItems.length === 0 ? undefined : {
       count: trayItems.length,
       takeOverSeq: reviewRequest?.seq,
+      // The composer sits outside the timeline's detail provider; an approval
+      // card needs one to know its display arrived whole and to read the rest.
       render: (footer: ReactNode) => (
+        <TranscriptDetailProvider controller={controller ?? undefined} loads={state.detailLoads} contentRefs={state.contentRefs}
+          sessionId={sessionId} agentId={MAIN_AGENT_ID}
+          load={(agentId, kind, id) => controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false)}
+          loadContent={(ref) => controller?.loadContentSegment(MAIN_AGENT_ID, ref) ?? Promise.resolve(false)}>
         <NeedsYouTray
           ref={trayRef}
           placement="card"
@@ -4928,10 +5081,14 @@ boundExecution,
           onAnswerQuestion={handleAnswerQuestion}
           onDismissQuestion={handleDismissQuestion}
           onRequestBatchResolve={handleBatchResolve}
+          permissionMode={permissionMode}
+          onChangePermissionMode={handlePermissionChange}
         />
+        </TranscriptDetailProvider>
       ),
     }
-  ), [trayItems, trayAgentNames, reviewRequest?.seq, handleResolveApproval, handleAnswerQuestion, handleDismissQuestion, handleBatchResolve]);
+  ), [trayItems, trayAgentNames, reviewRequest?.seq, handleResolveApproval, handleAnswerQuestion, handleDismissQuestion, handleBatchResolve,
+    controller, state.detailLoads, state.contentRefs, sessionId, permissionMode, handlePermissionChange]);
   const handleLocateAnnotation = useCallback((annotation: SelectionAnnotation) => {
     const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
     if (blockId !== undefined) navigateTimeline({ kind: 'annotation', blockId, annotationId: annotation.id }, { sessionId });
@@ -5119,6 +5276,7 @@ boundExecution,
             working={composerWorkingInfo}
             sessionRemainder={sessionRemainder}
             onAbort={handleComposerAbort}
+            abortPending={abortPending}
             queueEditing={queueEdit !== null}
             onQueueEditConfirm={handleQueueEditConfirm}
             onQueueEditCancel={handleQueueEditCancel}
@@ -5190,6 +5348,7 @@ boundExecution,
     handleComposerSendNow,
     nativeSteeringUnavailable,
     handleComposerAbort,
+    abortPending,
     queueEdit,
     updateQueueEditAttachments,
     handleQueueEditConfirm,
@@ -5324,7 +5483,7 @@ boundExecution,
           />,
           timeline: {
             view: timelineView,
-            state: { ...state, blocks: mainTranscriptBlocks },
+            state: timelineState,
             connected: wsStatus === 'open',
             onLoadOlder: handleLoadOlder,
             onResolveApproval: handleResolveApproval,
@@ -5417,13 +5576,24 @@ boundExecution,
       </ModelSwitchActionsContext.Provider>
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
-            <TerminalPanel
-              manager={currentTerminalManager}
-              height={terminalHeight}
-              wsStatus={wsStatus}
-              onHeightChange={handleTerminalHeightChange}
-              onClose={toggleTerminalPanel}
-            />,
+            // The fallback takes the panel's own box, so the column does not
+            // jump when the terminal code arrives.
+            <Suspense fallback={
+              <section
+                data-terminal-panel-loading
+                aria-busy="true"
+                className="flex shrink-0 flex-col bg-shell text-shell-ink"
+                style={{ height: terminalHeight }}
+              />
+            }>
+              <TerminalPanel
+                manager={currentTerminalManager}
+                height={terminalHeight}
+                wsStatus={wsStatus}
+                onHeightChange={handleTerminalHeightChange}
+                onClose={toggleTerminalPanel}
+              />
+            </Suspense>,
             slots.footer,
           )
         : null}

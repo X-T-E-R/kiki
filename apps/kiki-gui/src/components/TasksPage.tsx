@@ -5,7 +5,11 @@
  * the session's tasks; this page is the full inventory behind its "View all"
  * entry. The wire has no cross-session tasks endpoint (REST.md §3.7 only
  * scopes tasks under `/sessions/{id}/tasks*`), so the page stays
- * session-scoped and keeps a "back to session" exit.
+ * session-scoped; the page header's back arrow returns to the session.
+ *
+ * Rows sit in two groups, running and finished, each row two lines: the
+ * state as a word with the task's name, then its command. A running row stops
+ * in place; the status filter appears only on a long list.
  *
  * Data: the list rides paged `listTasks` (including terminal "ghost" tasks)
  * and polls only while something is still running. Row expansion lazily
@@ -17,16 +21,17 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import type { Task, TaskStatus } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { sortTasks } from '@kiki/session-core/sessions';
-import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
-import { DisclosureChevron, Icon } from './icons';
-import { pushToast } from '../lib/toasts';
+import { DisclosureChevron } from './icons';
+import { PAGE_WIDTH, PageHeader } from './PageChrome';
+import { LIST_TOOLS_MIN_ITEMS } from './settings/list';
+import { SECONDARY_BUTTON } from './ui';
 import { useConnection } from '../state/connection';
 
 const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
@@ -36,19 +41,6 @@ const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
   'failed',
   'cancelled',
 ];
-
-function statusPillTone(status: TaskStatus): string {
-  switch (status) {
-    case 'running':
-      return 'bg-ink/[0.05] text-ink';
-    case 'completed':
-      return 'bg-success/10 text-success';
-    case 'failed':
-      return 'bg-danger/10 text-danger';
-    case 'cancelled':
-      return 'bg-paper text-ink-soft';
-  }
-}
 
 function DetailRow({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -142,12 +134,12 @@ function TaskDetail({ task }: { task: Task }) {
 export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
   const { t, tp, time, locale } = useI18n();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null);
+  const [stopFailure, setStopFailure] = useState<{ readonly taskId: string; readonly detail: string } | null>(null);
   // Tracks the last poll where a task was running. Once the set goes quiet the
   // interval switches to a short grace pass so a "running → completed" flip
   // that straddled a tick still flushes to the DOM before polling stops.
@@ -181,14 +173,9 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     mutationFn: (taskId: string) => client.cancelTask(sessionId, taskId),
     onSettled: (_data, error, taskId) => {
       setPendingCancelId(null);
-      if (error !== null) {
-        pushToast({
-          tone: 'error',
-          text: t('sv.stopTaskFailed', {
-            detail: error instanceof Error ? error.message : String(error),
-          }),
-        });
-      }
+      // A failed stop is said on the row it failed for, not in a toast that
+      // leaves the reader to work out which task it meant.
+      setStopFailure(error === null ? null : { taskId, detail: errorText(locale, error) });
       // 40904 (already finished) resolves as success-shaped data; either way a
       // refetch reconciles the row with the server's truth.
       void queryClient.invalidateQueries({ queryKey: ['session-tasks', sessionId] });
@@ -200,170 +187,154 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     () => sortTasks(tasksQuery.data?.pages.flatMap((page) => page.items) ?? []),
     [tasksQuery.data],
   );
+  const running = tasks.filter((task) => task.status === 'running');
+  const finished = tasks.filter((task) => task.status !== 'running');
+  // The status filter is a list tool: it appears on a long list, and stays
+  // while it is narrowing one so it can be turned back off.
+  const showFilter = filter !== 'all' || tasks.length >= LIST_TOOLS_MIN_ITEMS;
 
-  const { sidebarOpen } = useSidebarContext();
+  const renderRow = (task: Task) => {
+    const expanded = expandedId === task.id;
+    const isRunning = task.status === 'running';
+    const failure = stopFailure?.taskId === task.id ? stopFailure.detail : undefined;
+    return (
+      <li key={task.id} data-task-row className="py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          {isRunning ? (
+            <span aria-hidden className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={task.description}>
+            <span data-task-status={task.status} className="text-ink-soft">{t(`rail.taskStatus.${task.status}`)}</span>
+            <span aria-hidden className="text-ink-faint"> · </span>
+            <span className="font-medium">{task.description}</span>
+          </span>
+          <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">
+            {time.relativeTime(task.created_at)}
+          </span>
+          {isRunning ? (
+            <button
+              type="button"
+              disabled={pendingCancelId === task.id}
+              onClick={() => {
+                setPendingCancelId(task.id);
+                setStopFailure(null);
+                cancelMutation.mutate(task.id);
+              }}
+              title={t('rail.stopTitle')}
+              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
+            >
+              {pendingCancelId === task.id ? t('tasks.stopping') : t('rail.stop')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? t('tasks.collapse') : t('tasks.expand')}
+            onClick={() => { setExpandedId(expanded ? null : task.id); }}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11"
+          >
+            <DisclosureChevron open={expanded} className="text-current" />
+          </button>
+        </div>
+        {task.command !== undefined ? (
+          <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" title={task.command}>
+            {task.command}
+          </p>
+        ) : null}
+        {failure !== undefined ? (
+          <p role="alert" data-task-stop-error className="mt-1 text-[12px] text-ink-soft">
+            {t('tasks.stopFailed', { detail: failure })}
+          </p>
+        ) : null}
+        {expanded ? <TaskDetail task={task} /> : null}
+      </li>
+    );
+  };
+  const group = (key: 'running' | 'finished', rows: readonly Task[]) => (rows.length === 0 ? null : (
+    <section data-task-group={key} aria-labelledby={`task-group-${key}`}>
+      <h2 id={`task-group-${key}`} className="mb-1 flex items-baseline gap-2 text-[12px] font-medium text-ink-soft">
+        {t(key === 'running' ? 'tasks.group.running' : 'tasks.group.finished')}
+        <span className="text-ink-faint tabular-nums">{rows.length}</span>
+      </h2>
+      <ul className="divide-y divide-hairline border-t border-hairline">
+        {rows.map(renderRow)}
+      </ul>
+    </section>
+  ));
 
   return (
     <>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          aria-label={t('sv.openMenuAria')}
-          aria-expanded={sidebarOpen}
-          aria-controls="app-sidebar"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
-        >
-          <Icon name="menu" size={16} />
-        </button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-          {t('tasks.title')}
-        </h1>
-        <button
-          type="button"
-          onClick={() => void navigate(`/s/${sessionId}`)}
-          className="shrink-0 rounded-lg border border-hairline px-3 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-        >
-          {t('tasks.back')}
-        </button>
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8">
-        <div className="mx-auto max-w-[860px] space-y-4" data-tasks-page>
+      <PageHeader title={t('tasks.title')} onToggleSidebar={onToggleSidebar} width="split" />
+      <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
+        <div className={`mx-auto ${PAGE_WIDTH.split} space-y-6`} data-tasks-page>
           {tasksQuery.isPending ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-hairline bg-panel px-4 py-10 text-[12px] text-ink-faint">
+            <p role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
               {t('tasks.loading')}
-            </div>
+            </p>
           ) : tasksQuery.isError ? (
-            <div className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
-              <p className="text-[13px] font-medium text-danger">{t('tasks.loadFailed')}</p>
-              <p className="mt-1 text-[12px] text-danger">
-                {errorText(locale, tasksQuery.error)}
-              </p>
+            <div role="alert" data-tasks-error className="py-4 text-[13px]">
+              <p className="font-medium text-ink">{t('tasks.loadFailed')}</p>
+              <p className="mt-1 text-[12px] text-ink-soft">{errorText(locale, tasksQuery.error)}</p>
               <button
                 type="button"
                 onClick={() => void tasksQuery.refetch()}
-                className="mt-2 text-[12px] font-medium text-danger underline"
+                className={`mt-3 ${SECONDARY_BUTTON}`}
               >
                 {t('common.retry')}
               </button>
             </div>
-          ) : tasks.length === 0 ? (
-            <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[13px] text-ink-faint">
-              {t('tasks.empty')}
-            </p>
+          ) : tasks.length === 0 && filter === 'all' ? (
+            <div data-tasks-empty className="py-6 text-[13px] leading-relaxed">
+              <p className="text-ink">{t('tasks.empty')}</p>
+              <p className="mt-1 max-w-[62ch] text-ink-soft">{t('tasks.emptyExplain')}</p>
+            </div>
           ) : (
             <>
-              <div className="flex flex-wrap items-center gap-3">
-                <div
-                  role="group"
-                  aria-label={t('tasks.title')}
-                  className="inline-flex rounded-lg border border-hairline bg-panel p-0.5"
-                >
-                  {STATUS_FILTERS.map((candidate) => (
-                    <button
-                      key={candidate}
-                      type="button"
-                      data-status-filter={candidate}
-                      onClick={() => { setFilter(candidate); }}
-                      aria-pressed={filter === candidate}
-                      className={`rounded-md px-3 py-1 text-[12px] transition-colors ${
-                        filter === candidate
-                          ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                          : 'text-ink-soft hover:text-ink'
-                      }`}
-                    >
-                      {candidate === 'all'
-                        ? t('tasks.filter.all')
-                        : t(`rail.taskStatus.${candidate}`)}
-                    </button>
-                  ))}
-                </div>
-                <span className="ml-auto text-[12px] text-ink-faint tabular-nums">
-                  {tp('tasks.count', tasks.length)}
-                </span>
-              </div>
-
-              {tasks.length === 0 ? (
-                <p className="rounded-2xl border border-hairline bg-panel px-4 py-10 text-center text-[13px] text-ink-faint">
-                  {t('tasks.emptyFilter')}
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {tasks.map((task) => {
-                    const expanded = expandedId === task.id;
-                    const running = task.status === 'running';
-                    return (
-                      <li
-                        key={task.id}
-                        data-task-row
-                        className={`rounded-2xl border bg-panel px-4 py-3 shadow-[0_2px_4px_rgb(var(--kiki-shadow-ink)/0.03)] transition-colors ${
-                          running ? 'border-hairline-strong' : 'border-hairline'
+              {showFilter ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <div
+                    role="group"
+                    aria-label={t('tasks.title')}
+                    className="inline-flex flex-wrap rounded-md bg-ink/[0.04] p-0.5"
+                  >
+                    {STATUS_FILTERS.map((candidate) => (
+                      <button
+                        key={candidate}
+                        type="button"
+                        data-status-filter={candidate}
+                        onClick={() => { setFilter(candidate); }}
+                        aria-pressed={filter === candidate}
+                        className={`rounded-[5px] px-3 py-1 text-[12px] transition-colors pointer-coarse:min-h-11 ${
+                          filter === candidate
+                            ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                            : 'text-ink-soft hover:text-ink'
                         }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`shrink-0 rounded-full px-2 py-px text-[11px] font-medium ${statusPillTone(task.status)}`}
-                          >
-                            {running ? (
-                              <span
-                                aria-hidden
-                                className="status-dot-busy mr-1 inline-block h-1.5 w-1.5 rounded-full bg-ink-soft"
-                              />
-                            ) : null}
-                            {t(`rail.taskStatus.${task.status}`)}
-                          </span>
-                          <span className="shrink-0 rounded-md border border-hairline px-1.5 py-px text-[11px] text-ink-faint">
-                            {t(`tasks.kind.${task.kind}`)}
-                          </span>
-                          <span
-                            className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink"
-                            title={task.description}
-                          >
-                            {task.description}
-                          </span>
-                          <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">
-                            {time.relativeTime(task.created_at)}
-                          </span>
-                          {running ? (
-                            <button
-                              type="button"
-                              disabled={pendingCancelId === task.id}
-                              onClick={() => {
-                                setPendingCancelId(task.id);
-                                cancelMutation.mutate(task.id);
-                              }}
-                              title={t('rail.stopTitle')}
-                              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[12px] text-ink-soft transition-colors hover:border-danger hover:text-danger disabled:opacity-50"
-                            >
-                              {pendingCancelId === task.id ? t('tasks.stopping') : t('rail.stop')}
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            aria-expanded={expanded}
-                            aria-label={expanded ? t('tasks.collapse') : t('tasks.expand')}
-                            onClick={() => { setExpandedId(expanded ? null : task.id); }}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-                          >
-                            <DisclosureChevron open={expanded} className="text-current" />
-                          </button>
-                        </div>
-                        {task.command !== undefined ? (
-                          <p className="mt-1.5 truncate font-mono text-[11px] text-ink-faint">
-                            {task.command}
-                          </p>
-                        ) : null}
-                        {expanded ? <TaskDetail task={task} /> : null}
-                      </li>
-                    );
-                  })}
-                </ul>
+                        {candidate === 'all'
+                          ? t('tasks.filter.all')
+                          : t(`rail.taskStatus.${candidate}`)}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="ml-auto text-[12px] text-ink-faint tabular-nums">
+                    {tp('tasks.count', tasks.length)}
+                  </span>
+                </div>
+              ) : null}
+
+              {tasks.length === 0 ? (
+                <p className="py-6 text-[13px] text-ink-faint">{t('tasks.emptyFilter')}</p>
+              ) : (
+                <>
+                  {group('running', running)}
+                  {group('finished', finished)}
+                </>
               )}
               {tasksQuery.hasNextPage ? (
                 <button type="button" disabled={tasksQuery.isFetchingNextPage}
                   onClick={() => { void tasksQuery.fetchNextPage(); }}
-                  className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft disabled:opacity-50">
+                  className={`${SECONDARY_BUTTON} disabled:opacity-50`}>
                   {t('tasks.loadMore')}
                 </button>
               ) : null}

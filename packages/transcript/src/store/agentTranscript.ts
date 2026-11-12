@@ -228,6 +228,52 @@ export class AgentTranscript {
     this.#state = { ...this.#state, hasMoreOlder: true };
   }
 
+  /** Record whether history older than the resident items exists, without emitting a change. */
+  setHasMoreOlder(hasMoreOlder: boolean): void {
+    if (this.#state.hasMoreOlder === hasMoreOlder) return;
+    this.#state = { ...this.#state, hasMoreOlder };
+  }
+
+  /**
+   * Replace the resident item sequence, keeping every other entity, as one change batch. A client that places
+   * paged history or releases old turns itself uses it; it is residency, not a logical deletion, so removal
+   * bookkeeping and the global tool-call count carry over. Items whose revision did not change keep their
+   * hydrated bodies. Returns whether anything changed.
+   */
+  replaceItems(items: readonly TranscriptItem[], hasMoreOlder: boolean): boolean {
+    if (items === this.#state.items) {
+      const changed = hasMoreOlder !== this.#state.hasMoreOlder;
+      this.setHasMoreOlder(hasMoreOlder);
+      return changed;
+    }
+    const snapshot = this.snapshot();
+    const streamed = [...this.#appendDirty];
+    const changed = this.apply([{
+      op: 'reset',
+      agentId: this.agentId,
+      snapshot: { ...snapshot, items, hasMoreOlder },
+      coverage: hasMoreOlder ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false },
+    }]).accepted.length > 0;
+    const resident = this.#state.items.flatMap((item) => item.kind === 'turn' ? [`frame:${item.turnId}:`] : []);
+    for (const key of streamed) {
+      if (key.startsWith('task:') || resident.some((prefix) => key.startsWith(prefix))) this.#appendDirty.add(key);
+    }
+    return changed;
+  }
+
+  /**
+   * Release every resident item before the given turn; older history then counts as not loaded. Returns the
+   * released items, or none when the turn is not resident or nothing precedes it.
+   */
+  releaseBefore(turnId: TurnId): readonly TranscriptItem[] {
+    const items = this.#state.items;
+    const start = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
+    if (start <= 0) return [];
+    const released = items.slice(0, start);
+    this.replaceItems(items.slice(start), true);
+    return released;
+  }
+
   /** Materialize current state (optionally windowed to the newest turns). */
   snapshot(options: TranscriptSnapshotOptions = {}): AgentTranscriptSnapshot {
     let items = this.#state.items;
@@ -384,6 +430,71 @@ export class AgentTranscript {
       }
     }
   }
+}
+
+/** Chooses the content of an item present both in a resident window and in an incoming run of items. */
+export type TranscriptItemResolver = (resident: TranscriptItem, incoming: TranscriptItem) => TranscriptItem;
+
+interface PlacedItem {
+  readonly item: TranscriptItem;
+  readonly anchor: number;
+  readonly turn: boolean;
+  readonly source: number;
+  readonly order: number;
+}
+
+/**
+ * Merge a server-ordered run of items into a server-ordered window. Turns are placed by ordinal. Every other item
+ * keeps the place its own source gave it: before the next turn of that source, or, for items after the incoming
+ * run's last turn, before the first resident turn that follows it. Within one place, incoming items precede
+ * resident ones. An item present on both sides takes the incoming place and the content `resolve` returns;
+ * repeated incoming items count once.
+ */
+export function placeTranscriptItems(
+  resident: readonly TranscriptItem[],
+  incoming: readonly TranscriptItem[],
+  resolve: TranscriptItemResolver,
+): readonly TranscriptItem[] {
+  if (incoming.length === 0) return resident;
+  const residentByKey = new Map(resident.map((item) => [itemKeyOf(item), item]));
+  const seen = new Set<string>();
+  const run: TranscriptItem[] = [];
+  for (const item of incoming) {
+    const key = itemKeyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const held = residentByKey.get(key);
+    run.push(held === undefined ? item : resolve(held, item));
+  }
+  let lastRunTurn = Number.NEGATIVE_INFINITY;
+  for (const item of run) if (item.kind === 'turn' && item.ordinal > lastRunTurn) lastRunTurn = item.ordinal;
+  const following = resident.find((item) => item.kind === 'turn' && item.ordinal > lastRunTurn);
+  const placed: PlacedItem[] = [];
+  const place = (items: readonly TranscriptItem[], source: number, trailing: number, skip?: ReadonlySet<string>): void => {
+    let next = trailing;
+    const anchors: number[] = [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]!;
+      if (item.kind === 'turn') next = item.ordinal;
+      anchors[index] = next;
+    }
+    items.forEach((item, order) => {
+      if (skip?.has(itemKeyOf(item)) === true) return;
+      placed.push({ item, anchor: anchors[order]!, turn: item.kind === 'turn', source, order });
+    });
+  };
+  place(run, 0, following?.kind === 'turn' ? following.ordinal : Number.POSITIVE_INFINITY);
+  place(resident, 1, Number.POSITIVE_INFINITY, seen);
+  placed.sort((left, right) => left.anchor - right.anchor || Number(left.turn) - Number(right.turn) ||
+    left.source - right.source || left.order - right.order);
+  const items = placed.map((entry) => entry.item);
+  return items.length === resident.length && items.every((item, index) => item === resident[index]) ? resident : items;
+}
+
+function itemKeyOf(item: TranscriptItem): string {
+  if (item.kind === 'turn') return `turn:${item.turnId}`;
+  if (item.kind === 'marker') return `marker:${item.markerId}`;
+  return `taskref:${item.refId}`;
 }
 
 interface WindowedGlobals {

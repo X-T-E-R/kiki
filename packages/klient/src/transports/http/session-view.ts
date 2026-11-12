@@ -11,7 +11,15 @@ interface ActiveView {
   readonly sessionId: string;
   input: SessionViewSubscribeInput;
   readonly handler: (signal: SessionViewSignal) => void;
-  attachCount: number;
+  attached: boolean;
+  /**
+   * The socket reopened after this view last attached, and no `ready` has
+   * acknowledged a re-attach on the new socket yet. Only this marks an attach
+   * `reconnected`: a grade change on a live socket also re-attaches, but it
+   * missed nothing. The flag survives until `ready` because the server drops
+   * an attach overtaken by a newer one without answering it.
+   */
+  reconnectPending: boolean;
   attachTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -49,7 +57,7 @@ export class HttpSessionViews {
 
   subscribe(sessionId: string, input: SessionViewSubscribeInput, handler: (signal: SessionViewSignal) => void): SessionViewChannelSubscription {
     const id = this.host.nextId();
-    const view: ActiveView = { id, sessionId, input, handler, attachCount: 0 };
+    const view: ActiveView = { id, sessionId, input, handler, attached: false, reconnectPending: false };
     this.views.set(id, view);
     try {
       handler({ type: 'status', status: 'connecting', generation: this.generation });
@@ -94,6 +102,7 @@ export class HttpSessionViews {
     this.generation += 1;
     for (const view of this.views.values()) {
       this.clearAttachTimer(view);
+      if (view.attached) view.reconnectPending = true;
       view.handler({ type: 'status', status: 'open', generation: this.generation });
       this.attach(view);
     }
@@ -128,6 +137,7 @@ export class HttpSessionViews {
       const data = frame.data;
       const generation = data !== null && typeof data === 'object' ? (data as { generation?: unknown }).generation : undefined;
       if (typeof generation === 'number' && generation !== this.generation) return true;
+      if ((data as { type?: unknown } | null)?.type === 'ready') view.reconnectPending = false;
       const signal = confirmsTranscriptCoverage(data)
         ? data
         : degradeUnconfirmedTranscriptSignal(data);
@@ -154,9 +164,9 @@ export class HttpSessionViews {
     this.clearAttachTimer(view);
     this.host.send({
       type: 'view_attach', id: view.id, sessionId: view.sessionId,
-      data: { input: view.input, generation: this.generation, reconnected: view.attachCount > 0,
+      data: { input: view.input, generation: this.generation, reconnected: view.reconnectPending,
         transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION },
     });
-    view.attachCount += 1;
+    view.attached = true;
   }
 }

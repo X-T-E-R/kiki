@@ -26,6 +26,7 @@ import {
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
   readLayoutPreferences,
+  resetLayoutPreferencesForTests,
   writeLayoutPreferences,
   resetSessionSeen,
 } from '@kiki/session-core/settings';
@@ -54,7 +55,9 @@ const setWorkspacePinnedCatalog = vi.fn(async () => {});
 const listEphemeralSessions = vi.fn(async (_query?: { before_id?: string; page_size?: number }): Promise<{ items: Session[]; has_more?: boolean; next_cursor?: string }> => ({ items: [] }));
 /** The persona roster the 角色 group reads; empty unless a test wants one. */
 const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
-const connectionScope = vi.hoisted(() => ({ id: 'local' }));
+const connectionScope = vi.hoisted(() => ({ id: 'local', ws: 'open' as 'open' | 'connecting' | 'closed' }));
+/** The runtime config the room entry reads; pending (unknown) unless a test settles it. */
+const getConfig = vi.fn<() => Promise<unknown>>();
 const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
 const listPrompts = vi.fn(async (): Promise<unknown> => ({ active: null, queued: [] }));
 // The row menu's archive call; held back by a test to read the pending state.
@@ -96,6 +99,7 @@ vi.mock('../state/connection', () => ({
       listPersonas,
       archiveSession,
       compactSession,
+      getConfig,
       restoreSession: vi.fn(async () => { throw new Error('not stubbed'); }),
       updateSessionProfile: vi.fn(async () => ({ ok: true })),
       klient: { rest: { rooms: roomRest } },
@@ -116,7 +120,7 @@ vi.mock('../state/connection', () => ({
       open_in_apps: [],
       dangerous_bypass_auth: false,
     },
-    wsStatus: 'open',
+    wsStatus: connectionScope.ws,
     disconnect: () => {},
   }),
 }));
@@ -232,7 +236,10 @@ beforeEach(() => {
   archiveSession.mockReset();
   archiveSession.mockImplementation(async (id: string) => archived(id));
   for (const fn of Object.values(roomRest)) fn.mockReset();
+  getConfig.mockReset();
+  getConfig.mockReturnValue(new Promise(() => {}));
   connectionScope.id = 'local';
+  connectionScope.ws = 'open';
   // Workspace folds and the list scroll persist across mounts.
   localStorage.removeItem('kiki.sidebar.workspaceGroups');
   localStorage.removeItem('kiki.sidebar.topLevelThreads');
@@ -797,7 +804,7 @@ describe('Sidebar session row states', () => {
       .toBe('needs-me');
   });
 
-  it('keeps workspace identity beside live timing, queue depth and pending questions', async () => {
+  it('says each state in words beside the workspace: running for how long, awaiting an answer', async () => {
     listPrompts.mockResolvedValue({
       active: { created_at: new Date(Date.now() - 224_000).toISOString(), content: 'Run the checks' },
       queued: [{ id: 'queued-1' }, { id: 'queued-2' }],
@@ -832,8 +839,11 @@ describe('Sidebar session row states', () => {
     const live = runningRow?.querySelector('[data-session-live]');
     expect(location?.textContent).toBe('…/apps/kiki-gui');
     expect(location?.getAttribute('title')).toBe('C:/workshop/apps/kiki-gui');
-    expect(live?.textContent).toContain('+2 queued');
-    expect(live?.textContent).toMatch(/\d:\d{2}/);
+    // One state, in words; the queue is the session's own business now and
+    // only a hover over the word still lists it.
+    expect(live?.textContent).toMatch(/^Running for \d:\d{2}$/);
+    expect(runningRow?.textContent).not.toContain('queued');
+    expect(live?.getAttribute('title')).toContain('+2 queued');
     expect(location?.parentElement).toBe(live?.parentElement);
 
     const worktreeLocation = container.querySelector('[data-session-row="s-running-worktree"] [data-session-location]');
@@ -1137,7 +1147,7 @@ describe('Sidebar archive feedback', () => {
 });
 
 describe('Sidebar background tasks', () => {
-  it('marks running background tasks with a terminal glyph and a list, not a "+N" chip', async () => {
+  it('keeps background tasks off the row and lists them on the running word\'s hover', async () => {
     listTasks.mockResolvedValue({ items: [
       { id: 't1', session_id: 's-run', kind: 'bash', description: 'live viewer', status: 'running', created_at: '2026-01-01T00:00:00.000Z' },
       { id: 't2', session_id: 's-run', kind: 'bash', description: 'rerun the suite', status: 'running', created_at: '2026-01-01T00:01:00.000Z' },
@@ -1146,12 +1156,11 @@ describe('Sidebar background tasks', () => {
     const running = { ...session('s-run'), busy: true, executing: true, main_turn_active: false };
     const { container } = await mount({ sessions: [running], sessionGroups: [{ key: 'today', label: 'Today', items: [running] }] });
     for (let index = 0; index < 4; index += 1) await settle();
-    const mark = container.querySelector<HTMLElement>('[data-session-row="s-run"] [data-session-background-tasks]');
-    expect(mark?.getAttribute('data-session-background-tasks')).toBe('2');
-    expect(mark?.querySelector('svg[data-icon="terminal"]')).not.toBeNull();
-    expect(mark?.title).toBe(['2 background tasks running', '· live viewer', '· rerun the suite'].join('\n'));
-    expect(mark?.textContent).toContain('2 background tasks running');
-    expect(container.querySelector('[data-session-row="s-run"]')?.textContent).not.toContain('+2');
+    const row = container.querySelector<HTMLElement>('[data-session-row="s-run"]');
+    expect(row?.querySelector('svg[data-icon="terminal"]')).toBeNull();
+    expect(row?.textContent).not.toContain('background');
+    expect(row?.querySelector('[data-session-live]')?.getAttribute('title'))
+      .toBe(['2 background tasks running', '· live viewer', '· rerun the suite'].join('\n'));
   });
 });
 
@@ -1255,16 +1264,22 @@ describe('Sidebar entry distribution', () => {
     expect(nav?.querySelector('[data-nav-capabilities]')).not.toBeNull();
 
     await settle();
-    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
+    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('2 queued');
   });
 
-  it('keeps only settings and the connection status dot in the footer', async () => {
+  it('says nothing about a working connection and names a dropped one in words', async () => {
     const { container } = await mount();
-    const status = container.querySelector<HTMLButtonElement>('[data-connection-status]');
-    expect(status).not.toBeNull();
-    expect(status?.getAttribute('title')).toContain('1.0.0');
+    const footer = container.querySelector('[data-sidebar-footer]');
+    expect(footer?.querySelector('[data-nav-settings]')).not.toBeNull();
+    expect(footer?.querySelector('[data-connection-status]')).toBeNull();
     // Disconnect moved to settings → connection.
     expect(container.textContent ?? '').not.toContain('Disconnect');
+
+    connectionScope.ws = 'connecting';
+    const dropped = await mount();
+    const status = dropped.container.querySelector<HTMLButtonElement>('[data-sidebar-footer] [data-connection-status]');
+    expect(status?.textContent).toBe('Disconnected · reconnecting');
+    expect(status?.getAttribute('title')).toContain('1.0.0');
   });
 
   it('offers a quick pin toggle per row and labels it from the pin state', async () => {
@@ -1489,10 +1504,13 @@ describe('Sidebar filters', () => {
     const onFiltersChange = vi.fn();
     const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB], onFiltersChange });
     const menu = await openFilterMenu(container);
+    // Only the states some session is in are offered: the one listed session is idle.
+    expect([...menu.querySelectorAll('[data-status-filter]')].map((node) => node.getAttribute('data-status-filter')))
+      .toEqual(['idle']);
     await act(async () => {
-      menu.querySelector<HTMLButtonElement>('[data-status-filter="running"]')?.click();
+      menu.querySelector<HTMLButtonElement>('[data-status-filter="idle"]')?.click();
     });
-    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: ['running'], workspaces: [], archived: 'hide' });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: ['idle'], workspaces: [], archived: 'hide' });
     await act(async () => {
       menu.querySelector<HTMLButtonElement>(`[data-workspace-filter="${wsB.id}"]`)?.click();
     });
@@ -1535,7 +1553,18 @@ describe('Sidebar filters', () => {
     const { container } = await mount({ ...listed(), workspaceOptions: [] });
     const menu = await openFilterMenu(container);
     expect(menu.querySelector('[data-workspace-filter]')).toBeNull();
-    expect(menu.querySelector('[data-status-filter="running"]')).not.toBeNull();
+    expect(menu.querySelector('[data-status-filter="idle"]')).not.toBeNull();
+  });
+
+  it('keeps a chosen status on offer after its last session left it, so it can be turned off', async () => {
+    const onFiltersChange = vi.fn();
+    const { container } = await mount({ ...listed(), filters: { status: ['running'], workspaces: [], archived: 'hide' }, onFiltersChange });
+    const menu = await openFilterMenu(container);
+    const running = menu.querySelector<HTMLButtonElement>('[data-status-filter="running"]');
+    expect(running?.getAttribute('aria-checked')).toBe('true');
+    expect(menu.querySelector('[data-status-filter="cleanup-pending"]')).toBeNull();
+    await act(async () => { running?.click(); });
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ status: [], workspaces: [], archived: 'hide' });
   });
 
   it('renders no chip row while every filter sits at its default', async () => {
@@ -1621,6 +1650,7 @@ describe('Sidebar filters', () => {
         overlayOpen: anyOverlayOpen(),
         terminalFocused: false,
         terminalOpen: false,
+        railOpen: false,
         inFormField: false,
       })) return;
       if (canAbortActiveTurn(running)) {
@@ -1810,7 +1840,7 @@ describe('Sidebar session menu location & link group', () => {
     expect(openPath).not.toHaveBeenCalled();
   });
 
-  it('adds the thread link to the open conversation, and disables itself with none open', async () => {
+  it('adds the thread link to the open conversation, and is not offered with none open', async () => {
     const other = session('session_other');
     const current = session('session_current');
     const items = [other, current];
@@ -1822,32 +1852,55 @@ describe('Sidebar session menu location & link group', () => {
       await act(async () => { row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
       const entry = container.querySelector<HTMLButtonElement>('[data-session-menu] [data-menu-item="add-to-conversation"]')!;
       expect(entry.textContent).toBe('Add to conversation');
-      expect(entry.disabled).toBe(false);
       await act(async () => { entry.click(); });
       expect(inserted).toEqual(['/s/session_other']);
       expect(container.querySelector('[data-session-menu]')).toBeNull();
       // The open conversation's own row has nothing to add to.
       const self = container.querySelector('[data-session-row="session_current"] [data-session-title]')!;
       await act(async () => { self.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
-      expect(container.querySelector<HTMLButtonElement>('[data-menu-item="add-to-conversation"]')?.disabled).toBe(true);
+      expect(container.querySelector('[data-session-menu]')).not.toBeNull();
+      expect(container.querySelector('[data-menu-item="add-to-conversation"]')).toBeNull();
     } finally {
       unsubscribe();
     }
     const none = await mount(listed());
     const menu = await openSessionMenu(none.container);
-    const disabled = menu.querySelector<HTMLButtonElement>('[data-menu-item="add-to-conversation"]')!;
-    expect(disabled.disabled).toBe(true);
-    expect(disabled.title).toBe('Open a conversation to add this thread to it');
+    expect(menu.querySelector('[data-menu-item="add-to-conversation"]')).toBeNull();
   });
 
-  it('keeps the link entries below the action group and above pin/rename', async () => {
+  it('leads with list management and keeps the content actions under More on a desktop', async () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
-    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map(
-      (element) => element.textContent,
-    );
-    expect(labels.indexOf('Copy thread link')).toBeGreaterThan(labels.indexOf('Undo last turn…'));
-    expect(labels.indexOf('Copy thread link')).toBeLessThan(labels.indexOf('Pin to top'));
+    const keys = () => [...menu.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item'));
+    expect(keys()).toEqual(['pin', 'rename', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
+    const more = menu.querySelector<HTMLButtonElement>('[data-menu-item="more"]')!;
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { more.click(); });
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    const submenu = menu.querySelector('[data-session-submenu]');
+    expect([...(submenu?.querySelectorAll('[role="menuitem"]') ?? [])].map((element) => element.getAttribute('data-menu-item')))
+      .toEqual(['fork', 'export', 'compact', 'undo']);
+    // Focus moves in, and ← brings it back to More with the submenu closed.
+    expect(submenu?.contains(document.activeElement)).toBe(true);
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
+    expect(menu.querySelector('[data-session-submenu]')).toBeNull();
+    expect(document.activeElement).toBe(more);
+  });
+
+  it('offers rooms only while thread communication is on', async () => {
+    getConfig.mockResolvedValue({ thread_communication: { enabled: false } });
+    const off = await mount(listed());
+    await settle();
+    const offMenu = await openSessionMenu(off.container);
+    expect(offMenu.querySelector('[data-menu-item="join-room"]')).toBeNull();
+    // Absent, not greyed out with an explanation.
+    expect(offMenu.textContent).not.toContain('Thread communication is off');
+
+    getConfig.mockResolvedValue({ thread_communication: { enabled: true } });
+    const on = await mount(listed());
+    await settle();
+    const onMenu = await openSessionMenu(on.container);
+    expect(onMenu.querySelector('[data-menu-item="join-room"]')).not.toBeNull();
   });
 });
 
@@ -1938,6 +1991,8 @@ describe('Sidebar session menu keyboard focus', () => {
     compactSession.mockResolvedValueOnce(receipt);
     const { container } = await mount(listed());
     const { menu } = await openMenuFromFocusedRow(container, 'one');
+    // The content actions sit one level down, under More.
+    await act(async () => { menuItem(menu, 'More').click(); });
     await act(async () => { menuItem(menu, 'Compact context').click(); });
     expect(compactSession).toHaveBeenCalledWith('one', {});
     const notice = container.querySelector('[role="status"].border-success');
@@ -2862,6 +2917,19 @@ describe('Sidebar room rows', () => {
       setter.call(input, '0.32 发布');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    // The Enter that commits an IME candidate (Safari: keyCode 229 after
+    // compositionend; Chromium: isComposing) and the Escape that cancels one
+    // belong to the IME: the half-typed title is neither saved nor dropped.
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, keyCode: 229 }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, keyCode: 229 }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true }));
+    });
+    await settle();
+    expect(roomRest.update).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-rename-editor="room_1"]')).not.toBeNull();
+    expect(input.value).toBe('0.32 发布');
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle();
     expect(roomRest.update).toHaveBeenCalledWith('room_1', { name: '0.32 发布' });
@@ -3234,5 +3302,97 @@ describe('sidebar secondary navigation', () => {
     const secondaryBadge = container.querySelector('[data-secondary-badges-count]');
     expect(secondaryBadge).not.toBeNull();
     expect(secondaryBadge?.textContent).toBe('2');
+  });
+});
+
+/** A phone: touch, and narrower than 640px (the drawer stage). */
+function stubPhone(): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(pointer: coarse)'
+      || query === '(pointer: coarse) and (max-width: 639px)'
+      || query === '(max-width: 767px)'
+      || query === '(max-width: 1279px)',
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+describe('sidebar on a phone', () => {
+  beforeEach(() => {
+    stubPhone();
+    resetLayoutPreferencesForTests();
+  });
+
+  it('pins no tools until this device saves a choice, then shows the saved one', async () => {
+    const { container } = await mount();
+    const nav = container.querySelector('[data-primary-nav]');
+    for (const hook of ['memory', 'personas', 'usage', 'cron', 'capabilities', 'discover']) {
+      expect(nav?.querySelector(`[data-nav-${hook}]`)).toBeNull();
+    }
+    expect(nav?.querySelector('[data-sidebar-secondary-toggle="expand"]')).not.toBeNull();
+
+    // The view menu mirrors that, and the first pin saves just that tool.
+    // It comes up as a bottom sheet, like the filter and row menus.
+    const view = await openViewMenu(container);
+    expect(view.classList.contains('kiki-action-sheet-layer')).toBe(true);
+    expect(document.querySelector('[data-nav-item-toggle="memory"]')?.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-nav-item-toggle="usage"]')?.click(); });
+    expect(readLayoutPreferences().pinnedNavItems).toEqual(['usage']);
+    expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
+    expect(nav?.querySelector('[data-nav-memory]')).toBeNull();
+  });
+
+  it('opens the row menu as a bottom sheet holding list management only', async () => {
+    const other = session('other');
+    const current = session('current');
+    const items = [other, current];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }], activeSessionId: 'current' });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-session-row="other"] button[aria-label="Session actions for other"]');
+    await act(async () => { trigger!.click(); });
+    const sheet = document.querySelector<HTMLElement>('[data-session-menu]');
+    expect(sheet?.classList.contains('kiki-action-sheet-layer')).toBe(true);
+    // No fork, export, compact or undo, and no More: those live in the
+    // conversation's own menu, one tap away.
+    expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
+      .toEqual(['pin', 'rename', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
+  });
+
+  it('keeps a choice saved before, even when it is the desktop default', async () => {
+    writeLayoutPreferences({ pinnedNavItems: ['memory', 'personas', 'usage'] });
+    const { container } = await mount();
+    for (const hook of ['memory', 'personas', 'usage']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
+    }
+  });
+
+  it('polls nothing for a closed drawer and reads again once it is open', async () => {
+    const running = { ...session('s-busy'), busy: true, executing: true, main_turn_active: true };
+    const props = { sessions: [running], sessionGroups: [{ key: 'today', label: 'Today', items: [running] }] };
+    writeLayoutPreferences({ pinnedNavItems: ['usage'] });
+    listPrompts.mockClear();
+    listTasks.mockClear();
+
+    // inert: the drawer is closed (off-screen) — no usage badge poll, no
+    // temporary-conversation poll, no per-session prompt/task reads.
+    const closed = await mount({ ...props, inert: true });
+    for (let index = 0; index < 3; index += 1) await settle();
+    expect(closed.container.querySelector('[data-primary-nav] [data-nav-usage]')).not.toBeNull();
+    expect(closed.container.querySelector('[data-request-governance-badge]')).toBeNull();
+    expect(closed.queryClient.getQueryCache().find({ queryKey: ['request-governance'] })).toBeUndefined();
+    expect(listEphemeralSessions).not.toHaveBeenCalled();
+    expect(listPrompts).not.toHaveBeenCalled();
+    expect(listTasks).not.toHaveBeenCalled();
+
+    const open = await mount({ ...props, inert: false });
+    for (let index = 0; index < 3; index += 1) await settle();
+    expect(open.container.querySelector('[data-request-governance-badge]')?.textContent).toBe('2 queued');
+    expect(listEphemeralSessions).toHaveBeenCalled();
+    expect(listPrompts).toHaveBeenCalledWith('s-busy');
+    expect(listTasks).toHaveBeenCalled();
   });
 });

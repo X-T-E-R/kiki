@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { basename, extname, isAbsolute, join, resolve } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
 
 import { createDecorator, IInstantiationService, type LiveRef, type ServiceIdentifier, type ServicesAccessor, ref } from '#/_base/di/instantiation';
@@ -13,10 +13,12 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   IRoomMessageRouter,
   IUserMessageRouter,
@@ -36,7 +38,8 @@ import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { IRequestIdentityRegistry } from '#/session/requestIdentity/requestIdentityRegistry';
 import type { MediaJob } from '@kiki/protocol';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import type { AgentTool, ExecutableToolContext, ToolExecution } from '#/tool/toolContract';
+import { canonicalizePath, resolveRealPathAccess, type PathAccess } from '#/tool/path-access';
+import { ToolAccesses, type AgentTool, type ExecutableToolContext, type ToolExecution } from '#/tool/toolContract';
 import { Error2, ErrorCodes } from '#/errors';
 import { SEND_MESSAGE_SECTION, SendMessageVoiceModeSchema, type SendMessageConfig, type SendMessageVoiceMode } from './configSection';
 
@@ -172,27 +175,51 @@ export class SendMessageTool implements ISendMessageTool {
     @IBlobStore private readonly blobs: IBlobStore,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
+    @IHostEnvironment private readonly env: IHostEnvironment,
+    @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IBotService private readonly bots: IBotService,
     @ref(IRoomMessageRouter) private readonly roomRouter: LiveRef<IRoomMessageRouter>,
     @ref(IUserMessageRouter) private readonly userRouter: LiveRef<IUserMessageRouter>,
     @ISessionMediaStore private readonly media?: ISessionMediaStore,
   ) {}
 
-  resolveExecution(input: SendMessageToolInput): ToolExecution {
+  async resolveExecution(input: SendMessageToolInput): Promise<ToolExecution> {
     if (this.agent.agentId !== 'main' || !this.instantiation.invokeFunction(isSendMessageToolActive)) {
       return { output: 'SendMessage is disabled by the active capability or tool policy.', isError: true };
     }
+    const requested = [...input.attachments ?? [], ...(input.messages ?? []).flatMap((item) => item.attachments ?? [])]
+      .flatMap((attachment) => 'path' in attachment ? [attachment.path] : []);
+    const admitted = new Map<string, PathAccess>();
+    for (const path of requested) {
+      if (!admitted.has(path)) admitted.set(path, await this.resolveAttachmentPath(path));
+    }
+    const targets = [...new Set([...admitted.values()].map((access) => access.path))];
     return {
       approvalRule: this.name,
-      description: 'Sending a message',
+      description: targets.length === 0
+        ? 'Sending a message'
+        : `Sending a message with ${targets.length === 1 ? 'attachment' : 'attachments'} ${targets.join(', ')}`,
+      accesses: admitted.size === 0
+        ? undefined
+        : [...[...admitted.values()].flatMap((access) => ToolAccesses.readFile(access.path, access.implicitExternal === true)), ...ToolAccesses.all()],
       execute: async (ctx) => input.messages === undefined
-        ? this.singleResult(input, ctx)
-        : this.batchResult(input, ctx),
+        ? this.singleResult(input, ctx, admitted)
+        : this.batchResult(input, ctx, admitted),
     };
   }
 
-  private async singleResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
-    const receipt = await this.sendOne(input, ctx);
+  private async resolveAttachmentPath(path: string): Promise<PathAccess> {
+    await this.env.ready;
+    const options = {
+      env: this.env,
+      workspace: { workspaceDir: this.workspace.workDir, additionalDirs: this.workspace.additionalDirs },
+      operation: 'read' as const,
+    };
+    return resolveRealPathAccess(path, options, this.fs);
+  }
+
+  private async singleResult(input: SendMessageToolInput, ctx: ExecutableToolContext, admitted: ReadonlyMap<string, PathAccess>): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
+    const receipt = await this.sendOne(input, ctx, admitted);
     const notes = notesForReceipt(receipt);
     const userDeliveryConfirmed = confirmedUserDelivery(receipt, input);
     return {
@@ -203,7 +230,7 @@ export class SendMessageTool implements ISendMessageTool {
     };
   }
 
-  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
+  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext, admitted: ReadonlyMap<string, PathAccess>): Promise<{ output: string; note?: string; stopTurn?: boolean; userDeliveryConfirmed?: boolean }> {
     const messages: Record<string, unknown>[] = [];
     const notes = new Set<string>();
     const batch = input.messages!;
@@ -232,7 +259,7 @@ export class SendMessageTool implements ISendMessageTool {
         channels: input.channels,
       };
       try {
-        const receipt = await this.sendOne(itemInput, { ...ctx, toolCallId: itemCallId });
+        const receipt = await this.sendOne(itemInput, { ...ctx, toolCallId: itemCallId }, admitted);
         messages.push({ index, ...toWireReceipt(receipt) });
         fullyDelivered = fullyDelivered && confirmedUserDelivery(receipt, itemInput);
         for (const note of notesForReceipt(receipt)) notes.add(note);
@@ -285,7 +312,7 @@ export class SendMessageTool implements ISendMessageTool {
     };
   }
 
-  private async sendOne(input: SendMessageItemInput, ctx: { readonly toolCallId: string; readonly signal: AbortSignal }): Promise<ExtendedReceipt> {
+  private async sendOne(input: SendMessageItemInput, ctx: { readonly toolCallId: string; readonly signal: AbortSignal }, admitted: ReadonlyMap<string, PathAccess>): Promise<ExtendedReceipt> {
     if (!this.instantiation.invokeFunction(isSendMessageToolActive)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'SendMessage is disabled by the active capability or tool policy.');
     if (input.to !== undefined && input.to !== 'user' && !input.to.startsWith('@')) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Recipient must be user or @Bot.');
@@ -315,7 +342,7 @@ export class SendMessageTool implements ISendMessageTool {
       : tts.mode === 'append' && rawText.trim().length === 0
         ? tts.speechText
         : rawText;
-    const baseAttachments = await this.copyAttachments(input.attachments ?? []);
+    const baseAttachments = await this.copyAttachments(input.attachments ?? [], admitted);
     if (roomId !== undefined) {
       const channelId = `room:${roomId}`;
       if (tts.mode === 'only' && baseAttachments.length === 0) {
@@ -892,7 +919,7 @@ export class SendMessageTool implements ISendMessageTool {
     return typeof roomId === 'string' && roomId.length > 0 ? roomId : undefined;
   }
 
-  private async copyAttachments(inputs: readonly AttachmentInput[]): Promise<readonly ExtendedAttachmentReceipt[]> {
+  private async copyAttachments(inputs: readonly AttachmentInput[], admitted: ReadonlyMap<string, PathAccess>): Promise<readonly ExtendedAttachmentReceipt[]> {
     if (inputs.length === 0) return [];
     const documents = optionalService(this.instantiation, IAtomicDocumentStore);
     const copied: ExtendedAttachmentReceipt[] = [];
@@ -912,10 +939,14 @@ export class SendMessageTool implements ISendMessageTool {
         data = await readMediaFile(file);
         if (data.byteLength !== file.size) throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment file_id changed while being read: ${input.file_id}`);
       } else {
-        const candidate = isAbsolute(input.path) ? input.path : resolve(this.session.cwd, input.path);
-        path = await this.fs.realpath(candidate).catch(() => {
+        const approved = admitted.get(input.path)!.path;
+        path = await this.fs.realpath(approved).catch(() => {
           throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment path does not exist: ${input.path}`);
         });
+        const current = canonicalizePath(path, this.workspace.workDir, this.env.pathClass);
+        if ((this.env.pathClass === 'win32' ? current.toLowerCase() : current) !== (this.env.pathClass === 'win32' ? approved.toLowerCase() : approved)) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment target changed after it was approved: approved "${approved}", actual "${current}". Send the message again to have the actual target checked.`);
+        }
         const stat = await this.fs.stat(path);
         if (!stat.isFile) throw new Error2(ErrorCodes.REQUEST_INVALID, `Attachment is not a file: ${input.path}`);
         data = await this.fs.readBytes(path);

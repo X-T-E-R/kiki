@@ -4,7 +4,8 @@
  * Top to bottom: the wordmark, New session (the surface's one primary) and
  * search, a short primary nav (task board, scheduled tasks, usage,
  * capabilities), the filter chip row, then the session list. The footer keeps
- * settings, the "waiting on you" badge and the connection dot on one line.
+ * settings and the collapse toggle on one line, plus the connection in words
+ * while it is down (connected says nothing).
  *
  * Organize: one View menu (group by time / workspace / none, sort by updated
  * / created / title) and one Filter menu (status, workspaces, archived); both
@@ -18,7 +19,8 @@
  *
  * The session row menu opens from the hover ⋯ button or a right-click
  * anywhere on the row; the undo confirmation rides the shared ConfirmDialog
- * and the header menus the shared AnchoredPopover.
+ * and the header menus the shared AnchoredPopover. In phone mode the row,
+ * filter and view menus are bottom sheets (ActionSheet) instead.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
@@ -59,7 +61,6 @@ import {
   splitByRanges,
   togglePinned,
   type ActivityEntry,
-  type ActivityTask,
   type MatchRange,
   type SessionGroup,
   type SessionListData,
@@ -70,6 +71,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  shownPinnedNavItems,
   writeLayoutPreferences,
   type SessionArchivedFilter,
   type SessionSeenMap,
@@ -81,7 +83,8 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { useLayoutPreferences, useMediaQuery, usePaneResize } from '../lib/layoutHooks';
+import { useLayerHistory } from '../lib/layerHistory';
+import { useCoarsePointer, useLayoutPreferences, useMediaQuery, usePaneResize, usePhoneMode } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { readExternalClientMark } from '../lib/externalClients';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
@@ -93,13 +96,15 @@ import { readTopLevelThreads, writeTopLevelThreads } from '../lib/threadDisplayM
 import { pushToast, runToastAction } from '../lib/toasts';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
-import { registerOverlay } from '../lib/uiBusy';
+import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { isEditableTarget, isImeKeyEvent } from '../lib/shortcuts';
 import { useConnection } from '../state/connection';
-import { RelativeTime } from './RelativeTime';
+import { RelativeTime, useElapsedSince } from './RelativeTime';
 import { useSessionSeen } from './ActivityPage';
 import { useSessionActivity } from './ActivityPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useGuardedNavigate } from './dirtyGuard';
+import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, Spinner } from './icons';
@@ -300,15 +305,19 @@ function PrimaryNav({
   activeSessionId,
   activeWorkspaceId,
   badges,
+  offscreen = false,
 }: {
   activeSessionId?: string;
   activeWorkspaceId: string | undefined;
   badges?: Partial<Record<NavKey, { count: number; label: string }>>;
+  /** The drawer is closed: nothing here is on screen. */
+  offscreen?: boolean;
 }) {
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const layoutPrefs = useLayoutPreferences();
+  const pinnedNavItems = shownPinnedNavItems(layoutPrefs, usePhoneMode());
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
     workspaceId: activeWorkspaceId,
@@ -322,7 +331,7 @@ function PrimaryNav({
     [location.pathname, location.search],
   );
 
-  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
+  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(pinnedNavItems), [pinnedNavItems]);
   const primaryItems = useMemo(() => NAV_ITEMS.filter((item) => pinnedSet.has(item.key)), [pinnedSet]);
   const secondaryItems = useMemo(() => NAV_ITEMS.filter((item) => !pinnedSet.has(item.key)), [pinnedSet]);
 
@@ -362,7 +371,9 @@ function PrimaryNav({
         >
           <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
           <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`)}</span>
-          {item.key === 'usage' ? <RequestGovernanceBadge /> : null}
+          {/* The badge polls once a second; behind a closed drawer it would
+              poll for nobody. It reads again the moment the drawer opens. */}
+          {item.key === 'usage' && !offscreen ? <RequestGovernanceBadge /> : null}
           {badge !== undefined && badge.count > 0 ? (
             <span
               data-nav-badge={item.key}
@@ -641,7 +652,7 @@ export function Sidebar({
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
-  const { client, meta, wsStatus, scopeId } = useConnection();
+  const { client, meta, wsStatus, wsBannerSuppressed, scopeId } = useConnection();
   const { t, tp, locale } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -665,9 +676,17 @@ export function Sidebar({
   };
   useEffect(() => {
     if (selected.size === 0) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setSelected(new Set()); };
-    window.addEventListener('keydown', onKeyDown);
-    return () => { window.removeEventListener('keydown', onKeyDown); };
+    // Dropping the selection is this Escape's whole job, so it claims the key:
+    // capture phase plus preventDefault, or the session view's own listener
+    // would also read it as "stop the running turn". An open menu or dialog,
+    // and a text field with its own use for Escape, keep theirs.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing || anyOverlayOpen() || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      setSelected(new Set());
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => { window.removeEventListener('keydown', onKeyDown, true); };
   }, [selected.size]);
   const [renaming, setRenaming] = useState<ConversationListItem | null>(null);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
@@ -755,8 +774,10 @@ export function Sidebar({
 
   // Bot homes and room member sessions never arrive here: the caller filters
   // them out (they keep their own addresses — a Bot row, the room's row),
-  // except archived ones from a deleted room, which stay findable.
-  const activity = useSessionActivity(sessions);
+  // except archived ones from a deleted room, which stay findable. Its
+  // per-session polls feed these rows only (the ☰ count is App's own), so a
+  // closed drawer pauses them.
+  const activity = useSessionActivity(sessions, inert !== true);
   // Read-state marks drive both the activity badge and the row states below.
   const seen = useSessionSeen();
   const inbox = useMemo(() => buildConversationInbox(sessions, rooms, seen, workspaceOptions), [sessions, rooms, seen, workspaceOptions]);
@@ -1089,6 +1110,11 @@ export function Sidebar({
 
   // One flat list across the result groups so ↑↓ never has to know where a
   // group boundary is; each entry knows how to open itself.
+  // Opening a session or message hit keeps the query and the active row: when
+  // hit 1 was the wrong one, hit 2 is one ↓/Enter (or click) away instead of a
+  // retype. Only Escape and the × clear it. A workspace pick is different: it
+  // turns the query into a list filter, and the list it filters is only shown
+  // once the query is gone.
   const results = useMemo(() => {
     const items: { key: string; open: () => void }[] = [];
     for (const match of search.local.workspaces) {
@@ -1103,13 +1129,12 @@ export function Sidebar({
       });
     }
     for (const match of search.local.sessions) {
-      items.push({ key: `s:${match.session.id}`, open: () => { setSearchInput(''); void navigate(`/s/${match.session.id}`); } });
+      items.push({ key: `s:${match.session.id}`, open: () => { void navigate(`/s/${match.session.id}`); } });
     }
     search.hits.forEach((hit, index) => {
       items.push({
         key: `h:${index}`,
         open: () => {
-          setSearchInput('');
           const route = hit.agent_id && hit.agent_id !== 'main'
             ? `/s/${hit.session_id}/agent/${hit.agent_id}` : `/s/${hit.session_id}`;
           void navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
@@ -1168,6 +1193,13 @@ export function Sidebar({
   ];
   const filtersActive = hasActiveSessionFilters(filters);
   const counts = { running: activity.model.running.length };
+  // The status filter offers only the states some session is in right now,
+  // among the archived ones the list shows: an entry with nothing behind it
+  // ("process cleanup unconfirmed" on a quiet day) is a choice nobody can use.
+  const presentStatuses = useMemo(() => new Set<SessionStatusFilter>(sessions
+    .filter((session) => (filters.archived === 'only' ? session.archived === true
+      : filters.archived === 'hide' ? session.archived !== true : true))
+    .map((session) => sessionStatusOf(session))), [sessions, filters.archived]);
 
   const toggleGroupCollapsed = (key: string) => {
     setCollapsedGroups((current) => {
@@ -1243,12 +1275,16 @@ export function Sidebar({
   // Temporary conversations stay out of the paged list (and its search and
   // grouping); they get their own block at the top while any exist. The key
   // sits under ['sessions'], so every list refresh refreshes it too.
+  // A closed drawer shows none of it, so it does not poll then (the session
+  // view keeps its own read of the same key for its record); opening the
+  // drawer shows the cached block and refetches it at once.
   const ephemeralQuery = useInfiniteQuery({
     queryKey: ['sessions', 'ephemeral'],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => client.listEphemeralSessions({ before_id: pageParam, page_size: 50 }),
     getNextPageParam: (page) => page.has_more ? page.next_cursor : undefined,
     refetchInterval: 15_000,
+    enabled: inert !== true,
   });
   const ephemeralSessions = ephemeralQuery.data?.pages.flatMap((page) => page.items) ?? [];
   // While a filter narrows the list, a workspace group shows what matched
@@ -1411,6 +1447,9 @@ export function Sidebar({
             aria-activedescendant={activeKey === undefined ? undefined : `sidebar-result-${activeKey}`}
             onChange={(event) => { setSearchInput(event.target.value); }}
             onKeyDown={(event) => {
+              // Enter, Escape and the arrows belong to an open IME candidate
+              // window: picking a candidate must not open a result.
+              if (isImeKeyEvent(event)) return;
               // Escape collapses the field again, back to the icon.
               if (event.key === 'Escape' && searchInput === '') {
                 setSearchOpen(false);
@@ -1440,7 +1479,7 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <PrimaryNav activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} badges={navBadges} />
+      <PrimaryNav activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} badges={navBadges} offscreen={inert === true} />
       <SidebarPersonaSection sessions={sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
@@ -1451,19 +1490,20 @@ export function Sidebar({
         <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
         <span className="min-w-0 flex-1" />
         {counts.running > 0 ? (
+          // Said in words ("2 running"), still the shortcut that filters to
+          // the running sessions; a bare number beside a dot was a guess.
           <button
             type="button"
             data-status-shortcut="running"
             data-activity-summary
             aria-pressed={filters.status.includes('running')}
-            aria-label={tp('sidebar.runningCount', counts.running)}
             title={tp('sidebar.runningCount', counts.running)}
             onClick={() => { toggleStatus('running'); }}
             className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             {/* The one breathing mark in the list: rows stay still. */}
             <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
-            {counts.running}
+            <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
           </button>
         ) : null}
         {workspaceGroupKeys.length > 1 && !foldsSuspended && !search.active ? (
@@ -1487,7 +1527,8 @@ export function Sidebar({
           aria-label={t('sidebar.filterMenu')}
           title={t('sidebar.filterMenu')}
           onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-accent-ink' : 'text-ink-faint'}`}
+          // An active filter is "on", not "needs you": the selected ink, never the accent.
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
         >
           <Icon name="filter" size={14} />
         </button>
@@ -1650,7 +1691,7 @@ export function Sidebar({
                   untitled={untitled}
                   resolveTitle={resolveTitle}
                   activity={activity.byId.get(session.id)}
-                  elapsedFor={activity.elapsedFor}
+                  anchorFor={activity.anchorFor}
                   showLocation
                   temporary
                   onOpen={() => { void navigate(`/s/${session.id}`); }}
@@ -1732,7 +1773,7 @@ export function Sidebar({
                   untitled={untitled}
                   resolveTitle={resolveTitle}
                   activity={activity.byId.get(session.id)}
-                  elapsedFor={activity.elapsedFor}
+                  anchorFor={activity.anchorFor}
                   relation={node.relation}
                   nested={nested}
                   showLocation={!groupNamesWorkspace}
@@ -1847,18 +1888,18 @@ export function Sidebar({
       </div>
       )}
 
-      {/* Footer: one full-width row. The whole row opens Settings; the
-        * connection dot sits at its end as its own small target (it opens
-        * the connection page), so both stay reachable by keyboard. The row
-        * never overlaps the list above it: it is a flex sibling, not an
-        * overlay, and the list keeps bottom padding for its last row. */}
-      <div className="relative flex h-12 shrink-0 items-center px-2" data-sidebar-footer>
+      {/* Footer: one row — Settings, then the connection while it is down,
+        * then the collapse toggle (it keeps its place at the end whether or
+        * not the connection words are there). The row never overlaps the
+        * list above it: it is a flex sibling, not an overlay, and the list
+        * keeps bottom padding for its last row. */}
+      <div className="relative flex h-12 shrink-0 items-center gap-1 px-2" data-sidebar-footer>
         <button
           type="button"
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => { void navigate('/settings'); }}
-          className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-20 pl-2 text-left text-[13px] pointer-coarse:h-11 ${
+          className={`row-interactive flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-11 ${
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
@@ -1867,36 +1908,17 @@ export function Sidebar({
         </button>
         {/* "Waiting on you" lives in the header's activity entry now; a second
             footer copy of the same count was three readings of one fact. */}
+        <SidebarConnectionMark wsStatus={wsStatus} settling={wsBannerSuppressed === true} serverVersion={meta.server_version}
+          onOpen={() => { void navigate('/settings/connection'); }} />
         <button
           type="button"
           data-sidebar-toggle="collapse"
           aria-label={t('sidebar.collapseSidebar')}
           title={t('sidebar.collapseSidebar')}
           onClick={() => { writeLayoutPreferences({ sidebarCollapsed: true }); }}
-          className="absolute top-1/2 right-11 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink max-md:hidden"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink max-md:hidden"
         >
           <Icon name="collapse" size={16} />
-        </button>
-        <button
-          type="button"
-          data-connection-status
-          onClick={() => { void navigate('/settings/connection'); }}
-          aria-label={t('sidebar.connStatusAria')}
-          title={t('sidebar.connTitle', {
-            version: meta.server_version,
-            status: t(`sidebar.ws.${wsStatus}`),
-          })}
-          className="absolute top-1/2 right-3 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] pointer-coarse:right-2 pointer-coarse:h-10 pointer-coarse:w-10"
-        >
-          <span
-            className={`h-2 w-2 rounded-full ${
-              wsStatus === 'open'
-                ? 'bg-success'
-                : wsStatus === 'connecting'
-                  ? 'status-dot-busy bg-amber-rule'
-                  : 'bg-danger'
-            }`}
-          />
         </button>
       </div>
 
@@ -1915,6 +1937,7 @@ export function Sidebar({
           anchor={filterMenuButtonRef}
           onClose={() => { setOpenMenu(null); }}
           filters={filters}
+          presentStatuses={presentStatuses}
           onToggleStatus={toggleStatus}
           onToggleWorkspace={toggleWorkspace}
           onArchived={(archived) => { setFilters({ archived }); }}
@@ -1930,6 +1953,7 @@ export function Sidebar({
       {menuItem !== null && menuItem.kind === 'session' ? (
         <SessionMenu
           session={menuItem.session}
+          title={resolveTitle(sessionLabel(menuItem.session, untitled))}
           topLevel={topLevelThreads.has(menuItem.id)}
           onToggleThreadDisplay={() => { toggleThreadDisplay(menuItem.id); }}
           scopeId={scopeId}
@@ -2056,9 +2080,11 @@ export function Sidebar({
 
 /**
  * One session row = status slot + title + trailing time, then one quiet
- * second line for stable workspace identity beside the current state (root
- * rows only). Nested rows are a single indented line. Weight is reserved for
- * state (unread / needs you / active), never for hierarchy.
+ * second line, "folder · state", where the state is a word (awaiting answer,
+ * failed, running for 12:03) — root rows only. On touch the time moves to the
+ * end of that second line and the ⋯ keeps the first line's end. Nested rows
+ * are a single indented line. Weight is reserved for state (unread / needs
+ * you / active), never for hierarchy.
  */
 function SessionRow({
   session,
@@ -2067,7 +2093,7 @@ function SessionRow({
   untitled,
   resolveTitle,
   activity,
-  elapsedFor,
+  anchorFor,
   relation,
   nested = false,
   showLocation = true,
@@ -2089,7 +2115,7 @@ function SessionRow({
   untitled: string;
   resolveTitle: (text: string) => string;
   activity: ActivityEntry | undefined;
-  elapsedFor: (entry: ActivityEntry) => number | undefined;
+  anchorFor: (entry: ActivityEntry) => number | undefined;
   /** Where this session came from, when its metadata records a creator. */
   relation?: SessionRelation;
   /** True while the row sits indented under the session it came from. */
@@ -2115,7 +2141,7 @@ function SessionRow({
   /** The last archive refusal, said in place until the next attempt. */
   archiveError?: string;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, time } = useI18n();
   const archived = session.archived === true;
   const pinned = isPinnedSession(session);
   const status = sessionStatusOf(session);
@@ -2123,19 +2149,26 @@ function SessionRow({
   // Weight and marker carry the difference; the active row still wins on lift.
   const rowState = sessionRowState(session, seen);
   const label = resolveTitle(sessionLabel(session, untitled));
-  const elapsed = activity === undefined ? undefined : elapsedFor(activity);
-  // Live progress changes; the workspace stays on the same second line so a
+  const elapsed = useElapsedSince(activity === undefined ? undefined : anchorFor(activity));
+  // A running row says one thing: that it runs, and for how long — a ticking
+  // m:ss inside the first hour, "3h 12m" after it (a clock past an hour does
+  // not read at a glance). The workspace stays on the same second line so a
   // running row never becomes anonymous. Nested rows keep their single-line
   // relation, and workspace groups already name the location in their header.
-  const liveFacts = activity === undefined || status !== 'running'
+  const runningText = elapsed === undefined
+    ? t('sidebar.status.working')
+    : t('sidebar.row.runningFor', { duration: elapsed < 3_600_000 ? formatElapsedClock(elapsed) : time.formatDuration(elapsed) });
+  // Queued prompts and background tasks are the session's own business and
+  // left the row; a desktop hover over the running word still lists them.
+  const runningDetail = activity === undefined || status !== 'running'
     ? []
     : [
-        elapsed === undefined ? undefined : formatElapsedClock(elapsed),
-        activity.queuedCount > 0 ? tp('activity.queueChip', activity.queuedCount) : undefined,
-      ].filter((entry): entry is string => entry !== undefined);
-  // Background tasks are not queued work: they ride their own terminal glyph
-  // and count after the fact, with the task list on hover.
-  const backgroundTasks = activity === undefined || status !== 'running' ? [] : activity.runningTasks;
+        ...(activity.queuedCount > 0 ? [tp('activity.queueChip', activity.queuedCount)] : []),
+        ...(activity.runningTasks.length > 0
+          ? [tp('sidebar.backgroundTasks', activity.runningTasks.length),
+              ...activity.runningTasks.map((task) => `· ${task.description.trim() || task.command || task.id}`)]
+          : []),
+      ];
   const relationNote = relation !== undefined && parentTitle !== undefined
     ? t(relation.kind === 'branch' ? 'sidebar.thread.branchedFrom' : 'sidebar.thread.from', { title: parentTitle })
     : undefined;
@@ -2154,7 +2187,7 @@ function SessionRow({
     : archiveError !== undefined
       ? { kind: 'archive-error' as const, text: archiveError }
       : undefined;
-  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation'; text: string } | undefined = archiveStatus !== undefined
+  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation'; text: string; detail?: string } | undefined = archiveStatus !== undefined
     ? archiveStatus
     : rowState === 'cleanup-pending'
       ? { kind: 'cleanup-pending', text: t('sidebar.rowState.cleanupPending') }
@@ -2164,8 +2197,8 @@ function SessionRow({
       ? { kind: 'needs-you', text: session.pending_interaction === 'question' ? t('sidebar.statusTag.question') : t('sidebar.statusTag.approval') }
       : failedUnseen
         ? { kind: 'failed', text: failedLabel(session, t) }
-      : liveFacts.length > 0
-        ? { kind: 'live', text: liveFacts.join(' · ') }
+      : status === 'running'
+        ? { kind: 'live', text: runningText, detail: runningDetail.length > 0 ? runningDetail.join('\n') : undefined }
         : relationNote !== undefined
           ? { kind: 'relation', text: relationNote }
           : undefined;
@@ -2182,6 +2215,10 @@ function SessionRow({
     : undefined;
   const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
   const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
+  const hasFacts = location !== undefined || fact !== undefined || archived || session.worktree !== undefined || externalSource !== undefined;
+  // Root rows with a ⋯ only: a temporary row keeps its time on the first line
+  // (it has no actions), and a nested row stays one line.
+  const touchTime = !nested && !temporary;
   return (
     <div
       className="group relative"
@@ -2258,8 +2295,8 @@ function SessionRow({
               <RelativeTime at={session.own_updated_at ?? session.updated_at} />
             </span>
           </span>
-          {location !== undefined || fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 || externalSource !== undefined ? (
-            <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+          {hasFacts || touchTime ? (
+            <span className={`mt-px min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint ${hasFacts ? 'flex' : 'hidden [@media(hover:none)]:flex'}`}>
               {/* The source tag leads this line: which client drove the work is
                   a fact about the row, while everything after it is about right
                   now and can change under the reader. */}
@@ -2288,7 +2325,7 @@ function SessionRow({
                   {fact.text}
                 </span>
               ) : fact.kind === 'live' ? (
-                <span data-session-live className="shrink-0 whitespace-nowrap text-ink-soft tabular-nums">{fact.text}</span>
+                <span data-session-live title={fact.detail} className="shrink-0 whitespace-nowrap text-ink-soft tabular-nums">{fact.text}</span>
               ) : fact.kind === 'archiving' ? (
                 // The one place a row says what it is waiting for, in the same
                 // quiet second line as every other row fact.
@@ -2305,8 +2342,15 @@ function SessionRow({
                 <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
               ) : null}
               <WorktreeMark worktree={session.worktree} className={fact === undefined && location === undefined ? 'max-w-full' : 'max-w-[40%] shrink-0'} />
-              {backgroundTasks.length > 0 ? <BackgroundTasksMark tasks={backgroundTasks} /> : null}
               {archived ? <span className="shrink-0">{fact === undefined && location === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+              {touchTime ? (
+                // Without hover the ⋯ covers the first line's time slot for
+                // good (it is the only way into the row menu on iOS), so on
+                // touch the time ends this line instead.
+                <span data-session-time-touch className="ml-auto hidden shrink-0 pl-1 tabular-nums [@media(hover:none)]:inline">
+                  <RelativeTime at={session.own_updated_at ?? session.updated_at} />
+                </span>
+              ) : null}
             </span>
           ) : null}
         </span>
@@ -2486,25 +2530,27 @@ function RoomConversationRow({
               <RelativeTime at={item.updated_at} />
             </span>
           </span>
-          {fact !== undefined || archived ? (
-            <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
-              {fact === undefined ? null : fact.kind === 'needs-you' ? (
-                <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
-              ) : fact.kind === 'failed' ? (
-                <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
-              ) : fact.kind === 'archiving' ? (
-                <span data-room-archiving role="status" className="flex min-w-0 items-center gap-1 truncate text-ink-soft">
-                  <Spinner label={t('sidebar.archivingAria', { title: item.title })} size={12} />
-                  <span className="truncate">{fact.text}</span>
-                </span>
-              ) : fact.kind === 'archive-error' ? (
-                <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
-              ) : (
-                <span data-room-location className="min-w-0 truncate" title={location}>{fact.text}</span>
-              )}
-              {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+          {/* Always there on touch: it carries the time the ⋯ covers above. */}
+          <span className={`mt-px min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint ${fact !== undefined || archived ? 'flex' : 'hidden [@media(hover:none)]:flex'}`}>
+            {fact === undefined ? null : fact.kind === 'needs-you' ? (
+              <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
+            ) : fact.kind === 'failed' ? (
+              <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
+            ) : fact.kind === 'archiving' ? (
+              <span data-room-archiving role="status" className="flex min-w-0 items-center gap-1 truncate text-ink-soft">
+                <Spinner label={t('sidebar.archivingAria', { title: item.title })} size={12} />
+                <span className="truncate">{fact.text}</span>
+              </span>
+            ) : fact.kind === 'archive-error' ? (
+              <span data-room-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
+            ) : (
+              <span data-room-location className="min-w-0 truncate" title={location}>{fact.text}</span>
+            )}
+            {archived ? <span className="shrink-0">{fact === undefined ? '' : '· '}{t('sidebar.archived')}</span> : null}
+            <span data-room-time-touch className="ml-auto hidden shrink-0 pl-1 tabular-nums [@media(hover:none)]:inline">
+              <RelativeTime at={item.updated_at} />
             </span>
-          ) : null}
+          </span>
         </span>
       </button>
 
@@ -2551,26 +2597,21 @@ function RoomConversationRow({
   );
 }
 
+/** A row-menu entry (thread and room menus). Inside the phone's bottom sheet
+ * the sheet's own rule resizes it for a thumb. */
+const ROW_MENU_ITEM =
+  'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper pointer-coarse:min-h-11 pointer-coarse:text-[14px]';
+const ROW_MENU_DISABLED = 'disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent';
+
 /**
  * The room row's menu: the thread menu's shared spine (link, pin, rename,
  * archive) plus the room's own entries (members, budget, pause). Delete is a
  * room-only destructive action and asks through ConfirmDialog upstream. The
  * summary row carries no pause flag, so the full room document (cached by an
- * open room page) answers the pause/continue label.
+ * open room page) answers the pause/continue label. In phone mode the same
+ * entries come up as a bottom sheet.
  */
-function RoomListMenu({
-  item,
-  x,
-  y,
-  onClose,
-  onTogglePin,
-  onTogglePause,
-  onRename,
-  onArchive,
-  onRestore,
-  onDelete,
-  archiving = false,
-}: {
+interface RoomMenuProps {
   item: Extract<ConversationListItem, { kind: 'room' }>;
   x: number;
   y: number;
@@ -2585,18 +2626,22 @@ function RoomListMenu({
   /** Its archive is in flight: only the entries that would race it go quiet;
       reading the room and copying its link stay available. */
   archiving?: boolean;
-}) {
+}
+
+function RoomListMenu(props: RoomMenuProps) {
   const { t } = useI18n();
-  const navigate = useGuardedNavigate();
-  const roomApi = useBotRoomApi();
-  const archived = item.archived === true;
-  const roomQuery = useQuery({
-    queryKey: roomQueryKey(item.id),
-    queryFn: () => roomApi.getRoom(item.id),
-    staleTime: 15_000,
-    retry: false,
-  });
-  const paused = roomQuery.data?.paused;
+  if (!usePhoneMode()) return <RoomPointerMenu {...props} />;
+  return (
+    <ActionSheet ariaLabel={t('room.menu')} overlayId="room-list-menu" dataAttribute="data-room-menu" onClose={props.onClose}>
+      <RoomMenuEntries {...props} />
+    </ActionSheet>
+  );
+}
+
+/** The desktop form: a small menu at the pointer (or under the row's ⋯). */
+function RoomPointerMenu(props: RoomMenuProps) {
+  const { x, y, onClose } = props;
+  const { t } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
   // Focus holder to hand back to on Escape / item activation — whatever was
   // focused when the menu opened. Outside-pointer closes do not restore: the
@@ -2646,13 +2691,6 @@ function RoomListMenu({
     };
   }, []);
 
-  const openPanel = (focus: 'members' | 'budget') => {
-    onClose();
-    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
-  };
-
-  const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   return (
     <div
       ref={menuRef}
@@ -2689,6 +2727,31 @@ function RoomListMenu({
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
+      <RoomMenuEntries {...props} />
+    </div>
+  );
+}
+
+/** The room menu's entries, shared by the desktop menu and the phone sheet. */
+function RoomMenuEntries({ item, onClose, onTogglePin, onTogglePause, onRename, onArchive, onRestore, onDelete, archiving = false }: RoomMenuProps) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const roomApi = useBotRoomApi();
+  const archived = item.archived === true;
+  const roomQuery = useQuery({
+    queryKey: roomQueryKey(item.id),
+    queryFn: () => roomApi.getRoom(item.id),
+    staleTime: 15_000,
+    retry: false,
+  });
+  const paused = roomQuery.data?.paused;
+  const openPanel = (focus: 'members' | 'budget') => {
+    onClose();
+    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
+  };
+  const itemClass = ROW_MENU_ITEM;
+  return (
+    <>
       {archived ? (
         <>
           <button type="button" role="menuitem" className={itemClass} onClick={() => { onRestore(item); }}>
@@ -2784,7 +2847,7 @@ function RoomListMenu({
           </button>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -2917,24 +2980,32 @@ function WorkspaceGroupHeader({
 }
 
 /**
- * Running background tasks on a session row: a terminal glyph and the count,
- * never a "+N" chip (that shape reads as queued or pending work). The hover
- * title lists what is running; the accessible name says it in words.
+ * The footer's connection mark. Connected is the normal state and shows
+ * nothing; a dropped socket says so in words, and still opens the connection
+ * page. While the app is still making its first connection (`settling`)
+ * nothing is said either: that is starting up, not a disconnect.
  */
-function BackgroundTasksMark({ tasks }: { tasks: readonly ActivityTask[] }) {
-  const { tp } = useI18n();
-  const summary = tp('sidebar.backgroundTasks', tasks.length);
-  const list = tasks.map((task) => `· ${task.description.trim() || task.command || task.id}`).join('\n');
+function SidebarConnectionMark({ wsStatus, settling, serverVersion, onOpen }: {
+  wsStatus: 'connecting' | 'open' | 'closed';
+  settling: boolean;
+  serverVersion: string;
+  onOpen: () => void;
+}) {
+  const { t } = useI18n();
+  if (wsStatus === 'open' || settling) return null;
+  // `connecting` after a drop is the socket's retry backoff; `closed` means
+  // it stopped retrying, so it must not claim to be reconnecting.
+  const words = wsStatus === 'connecting' ? t('sidebar.footer.reconnecting') : t('sidebar.footer.disconnected');
   return (
-    <span
-      data-session-background-tasks={tasks.length}
-      title={`${summary}\n${list}`}
-      className="flex shrink-0 items-center gap-0.5 text-ink-faint tabular-nums"
+    <button
+      type="button"
+      data-connection-status={wsStatus}
+      onClick={onOpen}
+      title={t('sidebar.connTitle', { version: serverVersion, status: t(`sidebar.ws.${wsStatus}`) })}
+      className="flex h-8 min-w-0 max-w-[60%] shrink items-center rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-10"
     >
-      <Icon name="terminal" size={12} />
-      <span aria-hidden>{tasks.length}</span>
-      <span className="sr-only">{summary}</span>
-    </span>
+      <span className="truncate">{words}</span>
+    </button>
   );
 }
 
@@ -3175,9 +3246,12 @@ function searchQueryDisplay(search: SessionSearchState): string {
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
-const MENU_HEADING = 'px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint';
+// The `phone:` sizes are for the bottom sheet these menus become on a phone:
+// the sheet's own rule only resizes plain `menuitem` rows, not the check and
+// radio rows that make up most of these two menus.
+const MENU_HEADING = 'px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]';
 const MENU_ITEM =
-  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper phone:h-12 phone:px-4 phone:text-[15px]';
 
 /** The selection column: reserved on every row so labels stay aligned. */
 function MenuMark({ on }: { on: boolean }) {
@@ -3205,7 +3279,12 @@ function menuArrowKeys(event: React.KeyboardEvent<HTMLDivElement>): boolean {
   return true;
 }
 
-/** Arrangement only: grouping and sorting. Nothing here hides a session. */
+/**
+ * Arrangement only: grouping, sorting, and which tools the sidebar pins.
+ * Nothing here hides a session. Anchored under its button on a desktop; a
+ * bottom sheet in phone mode, where the button sits at the top of a
+ * full-screen drawer, far from the thumb.
+ */
 function SidebarViewMenu({
   anchor,
   onClose,
@@ -3223,7 +3302,11 @@ function SidebarViewMenu({
 }) {
   const { t } = useI18n();
   const layoutPrefs = useLayoutPreferences();
-  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
+  const phone = usePhoneMode();
+  // The checks mirror what the nav shows, and a toggle starts from that list,
+  // so on a phone the first pin saves just the one tool.
+  const pinnedNavItems = shownPinnedNavItems(layoutPrefs, phone);
+  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(pinnedNavItems), [pinnedNavItems]);
   const groups: readonly { value: 'time' | 'workspace' | 'none'; label: string }[] = [
     { value: 'time', label: t('sidebar.groupByTime') },
     { value: 'workspace', label: t('sidebar.groupByWorkspace') },
@@ -3235,20 +3318,8 @@ function SidebarViewMenu({
     'created-desc': t('sidebar.sortCreated'),
     title: t('sidebar.sortTitle'),
   };
-  return (
-    <AnchoredPopover
-      open
-      onClose={onClose}
-      anchorRef={anchor}
-      id="sidebar-view-menu"
-      label={t('sidebar.viewMenu')}
-      role="menu"
-      align="end"
-      widthClassName="w-[232px]"
-      className="p-1"
-      data={{ 'data-view-menu': '' }}
-      onSurfaceKeyDown={menuArrowKeys}
-    >
+  const body = (
+    <>
       <p className={MENU_HEADING}>{t('sidebar.viewGroupHeading')}</p>
       {groups.map((option) => (
         <button
@@ -3299,8 +3370,8 @@ function SidebarViewMenu({
             className={`${MENU_ITEM} w-full`}
             onClick={() => {
               const next = isPinned
-                ? layoutPrefs.pinnedNavItems.filter((entry) => entry !== key)
-                : [...layoutPrefs.pinnedNavItems, key];
+                ? pinnedNavItems.filter((entry) => entry !== key)
+                : [...pinnedNavItems, key];
               writeLayoutPreferences({ pinnedNavItems: next });
             }}
           >
@@ -3309,6 +3380,29 @@ function SidebarViewMenu({
           </button>
         );
       })}
+    </>
+  );
+  // No autofocus in the sheet: its first-item focus only knows plain menu
+  // items, and a touch opener has no keyboard to move from there anyway.
+  return phone ? (
+    <ActionSheet ariaLabel={t('sidebar.viewMenu')} overlayId="sidebar-view-menu" dataAttribute="data-view-menu" onClose={onClose} autofocus={false}>
+      {body}
+    </ActionSheet>
+  ) : (
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchor}
+      id="sidebar-view-menu"
+      label={t('sidebar.viewMenu')}
+      role="menu"
+      align="end"
+      widthClassName="w-[232px]"
+      className="p-1"
+      data={{ 'data-view-menu': '' }}
+      onSurfaceKeyDown={menuArrowKeys}
+    >
+      {body}
     </AnchoredPopover>
   );
 }
@@ -3317,11 +3411,13 @@ function SidebarViewMenu({
  * Everything that changes WHICH sessions are visible: status, workspaces
  * (multi-select, with the server-side pin toggle per row) and archived.
  * The panel stays open across clicks — the list rearranges live behind it.
+ * A bottom sheet in phone mode, like the view menu.
  */
 function SidebarFilterMenu({
   anchor,
   onClose,
   filters,
+  presentStatuses,
   onToggleStatus,
   onToggleWorkspace,
   onArchived,
@@ -3333,6 +3429,9 @@ function SidebarFilterMenu({
   anchor: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   filters: SessionListFilters;
+  /** The states some listed session is in now; a chosen one stays offered
+   * even when it empties, so it can still be turned off here. */
+  presentStatuses: ReadonlySet<SessionStatusFilter>;
   onToggleStatus: (status: SessionStatusFilter) => void;
   onToggleWorkspace: (workspaceId: string) => void;
   onArchived: (archived: SessionArchivedFilter) => void;
@@ -3342,12 +3441,14 @@ function SidebarFilterMenu({
   onManageWorkspaces: () => void;
 }) {
   const { t } = useI18n();
-  const statuses: readonly { value: SessionStatusFilter; label: string }[] = [
+  const phone = usePhoneMode();
+  const allStatuses: readonly { value: SessionStatusFilter; label: string }[] = [
     { value: 'running', label: t('sidebar.statusRunning') },
     { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
     { value: 'cleanup-pending', label: t('sidebar.rowState.cleanupPending') },
     { value: 'idle', label: t('sidebar.statusIdle') },
   ];
+  const statuses = allStatuses.filter((option) => presentStatuses.has(option.value) || filters.status.includes(option.value));
   const head = workspaceOptions.slice(0, MENU_WORKSPACE_ROWS);
   const extra = workspaceOptions.filter((workspace) => filters.workspaces.includes(workspace.id) && !head.includes(workspace));
   const archivedOptions: readonly { value: SessionArchivedFilter; label: string }[] = [
@@ -3355,38 +3456,30 @@ function SidebarFilterMenu({
     { value: 'include', label: t('sidebar.archivedInclude') },
     { value: 'only', label: t('sidebar.archivedOnly') },
   ];
-  return (
-    <AnchoredPopover
-      open
-      onClose={onClose}
-      anchorRef={anchor}
-      id="sidebar-filter-menu"
-      label={t('sidebar.filterMenu')}
-      role="menu"
-      align="end"
-      widthClassName="w-[232px]"
-      className="p-1"
-      data={{ 'data-filter-menu': '', 'data-view-menu-filters': '' }}
-      onSurfaceKeyDown={menuArrowKeys}
-    >
-      <p className={MENU_HEADING}>{t('sidebar.filterStatusHeading')}</p>
-      {statuses.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked={filters.status.includes(option.value)}
-          data-status-filter={option.value}
-          className={`${MENU_ITEM} w-full`}
-          onClick={() => { onToggleStatus(option.value); }}
-        >
-          <MenuMark on={filters.status.includes(option.value)} />
-          <span className="truncate">{option.label}</span>
-        </button>
-      ))}
+  const body = (
+    <>
+      {statuses.length > 0 ? (
+        <>
+          <p className={MENU_HEADING}>{t('sidebar.filterStatusHeading')}</p>
+          {statuses.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={filters.status.includes(option.value)}
+              data-status-filter={option.value}
+              className={`${MENU_ITEM} w-full`}
+              onClick={() => { onToggleStatus(option.value); }}
+            >
+              <MenuMark on={filters.status.includes(option.value)} />
+              <span className="truncate">{option.label}</span>
+            </button>
+          ))}
+        </>
+      ) : null}
       {workspaceOptions.length > 0 ? (
         <>
-          <div className="mx-1 my-1 border-t border-hairline" />
+          {statuses.length > 0 ? <div className="mx-1 my-1 border-t border-hairline" /> : null}
           <p className={MENU_HEADING}>{t('sidebar.viewWorkspaceHeading')}</p>
           {[...head, ...extra].map((workspace) => (
             <div key={workspace.id} className="group flex items-center">
@@ -3414,10 +3507,12 @@ function SidebarFilterMenu({
                 }
                 title={workspace.pinned ? t('sidebar.unpinWorkspace') : t('sidebar.pinWorkspace')}
                 onClick={() => { onToggleWorkspacePin(workspace); }}
-                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 ${
+                // Without hover the unpinned mark would never show, leaving
+                // an invisible target in the row: touch keeps it faint.
+                className={`mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:bg-paper disabled:opacity-50 phone:h-12 phone:w-12 ${
                   workspace.pinned
                     ? 'text-ink-soft'
-                    : 'text-transparent group-focus-within:text-ink-faint group-hover:text-ink-faint hover:!text-ink'
+                    : 'text-transparent group-focus-within:text-ink-faint group-hover:text-ink-faint hover:!text-ink [@media(hover:none)]:text-ink-faint'
                 }`}
               >
                 <PinIcon />
@@ -3430,7 +3525,7 @@ function SidebarFilterMenu({
           </button>
         </>
       ) : null}
-      <div className="mx-1 my-1 border-t border-hairline" />
+      {statuses.length > 0 || workspaceOptions.length > 0 ? <div className="mx-1 my-1 border-t border-hairline" /> : null}
       <p className={MENU_HEADING}>{t('sidebar.filterArchivedHeading')}</p>
       {archivedOptions.map((option) => (
         <button
@@ -3447,32 +3542,37 @@ function SidebarFilterMenu({
           <span className="truncate">{option.label}</span>
         </button>
       ))}
+    </>
+  );
+  return phone ? (
+    <ActionSheet ariaLabel={t('sidebar.filterMenu')} overlayId="sidebar-filter-menu" dataAttribute="data-filter-menu" onClose={onClose} autofocus={false}>
+      {body}
+    </ActionSheet>
+  ) : (
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchor}
+      id="sidebar-filter-menu"
+      label={t('sidebar.filterMenu')}
+      role="menu"
+      align="end"
+      widthClassName="w-[232px]"
+      className="p-1"
+      data={{ 'data-filter-menu': '', 'data-view-menu-filters': '' }}
+      onSurfaceKeyDown={menuArrowKeys}
+    >
+      {body}
     </AnchoredPopover>
   );
 }
 
-/** Small hand-rolled context menu (no Radix): fixed panel, outside-click and
- * Escape to close. The panel size is measured after mount so the position can
- * be clamped inside the viewport on both axes (right-click near an edge). */
-function SessionMenu({
-  session,
-  topLevel,
-  onToggleThreadDisplay,
-  scopeId,
-  activeSessionId,
-  x,
-  y,
-  onClose,
-  onRename,
-  onTogglePin,
-  onAction,
-  onArchive,
-  onRestore,
-  threadCommsEnabled,
-  onJoinRoom,
-  archiving = false,
-}: {
+type SessionContentAction = 'fork' | 'undo' | 'compact' | 'export';
+
+interface SessionMenuProps {
   session: Session;
+  /** The row's shown title, for the menu's accessible name. */
+  title: string;
   topLevel: boolean;
   onToggleThreadDisplay: () => void;
   scopeId: string;
@@ -3483,7 +3583,7 @@ function SessionMenu({
   onClose: () => void;
   onRename: () => void;
   onTogglePin: () => void;
-  onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  onAction: (action: SessionContentAction) => void;
   onArchive: () => void;
   onRestore: () => void;
   /** `[thread_communication].enabled`; undefined while the config loads. */
@@ -3491,8 +3591,175 @@ function SessionMenu({
   onJoinRoom: () => void;
   /** Its archive is in flight: only the entries that would race it go quiet. */
   archiving?: boolean;
-}) {
+}
+
+/**
+ * The session row's menu. Its first level is list management only: where the
+ * row sits and what it is called, its link, adding it to the open
+ * conversation or to a room, its folder, and whether it stays in the list.
+ * What acts on the conversation's content — fork, export, compact, undo —
+ * belongs to the conversation's own ⋯. A desktop keeps those four one level
+ * down here, under More, because acting on a conversation without opening it
+ * is a real desktop use; phone mode shows the first level only, as a bottom
+ * sheet, and the four stay one tap away inside the conversation.
+ */
+function SessionMenu(props: SessionMenuProps) {
+  const { t } = useI18n();
+  if (!usePhoneMode()) return <SessionPointerMenu {...props} />;
+  return (
+    <ActionSheet ariaLabel={t('sidebar.sessionActionsFor', { title: props.title })} overlayId="session-menu"
+      dataAttribute="data-session-menu" onClose={props.onClose}>
+      <SessionMenuEntries {...props} phone />
+    </ActionSheet>
+  );
+}
+
+/** The menu's first level, shared by the desktop menu and the phone sheet. */
+function SessionMenuEntries({
+  session,
+  phone,
+  topLevel,
+  onToggleThreadDisplay,
+  scopeId,
+  activeSessionId,
+  onClose,
+  onRename,
+  onTogglePin,
+  onArchive,
+  onRestore,
+  threadCommsEnabled,
+  onJoinRoom,
+  archiving = false,
+}: SessionMenuProps & { phone: boolean }) {
   const host = useHost();
+  const { t } = useI18n();
+  const archived = session.archived === true;
+  // The lightweight link is the in-app route (the protocol-level kiki:// deep
+  // link is deliberately out of scope). Opening the folder rides the desktop
+  // opener commands, so the browser build and a phone get the copy only.
+  const cwd = session.metadata.cwd;
+  const canReveal = !phone && !scopeId.startsWith('ssh:') && host.revealPath !== undefined && cwd !== '';
+  // A thread reference goes into the open conversation's composer: with
+  // nothing open, or with this row being the open one, there is nowhere to
+  // add it, so the entry is not offered.
+  const canAddToConversation = activeSessionId !== undefined && activeSessionId !== session.id;
+  // Rooms need thread communication: switched off, the entry is not offered
+  // at all. Still loading is not off, so it stays.
+  const canJoinRoom = !isSubagentSession(session) && threadCommsEnabled !== false;
+  const runAndClose = (label: string, action: () => Promise<void>) => {
+    onClose();
+    runToastAction(label, action);
+  };
+  return (
+    <>
+      {sessionRelationOf(session)?.kind === 'thread' ? (
+        <>
+          <button type="button" role="menuitem" data-menu-item="thread-display" className={ROW_MENU_ITEM} onClick={onToggleThreadDisplay}>
+            {topLevel ? t('menu.showNested') : t('menu.showTopLevel')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+        </>
+      ) : null}
+      {archived ? (
+        <button type="button" role="menuitem" data-menu-item="restore" className={ROW_MENU_ITEM} onClick={onRestore}>
+          {t('menu.restore')}
+        </button>
+      ) : (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="pin"
+            disabled={archiving}
+            className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
+            onClick={onTogglePin}
+          >
+            {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
+          </button>
+          <button type="button" role="menuitem" data-menu-item="rename" className={ROW_MENU_ITEM} onClick={onRename}>
+            {t('menu.rename')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy-link"
+            className={ROW_MENU_ITEM}
+            onClick={() => {
+              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(`/s/${session.id}`));
+            }}
+          >
+            {t('menu.copyThreadLink')}
+          </button>
+          {canAddToConversation ? (
+            // A thread reference into the open conversation's composer, at its caret.
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="add-to-conversation"
+              className={ROW_MENU_ITEM}
+              onClick={() => {
+                if (activeSessionId === undefined) return;
+                onClose();
+                const link = threadRefLink(session.id);
+                if (!requestComposerInsert(activeSessionId, link)) appendToDraft(activeSessionId, link);
+              }}
+            >
+              {t('menu.addToConversation')}
+            </button>
+          ) : null}
+          {canJoinRoom ? (
+            <button type="button" role="menuitem" data-menu-item="join-room" className={ROW_MENU_ITEM} onClick={onJoinRoom}>
+              {t('room.joinRoom')}
+            </button>
+          ) : null}
+          {cwd !== '' ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="copy-path"
+              className={ROW_MENU_ITEM}
+              onClick={() => { runAndClose(t('menu.copyWorkingDirectory'), () => copyTextToClipboard(cwd)); }}
+            >
+              {t('menu.copyWorkingDirectory')}
+            </button>
+          ) : null}
+          {canReveal ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="open-folder"
+              className={ROW_MENU_ITEM}
+              onClick={() => { runAndClose(t('menu.openWorkingDirectory'), () => host.revealPath!(cwd)); }}
+            >
+              {t('menu.openWorkingDirectory')}
+            </button>
+          ) : null}
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="archive"
+            disabled={archiving}
+            className={`${ROW_MENU_ITEM} hover:text-danger ${ROW_MENU_DISABLED}`}
+            onClick={onArchive}
+          >
+            {archiving ? t('sidebar.archiving') : t('menu.archive')}
+          </button>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * The desktop form: a small hand-rolled menu (no Radix) at the pointer or
+ * beside the row's ⋯ — fixed panel, outside-click and Escape to close, the
+ * panel size measured after mount so the position clamps inside the viewport
+ * on both axes (right-click near an edge) — with More at its end.
+ */
+function SessionPointerMenu(props: SessionMenuProps) {
+  const { session, title, x, y, onClose, onAction } = props;
   const { t } = useI18n();
   const archived = session.archived === true;
   const menuRef = useRef<HTMLDivElement>(null);
@@ -3527,6 +3794,9 @@ function SessionMenu({
   // could swallow an Escape mid-reattach.
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // On a phone the back button closes this menu first, instead of taking the
+  // drawer underneath (and the menu with it) in one press.
+  useLayerHistory('session-menu', useCoarsePointer(), onClose);
   useEffect(() => {
     const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3551,29 +3821,70 @@ function SessionMenu({
     // onClose rides the ref; attach once.
   }, []);
 
-  // 「Location & link」group: the lightweight link is the in-app route (the
-  // protocol-level kiki:// deep link is deliberately out of scope); folder/
-  // editor actions ride the desktop opener commands, so the browser build
-  // degrades to the two copy entries only.
-  const cwd = session.metadata.cwd;
-  const desktop = !scopeId.startsWith('ssh:') && host.revealPath !== undefined;
-  const runAndClose = (label: string, action: () => Promise<void>) => {
-    onClose();
-    runToastAction(label, action);
+  // More: a click, Enter/Space or → opens it and moves focus in; a mouse
+  // hover opens it without taking focus, like a native submenu. ← or hovering
+  // another entry closes it; Escape closes the whole menu.
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreFocus, setMoreFocus] = useState(0);
+  const openMore = (focus: boolean) => {
+    setMoreOpen(true);
+    if (focus) setMoreFocus((count) => count + 1);
   };
+  useEffect(() => {
+    if (moreFocus > 0) submenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+  }, [moreFocus]);
+  // More is the menu's last entry, so near the bottom edge the submenu climbs
+  // to stay on screen, and near the right edge it opens to the left.
+  const [submenuPlace, setSubmenuPlace] = useState<{ top: number; left: boolean }>({ top: 0, left: false });
+  useLayoutEffect(() => {
+    const submenu = submenuRef.current;
+    const anchor = moreRef.current;
+    if (!moreOpen || submenu === null || anchor === null) return;
+    const rect = anchor.getBoundingClientRect();
+    const overflow = rect.top - 5 + submenu.offsetHeight - (window.innerHeight - 8);
+    setSubmenuPlace({
+      top: overflow > 0 ? -overflow : 0,
+      left: rect.right + 8 + submenu.offsetWidth > window.innerWidth - 8,
+    });
+  }, [moreOpen]);
+  const contentActions: readonly { action: SessionContentAction; label: string; danger?: boolean }[] = [
+    { action: 'fork', label: t('menu.fork') },
+    { action: 'export', label: t('menu.export') },
+    { action: 'compact', label: t('menu.compact') },
+    { action: 'undo', label: t('menu.undo'), danger: true },
+  ];
 
-  const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   return (
     <div
       ref={menuRef}
       data-session-menu
       role="menu"
+      aria-label={t('sidebar.sessionActionsFor', { title })}
       onKeyDown={(event) => {
+        const submenu = submenuRef.current;
+        const inSubmenu = submenu !== null && event.target instanceof Node && submenu.contains(event.target);
+        if (inSubmenu && event.key === 'ArrowLeft') {
+          event.preventDefault();
+          setMoreOpen(false);
+          moreRef.current?.focus();
+          return;
+        }
+        if (!inSubmenu && event.key === 'ArrowRight' && event.target === moreRef.current) {
+          event.preventDefault();
+          openMore(true);
+          return;
+        }
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        // The arrows walk the level that holds focus: the submenu's four, or
+        // the first level without them.
+        const scope = inSubmenu ? submenu : menuRef.current;
+        const items = [...(scope?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])]
+          .filter((item) => inSubmenu || submenu === null || !submenu.contains(item));
         if (items.length === 0) return;
         event.preventDefault();
+        if (!inSubmenu) setMoreOpen(false);
         const index = items.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === 'Home' ? 0
           : event.key === 'End' ? items.length - 1
@@ -3581,12 +3892,19 @@ function SessionMenu({
           : (index - 1 + items.length) % items.length;
         items[next]?.focus();
       }}
+      onPointerOver={(event) => {
+        if (event.pointerType !== 'mouse' || !(event.target instanceof Element)) return;
+        const item = event.target.closest('[role="menuitem"]');
+        if (item === null || submenuRef.current?.contains(item) === true) return;
+        if (item === moreRef.current) openMore(false);
+        else setMoreOpen(false);
+      }}
       onClick={(event) => {
         // Item activation hands focus back to the opener — but only after
-        // the click's commit has landed: an in-place toggle (pin/unpin keeps
-        // this menu open) keeps its focus, and a dialog the action opened
-        // (rename, join-room) focuses itself on mount. Checking post-commit
-        // restores exactly when neither happened.
+        // the click's commit has landed: an in-place toggle (More keeps this
+        // menu open) keeps its focus, and a dialog the action opened
+        // (rename, join-room, undo) focuses itself on mount. Checking
+        // post-commit restores exactly when neither happened.
         if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
         const menuNode = menuRef.current;
         queueMicrotask(() => {
@@ -3599,137 +3917,50 @@ function SessionMenu({
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
-      {sessionRelationOf(session)?.kind === 'thread' ? (
+      <SessionMenuEntries {...props} phone={false} />
+      {archived ? null : (
         <>
-          <button type="button" role="menuitem" data-menu-item="thread-display" className={itemClass} onClick={onToggleThreadDisplay}>
-            {topLevel ? t('menu.showNested') : t('menu.showTopLevel')}
-          </button>
           <div className="mx-1 my-1 border-t border-hairline" />
-        </>
-      ) : null}
-      {archived ? (
-        <button type="button" role="menuitem" className={itemClass} onClick={onRestore}>
-          {t('menu.restore')}
-        </button>
-      ) : (
-        <>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('fork'); }}>
-            {t('menu.fork')}
-          </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('export'); }}>
-            {t('menu.export')}
-          </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('compact'); }}>
-            {t('menu.compact')}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className={`${itemClass} hover:text-danger`}
-            onClick={() => { onAction('undo'); }}
-          >
-            {t('menu.undo')}
-          </button>
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="copy-link"
-            className={itemClass}
-            onClick={() => {
-              runAndClose(t('menu.copyThreadLink'), () => copyTextToClipboard(`/s/${session.id}`));
-            }}
-          >
-            {t('menu.copyThreadLink')}
-          </button>
-          {/* A thread reference into the open conversation's composer, at its
-              caret. Nothing open, or this row IS the open one: nothing to add to. */}
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="add-to-conversation"
-            disabled={activeSessionId === undefined || activeSessionId === session.id}
-            title={
-              activeSessionId === undefined
-                ? t('menu.addToConversationNone')
-                : activeSessionId === session.id
-                  ? t('menu.addToConversationSelf')
-                  : undefined
-            }
-            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
-            onClick={() => {
-              if (activeSessionId === undefined) return;
-              onClose();
-              const link = threadRefLink(session.id);
-              if (!requestComposerInsert(activeSessionId, link)) appendToDraft(activeSessionId, link);
-            }}
-          >
-            {t('menu.addToConversation')}
-          </button>
-          {isSubagentSession(session) ? null : (
-            <>
-              <div className="mx-1 my-1 border-t border-hairline" />
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="join-room"
-                disabled={threadCommsEnabled === false}
-                title={threadCommsEnabled === false ? t('room.commsOff') : undefined}
-                className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
-                onClick={onJoinRoom}
+          <div className="relative">
+            <button
+              ref={moreRef}
+              type="button"
+              role="menuitem"
+              data-menu-item="more"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              className={`${ROW_MENU_ITEM} flex items-center gap-2 ${moreOpen ? 'bg-paper' : ''}`}
+              onClick={() => { openMore(true); }}
+            >
+              <span className="min-w-0 flex-1 truncate">{t('sidebar.menu.more')}</span>
+              <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+            </button>
+            {moreOpen ? (
+              <div
+                ref={submenuRef}
+                role="menu"
+                aria-label={t('sidebar.menu.more')}
+                data-session-submenu
+                className={`anim-enter absolute w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)] ${
+                  submenuPlace.left ? 'right-full mr-2' : 'left-full ml-2'
+                }`}
+                style={{ top: submenuPlace.top - 5 }}
               >
-                {t('room.joinRoom')}
-              </button>
-              {threadCommsEnabled === false ? (
-                <p className="px-3 pt-0.5 pb-1 text-[11.5px] leading-4 text-ink-faint">{t('room.commsOffShort')}</p>
-              ) : null}
-            </>
-          )}
-          {cwd !== '' ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="copy-path"
-              className={itemClass}
-              onClick={() => { runAndClose(t('menu.copyWorkingDirectory'), () => copyTextToClipboard(cwd)); }}
-            >
-              {t('menu.copyWorkingDirectory')}
-            </button>
-          ) : null}
-          {desktop && cwd !== '' ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="open-folder"
-              className={itemClass}
-              onClick={() => { runAndClose(t('menu.openWorkingDirectory'), () => host.revealPath!(cwd)); }}
-            >
-              {t('menu.openWorkingDirectory')}
-            </button>
-          ) : null}
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            type="button"
-            role="menuitem"
-            disabled={archiving}
-            className={`${itemClass} disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
-            onClick={onTogglePin}
-          >
-            {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
-          </button>
-          <button type="button" role="menuitem" data-menu-item="rename" className={itemClass} onClick={onRename}>
-            {t('menu.rename')}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="archive"
-            disabled={archiving}
-            className={`${itemClass} hover:text-danger disabled:cursor-default disabled:text-ink-faint disabled:hover:bg-transparent`}
-            onClick={onArchive}
-          >
-            {archiving ? t('sidebar.archiving') : t('menu.archive')}
-          </button>
+                {contentActions.map((entry) => (
+                  <button
+                    key={entry.action}
+                    type="button"
+                    role="menuitem"
+                    data-menu-item={entry.action}
+                    className={`${ROW_MENU_ITEM} ${entry.danger === true ? 'hover:text-danger' : ''}`}
+                    onClick={() => { onAction(entry.action); }}
+                  >
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </>
       )}
     </div>
@@ -3782,7 +4013,8 @@ function SidebarRenameEditor({
   useEffect(() => {
     const unregister = registerOverlay('sidebar-rename');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      // An IME Escape cancels the candidate, not the rename.
+      if (event.key !== 'Escape' || isImeKeyEvent(event)) return;
       event.preventDefault();
       event.stopPropagation();
       onClose();
@@ -3832,7 +4064,9 @@ function SidebarRenameEditor({
         maxLength={200}
         onChange={(event) => { setTitle(event.target.value); }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') { event.preventDefault(); submit(); }
+          // The Enter that commits an IME candidate must not save a
+          // half-typed title.
+          if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); submit(); }
         }}
         onFocus={(event) => { event.currentTarget.select(); }}
       />

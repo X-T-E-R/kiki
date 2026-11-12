@@ -15,6 +15,7 @@ import { useHost } from '../../host';
 import { ExecutorScheduleControl, familyExecutorId, passthroughScheduleOverrides } from './ExecutorScheduleControl';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { useConnection } from '../../state/connection';
 import {
   MENU_ROW_CLASS,
@@ -74,6 +75,8 @@ export interface ProfileSelectProps {
   readonly onSelectPersona?: (personaId: string) => void;
   readonly onCancelPending?: () => void;
   readonly boundExecution?: ExecutionChoice;
+  /** Called after a pick is committed and the menu closed (never on Escape / cancel). */
+  readonly onPicked?: () => void;
 }
 
 export function ProfileSelect({
@@ -92,6 +95,7 @@ export function ProfileSelect({
   onSelectPersona,
   onCancelPending,
   boundExecution,
+  onPicked,
 }: ProfileSelectProps) {
   const { t, locale } = useI18n();
   const host = useHost();
@@ -111,6 +115,12 @@ export function ProfileSelect({
     setOpen(false);
     if (refocus) triggerRef.current?.focus();
   }, []);
+  // A committed pick closes onto the trigger, then lets the owner move on (the
+  // composer returns to its editor).
+  const closePicked = useCallback(() => {
+    close(true);
+    onPicked?.();
+  }, [close, onPicked]);
   const popoverKeyDown = usePopover(open, close, rootRef, 'composer-profile-select');
 
   useComposerPanelAnchor(rootRef, open);
@@ -372,8 +382,8 @@ export function ProfileSelect({
       external_connection_id: undefined,
       external_connection_name: undefined,
     });
-    close(true);
-  }, [choice, onChange, close]);
+    closePicked();
+  }, [choice, onChange, closePicked]);
 
   const retainedUnavailableExternal = !isNativeExecutor(choice.executor)
     && choice.external_connection_id === undefined
@@ -396,7 +406,7 @@ export function ProfileSelect({
     formPathRef.current = '';
     setFileForm({ open: false, path: '' });
     setCheck(undefined);
-    close(true);
+    closePicked();
   };
 
   const renderProfileRow = (p: NamedAgentProfile) => {
@@ -429,7 +439,7 @@ export function ProfileSelect({
               external_connection_id: undefined,
               external_connection_name: undefined,
             });
-            close(true);
+            closePicked();
           }}
           className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
         >
@@ -588,7 +598,7 @@ export function ProfileSelect({
                     setCheck(undefined);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key !== 'Enter') return;
+                    if (event.key !== 'Enter' || isImeKeyEvent(event)) return;
                     event.preventDefault();
                     event.stopPropagation();
                     void runCheck(fileForm.path.trim());
@@ -748,7 +758,7 @@ export function ProfileSelect({
                                 external_connection_id: undefined,
                                 external_connection_name: undefined,
                               });
-                              close(true);
+                              closePicked();
                             }}
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''} ${!usable && choice.executor !== item.id ? 'opacity-60 cursor-not-allowed' : ''}`}
                           >
@@ -860,7 +870,7 @@ export function ProfileSelect({
                                 external_connection_id: undefined,
                                 external_connection_name: undefined,
                               });
-                              close(true);
+                              closePicked();
                             }}
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                           >
@@ -950,7 +960,7 @@ export function ProfileSelect({
                                 data-option-value={item.id}
                                 onClick={() => {
                                   onSelectPersona(item.id);
-                                  close(true);
+                                  closePicked();
                                 }}
                                 className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                               >

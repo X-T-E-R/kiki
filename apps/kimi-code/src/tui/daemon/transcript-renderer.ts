@@ -11,6 +11,7 @@ import { UserMessageComponent } from '#/tui/components/messages/user-message';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
+import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 import { parseImageMeta } from '#/utils/image/image-mime';
 
 interface MountedBlock {
@@ -21,6 +22,9 @@ interface MountedBlock {
 
 export class DaemonTranscriptRenderer {
   private readonly mounted = new Map<string, MountedBlock>();
+  /** Client-only notes, each shown after the block that was last when it was added. */
+  private readonly notes: { readonly afterBlockId: string | undefined; readonly component: Component }[] = [];
+  private lastBlocks: readonly Block[] | undefined;
   private expanded = false;
 
   constructor(
@@ -29,7 +33,16 @@ export class DaemonTranscriptRenderer {
     private readonly workDir?: string,
   ) {}
 
+  /**
+   * Project blocks onto mounted components. session-core returns the same
+   * array when nothing changed and keeps unchanged blocks object-identical, so
+   * a streamed delta only touches the block that changed. Unchanged components
+   * keep their render caches; nothing here invalidates the whole tree — theme
+   * switches do that explicitly through `TUI.invalidate()`.
+   */
   sync(blocks: readonly Block[]): void {
+    if (blocks === this.lastBlocks) return;
+    this.lastBlocks = blocks;
     const active = new Set(blocks.map((block) => block.id));
     for (const [id, mounted] of this.mounted) {
       if (active.has(id)) continue;
@@ -37,13 +50,27 @@ export class DaemonTranscriptRenderer {
       this.mounted.delete(id);
     }
 
-    this.container.clear();
-    for (const block of blocks) {
-      const mounted = this.updateOrCreate(block);
-      this.container.addChild(mounted.component);
-    }
-    this.container.invalidate();
+    for (const block of blocks) this.updateOrCreate(block);
+    this.mountChildren();
     this.ui?.requestRender();
+  }
+
+  /**
+   * Show client-only output (a command result, a /btw answer) in the
+   * transcript after the current last block, where it stays readable instead
+   * of in the status line that the next turn clears. Notes belong to the
+   * session view: they are dropped by `clearNotes()` on a session switch, and
+   * a note whose block is rewritten away (e.g. by /undo) is no longer shown.
+   */
+  addNote(component: Component): void {
+    this.notes.push({ afterBlockId: this.lastBlocks?.at(-1)?.id, component });
+    this.mountChildren();
+    this.ui?.requestRender();
+  }
+
+  clearNotes(): void {
+    this.notes.length = 0;
+    this.mountChildren();
   }
 
   setExpanded(expanded: boolean): void {
@@ -62,11 +89,37 @@ export class DaemonTranscriptRenderer {
   dispose(): void {
     for (const mounted of this.mounted.values()) disposeComponent(mounted.component);
     this.mounted.clear();
+    this.notes.length = 0;
+    this.lastBlocks = undefined;
     this.container.clear();
+  }
+
+  /** Re-mount children only when the component sequence actually changed. */
+  private mountChildren(): void {
+    const components = this.notes
+      .filter((note) => note.afterBlockId === undefined)
+      .map((note) => note.component);
+    for (const block of this.lastBlocks ?? []) {
+      const mounted = this.mounted.get(block.id);
+      if (mounted !== undefined) components.push(mounted.component);
+      for (const note of this.notes) {
+        if (note.afterBlockId === block.id) components.push(note.component);
+      }
+    }
+    const children = this.container.children;
+    if (
+      components.length === children.length &&
+      components.every((component, index) => component === children[index])
+    ) {
+      return;
+    }
+    this.container.clear();
+    for (const component of components) this.container.addChild(component);
   }
 
   private updateOrCreate(block: Block): MountedBlock {
     const mounted = this.mounted.get(block.id);
+    if (mounted?.block === block) return mounted;
     if (
       mounted !== undefined &&
       mounted.kind === block.kind &&
@@ -141,8 +194,94 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
   }
 }
 
-class DaemonUserMessageComponent extends Container {
+/**
+ * Client-only output in the transcript: a command result, or a /btw question
+ * with its Markdown answer. Starts with a blank line like every block.
+ */
+export class TranscriptNoteComponent implements Component {
+  private readonly text = new Text('', 0, 0);
+  private answer: AssistantMessageComponent | undefined;
+  private renderCache: { width: number; parts: string[][]; lines: string[] } | undefined;
+
+  constructor(private message: string) {
+    this.restyle();
+  }
+
+  /** Replace the note text, optionally followed by a Markdown answer. */
+  update(message: string, answer?: string): void {
+    this.message = message;
+    this.restyle();
+    if (answer !== undefined) {
+      this.answer ??= new AssistantMessageComponent();
+      this.answer.updateContent(answer);
+    }
+    this.renderCache = undefined;
+  }
+
+  invalidate(): void {
+    this.restyle();
+    this.answer?.invalidate();
+    this.renderCache = undefined;
+  }
+
+  render(width: number): string[] {
+    const parts = [this.text.render(width), ...(this.answer === undefined ? [] : [this.answer.render(width)])];
+    const cache = this.renderCache;
+    if (
+      cache?.width === width &&
+      cache.parts.length === parts.length &&
+      parts.every((lines, index) => lines === cache.parts[index])
+    ) {
+      return cache.lines;
+    }
+    const lines = ['', ...parts.flat()];
+    this.renderCache = { width, parts, lines };
+    return lines;
+  }
+
+  private restyle(): void {
+    // Indent every line (not only the first) and drop CRs from CRLF output,
+    // which would otherwise blank the line once padded.
+    const styled = currentTheme.fg('textDim', this.message.replaceAll('\r', ''));
+    this.text.setText(styled.split('\n').map((line) => `  ${line}`).join('\n'));
+  }
+}
+
+/**
+ * Container that returns the same line array while none of its children
+ * re-rendered, so `GutterContainer` can reuse its prefixed lines instead of
+ * rebuilding every message's lines on each frame.
+ */
+class RenderCachedContainer extends Container {
+  private renderCache: { width: number; childLines: string[][]; lines: string[] } | undefined;
+
+  override invalidate(): void {
+    this.renderCache = undefined;
+    super.invalidate();
+  }
+
+  override render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const childLines = this.children.map((child) => child.render(safeWidth));
+    const cache = this.renderCache;
+    if (
+      isRenderCacheEnabled() &&
+      cache?.width === safeWidth &&
+      cache.childLines.length === childLines.length &&
+      childLines.every((lines, index) => lines === cache.childLines[index])
+    ) {
+      return cache.lines;
+    }
+    const lines = childLines.flat();
+    this.renderCache = { width: safeWidth, childLines, lines };
+    return lines;
+  }
+}
+
+class DaemonUserMessageComponent extends RenderCachedContainer {
   private readonly message: UserMessageComponent;
+  private readonly status = new Text('', 2, 0);
+  private statusText: string | undefined;
   private expanded = false;
 
   constructor(private block: UserBlock) {
@@ -150,21 +289,33 @@ class DaemonUserMessageComponent extends Container {
     this.message = new UserMessageComponent(block.text);
     this.addChild(this.message);
     addMediaLabels(this, block.media);
+    this.addChild(this.status);
+    this.syncStatus();
   }
 
   update(block: UserBlock): void {
     this.block = block;
     this.message.updateContent(block.text);
+    this.syncStatus();
   }
 
   setExpanded(expanded: boolean): void {
     this.expanded = expanded;
+    this.syncStatus();
   }
 
-  override render(width: number): string[] {
-    const lines = super.render(width);
-    const status = formatUserPromptStatus(this.block, this.expanded);
-    return status === undefined ? lines : [...lines, ...new Text(status, 2, 0).render(width)];
+  override invalidate(): void {
+    super.invalidate();
+    this.syncStatus();
+  }
+
+  private syncStatus(): void {
+    // Text drops its cache on every setText, so only touch it on a real change.
+    const status = formatUserPromptStatus(this.block, this.expanded) ?? '';
+    if (status !== this.statusText) {
+      this.statusText = status;
+      this.status.setText(status);
+    }
   }
 }
 
@@ -185,7 +336,7 @@ function formatUserPromptStatus(block: UserBlock, expanded = false): string | un
   return undefined;
 }
 
-class DaemonAssistantMessageComponent extends Container {
+class DaemonAssistantMessageComponent extends RenderCachedContainer {
   private readonly message = new AssistantMessageComponent();
 
   constructor(text: string, streaming: boolean, media: readonly MediaRef[] | undefined) {
@@ -200,7 +351,7 @@ class DaemonAssistantMessageComponent extends Container {
   }
 }
 
-class DaemonMessageComponent extends Container {
+class DaemonMessageComponent extends RenderCachedContainer {
   constructor(block: MessageBlock) {
     super();
     this.addChild(new Text(formatMessageBlock(block), 2, 0));

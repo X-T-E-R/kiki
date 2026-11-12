@@ -426,9 +426,9 @@ export function isAbsoluteRemoteCwdPath(value: string): boolean {
 }
 
 /**
- * Whether /new should offer first-run provider guidance. True only when both
- * probes have answered and agree there is nothing to answer with — an
- * in-flight or failed probe stays silent, because a card that flashes on
+ * Whether /new puts the connect card in the composer's place. True only when
+ * both probes have answered and agree there is nothing to answer with — an
+ * in-flight or failed probe keeps the composer, because a card that flashes on
  * every visit costs more than a late one.
  */
 export function needsProviderSetup(

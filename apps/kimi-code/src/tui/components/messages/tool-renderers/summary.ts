@@ -11,18 +11,55 @@
  */
 
 import type { Component } from '@kiki/pi-tui';
-import { Text } from '@kiki/pi-tui';
+import { Text, visibleWidth, wrapTextWithAnsi } from '@kiki/pi-tui';
 import chalk from 'chalk';
 
+import { ellipsizePathMiddle } from '../path-ellipsis';
 import { renderTruncated } from './truncated';
 import type { ResultRenderer } from './types';
 
 const GLANCE_SAMPLES = 3;
+const GLANCE_INDENT = '  ';
+
+interface Glance {
+  readonly samples: readonly string[];
+  readonly remaining: number;
+}
 
 type GlanceFn = (
   toolCall: Parameters<ResultRenderer>[0],
   result: Parameters<ResultRenderer>[1],
-) => string;
+) => Glance | undefined;
+
+/**
+ * The comma-separated path samples under a Grep/Glob header. Each sample is
+ * shortened in the middle to fit one row, so a path is never cut inside a
+ * segment, and wrapped rows hang at the body column like the first one.
+ */
+class GlanceLine implements Component {
+  private cache: { width: number; lines: string[] } | undefined;
+
+  constructor(private readonly glance: Glance) { }
+
+  invalidate(): void {
+    this.cache = undefined;
+  }
+
+  render(width: number): string[] {
+    if (this.cache?.width === width) return this.cache.lines;
+    const contentWidth = Math.max(1, width - GLANCE_INDENT.length);
+    const samples = this.glance.samples.map((sample) =>
+      ellipsizePathMiddle(sample, Math.max(1, contentWidth - 1)),
+    );
+    const tail = this.glance.remaining > 0 ? `, +${String(this.glance.remaining)} more` : '';
+    const lines = wrapTextWithAnsi(`${samples.join(', ')}${tail}`, contentWidth).map((line) => {
+      const row = `${GLANCE_INDENT}${chalk.dim(line)}`;
+      return row + ' '.repeat(Math.max(0, width - visibleWidth(row)));
+    });
+    this.cache = { width, lines };
+    return lines;
+  }
+}
 
 function withGlance(glance: GlanceFn | null): ResultRenderer {
   return (toolCall, result, ctx) => {
@@ -30,10 +67,8 @@ function withGlance(glance: GlanceFn | null): ResultRenderer {
 
     const out: Component[] = [];
     if (glance !== null) {
-      const line = glance(toolCall, result);
-      if (line.length > 0) {
-        out.push(new Text(`  ${chalk.dim(line)}`, 0, 0));
-      }
+      const samples = glance(toolCall, result);
+      if (samples !== undefined) out.push(new GlanceLine(samples));
     }
     if (ctx.expanded && result.output.length > 0) {
       out.push(new Text(chalk.dim(result.output), 4, 0));
@@ -59,20 +94,16 @@ function pathFromGrepLine(line: string): string {
 
 const grepGlance: GlanceFn = (_toolCall, result) => {
   const lines = nonEmptyLines(result.output);
-  if (lines.length === 0) return '';
+  if (lines.length === 0) return undefined;
   const samples = lines.slice(0, GLANCE_SAMPLES).map(pathFromGrepLine);
-  const remaining = lines.length - samples.length;
-  const tail = remaining > 0 ? `, +${String(remaining)} more` : '';
-  return `${samples.join(', ')}${tail}`;
+  return { samples, remaining: lines.length - samples.length };
 };
 
 const globGlance: GlanceFn = (_toolCall, result) => {
   const lines = nonEmptyLines(result.output);
-  if (lines.length === 0) return '';
+  if (lines.length === 0) return undefined;
   const samples = lines.slice(0, GLANCE_SAMPLES);
-  const remaining = lines.length - samples.length;
-  const tail = remaining > 0 ? `, +${String(remaining)} more` : '';
-  return `${samples.join(', ')}${tail}`;
+  return { samples, remaining: lines.length - samples.length };
 };
 
 // ── Exports ──────────────────────────────────────────────────────────

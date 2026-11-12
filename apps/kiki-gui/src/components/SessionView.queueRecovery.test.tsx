@@ -1330,3 +1330,88 @@ describe('admission line on the message', () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe('an edit approval in the composer card', () => {
+  const APPROVAL_ID = 'approval-edit-example';
+  const approval = {
+    kind: 'approval' as const,
+    id: `approval-${APPROVAL_ID}`,
+    request: {
+      approval_id: APPROVAL_ID, session_id: 'session-example', tool_call_id: 'call-edit-example', tool_name: 'Edit',
+      action: 'Editing /example/notes.md',
+      tool_input_display: { kind: 'file_io', operation: 'edit', path: '/example/notes.md', before: 'alpha\nbeta\n', after: 'alpha\nBETA\n' },
+      created_at: '2026-01-01T00:00:00Z', expires_at: '2099-01-01T00:00:00Z',
+    },
+    resolution: undefined,
+  };
+  /** The transport cut the edit's old text; the rest is still unread. */
+  const CUT_REF = { source: { kind: 'interaction' as const, id: APPROVAL_ID }, revision: 'rev-1', path: ['request', 'display', 'before'], kind: 'text' as const, offset: 6, total: 400 };
+
+  function stubController() {
+    const listeners = new Set<() => void>();
+    const contentListeners = new Set<() => void>();
+    let refs: readonly (typeof CUT_REF)[] = [CUT_REF];
+    let contentRevision = 0;
+    let state = {
+      ...createViewState('session-example'), loaded: true, transcriptReady: true,
+      session: { id: 'session-example', title: 'Approval example', workspace_id: 'workspace-example', ephemeral: false,
+        metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      busy: true,
+      pendingInteraction: 'approval' as const,
+      blocks: [approval],
+    };
+    fixture.controller = {
+      subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      subscribeContent: (listener: () => void) => { contentListeners.add(listener); return () => { contentListeners.delete(listener); }; },
+      getContentRevision: () => contentRevision,
+      subscribeInterruptedPrompt: () => () => {},
+      subscribeAgent: () => () => {},
+      getState: () => state,
+      getAgentState: () => state,
+      getForest: () => ({ roots: [], byId: {} }),
+      getDurableIngress: () => [],
+      open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+      contentRefsFor: (_agentId: string, source: { kind: string; id: string }) =>
+        refs.filter((ref) => ref.source.kind === source.kind && ref.source.id === source.id),
+      ...contentRead,
+    };
+    // What a finished read does: the cut field is whole, the content revision
+    // moves, and the view publishes again.
+    const readRest = () => {
+      refs = [];
+      contentRevision += 1;
+      state = { ...state };
+      for (const listener of contentListeners) listener();
+      for (const listener of listeners) listener();
+    };
+    return { readRest };
+  }
+
+  async function mountSession(): Promise<void> {
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+          <Route element={<ConversationShell />}><Route path="/s/:id/*" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+        </Routes></MemoryRouter></I18nProvider>
+      </QueryClientProvider>));
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  }
+
+  it('keeps the diff back while the edit is cut, then shows it once the rest is read', async () => {
+    const { readRest } = stubController();
+    await mountSession();
+    const card = () => container.querySelector('[data-needs-you-card]');
+    expect(card()?.querySelector('[data-approval-id]')).not.toBeNull();
+    expect(card()?.querySelector('[data-content-continuation]')).not.toBeNull();
+    expect(card()?.querySelector('[data-diff-tag]')).toBeNull();
+
+    await act(async () => {
+      readRest();
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(card()?.querySelector('[data-content-continuation]')).toBeNull();
+    expect(card()?.querySelector('[data-diff-tag="delete"]')?.textContent).toContain('beta');
+    expect(card()?.querySelector('[data-diff-tag="insert"]')?.textContent).toContain('BETA');
+  });
+});

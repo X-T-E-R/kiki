@@ -8,7 +8,7 @@ export const WriteInputSchema = z.object({
   path: z
     .string()
     .describe(
-      'Path to the file to create, append to, or completely overwrite. Relative paths resolve against the working directory; a path outside the working directory must be absolute. Missing parent directories are created automatically.',
+      'Path to the file to create, append to, or completely overwrite. Relative paths resolve against the working directory. Missing parent directories are created automatically.',
     ),
   content: z
     .string()

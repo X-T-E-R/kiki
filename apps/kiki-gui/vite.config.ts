@@ -4,6 +4,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+import { bootPreloadPlugin } from './vite/bootPreload';
 import { localServerPlugin } from './vite/localServer';
 import { pdfAssetsPlugin } from './vite/pdfAssets';
 
@@ -18,8 +19,21 @@ const webPort = Number(process.env['KIKI_GUI_PORT']) || 5177;
 // eslint-disable-next-line typescript/prefer-nullish-coalescing -- `||` is deliberate: an empty KIKI_SERVER_URL must fall back too
 const serverTarget = process.env['KIKI_SERVER_URL'] || 'http://127.0.0.1:58627';
 
+// React and the router change only with a dependency bump, while the entry
+// chunk's hash changes on every release. In a chunk of their own they keep
+// their hash across releases, and since hashed assets are served immutable a
+// returning browser reuses its cached copy after an upgrade. Only packages
+// that every start needs belong here: a module listed here loads with the
+// entry even when nothing but a lazy page uses it.
+const STABLE_VENDOR_PACKAGES = new Set(['react', 'react-dom', 'scheduler', 'react-router', 'react-router-dom']);
+
+function vendorChunk(id: string): string | undefined {
+  const packageName = /\/node_modules\/((?:@[^/]+\/)?[^/]+)\/(?!.*\/node_modules\/)/.exec(id)?.[1];
+  return packageName !== undefined && STABLE_VENDOR_PACKAGES.has(packageName) ? 'vendor-react' : undefined;
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget })],
+  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget }), bootPreloadPlugin()],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),
@@ -55,5 +69,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
+    rollupOptions: { output: { manualChunks: vendorChunk } },
   },
 });

@@ -201,11 +201,11 @@ describe('delegation context at bind', () => {
     expect(outbound.systemPrompt).not.toContain(TASK_AGENT_ROLE_PREFIX);
     expect(outbound.systemPrompt.includes(DEFAULT_INDEPENDENT_DELEGATION_NOTICE)).toBe(position === 'independent');
     const agentRun = outbound.tools.find((tool) => tool.name === 'AgentRun')!;
-    expect(agentRun.description).toContain('Let one active owner deliver the complete behavior');
-    expect(agentRun.description).toContain('integrate it before recording acceptance');
+    expect(agentRun.description).toContain('Give one owner a complete behaviour');
+    expect(agentRun.description).toContain('check the actual files or diff before relying on it');
     expect(JSON.stringify(agentRun.parameters)).toContain('authority and write boundary');
     const agentSend = outbound.tools.find((tool) => tool.name === 'AgentSend')!;
-    expect(agentSend.description).toContain('Do not forward raw receipts, partial progress');
+    expect(agentSend.description).toContain('Forwarding raw receipts, partial progress');
     expect(agentSend.description).toContain('the child continues on the same model, profile, tools, and context');
     expect(JSON.stringify(agentSend.parameters)).toContain('not a raw progress relay or acknowledgment');
     expect(outbound.tools.find((tool) => tool.name === 'ThreadSend')?.description)

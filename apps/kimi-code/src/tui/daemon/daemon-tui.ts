@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { Text, TuiAltScreen } from '@kiki/pi-tui';
+import { Spacer, Text, TuiAltScreen } from '@kiki/pi-tui';
 import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
 import type { PromptStatus, UpdateSessionProfileRequest } from '@kiki/protocol';
 
@@ -15,6 +15,7 @@ import type {
   SessionViewState,
 } from '@kiki/session-core/session/transcript/types';
 
+import { ActivityLineComponent, type ActivityLineParts } from '#/tui/components/chrome/activity-line';
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import {
@@ -31,7 +32,10 @@ import type { TuiConfig } from '#/tui/config';
 import {
   CTRL_C_HINT,
   CTRL_D_HINT,
+  ESC_INTERRUPT_HINT,
   EXIT_CONFIRM_WINDOW_MS,
+  INTERACTION_ARM_AFTER_MS,
+  INTERRUPT_CONFIRM_WINDOW_MS,
 } from '#/tui/constant/kimi-tui';
 import {
   MEDIA_SETTLEMENT_RETRY_BASE_MS,
@@ -53,6 +57,8 @@ import { createTUIState, type TUIState } from '#/tui/tui-state';
 import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
+import { installTerminalFocusTracking } from '#/tui/utils/terminal-focus';
+import { notifyTerminalOnce } from '#/tui/utils/terminal-notification';
 import { buildExportMarkdown } from '#/tui/utils/export-markdown';
 import {
   ImageAttachmentStore,
@@ -60,12 +66,15 @@ import {
 } from '#/tui/utils/image-attachment-store';
 import { extractInlineSkillActivations } from '#/tui/utils/inline-skill-tokens';
 import { readClipboardMedia } from '#/utils/clipboard/clipboard-image';
-import { clipboard } from '#/utils/clipboard/clipboard-native';
+import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
+import { appendInputHistory, loadInputHistory } from '#/utils/history/input-history';
 import { parseImageMeta } from '#/utils/image/image-mime';
 import { openUrl } from '#/utils/open-url';
+import { getInputHistoryFile } from '#/utils/paths';
 import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
 import { parsePluginInstallArgs } from '#/tui/utils/plugin-install-args';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
+import { detectFdPath } from '#/utils/process/fd-detect';
 
 import { projectAttachmentSettlement } from './attachment-settlement';
 import { executeWebCommand } from './web-command';
@@ -86,9 +95,11 @@ import {
   type DaemonSkillCommand,
 } from './commands';
 import { resolveDaemonHome, type DaemonConnection } from './discovery';
-import { DaemonTranscriptRenderer } from './transcript-renderer';
+import { DaemonTranscriptRenderer, TranscriptNoteComponent } from './transcript-renderer';
 import {
-  formatBusyActivityMessage,
+  activityLineText,
+  formatBusyActivityLine,
+  formatWaitingActivityLine,
   resolveStatusNoticePolicy,
   TurnActivityTracker,
   type ShowStatusOptions,
@@ -118,6 +129,8 @@ export interface DaemonTUIStartupInput {
 }
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
+
+type ActivityKind = 'idle' | 'busy' | 'waiting' | 'retry' | 'resyncing' | 'resyncFailed';
 
 interface AttachmentSettlementLease {
   readonly sessionId: string;
@@ -155,6 +168,11 @@ export class DaemonTUI {
   private mainControllerDispose: (() => void) | undefined;
   private focusedControllerDispose: (() => void) | undefined;
   private activeInteractionId: string | undefined;
+  /**
+   * An approval or question arrived while the user had their own dialog open
+   * (or such a dialog was mounted over it); it is shown once that dialog closes.
+   */
+  private interactionDeferred = false;
   private activeSessionPicker: SessionPickerComponent | undefined;
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
   private readonly agentProfileCommands = new Map<string, string>();
@@ -162,8 +180,9 @@ export class DaemonTUI {
   private readonly fileAttachments = new Map<number, DaemonFileAttachment>();
   private nextFileAttachmentId = 1;
   private focusedAgentId = 'main';
-  private pendingExit:
-    | { readonly kind: 'ctrl-c' | 'ctrl-d'; readonly timer: ReturnType<typeof setTimeout> }
+  /** A first press of a double-press key: exit (Ctrl-C/Ctrl-D) or interrupt (Esc). */
+  private pendingConfirm:
+    | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape'; readonly timer: ReturnType<typeof setTimeout> }
     | undefined;
   private startupOverridesPending = true;
   private todoExpanded = false;
@@ -182,9 +201,25 @@ export class DaemonTUI {
   private stopped = false;
   private sourceOverlayErrorActive = false;
   private activeStatusNotice: StatusNotice | undefined;
-  private lastActivityKind: 'idle' | 'busy' | 'retry' | 'resyncing' | 'resyncFailed' = 'idle';
+  private lastActivityKind: ActivityKind = 'idle';
+  /** Whether the busy line was last drawn for a draft ("Esc twice") or an empty input. */
+  private activityHasDraft = false;
   private activityTickTimer: ReturnType<typeof setInterval> | undefined;
   private readonly turnActivityTracker = new TurnActivityTracker();
+  /**
+   * Serializes input-history work (the startup load, then each submit) and
+   * resolves to the last persisted entry, so ↑ order and the on-disk dedupe
+   * stay correct even when the user submits before the load finishes.
+   */
+  private inputHistory: Promise<string | undefined> = Promise.resolve(undefined);
+  /** Busy flag of the last rendered main view, to notify when a turn ends. */
+  private wasBusy = false;
+  private completedTurns = 0;
+  private disposeFocusTracking: (() => void) | undefined;
+  /** fd binary for `@` mentions; null keeps the built-in directory scan. */
+  private fdPath: string | null = null;
+  /** Startup's session open/create; input submitted meanwhile waits for it. */
+  private sessionReady: Promise<void> | undefined;
 
   constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput) {
     this.startup = startup;
@@ -201,15 +236,28 @@ export class DaemonTUI {
   }
 
   async start(): Promise<void> {
+    this.inputHistory = this.loadInputHistory();
     this.state.ui.start();
+    // Focus reports let `[notifications] notification_condition = "unfocused"`
+    // stay quiet while the user is looking at this terminal.
+    this.disposeFocusTracking = installTerminalFocusTracking(this.state);
+    // An installed fd makes `@` completion fast and .gitignore-aware; the
+    // built-in scan stops at 2,000 entries. Probing runs `fd --version`, so do
+    // it after the first frame. This only looks for an fd that is already
+    // installed; it does not download one.
+    setImmediate(() => {
+      if (this.stopped) return;
+      this.fdPath = detectFdPath();
+      if (this.fdPath !== null) this.setupAutocomplete();
+    });
     this.state.transcriptContainer.addChild(new WelcomeComponent(this.state.appState));
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
     this.state.todoPanelContainer.addChild(this.state.todoPanel);
     this.mountFooter();
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
-    await this.refreshAgentCommands();
-    await this.initializeSession();
+    this.sessionReady = this.refreshAgentCommands().then(() => this.initializeSession());
+    await this.sessionReady;
   }
 
   async close(): Promise<void> {
@@ -241,7 +289,7 @@ export class DaemonTUI {
       }
     };
     await cleanup(() => {
-      this.clearPendingExit();
+      this.clearPendingConfirm();
     });
     await cleanup(() => this.focusedControllerDispose?.());
     this.focusedControllerDispose = undefined;
@@ -286,6 +334,10 @@ export class DaemonTUI {
     await cleanup(() => {
       this.state.footer.dispose();
     });
+    await cleanup(() => {
+      this.disposeFocusTracking?.();
+      this.disposeFocusTracking = undefined;
+    });
     await cleanup(() => this.state.terminal.drainInput());
     await cleanup(() => {
       this.state.ui.stop();
@@ -315,11 +367,26 @@ export class DaemonTUI {
   private installEditor(): void {
     const editor = this.state.editor;
     editor.onSubmit = (text) => {
-      this.clearPendingExit();
-      void this.handleInput(text).catch((error: unknown) => {
-        if (text.startsWith('/') && editor.getText() === '') editor.setText(text);
+      this.clearPendingConfirm();
+      const mode = editor.inputMode;
+      this.recordInputHistory(text, mode);
+      const submission = { accepted: false };
+      void this.handleInput(text, submission).catch((error: unknown) => {
+        // pi-tui clears the editor (and its undo stack) before onSubmit, so a
+        // failed send would lose the draft. Put it back unless the daemon had
+        // already accepted it — a later resync failure must not invite a
+        // duplicate send — or the user has started typing something else.
+        if (!submission.accepted && editor.getText() === '') {
+          editor.setInputMode(mode);
+          editor.setText(text);
+        }
         this.showStatus(formatErrorMessage(error), 'error');
       });
+    };
+    editor.onChange = (text) => {
+      // The busy line tells how to interrupt, which depends on the draft.
+      if (this.lastActivityKind !== 'busy' || (text.length > 0) === this.activityHasDraft) return;
+      if (this.controller !== undefined) this.renderActivityState(this.controller.getState());
     };
     editor.onCtrlC = () => {
       void this.handleInterrupt('ctrl-c');
@@ -327,12 +394,25 @@ export class DaemonTUI {
     editor.onCtrlD = () => {
       this.confirmExit('ctrl-d');
     };
+    // Esc with the input focused, after CustomEditor has closed a completion
+    // menu or left an empty shell mode: leave history browsing first; while a
+    // turn runs, interrupt at once on an empty input, but with a draft only arm
+    // the interrupt — that Esc was most likely meant for the input box (a vim
+    // reflex, an IME cancel, a split arrow-key sequence). A second Esc within
+    // the window interrupts and leaves the draft in place. Idle: nothing.
     editor.onEscape = () => {
-      this.clearPendingExit();
-      if (this.controller?.getState().busy === true) void this.abortActivePrompt();
+      const armed = this.pendingConfirm?.kind === 'escape';
+      this.clearPendingConfirm();
+      if (editor.restoreHistoryDraft()) return;
+      if (this.controller?.getState().busy !== true) return;
+      if (editor.getText().length === 0 || armed) {
+        void this.abortActivePrompt();
+        return;
+      }
+      this.armConfirm('escape');
     };
     editor.onNonEscapeInput = () => {
-      this.clearPendingExit();
+      this.clearPendingConfirm();
     };
     editor.onShiftTab = () => {
       void this.applyPlanMode(!this.state.appState.planMode).catch((error: unknown) => {
@@ -340,48 +420,34 @@ export class DaemonTUI {
       });
     };
     editor.onToggleToolExpand = () => {
-      const expanded = !this.state.toolOutputExpanded;
-      this.state.toolOutputExpanded = expanded;
-      this.renderer.setExpanded(expanded);
+      this.toggleToolOutput();
     };
     editor.onOpenExternalEditor = () => {
+      if (this.state.externalEditorRunning) return;
       const command = resolveEditorCommand(this.state.appState.editorCommand);
       if (command === undefined) {
         this.showStatus('No external editor is configured.', 'error');
         return;
       }
-      void editInExternalEditor(editor.getText(), command)
-        .then((text) => {
-          if (text !== undefined) editor.setText(text);
-          this.state.ui.requestRender(true);
-        })
-        .catch((error: unknown) => {
-          this.showStatus(formatErrorMessage(error), 'error');
-        });
+      void this.openExternalEditor(command);
     };
     editor.onCtrlS = () => {
-      this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', {
+      this.showStatus('Not available in the terminal UI — your message will be queued.', {
         tone: 'normal',
         transient: true,
       });
     };
     editor.onCtrlB = () => {
       if (this.controller?.getState().busy !== true) return false;
-      this.showStatus('Backgrounding the active turn is disabled in daemon TUI.', {
+      this.showStatus('Moving a turn to the background is not available in the terminal UI.', {
         tone: 'normal',
         transient: true,
       });
       return true;
     };
-    editor.onToggleTodoExpand = () => {
-      if (!this.state.todoPanel.hasOverflow()) return false;
-      this.todoExpanded = !this.todoExpanded;
-      this.state.todoPanel.setExpanded(this.todoExpanded);
-      this.state.ui.requestRender(true);
-      return true;
-    };
+    editor.onToggleTodoExpand = () => this.toggleTodoList();
     editor.onTextPaste = () => {
-      this.clearPendingExit();
+      this.clearPendingConfirm();
     };
     editor.onPasteImage = async () => {
       try {
@@ -421,6 +487,88 @@ export class DaemonTUI {
       return undefined;
     };
     updateHistoryFilter();
+  }
+
+  private toggleToolOutput(): void {
+    const expanded = !this.state.toolOutputExpanded;
+    this.state.toolOutputExpanded = expanded;
+    this.renderer.setExpanded(expanded);
+  }
+
+  /** Returns false when the todo list fits and there is nothing to toggle. */
+  private toggleTodoList(): boolean {
+    if (!this.state.todoPanel.hasOverflow()) return false;
+    this.todoExpanded = !this.todoExpanded;
+    this.state.todoPanel.setExpanded(this.todoExpanded);
+    // The panel sits below the transcript, inside the viewport: a diff render
+    // is enough, and a forced one would clear scrollback and replay history.
+    this.state.ui.requestRender();
+    return true;
+  }
+
+  private async loadInputHistory(): Promise<string | undefined> {
+    try {
+      const entries = await loadInputHistory(getInputHistoryFile(this.startup.workDir));
+      for (const entry of entries) this.state.editor.addToHistory(entry.content);
+      return entries.at(-1)?.content;
+    } catch {
+      // History is a convenience: an unreadable file must not block startup.
+      return undefined;
+    }
+  }
+
+  /**
+   * Make a submitted input recallable with ↑ and persist it for this working
+   * directory. Shell commands keep a leading `!`; the history filter and
+   * `onRecall` use it to restore shell mode.
+   */
+  private recordInputHistory(text: string, mode: 'prompt' | 'bash'): void {
+    const trimmed = text.trim();
+    if (trimmed === '') return;
+    const entry = mode === 'bash' ? `!${trimmed}` : trimmed;
+    const file = getInputHistoryFile(this.startup.workDir);
+    this.inputHistory = this.inputHistory.then(async (last) => {
+      this.state.editor.addToHistory(entry);
+      // A read-only or full home directory must not turn every submit into an error.
+      await appendInputHistory(file, entry, last).catch(() => false);
+      return entry;
+    });
+  }
+
+  /**
+   * Edit the draft in $VISUAL/$EDITOR. A terminal editor (vim, nano) reads
+   * the same tty, so the TUI must let go of it first: stop() leaves raw mode
+   * and removes the stdin reader, and no frame is drawn over the editor until
+   * start() takes the terminal back.
+   */
+  private async openExternalEditor(command: string): Promise<void> {
+    const { editor, ui } = this.state;
+    this.state.externalEditorRunning = true;
+    const seed = editor.getExpandedText();
+    // Focus reports would reach the editor as stray `ESC [ I` input.
+    const trackFocus = this.disposeFocusTracking !== undefined;
+    this.disposeFocusTracking?.();
+    this.disposeFocusTracking = undefined;
+    // Fullscreen only needs the alternate screen released; a plain stop()
+    // would replay the whole transcript into the main screen.
+    ui.stop({ preserveScreen: ui.mode === 'fullscreen' ? true : undefined });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    try {
+      const text = await editInExternalEditor(seed, command);
+      // Editors end the file with a newline the draft never had.
+      if (text !== undefined) editor.setText(text.replaceAll('\r\n', '\n').replace(/\n$/u, ''));
+    } catch (error) {
+      this.showStatus(`External editor failed: ${formatErrorMessage(error)}`, 'error');
+    } finally {
+      // The child shared stdin; pause it so start() attaches a fresh reader.
+      process.stdin.pause();
+      ui.start();
+      if (trackFocus) this.disposeFocusTracking = installTerminalFocusTracking(this.state);
+      ui.requestRender(true);
+      this.state.externalEditorRunning = false;
+    }
   }
 
   private async handleClipboardPaste(): Promise<boolean> {
@@ -502,12 +650,16 @@ export class DaemonTUI {
   }
 
   private async handleInterrupt(kind: 'ctrl-c'): Promise<void> {
+    // A draft is always cleared first (Ctrl+- restores it), and clearing never
+    // arms exit, so the shell habit of pressing Ctrl-C twice to drop a line
+    // cannot quit the app.
+    if (this.state.editor.getText().length > 0) {
+      this.clearPendingConfirm();
+      this.state.editor.setText('');
+      return;
+    }
     if (this.controller?.getState().busy === true) {
-      this.clearPendingExit();
-      if (this.state.editor.getText().length > 0) {
-        this.state.editor.setText('');
-        return;
-      }
+      this.clearPendingConfirm();
       await this.abortActivePrompt();
       return;
     }
@@ -523,29 +675,32 @@ export class DaemonTUI {
   }
 
   private confirmExit(kind: 'ctrl-c' | 'ctrl-d'): void {
-    if (this.pendingExit?.kind === kind) {
-      this.clearPendingExit();
+    if (this.pendingConfirm?.kind === kind) {
+      this.clearPendingConfirm();
       void this.stop();
       return;
     }
-    if (kind === 'ctrl-c' && this.state.editor.getText().length > 0) {
-      this.state.editor.setText('');
-    }
-    this.clearPendingExit();
+    this.armConfirm(kind);
+  }
+
+  private armConfirm(kind: 'ctrl-c' | 'ctrl-d' | 'escape'): void {
+    this.clearPendingConfirm();
     const timer = setTimeout(() => {
-      if (this.pendingExit?.timer !== timer) return;
-      this.clearPendingExit();
+      if (this.pendingConfirm?.timer !== timer) return;
+      this.clearPendingConfirm();
       this.state.ui.requestRender();
-    }, EXIT_CONFIRM_WINDOW_MS);
-    this.pendingExit = { kind, timer };
-    this.state.footer.setTransientHint(kind === 'ctrl-c' ? CTRL_C_HINT : CTRL_D_HINT);
+    }, kind === 'escape' ? INTERRUPT_CONFIRM_WINDOW_MS : EXIT_CONFIRM_WINDOW_MS);
+    this.pendingConfirm = { kind, timer };
+    this.state.footer.setTransientHint(
+      kind === 'ctrl-c' ? CTRL_C_HINT : kind === 'ctrl-d' ? CTRL_D_HINT : ESC_INTERRUPT_HINT,
+    );
     this.state.ui.requestRender();
   }
 
-  private clearPendingExit(): void {
-    if (this.pendingExit === undefined) return;
-    clearTimeout(this.pendingExit.timer);
-    this.pendingExit = undefined;
+  private clearPendingConfirm(): void {
+    if (this.pendingConfirm === undefined) return;
+    clearTimeout(this.pendingConfirm.timer);
+    this.pendingConfirm = undefined;
     this.state.footer.setTransientHint(null);
   }
 
@@ -644,7 +799,7 @@ export class DaemonTUI {
       new FileMentionProvider(
         commands,
         this.startup.workDir,
-        null,
+        this.fdPath,
         this.startup.additionalDirs ?? [],
         () => this.state.appState.inputMode,
         skillCommandNames,
@@ -711,6 +866,9 @@ export class DaemonTUI {
   }
 
   private async ensureSession(): Promise<SessionController> {
+    // The input box is live before startup has opened the session; an Enter
+    // pressed in that window must use that session, not create a second one.
+    if (this.controller === undefined) await this.sessionReady?.catch(() => {});
     if (this.controller !== undefined) return this.controller;
     await this.createSession();
     return this.controller!;
@@ -735,9 +893,11 @@ export class DaemonTUI {
     this.clearActivityTickTimer();
     this.turnActivityTracker.reset();
     this.lastActivityKind = 'idle';
+    this.wasBusy = false;
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
       this.state.editor.setText('');
+      this.renderer.clearNotes();
     }
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
@@ -799,6 +959,16 @@ export class DaemonTUI {
 
   private renderSession(view: SessionViewState): void {
     this.settleAttachmentLeases(view);
+    // An armed Esc has nothing left to interrupt once the turn ends.
+    if (!view.busy && this.pendingConfirm?.kind === 'escape') this.clearPendingConfirm();
+    if (this.wasBusy && !view.busy) {
+      this.completedTurns += 1;
+      notifyTerminalOnce(this.state, `turn-complete:${String(this.completedTurns)}`, {
+        title: 'Kiki task complete',
+        body: view.session?.title ?? undefined,
+      });
+    }
+    this.wasBusy = view.busy;
     if (this.focusedAgentId === 'main') this.renderer.sync(view.blocks);
     this.setAppState({
       sessionId: view.sessionId,
@@ -842,8 +1012,9 @@ export class DaemonTUI {
         (task) => task.kind === 'subagent' && task.status === 'running',
       ).length,
     });
-    this.renderActivityState(view);
+    // Mount (or hold back) approvals first: the activity line reports which.
     this.syncInteractionBlocks(view.blocks);
+    this.renderActivityState(view);
   }
 
   private clearStatusNotice(): void {
@@ -894,9 +1065,11 @@ export class DaemonTUI {
       now,
     );
 
-    let currentActivityKind: 'idle' | 'busy' | 'retry' | 'resyncing' | 'resyncFailed' = 'idle';
+    let currentActivityKind: ActivityKind = 'idle';
     let activityMessage: string | undefined;
     let activityTone: 'normal' | 'error' = 'normal';
+    let activityLine: ActivityLineParts | undefined;
+    const interaction = firstPendingInteraction(view.blocks ?? []);
 
     if (view.resyncFailed) {
       currentActivityKind = 'resyncFailed';
@@ -905,20 +1078,31 @@ export class DaemonTUI {
     } else if (view.resyncing) {
       currentActivityKind = 'resyncing';
       activityMessage = `Resyncing session (attempt ${String(view.resyncAttempt)})…`;
+    } else if (interaction !== undefined) {
+      // awaiting_approval also counts as busy, but the turn is waiting on the
+      // user, not working: say so instead of "Working" with a running clock.
+      currentActivityKind = 'waiting';
+      activityLine = formatWaitingActivityLine(
+        interaction.kind,
+        this.activeInteractionId !== interaction.id,
+      );
     } else if (view.turnRetry !== undefined) {
       currentActivityKind = 'retry';
       activityMessage = `Retrying attempt ${String(view.turnRetry.failedAttempt + 1)}/${String(view.turnRetry.maxAttempts)} in ${String(view.turnRetry.delayMs)}ms`;
     } else if (view.busy) {
       currentActivityKind = 'busy';
       const runningTasks = view.tasks?.filter((task) => task.status === 'running').length ?? 0;
-      activityMessage = formatBusyActivityMessage({
+      this.activityHasDraft = this.state.editor.getText().length > 0;
+      activityLine = formatBusyActivityLine({
         runningTasks,
         turnStartedAt: view.turnStartedAt,
         hasResponded: trackerState.hasResponded,
         lastResponseAt: trackerState.lastResponseAt,
         now,
+        hasDraft: this.activityHasDraft,
       });
     }
+    if (activityLine !== undefined) activityMessage = activityLineText(activityLine);
 
     const activityTransition = this.lastActivityKind !== currentActivityKind;
     this.lastActivityKind = currentActivityKind;
@@ -927,6 +1111,7 @@ export class DaemonTUI {
     if (view.resyncFailed) {
       this.clearStatusNotice();
       this.state.activityContainer.clear();
+      this.state.activityContainer.addChild(new Spacer(1));
       this.state.activityContainer.addChild(
         new Text(currentTheme.fg('error', activityMessage!), 0, 0),
       );
@@ -956,10 +1141,11 @@ export class DaemonTUI {
       return;
     }
 
-    this.showStatus(activityMessage, { tone: activityTone, source: 'activity' });
+    this.showStatus(activityMessage, { tone: activityTone, source: 'activity', activity: activityLine });
   }
 
-  private async handleInput(raw: string): Promise<void> {
+  /** `submission.accepted` turns true once the daemon has taken the input. */
+  private async handleInput(raw: string, submission?: { accepted: boolean }): Promise<void> {
     const text = raw.trim();
     if (text === '') return;
     if (this.state.editor.inputMode === 'bash') {
@@ -972,10 +1158,14 @@ export class DaemonTUI {
       await this.handleSlash(text);
       return;
     }
-    await this.sendPrompt(raw);
+    await this.sendPrompt(raw, undefined, submission);
   }
 
-  private async sendPrompt(text: string, profile?: string): Promise<void> {
+  private async sendPrompt(
+    text: string,
+    profile?: string,
+    submission?: { accepted: boolean },
+  ): Promise<void> {
     const controller = await this.ensureSession();
     const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
       refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
@@ -999,6 +1189,7 @@ export class DaemonTUI {
             input: prepared?.engineContent ?? [{ type: 'text', text }],
             skills: inlineSkills.map((skill) => ({ name: skill.skillName })),
           });
+        if (submission !== undefined) submission.accepted = true;
         if (prepared !== undefined) {
           this.handoffPreparedMedia(prepared, controller, {
             promptId: result.prompt_id,
@@ -1016,6 +1207,7 @@ export class DaemonTUI {
         const result = await this.client.klient.session(controller.sessionId).agent('main').steer({
           input: prepared?.engineContent ?? [{ type: 'text', text }],
         });
+        if (submission !== undefined) submission.accepted = true;
         if (result === undefined || result === null) {
           await controller.resync();
           if (prepared !== undefined) {
@@ -1047,6 +1239,7 @@ export class DaemonTUI {
       permissionMode: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode,
     });
+    if (submission !== undefined) submission.accepted = true;
     if (prepared !== undefined) {
       this.handoffPreparedMedia(prepared, controller, {
         promptId: result.prompt_id,
@@ -1455,6 +1648,21 @@ export class DaemonTUI {
       case 'exit':
         await this.stop();
         return;
+      case 'stop':
+        if (this.controller?.getState().busy !== true) {
+          this.showStatus('Nothing is running.', { transient: true });
+          return;
+        }
+        await this.abortActivePrompt();
+        return;
+      case 'expand':
+        this.toggleToolOutput();
+        return;
+      case 'todos':
+        if (!this.toggleTodoList()) {
+          this.showStatus('The todo list is already shown in full.', { transient: true });
+        }
+        return;
       case 'sessions':
         await this.showSessionPicker();
         return;
@@ -1613,7 +1821,7 @@ export class DaemonTUI {
 
   private async listPersonas(): Promise<void> {
     const personas = (await this.client.listPersonas()).filter((persona) => !persona.archived);
-    this.showStatus(
+    this.showResult(
       personas.map(formatPersonaSummary).join('\n') || 'No active personas configured.',
     );
   }
@@ -1652,7 +1860,7 @@ export class DaemonTUI {
 
   private showSessionStatus(): void {
     const state = this.state.appState;
-    this.showStatus(
+    this.showResult(
       [
         `Session: ${state.sessionId === '' ? 'not started' : state.sessionId}`,
         `Working directory: ${state.workDir}`,
@@ -1672,11 +1880,11 @@ export class DaemonTUI {
   private async showUsage(): Promise<void> {
     const controller = this.controller;
     if (controller === undefined) {
-      this.showStatus('No token usage recorded yet.');
+      this.showResult('No token usage recorded yet.');
       return;
     }
     const usage = await this.client.klient.session(controller.sessionId).agent('main').getUsage();
-    this.showStatus(JSON.stringify(usage, undefined, 2));
+    this.showResult(JSON.stringify(usage, undefined, 2));
   }
 
   private async compactSession(instruction: string): Promise<void> {
@@ -1703,11 +1911,11 @@ export class DaemonTUI {
     }
     if (action === 'output') {
       if (taskId === '') throw new Error('/tasks output requires a task id.');
-      this.showStatus(await agent.getTaskOutput({ taskId, tail: 20_000 }));
+      this.showResult(await agent.getTaskOutput({ taskId, tail: 20_000 }));
       return;
     }
     if (args !== '') {
-      this.showStatus(await agent.getTaskOutput({ taskId: args, tail: 20_000 }));
+      this.showResult(await agent.getTaskOutput({ taskId: args, tail: 20_000 }));
       return;
     }
     const tasks = await agent.getTasks({ activeOnly: false, limit: 100 });
@@ -1723,7 +1931,7 @@ export class DaemonTUI {
         void agent
           .getTaskOutput({ taskId: id, tail: 20_000 })
           .then((output) => {
-            this.showStatus(output);
+            this.showResult(output);
           })
           .catch((error: unknown) => {
             this.showStatus(formatErrorMessage(error), 'error');
@@ -1749,7 +1957,7 @@ export class DaemonTUI {
     const [action, rest] = splitFirst(args);
     if (action === '') {
       const items = await plugins.list();
-      this.showStatus(
+      this.showResult(
         items
           .map((item) => `${item.id} · ${item.globalEnabled ? 'enabled' : 'disabled'} · ${item.state}`)
           .join('\n') || 'No plugins installed.',
@@ -1765,7 +1973,7 @@ export class DaemonTUI {
         source: rest === '' ? undefined : rest,
         configSource: pluginConfig?.marketplace_url,
       });
-      this.showStatus(
+      this.showResult(
         [
           `Source: ${marketplace.source}`,
           ...marketplace.plugins.map((item) => item.displayName),
@@ -1779,7 +1987,7 @@ export class DaemonTUI {
       if (source === '') throw new Error('/plugins install [--trust] [--sha256 <64-hex>] requires an explicit source.');
       const previewInput = parsed.sha256 === undefined ? { source } : { source, sha256: parsed.sha256 };
       const plan = await plugins.preview(previewInput);
-      this.showStatus(`Plugin: ${plan.id}\nSource: ${source}\nContributions: ${plan.contributions.join(', ')}\nTrusted Node code runs with your full account permissions, not in a sandbox.`);
+      this.showResult(`Plugin: ${plan.id}\nSource: ${source}\nContributions: ${plan.contributions.join(', ')}\nTrusted Node code runs with your full account permissions, not in a sandbox.`);
       if (plan.consentRequired && !parsed.trust) throw new Error('To consent once to this source, run /plugins install --trust <source>.');
       await plugins.install(parsed.sha256 === undefined
         ? { source, fingerprint: plan.fingerprint, consent: parsed.trust }
@@ -1805,7 +2013,7 @@ export class DaemonTUI {
     const [action, rest] = splitFirst(args);
     if (action === '') {
       const items = await providers.listProviders();
-      this.showStatus(
+      this.showResult(
         items.map((item) => `${item.id} · ${item.status}`).join('\n') || 'No providers configured.',
       );
       return;
@@ -1844,7 +2052,7 @@ export class DaemonTUI {
       return;
     }
     openUrl(flow.verification_uri_complete);
-    this.showStatus(
+    this.showResult(
       `Open ${flow.verification_uri} and enter code ${flow.user_code}. The provider is added to the daemon as soon as authentication completes.`,
     );
   }
@@ -1860,7 +2068,7 @@ export class DaemonTUI {
       .session(controller.sessionId)
       .agent('main')
       .getMcpServers();
-    this.showStatus(
+    this.showResult(
       servers.map((server) => `${server.name} · ${server.status}`).join('\n') || 'No MCP servers configured.',
     );
   }
@@ -1873,7 +2081,7 @@ export class DaemonTUI {
     }
     const controller = await this.ensureSession();
     if (parsed.kind === 'status') {
-      this.showStatus(JSON.stringify(await this.client.getGoal(controller.sessionId), undefined, 2));
+      this.showResult(JSON.stringify(await this.client.getGoal(controller.sessionId), undefined, 2));
       return;
     }
     if (parsed.kind === 'create') {
@@ -1904,11 +2112,11 @@ export class DaemonTUI {
     const config = this.client.klient.global.config;
     const [domain, json] = splitFirst(args);
     if (domain === '') {
-      this.showStatus(JSON.stringify(redactSensitive(await config.getAll()), undefined, 2));
+      this.showResult(JSON.stringify(redactSensitive(await config.getAll()), undefined, 2));
       return;
     }
     if (json === '') {
-      this.showStatus(JSON.stringify(redactSensitive(await config.get(domain)), undefined, 2));
+      this.showResult(JSON.stringify(redactSensitive(await config.get(domain)), undefined, 2));
       return;
     }
     const value = JSON.parse(json) as unknown;
@@ -1959,7 +2167,7 @@ export class DaemonTUI {
 
   private async showExperiments(): Promise<void> {
     const flags = await this.client.klient.global.flags.list();
-    this.showStatus(
+    this.showResult(
       flags.map((flag) => `${flag.enabled ? 'on' : 'off'} · ${flag.id} · ${flag.source}`).join('\n')
         || 'No experimental features registered.',
     );
@@ -1988,6 +2196,27 @@ export class DaemonTUI {
   private async askBtw(question: string): Promise<void> {
     if (question === '') throw new Error('/btw requires a question.');
     const controller = await this.ensureSession();
+    const title = `btw · ${question}`;
+    const note = new TranscriptNoteComponent(`${title}\nAsking a side agent…`);
+    this.renderer.addNote(note);
+    const settle = (message: string, answer?: string): void => {
+      note.update(message, answer);
+      this.state.ui.requestRender();
+    };
+    try {
+      await this.runBtw(controller, question, title, settle);
+    } catch (error) {
+      settle(`${title}\n${formatErrorMessage(error)}`);
+      throw error;
+    }
+  }
+
+  private async runBtw(
+    controller: SessionController,
+    question: string,
+    title: string,
+    settle: (message: string, answer?: string) => void,
+  ): Promise<void> {
     const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
     const side = new SessionController(this.client, this.client.klient.session(child.id).view, child.id);
     this.sideControllers.add(side);
@@ -2008,14 +2237,15 @@ export class DaemonTUI {
         const failure = view.blocks.findLast(
           (block) => block.kind === 'notice' && block.tone === 'danger',
         );
-        this.showStatus(
-          answer?.kind === 'assistant'
-            ? answer.text
-            : failure?.kind === 'notice'
-              ? failure.text
-              : `Side session ${child.id} ended without an answer.`,
-          answer?.kind === 'assistant' ? 'normal' : 'error',
-        );
+        if (answer?.kind === 'assistant') {
+          settle(title, answer.text);
+        } else {
+          const reason = failure?.kind === 'notice'
+            ? failure.text
+            : `Side session ${child.id} ended without an answer.`;
+          settle(`${title}\n${reason}`);
+          this.showStatus(reason, 'error');
+        }
         cleanup();
         resolve();
       };
@@ -2026,6 +2256,7 @@ export class DaemonTUI {
         .prompt({ input: [{ type: 'text', text: question }] })
         .then((result) => {
           if (result === undefined || result === null) {
+            settle(`${title}\nSide session ${child.id} did not start.`);
             this.showStatus(`Side session ${child.id} did not start.`, 'error');
             cleanup();
             resolve();
@@ -2042,13 +2273,22 @@ export class DaemonTUI {
   }
 
   private async copyLastAssistantMessage(): Promise<void> {
-    if (clipboard?.setText === undefined) throw new Error('Clipboard access is unavailable.');
     const message = this.controller?.getState().blocks.findLast(
       (block) => block.kind === 'assistant' && !block.streaming,
     );
     if (message?.kind !== 'assistant') throw new Error('No completed assistant message to copy.');
-    await clipboard.setText(message.text);
-    this.showStatus('Copied the last assistant message.', { transient: true });
+    // Over SSH the native clipboard is the remote machine's, so the copy goes
+    // out as an OSC 52 request for the user's own terminal to carry out. A
+    // terminal may ignore that request without saying so, and the wording
+    // must not claim more than was done.
+    const channel = await copyTextToClipboard(message.text);
+    if (channel === 'failed') throw new Error('Clipboard access is unavailable.');
+    this.showStatus(
+      channel === 'osc52'
+        ? 'Sent the last assistant message to your terminal\'s clipboard (OSC 52).'
+        : 'Copied the last assistant message.',
+      { transient: true },
+    );
   }
 
   private configureEditor(command: string): void {
@@ -2072,6 +2312,9 @@ export class DaemonTUI {
     const palette = await getColorPalette(theme as AppState['theme']);
     currentTheme.setPalette(palette);
     this.setAppState({ theme: theme as AppState['theme'] });
+    // Transcript sync no longer invalidates the tree, so cached, already
+    // coloured lines must be dropped here for the new palette to show.
+    this.state.ui.invalidate();
     this.state.ui.requestRender(true);
   }
 
@@ -2282,11 +2525,15 @@ export class DaemonTUI {
       onCancel: () => {
         this.restoreEditor();
       },
+      // With a session open these keys only close the picker; the startup
+      // picker has no session to return to, so there they exit.
       onCtrlC: () => {
-        void this.stop();
+        if (this.controller === undefined) void this.stop();
+        else this.restoreEditor();
       },
       onCtrlD: () => {
-        void this.stop();
+        if (this.controller === undefined) void this.stop();
+        else this.restoreEditor();
       },
       onToggleScope: (selectedSessionId) => {
         void this.showSessionPicker(scope === 'all' ? 'cwd' : 'all', selectedSessionId).catch(
@@ -2366,29 +2613,66 @@ export class DaemonTUI {
   }
 
   private syncInteractionBlocks(blocks: readonly Block[]): void {
-    const interaction = blocks.find(
-      (block): block is ApprovalBlock | QuestionBlock =>
-        (block.kind === 'approval' && block.resolution === undefined) ||
-        (block.kind === 'question' && block.outcome === undefined),
-    );
+    const interaction = firstPendingInteraction(blocks);
     if (interaction === undefined) {
+      this.interactionDeferred = false;
       if (this.activeInteractionId !== undefined) this.restoreEditor();
       this.activeInteractionId = undefined;
       return;
     }
     if (interaction.id === this.activeInteractionId) return;
+    notifyTerminalOnce(this.state, `interaction:${interaction.id}`, {
+      title: interaction.kind === 'approval' ? 'Kiki needs your approval' : 'Kiki has a question',
+      body: interaction.kind === 'approval'
+        ? interaction.request.action
+        : interaction.request.questions[0]?.question,
+    });
+    // Never replace a dialog the user opened (a picker, /help): the keys they
+    // are pressing for it would land on the approval. The status line says a
+    // request is waiting; restoreEditor() shows it once their dialog closes.
+    if (
+      this.activeInteractionId === undefined &&
+      this.state.editorContainer.children[0] !== this.state.editor
+    ) {
+      this.interactionDeferred = true;
+      return;
+    }
+    this.interactionDeferred = false;
     this.activeInteractionId = interaction.id;
     if (interaction.kind === 'approval') this.showApproval(interaction);
     else this.showQuestion(interaction);
   }
 
   private showApproval(block: ApprovalBlock): void {
-    const panel = new ApprovalPanelComponent({ data: approvalPanelData(block) }, (response) => {
-      void this.respondApproval(block, response).catch((error: unknown) => {
-        this.showStatus(formatErrorMessage(error), 'error');
-      });
-    });
+    // Returning the response promise makes the panel ignore keys until it
+    // settles, so a second press cannot answer twice.
+    const panel = new ApprovalPanelComponent(
+      { data: approvalPanelData(block) },
+      (response) =>
+        this.respondApproval(block, response).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        }),
+      undefined,
+      undefined,
+      this.interactionArming(),
+    );
     this.mountEditorReplacement(panel);
+  }
+
+  /**
+   * Approvals and questions mount on their own, often while the user is
+   * typing into the input box they replace. Enter and option keys stay inert
+   * until no key has arrived for INTERACTION_ARM_AFTER_MS; the window starts
+   * at mount, so it always ends at least that long after the last keystroke
+   * the input box received.
+   */
+  private interactionArming(): { armAfterMs: number; onArmed: () => void } {
+    return {
+      armAfterMs: INTERACTION_ARM_AFTER_MS,
+      onArmed: () => {
+        this.state.ui.requestRender();
+      },
+    };
   }
 
   private async respondApproval(
@@ -2413,11 +2697,13 @@ export class DaemonTUI {
   private showQuestion(block: QuestionBlock): void {
     const dialog = new QuestionDialogComponent(
       { data: adaptQuestionRequest(block) },
-      (response) => {
-        void this.respondQuestion(block, response).catch((error: unknown) => {
+      (response) =>
+        this.respondQuestion(block, response).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
-        });
-      },
+        }),
+      undefined,
+      undefined,
+      this.interactionArming(),
     );
     this.mountEditorReplacement(dialog);
   }
@@ -2460,6 +2746,16 @@ export class DaemonTUI {
 
   private mountEditorReplacement(component: Parameters<TUIState['editorContainer']['addChild']>[0]): void {
     this.activeSessionPicker = undefined;
+    if (
+      this.activeInteractionId !== undefined &&
+      !(component instanceof ApprovalPanelComponent || component instanceof QuestionDialogComponent)
+    ) {
+      // A dialog the user asked for (e.g. a picker that finished loading after
+      // an approval appeared) takes the slot; the approval comes back when it
+      // closes instead of being lost behind it.
+      this.activeInteractionId = undefined;
+      this.interactionDeferred = true;
+    }
     this.state.editorContainer.clear();
     this.state.editorContainer.addChild(component);
     this.state.ui.setFocus(component);
@@ -2472,6 +2768,21 @@ export class DaemonTUI {
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
     this.state.ui.requestRender();
+    if (this.interactionDeferred && this.controller !== undefined) {
+      this.interactionDeferred = false;
+      const view = this.controller.getState();
+      this.syncInteractionBlocks(view.blocks);
+      this.renderActivityState(view);
+    }
+  }
+
+  /**
+   * Show a read-out the user asked for (a /status or /usage result, a list)
+   * in the transcript, where the next turn does not clear it. Short
+   * acknowledgements and errors stay in the status line.
+   */
+  private showResult(text: string): void {
+    this.renderer.addNote(new TranscriptNoteComponent(text));
   }
 
   private showStatus(
@@ -2517,9 +2828,14 @@ export class DaemonTUI {
       timer,
     };
 
+    // The blank line separates the status from the transcript above, like
+    // the blank line every transcript block starts with.
     this.state.activityContainer.clear();
+    this.state.activityContainer.addChild(new Spacer(1));
     this.state.activityContainer.addChild(
-      new Text(tone === 'error' ? currentTheme.fg('error', message) : currentTheme.dim(message), 0, 0),
+      normalizedOptions.activity !== undefined
+        ? new ActivityLineComponent(normalizedOptions.activity)
+        : new Text(currentTheme.fg(tone === 'error' ? 'error' : 'textDim', message), 0, 0),
     );
     this.state.ui.requestRender();
   }
@@ -2555,6 +2871,16 @@ export function buildLoadedTranscriptMarkdown(input: {
   }).replace(
     '# Kiki Session Export',
     '# Kiki Loaded Transcript View\n\n> Includes only loaded user and assistant text. Tools, media, and other blocks are omitted.',
+  );
+}
+
+function firstPendingInteraction(
+  blocks: readonly Block[],
+): ApprovalBlock | QuestionBlock | undefined {
+  return blocks.find(
+    (block): block is ApprovalBlock | QuestionBlock =>
+      (block.kind === 'approval' && block.resolution === undefined) ||
+      (block.kind === 'question' && block.outcome === undefined),
   );
 }
 

@@ -8,13 +8,15 @@ import {
   type PrintBackgroundMode,
   type RuntimeConfigDraft,
 } from '@kiki/session-core/settings';
+import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
-import { FORM_LABEL, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
+import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
+import { CommitInput, FORM_LABEL, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField, SettingsBox } from './fields';
 import { Group, NumberField } from './runtimeControls';
+import { useInstantSave } from './useInstantSave';
 import { useSavedTick } from './useSavedTick';
 
 /**
@@ -122,10 +124,91 @@ function PrintModePicker({ value, onChange }: {
 }
 
 /**
- * Task and background policy: the `task` config domain, saved through the
- * narrow task-domain patch so it never rewrites domains owned by other
- * leaves. The non-interactive (`kimi -p`) parameters and the kill grace
- * period sit under Advanced.
+ * Sessions › Background work: what happens to a command that runs too long,
+ * and to background tasks when a session closes — the three task values a
+ * person notices while working. Each saves the moment it changes. The write
+ * is still the one task-domain patch (`taskRuntimePatch` replaces the whole
+ * `task` table), rebuilt from the stored config with only this value changed,
+ * so a change here carries the engine-side task values exactly as stored.
+ */
+export function BackgroundWorkCard() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const save = useInstantSave();
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  // The value just chosen, shown until the write settles; a failed write
+  // drops it, so the control falls back to what the server holds.
+  const [pending, setPending] = useState<Partial<RuntimeConfigDraft['task']>>({});
+
+  if (configQuery.data === undefined) {
+    return (
+      <SectionCard id="st-card-background-work" title={t('st.sessions.card.background')}>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
+      </SectionCard>
+    );
+  }
+  const task = { ...runtimeConfigDraftFromConfig(configQuery.data).task, ...pending };
+
+  const write = (change: Partial<RuntimeConfigDraft['task']>) => {
+    setPending(change);
+    void save.run(async () => {
+      const latest = queryClient.getQueryData<KikiConfigResponse>(['config']) ?? configQuery.data;
+      const echoed = await client.patchConfig(taskRuntimePatch({ ...runtimeConfigDraftFromConfig(latest).task, ...change }));
+      queryClient.setQueryData(['config'], echoed);
+    }).finally(() => { setPending({}); });
+  };
+
+  const timeoutIssue = (text: string): string | null => {
+    // Empty is the engine default; anything else must be what the task patch accepts.
+    return text === '' || /^\d+$/.test(text) ? null : t('val.runtimeNonNegative', { field: t('st.taskPolicy.bashTimeout') });
+  };
+
+  return (
+    <SectionCard id="st-card-background-work" title={t('st.sessions.card.background')}>
+      <div className="space-y-2" data-background-work>
+        <SettingsBox>
+          <SettingField label={t('st.taskPolicy.bashTimeout')} htmlFor="task-bash-timeout" help={t('st.taskPolicy.bashTimeoutHint')}
+            detail={t('st.taskPolicy.bashTimeoutDetail', { seconds: TASK_DEFAULTS.bashTaskTimeoutS })}>
+            <div className="flex items-center gap-1.5">
+              <CommitInput
+                id="task-bash-timeout"
+                className="w-24 text-right"
+                inputMode="numeric"
+                value={task.bashTaskTimeoutS}
+                placeholder={TASK_DEFAULTS.bashTaskTimeoutS}
+                disabled={save.saving}
+                validate={timeoutIssue}
+                onCommit={(bashTaskTimeoutS) => { write({ bashTaskTimeoutS }); }}
+              />
+              <span className="text-[12px] text-ink-faint">{t('st.residency.secondsUnit')}</span>
+            </div>
+          </SettingField>
+          <SettingField label={t('st.taskPolicy.autoBackground')} help={t('st.taskPolicy.autoBackgroundHelp')}>
+            <Toggle layout="bare" label={t('st.taskPolicy.autoBackground')} checked={task.bashAutoBackgroundOnTimeout} disabled={save.saving}
+              onChange={(bashAutoBackgroundOnTimeout) => { write({ bashAutoBackgroundOnTimeout }); }} />
+          </SettingField>
+          <SettingField label={t('st.taskPolicy.keepAlive')} help={t('st.taskPolicy.keepAliveHelp')}>
+            <Toggle layout="bare" label={t('st.taskPolicy.keepAlive')} checked={task.keepAliveOnExit} disabled={save.saving}
+              onChange={(keepAliveOnExit) => { write({ keepAliveOnExit }); }} />
+          </SettingField>
+        </SettingsBox>
+        <SaveStatus saving={save.saving} saved={save.saved} />
+        <FeedbackLine feedback={save.error} />
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
+ * Developer & labs › Engine parameters → Task policy: the rest of the `task`
+ * config domain — the running-task cap, the file-tool nudge after Bash, and
+ * under Advanced the non-interactive (`kimi -p`) parameters and the kill
+ * grace period. Saved through the narrow task-domain patch so it never
+ * rewrites domains owned by other leaves. The values a person notices while
+ * working (the Bash timeout and what happens after it, keeping tasks alive on
+ * exit) are on Sessions › Background work; this draft still carries them, as
+ * stored, because the patch replaces the whole table.
  */
 export function TaskPolicyCard() {
   const { client } = useConnection();
@@ -194,22 +277,6 @@ export function TaskPolicyCard() {
               disabled={saving}
               onChange={(maxRunningTasks) => { updateTask({ maxRunningTasks }); }}
             />
-            <DraftNumberRow
-              label={t('st.taskPolicy.bashTimeout')}
-              id="task-bash-timeout"
-              value={draft.bashTaskTimeoutS}
-              placeholder={TASK_DEFAULTS.bashTaskTimeoutS}
-              detail={t('st.taskPolicy.bashTimeoutDetail', { seconds: TASK_DEFAULTS.bashTaskTimeoutS })}
-              unit={t('st.residency.secondsUnit')}
-              disabled={saving}
-              onChange={(bashTaskTimeoutS) => { updateTask({ bashTaskTimeoutS }); }}
-            />
-            <SettingField label={t('st.taskPolicy.autoBackground')} help={t('st.taskPolicy.autoBackgroundHelp')}>
-              <Toggle layout="bare" label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
-            </SettingField>
-            <SettingField label={t('st.taskPolicy.keepAlive')} help={t('st.taskPolicy.keepAliveHelp')}>
-              <Toggle layout="bare" label={t('st.taskPolicy.keepAlive')} checked={draft.keepAliveOnExit} onChange={(keepAliveOnExit) => { updateTask({ keepAliveOnExit }); }} />
-            </SettingField>
             <SettingField label={t('st.taskPolicy.fileToolHints')} help={t('st.taskPolicy.fileToolHintsHelp')}>
               <Toggle layout="bare" label={t('st.taskPolicy.fileToolHints')} checked={draft.bashFileToolHints} onChange={(bashFileToolHints) => { updateTask({ bashFileToolHints }); }} />
             </SettingField>

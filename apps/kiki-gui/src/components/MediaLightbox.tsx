@@ -280,7 +280,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   ].filter((part): part is string => part !== undefined && part !== '');
 
   return <Dialog onClose={dismiss} ariaLabel={label} overlayId="media-lightbox"
-    overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/85 p-4"
+    overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/85 p-4 pt-[max(1rem,var(--kiki-safe-top-inset))] pb-[max(1rem,var(--kiki-safe-bottom-inset))]"
     panelClassName="anim-enter flex max-h-full w-full max-w-[94vw] flex-col items-center gap-3 outline-none">
     <div className="flex w-full min-h-0 flex-col items-center gap-3" onKeyDown={(event) => {
       if (event.defaultPrevented || menu !== null || event.altKey || event.ctrlKey || event.metaKey || (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]') !== null)) return;

@@ -18,8 +18,13 @@ const listTasks = vi.fn();
 const getTask = vi.fn();
 const cancelTask = vi.fn();
 
+// The agent panel keys its usage freshness by the klient object (a WeakMap),
+// so the fixture needs one; its panel read never answers, which leaves the
+// metrics "not reported" without touching the rail's task chapter.
+const klient = { global: { agentPanel: { read: () => new Promise(() => {}) } } };
+
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: { listTasks, getTask, cancelTask } }),
+  useConnection: () => ({ client: { listTasks, getTask, cancelTask }, klient }),
   // No live session controller in these fixtures: the agent panel reports
   // "not reported" instead of borrowing another agent's data.
   useOptionalControllerRegistry: () => null,
@@ -91,18 +96,21 @@ async function renderPage(initialPath = '/s/sess-1/tasks') {
 
 describe('TasksPage', () => {
   it('requests server-filtered, bounded task pages', async () => {
+    // The status filter is a list tool: it is offered once the list is long.
     const all = [
       makeTask({ id: 't1', status: 'running', description: 'dev server' }),
       makeTask({ id: 't2', status: 'failed', description: 'broken build' }),
-      makeTask({ id: 't3', status: 'completed', description: 'lint pass' }),
+      ...Array.from({ length: 6 }, (_, index) => makeTask({ id: `t${index + 3}`, status: 'completed', description: `lint pass ${index}` })),
     ];
     listTasks.mockImplementation(async (_id, query) => ({
       items: query.status === undefined ? all : all.filter((task) => task.status === query.status),
     }));
     const container = await renderPage();
     expect(listTasks).toHaveBeenCalledWith('sess-1', { status: undefined, page_size: 100, offset: 0 });
-    expect(container.querySelectorAll('[data-task-row]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-task-row]')).toHaveLength(8);
     expect(container.textContent).toContain('dev server');
+    // Running work leads; everything else is one finished group.
+    expect([...container.querySelectorAll('[data-task-group]')].map((node) => node.getAttribute('data-task-group'))).toEqual(['running', 'finished']);
 
     const failedChip = container.querySelector<HTMLButtonElement>('[data-status-filter="failed"]')!;
     await act(async () => {
@@ -188,7 +196,7 @@ describe('TasksPage', () => {
     expect(listTasks.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('raises a sticky error toast when cancellation fails', async () => {
+  it('says on the row when stopping fails, and keeps the row stoppable', async () => {
     listTasks.mockResolvedValue({
       items: [makeTask({ id: 't1', status: 'running' })],
     });
@@ -201,21 +209,9 @@ describe('TasksPage', () => {
       stop.click();
     });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(getToasts().some((toast) => toast.tone === 'error' && toast.text.includes('nope'))).toBe(
-      true,
-    );
-  });
-
-  it('navigates back to the session view', async () => {
-    listTasks.mockResolvedValue({ items: [] });
-    const container = await renderPage();
-    const back = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Back to session',
-    )!;
-    await act(async () => {
-      back.click();
-    });
-    expect(container.querySelector('[data-session-home]')).not.toBeNull();
+    expect(container.querySelector('[data-task-row] [data-task-stop-error]')?.textContent).toContain('nope');
+    expect(getToasts().some((toast) => toast.tone === 'error')).toBe(false);
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent === 'Stop')).toBe(true);
   });
 });
 

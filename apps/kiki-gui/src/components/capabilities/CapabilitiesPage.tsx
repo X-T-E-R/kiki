@@ -1,7 +1,7 @@
 /**
  * /capabilities — the one place to see and manage what the agent can do.
  *
- * Four tabs, one per kind of capability: Plugins (marketplace home), Skills,
+ * Four tabs, one per kind of capability: Plugins (installed first, then the market), Skills,
  * MCP servers, and Tools (read-only, everything callable). Plugins come first
  * because a plugin bundles the others: installing one adds tools, skills,
  * panels, commands or skins, and its detail says which.
@@ -27,15 +27,13 @@ import { useConnection } from '../../state/connection';
 import { SidePanel } from '../SidePanel';
 import { Icon } from '../icons';
 import { MediaPreviewProvider } from '../mediaPreview';
-import { PAGE_WIDTH, PageHeader } from '../PageChrome';
+import { PAGE_WIDTH, PageHeader, PageMoreMenu } from '../PageChrome';
 import { SearchableSelect } from '../SearchableSelect';
 import { AddSourceDialog } from './AddSourceDialog';
-import { CapabilityGlyph } from './CapabilityIcon';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { McpView } from './McpView';
 import { PluginPanelHost } from './PluginPanelHost';
 import { PluginsView, type PluginsRoute } from './PluginsView';
-import { IconButton } from './primitives';
 import { SkillsView } from './SkillsView';
 import { ToolsView } from './ToolsView';
 import { usePluginPanels } from './usePlugins';
@@ -48,13 +46,16 @@ function isTab(value: string | null): value is CapabilityTab {
   return value !== null && (TABS as readonly string[]).includes(value);
 }
 
-/** Read the plugins sub-route from URL params. */
+/**
+ * Read the plugins sub-route from URL params. The page answers "what do I
+ * have, and does any of it need me" first, so a bare visit is the Installed
+ * view; the market is one segment over (`?view=market`).
+ */
 export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   const plugin = params.get('plugin');
   if (plugin !== null && plugin !== '') return { view: 'detail', id: plugin };
   const view = params.get('view');
-  // `manage` is the retired name of the Installed view; old links still land.
-  if (view === 'installed' || view === 'manage') return { view: 'installed' };
+  if (view === 'market') return { view: 'market' };
   // Import history used to be a plugins sub-view. It is a built-in session
   // surface now, so this case resolves to the market it was carved out of and
   // the redirect below carries the caller to the one address it really has.
@@ -64,7 +65,8 @@ export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   // Media is a plugins sub-view for the same reason import history is: it
   // manages what installed plugin packages can do.
   if (view === 'media') return { view: 'media' };
-  return { view: 'market' };
+  // `installed`, and `manage` (its retired name), land here like a bare visit.
+  return { view: 'installed' };
 }
 
 export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute): URLSearchParams {
@@ -75,7 +77,7 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
   next.delete('source');
   next.delete('sourcePlugin');
   if (route.view === 'detail') next.set('plugin', route.id);
-  if (route.view === 'installed') next.set('view', 'installed');
+  if (route.view === 'market') next.set('view', 'market');
   if (route.view === 'media') next.set('view', 'media');
   return next;
 }
@@ -162,7 +164,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   }, [params, setParams, navigate]);
 
   const setTab = (next: CapabilityTab) => {
-    const updated = applyPluginsRoute(params, { view: 'market' });
+    const updated = applyPluginsRoute(params, { view: 'installed' });
     if (next === 'plugins') updated.delete('tab');
     else updated.set('tab', next);
     setParams(updated);
@@ -248,8 +250,10 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
     <MediaPreviewProvider sessionId={sessionId}>
       <div className="flex h-full min-h-0 flex-col bg-paper" data-capabilities-page={tab}>
         <PageHeader title={t('cap.page.title')} onToggleSidebar={onToggleSidebar} width="split">
-          <IconButton glyph={<CapabilityGlyph kind="refresh" />} label={t('cap.page.refresh')} onClick={refresh} dataAttrs={{ 'data-capabilities-refresh': '' }} />
+          {/* Adding is the page's one action; re-reading the lists is rare
+              and sits behind the ⋯. */}
           {addControl}
+          <PageMoreMenu menuId="capabilities-more" entries={[{ key: 'refresh', label: t('cap.page.refresh'), run: refresh }]} />
         </PageHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
           <div className={`mx-auto w-full ${PAGE_WIDTH.split} pb-16 pt-4 min-[720px]:pt-8`}>

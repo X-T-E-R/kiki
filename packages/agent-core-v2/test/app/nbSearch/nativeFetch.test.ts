@@ -109,12 +109,15 @@ describe('native FetchURL donor boundaries', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('does not let a configured donor scope grant access outside the Kiki workspace', async () => {
-    const fetch = vi.spyOn(ix.get(INbSearchService), 'fetch');
+  it('admits a scoped file outside the Kiki workspace as an ordinary read of that path', async () => {
+    await writeFile(path.join(fixture, 'document.txt'), 'Outside fixture content.');
     runtime = { ...runtime, workspace: { supportsExternalPaths: true, mapRoots: () => ({ workDir: path.join(fixture, 'confined-workspace'), additionalDirs: [] }) } };
-    const result = await execute({ action: 'run', source: { kind: 'file', scope: 'fixture', path: 'document.txt' } });
-    expect(result.isError).toBe(true);
-    expect(fetch).not.toHaveBeenCalled();
+    const execution = await ix.get(IFetchURLTool).resolveExecution({ action: 'run', source: { kind: 'file', scope: 'fixture', path: 'document.txt' }, pipeline: 'direct.local', representation: 'text' });
+    expect(execution).toMatchObject({ accesses: [{ kind: 'file', operation: 'read', path: path.join(fixture, 'document.txt') }] });
+    if (execution.isError) throw new Error(JSON.stringify(execution.output));
+    const result = await execution.execute({ turnId: 0, toolCallId: 'fixture', signal: new AbortController().signal });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('Outside fixture content.');
   });
 
   it('rejects a sensitive canonical target and binds the admitted file to the runtime configuration', async () => {

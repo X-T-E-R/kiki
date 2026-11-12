@@ -55,7 +55,9 @@ const listProviders = vi.fn().mockResolvedValue({ items: [] });
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
-  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, listWorkspaceCatalog, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
+  // `klient` without the export route: the export view renders its own
+  // "not offered by this server" state when a test opens it.
+  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', klient: {}, meta: {}, config: { url: '' }, sshLabel: null, client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, listWorkspaceCatalog, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -629,19 +631,48 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('opens realtime by default and keeps historical reads out of the first screen', async () => {
+  it('opens History when no panel is given, with Live and Quotas as the other views', async () => {
     const { container, root } = await renderPage('/usage');
-    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['realtime', 'history', 'quota', 'export']);
+    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'quota']);
+    expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
+    expect(container.querySelector('[data-usage-filters]')).not.toBeNull();
+    expect(mainCalls().length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-request-governance]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('reaches model prices and export from the header ⋯ instead of the tab strip', async () => {
+    getUsage.mockImplementation(async () => usageResponse({ unknownPriceModels: ['mystery-9'] }));
+    const { container, root } = await renderPage('/usage');
+    await act(async () => { container.querySelector<HTMLButtonElement>('header [data-usage-more]')!.click(); });
+    const menu = document.querySelector('[data-usage-more-menu][role="menu"]')!;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(items.map((item) => item.textContent)).toEqual(['Model prices (1 missing)', 'Export']);
+    await act(async () => { items[1]!.click(); });
+    expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=export');
+    // Export is a view without a tab: no tab claims to be current.
+    expect(container.querySelector('[data-usage-panel][aria-current="page"]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps historical reads out of the Live view and reads no rule catalogs until the editor is opened', async () => {
+    const { container, root } = await renderPage('/usage?panel=realtime');
     expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
     expect(container.querySelector('[data-usage-filters]')).toBeNull();
     expect(resolveAnchorElement('usage-filter')).toBeNull();
     expect(mainCalls()).toHaveLength(0);
     expect(listWorkspaces).not.toHaveBeenCalled();
     expect(listWorkspaceCatalog).not.toHaveBeenCalled();
-    // RequestGovernanceView owns the live rule catalogs; the historical filter
-    // observers are disabled on this panel and must not add another read.
+    // The rules are one summary line; the editor (and its model/provider
+    // suggestions) loads only when asked for.
+    expect(container.querySelector('[data-governance-rules-summary]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+    expect(listModels).not.toHaveBeenCalled();
+    expect(listProviders).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-manage]')!.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
     expect(listModels).toHaveBeenCalledTimes(1);
     expect(listProviders).toHaveBeenCalledTimes(1);
     expect(getSession).not.toHaveBeenCalled();
@@ -673,7 +704,8 @@ describe('UsagePage (V2)', () => {
     ['/usage?session=s_1', 'history'],
     ['/usage?view=sessions', 'history'],
     ['/usage?metric=tokens', 'history'],
-    ['/usage?unrelated=state', 'realtime'],
+    ['/usage?unrelated=state', 'history'],
+    ['/usage', 'history'],
   ] as const)('resolves %s to the %s panel', (search, expected) => {
     expect(usagePanelFromSearch(search.slice('/usage'.length))).toBe(expected);
   });
@@ -686,10 +718,10 @@ describe('UsagePage (V2)', () => {
     expect(getUsage).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
     expect(listWorkspaceCatalog).not.toHaveBeenCalled();
-    // The live governance view owns one catalog read for its rule editor; the
-    // disabled historical filter observers must not add another request.
-    expect(listModels).toHaveBeenCalledTimes(1);
-    expect(listProviders).toHaveBeenCalledTimes(1);
+    // The rule editor stays folded on Live, and the disabled historical filter
+    // observers must not read the catalogs either.
+    expect(listModels).not.toHaveBeenCalled();
+    expect(listProviders).not.toHaveBeenCalled();
     expect(container.querySelector('[data-usage-locating]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
@@ -740,7 +772,9 @@ describe('UsagePage (V2)', () => {
     const { container, root } = await renderPage(`/usage?panel=${panel}`);
     expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    expect(container.querySelector('[data-governance-rules]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-rules-summary]')).not.toBeNull();
+    // A Limits link opens the editor and focuses it; a plain Live link keeps it folded.
+    expect(container.querySelector('[data-governance-rules]') !== null).toBe(panel === 'limits');
     expect(mainCalls()).toHaveLength(0);
     if (panel === 'limits') expect(document.activeElement).toBe(container.querySelector('#usage-limits'));
     expect(container.querySelector('[data-location-probe]')?.textContent).toBe(`/usage?panel=${panel}`);
@@ -1813,9 +1847,9 @@ describe('UsagePage manual full rescan', () => {
     const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
     expect(header).not.toBeNull();
     // The views are an underline tab strip in the content below the header;
-    // the header itself keeps only the quiet pricing action.
+    // the header itself keeps only the ⋯ with prices and export.
     expect(header.querySelector('[data-usage-panel]')).toBeNull();
-    expect(header.querySelector('[data-usage-pricing-open]')).not.toBeNull();
+    expect(header.querySelector('[data-usage-more]')).not.toBeNull();
     const nav = container.querySelector('[data-usage-nav]')!;
     expect(nav).not.toBeNull();
     expect(header.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

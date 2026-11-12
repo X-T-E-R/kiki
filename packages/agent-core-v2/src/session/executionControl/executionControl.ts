@@ -12,6 +12,7 @@ export interface ExecutionPendingTool {
 
 export interface ExecutionPendingStep {
   readonly stopTurn?: boolean;
+  readonly forcedStopTurn?: boolean;
   readonly sendMessageCompletionBlocked?: boolean;
   readonly userDeliveryConfirmed?: boolean;
   readonly step: number;

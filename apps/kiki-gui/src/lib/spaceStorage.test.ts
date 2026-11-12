@@ -384,11 +384,20 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   'apps/kiki-gui/src/components/settings/list/listState.ts',
   // Excluded: `kiki.connection` (desktop connections never persist).
   'apps/kiki-gui/src/state/connectionConfig.ts',
+  // Excluded: the mobile shell's `kiki.shell.managed` marker and the legacy
+  // `kiki.peer.token` (session storage), both connection state, never a
+  // space's data and never part of a settings export. The module only checks
+  // and clears them; the token itself is held in document memory.
+  'apps/kiki-gui/src/lib/appShell.ts',
   // Global: `kiki.spacePreferences.cache` (each space's cached preferences,
   // keyed by server + home inside the value) and `kiki.deviceId`.
   'apps/kiki-gui/src/lib/spaceAuthority.ts',
-  // Global: `kiki.onboarding.step` (this installation's first-run progress).
-  'apps/kiki-gui/src/components/OnboardingWizard.tsx',
+  // Mixed: global `kiki.firstRun` (one-time hints) + the space-scoped
+  // `kiki.onboarding` mark through the wrapper.
+  'packages/session-core/src/settings/onboarding.ts',
+  // Global: `kiki.firstRun.autoExplained` (the once-per-device Auto mode
+  // explanation on the first approval card).
+  'apps/kiki-gui/src/components/Interactions.tsx',
   // Global: `kiki.settingsIaPrototype` (which settings nav layout this device uses).
   'apps/kiki-gui/src/lib/settingsIaPrototype.ts',
   // Excluded: `kiki.output-layer.results.v1`, whose physical key the module

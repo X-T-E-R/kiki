@@ -11,6 +11,7 @@ import { FeedbackLine, InlineError, SavedTick, type Feedback } from '../controls
 import { ToolPolicyCard } from './AutomationSection';
 import { mergeConfigEcho } from './configEcho';
 import { PermissionRulesSettings } from './PermissionRulesSettings';
+import { PlanGateFields } from './PlanSettings';
 import { ReviewerSettings } from './ReviewerSettings';
 import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
@@ -23,7 +24,10 @@ function isPermissionMode(value: unknown): value is PermissionMode {
   return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
 }
 
-/** The mode new sessions start in. One segmented choice, saved on click. */
+/**
+ * The mode new sessions start in, the dangerous-command guard, and whether
+ * plan mode needs your approval. Each choice saves on click.
+ */
 function PermissionDefaultCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -113,8 +117,16 @@ function PermissionDefaultCard() {
         >
           <SettingsSegmented ariaLabelledBy="permission-dangerous-bash-label" value={dangerousBash}
             disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}
-            choices={(['default', 'on', 'off'] as const).map((value) => ({ value, label: t(`st.perm.dangerousBash.${value}`) }))} />
+            choices={(['default', 'on', 'off'] as const).map((value) => ({
+              value,
+              // "Default" says what it resolves to: the engine guards every
+              // mode except Full access (isDangerousBashGuardEnabled).
+              label: value === 'default'
+                ? t('st.permissions.dangerBash.followMode', { effect: t(mode === 'yolo' ? 'st.perm.dangerousBash.off' : 'st.perm.dangerousBash.on') })
+                : t(`st.perm.dangerousBash.${value}`),
+            }))} />
         </SettingField>
+        <PlanGateFields />
       </SettingsBox>
       <div className="pt-2">
         <FeedbackLine feedback={feedback} />

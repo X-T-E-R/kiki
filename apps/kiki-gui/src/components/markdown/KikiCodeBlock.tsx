@@ -8,7 +8,9 @@
  * highlighting is Streamdown's exported `CodeBlock` (shiki via the lazily
  * loaded `@streamdown/code` plugin), rendered inside our chrome with its own
  * header/actions suppressed (scoped CSS in index.css) so nothing is
- * duplicated. kiki shows 12 lines before collapsing (aionui shows 3).
+ * duplicated. Only a fence longer than 40 lines collapses, to a 12-line
+ * preview (aionui collapses at 3), so the usual block in a coding reply reads
+ * in full without a click.
  */
 
 import { useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
@@ -16,10 +18,13 @@ import { CodeBlock } from 'streamdown';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
 import { useMermaidEngine } from './streamdown-plugins';
 
-/** Lines shown before a fence collapses behind "View more". */
+/** A settled fence longer than this collapses behind "View more". */
+const COLLAPSE_AFTER_LINES = 40;
+/** Lines a collapsed fence still shows. */
 const PREVIEW_LINES = 12;
 /** JetBrains Mono 12.5px × 1.55 line-height + vertical padding. */
 const LINE_HEIGHT_PX = 19.4;
@@ -85,12 +90,17 @@ export function KikiMarkdownPre(props: PreProps) {
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
+  // The open/closed decision is taken once, when the block first renders: a
+  // fence still streaming in is never clamped (the reader is watching it
+  // grow), and once it settles it stays open rather than snapping shut under
+  // the reader's eyes. Only a block that first renders settled (history, a
+  // reload, a row scrolled back into view) starts collapsed.
+  const [expanded, setExpanded] = useState(isIncomplete === true);
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { code, language } = extractCode(children);
   const totalLines = code === '' ? 0 : code.split('\n').length;
-  const canCollapse = totalLines > PREVIEW_LINES;
+  const canCollapse = isIncomplete !== true && totalLines > COLLAPSE_AFTER_LINES;
   const collapsed = canCollapse && !expanded;
 
   useEffect(() => () => {
@@ -107,7 +117,8 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           setCopied(false);
         }, 1500);
       })
-      .catch(() => undefined);
+      // Both clipboard paths failed: say so, or the click looks dead.
+      .catch(() => { pushToast({ tone: 'error', text: t('transcript.copyFailed') }); });
   };
 
   return (

@@ -436,15 +436,19 @@ export function MediaPartList({ media, align = 'start', agentId }: { media: read
   );
 }
 
-/** Clickable host path; without a provider it degrades to plain text. */
-export function FilePathLink({ path, className }: { path: string; className?: string }) {
+/**
+ * Clickable host path; without a provider it degrades to plain text.
+ * `children` replaces how the path reads (a one-line row passes `PathText`);
+ * the link, its menu and its title still act on `path`.
+ */
+export function FilePathLink({ path, className, children }: { path: string; className?: string; children?: ReactNode }) {
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
   const connection = useOptionalConnection();
   const remoteScope = isRemoteConnection(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  if (preview === null) return <span className={className}>{path}</span>;
+  if (preview === null) return <span className={className}>{children ?? path}</span>;
   const filePath = resolveHostPath(path, preview.cwd);
   const hostEntries: MiniMenuEntry[] = [];
   if (!remoteScope) {
@@ -468,7 +472,7 @@ export function FilePathLink({ path, className }: { path: string; className?: st
         onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); preview.openFile(filePath); } }}
         className={`cursor-pointer rounded-[2px] underline-offset-2 decoration-ink-faint hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${className ?? ''}`}
       >
-        {path}
+        {children ?? path}
       </span>
       {menu !== null ? <MiniContextMenu x={menu.x} y={menu.y} entries={entries} onClose={() => { setMenu(null); }} ariaLabel={t('file.menuAria')} overlayId="file-path-link" dataAttribute="data-file-link-menu" /> : null}
     </>

@@ -174,7 +174,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
       ariaLabel={t('taskBoard.detail.title')}
       onClose={close}
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-3 sm:p-4"
-      panelClassName={`anim-enter flex max-h-[min(920px,calc(100vh-1.5rem))] w-full sm:w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.xl} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)] font-sans text-ink`}
+      panelClassName={`anim-enter flex max-h-[min(920px,calc(100dvh-1.5rem))] w-full sm:w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.xl} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)] font-sans text-ink`}
     >
         {/* Header: where the card lives, then its id; the title leads the body. */}
         <div className="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3 sm:px-6">

@@ -52,7 +52,6 @@ export const BRAILLE_SPINNER_INTERVAL_MS = 80;
 export const MOON_SPINNER_FRAMES = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
 export const MOON_SPINNER_INTERVAL_MS = 120;
 
-// Activity wait / last response constants
-export const ACTIVITY_WAIT_THRESHOLD_MS = 3_000;
+// Activity status line refresh and notice lifetime
 export const ACTIVITY_TICK_INTERVAL_MS = 1_000;
 export const STATUS_NOTICE_TTL_MS = 3_000;

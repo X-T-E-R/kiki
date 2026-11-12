@@ -11,7 +11,7 @@ import { I18nProvider } from '../../i18n';
 import { PdfPageView } from './PdfPageView';
 
 const pdfMocks = vi.hoisted(() => ({ getDocument: vi.fn() }));
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: { workerSrc: undefined },
   getDocument: pdfMocks.getDocument,
 }));
@@ -58,7 +58,7 @@ const LETTER_PORTRAIT = { width: 612, height: 792 };
 
 describe('pdf page proportions', () => {
   it('the real sample is a portrait page, and we know its exact shape', async () => {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdfjs = await vi.importActual<typeof import('pdfjs-dist/legacy/build/pdf.mjs')>('pdfjs-dist/legacy/build/pdf.mjs');
     const bytes = new Uint8Array(await readFile(REAL_SAMPLE));
     const document = await pdfjs.getDocument({ data: bytes, useWorkerFetch: false, isEvalSupported: false }).promise;
     const viewport = (await document.getPage(1)).getViewport({ scale: 1 });

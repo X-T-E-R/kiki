@@ -18,7 +18,7 @@ import { clearToasts, getToasts } from '../../lib/toasts';
 import { GeneralSection } from './GeneralSection';
 import { PermissionsSection } from './PermissionsSection';
 import { PlanSettings } from './PlanSettings';
-import { SessionsSection } from './SessionsSection';
+import { SessionTitleEngineCard, SessionsSection } from './SessionsSection';
 
 const getConfig = vi.fn();
 const patchConfig = vi.fn();
@@ -136,7 +136,10 @@ async function renderSection(section: 'general' | 'permissions' | 'sessions' | '
       <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={[path]}>
           <I18nProvider>
-            {section === 'plan' ? <PlanSettings /> : section === 'permissions' ? <PermissionsSection /> : section === 'sessions' ? <SessionsSection /> : <GeneralSection />}
+            {/* The plan-mode approval gate is on Permissions and the title
+                moments and prompt on Engine parameters; these tests drive both
+                halves of what used to be one card. */}
+            {section === 'plan' ? <><PlanSettings /><PermissionsSection /></> : section === 'permissions' ? <PermissionsSection /> : section === 'sessions' ? <><SessionsSection /><SessionTitleEngineCard /></> : <GeneralSection />}
           </I18nProvider>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -313,8 +316,8 @@ describe('PlanSettings plan gate defaults', () => {
   it('saves the question blocking choice immediately on Sessions', async () => {
     const container = await renderSection('sessions', '/settings/sessions?tab=behavior');
     const card = container.querySelector('#st-card-questions')!;
-    expect(card.querySelector('[data-question-behavior]')?.textContent).toContain('Don’t block');
-    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
+    expect(card.querySelector('[data-question-behavior]')?.textContent).toContain('Keep working');
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Wait for you')!);
     expect(patchConfig).toHaveBeenCalledWith({ interaction: { ask_user_question: 'blocking' } });
   });
 
@@ -380,7 +383,7 @@ describe('PlanSettings plan gate defaults', () => {
     stored = { ...CONFIG, experimental: { auto_session_title: true } };
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     const box = (moment: string) => card.querySelector<HTMLInputElement>(`[data-title-moment="${moment}"] input`)!;
     // The engine default is a real choice, shown whether or not a model exists.
     expect(box('first_turn_completed').checked).toBe(true);
@@ -428,7 +431,7 @@ describe('PlanSettings plan gate defaults', () => {
     };
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     expect([...card.querySelectorAll<HTMLInputElement>('[data-session-title-moments] input')].every((box) => !box.checked)).toBe(true);
     await click(card.querySelector('#session-title-model')!);
     const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
@@ -443,7 +446,7 @@ describe('PlanSettings plan gate defaults', () => {
     stored = { ...CONFIG, session_title: { model: 'custom-model' }, experimental: { auto_session_title: true } };
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     const box = (moment: string) => card.querySelector<HTMLInputElement>(`[data-title-moment="${moment}"] input`)!;
     // An absent `triggers` is the engine default: the first completed reply.
     expect(box('first_turn_completed').checked).toBe(true);
@@ -480,7 +483,7 @@ describe('PlanSettings plan gate defaults', () => {
     };
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     // What the screen is showing right now, before anything else moves.
     expect(card.querySelector('#session-title-model')!.textContent).toContain('old-model');
 
@@ -512,7 +515,7 @@ describe('PlanSettings plan gate defaults', () => {
     } as KikiConfigResponse;
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     const moments = card.querySelector('[data-session-title-moments]')!;
     expect([...moments.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].some((box) => box.checked)).toBe(false);
   });
@@ -524,7 +527,7 @@ describe('PlanSettings plan gate defaults', () => {
     stored = { ...CONFIG, session_title: { model: 'custom-model' }, experimental: { auto_session_title: true } };
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     expect(card.textContent).toContain('First message sent');
     expect(card.textContent).toContain('First reply finished');
     expect(card.textContent).toContain('Context compacted');
@@ -539,7 +542,7 @@ describe('PlanSettings plan gate defaults', () => {
     patchConfig.mockRejectedValueOnce(new Error('server said no'));
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const card = container.querySelector('#st-card-session-title')!;
+    const card = container; // the moments are on Engine parameters, the model on Sessions
     await click(card.querySelector('[data-title-moment="context_compacted"] input')!);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const error = card.querySelector('[data-feedback-tone="error"]');
@@ -554,7 +557,7 @@ describe('PlanSettings plan gate defaults', () => {
     const container = await renderSection('sessions', '/settings/sessions?tab=behavior');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const questions = container.querySelector('#st-card-questions')!;
-    await click([...questions.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
+    await click([...questions.querySelectorAll('button')].find((button) => button.textContent === 'Wait for you')!);
     expect(patchConfig).toHaveBeenCalledWith({ interaction: { ask_user_question: 'blocking' } });
     expect(questions.querySelector('[data-saved-tick]')).not.toBeNull();
   });

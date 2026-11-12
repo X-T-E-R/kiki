@@ -143,3 +143,86 @@ describe('args-validator (Ajv, format support)', () => {
     expect(result.args).toBe('3');
   });
 });
+
+describe('args-validator cross-field messages', () => {
+  const actionUnion = {
+    type: 'object',
+    oneOf: [
+      { type: 'object', properties: { action: { const: 'create' }, cron: { type: 'string' } }, required: ['action', 'cron'], additionalProperties: false },
+      { type: 'object', properties: { action: { const: 'delete' }, id: { type: 'string' } }, required: ['action', 'id'], additionalProperties: false },
+    ],
+  };
+
+  it('reports only the errors of the branch selected by the discriminator', () => {
+    const error = validate(actionUnion, { action: 'delete' });
+    expect(error).toContain("'id'");
+    expect(error).not.toContain("'cron'");
+    expect(validate(actionUnion, { action: 'list' })).toContain('"create", "delete"');
+  });
+
+  it('names the fields of a violated exclusion instead of "must NOT be valid"', () => {
+    const schema = {
+      type: 'object',
+      properties: { cursor: { type: 'string' }, order: { type: 'string' }, resume: { type: 'string' }, profile: { type: 'string' } },
+      allOf: [
+        { if: { required: ['cursor'] }, then: { not: { anyOf: [{ required: ['order'] }] } } },
+        { not: { allOf: [{ required: ['resume'] }, { anyOf: [{ required: ['profile'] }] }] } },
+      ],
+    };
+    const conditional = validate(schema, { cursor: 'c', order: 'oldest' });
+    expect(conditional).toContain("'order'");
+    expect(conditional).toContain("'cursor'");
+    const exclusive = validate(schema, { resume: 'r', profile: 'p' });
+    expect(exclusive).toContain("'resume'");
+    expect(exclusive).toContain("'profile'");
+    for (const message of [conditional, exclusive]) expect(message).not.toContain('must NOT be valid');
+  });
+});
+
+describe('args-validator unknown arguments', () => {
+  const closed = {
+    type: 'object',
+    properties: { path: { type: 'string' }, replace_all: { type: 'boolean' }, options: { type: 'object', properties: { depth: { type: 'integer' } }, additionalProperties: false } },
+    required: ['path'],
+    additionalProperties: false,
+  };
+
+  it('removes arguments the schema does not declare and reports them', () => {
+    expect(validateWithCoercion(closed, { path: 'a', reason: 'x', options: { depth: '2', why: 'y' } })).toEqual({
+      args: { path: 'a', options: { depth: 2 } },
+      error: null,
+      ignored: ['reason', 'options.why'],
+    });
+  });
+
+  it('keeps rejecting a near miss of an argument the call did not supply', () => {
+    const result = validateWithCoercion(closed, { path: 'a', replace_al: true });
+    expect(result.error).toContain("did you mean 'replace_all'");
+    expect(result.ignored).toBeUndefined();
+    expect(validateWithCoercion(closed, { path: 'a', replace_all: true, replace_al: true }).ignored).toEqual(['replace_al']);
+  });
+
+  it('never removes a property that another union branch declares', () => {
+    const union = {
+      type: 'object',
+      oneOf: [
+        { type: 'object', properties: { action: { const: 'list' } }, required: ['action'], additionalProperties: false },
+        { type: 'object', properties: { action: { const: 'delete' }, id: { type: 'string' } }, required: ['action', 'id'], additionalProperties: false },
+      ],
+    };
+    expect(validateWithCoercion(union, { action: 'delete', id: 'j1', reason: 'x' })).toEqual({
+      args: { action: 'delete', id: 'j1' },
+      error: null,
+      ignored: ['reason'],
+    });
+    const listWithId = validateWithCoercion(union, { action: 'list', id: 'j1', reason: 'x' });
+    expect(listWithId.error).toContain("'id'");
+    expect(listWithId.args).toEqual({ action: 'list', id: 'j1', reason: 'x' });
+  });
+
+  it('passes extra properties through when the schema allows them', () => {
+    const open = { type: 'object', properties: { path: { type: 'string' } } };
+    const input: JsonType = { path: 'a', reason: 'x' };
+    expect(validateWithCoercion(open, input)).toEqual({ args: input, error: null });
+  });
+});

@@ -33,9 +33,37 @@ export function useLayoutPreferences(): LayoutPreferences {
   return useSyncExternalStore(subscribeLayoutPreferences, getSnapshot, getServerSnapshot);
 }
 
+/**
+ * One-shot read of the same query `useCoarsePointer` tracks, for event
+ * handlers and effects that only need the answer at the moment they run.
+ */
+export function isCoarsePointer(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+}
+
 /** Touch-first devices (phones): IME Enter, hit targets and layer history follow the phone contract. */
 export function useCoarsePointer(): boolean {
   return useMediaQuery('(pointer: coarse)');
+}
+
+/**
+ * Phone mode: a touch screen that is also narrow. Touch alone (`useCoarsePointer`)
+ * decides input behaviour — keyboard hints, hover-only controls, drag handles —
+ * and width alone decides layout; this is the one name for "both", used where a
+ * feature is left out, folded a level down or off by default on a phone. A
+ * tablet, a phone held sideways, a touch laptop and a narrow desktop window
+ * are all outside it. Keep in step with the `phone:` variant in index.css.
+ */
+export const PHONE_QUERY = '(pointer: coarse) and (max-width: 639px)';
+
+/** One-shot `PHONE_QUERY`, for event handlers and effects. */
+export function isPhoneMode(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
+}
+
+/** Reactive `PHONE_QUERY`. */
+export function usePhoneMode(): boolean {
+  return useMediaQuery(PHONE_QUERY);
 }
 
 /**
@@ -53,11 +81,23 @@ export function useVisualViewportHeightVar(): void {
     const viewport = window.visualViewport;
     if (viewport === null || viewport === undefined) return;
     const root = document.documentElement;
+    const coarse = typeof window.matchMedia === 'function' ? window.matchMedia('(pointer: coarse)') : null;
     let frame = 0;
     const write = () => {
       frame = 0;
+      // A pinch-zoom shrinks the visual viewport exactly like a keyboard does.
+      // It is not one: keep the last unzoomed measurements instead of laying
+      // the whole app out into the zoomed-in window.
+      if (viewport.scale > 1.01) return;
       const height = Math.max(0, Math.round(viewport.height));
-      const imeInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      // On coarse pointers the app's height chain already follows
+      // --kiki-visual-height (index.css), so the keyboard is accounted for
+      // once there. Reporting it again as an inset would lift the composer a
+      // second keyboard-height; the inset is for surfaces whose box still
+      // spans the unshrunk layout viewport.
+      const imeInset = coarse?.matches === true
+        ? 0
+        : Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
       root.style.setProperty('--kiki-visual-height', `${height}px`);
       root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };

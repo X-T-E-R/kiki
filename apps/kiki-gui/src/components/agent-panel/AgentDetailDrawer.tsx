@@ -31,7 +31,7 @@ export type { DetailDrawerTarget } from './types';
  * needs the same slide-over frame instead of the rail's own column. */
 export const DETAIL_OVERLAY_CLASS = 'fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]';
 /** The detail shell's panel: a right-side sheet, 420px on wide viewports. */
-export const DETAIL_PANEL_CLASS = 'anim-enter h-full w-full max-w-full sm:max-w-[420px] bg-panel border-l border-hairline shadow-2xl flex flex-col overflow-hidden outline-none font-sans text-ink';
+export const DETAIL_PANEL_CLASS = 'anim-enter h-full w-full max-w-full sm:max-w-[420px] pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)] bg-panel border-l border-hairline shadow-2xl flex flex-col overflow-hidden outline-none font-sans text-ink';
 
 export interface AgentDetailDrawerProps {
   readonly target: DetailDrawerTarget | null;

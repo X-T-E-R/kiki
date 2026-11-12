@@ -15,7 +15,7 @@ export function PromptEffectiveDrawer({ sessionId, agentId, onClose }: {
   const result = useAgentPanelCatalog(query);
   return <Dialog onClose={onClose} ariaLabel={t('agentPanel.prompt.title')} overlayId="prompt-effective-drawer"
     overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]"
-    panelClassName="anim-enter flex h-full w-full max-w-full flex-col overflow-hidden bg-panel text-ink outline-none shadow-2xl min-[768px]:max-w-[440px]">
+    panelClassName="anim-enter flex h-full w-full max-w-full flex-col overflow-hidden bg-panel pt-[var(--kiki-safe-top-inset)] pb-[var(--kiki-safe-bottom-inset)] text-ink outline-none shadow-2xl min-[768px]:max-w-[440px]">
     <div className="flex shrink-0 items-center justify-between gap-3 px-5 py-4" data-prompt-drawer>
       <h2 className="text-[14px] font-medium">{t('agentPanel.prompt.title')}</h2>
       <button type="button" data-autofocus data-prompt-drawer-close aria-label={t('agentPanel.detailClose')} onClick={onClose}

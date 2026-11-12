@@ -36,13 +36,15 @@ import './styles/new-session.css';
  * the app boots exactly as it always has.
  */
 async function redeemWebAccessLink(): Promise<void> {
-  const { KikiClient } = await import('./lib/client');
   const outcome = takeAccessCode(window.location);
   if (outcome.kind !== 'code') {
     if (outcome.kind === 'rejected') setWebAccessBootstrap({ kind: 'failed', reason: 'retargeted' });
     return;
   }
   try {
+    // Loaded only when there is a code to redeem: an ordinary boot must not
+    // wait on the client module before it may start fetching the app graph.
+    const { KikiClient } = await import('./lib/client');
     // Same-origin: an empty baseUrl makes the transport resolve against this
     // page, and an empty token means no Authorization header is sent at all —
     // the browser authenticates with the cookie it is about to receive.

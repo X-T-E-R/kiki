@@ -1801,6 +1801,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const eligibleForSendMessageStop = response.message.toolCalls.every(isSendMessageCompletionCompatibleTool);
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
     let stopTurn = runtime.pendingStep?.stopTurn ?? false;
+    let forcedStopTurn = runtime.pendingStep?.forcedStopTurn ?? false;
     let sendMessageCompletionBlocked = runtime.pendingStep?.sendMessageCompletionBlocked ?? false;
     const systemReminders: Array<{ readonly text: string; readonly variant: string }> = [];
     while (pending.length > 0) {
@@ -1812,6 +1813,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         trace,
         tools: pending,
         stopTurn,
+        forcedStopTurn,
         sendMessageCompletionBlocked,
         userDeliveryConfirmed: runtime.userDeliveryConfirmed,
       };
@@ -1878,10 +1880,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               runtime.userDeliveryConfirmed = true;
               if (result.stopTurn === true && eligibleForSendMessageStop) stopTurn = true;
             }
-          } else if (result.isError === true) {
-            sendMessageCompletionBlocked = true;
-          } else if (result.stopTurn === true) {
-            stopTurn = true;
+          } else {
+            if (result.isError === true) sendMessageCompletionBlocked = true;
+            if (result.stopTurn === true) forcedStopTurn = true;
           }
         }
       }
@@ -1890,7 +1891,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     signal.throwIfAborted();
     for (const reminder of systemReminders) this.appendExtensionReminder(reminder.text, reminder.variant);
     if (eligibleForSendMessageStop && sendMessageCompletionBlocked) stopTurn = false;
-    return stopTurn ? 'completed' : 'tool_calls';
+    return stopTurn || forcedStopTurn ? 'completed' : 'tool_calls';
   }
 
   private sealGoogleProtocolStep(

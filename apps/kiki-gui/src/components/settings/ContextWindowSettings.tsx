@@ -33,6 +33,7 @@ import {
   snapCompactTokens,
   type AutoCompactBounds,
 } from '../../lib/autoCompact';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { TokenPresetRow } from '../TokenPresetRow';
 import { useConnection } from '../../state/connection';
 import { ContextStepper } from '../ProviderFields';
@@ -503,7 +504,7 @@ export function GlobalCompactionCard() {
               disabled={saving || configQuery.data === undefined}
               onChange={(event) => { setText(event.target.value); }}
               onBlur={savePercent}
-              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); savePercent(); } }}
+              onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); savePercent(); } }}
             />
             <span aria-hidden className="text-[12px] text-ink-faint">%</span>
           </SettingField>
@@ -520,7 +521,7 @@ export function GlobalCompactionCard() {
                 disabled={saving || configQuery.data === undefined}
                 onChange={(event) => { setReserve(event.target.value); }}
                 onBlur={saveReserve}
-                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveReserve(); } }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); saveReserve(); } }}
               />
               <span aria-hidden className="text-[12px] text-ink-faint">tokens</span>
             </SettingField>

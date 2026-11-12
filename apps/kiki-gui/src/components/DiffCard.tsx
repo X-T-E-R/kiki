@@ -10,9 +10,9 @@
 import { hunkGapLines, type DiffHunk, type DiffLine } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 
-function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number }) {
+function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number | undefined }) {
   const gutter =
-    line.tag === 'delete' ? String(line.lo) : line.ln > 0 ? String(line.ln) : '';
+    gutterWidth === undefined ? undefined : line.tag === 'delete' ? String(line.lo) : line.ln > 0 ? String(line.ln) : '';
   const tint =
     line.tag === 'insert'
       ? 'bg-success/[0.09]'
@@ -28,13 +28,15 @@ function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number })
         ? 'text-danger'
         : 'text-ink-faint';
   return (
-    <div className="flex">
-      <span
-        className="shrink-0 pr-2 text-right text-ink-faint select-none"
-        style={{ width: `${gutterWidth + 2}ch` }}
-      >
-        {gutter}
-      </span>
+    <div data-diff-tag={line.tag} className="flex">
+      {gutterWidth === undefined ? null : (
+        <span
+          className="shrink-0 pr-2 text-right text-ink-faint select-none"
+          style={{ width: `${gutterWidth + 2}ch` }}
+        >
+          {gutter}
+        </span>
+      )}
       <span className={`w-3 shrink-0 text-center select-none ${markerTone}`}>{marker}</span>
       <span className={`min-w-0 flex-1 px-1.5 whitespace-pre-wrap break-all ${tint ?? ''}`}>
         {line.text === '' ? ' ' : line.text}
@@ -43,7 +45,22 @@ function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number })
   );
 }
 
-export function DiffCard({ hunks }: { hunks: readonly DiffHunk[] }) {
+export function DiffCard({
+  hunks,
+  numbered = true,
+  surface = 'bg-panel',
+}: {
+  hunks: readonly DiffHunk[];
+  /**
+   * False when the hunks were built from a snippet whose place in the file is
+   * unknown (an edit's old/new text): their line numbers would count from the
+   * snippet, and the gaps between hunks would count snippet lines, so neither
+   * is shown rather than passed off as file positions.
+   */
+  numbered?: boolean;
+  /** The surface, for a card that already sits on the panel colour. */
+  surface?: string;
+}) {
   const { tp, t } = useI18n();
   // Gutter width from the largest line number shown (grok-build's layout).
   let maxLine = 1;
@@ -52,13 +69,13 @@ export function DiffCard({ hunks }: { hunks: readonly DiffHunk[] }) {
       maxLine = Math.max(maxLine, line.lo, line.ln);
     }
   }
-  const gutterWidth = String(maxLine).length;
+  const gutterWidth = numbered ? String(maxLine).length : undefined;
 
   return (
-    <div className="overflow-x-auto rounded-md bg-panel py-1 font-mono text-[12px] leading-[1.6]">
+    <div className={`overflow-x-auto rounded-md py-1 font-mono text-[12px] leading-[1.6] ${surface}`}>
       {hunks.map((hunk, hunkIndex) => {
         const previous = hunkIndex > 0 ? hunks[hunkIndex - 1] : undefined;
-        const gap = previous !== undefined ? hunkGapLines(previous, hunk) : undefined;
+        const gap = previous !== undefined && numbered ? hunkGapLines(previous, hunk) : undefined;
         return (
           <div key={hunkIndex}>
             {hunkIndex > 0 ? (

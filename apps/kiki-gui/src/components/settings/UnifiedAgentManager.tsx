@@ -11,9 +11,10 @@ import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
-import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
+import { FeedbackLine, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { DetailSplit, DetailRailGroup, DetailRailItem, useDetailParam } from '../overlays';
 import { SidePanel } from '../SidePanel';
@@ -23,14 +24,13 @@ import { SearchableSelect } from '../SearchableSelect';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
-import { SETTINGS_SELECT_TRIGGER } from './SettingsPrimitives';
+import { SETTINGS_SELECT_TRIGGER, TEXT_BUTTON } from './SettingsPrimitives';
 import { diagnosticTone, profileDiagnostics, sameProfile } from './profileEditor/diagnostics';
 import { engineLabel, useExecutorCatalog } from './profileEditor/engines';
 import { NewProfile } from './profileEditor/NewProfile';
 import { ProfileEditor } from './profileEditor/ProfileEditor';
-import { isWritable, writeScope } from './profileEditor/profileDraft';
+import { isWritable } from './profileEditor/profileDraft';
 import { displayName, TeamView, type TeamRow } from './profileEditor/TeamView';
-import { useSavedTick } from './useSavedTick';
 
 // Identity of the file, not of one workspace's registration: a refetch can
 // re-merge rows under another workspace id while the detail is open.
@@ -45,12 +45,13 @@ const WORKSPACE_QUERY_PARAM = 'workspace';
 type Creating = { source?: string } | null;
 
 /**
- * Agents: one team table across every profile (role, engine, model, effort,
- * who dispatches whom). Opening a profile edits it in the page
- * (`overlays/DetailSplit`): the table folds into a rail of names beside the
- * editor, and `?agent=<name>` addresses it. Creating one is a side panel that
- * lands in the new profile's detail. Quick model/effort edits in the table
- * save immediately; the detail is a draft with Save / Discard.
+ * Agents: one list across every profile, each row stating the model and
+ * thinking level in effect and whether it can be dispatched. Opening a
+ * profile edits it in the page (`overlays/DetailSplit`): the list folds into
+ * a rail of names beside the editor, and `?agent=<name>` addresses it. The
+ * model and thinking level are changed there, in the detail's draft with
+ * Save / Discard, not from the list. Creating one is a side panel that lands
+ * in the new profile's detail.
  */
 export function UnifiedAgentManager() {
   const { client } = useConnection();
@@ -66,8 +67,6 @@ export function UnifiedAgentManager() {
   const [landing, setLanding] = useState<string | null>(null);
   const [toggleSaving, setToggleSaving] = useState(false);
   const [namedDisabled, setNamedDisabled] = useState<string | null>(null);
-  const [quickSaving, setQuickSaving] = useState<string>();
-  const [quickSaved, pingQuickSaved] = useSavedTick();
   const [feedback, setFeedback] = useState<Feedback>(null);
   const { ask: askKiki, busy: askingKiki } = useAskKiki();
   // Only consulted when this page has no workspace of its own to address.
@@ -213,19 +212,6 @@ export function UnifiedAgentManager() {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally { setToggleSaving(false); }
   };
-  const quickSave = async (row: TeamRow, patch: { pinned_model_alias?: string | null; thinking_effort?: string | null }) => {
-    if (!row.writable || row.profile.workspace_id === undefined) return;
-    setQuickSaving(row.key); setFeedback(null);
-    try {
-      await client.updateNamedAgentProfile(row.profile.name, {
-        scope: writeScope(row.profile), workspace_id: row.profile.workspace_id, source_file: row.profile.source_file, ...patch,
-      });
-      pingQuickSaved();
-      refresh();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally { setQuickSaving(undefined); }
-  };
   const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => {
     // A workspace's own name, else the folder it points at — never the raw
     // registration id, which reads as a hash.
@@ -261,9 +247,8 @@ export function UnifiedAgentManager() {
   const list = <div className="space-y-4">
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-2" data-agents-scope>
         {workspacePicker ?? <span />}
-        <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
       </div>
-      <TeamView rows={rows} models={models} savingKey={quickSaving}
+      <TeamView rows={rows} models={models} defaultModelId={configQuery.data?.default_model}
         // Beside "New agent", because that is the verb this one stands in for —
         // not in the filter row, where it read as another workspace control.
         newActions={
@@ -294,8 +279,7 @@ export function UnifiedAgentManager() {
             }}
           />
         }
-        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending}
-        onQuickSave={(row, patch) => void quickSave(row, patch)} />
+        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>
         {removed.map((entry) => <div key={entry.template_id} data-shipped-removed={entry.template_id}
           className="flex flex-wrap items-center justify-between gap-2 rounded-md px-1 py-1.5">
@@ -304,7 +288,6 @@ export function UnifiedAgentManager() {
             onError={(error) => setFeedback({ tone: 'error', text: errorText(locale, error) })} />
         </div>)}
       </div> : null}
-      {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
       {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
       {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
@@ -320,6 +303,7 @@ export function UnifiedAgentManager() {
             aria-label={t('st.agentManager.disabledByName')}
             onChange={(event) => { setNamedDisabled(event.target.value); }}
             onKeyDown={(event) => {
+              if (isImeKeyEvent(event)) return;
               if (event.key === 'Enter') void setDisabledByName(namedDisabled ?? '', false);
             }}
           />
@@ -391,7 +375,7 @@ export function UnifiedAgentManager() {
       ? (elsewhere !== undefined ? (
         <p data-agent-elsewhere className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-faint">
           {t('st.profiles.inOtherWorkspace', { name: detail.selected, workspace: elsewhere.name ?? elsewhere.root })}
-          <button type="button" data-agent-elsewhere-open className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+          <button type="button" data-agent-elsewhere-open className={TEXT_BUTTON}
             onClick={() => { switchWorkspace(elsewhere.id, true); }}>
             {t('st.profiles.openThere')}
           </button>

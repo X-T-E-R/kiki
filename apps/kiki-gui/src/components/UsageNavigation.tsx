@@ -1,29 +1,32 @@
 import { useRef } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
-import { searchHasUsageHistoryParams } from '../lib/usageV2';
 
 export type UsagePanel = 'history' | 'realtime' | 'quota' | 'export';
 
 /**
- * `panel=` is the page's own axis, so a view stays deep-linkable: a bare
- * `/usage` visit opens the live governance view, historical filter/session/view
- * links remain history, and explicit `panel=` values keep their old meaning.
+ * `panel=` is the page's own axis, so a view stays deep-linkable. The page
+ * answers "how much have I used" first, so a bare `/usage` visit (and any
+ * link without a panel) opens History; explicit `panel=` values keep their
+ * old meaning, `limits` included.
  */
 export function usagePanelFromSearch(search: string): UsagePanel {
   const panel = new URLSearchParams(search).get('panel');
   if (panel === 'export') return 'export';
   if (panel === 'quota') return 'quota';
-  if (panel === 'history') return 'history';
   if (panel === 'realtime' || panel === 'limits') return 'realtime';
-  return searchHasUsageHistoryParams(search) ? 'history' : 'realtime';
+  return 'history';
 }
 
+/**
+ * The tab strip's views. Export is not among them: it is a one-off action on
+ * the data, reached from the header's `⋯`, and still renders here when a
+ * `panel=export` link asks for it.
+ */
 const NAV_ITEMS: readonly { id: UsagePanel; labelKey: string }[] = [
-  { id: 'realtime', labelKey: 'usage.governance.realtime' },
   { id: 'history', labelKey: 'usage.governance.history' },
+  { id: 'realtime', labelKey: 'usage.governance.realtime' },
   { id: 'quota', labelKey: 'usage.quota.nav' },
-  { id: 'export', labelKey: 'usage.export.nav' },
 ];
 
 /**
@@ -35,6 +38,9 @@ const NAV_ITEMS: readonly { id: UsagePanel; labelKey: string }[] = [
 export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChange: (panel: UsagePanel) => void }) {
   const { t } = useI18n();
   const tabsRef = useRef<HTMLDivElement>(null);
+  // On the export view no tab is current; the first one keeps the strip
+  // reachable by Tab.
+  const anyActive = NAV_ITEMS.some((item) => item.id === panel);
 
   const select = (next: UsagePanel, focus = false) => {
     if (focus) tabsRef.current?.querySelector<HTMLButtonElement>(`[data-usage-panel="${next}"]`)?.focus();
@@ -64,7 +70,7 @@ export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChan
             role="tab"
             aria-selected={active}
             aria-current={active ? 'page' : undefined}
-            tabIndex={active ? 0 : -1}
+            tabIndex={active || (!anyActive && index === 0) ? 0 : -1}
             data-usage-panel={id}
             data-usage-nav-item={id}
             onClick={() => { select(id); }}

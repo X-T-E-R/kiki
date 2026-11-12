@@ -18,6 +18,8 @@ import {
   appendExtraSkillDirs,
   AI_SETTINGS_TABS,
   aiTabForCard,
+  DEVELOPER_SETTINGS_TABS,
+  developerTabForCard,
   CONNECTION_SETTINGS_TABS,
   connectionTabForCard,
   buildSettingsSearchIndex,
@@ -80,9 +82,9 @@ import {
   runtimeConfigDraftFromConfig,
   searchSettings,
   SEARCH_SETTINGS_TABS,
-  SESSIONS_SETTINGS_TABS,
   searchTabForCard,
-  sessionsTabForCard,
+  settingsTabForCard,
+  experimentalTabForSection,
   connectionServicesTabForCard,
   CONNECTION_SERVICES_SETTINGS_TABS,
   serverFileSettingsFromConfig,
@@ -1341,6 +1343,72 @@ describe('settings search index', () => {
     }
   });
 
+  it('assigns every developer-entry card to the tab that mounts it', () => {
+    const developerEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'developer');
+    for (const entry of developerEntries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(developerTabForCard(entry.cardId));
+    }
+    for (const tab of DEVELOPER_SETTINGS_TABS) {
+      expect(developerEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+  });
+
+  it('follows engine parameters from Sessions and Agents to Developer › Engine parameters', () => {
+    // Every card that left an everyday page keeps its anchor, and the old
+    // address with that anchor lands on the Engine parameters tab.
+    const moved: readonly (readonly [string, string])[] = [
+      ['sessions', 'st-card-task-policy'],
+      ['sessions', 'st-card-session-residency'],
+      ['sessions', 'st-card-resource-limits'],
+      ['agents', 'st-card-agent-runtime'],
+      ['agents', 'st-card-subagent-agent-list-fields'],
+    ];
+    for (const [from, cardId] of moved) {
+      expect(resolveSettingsRoute(from, `#${cardId}`), cardId).toEqual({ status: 'ok', section: 'developer', cardId, tab: 'engine' });
+    }
+    // Cards that were split: the anchor stays with the everyday half, the
+    // engine half is found by search.
+    expect(resolveSettingsRoute('sessions', '#st-card-agent-messaging'))
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
+    expect(resolveSettingsRoute('sessions', '#st-card-session-title'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title' });
+    const index = buildSettingsSearchIndex({}, (key) => translate('en', key));
+    const hit = (query: string, cardId: string) => searchSettings(index, query).find((entry) => entry.cardId === cardId);
+    expect(hit('session_residency', 'st-card-session-residency')).toMatchObject({ section: 'developer', tab: 'engine' });
+    expect(hit('Handoff notice for subagents', 'st-card-handoff-notices')).toMatchObject({ section: 'developer', tab: 'engine' });
+    expect(hit('AgentList', 'st-card-subagent-agent-list-fields')).toMatchObject({ section: 'developer', tab: 'engine' });
+    expect(hit('title moment', 'st-card-session-title-engine')).toMatchObject({ section: 'developer', tab: 'engine' });
+    expect(hit('Maximum running tasks', 'st-card-task-policy')).toMatchObject({ section: 'developer', tab: 'engine' });
+    // What stayed is still found where it stayed.
+    expect(hit('Bash task timeout', 'st-card-background-work')).toMatchObject({ section: 'sessions' });
+    expect(hit('Bash task timeout', 'st-card-background-work')?.tab).toBeUndefined();
+    expect(hit('Require approval when the model changes plan mode', 'st-card-permission-defaults')).toMatchObject({ section: 'permissions' });
+  });
+
+  it('follows moved settings to their new page from an old address, an old anchor and a search', () => {
+    // Request identity left Models for Developer & labs.
+    expect(resolveSettingsRoute('ai', '', '?tab=identity')).toEqual({ status: 'ok', section: 'developer', tab: 'identity' });
+    expect(resolveSettingsRoute('identity', '')).toMatchObject({ status: 'ok', section: 'developer', tab: 'identity' });
+    expect(resolveSettingsRoute('ai', '#st-card-identity-profiles'))
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-identity-profiles', tab: 'identity' });
+    // A card hash is the precise half of an address and still wins over the query.
+    expect(resolveSettingsRoute('ai', '#st-card-global-defaults', '?tab=identity'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-global-defaults', tab: 'defaults' });
+    expect(resolveSettingsRoute('ai', '', '?tab=defaults')).toMatchObject({ status: 'ok', section: 'ai' });
+    // Recipes became a tab of Models.
+    expect(resolveSettingsRoute('recipes', '')).toMatchObject({ status: 'ok', section: 'ai', tab: 'recipes' });
+    expect(resolveSettingsRoute('recipes', '#st-card-recipe-markets'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-recipe-markets', tab: 'recipes' });
+    expect(resolveSettingsRoute('recipes', '#st-card-exp-recipes'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-exp-ai', tab: 'defaults' });
+    const index = buildSettingsSearchIndex({}, (key) => translate('en', key));
+    const identity = searchSettings(index, 'User-Agent').find((hit) => hit.cardId === 'st-card-request-identity');
+    expect(identity).toMatchObject({ section: 'developer', tab: 'identity' });
+    expect(searchSettings(index, 'Recipe').find((hit) => hit.cardId === 'st-card-recipes-library'))
+      .toMatchObject({ section: 'ai', tab: 'recipes' });
+  });
+
   it('assigns every search-entry card to the tab that mounts it', () => {
     const searchEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'search');
     expect(searchEntries.length).toBeGreaterThan(0);
@@ -1371,18 +1439,17 @@ describe('settings search index', () => {
       .toEqual({ status: 'ok', section: 'connection-services', cardId: 'st-card-conn-external', tab: 'web' });
   });
 
-  it('assigns every sessions-entry card to the tab that mounts it', () => {
+  it('keeps Sessions one page: no sessions card names a tab', () => {
     const sessionsEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'sessions');
+    expect(sessionsEntries.length).toBeGreaterThan(0);
     for (const entry of sessionsEntries) {
-      expect(entry.tab, entry.cardId).toBeDefined();
-      expect(entry.tab).toBe(sessionsTabForCard(entry.cardId));
+      expect(entry.tab, entry.cardId).toBeUndefined();
+      expect(settingsTabForCard(entry.cardId), entry.cardId).toBeUndefined();
     }
-    for (const tab of SESSIONS_SETTINGS_TABS) {
-      expect(sessionsEntries.some((entry) => entry.tab === tab), tab).toBe(true);
-    }
-    expect(resolveSettingsRoute('tasks', '')).toMatchObject({ section: 'sessions', tab: 'runtime' });
+    expect(experimentalTabForSection('sessions')).toBeUndefined();
+    expect(resolveSettingsRoute('tasks', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('sessions', '#st-card-import-history'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-import-history', tab: 'conversations' });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-import-history' });
   });
 
   it('assigns every connection-entry card to the tab that mounts it', () => {
@@ -1431,14 +1498,14 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places each of the 21 dedicated leaves once across the seven groups', () => {
+  it('places each of the 20 dedicated leaves once across the seven groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect(placed).toHaveLength(21);
-    expect(new Set(placed).size).toBe(21);
+    expect(placed).toHaveLength(20);
+    expect(new Set(placed).size).toBe(20);
     expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'recipes', 'agents']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
     expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
     expect(sectionsOf('rules')).toEqual(['permissions']);
@@ -1450,7 +1517,8 @@ describe('settings nav groups (IA purpose)', () => {
     expect(resolveSettingsRoute('skills', '')).toMatchObject({ section: 'extensions', tab: 'skills' });
     expect(resolveSettingsRoute('mcp', '')).toMatchObject({ section: 'extensions', tab: 'mcp' });
     expect(resolveSettingsRoute('plugins', '')).toMatchObject({ section: 'extensions', tab: 'plugins' });
-    expect(resolveSettingsRoute('identity', '')).toMatchObject({ section: 'ai', tab: 'identity' });
+    expect(resolveSettingsRoute('identity', '')).toMatchObject({ section: 'developer', tab: 'identity' });
+    expect(resolveSettingsRoute('recipes', '')).toMatchObject({ section: 'ai', tab: 'recipes' });
     expect(resolveSettingsRoute('subagents', '')).toMatchObject({ section: 'agents', tab: 'dispatch' });
     expect(resolveSettingsRoute('tasks', '')).toMatchObject({ section: 'sessions' });
     expect(resolveSettingsRoute('computer-control', '')).toMatchObject({ section: 'browser-control', tab: 'computer' });
@@ -1462,7 +1530,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
     expect(placed.at(-1)).toBe('developer');
-    for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
+    for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'recipes', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
   });
@@ -1531,14 +1599,14 @@ describe('installed-plugin settings pages', () => {
 });
 
 describe('Recipe library settings page', () => {
-  it('addresses one Recipe\'s own page inside the recipes section', () => {
+  it('addresses one Recipe\'s own page inside the Models page\'s Recipes tab', () => {
     // A copied link, a refresh, and the browser's back button all have to land
     // on the same package, so the id travels in the query of one section.
-    expect(recipeSettingsPath()).toBe('/settings/recipes');
-    expect(recipeSettingsPath('inst-clear-work')).toBe('/settings/recipes?recipe=inst-clear-work');
+    expect(recipeSettingsPath()).toBe('/settings/ai?tab=recipes');
+    expect(recipeSettingsPath('inst-clear-work')).toBe('/settings/ai?tab=recipes&recipe=inst-clear-work');
     expect(recipeSettingsPath('inst-clear-work', 'edit'))
-      .toBe('/settings/recipes?recipe=inst-clear-work&view=edit');
-    expect(resolveSettingsRoute('recipes', '')).toMatchObject({ status: 'ok', section: 'recipes' });
+      .toBe('/settings/ai?tab=recipes&recipe=inst-clear-work&view=edit');
+    expect(resolveSettingsRoute('recipes', '')).toMatchObject({ status: 'ok', section: 'ai', tab: 'recipes' });
     expect(recipeSettingsIdFromQuery('?recipe=inst-clear-work')).toBe('inst-clear-work');
   });
 
@@ -1682,8 +1750,9 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
     expect(resolveSettingsRoute('providers', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
+    // Request identity moved on to Developer & labs; its old anchor follows it.
     expect(resolveSettingsRoute('models', '#st-card-request-identity'))
-      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-request-identity', tab: 'identity' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-request-identity', tab: 'identity' });
     expect(resolveSettingsRoute('models', '#st-card-thinking'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-thinking', tab: 'defaults' });
     expect(resolveSettingsRoute('providers', '#st-card-auth'))
@@ -1692,12 +1761,12 @@ describe('settings route resolver', () => {
 
   it('redirects the retired experimental page and keeps feature card owners precise', () => {
     expect(resolveSettingsRoute('experimental', ''))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: 'overview' });
     expect(resolveSettingsRoute('experimental', '#st-card-experimental'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: 'overview' });
     // A retired multi-flag card lands on the Labs index; a single-flag card on its row's page.
     expect(resolveSettingsRoute('agents', '#st-card-tool-experiments'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: 'overview' });
     for (const [card, section] of [
       ['st-card-agent-profile-routes', 'agents'],
       ['st-card-mcp-delegation', 'extensions'],
@@ -1706,7 +1775,7 @@ describe('settings route resolver', () => {
       ['st-card-performance-storage', 'developer'],
     ] as const) {
       expect(resolveSettingsRoute('labs', `#${card}`), card)
-        .toEqual({ status: 'ok', section, cardId: `st-card-exp-${section}`, tab: section === 'sessions' ? 'runtime' : undefined });
+        .toEqual({ status: 'ok', section, cardId: `st-card-exp-${section}`, tab: section === 'developer' ? 'overview' : undefined });
     }
     // New row anchors on tabbed pages switch to the tab that mounts them.
     expect(resolveSettingsRoute('search', '#st-card-exp-search'))
@@ -1716,31 +1785,32 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('browser-control', '#st-card-exp-browser-control'))
       .toEqual({ status: 'ok', section: 'browser-control', cardId: 'st-card-exp-browser-control', tab: 'browser' });
     expect(resolveSettingsRoute('general', '#st-card-defaults'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: 'behavior' });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults' });
   });
 
   it('redirects the leaves retired by IA v2 to their new owners', () => {
     expect(resolveSettingsRoute('advanced', '')).toEqual({ status: 'ok', section: 'developer', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('advanced', '#st-card-advanced'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-advanced', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-advanced', tab: 'overview' });
     expect(resolveSettingsRoute('automation', '')).toEqual({ status: 'ok', section: 'permissions', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('automation', '#st-card-hooks'))
       .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
-    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'behavior' });
+    // Its two switches are agent-to-agent messages, on Agents › Dispatch now.
+    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'agents', cardId: undefined, tab: 'dispatch' });
     expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-token-counting', tab: 'defaults' });
     // Cards the Developer page used to hold land on their owning pages.
     expect(resolveSettingsRoute('advanced', '#st-card-retry'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-retry', tab: 'defaults' });
     expect(resolveSettingsRoute('advanced', '#st-card-resource-limits'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: 'engine' });
     expect(resolveSettingsRoute('advanced', '#st-card-session-residency'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-residency', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-session-residency', tab: 'engine' });
     expect(resolveSettingsRoute('developer', '#st-card-memory-advisor-tuning'))
       .toEqual({ status: 'ok', section: 'memory', cardId: 'st-card-memory-advisor', tab: undefined });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
-        .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
+        .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
     }
     // Permission defaults and the reviewer left the Models & providers tab.
     expect(resolveSettingsRoute('ai', '#st-card-permission-defaults'))
@@ -1748,7 +1818,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('ai', '#st-card-reviewer'))
       .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-reviewer', tab: undefined });
     expect(resolveSettingsRoute('general', '#st-card-session-title'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title', tab: 'conversations' });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title' });
   });
 
   it('follows a card hash whose content moved to another section', () => {
@@ -1784,25 +1854,27 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
     expect(resolveSettingsRoute('subagents', '#st-card-subagent-timeout'))
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
+    // The AgentList return fields are an engine parameter now.
     expect(resolveSettingsRoute('agents', '#st-card-subagent-agent-list-fields'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-agent-list-fields', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-subagent-agent-list-fields', tab: 'engine' });
   });
 
   it('redirects the retired runtime page to sessions and keeps dissolved card links precise', () => {
     expect(resolveSettingsRoute('runtime', ''))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
+    // The task policy card is an engine parameter; its old anchors follow it.
     expect(resolveSettingsRoute('runtime', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-task-policy', tab: 'engine' });
     expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-task-policy', tab: 'engine' });
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: 'overview' });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: 'engine' });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: 'profiles' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-agent-runtime', tab: 'engine' });
   });
 
   it('flags genuinely unknown sections instead of silently falling back to general', () => {
@@ -1814,7 +1886,8 @@ describe('settings route resolver', () => {
   it('knows the canonical owner of every indexed card', () => {
     expect(settingsSectionForCard('st-card-mcp')).toBe('extensions');
     expect(settingsSectionForCard('st-card-language')).toBe('general');
-    expect(settingsSectionForCard('st-card-task-policy')).toBe('sessions');
+    expect(settingsSectionForCard('st-card-task-policy')).toBe('developer');
+    expect(settingsSectionForCard('st-card-background-work')).toBe('sessions');
     // Dissolved cards leave the spec to their LEGACY_CARD_ALIASES entry.
     expect(settingsSectionForCard('st-card-sidecar')).toBeUndefined();
     expect(settingsSectionForCard('st-card-runtime')).toBeUndefined();

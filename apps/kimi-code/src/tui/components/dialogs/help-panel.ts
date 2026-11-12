@@ -56,7 +56,10 @@ const COMMAND_GROUPS: readonly { readonly title: string; readonly names: readonl
     title: 'Model & modes',
     names: ['model', 'effort', 'permission', 'yolo', 'auto', 'plan', 'agent', 'persona'],
   },
-  { title: 'Agents & tasks', names: ['agents', 'agent-transcript', 'tasks', 'goal', 'btw'] },
+  {
+    title: 'Agents & tasks',
+    names: ['stop', 'agents', 'agent-transcript', 'tasks', 'todos', 'goal', 'btw'],
+  },
   {
     title: 'Settings & integrations',
     names: [
@@ -73,7 +76,10 @@ const COMMAND_GROUPS: readonly { readonly title: string; readonly names: readonl
       'init',
     ],
   },
-  { title: 'App', names: ['status', 'usage', 'attach', 'copy', 'web', 'help', 'version', 'exit'] },
+  {
+    title: 'App',
+    names: ['status', 'usage', 'expand', 'attach', 'copy', 'web', 'help', 'version', 'exit'],
+  },
 ];
 const OTHER_GROUP = 'Other';
 const SKILLS_GROUP = 'Skills';

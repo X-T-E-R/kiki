@@ -13,17 +13,21 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import type { QuestionAnswer } from '@kiki/protocol';
+import type { PermissionMode, QuestionAnswer } from '@kiki/protocol';
 import type { ApprovalBlock, QuestionBlock } from '@kiki/session-core/session';
 
 import { useI18n } from '../i18n';
+import { matchesShortcutAction } from '../lib/shortcuts';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { Icon } from './icons';
-import { ApprovalCard, QuestionCard, type PlanReviewResponse } from './Interactions';
+import { ApprovalCard, ApprovalSubject, QuestionCard, type PlanReviewResponse } from './Interactions';
 import { LifeMark } from './LifeMark';
 
 type PendingItem = ApprovalBlock | QuestionBlock;
+
+/** How long a newly current approval ignores its approve/reject chords. */
+const APPROVAL_ARMING_MS = 700;
 
 export interface NeedsYouTrayHandle {
   /** Expand and focus one item (a transcript record's Review action). */
@@ -34,10 +38,10 @@ function itemId(item: PendingItem): string {
   return item.kind === 'approval' ? item.request.approval_id : item.request.question_id;
 }
 
-function itemSubject(item: PendingItem, fallback: string): string {
+function itemSubject(item: PendingItem, fallback: string): ReactNode {
   return item.kind === 'approval'
-    ? `${item.request.tool_name} · ${item.request.action}`
-    : (item.request.questions[0]?.question ?? fallback);
+    ? <ApprovalSubject request={item.request} />
+    : <span className="min-w-0 truncate">{item.request.questions[0]?.question ?? fallback}</span>;
 }
 
 /** Scrolls the transcript to an item's one-line record and flashes it. */
@@ -74,7 +78,11 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
    */
   readonly placement?: 'dock' | 'card';
   readonly footer?: ReactNode;
-}>(function NeedsYouTray({ items, agentNames, onResolveApproval, onAnswerQuestion, onDismissQuestion, onRequestBatchResolve, placement = 'dock', footer }, ref) {
+  /** The session's permission mode as the composer shows it (Auto is explained once). */
+  readonly permissionMode?: PermissionMode;
+  /** The composer's own mode change, so the explanation's "ask at every step" is the same write. */
+  readonly onChangePermissionMode?: (mode: PermissionMode) => void;
+}>(function NeedsYouTray({ items, agentNames, onResolveApproval, onAnswerQuestion, onDismissQuestion, onRequestBatchResolve, placement = 'dock', footer, permissionMode, onChangePermissionMode }, ref) {
   const { t, tp } = useI18n();
   const rootRef = useRef<HTMLElement>(null);
   // Questions the user put off: they drop to the collapsed rows until
@@ -119,24 +127,39 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
     },
   }), []);
 
-  // y/n decide the expanded approval from anywhere outside a text field (the
-  // session's own y/n resolver only sees cards inside the timeline, which now
-  // holds one-line records instead).
-  // SSH cards answer through their own form (and route); no global y/n.
+  // The approve/reject chords (y/n unless remapped in Settings) decide the
+  // expanded approval from anywhere outside a text field (the session's own
+  // resolver only sees cards inside the timeline, which now holds one-line
+  // records instead).
+  // SSH cards answer through their own form (and route); no global chord.
   const currentApprovalId = ordered[0]?.kind === 'approval' && ordered[0].request.ssh === undefined
     ? ordered[0].request.approval_id
     : undefined;
+  // When the approval in front changes, its chords stay disarmed for a moment.
+  // Sending a prompt hides the composer body and drops focus to <body>, so a
+  // user still typing a follow-up without looking is "outside a text field"
+  // when the card arrives: their next `y` or `n` must not decide a tool call
+  // they have not read. The same pause keeps a double-pressed `y` from also
+  // approving the approval that slides in behind the first.
+  const armedRef = useRef<{ readonly id: string; readonly armsAt: number } | null>(null);
   useEffect(() => {
     if (currentApprovalId === undefined) return;
+    if (armedRef.current?.id !== currentApprovalId) {
+      armedRef.current = { id: currentApprovalId, armsAt: Date.now() + APPROVAL_ARMING_MS };
+    }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'y' && event.key !== 'n') return;
-      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      if (event.repeat) return;
+      const decision = matchesShortcutAction(event, 'approve') ? 'approved'
+        : matchesShortcutAction(event, 'reject') ? 'rejected'
+          : null;
+      if (decision === null) return;
       const target = event.target as HTMLElement | null;
       if (target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
         || target.tagName === 'SELECT' || target.isContentEditable || target.closest('.xterm') !== null)) return;
       if (anyOverlayOpen()) return;
+      if (Date.now() < (armedRef.current?.armsAt ?? 0)) return;
       event.preventDefault();
-      void onResolveApproval(currentApprovalId, event.key === 'y' ? 'approved' : 'rejected').catch((error: unknown) => {
+      void onResolveApproval(currentApprovalId, decision).catch((error: unknown) => {
         pushToast({
           tone: 'error',
           text: t('sv.approvalShortcutFailed', { detail: error instanceof Error ? error.message : String(error) }),
@@ -162,12 +185,15 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   const currentId = itemId(current);
   const headAction =
     'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-11 font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
+  const askEveryStep = onChangePermissionMode === undefined ? undefined : () => { onChangePermissionMode('manual'); };
   const currentCard = current.kind === 'approval' ? (
     <ApprovalCard
       key={currentId}
       block={current}
       originAgentName={originName(current)}
       showShortcutHints
+      permissionMode={permissionMode}
+      onAskEveryStep={askEveryStep}
       onResolve={(decision, scope, selectedOptionId, review) =>
         onResolveApproval(currentId, decision, scope, selectedOptionId, review)
       }
@@ -228,7 +254,11 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
             </button>
           ) : null}
         </header>
-        <div data-tray-current={currentId} className="max-h-[min(44vh,400px)] overflow-y-auto px-3 pt-1 pb-2">
+        {/* Bounded by the visible height, not the layout height: with a phone
+            keyboard up (a reject note, an answer) `vh` still counts the
+            space behind the keyboard, and the card would push the session
+            off the top of what is left. */}
+        <div data-tray-current={currentId} className="max-h-[min(400px,calc(var(--kiki-visual-height,100vh)*0.44))] overflow-y-auto px-3 pt-1 pb-2">
           {currentCard}
         </div>
         {footer}
@@ -313,6 +343,8 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
               block={current}
               originAgentName={originName(current)}
               showShortcutHints
+              permissionMode={permissionMode}
+              onAskEveryStep={askEveryStep}
               onResolve={(decision, scope, selectedOptionId, review) =>
                 onResolveApproval(currentId, decision, scope, selectedOptionId, review)
               }
@@ -343,8 +375,8 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
                     <span className="shrink-0 text-[12px] font-medium text-ink-soft">
                       {item.kind === 'approval' ? t('pending.kind.approval') : t('pending.kind.question')}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-ink-faint">
-                      {origin !== undefined ? `${t('tray.from', { name: origin })} · ` : ''}
+                    <span className="flex min-w-0 flex-1 items-baseline text-ink-faint">
+                      {origin !== undefined ? <span className="shrink-0 whitespace-pre">{`${t('tray.from', { name: origin })} · `}</span> : null}
                       {itemSubject(item, t('ia.kikiAsks'))}
                     </span>
                     {later.has(id) ? <span className="shrink-0 text-[12px] text-ink-faint">{t('tray.later')}</span> : null}

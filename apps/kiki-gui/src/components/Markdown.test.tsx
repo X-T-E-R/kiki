@@ -542,7 +542,7 @@ describe('mobile reading & containment', () => {
   });
 
   it('collapses long code blocks with fade state and toggles aria-expanded cleanly', async () => {
-    const lines = Array.from({ length: 16 }, (_, index) => `const line_${index + 1} = ${index + 1};`).join('\n');
+    const lines = Array.from({ length: 46 }, (_, index) => `const line_${index + 1} = ${index + 1};`).join('\n');
     const probe = makeRoot();
     await renderSettled(probe.root, <Markdown mode="static" text={`\`\`\`ts\n${lines}\n\`\`\``} />);
     const block = probe.container.querySelector<HTMLElement>('.kiki-cb')!;
@@ -551,7 +551,7 @@ describe('mobile reading & containment', () => {
 
     expect(block.dataset['collapsed']).toBe('true');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.textContent).toContain('View more (4 lines)');
+    expect(toggle.textContent).toContain('View more (34 lines)');
     expect(body.style.maxHeight).not.toBe('');
 
     await act(async () => {

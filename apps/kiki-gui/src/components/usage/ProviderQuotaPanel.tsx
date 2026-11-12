@@ -16,7 +16,7 @@ import { SMALL_INPUT } from '../ui';
 import {
   arrangeQuotaSources, effectiveQuotaStatus, formatHarnessQuotaReading, formatWindowPeriod,
   groupHarnessQuotaReadings, HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaQueryKey, isSourceLocked,
-  isSourceRefreshable, mergeHarnessQuotaSnapshots, meterToneClass, meterUtilization, meterValue,
+  isSourceRefreshable, mergeHarnessQuotaSnapshots, meterUtilization, meterValue,
   normalizeQuotaSources, pluginQuotaNextExpiryMs, pluginQuotaSnapshotStatus, quotaEngineScopeOf,
   quotaLocalUsageHref, quotaSettingsHref, readCachedHarnessQuota, signedOutProviderIds, statusBadgeInfo,
   useProviderQuotas,
@@ -1080,12 +1080,9 @@ function PluginQuotaBucketRow({ reading, snapshotReadAt }: {
   const foldModels = models.length > 2;
   const distinctReadAt = reading.readAt !== undefined && reading.readAt !== snapshotReadAt ? reading.readAt : undefined;
   const barTone = val.kind === 'known' && val.remainingPercent !== undefined
-    ? val.remainingPercent === 0
-      ? 'bg-danger'
-      : val.remainingPercent <= 20
-        ? 'bg-amber-rule'
-        : 'bg-accent'
+    ? quotaBarTone(val.remainingPercent)
     : undefined;
+  const low = val.kind === 'known' && val.remainingPercent !== undefined && quotaIsLow(val.remainingPercent);
 
   return (
     <div
@@ -1164,6 +1161,7 @@ function PluginQuotaBucketRow({ reading, snapshotReadAt }: {
           />
         </div>
       ) : null}
+      {low ? <p data-quota-low className="text-[11px] font-medium text-attention">{t('usage.quota.low')}</p> : null}
     </div>
   );
 }
@@ -1259,13 +1257,26 @@ function OffQuotaRow({ source, href, onEnable }: {
   );
 }
 
+/**
+ * Quota bars are read, not acted on, so they are ink. Under a tenth left the
+ * bar takes the "needs you" colour and says so in words, since running out is
+ * the one thing here that will stop work.
+ */
+function quotaIsLow(remainingPercent: number): boolean {
+  return remainingPercent < 10;
+}
+
+function quotaBarTone(remainingPercent: number): string {
+  return quotaIsLow(remainingPercent) ? 'bg-attention' : 'bg-ink-soft';
+}
+
 function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaMeter; readonly sourceStatus: ProviderQuotaStatus }) {
   const { t, time } = useI18n();
   const periodLabel = meter.window?.label ?? formatWindowPeriod(meter.window?.duration_seconds);
   const status = meter.status ?? sourceStatus;
   const badge = statusBadgeInfo(status);
   const util = meterUtilization(meter);
-  const tone = util !== undefined ? meterToneClass(util) : 'bg-ink/[0.2] text-ink-faint';
+  const remainingPercent = util === undefined ? undefined : 100 - Math.min(100, Math.max(0, util));
   const reading = meterValue(meter);
   const valueText = reading.kind === 'unknown'
     ? t('usage.quota.status.unknown')
@@ -1293,10 +1304,13 @@ function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaM
           {resetTime ? <span className="text-[10.5px] text-ink-faint">{t('usage.quota.resets', { time: time.timeUntil(resetTime) })}</span> : null}
         </span>
       </div>
-      {util !== undefined ? (
+      {util !== undefined && remainingPercent !== undefined ? (
         <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-ink/[0.07]" data-quota-progress>
-          <div className={`h-full rounded-full transition-all duration-300 ${tone.split(' ')[0]}`} style={{ width: `${Math.min(100, Math.max(0, util))}%` }} />
+          <div className={`h-full rounded-full transition-all duration-300 ${quotaBarTone(remainingPercent)}`} style={{ width: `${Math.min(100, Math.max(0, util))}%` }} />
         </div>
+      ) : null}
+      {remainingPercent !== undefined && quotaIsLow(remainingPercent) ? (
+        <p data-quota-low className="text-[11px] font-medium text-attention">{t('usage.quota.low')}</p>
       ) : null}
       {meter.message ? <p className="text-[11px] text-danger">{meter.message}</p> : null}
     </div>

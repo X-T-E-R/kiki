@@ -392,22 +392,19 @@ class KikiWebActivity : ComponentActivity() {
             val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
             val density = resources.displayMetrics.density.coerceAtLeast(1f)
 
-            val topCssPx = (sysBars.top / density).toInt()
-            val bottomSysPx = (sysBars.bottom / density).toInt()
-            val leftCssPx = (sysBars.left / density).toInt()
-            val rightCssPx = (sysBars.right / density).toInt()
             val imeCssPx = ((ime.bottom - sysBars.bottom).coerceAtLeast(0) / density).toInt()
 
+            // The frame keeps the WebView clear of the system bars, cutout and
+            // keyboard, so the page never sits under any of them. The bar
+            // insets are therefore not published as `--kiki-safe-*`: the GUI
+            // pads by those variables (`--kiki-safe-top-inset`), and would add
+            // an empty band the height of each bar inside the WebView.
             rootFrame.setPadding(sysBars.left, sysBars.top, sysBars.right, maxOf(sysBars.bottom, ime.bottom))
 
             lastCssInsetsScript = """
                 (function() {
                   var r = document.documentElement;
                   if (!r) return;
-                  r.style.setProperty('--kiki-safe-top', '${topCssPx}px');
-                  r.style.setProperty('--kiki-safe-bottom', '${bottomSysPx}px');
-                  r.style.setProperty('--kiki-safe-left', '${leftCssPx}px');
-                  r.style.setProperty('--kiki-safe-right', '${rightCssPx}px');
                   r.style.setProperty('--kiki-ime-height', '${imeCssPx}px');
                 })();
             """.trimIndent()

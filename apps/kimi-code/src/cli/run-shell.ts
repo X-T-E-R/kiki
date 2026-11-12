@@ -1,11 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { clearLine, cursorTo } from 'node:readline';
 
 import { flushDiagnosticLogsSync, log } from '@kiki/node-sdk';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
+import { DAEMON_STARTING_MESSAGE } from '#/tui/constant/kimi-tui';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
+import { DISABLE_TERMINAL_FOCUS_REPORTING } from '#/tui/constant/terminal';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
 import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
 import { runWorkspaceTrustGate } from '#/tui/daemon/workspace-trust';
@@ -39,9 +42,18 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   const homeDir = resolveDaemonHome();
   if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
   const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-  const connection =
-    (await discoverDaemon(homeDir, workDir)) ??
-    (await ensureDaemon({ homeDir, workspacePath: workDir }));
+  let connection = await discoverDaemon(homeDir, workDir);
+  if (connection === null) {
+    // Spawning the daemon can take seconds; without this line the terminal
+    // stays blank. It is erased before the TUI draws its first frame.
+    process.stdout.write(`${' '.repeat(CHROME_GUTTER)}${DAEMON_STARTING_MESSAGE}`);
+    try {
+      connection = await ensureDaemon({ homeDir, workspacePath: workDir });
+    } finally {
+      clearLine(process.stdout, 0);
+      cursorTo(process.stdout, 0);
+    }
+  }
   startupTrace('daemon:connected');
   log.info('kiki starting', { version, uiMode: CLI_UI_MODE, nodeVersion: process.version, platform: `${process.platform}/${process.arch}`, workDir });
   const tui = new DaemonTUI(connection, {
@@ -95,6 +107,13 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
       /* ignore */
     }
     restoreTerminalModes();
+    // DaemonTUI turns on focus reporting; restoreTerminalModes() does not
+    // turn it off, and a shell left with it on prints `^[[I` on every focus change.
+    try {
+      process.stdout.write(DISABLE_TERMINAL_FOCUS_REPORTING);
+    } catch {
+      /* ignore — the terminal may already be gone */
+    }
     restoreStty();
     process.exit(exitCode);
   };

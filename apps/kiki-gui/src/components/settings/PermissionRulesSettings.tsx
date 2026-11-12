@@ -11,6 +11,7 @@ import { Icon } from '../icons';
 import { InlineEditor } from '../InlineEditor';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { AdvancedDetails } from './fields';
 import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec } from './list';
 import { FieldIssue, FORM_LABEL, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
@@ -105,17 +106,15 @@ export function PermissionRulesSettings() {
     setFeedback(null);
   };
 
+  const addButton = <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data || editing !== null}
+    onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>;
+  // "Add rule" sits in one place: in the empty sentence while there are no
+  // rules, beside the title once there are some.
   return <SectionCard id="st-card-permission-rules" title={t('st.perm.rulesTitle')}
-    actions={<button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data || editing !== null}
-      onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>}>
+    actions={rules.length > 0 ? addButton : undefined}>
     <div className="space-y-3" data-permission-rules>
-      <Hint>{t('st.perm.rulesHint')}</Hint>
       {configQuery.isLoading ? <Hint>{t('st.perm.loading')}</Hint> : rules.length === 0
-        ? (editing === null ? (
-          <div className="py-2" data-list-empty="none">
-            <p className="text-[13px] text-ink-soft">{t('st.perm.rulesEmpty')}</p>
-          </div>
-        ) : null)
+        ? (editing === null ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} action={addButton} /> : null)
         : <>
           <ListToolbar view={view} total={ruleItems.length} filters={filters}
             searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')} />
@@ -167,6 +166,10 @@ export function PermissionRulesSettings() {
         onCancel={() => { setEditing(null); setFeedback(null); }} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       {editing === null ? <FeedbackLine feedback={feedback} /> : null}
+      {/* Precedence is background, not part of the choice (settings conventions §3). */}
+      <AdvancedDetails summary={t('st.advanced.disclosure')} data-permission-rules-advanced>
+        <Hint>{t('st.perm.rulesHint')}</Hint>
+      </AdvancedDetails>
     </div>
   </SectionCard>;
 }

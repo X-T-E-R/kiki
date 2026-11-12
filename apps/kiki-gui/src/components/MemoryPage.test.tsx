@@ -194,7 +194,7 @@ async function search(container: HTMLElement, value: string) {
 }
 
 async function toggleInactive(container: HTMLElement) {
-  await act(async () => { container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.click(); });
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-show-inactive]')!.click(); });
   await flush();
 }
 
@@ -244,7 +244,7 @@ describe('MemoryPage filters', () => {
     expect(container.querySelector('[data-memory-empty]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-memory-search]')!.value).toBe('');
     expect(container.querySelector('[data-memory-type-filter="all"]')!.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.checked).toBe(false);
+    expect(container.querySelector('[data-memory-show-inactive]')!.getAttribute('aria-pressed')).toBe('false');
     expect(rowIds(container)).toEqual(entries.filter((entry) => entry.status === 'active').map((entry) => entry.id).sort());
   });
 });
@@ -295,20 +295,14 @@ describe('MemoryPage advisor switch', () => {
     advisor_status: { state: mode === 'off' ? 'off' as const : 'ready' as const, consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
   });
 
-  it('turns the advisor off from the header without touching the memory switch', async () => {
+  it('names the advisor model in the status line and leaves the advisor switch to Settings', async () => {
     seedMemories({ 'global::': [fixtureEntry({ id: 'm_global' })] });
     vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue(advisorRead('rank'));
-    const patch = vi.spyOn(client, 'patchMemoryAdvisorSettings').mockImplementation(async () => advisorRead('off'));
-    const memoryPatch = vi.spyOn(client, 'patchMemorySettings');
     const container = await renderPage('/memory');
-    const header = container.querySelector('[data-memory-advisor-header]')!;
-    expect(header.querySelector('[data-memory-advisor-state]')?.textContent).toBe('Ready');
-    await act(async () => { header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
-    await flush();
-    expect(patch).toHaveBeenCalledWith({ advisor: { mode: 'off' } }, undefined);
-    expect(memoryPatch).not.toHaveBeenCalled();
-    expect(header.querySelector('[data-memory-advisor-state]')?.textContent).toBe('Off');
-    // Memory itself stays on and the entries stay listed.
+    expect(container.querySelector('[data-memory-status-sentence]')?.textContent).toContain('cheap-judge');
+    // The switch is a default: it lives in Settings › Memory, not on this page.
+    expect(container.querySelector('[data-memory-advisor-switch]')).toBeNull();
+    expect(container.querySelector('[data-memory-advisor-state]')).toBeNull();
     expect(rowIds(container)).toEqual(['m_global']);
   });
 
@@ -327,7 +321,7 @@ describe('MemoryPage advisor switch', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-enable]')!.click(); });
     await flush();
     expect(advisorReads.mock.calls.length).toBeGreaterThan(1);
-    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+    expect(container.querySelector('[data-memory-status-sentence]')?.textContent).toContain('cheap-judge');
   });
 
   it('sends an advisor still waiting for a source straight to Who decides', async () => {
@@ -365,26 +359,14 @@ describe('MemoryPage advisor switch', () => {
         : read;
     });
     const container = await renderPage('/memory?workspace=wd_current', [workspace]);
-    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+    expect(container.querySelector('[data-memory-status-sentence]')?.textContent).toContain('cheap-judge');
     await click(container, '[data-memory-ws-option="false"]');
-    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Paused while memory is off');
+    expect(container.querySelector('[data-memory-advisor-state]')?.textContent).toContain('Paused while memory is off');
     await click(container, '[data-memory-ws-option="true"]');
-    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+    expect(container.querySelector('[data-memory-advisor-state]')).toBeNull();
+    expect(container.querySelector('[data-memory-status-sentence]')?.textContent).toContain('cheap-judge');
   });
 
-  it('shows a failed switch as a retryable toast and keeps the saved state', async () => {
-    seedMemories({ 'global::': [] });
-    vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue(advisorRead('rank'));
-    vi.spyOn(client, 'patchMemoryAdvisorSettings').mockRejectedValue(new Error('config is read-only'));
-    const container = await renderPage('/memory');
-    const header = container.querySelector('[data-memory-advisor-header]')!;
-    await act(async () => { header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
-    await flush();
-    const toast = getToasts().at(-1);
-    expect(toast?.text).toBe('Could not switch Memory Advisor: config is read-only');
-    expect(toast?.retry).toBeDefined();
-    expect(header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
-  });
 });
 
 describe('MemoryPage sources', () => {
@@ -984,7 +966,7 @@ describe('MemoryPage scope switcher', () => {
     expect(container.querySelector('[data-memory-editor]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-memory-search]')!.value).toBe('');
     expect(container.querySelector('[data-memory-type-filter="all"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.checked).toBe(false);
+    expect(container.querySelector('[data-memory-show-inactive]')!.getAttribute('aria-pressed')).toBe('false');
     await click(container, '[data-route-back]');
     expect(scopeKind(container)).toBe('workspace');
     expect(routeParams(container).get('workspace')).toBe(workspace.id);
@@ -1383,7 +1365,7 @@ describe('MemoryPage global switch', () => {
     expect(container.querySelector('[data-memory-intro]')).toBeNull();
     expect(container.querySelector('[data-memory-enable]')).toBeNull();
     // Header status node is present and does not duplicate the error string
-    const headerStatus = container.querySelector('header [data-memory-status]');
+    const headerStatus = container.querySelector('[data-memory-status]');
     expect(headerStatus).not.toBeNull();
     expect(headerStatus!.textContent).not.toContain('Network offline');
   });
@@ -1393,7 +1375,7 @@ describe('MemoryPage global switch', () => {
     vi.mocked(client.getMemorySettings).mockResolvedValueOnce(enabledSettings);
     const { container, queryClient } = await mountPage('/memory', []);
     // Initial mount succeeds with settings enabled and active view present
-    expect(container.querySelector('header [data-memory-status]')?.textContent).toContain('On');
+    expect(container.querySelector('[data-memory-status]')?.textContent).toContain('Memory is on');
     expect(container.querySelector('[data-memory-settings-error]')).toBeNull();
 
     // Background refetch rejects: query has cached data so body stays intact, error reports in header
@@ -1406,7 +1388,7 @@ describe('MemoryPage global switch', () => {
     // Body still renders cached content without settings error block
     expect(container.querySelector('[data-memory-settings-error]')).toBeNull();
     // Header status node provides the single failure feedback
-    const headerStatus = container.querySelector('header [data-memory-status]');
+    const headerStatus = container.querySelector('[data-memory-status]');
     expect(headerStatus).not.toBeNull();
     expect(headerStatus!.textContent).toContain('Background sync failed');
     // Whole page has only one error notification in header, no second error in body
@@ -1665,7 +1647,7 @@ describe('memory S4 logic contracts', () => {
     seedMemories({ 'global::': [fixtureEntry({ id: 'm_located', body: 'Global copy.' })], 'workspace:wd_current:': [fixtureEntry({ id: 'm_located', status: 'archived', body: 'Workspace archive.' })] });
     const container = await renderPage('/memory?workspace=wd_current&entry=m_located&inactive=true', [workspace]);
     expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Workspace archive.');
-    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')?.checked).toBe(true);
+    expect(container.querySelector('[data-memory-show-inactive]')?.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('opens persona-workspace detail with the ID from View', async () => {
@@ -1940,7 +1922,7 @@ it('MemoryPage continuation refuses to approve a newer full proposal fetched fro
   expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(1);
 });
 
-it('MemoryPage M1 layout places status in header, keeps fixed split columns with empty detail placeholder, and uses amber for incomplete coverage without read error', async () => {
+it('MemoryPage M1 layout places status under the header, keeps fixed split columns with empty detail placeholder, and uses amber for incomplete coverage without read error', async () => {
   const entry = fixtureEntry({ id: 'm_layout' });
   seedMemories({ 'global::': [entry] });
   vi.mocked(client.listMemory).mockResolvedValue({
@@ -1949,9 +1931,11 @@ it('MemoryPage M1 layout places status in header, keeps fixed split columns with
     coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: true, complete: false, warnings: ['1 memory records were skipped'] },
   });
   const container = await renderPage('/memory');
-  const headerStatus = container.querySelector('header [data-memory-status]');
-  expect(headerStatus?.textContent).toContain('On');
+  const headerStatus = container.querySelector('[data-memory-status]');
+  // The state reads as a sentence under the header, with the way to change it.
+  expect(headerStatus?.textContent).toContain('Memory is on');
   expect(headerStatus?.textContent).toContain('Memory settings');
+  expect(container.querySelector('header [data-memory-status]')).toBeNull();
   const grid = container.querySelector('[data-memory-list-detail]')!;
   expect(grid.className).toContain('lg:grid-cols-[340px_minmax(0,1fr)]');
   expect(container.querySelector('[data-memory-detail-empty]')?.textContent).toContain('Select a memory on the left to inspect its details and history.');

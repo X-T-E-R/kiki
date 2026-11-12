@@ -24,6 +24,7 @@ import {
 } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
+import { isImeKeyEvent } from '../lib/shortcuts';
 import { pushToast } from '../lib/toasts';
 import { useMemoryAdvisor } from './memory/useMemoryAdvisor';
 import { useSessionSearch } from '../lib/sessionSearch';
@@ -153,6 +154,8 @@ export function QuickSwitcher({
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {
+    // Enter and the arrows belong to an open IME candidate window.
+    if (isImeKeyEvent(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex((index) => (items.length === 0 ? 0 : (index + 1) % items.length));

@@ -124,10 +124,16 @@ export function SettingField({
   const helpNode = help !== undefined && help !== null ? <Hint>{help}</Hint> : null;
 
   // Row: label and its help on the left, control on the right edge. Below
-  // `sm` the control drops under the text so nothing is squeezed.
+  // `sm` the control drops under the text so nothing is squeezed — except in
+  // phone mode, where the row wraps instead (conventions §2, "Phone rows"): the
+  // text keeps at least 10rem, so a switch or a short number field (with its
+  // "Saving…" beside it) stays on the right like on a desktop, and only a
+  // control too wide to sit beside that (a long picker, a four-way segmented
+  // choice) wraps under the label, where `justify-between` starts it at the
+  // left edge.
   return layout === 'row' ? (
-    <div className="flex flex-col gap-2 py-1 sm:flex-row sm:items-start sm:justify-between sm:gap-6" data-settings-field>
-      <div className="min-w-0 space-y-0.5 sm:pt-1.5 sm:leading-5">{headingNode}{helpNode}</div>
+    <div className="flex flex-col gap-2 py-1 phone:flex-row phone:flex-wrap phone:items-start phone:justify-between phone:gap-x-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6" data-settings-field>
+      <div className="min-w-0 space-y-0.5 phone:flex-[1_1_10rem] phone:pt-1.5 phone:leading-5 sm:pt-1.5 sm:leading-5">{headingNode}{helpNode}</div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
     </div>
   ) : (

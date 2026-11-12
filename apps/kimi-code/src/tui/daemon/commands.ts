@@ -4,6 +4,9 @@ import type { SlashAutocompleteCommand } from '#/tui/components/editor/file-ment
 
 export type DaemonCommandName =
   | 'exit'
+  | 'stop'
+  | 'expand'
+  | 'todos'
   | 'sessions'
   | 'new'
   | 'agent'
@@ -90,6 +93,11 @@ const EXPORT_VIEW_DESCRIPTION = 'Export loaded user and assistant text as Markdo
 
 const SUPPORTED_COMMANDS = [
   command('exit', ['quit', 'q'], 'Exit the application', 'none'),
+  // Keyboard-free equivalents of Esc, Ctrl+O and Ctrl+T, for phone keyboards
+  // and terminals without Esc or Ctrl keys.
+  command('stop', ['interrupt'], 'Interrupt the running turn (same as Esc)', 'none'),
+  command('expand', ['output'], 'Expand or collapse tool output (same as Ctrl+O)', 'none'),
+  command('todos', [], 'Expand or collapse a truncated todo list (same as Ctrl+T)', 'none'),
   command('sessions', ['resume'], 'Browse and resume sessions', 'none'),
   command('new', ['clear'], 'Start a fresh session in the current workspace', 'none'),
   command('agent', [], 'Select the agent profile for new sessions', 'optional-one', '[name]'),

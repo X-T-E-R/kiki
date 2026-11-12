@@ -55,7 +55,7 @@ Two more ship as templates, because most work divides into the same two shapes:
 - **`implementer`** owns one technical objective end to end — investigate, implement when authorized, verify, and hand off with evidence. It may use `explore` for read-only groundwork but keeps the final engineering judgment.
 - **`reviewer`** judges a decision, a candidate, or a repair independently and read-only, reporting findings without changing the work. Its tools are restricted so it cannot edit or dispatch.
 
-Both templates set `model_alias: inherit`, so the role follows whatever model dispatched it unless you pin one. You can add them from first-run setup, the `/kiki-profile` skill, or **Settings → Agents**.
+Both templates set `model_alias: inherit`, so the role follows whatever model dispatched it unless you pin one. You can ask for one in a conversation, use the `/kiki-profile` skill, or add them in **Settings → Agents**.
 
 Editing one opens its own page. The form covers the fields that matter — the instructions it starts from, the description the dispatcher reads, when to use it, model, effort, engine, whether it can drive a session, and which child agents it may create — with a **Raw file** tab beside it when you would rather read or write the Markdown directly.
 

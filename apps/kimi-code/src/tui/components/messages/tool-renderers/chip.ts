@@ -44,16 +44,44 @@ export interface WriteStats {
   readonly lines: number;
 }
 
+export interface EditHunk {
+  readonly oldText: string;
+  readonly newText: string;
+}
+
+function editHunk(args: Record<string, unknown>): EditHunk | undefined {
+  const oldText = strArg(args, 'old_string');
+  const newText = strArg(args, 'new_string');
+  return oldText.length === 0 && newText.length === 0 ? undefined : { oldText, newText };
+}
+
+/**
+ * The replacements an Edit call carries: one for the `old_string` /
+ * `new_string` form, one per entry for the `edits` form, in order.
+ */
+export function editHunks(args: Record<string, unknown>): EditHunk[] {
+  const edits = args['edits'];
+  if (!Array.isArray(edits)) {
+    const single = editHunk(args);
+    return single === undefined ? [] : [single];
+  }
+  const hunks: EditHunk[] = [];
+  for (const edit of edits) {
+    if (typeof edit !== 'object' || edit === null || Array.isArray(edit)) continue;
+    const hunk = editHunk(edit as Record<string, unknown>);
+    if (hunk !== undefined) hunks.push(hunk);
+  }
+  return hunks;
+}
+
 export function computeEditStats(args: Record<string, unknown>): EditStats {
-  const oldStr = strArg(args, 'old_string');
-  const newStr = strArg(args, 'new_string');
-  if (oldStr.length === 0 && newStr.length === 0) return { added: 0, removed: 0 };
-  const diff = computeDiffLines(oldStr, newStr);
   let added = 0;
   let removed = 0;
-  for (const line of diff) {
-    if (line.kind === 'add') added++;
-    else if (line.kind === 'delete') removed++;
+  for (const hunk of editHunks(args)) {
+    for (const line of computeDiffLines(hunk.oldText, hunk.newText)) {
+      if (line.kind === 'add') added++;
+      else if (line.kind === 'delete') removed++;
+    }
   }
   return { added, removed };
 }

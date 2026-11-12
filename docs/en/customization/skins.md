@@ -23,7 +23,7 @@ Settings → Appearance:
 - **Accent, fonts, radius, density**: override these on top of the skin you picked. Every change applies as you make it, and **Restore defaults** undoes all of them at once, with an undo.
 - **Export as skin file**: writes everything you currently see as a `.json` skin file. Put it in your themes folder or share it.
 
-On the first page of the [welcome setup](../getting-started/first-launch.md#connect-a-model), open **Appearance** for the same light / dark choice, built-in palettes, and an optional background picture.
+[First run](../getting-started/first-launch.md#connect-a-model) does not ask about appearance: until you choose here, the GUI follows your system's light or dark setting.
 
 ## Background picture or video
 

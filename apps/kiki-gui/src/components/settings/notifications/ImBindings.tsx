@@ -20,6 +20,7 @@ import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import { copyTextToClipboard } from '../../../lib/clipboard';
 import { pushUndoToast } from '../../../lib/toasts';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
@@ -231,6 +232,7 @@ function GroupBindingOptions({
               if (list.join(',') !== (prefixes ?? []).join(',')) onPrefixes(list);
             }}
             onKeyDown={(e) => {
+              if (isImeKeyEvent(e)) return;
               if (e.key === 'Enter') {
                 e.currentTarget.blur();
               }
@@ -312,6 +314,7 @@ function GroupBindingOptions({
                 data-im-sender-input={prefix}
                 onChange={(event) => { setSenderDraft(event.target.value); }}
                 onKeyDown={(event) => {
+                  if (isImeKeyEvent(event)) return;
                   if (event.key === 'Enter') {
                     event.preventDefault();
                     commitDraftSenders();

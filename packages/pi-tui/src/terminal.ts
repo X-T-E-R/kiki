@@ -101,7 +101,11 @@ export interface Terminal {
 	setProgress(active: boolean): void;
 }
 
-const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
+// Kiki divergence (upstream: 10). A local session whose SSH_* variables were
+// dropped (e.g. after `sudo -i`) still sits behind a network link; at 10ms an
+// arrow key split into `ESC` + `[A` reaches the app as Escape (which interrupts
+// a running turn) plus literal `[A`. 30ms is still imperceptible as Esc latency.
+const DEFAULT_ESCAPE_TIMEOUT_MS = 30;
 const DEFAULT_SSH_ESCAPE_TIMEOUT_MS = 100;
 
 /**

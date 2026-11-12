@@ -20,7 +20,7 @@ import {
 import type { ShortcutAction } from '@kiki/session-core/settings/shortcuts';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { browserOwnsChord, chordKeys, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
+import { browserOwnsChord, chordKeys, chordText, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Dialog } from './Dialog';
 
@@ -71,7 +71,7 @@ export function shortcutsGroups(
     ...rows('shortcuts-help'),
   ];
   if (desktop) {
-    globalRows.push({ keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' });
+    globalRows.push({ keys: chordKeys({ key: 'k', modifier: 'ctrl', shift: true, alt: false }, current.platform), labelKey: 'shortcuts.showHide' });
   }
   const groups: ShortcutGroup[] = [
     { titleKey: 'shortcuts.group.global', rows: globalRows },
@@ -83,6 +83,8 @@ export function shortcutsGroups(
         // Esc is layered, highest priority first: an open dialog or menu
         // swallows it, an open terminal panel is next, and only otherwise
         // does it abort the running turn (SessionView wires that order).
+        // A text field keeps Esc for itself — the composer included, so a
+        // reflexive Esc while typing never stops the reply being written.
         { keys: ['Esc'], labelKey: 'shortcuts.escOverlay' },
         { keys: ['Esc'], labelKey: 'shortcuts.escTerminal' },
         { keys: ['Esc'], labelKey: 'shortcuts.escAbort' },
@@ -172,7 +174,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline pt-2 text-[10.5px] text-ink-faint">
         <span>{current.bindings.shortcuts[0] === undefined
           ? t('shortcuts.hintNoChord')
-          : t('shortcuts.hintChord', { keys: chordKeys(current.bindings.shortcuts[0], current.platform).join('+') })}</span>
+          : t('shortcuts.hintChord', { keys: chordText(current.bindings.shortcuts[0], current.platform) })}</span>
         <button
           type="button"
           data-shortcuts-customize

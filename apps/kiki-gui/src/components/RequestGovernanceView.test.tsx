@@ -100,21 +100,25 @@ async function settle(render: () => void, ms = 10) {
 }
 
 describe('live request governance', () => {
-  it('shows a compact live summary above editable rules and keeps request details available', async () => {
+  it('reports the rules in one line under the live summary and opens the editor only on request', async () => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
-    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    connection.client.getRequestGovernance.mockResolvedValue({ ...snapshot, rules: [RULE, { ...RULE, id: 'paused-cap', enabled: false }] });
     const { container, render } = mount('realtime');
     await settle(render);
     const live = container.querySelector<HTMLElement>('[data-governance-live]')!;
-    const rules = container.querySelector('[data-governance-rules]')!;
+    const summary = container.querySelector<HTMLElement>('[data-governance-rules-summary]')!;
     // The live detail is a section on the page, not a collapsible card: the
     // request table is what this tab is for, so it is always shown.
-    expect(live.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(live.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    expect(rules.textContent).toContain('Concurrency limits');
     expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
+    // Only the rules in force count; the editor stays folded.
+    expect(summary.textContent).toContain('Limited by 1 concurrency rule');
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-manage]')!.click(); });
+    expect(container.querySelector('[data-governance-rules]')?.textContent).toContain('Concurrency limits');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
     expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
   });
@@ -188,7 +192,7 @@ describe('live request governance', () => {
     await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
-    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toContain('3 · +2');
+    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toBe(locale === 'zh' ? '2 排队 ◦' : '2 queued ◦');
     const staleLines = container.querySelectorAll('[data-governance-stale]');
     expect(staleLines).toHaveLength(1);
     expect(staleLines[0]?.textContent).toContain(locale === 'zh'
@@ -214,7 +218,7 @@ describe('live request governance', () => {
     expect(container.querySelector('[data-governance-dimensions]')?.textContent).toContain('Subagents');
   });
 
-  it('hides RequestGovernanceBadge when unavailable or idle and shows it when active or stale', async () => {
+  it('shows RequestGovernanceBadge only while something is queued', async () => {
     vi.useFakeTimers();
     connection.wsStatus = 'open';
     connection.client.getRequestGovernance.mockRejectedValueOnce(new Error('unavailable'));
@@ -231,13 +235,22 @@ describe('live request governance', () => {
     await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
     expect(container.querySelector('[data-request-governance-badge]')).toBeNull();
 
+    // Running alone needs nothing from the reader: no badge.
     connection.client.getRequestGovernance.mockResolvedValueOnce({
       ...snapshot,
       active: 2,
       queued: 0,
     });
     await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
-    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toBe('2');
+    expect(container.querySelector('[data-request-governance-badge]')).toBeNull();
+
+    connection.client.getRequestGovernance.mockResolvedValueOnce({
+      ...snapshot,
+      active: 2,
+      queued: 1,
+    });
+    await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
+    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toMatch(/^1 (queued|排队)$/);
   });
 });
 
@@ -660,16 +673,25 @@ describe('limit rules editor', () => {
       overflow: 'queue' as const,
       enabled: true,
     };
+    // The resource filter is a list tool: it appears only once the list is
+    // long (8 rules) and holds both kinds.
+    const moreModelRules = Array.from({ length: 6 }, (_, index) => ({ ...RULE, id: `model-cap-${index}` }));
+    connection.client.getRequestGovernance.mockResolvedValueOnce({ ...snapshot, rules: [RULE, agentRule] });
+    const short = mount('limits');
+    await settle(short.render);
+    expect(short.container.querySelector('[data-axis-select]')).toBeNull();
+    expect(short.container.querySelectorAll('[data-governance-rule]')).toHaveLength(2);
+
     connection.client.getRequestGovernance.mockResolvedValue({
       ...snapshot,
-      rules: [RULE, agentRule],
+      rules: [RULE, agentRule, ...moreModelRules],
     });
 
     const { container, render } = mount('limits');
     await settle(render);
 
-    // Initial shows all 2 rules
-    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(2);
+    // Initial shows all 8 rules
+    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(8);
 
     // Filter by agent_execution: the resource choice lives in the quiet
     // select above the list (the wrapper carries the current value).
@@ -689,7 +711,7 @@ describe('limit rules editor', () => {
 
     // Filter by model_request
     await pick('model_request');
-    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(7);
     expect(container.querySelector('[data-governance-rule="provider-cap"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rule="agent-cap"]')).toBeNull();
   });

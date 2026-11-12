@@ -484,6 +484,26 @@ describe('transcript authority projection', () => {
     expect(completed.abortablePromptId).toBeUndefined();
   });
 
+  it('keeps task and failed-turn identity across publishes that do not change them', () => {
+    const shell = { taskId: 'task-shell', kind: 'shell' as const, state: 'running' as const, detached: false, outputTail: 'line 1', startedAt: FIXED_AT };
+    const agent = { taskId: 'task-agent', kind: 'subagent' as const, state: 'running' as const, detached: false, outputTail: '', agentId: CHILD_AGENT_ID, startedAt: FIXED_AT };
+    const failed = { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'failed' as const, origin: { kind: 'user' as const }, steps: [] };
+    const streaming = (text: string) => emptySnapshot({ tasks: [shell, agent], items: [failed, { kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' },
+      steps: [{ kind: 'step', stepId: 's1', turnId: 't2', ordinal: 0, state: 'running', frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text }] }] }] });
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', streaming('Hel'));
+    const second = projectAgentTranscriptView(first, 'main', streaming('Hello'));
+    expect(second.blocks).not.toBe(first.blocks);
+    expect(second.tasks).toBe(first.tasks);
+    expect(second.failedTurnIds).toBe(first.failedTurnIds);
+    const progressed = projectAgentTranscriptView(second, 'main', { ...streaming('Hello'), tasks: [{ ...shell, outputTail: 'line 2' }, agent] });
+    expect(progressed.tasks).not.toBe(second.tasks);
+    expect(progressed.tasks[0]).toMatchObject({ id: 'task-shell', output_preview: 'line 2' });
+    expect(progressed.tasks[1]).toBe(second.tasks[1]);
+    expect(progressed.failedTurnIds).toBe(second.failedTurnIds);
+    const idle = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot());
+    expect(projectAgentTranscriptView(idle, 'main', emptySnapshot()).tasks).toBe(idle.tasks);
+  });
+
   it('does not invent a binding for an unbound main or child with sparse transcript metadata', () => {
     for (const agentId of ['main', CHILD_AGENT_ID]) {
       const state = projectAgentTranscriptView(createViewState('session_test'), agentId, emptySnapshot());

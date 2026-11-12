@@ -21,17 +21,12 @@ export class FileEditService implements IFileEditService {
     try {
       const raw = await fs.readText(input.path, { errors: 'strict' });
       const model = new TextModel(raw);
-      const result = this.editor.apply(model, {
-        path: input.displayPath,
-        old_string: input.old_string,
-        new_string: input.new_string,
-        replace_all: input.replace_all,
-      });
+      const result = this.editor.apply(model, { path: input.displayPath, edits: input.edits });
       if (!result.ok) {
-        return { ok: false, error: result.error };
+        return { ok: false, error: result.error, editIndex: result.editIndex };
       }
       await fs.writeText(input.path, result.rawContent);
-      return { ok: true, count: result.count };
+      return { ok: true, replacements: result.replacements, changedLines: result.changedLines };
     } catch (error) {
       const code = (unwrapErrorCause(error) as { code?: unknown } | null)?.code;
       if (code === 'EISDIR') {

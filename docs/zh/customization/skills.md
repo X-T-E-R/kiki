@@ -116,7 +116,7 @@ extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 /skill:git-commits 修复登录接口的并发问题
 ```
 
-模型也可以根据 `description` 和 `whenToUse` 自动调用 Skill（除非 `disableModelInvocation` 为 `true` 或 `type` 为 `flow`）。Skill 之间可以嵌套调用，最多 3 层。
+模型也可以根据 `description` 和 `whenToUse` 自动调用 Skill（除非 `disableModelInvocation` 为 `true` 或 `type` 为 `flow`）。Skill 的指令可以让模型再加载另一个 Skill，每次加载都是一次独立的 `Skill` 调用。
 
 ## 完整示例
 

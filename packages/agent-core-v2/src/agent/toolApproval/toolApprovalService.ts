@@ -14,6 +14,7 @@ import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { sessionApprovalKey } from '#/agent/permissionPolicy/policies/session-approval-history';
 import { reviewPermission, type ReviewerVerdict } from './permissionReviewer';
 import type {
   ApprovalResponse,
@@ -236,7 +237,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     }
     const sessionApprovalRule =
       response.decision === 'approved' && response.scope === 'session'
-        ? name === 'Bash' ? context.execution.sessionApprovalRule : context.execution.approvalRule
+        ? sessionApprovalKey(context)
         : undefined;
     if (approvalService !== undefined) {
       void this.dispatcher.dispatch(

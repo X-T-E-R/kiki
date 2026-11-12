@@ -15,10 +15,10 @@ describe("resolveEscapeTimeoutMs", () => {
 	});
 
 	it("ignores invalid PI_TUI_ESC_TIMEOUT values", () => {
-		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "abc" }), 10);
-		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "0" }), 10);
-		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "-5" }), 10);
-		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "" }), 10);
+		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "abc" }), 30);
+		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "0" }), 30);
+		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "-5" }), 30);
+		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "" }), 30);
 	});
 
 	it("defaults to 100ms over SSH", () => {
@@ -26,8 +26,8 @@ describe("resolveEscapeTimeoutMs", () => {
 		assert.equal(resolveEscapeTimeoutMs({ SSH_TTY: "/dev/pts/1" }), 100);
 	});
 
-	it("defaults to 10ms otherwise", () => {
-		assert.equal(resolveEscapeTimeoutMs({}), 10);
+	it("defaults to 30ms otherwise", () => {
+		assert.equal(resolveEscapeTimeoutMs({}), 30);
 	});
 });
 

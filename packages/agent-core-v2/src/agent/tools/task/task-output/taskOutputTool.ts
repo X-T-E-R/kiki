@@ -1,6 +1,6 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesStringRuleSubject } from '#/tool/rule-match';
-import { type ExecutableToolResult, type ToolExecution } from '#/tool/toolContract';
+import { ToolAccesses, type ExecutableToolResult, type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentTaskService } from '#/agent/task/task';
@@ -42,6 +42,7 @@ export class TaskOutputTool implements ITaskOutputTool {
   resolveExecution(args: TaskOutputInput): ToolExecution {
     return {
       description: `Reading output of task ${args.task_id}`,
+      accesses: ToolAccesses.none(),
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.task_id),
       execute: () => this.execute(args),

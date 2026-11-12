@@ -345,17 +345,23 @@ describe('WriteTool', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rejects relative traversal writes before fs I/O', async () => {
+  it('treats a relative path outside the workspace exactly like its absolute form', async () => {
     const { tool, writeText } = makeTool(
       {},
       stubWorkspaceContext('/workspace/project'),
     );
 
-    const result = await execute(tool, { path: '../outside.txt', content: 'x' });
+    for (const [relative, absolute] of [['../outside.txt', '/workspace/outside.txt'], ['../.env', '/workspace/.env']] as const) {
+      const fromRelative = await tool.resolveExecution({ path: relative, content: 'x' });
+      const fromAbsolute = await tool.resolveExecution({ path: absolute, content: 'x' });
+      expect(fromRelative.isError ?? false).toBe(false);
+      expect((fromRelative as { accesses?: unknown }).accesses).toEqual((fromAbsolute as { accesses?: unknown }).accesses);
+      expect(fromRelative).toMatchObject({ approvalRule: (fromAbsolute as { approvalRule?: string }).approvalRule });
+    }
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('absolute path');
-    expect(writeText).not.toHaveBeenCalled();
+    const result = await execute(tool, { path: '../outside.txt', content: 'x' });
+    expect(result.isError).toBeUndefined();
+    expect(writeText).toHaveBeenCalledWith('/workspace/outside.txt', 'x');
   });
 
   it('declares sensitive file writes for permission evaluation before execution', async () => {

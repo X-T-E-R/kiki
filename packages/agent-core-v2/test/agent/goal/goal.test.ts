@@ -883,12 +883,16 @@ describe('AgentGoalService goal-start review', () => {
     await ctx?.dispose();
   });
 
-  function createGoalHookContext(display: ToolInputDisplay | undefined): ResolvedToolExecutionHookContext {
+  function createGoalHookContext(
+    display: ToolInputDisplay | undefined,
+    name = 'CreateGoal',
+    args: Record<string, unknown> = { objective: 'Ship feature X' },
+  ): ResolvedToolExecutionHookContext {
     const toolCall: ToolCall = {
       type: 'function',
       id: 'call_create_goal',
-      name: 'CreateGoal',
-      arguments: JSON.stringify({ objective: 'Ship feature X' }),
+      name,
+      arguments: JSON.stringify(args),
     };
     const execution: RunnableToolExecution = {
       description: 'Creating a goal',
@@ -901,7 +905,7 @@ describe('AgentGoalService goal-start review', () => {
       signal: new AbortController().signal,
       toolCall,
       toolCalls: [toolCall],
-      args: { objective: 'Ship feature X' },
+      args,
       execution,
     };
   }
@@ -923,6 +927,16 @@ describe('AgentGoalService goal-start review', () => {
     });
     expect(resolved).toBeUndefined();
     expect(ctx!.get(IAgentPermissionModeService).mode).toBe('yolo');
+  });
+
+  it('reviews a goal_start Goal create action like CreateGoal', async () => {
+    setup('manual');
+
+    await executorEvents.fireBeforeExecute(createGoalHookContext(goalStartDisplay, 'Goal', { action: 'create', objective: 'Ship feature X' }));
+
+    expect(approvalCalls.map((call) => call.origin)).toEqual(['goal-start-review-ask']);
+    approvalCalls[0]!.result.resolveApproval?.({ decision: 'approved', selectedLabel: 'auto' });
+    expect(ctx!.get(IAgentPermissionModeService).mode).toBe('auto');
   });
 
   it('does not review CreateGoal in auto mode', async () => {

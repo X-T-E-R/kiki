@@ -27,6 +27,8 @@ export function agentOutputSignature(blocks: readonly Block[]): string | undefin
   return undefined;
 }
 
+const LAST_RESPONSE_RESOLUTION_MS = 1000;
+
 /** Epoch ms of the newest agent output whose own timestamp is known. */
 function latestAgentTimestamp(blocks: readonly Block[]): number | undefined {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
@@ -71,7 +73,13 @@ export function useLastResponseAt(
     }
     if (signature !== undefined && signature !== seenRef.current) {
       seenRef.current = signature;
-      setAt(Date.now());
+      // The fingerprint moves on every streamed token frame, while the label
+      // this feeds reads in whole seconds. Advancing at most once per
+      // LAST_RESPONSE_RESOLUTION_MS keeps a steady stream from re-rendering
+      // the session view and the composer once more per frame.
+      const now = Date.now();
+      setAt((previous) =>
+        previous !== undefined && now >= previous && now - previous < LAST_RESPONSE_RESOLUTION_MS ? previous : now);
     }
     // blocks is read only on the rising edge; the signature carries changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps

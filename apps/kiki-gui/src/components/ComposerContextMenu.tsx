@@ -28,6 +28,7 @@ import { useI18n } from '../i18n';
 import { androidBridge, hasAndroidBridge } from '../lib/androidBridge';
 import { composerInputElement, type ComposerInputHandle } from '../lib/composerInput';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { isCoarsePointer } from '../lib/layoutHooks';
 import { runToastAction } from '../lib/toasts';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -255,6 +256,10 @@ export function useComposerContextMenu({
     // Without the clipboard API the native menu is the only working Paste —
     // let it through instead of showing a menu whose paste can do nothing.
     if (!clipboardOk) return;
+    // Touch reaches this through a long-press, where the platform's own
+    // selection handles and Cut/Copy/Paste bar are the editing surface; a
+    // pointer-anchored desktop menu in their place takes both away.
+    if (isCoarsePointer()) return;
     // The card's blank chrome routes here too; the menu always acts on the
     // textarea. Controls inside the card keep their own (native) menu.
     const el = textareaRef.current;

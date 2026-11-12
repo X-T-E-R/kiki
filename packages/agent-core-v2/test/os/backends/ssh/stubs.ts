@@ -6,7 +6,7 @@ import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IBashTool } from '#/agent/tools/os/bash/bash';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import { IReadTool } from '#/agent/tools/os/read/read';
@@ -34,7 +34,7 @@ export function sshTestTools(input: {
   workspace: ISessionWorkspaceContext;
   localFs: IHostFileSystem;
   catalog: ISessionSkillCatalog;
-  truncation: IAgentToolResultTruncationService;
+  toolRegistry: IAgentToolRegistryService;
   telemetry: ITelemetryService;
 }) {
   const disposables = new DisposableStore();
@@ -45,7 +45,7 @@ export function sshTestTools(input: {
       reg.defineInstance(ISessionWorkspaceContext, input.workspace);
       reg.defineInstance(IHostFileSystem, input.localFs);
       reg.defineInstance(ISessionSkillCatalog, input.catalog);
-      reg.defineInstance(IAgentToolResultTruncationService, input.truncation);
+      reg.defineInstance(IAgentToolRegistryService, input.toolRegistry);
       reg.defineInstance(ITelemetryService, input.telemetry);
       reg.definePartialInstance(ISessionContext, {});
       reg.defineInstance(IConfigService, createStubInstance(ConfigService));

@@ -91,7 +91,7 @@ export function SpaceSwitcher() {
   const pending = mode === 'switch' ? otherSpacesPending(statuses.data) : 0;
 
   const label = (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name);
-  const currentName = here === null ? t('st.spaces.main') : (here.name ?? items.find((item) => item.id === here.homeId)?.name ?? here.homeId);
+  const currentName = here === null ? t('st.spaces.main') : (here.name ?? items.find((item) => item.id === here.homeId)?.name ?? t('sidebar.space.unnamed'));
   const currentRemoteName = currentRemote?.label ?? t('sidebar.space.remoteKiki');
 
   const directoryRef = useRef(directoryClient);
@@ -246,7 +246,7 @@ export function SpaceSwitcher() {
                 {count > 0 && !current && mode === 'switch' ? (
                   <span className="shrink-0 rounded-full bg-attention-soft px-1.5 text-[11px] font-medium tabular-nums text-attention" aria-label={tp('st.spaces.pending', count)}>{count}</span>
                 ) : null}
-                {index < 9 && multi ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline">⌃⌥{index + 1}</kbd> : null}
+                {index < 9 && multi ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥{index + 1}</kbd> : null}
               </button>
             );
           })}
@@ -331,7 +331,7 @@ function RemoteSpaceRow({ record, current, shortcut, showShortcut, onEnter }: {
           </span>
         ) : null}
       </span>
-      {showShortcut ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline">⌃⌥{shortcut}</kbd> : null}
+      {showShortcut ? <kbd className="hidden shrink-0 font-mono text-[10.5px] text-ink-faint md:inline pointer-coarse:hidden">⌃⌥{shortcut}</kbd> : null}
     </button>
   );
 }

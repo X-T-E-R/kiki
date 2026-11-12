@@ -1,22 +1,78 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { clipboard } from './clipboard-native';
 import { writeClipboardOSC52 } from './clipboard-osc52';
 
-function runClipboardCommand(command: string, args: readonly string[], input: string): void {
-  const result = spawnSync(command, args, { encoding: 'utf8', input });
-  if (result.error) throw result.error;
-  if (result.status === 0) return;
+/** Upper bound for any clipboard helper (native call or child process). */
+const CLIPBOARD_TEXT_TIMEOUT_MS = 2000;
 
-  const detail = result.stderr.trim();
-  throw new Error(
-    detail.length > 0
-      ? `${command} exited with code ${String(result.status)}: ${detail}`
-      : `${command} exited with code ${String(result.status)}`,
-  );
+/** How the text was delivered: a verified local clipboard tool, an
+ *  unverified OSC 52 escape emitted to the terminal, or nothing worked. */
+export type ClipboardCopyMethod = 'native' | 'osc52';
+export type ClipboardCopyResult = ClipboardCopyMethod | 'failed';
+
+/**
+ * True inside an SSH session. The clipboard of this machine is then not the
+ * user's: writing it would put the text on the remote host, and reading it
+ * would paste the remote host's clipboard.
+ */
+export function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env['SSH_CONNECTION'] || env['SSH_TTY'] || env['SSH_CLIENT']);
 }
 
-async function copyWithPlatformCommand(text: string): Promise<void> {
+/** Resolves `fallback` when `promise` has not settled within `timeoutMs`. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
+/**
+ * Pipes `input` into a clipboard command. Resolves false on spawn failure,
+ * non-zero exit, or timeout (the child is killed). stdout/stderr are ignored:
+ * `xclip` forks a daemon that keeps inherited pipes open, which would stall
+ * a caller waiting for them to close.
+ */
+function pipeToCommand(command: string, args: readonly string[], input: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+    } catch {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, CLIPBOARD_TEXT_TIMEOUT_MS);
+    timer.unref?.();
+    child.on('error', () => finish(false));
+    child.on('exit', (code) => finish(code === 0));
+    child.stdin?.on('error', () => finish(false));
+    child.stdin?.end(input);
+  });
+}
+
+async function copyWithPlatformCommand(text: string): Promise<boolean> {
   const commands =
     process.platform === 'darwin'
       ? [{ command: 'pbcopy', args: [] as string[] }]
@@ -26,49 +82,57 @@ async function copyWithPlatformCommand(text: string): Promise<void> {
             { command: 'wl-copy', args: [] as string[] },
             { command: 'xclip', args: ['-selection', 'clipboard'] },
           ];
-
-  let lastError: unknown;
   for (const candidate of commands) {
-    try {
-      runClipboardCommand(candidate.command, candidate.args, text);
-      return;
-    } catch (error) {
-      lastError = error;
-    }
+    if (await pipeToCommand(candidate.command, candidate.args, text)) return true;
   }
-
-  if (lastError instanceof Error) throw lastError;
-  throw new Error('No clipboard command is available.');
+  return false;
 }
 
-/** How the text was delivered: a verified local clipboard tool, or an
- *  unverified OSC 52 escape emitted to the terminal as a last resort. */
-export type ClipboardCopyMethod = 'native' | 'osc52';
-
-export async function copyTextToClipboard(text: string): Promise<ClipboardCopyMethod> {
-  // OSC 52 travels over stdout to the local terminal emulator, so it reaches
-  // the clipboard even over SSH or in containers with no native clipboard
-  // tool. Emit it up front; every failure path below can fall back on it.
-  const osc52Emitted = writeClipboardOSC52(text);
+/**
+ * Copies `text` and reports the channel that carried it. Never throws.
+ *
+ * Over SSH only OSC 52 is tried: it travels over stdout to the user's own
+ * terminal, while the native clipboard here belongs to the remote host.
+ * Locally the native clipboard is tried first and OSC 52 is the last resort
+ * (headless, or no clipboard tool). OSC 52 delivery cannot be confirmed —
+ * terminals without support silently drop it — so callers must not word an
+ * `'osc52'` result as a confirmed copy.
+ */
+export async function copyTextToClipboard(
+  text: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ClipboardCopyResult> {
+  if (isRemoteSession(env)) return writeClipboardOSC52(text) ? 'osc52' : 'failed';
 
   const clipboardModule = clipboard;
   if (clipboardModule?.setText !== undefined) {
-    try {
-      await clipboardModule.setText(text);
-      return 'native';
-    } catch {
-      // Fall back to platform clipboard commands below.
-    }
+    // An async wrapper turns a synchronous throw into a rejection, which
+    // withTimeout maps to `false`; `?.()` keeps the method's `this`.
+    const attempt = (async () => {
+      await clipboardModule.setText?.(text);
+      return true;
+    })();
+    if (await withTimeout(attempt, CLIPBOARD_TEXT_TIMEOUT_MS, false)) return 'native';
   }
+  if (await copyWithPlatformCommand(text)) return 'native';
+  return writeClipboardOSC52(text) ? 'osc52' : 'failed';
+}
 
-  try {
-    await copyWithPlatformCommand(text);
-    return 'native';
-  } catch (error) {
-    // The native clipboard is unreachable (headless server, SSH session,
-    // missing wl-copy/xclip …) but the terminal may still have delivered the
-    // text via OSC 52; without a terminal there is nothing left to try.
-    if (osc52Emitted) return 'osc52';
-    throw error;
-  }
+/**
+ * Reads text from the local clipboard for an explicit paste (Ctrl-V).
+ * Undefined when there is none, the read fails or times out, or the session
+ * is remote (that clipboard is not the user's; the terminal's own paste is).
+ */
+export async function readClipboardText(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  if (isRemoteSession(env)) return undefined;
+  const clipboardModule = clipboard;
+  if (clipboardModule?.getText === undefined) return undefined;
+  const text = await withTimeout<string | undefined>(
+    (async () => clipboardModule.getText?.())(),
+    CLIPBOARD_TEXT_TIMEOUT_MS,
+    undefined,
+  );
+  return text !== undefined && text.length > 0 ? text : undefined;
 }

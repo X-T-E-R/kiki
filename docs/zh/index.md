@@ -4,8 +4,8 @@ title: Kiki（kiki-agent）— 多模型 AI 智能体工作台
 titleTemplate: false
 hero:
   name: Kiki
-  text: 把一个文件夹和一件事交给它。
-  tagline: 跑在你机器上的开源多模型 AI 智能体工作台。摸清代码库、核对 PDF 与表格、写长文或改工程都能交出去——主会话按角色调度你选定的模型，桌面、终端与浏览器共用同一个本地会话存储。
+  text: 一件事，几家模型分工做。
+  tagline: 开源的本地智能体工作台。主会话把活拆开：规划交给强模型，日常的活交给便宜的模型，审查换一家厂商。每个帮手用哪个模型由你定——你的智能体，你说了算。
   actions:
     - theme: brand
       text: 快速上手
@@ -17,12 +17,15 @@ hero:
       text: 发布说明
       link: ./release-notes/changelog
 features:
-  - title: "从一个文件夹和想要的结果开始"
-    details: "把 Kiki 指向代码库、一摞 PDF 与表格，或一份草稿。它先读材料、做计划，就在原地动手；在桌面应用、终端 `kiki` 或浏览器 `kiki web` 里开的会话，换个窗口打开还是它。"
-    link: ./getting-started/first-launch
   - title: "一个主会话，调配不同模型的帮手"
     details: "活能拆开时，主智能体把子任务派给上下文隔离的子智能体——探查用快模型、写作或实现换另一个、审查再换一家厂商。每个子智能体的记录都能点开看，后台任务跑完会自动回来报到。"
     link: ./features/workbench
+  - title: "每个模型都有自己的专武"
+    details: "别家工具各为自家模型调；Kiki 用配方（Recipe）给接进来的每个模型单独调：一套提示词加模型设置，装一次，绑在模型上。作者发布了五套，分别给 GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon 和 Gemini 3.8 Flash；可以照着改，也可以自己写。"
+    link: ./customization/recipes
+  - title: "跑在你的机器上，哪个窗口打开都是同一场工作"
+    details: "工作文件留在你选定的文件夹里，会话、历史和配置留在本机。在桌面应用、终端 `kiki` 或浏览器 `kiki web` 里开的会话，换个窗口打开还是它。"
+    link: ./getting-started/first-launch
   - title: "每个角色就是一份可读可改的 Markdown"
     details: "每个 Agent Profile 是一份由你掌控的纯文本 Markdown：Frontmatter 定模型、思考档位、可用工具与可派发的子智能体，正文就是系统提示词。可以直接用内置的 `explore`、`implementer`、`reviewer` 等角色，也能按需新建。"
     link: ./features/agent-workflows

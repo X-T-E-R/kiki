@@ -23,6 +23,7 @@ import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { MediaJobView, readMediaJobResult } from './media/MediaJobView';
 import { FilePathLink, MediaPartList } from './mediaParts';
+import { PathText } from './PathText';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { usePluginGuiSlots } from './plugins/PluginComposerSlots';
 import { PluginToolCardBody, resolvePluginToolTargetNode } from './plugins/PluginToolCardBody';
@@ -608,7 +609,7 @@ ${engineError}`;
     // The label already names the action (Read / Edit / Glob); the display's
     // operation word would say it a second time, so the path stands alone.
     <span className="font-mono">
-      <FilePathLink path={displayPath} />
+      <FilePathLink path={displayPath} className="inline-flex max-w-full min-w-0 align-bottom"><PathText path={displayPath} /></FilePathLink>
     </span>
   ) : block.progressText !== undefined && block.status === 'running' && (!external || summary === '') ? (
     <span className="text-ink-faint">{block.progressText}</span>
@@ -792,10 +793,12 @@ ${engineError}`;
                 </div>
               ) : editSource !== undefined ? (
                 <div>
-                  {editSource.path !== undefined && editSource.path !== displayPath ? (
+                  {/* Named in full even when it is the row's own path: the row
+                      cuts a long directory to keep the file name. */}
+                  {editSource.path !== undefined ? (
                     <p className={label}>
                       {t('tc.changes')}
-                      <span className="font-mono font-normal">
+                      <span className="font-mono font-normal break-all">
                         {' — '}
                         <FilePathLink path={editSource.path} />
                       </span>

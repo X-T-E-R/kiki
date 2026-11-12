@@ -214,10 +214,11 @@ describe('search breadcrumbs under a candidate tree', () => {
     const taskflow = buildSettingsSearchIndex(labels, t, TASKFLOW_NAV_TREE);
     const permissions = taskflow.find((entry) => entry.section === 'permissions')!;
     expect(permissions.groupLabel).toBe('st.group.rulesAlerts');
+    // Request identity now lives on Developer & labs, which the candidate files under System.
     const objects = buildSettingsSearchIndex(labels, t, OBJECTS_NAV_TREE);
-    const identity = objects.find((entry) => entry.section === 'ai' && entry.tab === 'identity')!;
-    expect(identity.groupLabel).toBe('st.group.modelsAccounts');
-    expect(identity.sectionLabel).toBe('st.section.ai');
+    const identity = objects.find((entry) => entry.section === 'developer' && entry.tab === 'identity')!;
+    expect(identity.groupLabel).toBe('st.group.system');
+    expect(identity.sectionLabel).toBe('st.section.developer');
     const shipped = buildSettingsSearchIndex(labels, t, SETTINGS_NAV_TREE);
     expect(shipped.find((entry) => entry.section === 'extensions')!.groupLabel).toBe('st.group.capabilities');
   });

@@ -2,6 +2,7 @@ import { Text, truncateToWidth, type Component } from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
+import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 
 import type { ResultRenderer } from './types';
 import { PREVIEW_LINES } from './types';
@@ -31,6 +32,8 @@ export class TruncatedOutputComponent implements Component {
   private readonly indent: number;
   private readonly expandHint: boolean;
   private readonly tail: boolean;
+  /** Truncated output for the Text lines it was cut from, so an unchanged render returns the same array. */
+  private truncatedCache: { source: string[]; width: number; lines: string[] } | undefined;
 
   constructor(
     output: string,
@@ -68,6 +71,7 @@ export class TruncatedOutputComponent implements Component {
   invalidate(): void {
     // Text component caches wrapped lines; invalidate on terminal resize.
     this.textComponent.invalidate();
+    this.truncatedCache = undefined;
   }
 
   private renderHint(width: number, hint: string): string {
@@ -82,7 +86,17 @@ export class TruncatedOutputComponent implements Component {
     if (this.expanded || contentLines.length <= this.maxLines) {
       return contentLines;
     }
+    // Text returns the same array until its text, width or theme changes.
+    const cache = this.truncatedCache;
+    if (isRenderCacheEnabled() && cache?.source === contentLines && cache.width === width) {
+      return cache.lines;
+    }
+    const lines = this.truncate(contentLines, width);
+    if (isRenderCacheEnabled()) this.truncatedCache = { source: contentLines, width, lines };
+    return lines;
+  }
 
+  private truncate(contentLines: string[], width: number): string[] {
     const remaining = contentLines.length - this.maxLines;
     if (this.tail) {
       const shown = contentLines.slice(contentLines.length - this.maxLines);

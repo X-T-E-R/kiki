@@ -57,11 +57,11 @@ type PermissionPolicyResult =
 | 1 | 外部钩子否决 | `pre-tool-call-hook` | 用户 `PreToolUse` hook 是否返回 block |
 | 2 | 运行模式姿态 | `auto-mode-approve`、`yolo-mode-approve`（当前实现；Auto 不再禁止 `AskUserQuestion`） | `permission.mode` |
 | 3 | Plan 模式约束 | `plan-mode-guard-deny`、`plan-mode-tool-approve`、`exit-plan-mode-review-ask` | `planMode.isActive` + plan 文件路径 + review 状态 |
-| 4 | Goal 启动审批 | `goal-start-review-ask` | `tool === CreateGoal` 且非 auto |
+| 4 | Goal 启动审批 | `goal-start-review-ask` | `CreateGoal` 或 `Goal`（`action: "create"`），且非 auto |
 | 5 | 静态配置规则 | `user-configured-deny/ask/allow` | 用户/项目/turn 配置的 DSL 规则 |
-| 6 | 会话批准记忆 | `session-approval-history` | 本会话 "approve for session" 缓存 |
+| 6 | 会话批准记忆 | `session-approval-history` | 本会话 "approve for session" 缓存；调用声明的访问含敏感文件或指向工作区外的链接时，只认针对同一工具同样目标记下的批准，否则交给后面的敏感路径 / 外部链接 ask |
 | 7 | 敏感/特殊路径 | `sensitive-file-access-ask`、`git-control-path-access-ask` | 工具访问的文件路径 |
-| 8 | 工具内在风险 | `default-tool-approve` | 工具名 ∈ 默认安全集合 |
+| 8 | 工具内在风险 | `default-tool-approve` | 工具名 ∈ 默认安全集合，或 `Cron` 的 `list`、`Goal` 的 `get` / `create` / `update`；`Goal` 的 `create` 另由启动审批询问 |
 | 9 | 工作区写信任 | `git-cwd-write-approve` | POSIX + git worktree + cwd 内写 |
 | 11 | 兜底 | `fallback-ask` | 无（默认 ask） |
 

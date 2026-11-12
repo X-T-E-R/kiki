@@ -11,6 +11,7 @@ import type { Virtualizer } from '@tanstack/react-virtual';
 
 import { buildFloorEntries, type Block, type FloorEntry } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { useCoarsePointer } from '../lib/layoutHooks';
 
 const REVEAL_IDLE_MS = 1400;
 const MAX_FLOOR_TICKS = 64;
@@ -59,17 +60,28 @@ function resolveVirtualFloorId(
   return candidate ?? entries[0]?.blockId;
 }
 
-export function FloorNavRail({
-  blocks,
-  nodeIndexes,
-  scrollRef,
-  virtualizer,
-}: {
+interface FloorNavRailProps {
   blocks: readonly Block[];
   nodeIndexes: ReadonlyMap<string, number>;
   scrollRef: { readonly current: HTMLDivElement | null };
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
-}) {
+}
+
+/**
+ * Touch gets no rail: it reveals on hover and is aimed with a pointer at
+ * 2px ticks. Not mounting it there (rather than only hiding it) also spares
+ * the floor lookup and two state updates it would run on every scroll.
+ */
+export function FloorNavRail(props: FloorNavRailProps) {
+  return useCoarsePointer() ? null : <FloorNavRailBody {...props} />;
+}
+
+function FloorNavRailBody({
+  blocks,
+  nodeIndexes,
+  scrollRef,
+  virtualizer,
+}: FloorNavRailProps) {
   const { t } = useI18n();
   const entries = useStableFloorEntries(blocks);
   const [revealed, setRevealed] = useState(false);
@@ -159,7 +171,7 @@ export function FloorNavRail({
       onMouseLeave={() => { setHovering(false); }}
       onFocus={() => { setHovering(true); }}
       onBlur={() => { setHovering(false); }}
-      className={`group/floor absolute top-1/2 right-0.5 z-10 flex -translate-y-1/2 flex-col items-end gap-[6px] rounded-l-md py-2 pr-1 pl-3 transition-opacity duration-200 motion-reduce:transition-none ${
+      className={`group/floor absolute top-1/2 right-0.5 z-10 flex pointer-coarse:hidden -translate-y-1/2 flex-col items-end gap-[6px] rounded-l-md py-2 pr-1 pl-3 transition-opacity duration-200 motion-reduce:transition-none ${
         hovering ? 'opacity-100' : visible ? 'opacity-60' : 'pointer-events-none opacity-0'
       }`}
     >

@@ -975,6 +975,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     const childChanges = vi.fn();
     const offMain = controller.subscribe(mainChanges);
     const offChild = controller.subscribeAgent(child.id, childChanges);
+    controller.retainAgentView('test-child', child.id, 'turn');
     try {
       await controller.open();
       await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });

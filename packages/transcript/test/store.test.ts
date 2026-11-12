@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AgentTranscript } from '#/store/agentTranscript';
+import { AgentTranscript, placeTranscriptItems } from '#/store/agentTranscript';
 import { AgentTranscriptDraft } from '#/store/agentTranscriptDraft';
 import { agentTranscriptSnapshotSchema } from '#/contract/schema';
 import { TranscriptStore } from '#/store/transcriptStore';
@@ -1314,6 +1314,44 @@ describe('AgentTranscript', () => {
     const turn = tx.getTurn('t1');
     const frame = turn?.steps[0]?.frames.find((f) => f.kind === 'tool');
     expect(frame?.kind === 'tool' && frame.input).toEqual({ path: '/b' });
+  });
+
+  it('releases a resident prefix as unloaded history and replaces items without touching other entities', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([...toolFrame('done', 'ok'),
+      { op: 'marker.upsert', item: { kind: 'marker', markerId: 'm1', marker: 'compaction' } },
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' } } },
+      { op: 'task.upsert', task: { taskId: 'task', kind: 'other', state: 'running', detached: false, outputTail: '' } }]);
+    const count = tx.snapshot().toolCallCount;
+    expect(tx.getToolCall('call_1')).toBeDefined();
+    expect(tx.releaseBefore('t1')).toEqual([]);
+    expect(tx.releaseBefore('t2').map(itemLabel)).toEqual(['t1', 'm1']);
+    expect(tx.getItems().map(itemLabel)).toEqual(['t2']);
+    expect(tx.hasMoreOlder).toBe(true);
+    expect(tx.getToolCall('call_1')).toBeUndefined();
+    expect(tx.getTask('task')).toBeDefined();
+    expect(tx.snapshot().toolCallCount).toBe(count);
+    const items = tx.getItems();
+    expect(tx.replaceItems(items, true)).toBe(false);
+    expect(tx.replaceItems(items, false)).toBe(true);
+    expect(tx.hasMoreOlder).toBe(false);
+  });
+
+  it('places an older run by server order, relocating shared items to the incoming place', () => {
+    const turn = (ordinal: number): TranscriptItem => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const marker = (id: string): TranscriptItem => ({ kind: 'marker', markerId: id, marker: 'message.delivery' });
+    const keep = (resident: TranscriptItem) => resident;
+    const resident = [turn(0), marker('m0'), turn(1), marker('m3'), turn(4), marker('live')];
+    expect(placeTranscriptItems(resident, [turn(2), marker('m2'), turn(3)], keep).map(itemLabel))
+      .toEqual(['t0', 'm0', 't1', 't2', 'm2', 't3', 'm3', 't4', 'live']);
+    const window = [marker('m4'), turn(5)];
+    expect(placeTranscriptItems(window, [turn(3), marker('m3')], keep).map(itemLabel)).toEqual(['t3', 'm3', 'm4', 't5']);
+    const misplaced = [turn(22), turn(23), marker('late'), turn(24)];
+    const placed = placeTranscriptItems(misplaced, [turn(21), marker('late'), marker('late')], keep);
+    expect(placed.map(itemLabel)).toEqual(['t21', 'late', 't22', 't23', 't24']);
+    expect(placeTranscriptItems(placed, [turn(21), marker('late')], keep)).toBe(placed);
+    const resolved = placeTranscriptItems([turn(1)], [{ ...turn(1), prompt: 'incoming' } as TranscriptItem], (_held, next) => next);
+    expect(resolved[0]).toMatchObject({ prompt: 'incoming' });
   });
 });
 

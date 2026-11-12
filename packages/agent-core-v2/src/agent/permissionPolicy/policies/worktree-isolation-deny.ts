@@ -67,9 +67,16 @@ export class WorktreeIsolationDenyPermissionPolicyService implements PermissionP
     const path = pathClass === 'win32' ? win32 : posix;
     const other = (await this.worktrees.list()).filter((item) => item.state !== 'removed' && item.id !== bound.worktreeId).map((item) => item.path);
     const protectedPaths = [bound.sourceRoot, ...other];
-    const protectedTarget = (target: string): boolean => protectedPaths.some((root) => isWithinDirectory(target, root, pathClass));
-    const deny = { kind: 'deny' as const, message: 'This is an isolated worktree session; the source checkout and other Kiki worktrees are read-only here.' };
-    if (writeFileAccesses(context).some((access) => protectedTarget(access.path))) return deny;
+    const protectedRoot = (target: string): string | undefined => protectedPaths.find((root) => isWithinDirectory(target, root, pathClass));
+    const deny = (target: string, root: string): PermissionPolicyResult => ({
+      kind: 'deny',
+      message: 'This is an isolated worktree session; the source checkout and other Kiki worktrees are read-only here. ' +
+        `"${target}" is inside the protected checkout "${root}". Make the change inside this session's worktree instead.`,
+    });
+    for (const access of writeFileAccesses(context)) {
+      const root = protectedRoot(access.path);
+      if (root !== undefined) return deny(access.path, root);
+    }
     if (context.toolCall.name !== 'Bash' || context.args === null || typeof context.args !== 'object') return undefined;
     if (context.execution.shellContext?.runtimeId.startsWith('ssh:')) return undefined;
     const args = context.args as { readonly command?: unknown; readonly cwd?: unknown };
@@ -85,12 +92,14 @@ export class WorktreeIsolationDenyPermissionPolicyService implements PermissionP
     const commands: BashSyntaxNode[] = [];
     const redirects: BashSyntaxNode[] = [];
     if (parsed.ok && !parsed.hasError) collect(parsed.root, commands, redirects);
-    let writesProtectedPath = false;
+    const protectedWrites: Array<{ readonly target: string; readonly root: string }> = [];
     const inspectWrites = async (node: BashSyntaxNode, base: string): Promise<string> => {
       if (node.type === 'file_redirect' && node.children.some((child) => ['>', '>>', '>|', '&>', '&>>', '<>'].includes(child.type))) {
         const target = node.children.findLast((child) => child.isNamed);
         const targetPath = target === undefined ? undefined : literal(target);
-        if (targetPath !== undefined && protectedTarget(await canonical(targetPath, base))) writesProtectedPath = true;
+        const resolved = targetPath === undefined ? undefined : await canonical(targetPath, base);
+        const root = resolved === undefined ? undefined : protectedRoot(resolved);
+        if (resolved !== undefined && root !== undefined) protectedWrites.push({ target: resolved, root });
       }
       let current = base;
       const children = node.type === 'redirected_statement'
@@ -104,16 +113,21 @@ export class WorktreeIsolationDenyPermissionPolicyService implements PermissionP
       return ['subshell', 'command_substitution', 'pipeline'].includes(node.type) ? base : current;
     };
     if (parsed.ok && !parsed.hasError) await inspectWrites(parsed.root, cwd);
-    if (writesProtectedPath) return deny;
+    const protectedWrite = protectedWrites[0];
+    if (protectedWrite !== undefined) return deny(protectedWrite.target, protectedWrite.root);
     const readOnly = parsed.ok && !parsed.hasError && commands.length > 0 && commands.every(readOnlyCommand) &&
       redirects.every((redirect) => {
         const target = redirect.children.findLast((child) => child.isNamed);
         return target !== undefined && literal(target) !== undefined;
       });
     if (readOnly) return undefined;
-    if (protectedTarget(await canonical(cwd))) return deny;
+    const canonicalCwd = await canonical(cwd);
+    const cwdRoot = protectedRoot(canonicalCwd);
+    if (cwdRoot !== undefined) return deny(canonicalCwd, cwdRoot);
     for (const target of commandPaths(args.command)) {
-      if (protectedTarget(await canonical(target))) return deny;
+      const resolved = await canonical(target);
+      const root = protectedRoot(resolved);
+      if (root !== undefined) return deny(resolved, root);
     }
     return undefined;
   }

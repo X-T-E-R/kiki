@@ -144,37 +144,51 @@ async function render() {
 }
 
 describe('agents team view', () => {
-  it('lists every agent with model, effort and whom it may call, and flags an alias the catalog lacks', async () => {
+  it('states the values in effect on every row and never a bare "Default"', async () => {
     await render();
     const rows = [...container.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow']);
     // Grouped by what the user talks to: main agents, then the helpers they dispatch.
     expect(rows).toEqual(['agent', 'explore', 'reviewer']);
-    const lead = container.querySelector('[data-team-row="agent"]')!;
-    expect(lead.querySelector('[data-team-dispatch]')?.textContent).toContain('reviewer, explore');
-    expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('High');
-    const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
-    // An empty preset list reads as a quiet fact, not a warning.
-    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No presets');
-    // An undeclared list is the neutral default.
-    expect(container.querySelector('[data-team-row="explore"] [data-team-dispatch]')?.textContent).toContain('Default');
+    const effective = (name: string) => container.querySelector(`[data-team-row="${name}"] [data-team-effective]`)?.textContent ?? '';
+    // An agent's own model and thinking level are named as they are.
+    expect(effective('agent')).toContain('fixture/opus');
+    expect(effective('agent')).toContain('Thinking: High');
+    expect(effective('agent')).not.toContain('Can be dispatched');
+    // A helper that runs can be sent out.
+    expect(effective('reviewer')).toContain('typo/model');
+    expect(effective('reviewer')).toContain('Can be dispatched');
+    // Without a model of its own and with no default model known, it says so.
+    expect(effective('explore')).toContain('Default (unknown)');
+    for (const name of ['agent', 'explore', 'reviewer']) {
+      expect(effective(name), name).not.toMatch(/Default(?! (model )?\()/);
+    }
     // Where the file lives is a row tag, not a group: a built-in says so, your own folder says nothing.
     expect(container.querySelector('[data-team-row="explore"] [data-team-tag="source"]')?.textContent).toBe('Built-in');
     expect(container.querySelector('[data-team-row="reviewer"] [data-team-tag="source"]')).toBeNull();
+    // The model and thinking level change in the agent's detail, not in the list.
+    expect(container.querySelector('[data-team-row] [data-team-model] button')).toBeNull();
+    // The problem is said once, above the list, beside the agent it is about,
+    // with the way into that agent.
+    const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
-    expect(container.querySelector('[data-team-warnings]')?.textContent).toContain('1 setting needs attention');
-    // A built-in is read-only: its cells are text, not pickers.
-    expect(container.querySelector('[data-team-row="explore"] [data-team-model] button')).toBeNull();
+    const warnings = container.querySelector('[data-team-warnings]')!;
+    expect(warnings.textContent).toContain('Needs attention (1)');
+    expect(warnings.querySelector('[data-team-attention="reviewer"]')?.textContent).toContain('typo/model');
+    await act(async () => warnings.querySelector<HTMLButtonElement>('[data-team-attention-open="reviewer"]')!.click());
+    await settle();
+    expect(currentSearch).toBe('?agent=reviewer');
   });
 
-  it('saves a model change from the table on its own', async () => {
-    client.updateNamedAgentProfile.mockResolvedValue({ ...sub, pinned_model_alias: 'fixture/opus' });
+  it('resolves "Default" to the model new conversations use and that model’s own thinking level', async () => {
+    client.getConfig.mockResolvedValue({ default_model: 'fixture/opus' });
+    client.listModels.mockResolvedValue({ items: [
+      { id: 'fixture/opus', provider_id: 'fixture', remote_id: 'opus', display_name: 'Opus Fixture', max_context_size: 1_000_000,
+        support_efforts: ['low', 'high', 'max'], default_effort: 'low' },
+    ] });
     await render();
-    await choose(container.querySelector<HTMLElement>('[data-team-row="reviewer"] [data-team-model] button')!, 'fixture/opus');
-    await settle();
-    expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('reviewer', {
-      scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/reviewer/SYSTEM.md', pinned_model_alias: 'fixture/opus',
-    });
-    expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
+    const explore = container.querySelector('[data-team-row="explore"] [data-team-effective]')?.textContent ?? '';
+    expect(explore).toContain('Default model (Opus Fixture)');
+    expect(explore).toContain('Thinking: Default (Low)');
   });
 
   it('groups main agents above helpers, tags the project source, and hides an empty group', async () => {
@@ -794,7 +808,9 @@ it('finds a pinned model by a display name that shares nothing with its ids', as
     { id: 'acme/zz-local', provider_id: 'acme', remote_id: 'zz-remote', display_name: 'Northwind Writer', max_context_size: 8000 },
   ] });
   await render();
-  const trigger = container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!;
+  // The model is picked in the agent's detail; the list only states it.
+  await open('agent');
+  const trigger = sheet().querySelector<HTMLElement>('#profile-model')!;
   await act(async () => { trigger.click(); });
   const search = document.body.querySelector<HTMLInputElement>('[role="combobox"]')!;
   const optionText = async (query: string) => {
@@ -805,26 +821,6 @@ it('finds a pinned model by a display name that shares nothing with its ids', as
   expect(await optionText('zz-remote')).toContain('Northwind Writer');
   expect(await optionText('acme')).toContain('Northwind Writer');
   expect(await optionText('no-such-model')).not.toContain('Northwind Writer');
-});
-
-it('requires an explicit save after a restricted TeamView default change', async () => {
-  const restricted = { ...main, restrict_models_to_menu: true };
-  client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });
-  client.klient.rest.agents.previewModelMenu.mockResolvedValue({ restrict_models_to_menu: true,
-    declared_model_menu: { aliases: ['fixture/lite'], default_alias: 'fixture/lite', identities: ['fixture/lite'] },
-    effective_model_aliases: ['fixture/lite'], added_model_identities: ['fixture/lite'], removed_model_identities: ['fixture/opus'],
-  });
-  client.updateNamedAgentProfile.mockResolvedValue({ ...restricted, pinned_model_alias: 'fixture/lite' });
-  await render();
-  await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
-  await settle();
-  expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
-  // The menu review is a popover anchored to the model cell, portaled to <body>.
-  const review = document.body.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
-  expect(review.querySelector('[data-menu-removed]')?.textContent).toContain('fixture/opus');
-  await act(async () => review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!.click());
-  await settle();
-  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
 });
 
 it('keeps failed previews savable while preserving retry and empty effective set diagnostics', async () => {
@@ -848,22 +844,6 @@ it('keeps failed previews savable while preserving retry and empty effective set
   await save();
   expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ restrict_models_to_menu: true }));
 
-});
-
-it('allows saving a restricted TeamView default change when the menu preview fails', async () => {
-  const restricted = { ...main, restrict_models_to_menu: true };
-  client.listNamedAgentProfiles.mockResolvedValue({ items: [restricted], complete: true });
-  client.klient.rest.agents.previewModelMenu.mockRejectedValue(new Error('preview offline'));
-  client.updateNamedAgentProfile.mockResolvedValue({ ...restricted, pinned_model_alias: 'fixture/lite' });
-  await render();
-  await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
-  await settle();
-  const review = document.body.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
-  const teamSave = review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!;
-  expect(teamSave.disabled).toBe(false);
-  await act(async () => teamSave.click());
-  await settle();
-  expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ pinned_model_alias: 'fixture/lite' }));
 });
 
 describe('profile prompt editing', () => {

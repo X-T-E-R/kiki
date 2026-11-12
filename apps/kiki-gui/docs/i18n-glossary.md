@@ -36,6 +36,32 @@ copy rules.
 | 提示 / 帮助 | hint / help | `*.hint`、`*.help` 是设置卡里的帮助文本：一句话说清「做什么 + 默认值」，优先级、环境变量、内部细节放 AdvancedDetails，zh 不留英文。 |
 | worktree | worktree | zh 保留原词不译（`st.worktrees.title` 两边都是 'Worktrees'）。分支 = branch，检出目录 = checkout。 |
 | MCP 服务器 | MCP server | 保留 MCP 不译（`st.plugins.contrib.mcp`）。 |
+| 复刻 | fork | 从一个会话或一条消息复制出新会话（`menu.fork`、`transcript.fork`）。统一「复刻」，不要「分叉」。 |
+| 导览 | tour | 首次启动后唯一的引导形式：可选的一分钟导览（`firstRun.tour.*`、`discovery.hub.*`）。「引导」「向导」不作为产品词。 |
+| 连接 / 模型连接 | connection / model connection | 设置和首次启动里用户面对的对象：一个账号登录或一个 API 密钥（`st.ai.status.*`、`firstRun.*`）。「提供商」只指厂商本身。分区名「模型与提供商 / Models & providers」随设置改版改为「模型 / Models」。 |
+| 这台电脑 / 运行 Kiki 的电脑 | this computer / the computer running Kiki | 「这台电脑」只在桌面应用里、且确指运行服务器的那台机器时用。手机或浏览器接入另一台电脑上的 Kiki 时，一律写「运行 Kiki 的电脑」（`firstRun.lane.localRemote*`、`memory.status.on`）。不要写「本机」「本地」指服务器所在的机器：在手机上有歧义。 |
+| 默认（{value}） | Default ({value}) | 凡显示「默认」，必须带上它解析到的值（`common.defaultWithValue`）；解析不出时写「默认（未知）」（`common.defaultUnknown`）。不要只写「默认」。 |
+| 自动（权限模式） | Auto | 标准解释句：「工作区里的读写和常规命令 Kiki 自己做；敏感文件、外部链接和危险命令先问你。」/ "Kiki handles reads, writes and routine commands in the workspace itself, and asks you before sensitive files, external links or risky commands." 权限页、第一张审批卡（`firstRun.auto.explain`）、输入框芯片的说明都用这一句；`composer.perm.autoHint` 是它的短形。 |
+
+## State words
+
+One word per state, shared by rows, state cards and the sidebar. Colour only
+reinforces the word. 「未检测」「未知」「0」「默认」 are four different things;
+never show one in place of another.
+
+| 中文 | English | 用于 |
+| --- | --- | --- |
+| 已连接 | Connected | 连接可用 |
+| 就绪 | Ready | 工具、服务可用 |
+| 缺少密钥 | Missing key | 有连接，没有凭据 |
+| 未登录 | Not signed in | 账号类连接 |
+| 未检测 | Not checked | 还没去看过，不等于「没有」 |
+| 未知 | Unknown | 读过，但读不出 |
+| 不可用 | Unavailable | 读到了，确实用不了 |
+| 正在{动作}… | {Doing}… | 进行中，带上对象（「正在检查…」） |
+| 已失败 / 已停止 | Failed / Stopped | 结果；不用红色 |
+| 需要处理 | Needs attention | 设置和列表里的问题汇总（`st.nav.needsAttention`） |
+| 等你处理 / 待批准 / 待回答 | Needs you / Awaiting approval / Awaiting answer | 只给需要用户决定的事 |
 
 ## English style
 
@@ -81,8 +107,13 @@ rather than in a separate sweep.
 | zh values using 「子 Agent」 | 一词 subagent | 子智能体 |
 | zh values containing a bare `Thread` | zh 统一「线程」 | 线程 |
 | `preview.addToChat` ("Add to chat") | en chat vs conversation | conversation |
-| `st.sessions.messagingTitle`, `st.communication.threadCommunication`, `st.purpose.sessions` | zh says 传话 | 消息 / 通信 |
 | `taskBoard.*`, `agentPanel.*` | Title Case labels | sentence case |
+
+Already fixed, listed so new copy doesn't bring them back: 「分叉」 for fork
+(`transcript.fork`, `transcript.forkTitle`, `harness.cap.fork`,
+`action.forkDoneSession` now say 复刻); 「传话」 (`st.sessions.messagingTitle` now
+says 智能体之间的消息; no zh value says 传话 any more); bare `Agent` in
+`st.purpose.permissions`, `st.purpose.browserControl`, `st.browser.emptyBody`.
 
 Where zh has several renderings of one term (agent profile: 档案 / 配置档 /
 配置目录), use 智能体档案 and leave the diagnostic strings to be normalized

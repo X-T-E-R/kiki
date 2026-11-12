@@ -4,6 +4,7 @@ import type { ImSessionSnapshot, SendMessageConfigPatch, SendMessageVoiceMode } 
 
 import { useI18n } from '../../../i18n';
 import { useMediaManagedSources } from '../../../lib/mediaSources';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Toggle } from '../../controls';
 import { DisclosureChevron } from '../../icons';
@@ -136,6 +137,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                   if (next !== ttsProvider) patchSendMessage({ tts_provider: next === '' ? null : next });
                 }}
                 onKeyDown={(event) => {
+                  if (isImeKeyEvent(event)) return;
                   if (event.key === 'Enter') event.currentTarget.blur();
                 }}
               />
@@ -205,6 +207,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                 if (next !== ttsVoice) patchSendMessage({ tts_voice: next === '' ? null : next });
               }}
               onKeyDown={(event) => {
+                if (isImeKeyEvent(event)) return;
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
             />
@@ -224,6 +227,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                 if (next !== ttsModel) patchSendMessage({ tts_model: next === '' ? null : next });
               }}
               onKeyDown={(event) => {
+                if (isImeKeyEvent(event)) return;
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
             />
@@ -249,6 +253,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                     if (next !== ttsLanguage) patchSendMessage({ tts_language: next === '' ? null : next });
                   }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter') event.currentTarget.blur();
                   }}
                 />
@@ -268,6 +273,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                     if (next !== ttsFormat) patchSendMessage({ tts_format: next === '' ? null : next });
                   }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter') event.currentTarget.blur();
                   }}
                 />
@@ -301,6 +307,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                     }
                   }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter') event.currentTarget.blur();
                   }}
                 />
@@ -338,6 +345,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                     }
                   }}
                   onKeyDown={(event) => {
+                    if (isImeKeyEvent(event)) return;
                     if (event.key === 'Enter') event.currentTarget.blur();
                   }}
                 />

@@ -754,6 +754,25 @@ export function transcriptDetailKey(kind: TranscriptDetailKind, id: string): str
   return `${kind}:${id}`;
 }
 
+/**
+ * Where a loaded turn is missing content, as far as the client knows.
+ * - `start`: before the first held step (and the turn's opening, when it has
+ *   none): the beginning of the turn is not loaded.
+ * - `between`: a head and a tail of the turn were read separately; what is
+ *   missing lies right after the step `afterStepId`.
+ * - `turn`: the place is unknown; treat the whole turn as not loaded.
+ *
+ * `reason` is `partial` when a bounded source window cut the turn, and
+ * `stale` when the turn changed while this client received it below the
+ * timeline's grade (or not at all), so what is held may be out of date
+ * anywhere in it.
+ */
+export interface TurnGap {
+  readonly at: 'start' | 'between' | 'turn';
+  readonly afterStepId?: string;
+  readonly reason: 'partial' | 'stale';
+}
+
 export interface SessionViewState {
   readonly contentRefs?: readonly import('@kiki/transcript').ContentRef[];
   readonly version: number;
@@ -844,7 +863,34 @@ export interface SessionViewState {
    */
   readonly transcriptReady: boolean;
   readonly loadError: string | undefined;
+  /**
+   * More history can be loaded above the oldest loaded row: older turns, a
+   * truncated step prefix of the oldest turn, or an oldest turn whose
+   * structure is incomplete.
+   */
   readonly hasMoreHistory: boolean;
+  /**
+   * Loaded turns that are not complete: exactly the keys of `turnGaps`, in
+   * timeline order. A bounded source window held only part of them
+   * (`stepsPartial`), or they changed while this client received them below
+   * the timeline's grade. Reading a turn's `steps` (`beginContentRead`)
+   * completes it. The array keeps its identity while the set is unchanged, so
+   * it can be a memo key.
+   */
+  readonly incompleteTurnIds: readonly string[];
+  /**
+   * Where each incomplete loaded turn is missing content, by turn id (see
+   * {@link TurnGap}); absent or empty when every loaded turn is complete. The
+   * object keeps its identity while unchanged.
+   */
+  readonly turnGaps?: Readonly<Record<string, TurnGap>>;
+  /**
+   * The timeline is shown from what the window holds while a raised baseline
+   * is on its way (the grade was lowered — main while a subagent page was
+   * open, a parked session — and raised again). Turns updated meanwhile are in
+   * `turnGaps` as `stale`; everything else is current as of the last baseline.
+   */
+  readonly refreshing?: boolean;
   readonly historyCoverageKind: 'full' | 'tail' | 'unknown' | undefined;
   readonly historyRead: TranscriptRead | undefined;
   readonly oldestMessageId: string | undefined;
@@ -902,6 +948,7 @@ export function createViewState(sessionId: string): SessionViewState {
     transcriptReady: false,
     loadError: undefined,
     hasMoreHistory: false,
+    incompleteTurnIds: [],
     historyCoverageKind: undefined,
     historyRead: undefined,
     oldestMessageId: undefined,

@@ -63,11 +63,18 @@ export function AccountSignIn({
   onChanged,
   compact = false,
   configuredProviderIds,
+  originalSource = true,
 }: {
   /** Called after a sign-in completes, so the page can re-read its data. */
   onChanged?: () => Promise<void> | void;
   /** Onboarding density: no account line. */
   compact?: boolean;
+  /**
+   * Offer, under each method that has one, the sign-in already on the machine
+   * (`OriginalSourcePanel`). The first-run card leaves it out: reusing such a
+   * sign-in is a way in of its own there.
+   */
+  originalSource?: boolean;
   /**
    * Provider ids the page already lists. A method whose connection is among
    * them is not offered here: that connection is managed in its own row, and
@@ -162,7 +169,7 @@ export function AccountSignIn({
                   attached instead of running a device flow. It is offered here
                   because this is the one place a new connection is made, and
                   the connection it creates is the one this page manages. */}
-              {!pending && facts.state !== 'connected' && isOriginalSourceMethod(method) ? (
+              {originalSource && !pending && facts.state !== 'connected' && isOriginalSourceMethod(method) ? (
                 <div className="mt-3">
                   <OriginalSourcePanel method={method} onChanged={onChanged} />
                 </div>

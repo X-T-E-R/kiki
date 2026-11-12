@@ -1096,7 +1096,7 @@ describe('AgentToolSelectService.load', () => {
     if (mixed.isError === true) throw new Error('expected a runnable execution');
     expect(await mixed.execute(ctx)).toEqual({
       output: [
-        `Loaded: ${MCP_BETA}`,
+        `Loaded: ${MCP_BETA}. Their schemas arrive with your next step; then call each by its name.`,
         `Already available: ${MCP_ALPHA}`,
         `Unknown tool: ${MCP_GONE}. Pick from the latest announced tools list.`,
       ].join('\n'),
@@ -1129,25 +1129,50 @@ describe('AgentToolSelectService executor interception', () => {
     const results = await execute(h, toolCall('call-1', MCP_ALPHA));
     expect(results).toHaveLength(1);
     expect(results[0]!.result.isError).toBe(true);
-    expect(results[0]!.result.output).toContain('is available but not loaded');
+    expect(results[0]!.result.output).toContain('had not been loaded, so this call was not run');
     expect(alpha.calls).toBe(0);
   });
 
-  it('the executor returns loading guidance before validating args for an unloaded MCP tool', async () => {
+  it('loads an unloaded tool on its first call and returns its schema, running it only after the schema step', async () => {
     const h = createExecutorHarness();
     const alpha = new StubMcpTool(MCP_ALPHA, 'mcp ok', REQUIRED_PAYLOAD_PARAMETERS);
     registerMcp(h, alpha);
 
-    const results = await execute(h, toolCall('call-1', MCP_ALPHA, { unexpected: true }));
-    expect(results).toHaveLength(1);
-    expect(results[0]!.result).toEqual({
+    const results: ToolExecutionResult[] = [];
+    for await (const result of h.executor.execute([
+      toolCall('call-1', MCP_ALPHA, { unexpected: true }),
+      toolCall('call-2', MCP_ALPHA, { payload: 'same batch' }),
+    ], { signal: new AbortController().signal, turnId: 1 })) {
+      results.push(result);
+    }
+    const guidance = {
       output:
-        `Tool "${MCP_ALPHA}" is available but not loaded. ` +
-        `Call SelectTools with ["${MCP_ALPHA}"] first, then call the tool.`,
+        `Tool "${MCP_ALPHA}" had not been loaded, so this call was not run. It is loaded now. ` +
+        `Call it again by its name, with arguments that match its parameter schema:\n${JSON.stringify(REQUIRED_PAYLOAD_PARAMETERS)}`,
       isError: true,
       stopTurn: false,
-    });
+    };
+    expect(results.map((result) => result.result)).toEqual([guidance, guidance]);
     expect(alpha.calls).toBe(0);
+    expect(h.sut.drainPendingToolSchemas()?.map((tool) => tool.name)).toEqual([MCP_ALPHA]);
+
+    h.contextMemory.history.push(schemaMessage(MCP_ALPHA));
+    const ran = await execute(h, toolCall('call-3', MCP_ALPHA, { payload: 'after schema' }));
+    expect(ran[0]!.result.output).toBe('mcp ok');
+    expect(alpha.calls).toBe(1);
+  });
+
+  it('tells a CallTool caller how to use the bridge when it loads a tool', async () => {
+    const h = createExecutorHarness();
+    const alpha = new StubMcpTool(MCP_ALPHA, 'mcp ok', REQUIRED_PAYLOAD_PARAMETERS);
+    registerMcp(h, alpha);
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+
+    const wrapper = toolCall('call-1', CALL_TOOL_NAME, { name: MCP_ALPHA, arguments: { payload: 'x' } });
+    const results = await execute(h, h.sut.resolveBridgeCall(wrapper));
+    expect(results[0]!.result.output).toContain(`through ${CALL_TOOL_NAME} as {"name": "${MCP_ALPHA}", "arguments": {...}}`);
+    expect(alpha.calls).toBe(0);
+    expect(h.sut.resolveBridgeCall(wrapper).name).toBe(MCP_ALPHA);
   });
 
   it('the executor runs the tool once its schema is loaded', async () => {
@@ -1218,7 +1243,7 @@ describe('AgentToolSelectService executor interception', () => {
     expect(h.sut.resolveBridgeCall(toolCall('call-2', CALL_TOOL_NAME, { name: MCP_GONE, arguments: {} })).name).toBe(CALL_TOOL_NAME);
   });
 
-  it('announces a deferred browser operation, keeps the direct call unavailable, then runs it once after SelectTools and the schema step', async () => {
+  it('announces a deferred browser operation, keeps it off tools[], then runs it once after SelectTools and the schema step', async () => {
     const h = createExecutorHarness();
     const snapshot = new EchoTool('browser__agent_browser_snapshot');
     const registration = h.registry.register(snapshot, { source: 'builtin', disclosure: 'deferred' });
@@ -1230,9 +1255,6 @@ describe('AgentToolSelectService executor interception', () => {
     expect(before).not.toContain('browser__agent_browser_snapshot');
     expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(true);
 
-    const blocked = await execute(h, toolCall('call-direct', 'browser__agent_browser_snapshot'));
-    expect(blocked[0]!.result.output).toContain('is available but not loaded');
-    expect(snapshot.calls).toBe(0);
     const wrapper = toolCall('call-bridge', CALL_TOOL_NAME, { name: 'browser__agent_browser_snapshot', arguments: { ready: true } });
     expect(h.sut.resolveBridgeCall(wrapper).name).toBe(CALL_TOOL_NAME);
 
@@ -1247,7 +1269,7 @@ describe('AgentToolSelectService executor interception', () => {
     if (selected.isError === true) throw new Error('expected a runnable execution');
     expect(await selected.execute({ turnId: 1, toolCallId: 'select-1', signal: new AbortController().signal })).toEqual({
       output: [
-        'Loaded: browser__agent_browser_snapshot',
+        'Loaded: browser__agent_browser_snapshot. Their schemas arrive with your next step; then run each through CallTool as {"name": "<tool>", "arguments": {...}}.',
         'Unknown tool: browser__ego_run. Pick from the latest announced tools list.',
       ].join('\n'),
     });

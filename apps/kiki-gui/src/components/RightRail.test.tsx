@@ -983,10 +983,13 @@ function createMockController(sessionId: string, initialMainState: SessionViewSt
   const agentListeners = new Map<string, Set<() => void>>();
   const refreshSession = vi.fn();
 
+  // Like the real controller, main is served through the per-agent reads too:
+  // `getAgentState('main')` is the session view and `subscribeAgent('main')`
+  // hears its publications.
   return {
     sessionId,
     getState: () => mainState,
-    getAgentState: (id: string) => agentStates.get(id),
+    getAgentState: (id: string) => id === 'main' ? mainState : agentStates.get(id),
     setMainState: (next: SessionViewState) => {
       mainState = next;
       for (const l of listeners) l();
@@ -1000,6 +1003,10 @@ function createMockController(sessionId: string, initialMainState: SessionViewSt
       return () => { listeners.delete(l); };
     },
     subscribeAgent: (id: string, l: () => void) => {
+      if (id === 'main') {
+        listeners.add(l);
+        return () => { listeners.delete(l); };
+      }
       let set = agentListeners.get(id);
       if (!set) {
         set = new Set();

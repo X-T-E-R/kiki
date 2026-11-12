@@ -5,6 +5,7 @@ import type { Locale } from '@kiki/session-core/i18n';
 import {
   ALL_SIDEBAR_NAV_KEYS,
   readDesktopPrefs,
+  shownPinnedNavItems,
   writeDesktopPrefs,
   writeLayoutPreferences,
   writeSettings,
@@ -15,7 +16,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import { useLayoutPreferences } from '../../lib/layoutHooks';
+import { useCoarsePointer, useLayoutPreferences, usePhoneMode } from '../../lib/layoutHooks';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Toggle } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -40,6 +41,12 @@ export function GeneralSection() {
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
   const isDesktop = host.kind === 'tauri';
+  // Touch: Enter is always the newline key there, so the send-key choice has
+  // nothing to choose. Phone mode: the terminal's opt-in, and the tools the
+  // drawer shows when this phone never picked any.
+  const coarsePointer = useCoarsePointer();
+  const phoneMode = usePhoneMode();
+  const pinnedNavItems = shownPinnedNavItems(layoutPrefs, phoneMode);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -76,26 +83,28 @@ export function GeneralSection() {
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')} scope="app">
         <SettingsBox>
-          <SettingField
-            label={t('st.composer.sendShortcut')}
-            labelId="send-shortcut-label"
-            help={
-              <span data-send-shortcut-help={settings.sendShortcut}>
-                {t(settings.sendShortcut === 'cmd-enter' ? 'st.composer.shortcutCmdEnterHint' : 'st.composer.shortcutEnterHint')}
-              </span>
-            }
-          >
-            <SettingsSelect<SendShortcut>
-              id="send-shortcut-select"
-              ariaLabel={t('st.composer.sendShortcut')}
-              value={settings.sendShortcut}
-              onChange={(value) => { writeSettings({ sendShortcut: value }); }}
-              choices={[
-                { value: 'enter', label: t('st.composer.shortcutEnter') },
-                { value: 'cmd-enter', label: t('st.composer.shortcutCmdEnter') },
-              ]}
-            />
-          </SettingField>
+          {coarsePointer ? null : (
+            <SettingField
+              label={t('st.composer.sendShortcut')}
+              labelId="send-shortcut-label"
+              help={
+                <span data-send-shortcut-help={settings.sendShortcut}>
+                  {t(settings.sendShortcut === 'cmd-enter' ? 'st.composer.shortcutCmdEnterHint' : 'st.composer.shortcutEnterHint')}
+                </span>
+              }
+            >
+              <SettingsSelect<SendShortcut>
+                id="send-shortcut-select"
+                ariaLabel={t('st.composer.sendShortcut')}
+                value={settings.sendShortcut}
+                onChange={(value) => { writeSettings({ sendShortcut: value }); }}
+                choices={[
+                  { value: 'enter', label: t('st.composer.shortcutEnter') },
+                  { value: 'cmd-enter', label: t('st.composer.shortcutCmdEnter') },
+                ]}
+              />
+            </SettingField>
+          )}
           <div className="space-y-1">
             <AppendTimingField />
             <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
@@ -140,10 +149,25 @@ export function GeneralSection() {
                 layout="bare"
                 label={t('st.layout.railOpenByDefault')}
                 checked={settings.railOpenByDefault}
-                onChange={(checked) => { writeSettings({ railOpenByDefault: checked }); }}
+                // The rail's last open/closed choice is remembered and wins over
+                // this default, so flipping the default has to move that choice
+                // too or the switch would appear to do nothing.
+                onChange={(checked) => { writeSettings({ railOpenByDefault: checked }); writeLayoutPreferences({ railOpen: checked }); }}
               />
             </SettingField>
           </div>
+          {phoneMode ? (
+            <div data-setting-phone-terminal>
+              <SettingField label={t('st.layout.phoneTerminal')} help={t('st.layout.phoneTerminalHint')}>
+                <Toggle
+                  layout="bare"
+                  label={t('st.layout.phoneTerminal')}
+                  checked={settings.showTerminalOnPhone}
+                  onChange={(checked) => { writeSettings({ showTerminalOnPhone: checked }); }}
+                />
+              </SettingField>
+            </div>
+          ) : null}
           {/* The /new worktree opt-in's "don't ask again" lands back here. */}
           <div data-setting-worktree-confirm className="space-y-1">
             <SettingField label={t('st.composer.worktreeConfirm')} help={t('st.composer.worktreeConfirmHint')}>
@@ -162,7 +186,7 @@ export function GeneralSection() {
       <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
         <SettingsBox data-sidebar-nav-toggles>
           {ALL_SIDEBAR_NAV_KEYS.map((key) => {
-            const isPinned = layoutPrefs.pinnedNavItems.includes(key);
+            const isPinned = pinnedNavItems.includes(key);
             const label = key === 'personas'
               ? t('persona.nav')
               : key === 'discover'
@@ -177,8 +201,8 @@ export function GeneralSection() {
                     checked={isPinned}
                     onChange={(checked) => {
                       const next = checked
-                        ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
-                        : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
+                        ? Array.from(new Set([...pinnedNavItems, key]))
+                        : pinnedNavItems.filter((k) => k !== key);
                       writeLayoutPreferences({ pinnedNavItems: next });
                     }}
                   />

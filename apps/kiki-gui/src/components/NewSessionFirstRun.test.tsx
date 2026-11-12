@@ -2,10 +2,13 @@
 
 /**
  * First-run surface of /new: the native folder picker in the workspace
- * popover, the empty-catalog explanation, and the provider-readiness rule
- * behind the hero guidance card. Also pins what the page itself carries: the
- * target row and the claim, and nothing that repeats the sidebar's session
- * list or the composer's agent picker.
+ * popover, the empty-catalog explanation, the provider-readiness rule, and the
+ * connect card that takes the composer's place without a model (no dialog, no
+ * check of this computer and no connection until the person presses; a typed
+ * key counts only once a real request with it answers). Also
+ * pins what the page itself carries: the target row and the claim, the tour
+ * line only on a server with no conversations, and nothing that repeats the
+ * sidebar's session list or the composer's agent picker.
  */
 
 import { act, useState } from 'react';
@@ -15,7 +18,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSummary, Workspace } from '@kiki/protocol';
-import { resolveSettingsRoute, SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
 import {
@@ -49,11 +51,29 @@ const firstRun = vi.hoisted(() => ({
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
     createProvider: vi.fn(),
+    listOAuthMethods: vi.fn(async (): Promise<unknown[]> => []),
+    probeOriginalOAuth: vi.fn(async (_body: { provider: string }): Promise<unknown> => ({})),
+    connectOriginalOAuth: vi.fn(async (_body: { provider: string; expected_account_id?: string }): Promise<unknown> => ({})),
+    listSessions: vi.fn(async (): Promise<unknown> => ({ items: [{ id: 'session-example' }], has_more: false })),
+    listModels: vi.fn(async (): Promise<{ items: { id: string }[] }> => ({ items: [] })),
+    listCatalogProviders: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
+    listProviders: vi.fn(async (): Promise<{ items: { id: string }[] }> => ({ items: [] })),
+    importCatalogProvider: vi.fn(async (body: { catalog_id: string; api_key?: string }): Promise<unknown> => ({ provider: { id: body.catalog_id }, models_imported: 1 })),
+    testProviderConnection: vi.fn(async (_providerId: string): Promise<unknown> => ({})),
+    deleteProviderEntity: vi.fn(async (_providerId: string): Promise<void> => {}),
+    getConfig: vi.fn(async (): Promise<{ default_model?: string }> => ({})),
+    setDefaultModel: vi.fn(async (_modelId: string): Promise<unknown> => ({})),
   },
+  discovery: null as { state: { lifecycle: string }; startRoute: (route: string) => Promise<boolean> } | null,
 }));
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ client: firstRun.client }),
+}));
+
+vi.mock('./discovery', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./discovery')>(),
+  useOptionalDiscovery: () => firstRun.discovery,
 }));
 
 vi.mock('./Composer', () => ({ Composer: () => null }));
@@ -169,16 +189,29 @@ beforeEach(() => {
   firstRun.workspacesError = null;
   firstRun.workspaceId = '';
   firstRun.effectiveWorkspace = undefined;
+  firstRun.discovery = null;
   localStorage.setItem('kiki.locale', 'en');
+  localStorage.removeItem('kiki.firstRun');
+  localStorage.removeItem('kiki.onboarding');
   vi.clearAllMocks();
+  firstRun.client.listSessions.mockResolvedValue({ items: [{ id: 'session-example' }], has_more: false });
 });
 
-afterEach(async () => {
+async function unmountAll() {
   await act(async () => {
     for (const root of roots.splice(0)) root.unmount();
   });
   for (const container of containers.splice(0)) container.remove();
-});
+}
+
+afterEach(unmountAll);
+
+/** Let query results and lazy modules land, render by render. */
+async function settle() {
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+}
 
 afterAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
@@ -564,56 +597,268 @@ describe('the /new page', () => {
     }
   });
 
-  it.each([
-    ['en', 0, 'Sign in with an account', 'st-card-auth'],
-    ['en', 1, 'Use an API key or local server', 'st-card-providers-add'],
-    ['zh', 0, '使用账号登录', 'st-card-auth'],
-    ['zh', 1, '填写 API 密钥或本地服务', 'st-card-providers-add'],
-  ] as const)('routes the %s connection choice %i to its own settings lane without authentication side effects', async (locale, choice, label, cardId) => {
+});
+
+describe('first run without a model', () => {
+  async function renderSeat(): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider>
+            <MemoryRouter initialEntries={['/new']}>{firstRun.seat?.composer}</MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    // The card is downloaded on first need; let the lazy module land.
+    await act(async () => { await import('./firstRun/ModelConnectCard'); });
+    await settle();
+    return container;
+  }
+
+  it('puts the connect card where the composer goes, opens no dialog, and keeps it out once a model exists', async () => {
     firstRun.needsProviderSetup = true;
-    localStorage.setItem('kiki.locale', locale);
-    const openWindow = vi.spyOn(window, 'open').mockReturnValue(null);
-    try {
-      const container = await mountNewSessionPage();
-      // At rest the prompt is one quiet line, not a card competing with the starters.
-      expect(document.querySelector('#first-run-hero-footer [data-provider-setup="card"]')).toBeNull();
-      const line = document.querySelector('#first-run-hero-footer [data-provider-setup="quiet"]')!;
-      const buttons = line.querySelectorAll('button');
-      expect(buttons).toHaveLength(2);
-      expect(buttons[choice]?.textContent).toBe(label);
-      expect(line.textContent).not.toContain('Kimi');
-      await act(async () => { buttons[choice]!.click(); });
-      expect(container.querySelector('[data-location]')?.textContent)
-        .toBe(`/settings/ai?tab=providers#${cardId}`);
-      expect(container.querySelector('[data-settings-destination]')).not.toBeNull();
-      expect(SETTINGS_SEARCH_SPEC.find((entry) => entry.cardId === cardId))
-        .toMatchObject({ section: 'ai', tab: 'providers' });
-      expect(resolveSettingsRoute('ai', `#${cardId}`))
-        .toMatchObject({ status: 'ok', section: 'ai', tab: 'providers', cardId });
-      expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
-      expect(firstRun.client.cancelOAuthLogin).not.toHaveBeenCalled();
-      expect(firstRun.client.createProvider).not.toHaveBeenCalled();
-      expect(openWindow).not.toHaveBeenCalled();
-    } finally {
-      openWindow.mockRestore();
-    }
+    firstRun.client.listOAuthMethods.mockResolvedValue([{
+      id: 'openai-codex', provider: 'managed:openai-codex', label: 'ChatGPT (Codex)', protocol: 'oauth',
+      signed_in: false, account: { state: 'unknown' }, quota: { state: 'unknown' },
+    }]);
+    const page = await mountNewSessionPage();
+    const seat = await renderSeat();
+    expect(seat.querySelector('[data-first-run-card="lanes"]')).not.toBeNull();
+    expect([...seat.querySelectorAll<HTMLElement>('[data-first-run-lane]')].map((lane) => lane.dataset['firstRunLane']))
+      .toEqual(['account', 'key', 'local']);
+    expect(document.querySelector('[role="dialog"], [aria-modal="true"]')).toBeNull();
+    // The wordmark alone above the card: no claim, no target row, no starters.
+    expect(page.querySelector('[data-hero-masthead]')).not.toBeNull();
+    expect(page.querySelector('[data-hero-headline]')).toBeNull();
+    expect(page.querySelector('[data-hero-target]')).toBeNull();
+    expect(document.querySelector('#first-run-hero-footer [data-hero-starter]')).toBeNull();
+
+    await unmountAll();
+    firstRun.needsProviderSetup = false;
+    await mountNewSessionPage();
+    const composerSeat = await renderSeat();
+    expect(composerSeat.querySelector('[data-first-run-card]')).toBeNull();
   });
 
-  it('turns the quiet connection line into a card once the user tries to send', async () => {
-    firstRun.needsProviderSetup = true;
+  it('offers the tour line only while the server has no conversations', async () => {
+    firstRun.discovery = { state: { lifecycle: 'new' }, startRoute: vi.fn(async () => true) };
+    firstRun.client.listSessions.mockResolvedValue({ items: [], has_more: false });
     await mountNewSessionPage();
-    const footer = document.querySelector('#first-run-hero-footer')!;
-    expect(footer.querySelector('[data-provider-setup="quiet"]')).not.toBeNull();
-    expect(footer.querySelector('[data-provider-setup="card"]')).toBeNull();
-    const seat = firstRun.seat?.composer as import('react').ReactElement<{ children: import('react').ReactElement<{ onSend: () => unknown }> }>;
-    await act(async () => { seat.props.children.props.onSend(); });
-    const card = footer.querySelector('[data-provider-setup="card"]');
-    expect(card).not.toBeNull();
-    expect(card?.textContent).toContain('Connect a model to send');
-    const buttons = card!.querySelectorAll('button');
-    expect(Array.from(buttons, (button) => button.textContent)).toEqual(['Sign in with an account', 'Use an API key or local server']);
-    expect(footer.querySelector('[data-provider-setup="quiet"]')).toBeNull();
+    await settle();
+    const footer = () => document.querySelector('#first-run-hero-footer')!;
+    expect(footer().querySelector('[data-first-run-tour]')).not.toBeNull();
+
+    await unmountAll();
+    firstRun.client.listSessions.mockResolvedValue({ items: [{ id: 'session-example' }], has_more: false });
+    await mountNewSessionPage();
+    await settle();
+    expect(firstRun.client.listSessions).toHaveBeenCalled();
+    expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
+  });
+
+  it('puts the tour line away for good on "No thanks" and for someone who finished the old wizard', async () => {
+    firstRun.discovery = { state: { lifecycle: 'new' }, startRoute: vi.fn(async () => true) };
+    firstRun.client.listSessions.mockResolvedValue({ items: [], has_more: false });
+    await mountNewSessionPage();
+    await settle();
+    const footer = () => document.querySelector('#first-run-hero-footer')!;
+    await act(async () => { footer().querySelector<HTMLButtonElement>('[data-first-run-tour-dismiss]')!.click(); });
+    expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
+    await unmountAll();
+    await mountNewSessionPage();
+    await settle();
+    expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
+    expect(firstRun.discovery.startRoute).not.toHaveBeenCalled();
+
+    await unmountAll();
+    localStorage.removeItem('kiki.firstRun');
+    localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+    await mountNewSessionPage();
+    await settle();
+    expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
+  });
+});
+
+async function mountCard(onConnected = vi.fn(), onHold = vi.fn()) {
+  const { ModelConnectCard } = await import('./firstRun/ModelConnectCard');
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider>
+          <MemoryRouter initialEntries={['/new']}><ModelConnectCard onConnected={onConnected} onHold={onHold} /></MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  await settle();
+  return container;
+}
+
+describe('the connect card checks this computer only when asked', () => {
+  const method = (id: string, provider: string, label: string) => ({
+    id, provider, label, protocol: 'oauth', signed_in: false, account: { state: 'unknown' }, quota: { state: 'unknown' },
+  });
+  const probe = (provider: string, found: boolean) => ({
+    provider,
+    home_dir: `/home/example/.${provider}`,
+    storage_backend: found ? 'file' : null,
+    state: found ? 'ready' : 'signed_out',
+    account: found ? { state: 'known', id: 'you@example.com' } : { state: 'unknown' },
+    can_connect: found,
+  });
+
+  beforeEach(() => {
+    firstRun.client.listOAuthMethods.mockResolvedValue([
+      method('openai-codex', 'managed:openai-codex', 'ChatGPT (Codex)'),
+      method('kimi-code', 'managed:kimi-code', 'Kimi Code'),
+      method('github-copilot', 'managed:github-copilot', 'GitHub Copilot'),
+    ]);
+  });
+
+  it('reads nothing on load, states what the press found, and connects only on a second press with that account', async () => {
+    firstRun.client.probeOriginalOAuth.mockImplementation(async ({ provider }: { provider: string }) => probe(provider, provider === 'openai-codex'));
+    firstRun.client.connectOriginalOAuth.mockImplementation(async ({ provider }: { provider: string }) => probe(provider, true));
+    const onConnected = vi.fn();
+    const card = await mountCard(onConnected);
+    expect(card.querySelector('[data-first-run-card="lanes"]')).not.toBeNull();
+    expect(firstRun.client.probeOriginalOAuth).not.toHaveBeenCalled();
+    expect(firstRun.client.connectOriginalOAuth).not.toHaveBeenCalled();
     expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
-    expect(firstRun.client.createProvider).not.toHaveBeenCalled();
+
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-lane="local"]')!.click(); });
+    await settle();
+    // Only the sign-ins this server can reuse are asked about.
+    expect(firstRun.client.probeOriginalOAuth.mock.calls.map(([body]) => body)).toEqual([
+      { provider: 'openai-codex' },
+      { provider: 'kimi-code' },
+    ]);
+    expect(card.querySelector('[data-first-run-local-found="openai-codex"]')?.textContent).toContain('Found a Codex sign-in: you@example.com');
+    // Nothing on disk for Kimi Code is not a problem to report.
+    expect(card.querySelector('[data-first-run-local-found="kimi-code"], [data-first-run-local-blocked]')).toBeNull();
+    expect(firstRun.client.connectOriginalOAuth).not.toHaveBeenCalled();
+
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-local-use="openai-codex"]')!.click(); });
+    await settle();
+    expect(firstRun.client.connectOriginalOAuth).toHaveBeenCalledTimes(1);
+    expect(firstRun.client.connectOriginalOAuth).toHaveBeenCalledWith({ provider: 'openai-codex', expected_account_id: 'you@example.com' });
+    expect(onConnected).toHaveBeenCalledWith('Codex');
+  });
+
+  it('says so when the computer has no sign-in to reuse', async () => {
+    firstRun.client.probeOriginalOAuth.mockImplementation(async ({ provider }: { provider: string }) => probe(provider, false));
+    const card = await mountCard();
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-lane="local"]')!.click(); });
+    await settle();
+    expect(card.querySelector('[data-first-run-local-none]')?.textContent).toBe('No usable sign-in was found on the computer running Kiki.');
+    expect(firstRun.client.connectOriginalOAuth).not.toHaveBeenCalled();
+  });
+
+  it('lists account sign-ins without the per-row "already on this computer" panel, which is a lane of its own', async () => {
+    const card = await mountCard();
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await settle();
+    expect([...card.querySelectorAll<HTMLElement>('[data-account-sign-in] [data-oauth-method]')].map((row) => row.dataset['oauthMethod']))
+      .toEqual(['openai-codex', 'kimi-code', 'github-copilot']);
+    expect(card.querySelector('[data-original-source]')).toBeNull();
+    expect(firstRun.client.probeOriginalOAuth).not.toHaveBeenCalled();
+    expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('the key lane counts a key as connected only once it answers', () => {
+  const service = { id: 'example-ai', name: 'Example AI', models: [{ id: 'example-chat' }], rejected: false, needs_base_url: false };
+
+  beforeEach(() => {
+    firstRun.client.listOAuthMethods.mockResolvedValue([]);
+    firstRun.client.listCatalogProviders.mockResolvedValue({ items: [service] });
+    firstRun.client.listProviders.mockResolvedValue({ items: [] });
+    firstRun.client.deleteProviderEntity.mockResolvedValue(undefined);
+    firstRun.client.getConfig.mockResolvedValue({ default_model: 'example-ai/example-chat' });
+    firstRun.client.listModels.mockResolvedValue({ items: [{ id: 'example-ai/example-chat' }] });
+  });
+
+  const passes = { provider_id: 'example-ai', model_id: 'example-ai/example-chat', ok: true, checked_at: 1, duration_ms: 1 };
+  const fails = { provider_id: 'example-ai', model_id: 'example-ai/example-chat', ok: false, checked_at: 1, duration_ms: 1, http_status: 401, error: 'invalid api key' };
+
+  /** Pick the service, type the key, press Connect. */
+  async function connectWithKey(card: HTMLElement, key: string) {
+    if (card.querySelector('[data-first-run-key-form]') === null) {
+      await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-lane="key"]')!.click(); });
+      await settle();
+      await act(async () => { card.querySelector<HTMLButtonElement>('#first-run-key-service-select')!.click(); });
+      await act(async () => { document.querySelector<HTMLElement>(`[role="option"][data-option-value="${service.id}"]`)!.click(); });
+    }
+    const input = card.querySelector<HTMLInputElement>('[data-first-run-key] [data-secret-field] input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, key);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { card.querySelector<HTMLButtonElement>('[data-first-run-key-connect]')!.click(); });
+    await settle();
+  }
+
+  it('checks the saved key with a real request before the composer comes back', async () => {
+    firstRun.client.testProviderConnection.mockResolvedValue(passes);
+    const onConnected = vi.fn();
+    const onHold = vi.fn();
+    const card = await mountCard(onConnected, onHold);
+    await connectWithKey(card, 'YOUR_API_KEY');
+    expect(onHold).toHaveBeenCalledTimes(1);
+    expect(firstRun.client.importCatalogProvider).toHaveBeenCalledWith({ catalog_id: 'example-ai', api_key: 'YOUR_API_KEY' });
+    expect(firstRun.client.testProviderConnection).toHaveBeenCalledWith('example-ai');
+    expect(onConnected).toHaveBeenCalledWith('Example AI');
+    expect(firstRun.client.deleteProviderEntity).not.toHaveBeenCalled();
+    expect(firstRun.client.setDefaultModel).not.toHaveBeenCalled();
+  });
+
+  it('stays open on a key that fails, takes back only what it added, and repairs a default left pointing at nothing', async () => {
+    firstRun.client.testProviderConnection.mockResolvedValue(fails);
+    const onConnected = vi.fn();
+    const card = await mountCard(onConnected);
+    await connectWithKey(card, 'YOUR_API_KEY');
+    expect(card.querySelector('[data-first-run-key-failed]')?.textContent)
+      .toBe("This key didn't pass the check: invalid api key. Make sure it was copied in full, or try another key.");
+    expect(firstRun.client.deleteProviderEntity).toHaveBeenCalledWith('example-ai');
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(card.querySelector('[data-first-run-key-form]')).not.toBeNull();
+
+    // The import that failed had picked a default the removal left behind.
+    firstRun.client.getConfig.mockResolvedValue({ default_model: 'example-ai/example-old' });
+    firstRun.client.testProviderConnection.mockResolvedValue(passes);
+    await connectWithKey(card, 'YOUR_OTHER_API_KEY');
+    expect(firstRun.client.setDefaultModel).toHaveBeenCalledWith('example-ai/example-chat');
+    expect(onConnected).toHaveBeenCalledWith('Example AI');
+  });
+
+  it('never removes a connection that was there before the press, and says when it could not take its own back', async () => {
+    firstRun.client.testProviderConnection.mockResolvedValue(fails);
+    firstRun.client.listProviders.mockResolvedValue({ items: [{ id: 'example-ai' }] });
+    const card = await mountCard();
+    await connectWithKey(card, 'YOUR_API_KEY');
+    expect(firstRun.client.deleteProviderEntity).not.toHaveBeenCalled();
+    expect(card.querySelector('[data-first-run-key-left-behind]')).toBeNull();
+
+    firstRun.client.listProviders.mockResolvedValue({ items: [] });
+    firstRun.client.deleteProviderEntity.mockRejectedValue(new Error('config is read-only'));
+    await connectWithKey(card, 'YOUR_API_KEY');
+    expect(card.querySelector('[data-first-run-key-left-behind]')?.textContent).toContain('config is read-only');
+
+    // Still this card's own on the next try, though it is now listed.
+    firstRun.client.listProviders.mockResolvedValue({ items: [{ id: 'example-ai' }] });
+    firstRun.client.deleteProviderEntity.mockResolvedValue(undefined);
+    await connectWithKey(card, 'YOUR_API_KEY');
+    expect(firstRun.client.deleteProviderEntity).toHaveBeenLastCalledWith('example-ai');
+    expect(card.querySelector('[data-first-run-key-left-behind]')).toBeNull();
   });
 });

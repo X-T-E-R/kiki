@@ -99,6 +99,24 @@ describe('ToolCallComponent', () => {
     });
   });
 
+  it.each([
+    ['Read', { path: 'src/foo.ts' }, '1\tfoo\n2\tbar'],
+    ['Grep', { pattern: 'needle' }, 'src/a.ts:1:needle\nsrc/b.ts:2:needle'],
+    ['Edit', { file_path: 'src/foo.ts', old_string: 'a', new_string: 'b' }, 'Edited'],
+    ['Bash', { command: 'printf hi' }, 'one\ntwo\nthree\nfour\nfive'],
+    ['SomeMcpTool', { query: 'x' }, 'one\ntwo\nthree\nfour\nfive'],
+  ])('returns the same line array when an unchanged %s card renders again', (name, args, output) => {
+    // The transcript re-renders every card each frame; an unchanged card must
+    // be an O(1) reference return, not a rebuild.
+    const component = new ToolCallComponent(
+      { id: `call_cache_${name}`, name, args },
+      { tool_call_id: `call_cache_${name}`, output, is_error: false },
+    );
+
+    const first = component.render(80);
+    expect(component.render(80)).toBe(first);
+  });
+
   it('keeps collapsed tool-call lines within very narrow widths', () => {
     const component = new ToolCallComponent(
       {
@@ -880,7 +898,7 @@ describe('ToolCallComponent', () => {
     it('keeps the tail of a long CJK path recognizable', () => {
       const path = '项目/源码/组件/界面/消息/工具调用/渲染/输出/最终/深层/目标文件.ts';
       const keyArg = extractKeyArgument('Read', { path }) ?? '';
-      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg).toContain('…');
       expect(keyArg.endsWith('目标文件.ts')).toBe(true);
       expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
     });
@@ -888,7 +906,7 @@ describe('ToolCallComponent', () => {
     it('keeps the tail of a long emoji path without broken characters', () => {
       const path = `${'dir/'.repeat(30)}📦/目标.ts`;
       const keyArg = extractKeyArgument('Read', { path }) ?? '';
-      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg).toContain('…');
       expect(keyArg.endsWith('目标.ts')).toBe(true);
       expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
       expect(keyArg).not.toContain('\uFFFD');
@@ -1853,6 +1871,43 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('foo.ts');
     expect(out).toMatch(/^\s*2\s+- b\s*$/m);
     expect(out).toMatch(/^\s*2\s+\+ B\s*$/m);
+  });
+
+  it('renders one diff per replacement of an Edit edits list', () => {
+    const component = new ToolCallComponent(
+      {
+        id: 'call_edit_list',
+        name: 'Edit',
+        args: {
+          file_path: 'foo.ts',
+          edits: [
+            { old_string: 'alpha', new_string: 'ALPHA' },
+            { old_string: 'omega', new_string: 'OMEGA', replace_all: true },
+          ],
+        },
+      },
+      undefined,
+    );
+    const out = strip(component.render(100).join('\n'));
+    expect(out).toMatch(/^\s*1\s+- alpha\s*$/m);
+    expect(out).toMatch(/^\s*1\s+\+ ALPHA\s*$/m);
+    expect(out).toMatch(/^\s*1\s+- omega\s*$/m);
+    expect(out).toMatch(/^\s*1\s+\+ OMEGA\s*$/m);
+  });
+
+  it('keeps a collapsed Edit edits list within the single-edit row budget', () => {
+    const edits = Array.from({ length: 12 }, (_, index) => ({
+      old_string: `old${String(index)}`,
+      new_string: `new${String(index)}`,
+    }));
+    const component = new ToolCallComponent(
+      { id: 'call_edit_many', name: 'Edit', args: { file_path: 'foo.ts', edits } },
+      undefined,
+    );
+    const out = strip(component.render(100).join('\n'));
+    expect(out).toContain('- old0');
+    expect(out).not.toContain('- old11');
+    expect(out).toMatch(/more edits, 12 total, Ctrl\+O to expand/);
   });
 
   it('refreshes and stops the Edit streaming progress timer', () => {

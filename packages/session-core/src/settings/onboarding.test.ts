@@ -3,7 +3,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  clearFirstRunHint,
+  isFirstRunHintDone,
   isOnboardingCompleted,
+  markFirstRunHintDone,
   markOnboardingCompleted,
   readOnboardingState,
 } from './onboarding';
@@ -58,5 +61,27 @@ describe('onboarding completion flag', () => {
     expect(isOnboardingCompleted()).toBe(false);
     ls().setItem('kiki.onboarding', JSON.stringify({ completedAt: 42 }));
     expect(isOnboardingCompleted()).toBe(false);
+  });
+});
+
+describe('first-run hints', () => {
+  it('records each hint once per device and takes back only the one cleared', () => {
+    expect(isFirstRunHintDone('notifyAsk')).toBe(false);
+    markFirstRunHintDone('notifyAsk');
+    markFirstRunHintDone('notifyDeclined');
+    expect(isFirstRunHintDone('notifyAsk')).toBe(true);
+    expect(isFirstRunHintDone('notifyDeclined')).toBe(true);
+
+    clearFirstRunHint('notifyDeclined');
+    expect(isFirstRunHintDone('notifyDeclined')).toBe(false);
+    expect(isFirstRunHintDone('notifyAsk')).toBe(true);
+    expect(JSON.parse(ls().getItem('kiki.firstRun')!)).toEqual({ notifyAsk: true });
+  });
+
+  it('counts the tour line as had for someone who finished the old wizard', () => {
+    expect(isFirstRunHintDone('tourLine')).toBe(false);
+    markOnboardingCompleted();
+    expect(isFirstRunHintDone('tourLine')).toBe(true);
+    expect(isFirstRunHintDone('notifyAsk')).toBe(false);
   });
 });

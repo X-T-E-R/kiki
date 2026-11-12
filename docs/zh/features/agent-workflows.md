@@ -55,7 +55,7 @@ frontmatter 里的 `main: true` 只是把某个 profile 标记为会话主 agent
 - **`implementer`** 端到端负责一个技术目标——调查、在授权后实现、验证、带证据交回。它可以用 `explore` 做只读的铺垫，但保留最终的工程判断。
 - **`reviewer`** 独立、只读地判断一个决定、一份候选或一次修复，报出问题但不去改。工具被限制，无法编辑或派发。
 
-两个模板都设了 `model_alias: inherit`，也就是除非你钉死，否则这个角色跟着派发它的模型走。你可以在首次启动向导、`/kiki-profile` skill，或**设置 → 智能体**里加入它们。
+两个模板都设了 `model_alias: inherit`，也就是除非你钉死，否则这个角色跟着派发它的模型走。你可以在对话里直接要一个、用 `/kiki-profile` skill，或在**设置 → 智能体**里加入它们。
 
 ![设置里的智能体编辑页：指令、描述、何时使用、模型、思考档位、引擎、是否可作主 agent，以及它能派发哪些子智能体。](/shots/agents/agents-profile-editor.zh.png)
 

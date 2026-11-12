@@ -17,10 +17,12 @@ import { ConnectionsTab } from './ProvidersSection';
 
 /**
  * Visual tab order follows the path a person takes: connect something and
- * edit the models it brings, decide which model each job uses, and configure
- * how outbound requests identify themselves.
+ * edit the models it brings, decide which model each job uses, then manage the
+ * Recipe packages those models can be bound to. The Recipes tab itself is
+ * drawn by `SettingsPage`; listing it here keeps it one click away from the
+ * other two.
  */
-const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'defaults', 'identity'] as const)
+const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'defaults', 'recipes'] as const)
   .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
 
 /**

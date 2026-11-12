@@ -87,7 +87,7 @@ export function isSensitiveFile(path: string): boolean {
 }
 
 export type PathClass = 'posix' | 'win32';
-export type PathSecurityCode = 'PATH_OUTSIDE_WORKSPACE' | 'PATH_INVALID';
+export type PathSecurityCode = 'PATH_INVALID';
 export type PathAccessOperation = 'read' | 'write' | 'search';
 export interface PathAccess {
   readonly path: string;
@@ -218,10 +218,6 @@ export interface ResolvePathAccessPathOptions {
   readonly shellPathBridge?: ShellPathBridge;
 }
 
-function relativeOutsideMessage(path: string, target: string): string {
-  return `[external_target_approval] Path "${path}" resolves to external target "${target}". Use an explicit absolute path and obtain approval for access to the target.`;
-}
-
 export function resolvePathAccess(
   path: string,
   cwd: string,
@@ -232,18 +228,8 @@ export function resolvePathAccess(
   const normalizedPath =
     options.shellPathBridge?.fromShellPath(path) ?? normalizeUserPath(path, pathClass);
   const expandedPath = expandUserPath(normalizedPath, options.homeDir, pathClass);
-  const rawIsAbsolute = pathe.isAbsolute(expandedPath);
   const canonical = canonicalizePath(expandedPath, cwd, pathClass);
-  const outsideWorkspace = !isWithinWorkspace(canonical, config, pathClass);
-  if (outsideWorkspace && !rawIsAbsolute &&
-    !(options.operation !== 'write' && config.definitionReadRoots?.some((root) =>
-      isWithinDirectory(canonical, root, pathClass)))) {
-    throw new PathSecurityError(
-      'PATH_OUTSIDE_WORKSPACE', path, canonical, relativeOutsideMessage(path, canonical),
-    );
-  }
-
-  return { path: canonical, outsideWorkspace };
+  return { path: canonical, outsideWorkspace: !isWithinWorkspace(canonical, config, pathClass) };
 }
 
 export function resolvePathAccessPath(

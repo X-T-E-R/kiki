@@ -142,6 +142,21 @@ describe('ExitPlanMode options schema', () => {
 });
 
 describe('ExitPlanMode option output', () => {
+  it.each([
+    [[{ label: 'Patch config', description: 'x' }, { label: '  patch CONFIG  ', description: 'y' }], 'must be unique'],
+    [[{ label: 'Approach A', description: 'x' }, { label: ' revise ', description: 'y' }], 'must not be Approve'],
+  ] as const)('refuses option labels that would make the review ambiguous before showing it: %j', async (labels, message) => {
+    const exit = vi.fn();
+    const result = await executeTool(
+      new ExitPlanModeTool({ ...planService(), exit }, permissionMode('manual'), recordingTelemetry()),
+      { turnId: 7, toolCallId: 'call_exit_plan_labels', args: { options: labels }, signal },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(message);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
   it('treats a single option as plain plan approval', async () => {
     const exit = vi.fn();
     const telemetry = recordingTelemetry();

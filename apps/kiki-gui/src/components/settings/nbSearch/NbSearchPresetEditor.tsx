@@ -25,6 +25,7 @@ import {
   nbSearchInstanceProviderId,
   type NbSearchAdvancedBinding,
 } from './advancedSupport';
+import { isImeKeyEvent } from '../../../lib/shortcuts';
 
 export function NbSearchPresetEditor({
   binding,
@@ -150,6 +151,7 @@ export function NbSearchPresetEditor({
             }}
             onBlur={rename}
             onKeyDown={(event) => {
+              if (isImeKeyEvent(event)) return;
               if (event.key === 'Enter') {
                 event.preventDefault();
                 rename();

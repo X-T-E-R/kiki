@@ -54,7 +54,7 @@ use tauri::async_runtime::Receiver;
 use tauri::image::Image;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -3846,11 +3846,127 @@ fn build_tray_menu(app: &AppHandle, labels: TrayLabels) -> Result<Menu<Wry>, Str
     Ok(menu)
 }
 
+/// Distinct from every tray menu id: both menus reach the same listeners.
+#[cfg(target_os = "macos")]
+const APP_MENU_QUIT_ID: &str = "app-quit";
+
+/// Tauri's default macOS menu with one change. Its Quit item sends AppKit
+/// `terminate:`, which tao never turns into `ExitRequested`, so Cmd+Q skipped
+/// the quit confirmation and service shutdown. This Quit calls `app.exit`,
+/// the same path as the tray's Quit. The Edit items stay: they are what make
+/// Cmd+C / Cmd+V reach text fields in the web view.
+#[cfg(target_os = "macos")]
+fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let package = app.package_info();
+    let name = package.name.clone();
+    let about = tauri::menu::AboutMetadata {
+        name: Some(name.clone()),
+        version: Some(package.version.to_string()),
+        copyright: app.config().bundle.copyright.clone(),
+        authors: app.config().bundle.publisher.clone().map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+    let quit = MenuItem::with_id(app, APP_MENU_QUIT_ID, format!("Quit {name}"), true, Some("CmdOrCtrl+Q"))?;
+    Menu::with_items(app, &[
+        &Submenu::with_items(app, &name, true, &[
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ])?,
+        &Submenu::with_items(app, "File", true, &[&PredefinedMenuItem::close_window(app, None)?])?,
+        &Submenu::with_items(app, "Edit", true, &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ])?,
+        &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+        &Submenu::with_id_and_items(app, tauri::menu::WINDOW_SUBMENU_ID, "Window", true, &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ])?,
+        &Submenu::with_id_and_items(app, tauri::menu::HELP_SUBMENU_ID, "Help", true, &[])?,
+    ])
+}
+
 fn background_main_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     return window.minimize();
+    #[cfg(target_os = "macos")]
+    if hide_after_fullscreen_exit(&window.as_ref().window()) { return Ok(()); }
     #[cfg(not(target_os = "linux"))]
     window.hide()
+}
+
+#[cfg(target_os = "macos")]
+static HIDE_AFTER_FULLSCREEN_EXIT: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static FULLSCREEN_EXIT_OBSERVED: AtomicBool = AtomicBool::new(false);
+
+/// AppKit keeps a native-fullscreen window's Space after the window is
+/// ordered out, so hiding it directly leaves the user on an empty Space. This
+/// leaves fullscreen first and hides once AppKit reports the exit finished.
+/// Tauri has no fullscreen-transition event, and `is_fullscreen` turns false
+/// as soon as the exit starts, so the AppKit notification is the only exact
+/// signal. The main window lives as long as the process, so one observer is
+/// registered on first use and never removed (removing it from inside its own
+/// block could free the block mid-call); a flag says whether an exit should
+/// hide. Returns false when the window is not fullscreen or the deferral
+/// cannot be set up; the caller then hides at once, as before.
+#[cfg(target_os = "macos")]
+fn hide_after_fullscreen_exit(window: &tauri::Window) -> bool {
+    use std::ptr::NonNull;
+    use block2::RcBlock;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::NSWindowDidExitFullScreenNotification;
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    if !window.is_fullscreen().unwrap_or(false) { return false; }
+    if !FULLSCREEN_EXIT_OBSERVED.load(Ordering::SeqCst) {
+        let ns_window = match window.ns_window() {
+            Ok(pointer) if !pointer.is_null() => pointer,
+            _ => return false,
+        };
+        if FULLSCREEN_EXIT_OBSERVED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let target = window.clone();
+            let on_exit = RcBlock::new(move |_: NonNull<NSNotification>| {
+                if HIDE_AFTER_FULLSCREEN_EXIT.swap(false, Ordering::SeqCst) {
+                    if let Err(error) = target.hide() {
+                        eprintln!("Kiki could not hide the main window after leaving fullscreen: {error}");
+                    }
+                }
+            });
+            // SAFETY: Tauri returns this window's live NSWindow, used only as
+            // the observed object. AppKit posts window notifications on the
+            // main thread, and with no queue the block runs there. The center
+            // keeps the registration and its block until the process exits.
+            let _registration = unsafe {
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(NSWindowDidExitFullScreenNotification),
+                    Some(&*(ns_window as *const AnyObject)),
+                    None,
+                    &on_exit,
+                )
+            };
+        }
+    }
+    HIDE_AFTER_FULLSCREEN_EXIT.store(true, Ordering::SeqCst);
+    if let Err(error) = window.set_fullscreen(false) {
+        HIDE_AFTER_FULLSCREEN_EXIT.store(false, Ordering::SeqCst);
+        eprintln!("Kiki could not leave fullscreen before hiding the main window: {error}");
+        return false;
+    }
+    true
 }
 
 /// Linux keeps a taskbar recovery entry even when no indicator is visible.
@@ -4057,6 +4173,19 @@ pub fn run() {
         app
     };
 
+    // Tray menu events reach this listener too; it acts only on its own id.
+    #[cfg(target_os = "macos")]
+    let app = app
+        .menu(|handle| {
+            build_app_menu(handle).or_else(|error| {
+                eprintln!("Kiki could not build its macOS menu; Quit will skip the quit confirmation: {error}");
+                Menu::default(handle)
+            })
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == APP_MENU_QUIT_ID { app.exit(0); }
+        });
+
     let app = app
         .manage(manager)
         .manage(tunnel_manager)
@@ -4071,6 +4200,8 @@ pub fn run() {
                 let action = desktop_close_action(&prefs, close_tray_created.load(Ordering::SeqCst), env::consts::OS);
                 match action {
                     DesktopCloseAction::Hide | DesktopCloseAction::Minimize => {
+                        #[cfg(target_os = "macos")]
+                        if hide_after_fullscreen_exit(window) { return; }
                         let result = if action == DesktopCloseAction::Minimize { window.minimize() } else { window.hide() };
                         if let Err(error) = result {
                             eprintln!("Kiki could not background the main window: {error}");
@@ -4162,14 +4293,32 @@ pub fn run() {
                 request_confirmed_exit(app_handle.clone(), shutdown_manager.clone(), exit_confirmed.clone(), exit_prompting.clone());
             }
         }
+        // AppKit `terminate:` (Dock > Quit, logout, restart) never produces
+        // `ExitRequested`; tao reports it only as this final event. Release
+        // what the confirmed quit path releases. Both calls are idempotent and
+        // wait for neither a child nor the network, so the normal path
+        // running them a second time is harmless.
+        if let RunEvent::Exit = &event {
+            shutdown_tunnels.shutdown();
+            shutdown_manager.detach_desktop();
+        }
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { .. } = &event {
             let _ = show_main_window(app_handle.clone());
         }
-        if let RunEvent::TrayIconEvent(TrayIconEvent::Click { button, .. }) = &event {
-            if *button == MouseButton::Left {
-                let _ = show_main_window(app_handle.clone());
-            }
+        // A macOS status item opens its menu on mouse-down and reports both
+        // button states, so raising the window there would also fire twice;
+        // the Dock icon (`Reopen`) is the macOS way back to the window. On
+        // Windows the press raises the window before the release opens the
+        // menu, and the release no longer raises it a second time.
+        #[cfg(not(target_os = "macos"))]
+        if let RunEvent::TrayIconEvent(tauri::tray::TrayIconEvent::Click {
+            button: tauri::tray::MouseButton::Left,
+            button_state: tauri::tray::MouseButtonState::Down,
+            ..
+        }) = &event
+        {
+            let _ = show_main_window(app_handle.clone());
         }
     });
 }

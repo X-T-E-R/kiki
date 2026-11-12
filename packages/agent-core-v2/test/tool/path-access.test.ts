@@ -8,6 +8,8 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import type { ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IReadTool } from '#/agent/tools/os/read/read';
 import { ReadTool } from '#/agent/tools/os/read/readTool';
 import { IGlobTool } from '#/agent/tools/os/glob/glob';
@@ -152,10 +154,11 @@ describe('resolvePathAccess shell path bridge', () => {
     expect(result).toBe('C:/workspace/file.txt');
   });
 
-  it('reports the raw path, target, and recovery for relative external intent', () => {
-    expect(() => resolvePathAccess('..\\outside.txt', 'C:/workspace', {
-      workspaceDir: 'C:/workspace', additionalDirs: [],
-    }, { operation: 'read', pathClass: 'win32' })).toThrow(/external target.*absolute path.*approval/);
+  it('resolves a relative path outside the workspace to the same target as its absolute form', () => {
+    const workspace = { workspaceDir: 'C:/workspace', additionalDirs: [] };
+    const relative = resolvePathAccess('..\\outside.txt', 'C:/workspace', workspace, { operation: 'write', pathClass: 'win32' });
+    expect(relative).toEqual({ path: 'C:/outside.txt', outsideWorkspace: true });
+    expect(resolvePathAccess('C:\\outside.txt', 'C:/workspace', workspace, { operation: 'write', pathClass: 'win32' })).toEqual(relative);
   });
 
   it('passes root-relative POSIX paths through when cygpath is unavailable', () => {
@@ -262,6 +265,8 @@ describe('resolveRealPathAccessPath', () => {
         });
         reg.defineInstance(IBootstrapService, stubBootstrap(root));
         reg.defineInstance(ITelemetryService, noopTelemetryService);
+        reg.definePartialInstance(IAgentToolRegistryService, { resolve: () => undefined });
+        reg.definePartialInstance(IAgentToolPolicyService, { isToolActive: () => true });
         reg.define(IReadTool, ReadTool);
         reg.define(IGlobTool, GlobTool);
         reg.define(IWriteTool, WriteTool);
@@ -294,8 +299,14 @@ describe('resolveRealPathAccessPath', () => {
     await mkdir(defaultDocs, { recursive: true });
     const old = join(defaultDocs, 'guide.md');
     await writeFile(old, 'unselected main');
-    await expect(services.get(IReadTool).resolveExecution({ path: '../.kiki/docs/guide.md' })).rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
-    await expect(services.get(IWriteTool).resolveExecution({ path: '../docs/guide.md', content: 'changed' })).rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+    const relativeDefault = await services.get(IReadTool).resolveExecution({ path: '../.kiki/docs/guide.md' });
+    const absoluteDefault = await services.get(IReadTool).resolveExecution({ path: old });
+    if (relativeDefault.isError === true || absoluteDefault.isError === true) throw new Error('expected runnable reads');
+    expect(relativeDefault.accesses).toEqual(absoluteDefault.accesses);
+    const relativeWrite = await services.get(IWriteTool).resolveExecution({ path: '../docs/guide.md', content: 'changed' });
+    if (relativeWrite.isError === true) throw new Error(outputText(relativeWrite.output));
+    expect(relativeWrite.accesses).toEqual(write.accesses);
+    expect(await readFile(current, 'utf8')).toBe('current Space docs');
   });
 
   it('keeps native Read, Glob and Write usable with an uncreated additional root', async () => {
@@ -345,7 +356,7 @@ describe('resolveRealPathAccessPath', () => {
     await expect(resolveRealPathAccess(join(linkedParent, 'sibling.txt'), { env, workspace, operation: 'write' }, fs))
       .resolves.toMatchObject({ outsideWorkspace: true });
     await expect(resolveRealPathAccess('../linked-parent/sibling.txt', { env, workspace, operation: 'write' }, fs))
-      .rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+      .resolves.toEqual(await resolveRealPathAccess(join(linkedParent, 'sibling.txt'), { env, workspace, operation: 'write' }, fs));
   });
 
   it('still requires the main workspace directory to exist', async () => {

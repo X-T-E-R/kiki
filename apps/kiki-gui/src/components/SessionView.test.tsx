@@ -85,6 +85,7 @@ import {
   resetAgentOlderFetchGate,
   settleAgentOlderFetch,
   isTerminalEscapeTarget,
+  isFormFieldEscapeTarget,
   resolveAllApprovals,
   resolveApprovalShortcutTarget,
   approvalShortcutRoot,
@@ -117,6 +118,7 @@ import {
   shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
+  useAbortPending,
 } from './SessionView';
 import { withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { nowReceiptDecision, sendNowNotice, sendNowQueuedNotice } from './agent-workspace';
@@ -1919,37 +1921,40 @@ describe('isTerminalEscapeTarget', () => {
 });
 
 describe('shouldCloseSessionChromeOnEscape', () => {
+  const railOpen = {
+    key: 'Escape',
+    defaultPrevented: false,
+    overlayOpen: false,
+    terminalFocused: false,
+    terminalOpen: false,
+    railOpen: true,
+  };
+
   it('closes rail/terminal only when no overlay or PTY owns Escape', () => {
-    expect(shouldCloseSessionChromeOnEscape({
-      key: 'Escape',
-      defaultPrevented: false,
-      overlayOpen: false,
-      terminalFocused: false,
-    })).toBe(true);
-    expect(shouldCloseSessionChromeOnEscape({
-      key: 'Escape',
-      defaultPrevented: true,
-      overlayOpen: false,
-      terminalFocused: false,
-    })).toBe(false);
-    expect(shouldCloseSessionChromeOnEscape({
-      key: 'Escape',
-      defaultPrevented: false,
-      overlayOpen: true,
-      terminalFocused: false,
-    })).toBe(false);
-    expect(shouldCloseSessionChromeOnEscape({
-      key: 'Escape',
-      defaultPrevented: false,
-      overlayOpen: false,
-      terminalFocused: true,
-    })).toBe(false);
-    expect(shouldCloseSessionChromeOnEscape({
-      key: 'y',
-      defaultPrevented: false,
-      overlayOpen: false,
-      terminalFocused: false,
-    })).toBe(false);
+    expect(shouldCloseSessionChromeOnEscape(railOpen)).toBe(true);
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, railOpen: false, terminalOpen: true })).toBe(true);
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, defaultPrevented: true })).toBe(false);
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, overlayOpen: true })).toBe(false);
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, terminalFocused: true })).toBe(false);
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, key: 'y' })).toBe(false);
+  });
+
+  it('claims nothing when there is no rail or terminal to close', () => {
+    expect(shouldCloseSessionChromeOnEscape({ ...railOpen, railOpen: false })).toBe(false);
+  });
+
+  // The closer and the abort are separate window listeners whose order flips
+  // as their effects re-run; the decision must not depend on that order.
+  it('gives each bare Escape to exactly one of closer and abort, closer first', () => {
+    for (const rail of [false, true]) {
+      for (const terminal of [false, true]) {
+        const input = { ...railOpen, railOpen: rail, terminalOpen: terminal };
+        const closes = shouldCloseSessionChromeOnEscape(input);
+        const aborts = shouldHandleGlobalAbortOnEscape({ ...input, inFormField: false });
+        expect(closes).toBe(rail || terminal);
+        expect(aborts).toBe(!closes);
+      }
+    }
   });
 });
 
@@ -1960,6 +1965,7 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     overlayOpen: false,
     terminalFocused: false,
     terminalOpen: false,
+    railOpen: false,
     inFormField: false,
   };
 
@@ -1969,8 +1975,30 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, overlayOpen: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalFocused: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, terminalOpen: true })).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({ ...ready, railOpen: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, inFormField: true })).toBe(false);
     expect(shouldHandleGlobalAbortOnEscape({ ...ready, key: 'Enter' })).toBe(false);
+  });
+
+  it('never stops a running turn for Escape pressed in the composer or another text field', () => {
+    const running = { ...createViewState('session-test'), busy: true, abortablePromptId: 'p-main' };
+    const abortActive = vi.fn();
+    const composer = document.createElement('div');
+    composer.setAttribute('contenteditable', 'true');
+    composer.setAttribute('data-composer', '');
+    // jsdom does not implement isContentEditable; a browser reports it for the editor.
+    Object.defineProperty(composer, 'isContentEditable', { value: true });
+    const fields = [composer, document.createElement('input'), document.createElement('textarea'), document.createElement('select')];
+    for (const field of fields) {
+      expect(isFormFieldEscapeTarget(field)).toBe(true);
+      if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({ ...ready, inFormField: isFormFieldEscapeTarget(field) })) {
+        abortActive();
+      }
+    }
+    expect(abortActive).not.toHaveBeenCalled();
+    // Focus outside any text field still stops the turn.
+    expect(isFormFieldEscapeTarget(document.body)).toBe(false);
+    expect(isFormFieldEscapeTarget(document.createElement('button'))).toBe(false);
   });
 
   it('does not abort a running main turn for body-focused Escape while child preview is fullscreen', () => {
@@ -2000,6 +2028,53 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
       abortActive();
     }
     expect(abortActive).not.toHaveBeenCalled();
+  });
+
+  describe('Stop pending state', () => {
+    const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
+    beforeAll(() => { actEnvironment.IS_REACT_ACT_ENVIRONMENT = true; });
+    afterAll(() => { actEnvironment.IS_REACT_ACT_ENVIRONMENT = false; });
+
+    function mountPending(busy: boolean) {
+      let latest: ReturnType<typeof useAbortPending> | undefined;
+      function Probe({ busy: running }: { busy: boolean }) {
+        latest = useAbortPending(running);
+        return null;
+      }
+      const root = createRoot(document.createElement('div'));
+      const render = (running: boolean) => { act(() => { root.render(<Probe busy={running} />); }); };
+      render(busy);
+      return {
+        render,
+        pending: () => latest![0],
+        track: (abort: Promise<unknown>) => { act(() => { latest![1](abort); }); },
+        unmount: () => { act(() => { root.unmount(); }); },
+      };
+    }
+
+    it('holds from the press until the abort settles, failure included', async () => {
+      const probe = mountPending(true);
+      let finish!: () => void;
+      probe.track(new Promise<void>((resolve) => { finish = resolve; }));
+      expect(probe.pending()).toBe(true);
+      await act(async () => { finish(); });
+      expect(probe.pending()).toBe(false);
+      let fail!: (error: Error) => void;
+      probe.track(new Promise<void>((_, reject) => { fail = reject; }));
+      expect(probe.pending()).toBe(true);
+      await act(async () => { fail(new Error('network')); });
+      expect(probe.pending()).toBe(false);
+      probe.unmount();
+    });
+
+    it('clears when the turn ends even though the abort never settles', () => {
+      const probe = mountPending(true);
+      probe.track(new Promise<never>(() => {}));
+      expect(probe.pending()).toBe(true);
+      probe.render(false);
+      expect(probe.pending()).toBe(false);
+      probe.unmount();
+    });
   });
 
   it('uses an in-flight engine id rather than requiring a visible user prompt', () => {

@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
+    <!-- Fallback only: theme-boot.js below, then src/lib/theme.ts, set both
+         to the paper of the app's own resolved theme, so the browser chrome
+         follows the in-app choice rather than the OS. -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1B2226" />
     <!-- Add to Home Screen: the served GUI opens as its own standalone window. -->
@@ -17,21 +20,11 @@
     <title>kiki</title>
     <!-- Resolve the theme before first paint; the module bundle re-applies it
          and then keeps it in sync (src/lib/theme.ts). Without this, a dark
-         user gets a paper-white flash while the bundle loads. -->
-    <script>
-      (function () {
-        try {
-          var stored = JSON.parse(localStorage.getItem('kiki.settings') || '{}');
-          var pref = stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'system';
-          var dark =
-            pref === 'dark' ||
-            (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-        } catch (_) {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
+         user gets a paper-white flash while the bundle loads. A same-origin
+         file, not an inline script: a server reached over the network sends
+         `Content-Security-Policy: default-src 'self'`, which blocks inline
+         scripts — exactly the phone case, where the flash is most visible. -->
+    <script vite-ignore src="/theme-boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

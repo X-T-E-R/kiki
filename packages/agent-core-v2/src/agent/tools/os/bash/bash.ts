@@ -8,14 +8,6 @@ export const MAX_TIMEOUT_S = 5 * 60;
 export const DEFAULT_BACKGROUND_TIMEOUT_S = 10 * 60;
 export const MAX_BACKGROUND_TIMEOUT_S = 24 * 60 * 60;
 
-function timeoutCapS(isBackground: boolean): number {
-  return isBackground ? MAX_BACKGROUND_TIMEOUT_S : MAX_TIMEOUT_S;
-}
-
-function isValidTimeoutValue(timeout: number, isBackground: boolean): boolean {
-  return timeout <= timeoutCapS(isBackground);
-}
-
 export const BashInputSchema = z
   .object({
     command: z.string().min(1, 'Command cannot be empty.').describe('The command to execute.'),
@@ -32,14 +24,14 @@ export const BashInputSchema = z
       .positive()
       .default(DEFAULT_TIMEOUT_S)
       .describe(
-        `Optional timeout in seconds for the command to execute. Foreground default ${String(DEFAULT_TIMEOUT_S)}s, max ${String(MAX_TIMEOUT_S)}s. Background default ${String(DEFAULT_BACKGROUND_TIMEOUT_S)}s, max ${String(MAX_BACKGROUND_TIMEOUT_S)}s. Ignored for background commands when disable_timeout=true.`,
+        `Timeout in seconds. Foreground: default ${String(DEFAULT_TIMEOUT_S)}, at most ${String(MAX_TIMEOUT_S)}. Background: default ${String(DEFAULT_BACKGROUND_TIMEOUT_S)}, at most ${String(MAX_BACKGROUND_TIMEOUT_S)}, ignored when disable_timeout=true. A larger value is lowered to the limit and the result says so.`,
       )
       .optional(),
     description: z
       .string()
       .optional()
       .describe(
-        'A short description for the background task. Required when run_in_background is true.',
+        'A short label for the task list. Defaults to the start of the command.',
       ),
     run_in_background: z
       .boolean()
@@ -48,32 +40,13 @@ export const BashInputSchema = z
     lifetime: z
       .enum(['finite', 'service'])
       .optional()
-      .describe('Whether background work is finite or a long-running service.'),
+      .describe('For a background command: finite (default) for work that ends, service for a server, watcher or listener that keeps running. Ignored in the foreground.'),
     disable_timeout: z
       .boolean()
       .optional()
       .describe(
         'If true, do not apply a timeout to the command. Only applies when run_in_background is true.',
       ),
-  })
-  .superRefine((val, ctx) => {
-    const isBackground = val.run_in_background === true;
-    if (val.lifetime !== undefined && !isBackground) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['lifetime'],
-        message: 'lifetime is only valid when run_in_background is true',
-      });
-    }
-    if (val.timeout === undefined) return;
-    if (!isValidTimeoutValue(val.timeout, isBackground)) {
-      const cap = isBackground ? MAX_BACKGROUND_TIMEOUT_S : MAX_TIMEOUT_S;
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['timeout'],
-        message: `timeout must be ≤ ${String(cap)}s (${isBackground ? 'background' : 'foreground'})`,
-      });
-    }
   });
 
 export const BashOutputSchema = z.object({

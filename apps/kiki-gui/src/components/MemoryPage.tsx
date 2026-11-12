@@ -35,12 +35,11 @@
  * `auto` there is nothing pending, so there is no tab.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemorySources, type MemorySource } from './useMemorySources';
 import { MemorySharingControls } from './MemorySharingControls';
-import { MemoryAdvisorSwitch } from './memory/MemoryAdvisorSwitch';
-import { invalidateMemoryAdvisorReads } from './memory/useMemoryAdvisor';
+import { invalidateMemoryAdvisorReads, useMemoryAdvisor } from './memory/useMemoryAdvisor';
 import { useSearchParams, type To } from 'react-router-dom';
 
 import type { WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -48,7 +47,9 @@ import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
-import { Icon } from './icons';
+import { DisclosureChevron, Icon } from './icons';
+import { usePhoneMode } from '../lib/layoutHooks';
+import { SettingsSelect } from './settings/SettingsPrimitives';
 import { BasisLine, historyLabel, MemoryHistoryDialog, MemoryReadView, TypeTag, ValidityLine } from './MemoryHistory';
 import { memoryApplicability, parseMemoryEntry } from './memory/memoryReceipt';
 import { continueMemory } from './memory/continueMemory';
@@ -67,7 +68,7 @@ import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
-import { InlineError, Toggle } from './controls';
+import { InlineError } from './controls';
 import { useDirtyGuard, useDirtyReporter } from './dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { SearchableSelect } from './SearchableSelect';
@@ -243,33 +244,51 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     },
   });
 
+  const scopeViewRef = useRef<MemoryScopeViewHandle>(null);
+  // "New memory" acts on the scope on screen, so it is offered exactly when
+  // that scope's list is: memory on, the scope resolved and readable.
+  const scopeViewMounted = settings !== undefined && globalEnabled && scopeError === null
+    && !((missingObject && objectLoading) || memorySources.loading) && !missingObject;
+
   return (
     <MemoryAuthorityContext.Provider value={authority}>
     <div data-memory-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+      {/* The header holds the title and the one way to add to this page; the
+          state of memory reads as a sentence right under it, and the
+          advisor's switch lives in Settings › Memory with the other defaults. */}
       <PageHeader title={t('memory.title')} onToggleSidebar={onToggleSidebar} width="split">
-        <div data-memory-status className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-soft" role="status">
+        {scopeViewMounted ? (
+          <button
+            type="button"
+            data-memory-new
+            disabled={!authority.writable}
+            onClick={() => { scopeViewRef.current?.startCreate(); }}
+            className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
+          >
+            {t('memory.new')}
+          </button>
+        ) : null}
+      </PageHeader>
+      <div className="shrink-0 px-4 lg:px-6">
+        <div data-memory-status role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-3 gap-y-1 pb-2 text-[12.5px] text-ink-soft`}>
           {settingsQuery.isPending && settings === undefined ? (
             <span>{t('memory.loading')}</span>
           ) : settingsQuery.isError && settings === undefined ? null : settingsQuery.isError ? (
             <span>{t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })}</span>
+          ) : globalEnabled ? (
+            <MemoryOnSentence workspaceId={scope} />
           ) : (
-            <span>{t(globalEnabled ? 'st.memory.enabled' : 'st.memory.disabled')}</span>
+            <span>{t('st.memory.disabled')}</span>
           )}
           {globalEnabled && scope !== undefined && workspaceOverride === false ? (
             <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
           ) : null}
           {settings !== undefined ? <MemoryStoreStatus /> : null}
-          {globalEnabled ? (
-            <span className="inline-flex min-w-0 items-center gap-2 border-l border-hairline pl-3" data-memory-advisor-header>
-              <span className="shrink-0 text-ink-faint" aria-hidden>{t('memory.advisor.headerLabel')}</span>
-              <MemoryAdvisorSwitch workspaceId={scope} onNavigate={onNavigate} />
-            </span>
-          ) : null}
-          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
+          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="rounded-sm font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
             {t('st.memory.settingsLink')}
           </button>
         </div>
-      </PageHeader>
+      </div>
       {settings === undefined && settingsQuery.isPending ? (
         <p data-memory-loading role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} items-center gap-2 px-4 py-12 text-[13px] text-ink-faint lg:px-6`}>
           <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -428,6 +447,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           ) : (
             <MemoryScopeView
               key={targetKey(target)}
+              ref={scopeViewRef}
               target={target}
               sources={memorySources.sources}
               enabled={scopeEnabled}
@@ -439,6 +459,34 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
       )}
     </div>
     </MemoryAuthorityContext.Provider>
+  );
+}
+
+/**
+ * The state of memory as one sentence under the header: on, where it is kept,
+ * and which model picks the entries each turn. The advisor's own switch is a
+ * default and lives in Settings › Memory; here only a problem with it is
+ * named, as a word, because that is the one thing the reader may need to act
+ * on. The read is the one the settings card and the old header switch share.
+ */
+function MemoryOnSentence({ workspaceId }: { readonly workspaceId?: string }) {
+  const { t } = useI18n();
+  const advisor = useMemoryAdvisor(workspaceId);
+  const { view } = advisor;
+  const status = advisor.data?.advisor_status;
+  const config = advisor.data?.advisor;
+  const model = view.kind === 'on'
+    ? status?.model ?? status?.source_status?.model ?? config?.source?.model ?? config?.selector?.model
+    : undefined;
+  return (
+    <>
+      <span data-memory-status-sentence>{model !== undefined ? t('memory.status.on', { model }) : t('memory.status.onNoAdvisor')}</span>
+      {view.on && (view.kind === 'unconfigured' || view.kind === 'problem') ? (
+        <span data-memory-advisor-state className={view.tone === 'danger' ? 'text-danger' : 'text-amber-ink'}>
+          {t('memory.advisor.headerLabel')} · {t(view.stateKey)}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -484,13 +532,21 @@ function MemoryIntro({
   );
 }
 
+/** What the page header's "New memory" reaches into the scope view for. */
+interface MemoryScopeViewHandle {
+  /** Open an empty editor, asking first when another draft is unsaved. */
+  readonly startCreate: () => void;
+}
+
 function MemoryScopeView({
+  ref,
   target,
   sources,
   enabled,
   review,
   onOpenSession,
 }: {
+  readonly ref?: Ref<MemoryScopeViewHandle>;
   readonly target: MemoryTarget;
   readonly sources: readonly MemorySource[];
   readonly enabled: boolean;
@@ -498,9 +554,10 @@ function MemoryScopeView({
   readonly onOpenSession: (sessionId: string) => void;
 }) {
   const { t, tp, locale } = useI18n();
+  const phone = usePhoneMode();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { state: authorityState, writable, kind } = useMemoryAuthority();
+  const { state: authorityState, kind } = useMemoryAuthority();
   // The store answers no ordinary read until its automatic upgrade is done.
   const upgrading = kind === 'migrating';
   const [params] = useSearchParams();
@@ -533,6 +590,9 @@ function MemoryScopeView({
     guard.confirmDiscard?.(MEMORY_EDITOR_DIRTY_ID, go);
     if (guard.confirmDiscard === undefined) go();
   };
+  useImperativeHandle(ref, () => ({
+    startCreate: () => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); },
+  }));
 
   const lists = useQueries({ queries: sources.map((source) => {
     const queryKey = ['memory', targetKey(source.target), { search, typeFilter, showInactive }];
@@ -604,6 +664,7 @@ function MemoryScopeView({
     if (!upgrading && !readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
   }, [upgrading, readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
   const filtersActive = search.trim() !== '' || typeFilter !== 'all' || showInactive;
+  const inactiveCount = entries.filter(({ entry }) => entry.status === 'archived' || entry.status === 'superseded').length;
 
   const detail = creating ? (
     <MemoryEditor
@@ -759,15 +820,6 @@ function MemoryScopeView({
                       aria-label={t('memory.search.aria')}
                       className="h-8 min-w-0 flex-1 rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-selected-ink"
                     />
-                    <button
-                      type="button"
-                      data-memory-new
-                      disabled={!writable}
-                      onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); }}
-                      className={SECONDARY_BUTTON}
-                    >
-                      {t('memory.new')}
-                    </button>
                     <MemoryImportButton
                       target={target}
                       onOpenEntry={(id) => {
@@ -778,24 +830,35 @@ function MemoryScopeView({
                     />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                    <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
-                      {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
-                        const active = candidate === typeFilter;
-                        return (
-                          <button
-                            key={candidate}
-                            type="button"
-                            data-memory-type-filter={candidate}
-                            aria-pressed={active}
-                            onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                            className={`h-7 rounded-md px-2 text-[12.5px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
-                          >
-                            {t(`memory.type.${candidate}`)}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <span data-memory-show-inactive><Toggle label={t('memory.showInactive')} checked={showInactive} onChange={setShowInactive} /></span>
+                    {/* The type matters to what an entry is, so the filter
+                        stays; on a phone its five chips are one dropdown. */}
+                    {phone ? (
+                      <SettingsSelect<MemoryType | 'all'>
+                        ariaLabel={t('memory.filter.aria')}
+                        value={typeFilter}
+                        dataAttr="data-memory-type-select"
+                        onChange={(next) => { setTypeFilter(next); }}
+                        choices={(['all', ...MEMORY_TYPES] as const).map((candidate) => ({ value: candidate, label: t(`memory.type.${candidate}`) }))}
+                      />
+                    ) : (
+                      <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
+                        {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
+                          const active = candidate === typeFilter;
+                          return (
+                            <button
+                              key={candidate}
+                              type="button"
+                              data-memory-type-filter={candidate}
+                              aria-pressed={active}
+                              onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
+                              className={`h-7 rounded-md px-2 text-[12.5px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
+                            >
+                              {t(`memory.type.${candidate}`)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                     {listQuery.data !== undefined ? (
                       <span data-memory-count className="ml-auto text-[12px] text-ink-faint tabular-nums">
                         {tp('memory.count', entries.length)}
@@ -856,6 +919,21 @@ function MemoryScopeView({
                     ))}
                   </div>
                 )}
+                {/* Archived and superseded entries stay out of the list until
+                    asked for: one quiet row at its end brings them in. The
+                    count is known only once they are read. */}
+                {!upgrading && !listQuery.isPending && !listQuery.isError ? (
+                  <button
+                    type="button"
+                    data-memory-show-inactive
+                    aria-pressed={showInactive}
+                    onClick={() => { setShowInactive(!showInactive); }}
+                    className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                  >
+                    {showInactive && inactiveCount > 0 ? tp('memory.archivedRow', inactiveCount) : t('memory.showInactive')}
+                    <DisclosureChevron open={showInactive} className="text-ink-faint" />
+                  </button>
+                ) : null}
               </div>
             </div>
             <div

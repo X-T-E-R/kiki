@@ -14,6 +14,9 @@ export interface BoardTodoController {
   readonly getAgentState: (agentId: string) => SessionViewState;
   readonly subscribe: (listener: () => void) => () => void;
   readonly subscribeAgent: (agentId: string, listener: () => void) => () => void;
+  readonly retainAgentView: (viewId: string, agentId: string, grade: 'turn') => void;
+  readonly releaseAgentView: (viewId: string) => void;
+  readonly setFocusedAgent: (agentId: string | undefined) => void;
   readonly open: () => Promise<void>;
   readonly close: () => void;
 }
@@ -80,9 +83,13 @@ function makeSnapshot(controller: BoardTodoController): BoardAssociatedTodoSnaps
   };
 }
 
+let todoManagerSequence = 0;
+
 class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
   private readonly sources = new Map<string, SourceRecord>();
   private disposed = false;
+  /** Prefix of this manager's view leases, so they never replace another holder's on a borrowed controller. */
+  private readonly leasePrefix = `board-todos:${(todoManagerSequence += 1).toString(36)}`;
 
   constructor(private readonly options: {
     readonly createController: (sessionId: string) => BoardTodoController;
@@ -144,6 +151,10 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
     source.mainUnsubscribe = source.controller.subscribe(publish);
     this.reconcileAgentSubscriptions(source, publish);
     if (!source.borrowed) {
+      // A todo list needs main at `turn`, which the session always holds:
+      // release the focus lease a new controller starts with, so this one
+      // does not receive main's timeline frame by frame.
+      source.controller.setFocusedAgent(undefined);
       void source.controller.open().catch((error: unknown) => {
         if (source.disposed) return;
         source.snapshot = {
@@ -162,6 +173,11 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
     this.notify(source);
   }
 
+  /**
+   * Each subagent's todos arrive at `turn`. Listening asks for nothing, so
+   * every subagent the list shows also gets a `turn` lease, released with its
+   * listener.
+   */
   private reconcileAgentSubscriptions(source: SourceRecord, publish: () => void): void {
     const wanted = new Set(Object.keys(source.controller.getForest()?.byId ?? {}).filter((id) => id !== 'main'));
     for (const [agentId, unsubscribe] of source.agentUnsubscribers) {
@@ -171,7 +187,13 @@ class BoardAssociatedTodoManagerImpl implements BoardAssociatedTodoManager {
     }
     for (const agentId of wanted) {
       if (source.agentUnsubscribers.has(agentId)) continue;
-      source.agentUnsubscribers.set(agentId, source.controller.subscribeAgent(agentId, publish));
+      const viewId = `${this.leasePrefix}:${agentId}`;
+      const unsubscribe = source.controller.subscribeAgent(agentId, publish);
+      source.controller.retainAgentView(viewId, agentId, 'turn');
+      source.agentUnsubscribers.set(agentId, () => {
+        unsubscribe();
+        source.controller.releaseAgentView(viewId);
+      });
     }
   }
 

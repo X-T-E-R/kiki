@@ -23,11 +23,17 @@
  * make, not a reflex, so a stray click on the backdrop cannot discard it. That
  * flag governs only those two inputs; the panel's own close control, its focus
  * trap, and the pickers it owns are unaffected.
+ *
+ * On a coarse pointer a dismissible dialog also owns one history entry
+ * (lib/layerHistory), so the phone's back closes it the way Escape does.
  */
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useLayerHistory } from '../lib/layerHistory';
+import { useCoarsePointer } from '../lib/layoutHooks';
+import { isImeKeyEvent } from '../lib/shortcuts';
 import { canRestoreModalFocus, MODAL_BASE_Z_INDEX, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
 
 const ModalDepth = createContext<number | undefined>(undefined);
@@ -71,7 +77,34 @@ export const DIALOG_PANEL_SIZES = {
   '2xl': 'max-w-[1280px]',
 } as const;
 
-const DEFAULT_PANEL_CLASS = `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`;
+/**
+ * The default backdrop: a centered panel, the top padding clearing the status
+ * bar in edge-to-edge shells (the inset is 0 elsewhere).
+ */
+const CENTERED_OVERLAY_CLASS =
+  'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4 pt-[max(1rem,var(--kiki-safe-top-inset))]';
+
+/**
+ * The backdrop for the default panel. On a coarse pointer the box follows the
+ * visual viewport, so a phone keyboard shortens it instead of covering the
+ * panel's bottom; below `md` the panel docks to the bottom edge as a sheet.
+ * Only the default panel gets it: its height cap tracks the same viewport and
+ * its sheet chrome (square bottom, home-indicator padding) is what makes a
+ * docked panel read right. A caller's own panel keeps the centered backdrop.
+ */
+export const DIALOG_SHEET_OVERLAY_CLASS =
+  `${CENTERED_OVERLAY_CLASS} pointer-coarse:h-[var(--kiki-visual-height,100dvh)] max-md:items-end max-md:p-0 max-md:pt-[var(--kiki-safe-top-inset)]`;
+
+/**
+ * The default panel: the `sm` tier, capped to the visible height and
+ * scrolling inside itself so its action row stays reachable; below `md` a
+ * full-width bottom sheet padded above the home indicator. The cap is not in
+ * DIALOG_PANEL_BASE because callers compose the base with their own height
+ * and overflow rules, which an arbitrary-value cap here would race in the
+ * stylesheet.
+ */
+export const DIALOG_DEFAULT_PANEL_CLASS =
+  `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[calc(var(--kiki-visual-height,100dvh)-2rem-var(--kiki-safe-top-inset))] overflow-y-auto overscroll-y-contain max-md:max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(1.5rem+var(--kiki-safe-bottom-inset))]`;
 
 export function Dialog({
   onClose, ariaLabel, overlayId, panelClassName, overlayClassName, children,
@@ -111,6 +144,10 @@ export function Dialog({
   closeRef.current = onClose;
   const dismissibleRef = useRef(dismissible);
   dismissibleRef.current = dismissible;
+  // Phone back = Escape: only where Escape closes it, and only on touch, where
+  // a device back exists and no desktop history gets an entry per dialog.
+  const coarse = useCoarsePointer();
+  useLayerHistory(overlayId, coarse && dismissible, onClose);
 
   // Stack registration is stable across form edits and busy-state changes.
   useEffect(() => {
@@ -118,6 +155,8 @@ export function Dialog({
     const modal = depth !== undefined && panelRef.current ? registerModal(overlayId, depth, panelRef.current) : null;
     ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
+      // An Escape that ends an IME composition belongs to the field, not the dialog.
+      if (isImeKeyEvent(event)) return;
       if (event.key !== 'Escape' || !dismissibleRef.current
         || (modal ? !modal.isTop() : !panelRef.current || !canRestoreModalFocus(panelRef.current))) return;
       // A confirmation rendered inline inside this panel (not stacked) owns
@@ -209,7 +248,7 @@ export function Dialog({
     <ModalDepth.Provider value={depth}>
       <div
         {...overlayData}
-        className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
+        className={overlayClassName ?? (panelClassName === undefined ? DIALOG_SHEET_OVERLAY_CLASS : CENTERED_OVERLAY_CLASS)}
         style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
         onPointerDown={(event) => {
           if (dismissible && event.target === event.currentTarget && (depth === undefined
@@ -217,7 +256,7 @@ export function Dialog({
             : ownership.current?.isTop())) onClose();
         }}
       >
-        <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DEFAULT_PANEL_CLASS}>
+        <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}>
           {children}
         </div>
       </div>

@@ -39,10 +39,12 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent,
   type ReactNode,
 } from 'react';
 import { Outlet, useMatch } from 'react-router-dom';
 
+import { SeatFileDropContext, type SeatFileDrop } from './seatFileDrop';
 import { ToastAnchor } from './Toasts';
 
 export type ConversationPhase = 'hero' | 'settling' | 'active';
@@ -98,6 +100,10 @@ export const EMPTY_SLOTS: ConversationShellSlots = {
  */
 export function resolveFallbackPhase(isNewRoute: boolean): ConversationPhase {
   return isNewRoute ? 'hero' : 'settling';
+}
+
+function hasFiles(event: DragEvent): boolean {
+  return [...event.dataTransfer.types].includes('Files');
 }
 
 /** Slot portal targets + seat registration. Only usable under ConversationShell. */
@@ -212,6 +218,21 @@ export function ConversationShell() {
   const [rail, railRef] = useSlotRef();
   const [footer, footerRef] = useSlotRef();
   const [preview, previewRef] = useSlotRef();
+  const [column, columnRef] = useSlotRef();
+
+  const dropRef = useRef<((files: readonly File[]) => void) | null>(null);
+  const registerDrop = useCallback((drop: (files: readonly File[]) => void) => {
+    dropRef.current = drop;
+    return () => { if (dropRef.current === drop) dropRef.current = null; };
+  }, []);
+  // dragenter / dragleave fire at every child boundary, so a depth count, not
+  // a boolean, says whether the drag is still over the column.
+  const dragDepthRef = useRef(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const seatFileDrop = useMemo<SeatFileDrop>(
+    () => ({ dragActive: fileDragActive, column, registerDrop }),
+    [fileDragActive, column, registerDrop],
+  );
 
   const contextValue = useMemo<ConversationShellContextValue>(
     () => ({
@@ -228,9 +249,53 @@ export function ConversationShell() {
 
   return (
     <ConversationShellContext.Provider value={contextValue}>
-      <div className="conversation-shell" data-phase={phase}>
+      <div
+        className="conversation-shell"
+        data-phase={phase}
+        // Nothing outside the column takes a file: refuse it there, so a
+        // release over the rail or the preview cannot open the file in place
+        // of the app. Anything that does take one claimed the event first.
+        onDragOver={(event) => {
+          if (!hasFiles(event) || event.defaultPrevented) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'none';
+        }}
+        onDrop={(event) => {
+          if (hasFiles(event)) event.preventDefault();
+        }}
+      >
         <div className="conversation-row">
-          <div className="conversation-center">
+          <div
+            ref={columnRef}
+            className="conversation-center"
+            // Taken only while a seated composer is there to receive it (a
+            // subagent page seats none); otherwise the shell root refuses it.
+            onDragEnter={(event) => {
+              if (!hasFiles(event) || dropRef.current === null) return;
+              event.preventDefault();
+              dragDepthRef.current += 1;
+              setFileDragActive(true);
+            }}
+            onDragOver={(event) => {
+              if (hasFiles(event) && dropRef.current !== null) event.preventDefault();
+            }}
+            onDragLeave={(event) => {
+              if (!hasFiles(event)) return;
+              dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+              if (dragDepthRef.current === 0) setFileDragActive(false);
+            }}
+            onDrop={(event) => {
+              if (!hasFiles(event)) return;
+              dragDepthRef.current = 0;
+              setFileDragActive(false);
+              // The card itself, or another editor in the column (an inline
+              // message edit), already took it.
+              if (event.defaultPrevented) return;
+              event.preventDefault();
+              const files = [...event.dataTransfer.files];
+              if (files.length > 0) dropRef.current?.(files);
+            }}
+          >
             <div ref={headerRef} className="conversation-header-slot" />
             <div className="conversation-middle">
               {/* <main>: the route's primary content landmark (the burst
@@ -241,7 +306,9 @@ export function ConversationShell() {
               <div className="conversation-seat" data-composer-seat="">
                 {phase === 'hero' ? <HeroGlow className="hero-glow" /> : null}
                 <div ref={dockRef} className="conversation-dock-slot" />
-                {seat?.composer ?? null}
+                <SeatFileDropContext.Provider value={seatFileDrop}>
+                  {seat?.composer ?? null}
+                </SeatFileDropContext.Provider>
                 <div ref={heroFooterRef} className="conversation-herofooter-slot" />
                 {/* Docked: toasts rise from just above the card, inside this
                     column, so they cover neither the rail nor the tray. */}

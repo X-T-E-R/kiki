@@ -3,9 +3,47 @@ import { RPCError } from '@kiki/klient';
 import type { HostAdapter } from '../host';
 import type { ConnectionSelection } from '../state/connectionConfig';
 import { API_CODES, ApiError, createRemoteSpaceClient, isSessionNotFoundMessage, KikiClient } from './client';
-import { ScopeRestoreError, type ScopeConnectionAdapter } from './navScope';
+import { ScopeRestoreError, type ScopeConnectionAdapter, type ScopeRestoreFailure } from './navScope';
 import type { NavScopeIdentity } from './navHistory';
 import { parseActiveSpacePayload } from './spaceStorage';
+
+/**
+ * The broker (`/api/remote-connections/:id/call`) answers every refusal with
+ * the same envelope code, 40101, whatever the HTTP status was; the only thing
+ * that tells the causes apart is the reason string it puts in the message.
+ * Only reasons that mean exactly one thing are listed. Anything else — a
+ * network failure (which arrives as a 50001 or a client transport error), a
+ * timeout, an unlisted reason — stays on "can't reach it".
+ */
+const REMOTE_REFUSALS: ReadonlyMap<string, ScopeRestoreFailure> = new Map<string, ScopeRestoreFailure>([
+  ['inbound_disabled', 'remote-closed'],
+  ['connection_paused', 'remote-paused'],
+  ['connection_disabled', 'remote-paused'],
+  ['identity_changed', 'remote-identity-changed'],
+  ['registered_space_identity_changed', 'remote-identity-changed'],
+  ['connection_not_approved', 'remote-not-approved'],
+  ['authentication_required', 'remote-not-approved'],
+  ['invalid_owner_credential', 'remote-not-approved'],
+  ['target_daemon_unavailable_start_registered_space', 'remote-not-running'],
+]);
+
+/** The envelope message: `ApiError` appends ` (code N)`, `RPCError` does not. */
+function envelopeMessage(error: ApiError | RPCError): string {
+  const suffix = ` (code ${error.code})`;
+  return error instanceof ApiError && error.message.endsWith(suffix) ? error.message.slice(0, -suffix.length) : error.message;
+}
+
+/**
+ * A paired space's failure, in the person's terms. It never becomes
+ * `auth-required`: the remote branch does not read a typed token, so a token
+ * field there could only be a dead end.
+ */
+function remoteScopeFailure(error: unknown): unknown {
+  if (error instanceof ScopeRestoreError || (error instanceof DOMException && error.name === 'AbortError')) return error;
+  const reason = (error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED
+    ? REMOTE_REFUSALS.get(envelopeMessage(error)) : undefined;
+  return new ScopeRestoreError(reason ?? 'remote-unreachable');
+}
 
 /** A guarded windows-mode action: no source selection or Router visit is committed. */
 export async function openRemoteScopeWindow(host: Pick<HostAdapter, 'openRemoteSpace'>, scope: NavScopeIdentity, signal: AbortSignal): Promise<void> {
@@ -29,7 +67,7 @@ export interface ScopeConnectionOptions {
   createClient?: (selection: ConnectionSelection) => KikiClient;
 }
 
-export async function validateScopeRoute(client: KikiClient, route: string, signal: AbortSignal): Promise<void> {
+export async function validateScopeRoute(client: KikiClient, route: string, signal: AbortSignal, remote = false): Promise<void> {
   signal.throwIfAborted();
   const pathname = new URL(route, 'http://example.test').pathname;
   const sessionId = /^\/s\/([^/]+)/.exec(pathname)?.[1];
@@ -57,6 +95,7 @@ export async function validateScopeRoute(client: KikiClient, route: string, sign
     // an arbitrary 400/404, missing prompt/block, or malformed response is not deletion.
     if (roomId !== undefined && error instanceof RPCError && error.code === API_CODES.REQUEST_INVALID &&
         error.message === `Room '${decodeURIComponent(roomId)}' does not exist.`) throw new ScopeRestoreError('target-missing');
+    if (remote) throw remoteScopeFailure(error);
     if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
     throw error;
   }
@@ -70,10 +109,12 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
       signal.throwIfAborted();
       const source = options.active();
       const crossHome = source.scope.homeId !== scope.homeId;
+      const remote = scope.scopeId.startsWith('remote:') || scope.homeId.startsWith('remote:');
       if (!crossHome && scope.scopeId === source.scope.scopeId && token === undefined) {
         let meta: MetaResponse;
         try { meta = await source.client.meta(); }
         catch (error) {
+          if (remote) throw remoteScopeFailure(error);
           if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
           throw error;
         }
@@ -82,7 +123,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
         if ((expectedHome !== undefined && expectedHome !== meta.server_home_id) ||
             (scope.connectionRef !== undefined && scope.connectionRef !== source.scope.connectionRef)) throw new ScopeRestoreError('identity-mismatch');
         return { scope: { ...source.scope, serverHomeId: meta.server_home_id },
-          validate: (route, nextSignal) => validateScopeRoute(source.client, route, nextSignal),
+          validate: (route, nextSignal) => validateScopeRoute(source.client, route, nextSignal, remote),
           commit: () => { signal.throwIfAborted(); }, dispose: () => {} };
       }
       let selection: ConnectionSelection;
@@ -101,7 +142,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
         } finally { options.preparing?.(false); }
       };
       try {
-        if (scope.scopeId.startsWith('remote:') || scope.homeId.startsWith('remote:')) {
+        if (remote) {
           const id = scope.scopeId.slice(7);
           if (scope.homeId !== scope.scopeId || !scope.scopeId.startsWith('remote:') ||
               !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new ScopeRestoreError('scope-invalid');
@@ -113,13 +154,19 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           signal.throwIfAborted();
           const record = records.find((entry) => entry.id === id);
           if (record === undefined) throw new ScopeRestoreError('scope-invalid');
-          if (record.enabled !== true || record.state === 'disabled' || record.target.protocol !== CONNECTION_PROTOCOL) throw new ScopeRestoreError('identity-mismatch');
+          // What the record already says is read before asking the broker, which
+          // would refuse these the same way with a less certain reason.
+          if (record.enabled !== true || record.state === 'disabled') throw new ScopeRestoreError('remote-paused');
+          if (record.target.protocol !== CONNECTION_PROTOCOL) throw new ScopeRestoreError('remote-protocol');
+          if (record.state === 'identity_changed') throw new ScopeRestoreError('remote-identity-changed');
           selection = { config: control.selection.config, persist: false, source: 'remote', scopeId: scope.scopeId,
             connectionId: record.id, serverHomeId: record.target.homeId };
           instance = options.createClient?.(selection) ?? createRemoteSpaceClient({ endpoint: selection.config.url,
             token: selection.config.token, connectionId: record.id });
           ownsClient = true;
-          const meta = await instance.meta();
+          let meta: MetaResponse;
+          try { meta = await instance.meta(); }
+          catch (error) { throw remoteScopeFailure(error); }
           signal.throwIfAborted();
           if (meta.server_home_id !== record.target.homeId ||
               (scope.serverHomeId !== undefined && scope.serverHomeId !== meta.server_home_id) ||
@@ -127,7 +174,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           const verified = instance;
           return {
             scope: { ...scope, serverHomeId: meta.server_home_id, connectionRef: record.id },
-            validate: (route, nextSignal) => validateScopeRoute(verified, route, nextSignal),
+            validate: (route, nextSignal) => validateScopeRoute(verified, route, nextSignal, true),
             commit: () => {
               signal.throwIfAborted();
               options.commit(selection, verified, meta);
@@ -245,7 +292,10 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
         };
       } catch (error) {
         await dispose();
-        if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
+        // A 40101 left over on the remote branch came from this window's own
+        // home (the pairing list), not from the paired space; the remote branch
+        // never reads a typed token, so it must not ask for one.
+        if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError(remote ? 'offline' : 'auth-required');
         throw error;
       }
     },

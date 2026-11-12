@@ -256,7 +256,9 @@ describe('CronPage', () => {
     const rows = [...dialog.querySelectorAll<HTMLElement>('[data-cron-task]')];
     expect(rows).toHaveLength(2);
 
-    expect(rows[0]!.querySelector('[data-cron-status="running"]')).not.toBeNull();
+    // The group says the state; the row does not repeat it.
+    expect(rows[0]!.closest('[data-cron-section]')?.getAttribute('data-cron-section')).toBe('active');
+    expect(rows[0]!.querySelector('[data-cron-status="running"]')).toBeNull();
     // The row leads with the schedule in the reader's language, not the
     // engine's string and not the raw expression.
     expect(rows[0]!.querySelector('[data-cron-schedule]')?.textContent).toBe('Every day at 09:00');
@@ -268,7 +270,7 @@ describe('CronPage', () => {
     expect(rows[0]!.textContent).toContain('Next run');
     expect(rows[0]!.textContent).toContain('Never');
 
-    expect(rows[1]!.querySelector('[data-cron-status="paused"]')).not.toBeNull();
+    expect(rows[1]!.closest('[data-cron-section]')?.getAttribute('data-cron-section')).toBe('paused');
     expect(rows[1]!.querySelector('[data-cron-status="stale"]')).not.toBeNull();
     expect(rows[1]!.querySelector('[data-cron-session]')).toBeNull();
     expect(rows[1]!.textContent).toContain('Beta');
@@ -309,7 +311,7 @@ describe('CronPage', () => {
 
     expect(pauseCronTask).toHaveBeenCalledWith('task-1', 'sess-1');
     expect(getToasts().some((toast) => toast.tone === 'success' && toast.text === 'Scheduled task paused')).toBe(true);
-    expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-status="paused"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-cron-section="paused"] [data-cron-task="task-1"]')).not.toBeNull();
     // The one control flips its own label; its test hook stays the same.
     expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-action="pause"]')?.textContent).toBe('Resume');
   });
@@ -326,7 +328,7 @@ describe('CronPage', () => {
 
     expect(resumeCronTask).toHaveBeenCalledWith('task-1', 'sess-1');
     expect(getToasts().some((toast) => toast.text === 'Scheduled task resumed')).toBe(true);
-    expect(dialog.querySelector('[data-cron-task="task-1"] [data-cron-status="running"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-cron-section="active"] [data-cron-task="task-1"]')).not.toBeNull();
   });
 
   it('triggers a task immediately without touching its schedule', async () => {

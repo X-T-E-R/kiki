@@ -503,7 +503,7 @@ describe('AgentPermissionPolicyService chain', () => {
       policyName: 'user-configured-deny',
       result: {
         kind: 'deny',
-        message: 'Tool "Bash" was denied by permission rule. Reason: blocked by test',
+        message: 'Tool "Bash" was denied by permission rule "Bash". Reason: blocked by test',
       },
     });
   });
@@ -623,6 +623,25 @@ describe('AgentPermissionPolicyService chain', () => {
     }
   });
 
+  it('keeps a tool-wide session approval from covering sensitive files and links out of the workspace', async () => {
+    sessionApprovalRulePatterns.push('SendMessage', 'Grep(TODO)');
+    const plain = { toolName: 'SendMessage', args: { text: 'hi' }, accesses: [...ToolAccesses.readFile('/workspace/notes.md'), ...ToolAccesses.all()] };
+    await expect(evaluate(plain)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    const secret = { ...plain, accesses: [...ToolAccesses.readFile('/workspace/.env'), ...ToolAccesses.all()] };
+    await expect(evaluate(secret)).resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+    const linked = { ...plain, accesses: [...ToolAccesses.readFile('/outside/notes.md', true), ...ToolAccesses.all()] };
+    await expect(evaluate(linked)).resolves.toMatchObject({ policyName: 'external-link-access-ask', result: { kind: 'ask' } });
+    await expect(evaluate({ toolName: 'Grep', args: { pattern: 'TODO', path: '/workspace/.env' } }))
+      .resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+
+    sessionApprovalRulePatterns.push(JSON.stringify(['SendMessage', 'read:/workspace/.env']));
+    await expect(evaluate(secret)).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    await expect(evaluate({ ...secret, accesses: [...ToolAccesses.readFile('/workspace/.env.local'), ...ToolAccesses.all()] }))
+      .resolves.toMatchObject({ policyName: 'sensitive-file-access-ask', result: { kind: 'ask' } });
+    mode = 'yolo';
+    await expect(evaluate(linked)).resolves.toMatchObject({ policyName: 'yolo-mode-approve', result: { kind: 'approve' } });
+  });
+
   it.each(['HEAD', 'refs/heads/main', 'objects/pack/example.idx'])('allows ordinary git metadata reads: %s', async (target) => {
     await expect(evaluate({ toolName: 'Read', args: { path: `/workspace/.git/${target}` } })).resolves.toMatchObject({ result: { kind: 'approve' } });
   });
@@ -656,10 +675,10 @@ describe('AgentPermissionPolicyService chain', () => {
   });
 
   it.each([
-    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
-    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
-  ])('applies session approval before $policyName, but asks again on a nonmatching call', async ({ path, policyName }) => {
-    sessionApprovalRulePatterns.push(`Write(${path})`);
+    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask', approved: JSON.stringify(['Write(/workspace/.env)', 'write:/workspace/.env']) },
+    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask', approved: 'Write(/workspace/.git/config)' },
+  ])('applies session approval before $policyName, but asks again on a nonmatching call', async ({ path, policyName, approved }) => {
+    sessionApprovalRulePatterns.push(approved);
     await expect(evaluate({ toolName: 'Write', args: { path, content: 'x' } })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
     });
@@ -678,11 +697,15 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('honors matching session approval for external symlink access', async () => {
-    sessionApprovalRulePatterns.push('Read(/workspace/alias.txt)');
+  it('honors a session approval for the same external symlink target only', async () => {
+    sessionApprovalRulePatterns.push(JSON.stringify(['Read(/workspace/alias.txt)', 'read:/outside/notes.txt']));
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/alias.txt' },
       accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/alias.txt' },
+      accesses: ToolAccesses.readFile('/outside/moved.txt', true) })).resolves.toMatchObject({
+      policyName: 'external-link-access-ask', result: { kind: 'ask' },
     });
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/other.txt' },
       accesses: ToolAccesses.readFile('/outside/notes.txt', true) })).resolves.toMatchObject({

@@ -14,7 +14,7 @@
  * with the shell, expressed here through `navigation` and the rail props.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
@@ -763,7 +763,8 @@ function ChildAgentWorkspace({
 
   // Live per-agent channel: child-agent frames land in their own sub-store, so
   // this workspace re-renders from here without the main transcript
-  // republishing for every hidden child delta.
+  // republishing for every hidden child delta. Listening adds no demand: the
+  // leases below are what make the controller receive these agents.
   const subscribeAgent = useCallback(
     (listener: () => void) =>
       controller === null || !transcriptVisible ? () => {} : controller.subscribeAgent(agentId, listener),
@@ -787,16 +788,33 @@ function ChildAgentWorkspace({
       : emptyAgentView,
   );
 
-  const workspaceViewId = useMemo(() => `workspace:${sessionId}:${agentId}`, [sessionId, agentId]);
+  // Demand, held while this workspace is mounted: this agent's timeline at
+  // `delta` while it is visible (`off` while its tab is hidden), and a nested
+  // agent's parent at `turn` for the parent's task list (the stop control);
+  // main's tasks need no lease, the session holds main at `turn`. The lease
+  // is this instance's own, so the routed page and a tab showing the same
+  // agent never release each other's demand, and it is retained once and
+  // updated on visibility so a flip changes the grade in one step.
+  const leaseId = useId();
+  const workspaceViewId = `workspace:${sessionId}:${agentId}:${leaseId}`;
+  const transcriptVisibleRef = useRef(transcriptVisible);
+  transcriptVisibleRef.current = transcriptVisible;
   useEffect(() => {
     if (controller === null || typeof controller.retainAgentView !== 'function') return;
-    controller.retainAgentView(workspaceViewId, agentId, transcriptVisible ? 'delta' : 'off');
+    controller.retainAgentView(workspaceViewId, agentId, transcriptVisibleRef.current ? 'delta' : 'off');
     return () => { controller.releaseAgentView?.(workspaceViewId); };
-  }, [controller, workspaceViewId, agentId, transcriptVisible]);
+  }, [controller, workspaceViewId, agentId]);
   useEffect(() => {
     if (controller === null || typeof controller.updateAgentView !== 'function') return;
     controller.updateAgentView(workspaceViewId, transcriptVisible ? 'delta' : 'off');
   }, [controller, workspaceViewId, transcriptVisible]);
+  const nestedParentId = parentAgentId !== undefined && parentAgentId !== MAIN_AGENT_ID ? parentAgentId : undefined;
+  useEffect(() => {
+    if (controller === null || nestedParentId === undefined || !transcriptVisible || typeof controller.retainAgentView !== 'function') return;
+    const parentViewId = `${workspaceViewId}:parent`;
+    controller.retainAgentView(parentViewId, nestedParentId, 'turn');
+    return () => { controller.releaseAgentView?.(parentViewId); };
+  }, [controller, workspaceViewId, nestedParentId, transcriptVisible]);
 
   // Same query key as the session view: one catalog fetch, shared cache.
   const handleLoadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
@@ -1497,7 +1515,14 @@ function ChildAgentWorkspace({
     () => withOptimisticUserBlock(agentBlocks, scopedEcho),
     [agentBlocks, scopedEcho],
   );
-  const agentState: SessionViewState = {
+  // Load failure is the session's: an agent's own view never carries one.
+  const agentLoadError = sessionState.loadError ??
+    (agentReadUnavailable ? t('subagent.name.unreported', { id: agentId }) :
+      !agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined);
+  // Memoised like the main session's `timelineState`: `Transcript` and its
+  // rows compare the state and the callbacks below by identity, so rebuilding
+  // them on every render (each composer keystroke) re-rendered the timeline.
+  const agentState = useMemo<SessionViewState>(() => ({
     ...agentLiveState,
     session: sessionState.session,
     blocks: agentBlocks,
@@ -1505,9 +1530,7 @@ function ChildAgentWorkspace({
     // nothing about this agent's rows, and landing before they arrive
     // would spend the one-time initial scroll on an empty list.
     loaded: agentLiveState.loaded,
-    loadError: agentLiveState.loadError ?? sessionState.loadError ??
-      (agentReadUnavailable ? t('subagent.name.unreported', { id: agentId }) :
-        !agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
+    loadError: agentLoadError,
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -1516,7 +1539,26 @@ function ChildAgentWorkspace({
     contextBreakdown: undefined,
     usage: displayUsage,
     pendingInteraction: 'none',
-  };
+  }), [
+    agentLiveState, sessionState.session, agentBlocks, agentLoadError, headerBusy, displayModel,
+    displayEffort, displayContextTokens, displayMaxContextTokens, displayUsage,
+  ]);
+  const timelineState = useMemo(
+    () => timelineBlocks === agentBlocks ? agentState : { ...agentState, blocks: timelineBlocks },
+    [agentState, agentBlocks, timelineBlocks],
+  );
+  const handleRetryLoad = useMemo(
+    () => controller === null ? undefined : () => { void controller.retryOpen(); },
+    [controller],
+  );
+  const handleCancelQueued = useMemo(
+    () => controller === null ? undefined : (promptId: string) => {
+      void controller.abortPrompt(promptId, agentId).catch((error: unknown) => {
+        pushToast({ tone: 'error', text: t('sv.cancelQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+      });
+    },
+    [controller, agentId, t],
+  );
 
   const composerWorking = headerBusy && agentState.pendingInteraction === 'none';
   const lastResponseAt = useLastResponseAt(composerWorking, agentBlocks, agentState.turnStartedAt);
@@ -1544,16 +1586,12 @@ function ChildAgentWorkspace({
         promote={promoteAction}
       />}
       timeline={{
-        state: timelineBlocks === agentBlocks ? agentState : { ...agentState, blocks: timelineBlocks },
+        state: timelineState,
         agentId, onLoadOlder: handleLoadOlder, showQueuedPrompts: true,
         onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
         onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
-        onRetryLoad: controller === null ? undefined : () => { void controller.retryOpen(); },
-        onCancelQueued: controller === null ? undefined : promptId => {
-          void controller.abortPrompt(promptId, agentId).catch(error => {
-            pushToast({ tone: 'error', text: t('sv.cancelQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
-          });
-        },
+        onRetryLoad: handleRetryLoad,
+        onCancelQueued: handleCancelQueued,
         visible: transcriptVisible,
       }}
       dock={<div className="space-y-2 pt-2">

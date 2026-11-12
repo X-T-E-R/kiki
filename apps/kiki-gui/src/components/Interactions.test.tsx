@@ -14,13 +14,14 @@ import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { QuestionAnswer, QuestionItem } from '@kiki/protocol';
-import { createViewState, projectAgentTranscriptView, type ApprovalBlock, type QuestionBlock } from '@kiki/session-core/session';
-import { AgentTranscript, type InteractionState } from '@kiki/transcript';
+import type { PermissionMode, QuestionAnswer, QuestionItem } from '@kiki/protocol';
+import { createViewState, projectAgentTranscriptView, type ApprovalBlock, type QuestionBlock, type SessionController } from '@kiki/session-core/session';
+import { AgentTranscript, type ContentRef, type InteractionState } from '@kiki/transcript';
 import { I18nProvider } from '../i18n';
-import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard } from './Interactions';
+import { ApprovalCard, externalPermissionFromDisplay, InteractionRecord, QuestionCard, type PlanReviewResponse } from './Interactions';
+import { TranscriptDetailProvider } from './transcriptDetail';
 import { getToasts } from '../lib/toasts';
 
 const configApi = vi.hoisted(() => ({
@@ -39,20 +40,40 @@ afterAll(() => {
   for (const container of containers) container.remove();
 });
 
+/**
+ * The controller side a transcript-detail provider reads for one card: the
+ * interaction's still-unread content refs (none = its display is whole).
+ */
+function detailController(refs: readonly ContentRef[] = []): SessionController {
+  return {
+    contentRefsFor: () => refs,
+    isContentRange: () => false,
+    beginContentRead: () => ({ release: () => {}, retry: () => {} }),
+    getAgentState: () => ({ detailLoads: {} }),
+  } as unknown as SessionController;
+}
+
 async function renderCard(
   block: ApprovalBlock,
   onResolve: (
     decision: 'approved' | 'rejected' | 'cancelled',
     scope?: 'session',
     selectedOptionId?: string,
+    review?: PlanReviewResponse,
   ) => Promise<void>,
+  extra: { controller?: SessionController; permissionMode?: PermissionMode; onAskEveryStep?: () => void } = {},
 ): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
   containers.push(container);
-  const node: ReactNode = <ApprovalCard block={block} onResolve={onResolve} />;
+  const card = <ApprovalCard block={block} onResolve={onResolve} permissionMode={extra.permissionMode} onAskEveryStep={extra.onAskEveryStep} />;
+  const node: ReactNode = extra.controller === undefined ? card : (
+    <TranscriptDetailProvider controller={extra.controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
+      {card}
+    </TranscriptDetailProvider>
+  );
   await act(async () => {
     flushSync(() => {
       root.render(
@@ -367,6 +388,143 @@ describe('ApprovalCard always allow', () => {
     void _rule;
     const container = await renderCard({ ...COMMAND_BLOCK, request }, () => Promise.resolve());
     expect(container.querySelector('[data-approval-always-allow]')).toBeNull();
+  });
+});
+
+function editBlock(id: string, before: string, after: string): ApprovalBlock {
+  return {
+    kind: 'approval',
+    id,
+    request: {
+      approval_id: id,
+      session_id: 'session_test',
+      tool_call_id: `call-${id}`,
+      tool_name: 'Edit',
+      action: 'Editing C:/fixture/workshop/bench.md',
+      tool_input_display: { kind: 'file_io', operation: 'edit', path: 'C:/fixture/workshop/bench.md', before, after },
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+  };
+}
+
+const diffRows = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>('[data-diff-tag]')]
+  .map((row) => `${row.dataset['diffTag'] ?? ''}:${row.lastElementChild?.textContent ?? ''}`);
+
+describe('ApprovalCard edit preview', () => {
+  const before = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n');
+  const after = before.replace('line 5\n', 'LINE 5\n').replace('line 15\n', 'LINE 15\n');
+
+  it('shows the removed and added lines of the edit, folded past 12 lines until expanded', async () => {
+    const container = await renderCard(editBlock('approval-edit-1', before, after), () => Promise.resolve(),
+      { controller: detailController() });
+    expect(diffRows(container)).toHaveLength(12);
+    expect(diffRows(container)).toEqual(expect.arrayContaining(['delete:line 5', 'insert:LINE 5']));
+    expect(diffRows(container)).not.toContain('insert:LINE 15');
+    // The title names the file; no second well repeats the path.
+    expect(container.querySelector('[data-approval-path]')?.textContent).toBe('C:/fixture/workshop/bench.md');
+    expect(container.querySelector('pre[aria-label="File"]')).toBeNull();
+
+    const expand = container.querySelector<HTMLButtonElement>('[data-approval-change-expand]')!;
+    expect(expand.textContent).toBe('Show all 16 lines');
+    await act(async () => { click(expand); });
+    expect(diffRows(container)).toHaveLength(16);
+    expect(diffRows(container)).toEqual(expect.arrayContaining(['delete:line 15', 'insert:LINE 15']));
+    expect(container.querySelector('[data-approval-change-expand]')).toBeNull();
+  });
+
+  it('shows no diff while the transport still holds part of the edit back', async () => {
+    const cut: ContentRef = {
+      source: { kind: 'interaction', id: 'approval-edit-2' },
+      revision: 'r1',
+      path: ['request', 'display', 'before'],
+      kind: 'text',
+      offset: 40,
+      total: 2000,
+    };
+    const container = await renderCard(editBlock('approval-edit-2', before, after), () => Promise.resolve(),
+      { controller: detailController([cut]) });
+    expect(diffRows(container)).toEqual([]);
+    expect(container.querySelector('[data-content-continuation]')).not.toBeNull();
+  });
+});
+
+function typeInto(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+describe('ApprovalCard reject with a note', () => {
+  const block = (id: string): ApprovalBlock => ({
+    kind: 'approval',
+    id,
+    request: {
+      approval_id: id,
+      session_id: 'session_test',
+      tool_call_id: `call-${id}`,
+      tool_name: 'Bash',
+      action: 'Run: npm install',
+      tool_input_display: { kind: 'command', command: 'npm install' },
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+  });
+
+  it('sends the rejection with the note as feedback', async () => {
+    const calls: unknown[][] = [];
+    const container = await renderCard(block('approval-note-1'), (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve();
+    });
+    expect(container.querySelector('[data-approval-note]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-approval-reject-note]')!); });
+    await act(async () => { typeInto(container.querySelector<HTMLInputElement>('[data-approval-note]')!, '  use pnpm instead  '); });
+    await act(async () => { click(container.querySelector('[data-approval-reject-send]')!); });
+    expect(calls).toEqual([['rejected', undefined, undefined, { feedback: 'use pnpm instead' }]]);
+  });
+
+  it('sends a plain rejection when the note is left empty', async () => {
+    const calls: unknown[][] = [];
+    const container = await renderCard(block('approval-note-2'), (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve();
+    });
+    await act(async () => { click(container.querySelector('[data-approval-reject-note]')!); });
+    await act(async () => { typeInto(container.querySelector<HTMLInputElement>('[data-approval-note]')!, '   '); });
+    await act(async () => { click(container.querySelector('[data-approval-reject-send]')!); });
+    expect(calls).toEqual([['rejected', undefined, undefined]]);
+  });
+});
+
+describe('ApprovalCard Auto mode explanation', () => {
+  afterEach(() => { localStorage.clear(); });
+
+  it('explains Auto mode on the first approval, then never again on this device', async () => {
+    const first = await renderCard(editBlock('approval-auto-1', 'a', 'b'), () => Promise.resolve(), { permissionMode: 'auto' });
+    expect(first.querySelector('[data-auto-explain]')?.textContent).toContain('This is Auto mode');
+    await act(async () => { click(first.querySelector('[data-auto-explain-ok]')!); });
+    expect(first.querySelector('[data-auto-explain]')).toBeNull();
+
+    const next = await renderCard(editBlock('approval-auto-2', 'a', 'b'), () => Promise.resolve(), { permissionMode: 'auto' });
+    expect(next.querySelector('[data-auto-explain]')).toBeNull();
+  });
+
+  it('switches this session to asking at every step from the explanation', async () => {
+    const onAskEveryStep = vi.fn();
+    const container = await renderCard(editBlock('approval-auto-3', 'a', 'b'), () => Promise.resolve(),
+      { permissionMode: 'auto', onAskEveryStep });
+    await act(async () => { click(container.querySelector('[data-auto-explain-manual]')!); });
+    expect(onAskEveryStep).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-auto-explain]')).toBeNull();
+  });
+
+  it('says nothing about Auto mode in the other modes', async () => {
+    for (const mode of ['manual', 'review', 'yolo'] as const) {
+      const container = await renderCard(editBlock(`approval-mode-${mode}`, 'a', 'b'), () => Promise.resolve(), { permissionMode: mode });
+      expect(container.querySelector('[data-auto-explain]')).toBeNull();
+    }
   });
 });
 

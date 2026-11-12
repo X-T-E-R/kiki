@@ -15,11 +15,16 @@ import { act, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createMemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONNECTION_PROTOCOL, type RemoteConnection } from '@kiki/protocol';
 import { writeDesktopPrefs } from '@kiki/session-core/settings';
 import { NavScopeBoundary } from '../components/NavScopeBoundary';
 import { useDirtyGuardState, type DirtyGuardState } from '../components/dirtyGuard';
-import { clearNavHistory, getCurrentVisit, recordNavigation } from './navHistory';
+import type { HostAdapter } from '../host';
+import type { ConnectionSelection } from '../state/connectionConfig';
+import { createRemoteSpaceClient, KikiClient } from './client';
+import { clearNavHistory, getCurrentVisit, recordNavigation, type NavScopeIdentity } from './navHistory';
 import { requestScopeNavigation } from './navScope';
+import { createScopeConnectionAdapter } from './navScopeConnection';
 import { resetLaunchWindowMode } from './spaces';
 import { configureSpaceStorage } from './spaceStorage';
 
@@ -109,6 +114,7 @@ beforeEach(async () => {
   mocks.dispose.mockReset();
   mocks.hostSwitch.mockReset();
   mocks.reload = false;
+  mocks.takenOver = false;
   connection.spaceKey = 'main';
   connection.scopeId = 'local';
   connection.connectionId = null;
@@ -223,5 +229,79 @@ describe('leaving a remote space in switch mode', () => {
     expect(getCurrentVisit()?.scope.homeId).toBe('main');
     expect(handoff.scope.scopeId).toBe('local');
     expect(handoff.scope.serverHomeId).toBe('source-home');
+  });
+});
+
+/**
+ * A failed entry is told in the person's terms, end to end: the real adapter
+ * reads the broker's refusal and the recovery surface says which one it was.
+ * The token field is a promise that a typed token will be used, so it appears
+ * only where the adapter really reads one — a hand-entered address — and never
+ * for a paired space, whose branch has no use for it.
+ */
+describe('a failed entry says why', () => {
+  const PAIRING = '44444444-4444-4444-8444-444444444444';
+  const pairingScope = { homeId: `remote:${PAIRING}`, scopeId: `remote:${PAIRING}` };
+  const ADDRESS = 'http://source.example.test';
+  const pairing: RemoteConnection = { id: PAIRING, label: 'Example pairing', endpoint: 'https://remote.example.test',
+    target: { homeId: REMOTE_HOME, hostId: 'example-host', protocol: CONNECTION_PROTOCOL }, credentialRef: 'example-reference',
+    enabled: true, backgroundSummary: false, purposes: ['gui'], state: 'online', activeLeases: 0 };
+  const clients: KikiClient[] = [];
+
+  afterEach(async () => {
+    await Promise.all(clients.splice(0).map((client) => client.klient.close()));
+    vi.unstubAllGlobals();
+  });
+
+  /** The real adapter over a stubbed network, standing in for the window's own. */
+  function stubRealAdapter(active: NavScopeIdentity, answer: () => Response) {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url === `${ADDRESS}/api/remote-connections`) return Response.json({ code: 0, msg: 'success', data: [pairing], request_id: 'example' });
+      return answer();
+    }));
+    const selection: ConnectionSelection = { config: { url: ADDRESS, token: 'example-token' }, persist: false, source: 'stored', scopeId: active.scopeId };
+    const client = new KikiClient({ baseUrl: ADDRESS, token: 'example-token' }); clients.push(client);
+    const source = { scope: active, selection, client };
+    const adapter = createScopeConnectionAdapter({ host: { connection: {} } as unknown as HostAdapter,
+      active: () => source, local: () => source, control: () => source, commit: vi.fn(), reload: vi.fn(),
+      createClient: (next) => {
+        const remote = createRemoteSpaceClient({ endpoint: next.config.url, token: next.config.token, connectionId: next.connectionId! });
+        clients.push(remote); return remote;
+      } });
+    mocks.prepare.mockReset().mockImplementation((scope: NavScopeIdentity, signal: AbortSignal, token?: string) => adapter.prepare(scope, signal, token));
+  }
+
+  it.each([
+    { msg: 'inbound_disabled', status: 403, reason: 'remote-closed' },
+    { msg: 'connection_paused', status: 409, reason: 'remote-paused' },
+    { msg: 'identity_changed', status: 409, reason: 'remote-identity-changed' },
+    { msg: 'connection_not_approved', status: 401, reason: 'remote-not-approved' },
+  ])('says $msg in its own words and never asks a paired space for a token', async ({ msg, status, reason }) => {
+    stubRealAdapter({ homeId: 'main', scopeId: 'local' },
+      () => Response.json({ code: 40101, msg, data: null, request_id: 'example' }, { status }));
+
+    await act(async () => { await requestScopeNavigation(pairingScope).catch(() => {}); });
+
+    expect(surface()?.querySelector<HTMLElement>('h1')?.dataset['navScopeFailure']).toBe(reason);
+    expect(surfaceTitle()).toBe(`nav.scope.failed.${reason}.title`);
+    expect(surface()?.querySelector('input')).toBeNull();
+    expect(surfaceTitle()).not.toBe('nav.scope.failed.auth-required.title');
+  });
+
+  it('still asks for a token when a hand-entered address answers 401', async () => {
+    await act(async () => { root?.unmount(); });
+    router?.dispose();
+    container.remove();
+    clearNavHistory();
+    const direct = { homeId: 'main', scopeId: `direct:${ADDRESS}` };
+    connection.scopeId = direct.scopeId;
+    await mount();
+    stubRealAdapter(direct, () => Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 }));
+
+    await act(async () => { await requestScopeNavigation({ scope: direct, route: '/s/example-session' }).catch(() => {}); });
+
+    expect(surfaceTitle()).toBe('nav.scope.failed.auth-required.title');
+    expect(surface()?.querySelector('input[type="password"]')).not.toBeNull();
   });
 });

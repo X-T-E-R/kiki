@@ -519,21 +519,6 @@ describe('TaskListTool', () => {
 });
 
 describe('TaskOutputTool', () => {
-  it('describes non-blocking snapshots without redirecting to foreground waiting', async () => {
-    const ctx = createTestAgent();
-    try {
-      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskOutput');
-      expect(tool).toBeDefined();
-      expect(tool!.description).toContain('Inspect a running or completed background task without waiting');
-      expect(tool!.description).toContain('Use TaskList first if you do not know its id');
-      expect(tool!.description).toContain('Prefer completion notifications; do not poll merely to hold a turn open');
-      expect(tool!.description).toContain('A subagent must resolve its own outstanding dependencies before returning a final receipt');
-      expect(tool!.description).not.toContain('run that task in the foreground instead');
-    } finally {
-      await ctx.dispose();
-    }
-  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
-
   it('has name and accepts the current schema', () => {
     const tool = new TaskOutputTool(new FakeTaskService());
 
@@ -988,29 +973,6 @@ describe('TaskStopTool', () => {
 });
 
 describe('TaskWait tool', () => {
-  it('reserves synchronous waiting while distinguishing root turns from subagent completion', async () => {
-    const ctx = createTestAgent();
-    try {
-      const tool = ctx.get(ITaskWaitTool);
-      expect(tool.description).toContain('concrete same-turn dependency (e.g. verifying your own build or deletion)');
-      expect(tool.description).toContain('An interactive main agent outside active goal mode must not wait merely to collect automatically notifying subagent reports');
-      expect(tool.description).toContain('requires `sync_wait=true`, a specific `task_id`, and a concrete `sync_reason`');
-      expect(tool.description).toContain('Do other useful work or end the turn with a brief pending status, then continue on notification');
-      expect(tool.description).toContain("this neither cancels the work nor completes the user's task");
-      expect(tool.description).toContain('Do not poll TaskWait/TaskOutput/TaskList/AgentList to hold that turn open');
-      expect(tool.description).toContain('A timeout leaves tasks running; reassess rather than automatically repeat');
-      expect(tool.description).toContain('Terminal tasks reported here do not also send an automatic completion notification');
-      expect(tool.description).toContain('Subagents must instead resolve their own dependencies before returning a final receipt');
-      expect(TaskWaitInputSchema.shape.sync_wait.description).toContain('not needed for subagents');
-      expect(TaskWaitInputSchema.shape.sync_reason.description).toContain('main-to-agent sync_wait exception');
-      expect(tool.description).not.toContain('To wait longer, call TaskWait again');
-      expect(TaskWaitInputSchema.shape.timeout.description).toContain('explicit same-turn wait');
-      expect(TaskWaitInputSchema.shape.timeout.description).toContain('do not automatically repeat');
-    } finally {
-      await ctx.dispose();
-    }
-  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
-
   function waitTelemetry(): { records: TelemetryRecord[]; telemetry: ReturnType<typeof recordingTelemetry> } {
     const records: TelemetryRecord[] = [];
     return { records, telemetry: recordingTelemetry(records) };
@@ -1060,31 +1022,10 @@ describe('TaskWait tool', () => {
 
   it.each([
     {},
-    { sync_wait: false, sync_reason: 'Host consumes only this final response' },
-    { sync_wait: true },
+    { sync_wait: false },
     { sync_wait: true, sync_reason: '' },
-    { sync_wait: true, sync_reason: ' \n\t ' },
-    { sync_reason: 'I am in goal mode' },
-  ])('rejects a main wait on a running agent without a complete exception: %j', async (exception) => {
-    const tasks = new FakeTaskService();
-    const taskId = tasks.add(agentTaskInfo({ taskId: 'bash-not-a-process', status: 'running' }));
-    const onUpdate = vi.fn();
-    const result = await executeTool(
-      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
-      { ...context('wait_guard', { timeout: 86_400, task_id: taskId, ...exception }), onUpdate },
-    );
-    expect(result.isError).toBe(true);
-    expect(outputString(result)).toContain('Do independent work or end the turn');
-    expect(outputString(result)).toContain('continue on notification');
-    expect(tasks.waitCalls).toEqual([]);
-    expect(tasks.waitDeliveries).toEqual([]);
-    expect(tasks.suppressCalls).toEqual([]);
-    expect(tasks.stopCalls).toEqual([]);
-    expect(tasks.getTask(taskId)?.status).toBe('running');
-    expect(onUpdate).not.toHaveBeenCalled();
-  });
-
-  it('allows the explicit main-to-agent synchronous exception', async () => {
+    { sync_wait: true, sync_reason: 'Host consumes only this final response' },
+  ])('waits on a running subagent task named by task_id, ignoring the old exception fields: %j', async (extra) => {
     const tasks = new FakeTaskService();
     const taskId = tasks.add(agentTaskInfo({ status: 'running' }));
     tasks.waitDelegate = async (id) => {
@@ -1093,27 +1034,42 @@ describe('TaskWait tool', () => {
     };
     const result = await executeTool(
       createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
-      context('wait_sync', {
-        timeout: 86_400, task_id: taskId, sync_wait: true,
-        sync_reason: 'The host consumes only this final response and needs the result in it',
-      }),
+      context('wait_agent', { timeout: 86_400, task_id: taskId, ...extra }),
     );
     expect(result.isError).toBe(false);
     expect(tasks.waitCalls).toEqual([{ taskId, timeoutMs: 86_400_000 }]);
     expect(tasks.waitDeliveries).toEqual([[{ taskId, status: 'completed' }]]);
   });
 
-  it.each([false, true])('rejects mixed wait-any without silently filtering agents (sync_wait=%s)', async (sync_wait) => {
+  it('waits only for non-subagent tasks when the main agent omits task_id outside goal mode and names the skipped subagents', async () => {
     const tasks = new FakeTaskService();
-    tasks.add(processTask());
-    tasks.add(agentTaskInfo({ status: 'running' }));
+    const processId = tasks.add(processTask());
+    const agentId = tasks.add(agentTaskInfo({ status: 'running' }));
+    tasks.waitDelegate = async (id) => {
+      tasks.settle(id);
+      return tasks.getTask(id);
+    };
     const result = await executeTool(
       createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
-      context('wait_mixed', { timeout: 86_400, sync_wait, sync_reason: 'Host consumes this response' }),
+      context('wait_mixed', { timeout: 86_400 }),
     );
-    expect(result.isError).toBe(true);
-    expect(outputString(result)).toContain('Specify a process task_id');
-    expect(outputString(result)).toContain('A wait-any call cannot use this exception');
+    expect(result.isError).toBe(false);
+    expect(tasks.waitCalls.map((call) => call.taskId)).toEqual([processId]);
+    expect(tasks.waitDeliveries).toEqual([[{ taskId: processId, status: 'completed' }]]);
+    expect(outputString(result)).toContain(`Not waited for: subagent task ${agentId}.`);
+    expect(tasks.getTask(agentId)?.status).toBe('running');
+  });
+
+  it('returns at once when only subagent tasks are running and the main agent omits task_id outside goal mode', async () => {
+    const tasks = new FakeTaskService();
+    const agentId = tasks.add(agentTaskInfo({ status: 'running' }));
+    const result = await executeTool(
+      createWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      context('wait_only_agents', { timeout: 86_400 }),
+    );
+    expect(result.isError ?? false).toBe(false);
+    expect(outputString(result)).toContain('wait_status: no_tasks');
+    expect(outputString(result)).toContain(`Not waited for: subagent task ${agentId}.`);
     expect(tasks.waitCalls).toEqual([]);
     expect(tasks.waitDeliveries).toEqual([]);
   });
@@ -1798,7 +1754,7 @@ describe('TaskWait tool (harness)', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('preserves automatic completion notification after rejecting a main agent wait', async () => {
+  it('keeps the automatic completion notification of a subagent task that a main wait-any skipped', async () => {
     const loop = stubLoopWithHooks();
     const ctx = createTestAgent(agentService(IAgentLoopService, loop));
     let settle!: (value: { result: string }) => void;
@@ -1808,9 +1764,10 @@ describe('TaskWait tool (harness)', () => {
       const taskId = tasks.registerTask(new SubagentTask(
         { agentId: 'child', profileName: 'coder', completion }, 'report work', new AbortController(),
       ));
-      const result = await executeTool(ctx.get(ITaskWaitTool), context('wait_rejected', { timeout: 86_400, task_id: taskId }));
-      expect(result.isError).toBe(true);
-      await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'wait_rejected', isError: true });
+      const result = await executeTool(ctx.get(ITaskWaitTool), context('wait_skipped', { timeout: 86_400 }));
+      expect(result.isError ?? false).toBe(false);
+      expect(outputString(result)).toContain(`Not waited for: subagent task ${taskId}.`);
+      await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'wait_skipped', isError: false });
       expect(tasks.getTask(taskId)?.status).toBe('running');
       settle({ result: 'NOTIFICATION RECEIPT' });
       await vi.waitFor(() => expect(loop.hasPendingRequests()).toBe(true));
@@ -1845,12 +1802,16 @@ describe('TaskWait tool (harness)', () => {
       const tool = ctx.get(ITaskWaitTool);
       const specific = executeTool(tool, context('wait_goal_specific', { timeout: 86_400, task_id: taskId }));
       const any = executeTool(tool, context('wait_goal_any', { timeout: 86_400 }));
-      if (status === 'active') settle({ result: 'GOAL RECEIPT' });
-      const results = await Promise.all([specific, any]);
-      for (const result of results) {
-        expect(result.isError).toBe(status !== 'active');
-        expect(outputString(result)).toContain(status === 'active' ? 'wait_status: completed' : 'Do independent work or end the turn');
-      }
+      settle({ result: 'GOAL RECEIPT' });
+      const specificResult = await specific;
+      expect(specificResult.isError).toBe(false);
+      expect(outputString(specificResult)).toContain(`task_id: ${taskId}`);
+      if (status !== 'active') process.resolveWait(0);
+      const anyResult = await any;
+      expect(anyResult.isError).toBe(false);
+      expect(outputString(anyResult)).toContain('wait_status: completed');
+      if (status === 'active') expect(outputString(anyResult)).not.toContain('Not waited for');
+      else expect(outputString(anyResult)).toContain(`Not waited for: subagent task ${taskId}.`);
     } finally {
       settle({ result: 'GOAL RECEIPT' });
       process.resolveWait(0);

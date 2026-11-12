@@ -7,8 +7,10 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
+import { useLayerHistory } from '../lib/layerHistory';
+import { useCoarsePointer } from '../lib/layoutHooks';
 import { registerOverlay } from '../lib/uiBusy';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES, useStackedDialog } from './Dialog';
+import { Dialog, DIALOG_DEFAULT_PANEL_CLASS, DIALOG_SHEET_OVERLAY_CLASS, useStackedDialog } from './Dialog';
 import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 export interface ConfirmDialogProps {
@@ -57,6 +59,10 @@ export function ConfirmDialog({
   const stacked = ownStack || inheritedStack;
   const cancelRef = useRef<HTMLButtonElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  // The stacked branch gets phone back from Dialog; the inline one registers
+  // the same layer itself, so back cancels it rather than its host.
+  const coarse = useCoarsePointer();
+  useLayerHistory(overlayId, coarse && open && !stacked, () => { if (!busy) onCancel(); });
 
   useEffect(() => {
     if (!open || stacked) return;
@@ -132,15 +138,15 @@ export function ConfirmDialog({
     </Dialog>
   );
   return (
-    // Phone: decision surfaces are bottom sheets — the choice lands in the
-    // thumb's reach and the home-indicator strip stays padded. Tablet/desktop
-    // keep the centered dialog.
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4 max-md:items-end max-md:p-0" onClick={onCancel}>
+    // Dialog's own default chrome, so both branches present the same way:
+    // a centered panel, and below `md` a bottom sheet — the choice lands in
+    // the thumb's reach and the home-indicator strip stays padded.
+    <div className={DIALOG_SHEET_OVERLAY_CLASS} onClick={onCancel}>
       <div
         role="alertdialog"
         aria-modal="true"
         aria-label={title}
-        className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-md:max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))]`}
+        className={DIALOG_DEFAULT_PANEL_CLASS}
         onClick={(event) => { event.stopPropagation(); }}
         onKeyDown={onKeyDown}
       >

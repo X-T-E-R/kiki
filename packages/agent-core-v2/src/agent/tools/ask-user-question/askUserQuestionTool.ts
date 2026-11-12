@@ -39,7 +39,7 @@ import {
 } from './ask-user-question';
 import DESCRIPTION from './ask-user.md?raw';
 import { QuestionBackgroundTask } from './question-background-task';
-import { IQuestionFrequencyGuard, QUESTION_FREQUENCY_REMINDER, type QuestionAdmission } from './questionFrequencyGuard';
+import { IQuestionFrequencyGuard, questionFrequencyReminder, type QuestionAdmission } from './questionFrequencyGuard';
 
 const QUESTION_DISMISSED_MESSAGE = 'User dismissed the question without answering.';
 
@@ -127,8 +127,12 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
       if (this.rooms?.current === undefined) return { isError: true, output: 'Room questions are unavailable.' };
       room = { id: roomId, sessionId: metadata!.id };
     }
-    const admission = attempt === undefined ? undefined : guard!.admit(attempt);
-    if (guard !== undefined && admission === undefined) return { isError: true, output: QUESTION_FREQUENCY_REMINDER };
+    const decision = attempt === undefined ? undefined : guard!.admit(attempt);
+    if (decision !== undefined && 'kind' in decision) {
+      const sample = args.questions.map((item) => `${item.question} ${item.header}`).join(' ');
+      return { isError: true, output: questionFrequencyReminder(decision, sample) };
+    }
+    const admission = decision;
     const messageMode = this.delivery?.current?.effectiveMode() === 'message';
     if (messageMode || (args.background === true && !this.isBlocking())) {
       return this.executeInBackground({ ...args, background: true }, { toolCallId, turnId, signal, trace }, room, admission);

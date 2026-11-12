@@ -1,5 +1,5 @@
 /**
- * Settings → Spaces: "Kikis I connect to" (outbound, §5.1 of the remote-space
+ * Settings → Access from elsewhere → Other Kiki: "Kikis I connect to" (outbound, §5.1 of the remote-space
  * design). A flat list in the accepted settings style: one row per registered
  * remote Kiki, the connection's own state, and the actions that affect only
  * this window's connection to it.
@@ -31,7 +31,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
 import { AdvancedDetails } from './fields';
 import { SectionCard } from './SectionCard';
-import { MAIN_SPACE_ID } from '../../lib/spaces';
+import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
 import { SpaceRowMenu } from './spaces/SpaceRowMenu';
 import { AddConnectionDialog } from './remote/AddConnectionDialog';
 import { CopyField, RemoteStateChip, connectionFailureText } from './remote/parts';
@@ -80,7 +80,12 @@ export function RemoteConnectionsSection() {
   };
 
   const controlHome = controlTarget?.identity.homeId;
-  const controlHomeLabel = controlHome === undefined ? undefined : controlHome === MAIN_SPACE_ID ? t('st.spaces.main') : controlHome;
+  // A space is named from the space list, never by its home id; until the list
+  // says, the source line names only the address.
+  const spaceList = useSpaces(controlHome !== undefined && controlHome !== MAIN_SPACE_ID ? control : null);
+  const controlHomeLabel = controlHome === undefined ? undefined
+    : controlHome === MAIN_SPACE_ID ? t('st.spaces.main')
+    : spaceList.data?.find((item) => item.id === controlHome)?.name;
   const sourceLine = control === null
     ? t('st.remote.controlUnavailable')
     : controlHomeLabel === undefined
