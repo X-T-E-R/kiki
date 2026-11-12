@@ -4340,6 +4340,8 @@ describe('user message body sizing', () => {
     expect(container.querySelectorAll('[data-block-id="user-um-bounded"]')).toHaveLength(1);
     expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
     if (kind === 'attachments') {
+      const gate = container.querySelector<HTMLButtonElement>('[data-user-media] [data-markdown-remote-image]');
+      if (gate !== null) await act(async () => { gate.click(); });
       expect(container.querySelector('[data-user-media] img')?.getAttribute('src')).toBe('https://example.test/photo.png');
     } else {
       expect(container.querySelector('[data-source-block-id="user-um-bounded"]')?.textContent).toBe('Review the complete message.');

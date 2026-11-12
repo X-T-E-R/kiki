@@ -290,10 +290,14 @@ describe('media preview budget and ownership', () => {
     expect(original).not.toHaveBeenCalled();
   });
 
-  it('displays external images automatically without forwarding a bearer header or adding a download link', async () => {
+  it('gates external images behind click-to-load without forwarding a bearer header or adding a download link', async () => {
     await act(async () => {
       root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: 'https://example.test/original.png', name: 'external.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
     });
+    expect(container.querySelector('img')).toBeNull();
+    const gate = container.querySelector<HTMLButtonElement>('[data-markdown-remote-image]');
+    expect(gate).not.toBeNull();
+    await act(async () => { gate!.click(); });
     expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/original.png');
     expect(container.querySelector('a[download]')).toBeNull();
     expect(originalRequests).toBe(0);
