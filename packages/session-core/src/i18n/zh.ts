@@ -13300,4 +13300,9 @@ export const zh = {
   'preview.webFailed': '没能打开这个网页，可以在浏览器里打开',
   'preview.readFileTooLarge': '这个文件太大，无法通过当前连接读取。',
   'preview.loadFailed': '无法加载预览组件。',
+  'preview.openTabsTitle': '已打开的标签页',
+  'preview.tabPickerAria': '{name}，共 {count} 个已打开标签页',
+  'preview.findInFile': '文件内查找',
+  'preview.switchToSource': '查看源码',
+  'preview.switchToRendered': '查看渲染结果',
 };

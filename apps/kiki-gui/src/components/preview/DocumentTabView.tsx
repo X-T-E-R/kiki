@@ -16,12 +16,14 @@ import { basenameOf } from '@kiki/session-core/composer/media';
 
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { usePhoneMode } from '../../lib/layoutHooks';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { documentSourceFor, sheetsOf, useDocumentPreview, type DocumentPreviewController } from './documentPreview';
 import { PreviewAssetImage } from './PreviewAssetImage';
 import { RendererInstall } from './RendererInstall';
 import { PdfPageView } from './PdfPageView';
+import { HeaderFileActions } from './ResourceHeader';
 import { HEADER_ACTION_CLASS, INK_BUTTON_CLASS } from './shared';
 
 export type DocumentTabSource =
@@ -36,6 +38,7 @@ export interface DocumentTabViewProps {
   readonly source: DocumentTabSource;
   /** Which session's renderer and asset route serve this file. */
   readonly sessionId?: string;
+  readonly workspaceRoot?: string;
   /** The connection that owns the file; its client carries the bearer token. */
   readonly client?: KikiClient;
   /**
@@ -135,6 +138,7 @@ function PageControl({ controller, response }: { controller: DocumentPreviewCont
 export function DocumentTabView({
   source,
   sessionId,
+  workspaceRoot,
   client: clientProp,
   onOpenPluginSettings,
   onOpenLocally,
@@ -146,6 +150,7 @@ export function DocumentTabView({
   active = true,
 }: DocumentTabViewProps) {
   const { t, locale } = useI18n();
+  const phoneMode = usePhoneMode();
   // The client is a prop, not a context read: the tab already knows which
   // session owns the file, and a caller outside the live connection (a test, a
   // proof run) must be able to supply the same client the shell would.
@@ -173,39 +178,59 @@ export function DocumentTabView({
   const header = (
     <div className={CAPTION}>
       <div className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[11px] text-ink-faint" title={path}>{path}</span>
+        <span className="block truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {phoneMode ? name : path}
+        </span>
         {headerSubtitle}
       </div>
       {state.kind === 'ready' && state.response.kind === 'ready' ? <PageControl controller={controller} response={state.response} /> : null}
-      {state.kind === 'ready' && state.response.kind === 'text' ? (
+      {!phoneMode && state.kind === 'ready' && state.response.kind === 'text' ? (
         <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-soft" data-preview-fidelity="source">
           {t('preview.fidelitySource')}
         </span>
       ) : null}
-      {source.kind === 'workspace' ? (
-        <button
-          type="button"
-          title={t('preview.reloadFile')}
-          aria-label={t('preview.reloadFile')}
-          data-header-reload
-          onClick={retry}
-          className={HEADER_ACTION_CLASS}
-        >
-          <Icon name="refresh" size={12} />
-        </button>
-      ) : null}
-      {state.kind === 'ready' && onDownload !== undefined ? (
-        <button
-          type="button"
-          title={t('media.download')}
-          aria-label={t('media.download')}
-          data-download-file
-          onClick={onDownload}
-          className={HEADER_DOWNLOAD_BUTTON}
-        >
-          <Icon name="arrowDown" size={12} />
-        </button>
-      ) : null}
+      {source.kind === 'workspace' && phoneMode ? (
+        <HeaderFileActions
+          path={source.path}
+          name={name}
+          sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
+          canDownload={state.kind === 'ready' && onDownload !== undefined}
+          readFailed={state.kind === 'failed'}
+          onReload={retry}
+        />
+      ) : (
+        <>
+          {source.kind === 'workspace' ? (
+            <button
+              type="button"
+              title={t('preview.reloadFile')}
+              aria-label={t('preview.reloadFile')}
+              data-header-reload
+              onClick={retry}
+              className={HEADER_ACTION_CLASS}
+            >
+              <Icon name="refresh" size={12} />
+            </button>
+          ) : null}
+          {state.kind === 'ready' && onDownload !== undefined ? (
+            <button
+              type="button"
+              title={t('media.download')}
+              aria-label={t('media.download')}
+              data-download-file
+              onClick={onDownload}
+              className={
+                phoneMode
+                  ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+                  : HEADER_DOWNLOAD_BUTTON
+              }
+            >
+              <Icon name="arrowDown" size={phoneMode ? 16 : 12} />
+            </button>
+          ) : null}
+        </>
+      )}
       {headerActions}
     </div>
   );

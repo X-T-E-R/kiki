@@ -3270,4 +3270,145 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     expect(previewHostFileSpy).toHaveBeenCalledWith('/work/src/server.ts');
     expect(fsReadSpy).not.toHaveBeenCalled();
   });
+
+  it('replaces the tab strip with a title + tab sheet in phone touch mode, exposes @ and actions via header more sheet, and scrolls active desktop tabs into view (#36)', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    FILES['/work/a.ts'] = 'export const a = 1;';
+    FILES['/work/b.ts'] = 'export const b = 2;';
+    FILES['/work/c.ts'] = 'export const c = 3;';
+    FILES['/work/d.ts'] = 'export const d = 4;';
+    FILES['/work/notes.md'] = '# Phone Markdown\n\nBody text.';
+
+    const scrollIntoViewSpy = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoViewSpy;
+    const originalMatchMedia = window.matchMedia;
+
+    try {
+      // 1. Desktop strip scrolls active tab into view on open & re-open
+      const desktopProbe = makeRoot();
+      await renderSettled(
+        desktopProbe.root,
+        <MediaPreviewProvider cwd="/work" sessionId="sess-36">
+          <OpenButton path="/work/a.ts" />
+          <OpenButton path="/work/b.ts" />
+          <OpenButton path="/work/notes.md" />
+        </MediaPreviewProvider>,
+      );
+      await openFile(desktopProbe.container, '/work/a.ts');
+      await openFile(desktopProbe.container, '/work/b.ts');
+      await openFile(desktopProbe.container, '/work/notes.md');
+      await settle();
+      expect(scrollIntoViewSpy).toHaveBeenCalled();
+      scrollIntoViewSpy.mockClear();
+      await openFile(desktopProbe.container, '/work/a.ts');
+      await settle();
+      expect(scrollIntoViewSpy).toHaveBeenCalled();
+
+      // 2. Phone touch mode: title row + tab sheet + header more sheet
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: (query: string) => ({
+          matches:
+            query.includes('(pointer: coarse)') ||
+            query.includes('(max-width: 639px)'),
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }),
+      });
+      window.innerWidth = 390;
+
+      const phoneProbe = makeRoot();
+      await renderSettled(
+        phoneProbe.root,
+        <MediaPreviewProvider cwd="/work" sessionId="sess-36">
+          <OpenButton path="/work/a.ts" />
+          <OpenButton path="/work/b.ts" />
+          <OpenButton path="/work/c.ts" />
+          <OpenButton path="/work/d.ts" />
+          <OpenButton path="/work/notes.md" />
+        </MediaPreviewProvider>,
+      );
+
+      for (const p of ['/work/a.ts', '/work/b.ts', '/work/c.ts', '/work/d.ts', '/work/notes.md']) {
+        await openFile(phoneProbe.container, p);
+      }
+      await settle();
+
+      expect(phoneProbe.container.querySelector('[role="tablist"]')).toBeNull();
+      expect(phoneProbe.container.querySelector('[data-mention-file]')).toBeNull();
+      expect(phoneProbe.container.querySelector('[data-readonly-reason]')).toBeNull();
+
+      const picker = phoneProbe.container.querySelector<HTMLButtonElement>('[data-preview-tab-picker]')!;
+      expect(picker).not.toBeNull();
+      expect(picker.textContent).toContain('notes.md');
+      expect(picker.textContent).toContain('▾ · 5');
+
+      // Header keeps name + single primary download action + ⋯
+      const mdPanel = phoneProbe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/notes.md"]')!;
+      expect(mdPanel.querySelector('[data-download-file]')).not.toBeNull();
+      const moreBtn = mdPanel.querySelector<HTMLButtonElement>('[data-header-more]')!;
+      expect(moreBtn).not.toBeNull();
+
+      await act(async () => {
+        moreBtn.click();
+      });
+      const moreSheet = document.body.querySelector('[data-preview-header-more-menu]')!;
+      expect(moreSheet).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="rendered-source"]')).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="find-in-file"]')).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="add-to-chat"]')).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="copy-content"]')).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+      expect(moreSheet.querySelector('[data-menu-item="reload"]')).not.toBeNull();
+
+      // Switch to source via header ⋯ sheet
+      await act(async () => {
+        moreSheet.querySelector<HTMLButtonElement>('[data-menu-item="rendered-source"]')!.click();
+      });
+      await settle();
+      expect(mdPanel.querySelector('[data-testid="editor"]')).not.toBeNull();
+
+      // Open tab sheet, switch tab, and close a tab
+      await act(async () => {
+        picker.click();
+      });
+      const tabSheet = document.body.querySelector('[data-preview-tab-sheet]')!;
+      expect(tabSheet).not.toBeNull();
+      expect(tabSheet.querySelectorAll('[data-preview-tab-sheet-row]')).toHaveLength(5);
+
+      await act(async () => {
+        tabSheet.querySelector<HTMLButtonElement>('[data-preview-tab-sheet-close="file:/work/d.ts"]')!.click();
+      });
+      await settle();
+      expect(document.body.querySelectorAll('[data-preview-tab-sheet-row]')).toHaveLength(4);
+
+      await act(async () => {
+        document.body
+          .querySelector<HTMLButtonElement>('[data-preview-tab-sheet-select="file:/work/b.ts"]')!
+          .click();
+      });
+      await settle();
+      expect(document.body.querySelector('[data-preview-tab-sheet]')).toBeNull();
+      expect(picker.textContent).toContain('b.ts');
+      expect(picker.textContent).toContain('▾ · 4');
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+      window.innerWidth = 1024;
+      delete FILES['/work/a.ts'];
+      delete FILES['/work/b.ts'];
+      delete FILES['/work/c.ts'];
+      delete FILES['/work/d.ts'];
+      delete FILES['/work/notes.md'];
+    }
+  });
 });

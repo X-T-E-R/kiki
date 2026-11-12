@@ -5,9 +5,11 @@
 import { basenameOf } from '@kiki/session-core/composer/media';
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
+import { usePhoneMode } from '#/lib/layoutHooks';
 import { useOptionalConnection } from '#/state/connection';
 import type { PreviewReadFailureReason } from '#/state/previewResource';
 import { Icon } from '../icons';
+import { HeaderFileActions } from './ResourceHeader';
 import {
   CAPTION_ACTION_CLASS,
   downloadHostFile,
@@ -29,6 +31,7 @@ export function BinaryTabView({
 }) {
   const host = useHost();
   const { t } = useI18n();
+  const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
@@ -37,9 +40,19 @@ export function BinaryTabView({
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {path}
+          {phoneMode ? name : path}
         </span>
-        {openers?.reveal !== undefined ? (
+        {phoneMode ? (
+          <HeaderFileActions
+            path={path}
+            name={name}
+            sessionId={sessionId}
+            workspaceRoot={workspaceRoot}
+            resourceType="unsupported"
+            canDownload
+            failureReason={reason}
+          />
+        ) : openers?.reveal !== undefined ? (
           <button
             type="button"
             title={t('file.showInFolder')}

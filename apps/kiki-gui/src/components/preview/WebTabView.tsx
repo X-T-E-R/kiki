@@ -7,7 +7,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { openExternalUrl, useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { copyTextToClipboard } from '#/lib/clipboard';
+import { usePhoneMode } from '#/lib/layoutHooks';
 import { Icon } from '../icons';
+import { MiniContextMenu } from '../MiniContextMenu';
 import {
   BODY_ACTION_CLASS,
   DelayedReadingNotice,
@@ -34,8 +36,10 @@ export function PreviewWebView({
 }) {
   const host = useHost();
   const { t } = useI18n();
+  const phoneMode = usePhoneMode();
   const [reloadKey, setReloadKey] = useState(0);
   const [frameState, setFrameState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null);
   const label = webUrlDisplayLabel(url, title);
 
   const reload = useCallback(() => {
@@ -68,38 +72,82 @@ export function PreviewWebView({
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <Icon name="compass" size={12} className="shrink-0 text-ink-faint" />
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-soft" title={url}>
-          {url}
+          {phoneMode ? label : url}
         </span>
-        <button
-          type="button"
-          title={t('preview.reloadFile')}
-          aria-label={t('preview.reloadFile')}
-          data-web-reload
-          onClick={reload}
-          className={HEADER_ACTION_CLASS}
-        >
-          <Icon name="refresh" size={12} />
-        </button>
-        <button
-          type="button"
-          title={t('preview.copyUrl')}
-          aria-label={t('preview.copyUrl')}
-          data-web-copy-url
-          onClick={() => { void copyTextToClipboard(url); }}
-          className={HEADER_ACTION_CLASS}
-        >
-          <Icon name="copy" size={12} />
-        </button>
-        <button
-          type="button"
-          data-web-open-external
-          onClick={() => { void openExternalUrl(host, url, t('common.popupBlocked')); }}
-          className="shrink-0 inline-flex items-center gap-1 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-        >
-          <span>{t('message.openInBrowser')}</span>
-          <Icon name="external" size={12} />
-        </button>
+        {phoneMode ? (
+          <>
+            <button
+              type="button"
+              data-web-open-external
+              title={t('message.openInBrowser')}
+              aria-label={t('message.openInBrowser')}
+              onClick={() => { void openExternalUrl(host, url, t('common.popupBlocked')); }}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <Icon name="external" size={16} />
+            </button>
+            <button
+              type="button"
+              title={t('preview.moreActions')}
+              aria-label={t('preview.moreActions')}
+              data-header-more
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
+              }}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <Icon name="more" size={16} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              title={t('preview.reloadFile')}
+              aria-label={t('preview.reloadFile')}
+              data-web-reload
+              onClick={reload}
+              className={HEADER_ACTION_CLASS}
+            >
+              <Icon name="refresh" size={12} />
+            </button>
+            <button
+              type="button"
+              title={t('preview.copyUrl')}
+              aria-label={t('preview.copyUrl')}
+              data-web-copy-url
+              onClick={() => { void copyTextToClipboard(url); }}
+              className={HEADER_ACTION_CLASS}
+            >
+              <Icon name="copy" size={12} />
+            </button>
+            <button
+              type="button"
+              data-web-open-external
+              onClick={() => { void openExternalUrl(host, url, t('common.popupBlocked')); }}
+              className="shrink-0 inline-flex items-center gap-1 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <span>{t('message.openInBrowser')}</span>
+              <Icon name="external" size={12} />
+            </button>
+          </>
+        )}
       </div>
+      {moreAnchor !== null ? (
+        <MiniContextMenu
+          x={moreAnchor.x}
+          y={moreAnchor.y}
+          entries={[
+            { key: 'copy-url', label: t('preview.copyUrl'), run: () => copyTextToClipboard(url) },
+            { key: 'reload', label: t('preview.reloadFile'), run: reload },
+          ]}
+          onClose={() => { setMoreAnchor(null); }}
+          ariaLabel={t('preview.moreActions')}
+          overlayId="preview-web-more"
+          dataAttribute="data-preview-header-more-menu"
+        />
+      ) : null}
       {frameState === 'failed' ? (
         <div
           className="flex min-h-0 flex-1 flex-col items-start gap-3 p-4"

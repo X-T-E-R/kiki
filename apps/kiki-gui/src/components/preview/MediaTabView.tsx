@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { basenameOf, formatBytes } from '@kiki/session-core/composer/media';
 import type { KikiClient } from '#/lib/client';
+import { usePhoneMode } from '#/lib/layoutHooks';
 import { useOptionalConnection } from '#/state/connection';
 import { classifyHostFileReadError } from '#/state/hostFileEditor';
 import type { PreviewReadFailureReason, PreviewReadState } from '#/state/previewResource';
@@ -90,6 +91,7 @@ export function AudioTabView({
   readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
+  const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const client = connection?.client;
   const localKikiComputer = isLocalKikiComputer(connection);
@@ -198,9 +200,9 @@ export function AudioTabView({
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {path}
+          {phoneMode ? name : path}
         </span>
-        {readyState !== undefined ? (
+        {!phoneMode && readyState !== undefined ? (
           <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-audio-meta>
             {formatBytes(readyState.size)}
           </span>
@@ -210,6 +212,7 @@ export function AudioTabView({
           name={name}
           sessionId={sessionId}
           workspaceRoot={workspaceRoot}
+          resourceType="audio"
           canDownload={!readFailed}
           readFailed={readFailed}
           failureReason={failureReason}
@@ -269,6 +272,7 @@ export function VideoTabView({
   readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
+  const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const client = connection?.client;
   const localKikiComputer = isLocalKikiComputer(connection);
@@ -369,9 +373,9 @@ export function VideoTabView({
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {path}
+          {phoneMode ? name : path}
         </span>
-        {state.status === 'ready' ? (
+        {!phoneMode && state.status === 'ready' ? (
           <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-video-meta>
             {formatBytes(state.size)}
           </span>
@@ -381,6 +385,7 @@ export function VideoTabView({
           name={name}
           sessionId={sessionId}
           workspaceRoot={workspaceRoot}
+          resourceType="video"
           canDownload={!readFailed}
           readFailed={readFailed}
           failureReason={failureReason}

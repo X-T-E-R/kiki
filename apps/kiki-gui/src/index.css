@@ -1108,6 +1108,33 @@ body[data-pane-resizing='true'] {
   }
 }
 
+/* Phone touch mode: every interactive control inside the preview panel meets
+ * the 44x44 px thumb target minimum (#36). */
+@media (pointer: coarse) and (max-width: 639px) {
+  .preview-workspace button,
+  .preview-workspace select,
+  .preview-workspace input[type='range'],
+  .preview-workspace [role='button'],
+  .preview-workspace [role='tab'] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .preview-workspace .kiki-md a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .preview-workspace .cm-search.cm-panel input,
+  .preview-workspace .cm-search.cm-panel button,
+  .preview-workspace .cm-search.cm-panel label {
+    min-height: 44px;
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
 /* CodeMirror fills the tab panel's flex height. */
 .preview-workspace .cm-editor {
   height: 100%;

@@ -2,11 +2,14 @@
  * Resource header action controls and the tab right-click context menu.
  */
 
+import { useMemo, useState } from 'react';
+
 import { appendToDraft } from '@kiki/session-core/composer';
 import { basenameOf, resolveHostPath } from '@kiki/session-core/composer/media';
 import { openExternalUrl, useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { copyTextToClipboard } from '#/lib/clipboard';
+import { runToastAction } from '#/lib/toasts';
 import { useOptionalConnection } from '#/state/connection';
 import {
   classifyResource,
@@ -226,30 +229,159 @@ export function HeaderFileActions({
   name,
   sessionId,
   workspaceRoot,
+  resourceType,
   canDownload = true,
   readFailed = false,
   failureReason,
+  truncated = false,
+  losslessUtf8,
+  contentText,
+  renderedMode,
+  onToggleRenderedMode,
+  onFindInFile,
   onReload,
 }: {
   readonly path: string;
   readonly name: string;
   readonly sessionId?: string;
   readonly workspaceRoot?: string;
+  readonly resourceType?: PreviewResource['type'];
   readonly canDownload?: boolean;
   readonly readFailed?: boolean;
   readonly failureReason?: PreviewReadState['failureReason'];
+  readonly truncated?: boolean;
+  readonly losslessUtf8?: boolean;
+  readonly contentText?: string;
+  readonly renderedMode?: 'rendered' | 'source';
+  readonly onToggleRenderedMode?: (mode: 'rendered' | 'source') => void;
+  readonly onFindInFile?: () => void;
   readonly onReload?: () => void;
 }) {
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const localKikiComputer = isLocalKikiComputer(connection);
+  const environment = usePreviewEnvironment(sessionId);
+  const localKikiComputer = environment.isKikiComputer;
+  const phoneForm = environment.phoneForm === true;
   const openers = useFileOpeners();
-  const showOpeners = !readFailed || failureReason === 'folder' || failureReason === 'unsupported';
+  const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null);
+
+  const resource = useMemo<PreviewResource>(() => {
+    const resolved = resolveHostPath(path, workspaceRoot);
+    const head =
+      losslessUtf8 === undefined
+        ? undefined
+        : losslessUtf8
+          ? new Uint8Array([0x61])
+          : new Uint8Array([0xff]);
+    return {
+      source: { kind: 'host-file', path: resolved },
+      origin: { path: resolved, trusted: true },
+      type: resourceType ?? classifyResource({ name: basenameOf(resolved), head }),
+      name: basenameOf(resolved),
+    };
+  }, [losslessUtf8, path, resourceType, workspaceRoot]);
+
+  const readState = useMemo<PreviewReadState>(
+    () => ({
+      status: readFailed ? 'failed' : 'ready',
+      readableFromDevice: !readFailed && failureReason !== 'remote-unreadable',
+      originalReadable: !readFailed && failureReason !== 'remote-unreadable',
+      truncated,
+      losslessUtf8,
+      failureReason,
+    }),
+    [failureReason, losslessUtf8, readFailed, truncated],
+  );
+
+  const moreEntries = useMemo<readonly MiniMenuEntry[]>(() => {
+    const actions = resourceActions(resource, environment, readState);
+    const trustedPath = resolveHostPath(path, workspaceRoot);
+    const list: MiniMenuEntry[] = [];
+    for (const action of actions) {
+      if (action.id === 'rendered-source' && phoneForm && renderedMode !== undefined && onToggleRenderedMode !== undefined) {
+        const nextMode = renderedMode === 'rendered' ? 'source' : 'rendered';
+        list.push({
+          key: 'rendered-source',
+          label: nextMode === 'source' ? t('preview.switchToSource') : t('preview.switchToRendered'),
+          run: () => { onToggleRenderedMode(nextMode); },
+        });
+      } else if (action.id === 'find-in-file' && onFindInFile !== undefined) {
+        list.push({
+          key: 'find-in-file',
+          label: t('preview.findInFile'),
+          run: onFindInFile,
+        });
+      } else if (action.id === 'add-to-chat' && sessionId !== undefined) {
+        list.push({
+          key: 'add-to-chat',
+          label: t('preview.addToChat'),
+          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, workspaceRoot)); },
+        });
+      } else if (action.id === 'copy-content' && contentText !== undefined) {
+        list.push({
+          key: 'copy-content',
+          label: t('preview.copyContent'),
+          run: () => copyTextToClipboard(contentText),
+        });
+      } else if (action.id === 'copy-path') {
+        const relativePath = relativeToCwd(trustedPath, workspaceRoot);
+        if (relativePath !== trustedPath) {
+          list.push({
+            key: 'copy-relative',
+            label: t('file.copyRelativePath'),
+            run: () => copyTextToClipboard(relativePath),
+          });
+        }
+        list.push({
+          key: 'copy-path',
+          label: relativePath !== trustedPath ? t('file.copyAbsolutePath') : t('file.copyPath'),
+          run: () => copyTextToClipboard(trustedPath),
+        });
+      } else if (action.id === 'show-on-this-computer' && phoneForm && host.revealPath !== undefined) {
+        list.push({
+          key: 'show-in-folder',
+          label: t('file.showInFolder'),
+          run: () => { runToastAction(t('file.showInFolder'), () => host.revealPath!(trustedPath)); },
+        });
+      } else if (action.id === 'open-with-default-app' && phoneForm && host.openPath !== undefined) {
+        list.push({
+          key: 'open-default-app',
+          label: t('file.openDefaultApp'),
+          run: () => { runToastAction(t('file.openDefaultApp'), () => host.openPath!(trustedPath)); },
+        });
+      } else if (action.id === 'reload' && phoneForm && onReload !== undefined) {
+        list.push({
+          key: 'reload',
+          label: t('preview.reloadFile'),
+          run: onReload,
+        });
+      }
+    }
+    return list;
+  }, [
+    contentText,
+    environment,
+    host.openPath,
+    host.revealPath,
+    onFindInFile,
+    onReload,
+    onToggleRenderedMode,
+    path,
+    phoneForm,
+    readState,
+    renderedMode,
+    resource,
+    sessionId,
+    t,
+    workspaceRoot,
+  ]);
+
+  const showOpeners = !phoneForm && (!readFailed || failureReason === 'folder' || failureReason === 'unsupported');
   return (
     <>
-      {onReload !== undefined ? (
+      {!phoneForm && onReload !== undefined ? (
         <button
           type="button"
           title={t('preview.reloadFile')}
@@ -276,9 +408,9 @@ export function HeaderFileActions({
               });
             }
           }}
-          className={HEADER_ACTION_CLASS}
+          className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
         >
-          <Icon name="arrowDown" size={12} />
+          <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
         </button>
       ) : null}
       {showOpeners && failureReason !== 'folder' && openers?.open !== undefined ? (
@@ -303,6 +435,32 @@ export function HeaderFileActions({
         >
           <Icon name="folder" size={12} />
         </button>
+      ) : null}
+      {phoneForm && moreEntries.length > 0 ? (
+        <button
+          type="button"
+          title={t('preview.moreActions')}
+          aria-label={t('preview.moreActions')}
+          data-header-more
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
+          }}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <Icon name="more" size={16} />
+        </button>
+      ) : null}
+      {moreAnchor !== null ? (
+        <MiniContextMenu
+          x={moreAnchor.x}
+          y={moreAnchor.y}
+          entries={moreEntries}
+          onClose={() => { setMoreAnchor(null); }}
+          ariaLabel={t('preview.moreActions')}
+          overlayId="preview-header-more"
+          dataAttribute="data-preview-header-more-menu"
+        />
       ) : null}
     </>
   );

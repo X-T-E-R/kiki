@@ -5,6 +5,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { HostSaveSink } from '../host/host';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
+import { useCoarsePointer } from '../lib/layoutHooks';
 import { useOptionalConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -49,6 +50,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
 }) {
   const { t } = useI18n();
   const host = useHost();
+  const coarsePointer = useCoarsePointer();
   const connection = useOptionalConnection();
   const onKikiComputer =
     localKikiComputer ??
@@ -311,7 +313,30 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           {name !== undefined && name !== '' ? <span title={name}>{name}</span> : null}
           {natural !== undefined ? <span className="ml-1.5 text-shell-ink/70">{natural.width} × {natural.height}</span> : null}
         </div>
-        <button type="button" disabled={transfer.status === 'saving'} onClick={onClose} aria-label={t('common.close')} className={controlClass}><Icon name="close" /></button>
+        {coarsePointer && menuEntries.length > 0 ? (
+          <button
+            type="button"
+            data-lightbox-more
+            aria-label={t('preview.moreActions')}
+            title={t('preview.moreActions')}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setMenu({ x: rect.right, y: rect.bottom + 4 });
+            }}
+            className={`${controlClass} flex h-11 w-11 items-center justify-center !p-0`}
+          >
+            <Icon name="more" size={16} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={transfer.status === 'saving'}
+          onClick={onClose}
+          aria-label={t('common.close')}
+          className={coarsePointer ? `${controlClass} flex h-11 w-11 items-center justify-center !p-0` : controlClass}
+        >
+          <Icon name="close" size={coarsePointer ? 16 : 12} />
+        </button>
       </div>
       <div className="relative flex max-w-full flex-wrap items-center justify-center gap-2">
         {count > 1 ? <>

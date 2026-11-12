@@ -138,6 +138,7 @@ export function PreviewAttachmentView({
 
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [attempt, setAttempt] = useState(0);
+  const [searchNonce, setSearchNonce] = useState(0);
   const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
   const [docReadStatus, setDocReadStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -391,10 +392,39 @@ export function PreviewAttachmentView({
     [load, textPreview, html],
   );
 
+  const phoneForm = environment.phoneForm === true;
+  const hasRenderedToggle = html || markdown;
   const moreEntries = useMemo<readonly MiniMenuEntry[]>(() => {
     const list: MiniMenuEntry[] = [];
     for (const action of actions) {
-      if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+      if (
+        action.id === 'open-current-file' &&
+        phoneForm &&
+        trustedPath !== undefined &&
+        onOpenCurrentFile !== undefined
+      ) {
+        list.push({
+          key: 'open-current-file',
+          label: t('preview.openCurrentFile'),
+          run: () => { onOpenCurrentFile(trustedPath); },
+        });
+      } else if (action.id === 'rendered-source' && phoneForm && hasRenderedToggle) {
+        const nextMode = mode === 'rendered' ? 'source' : 'rendered';
+        list.push({
+          key: 'rendered-source',
+          label: nextMode === 'source' ? t('preview.switchToSource') : t('preview.switchToRendered'),
+          run: () => { setMode(nextMode); },
+        });
+      } else if (action.id === 'find-in-file' && textPreview) {
+        list.push({
+          key: 'find-in-file',
+          label: t('preview.findInFile'),
+          run: () => {
+            if (markdown && mode !== 'source') setMode('source');
+            setSearchNonce((n) => n + 1);
+          },
+        });
+      } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
         list.push({
           key: 'add-to-chat',
           label: t('preview.addToChat'),
@@ -440,20 +470,19 @@ export function PreviewAttachmentView({
       }
     }
     return list;
-  }, [actions, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t]);
+  }, [actions, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t, phoneForm, onOpenCurrentFile, hasRenderedToggle, mode, textPreview, markdown]);
 
-  const hasRenderedToggle = html || markdown;
   const sizeBytes = load.status === 'ready' ? load.bytes.byteLength : size;
   const canOpenCurrent = actionIds.has('open-current-file') && trustedPath !== undefined && onOpenCurrentFile !== undefined;
   const canDownload = actionIds.has('download');
 
-  const copyNoticeNode = isCopy ? (
+  const copyNoticeNode = !phoneForm && isCopy ? (
     <span className="shrink-0 text-[11px] text-ink-faint" data-preview-copy-notice>
       {t('preview.sentCopyNotice')}
     </span>
   ) : null;
 
-  const openCurrentButton = canOpenCurrent ? (
+  const openCurrentButton = !phoneForm && canOpenCurrent ? (
     <button
       type="button"
       data-open-current-file
@@ -474,9 +503,9 @@ export function PreviewAttachmentView({
         const rect = event.currentTarget.getBoundingClientRect();
         setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
       }}
-      className={HEADER_ACTION_CLASS}
+      className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
     >
-      <Icon name="more" size={12} />
+      <Icon name="more" size={phoneForm ? 16 : 12} />
     </button>
   ) : null;
 
@@ -502,7 +531,7 @@ export function PreviewAttachmentView({
           active={visible}
           externalReloadNonce={externalReloadNonce}
           headerSubtitle={
-            isCopy ? (
+            !phoneForm && isCopy ? (
               <span className="block truncate text-[10.5px] text-ink-faint" data-preview-copy-notice>
                 {t('preview.sentCopyNotice')}
               </span>
@@ -538,13 +567,13 @@ export function PreviewAttachmentView({
               </span>
               {copyNoticeNode}
             </div>
-            {sizeBytes !== undefined ? (
+            {!phoneForm && sizeBytes !== undefined ? (
               <span className="shrink-0 font-mono text-[11px] text-ink-faint">
                 {formatBytes(sizeBytes)}
               </span>
             ) : null}
             {openCurrentButton}
-            {hasRenderedToggle && actionIds.has('rendered-source') ? (
+            {!phoneForm && hasRenderedToggle && actionIds.has('rendered-source') ? (
               <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
                 {(['rendered', 'source'] as const).map((option) => (
                   <button
@@ -573,9 +602,9 @@ export function PreviewAttachmentView({
                 aria-label={t('media.download')}
                 data-download-file
                 onClick={() => { void downloadAttachment(); }}
-                className={HEADER_ACTION_CLASS}
+                className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
               >
-                <Icon name="arrowDown" size={12} />
+                <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
               </button>
             ) : null}
             {moreButton}
@@ -693,6 +722,7 @@ export function PreviewAttachmentView({
                 alt={name}
                 caption={<span title={trustedPath ?? name}>{name}</span>}
                 meta={formatBytes(load.bytes.byteLength)}
+                showHeader={!phoneForm}
                 actions={
                   <button
                     type="button"
@@ -737,6 +767,7 @@ export function PreviewAttachmentView({
                       generation={attempt}
                       readOnly
                       onChange={() => {}}
+                      searchNonce={searchNonce}
                       ariaLabel={t('preview.openFile', { name })}
                     />
                   </div>

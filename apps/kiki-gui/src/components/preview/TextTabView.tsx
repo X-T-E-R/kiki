@@ -8,6 +8,7 @@ import { basenameOf, type FileReference } from '@kiki/session-core/composer/medi
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import type { KikiClient } from '#/lib/client';
+import { usePhoneMode } from '#/lib/layoutHooks';
 import { useOptionalConnection } from '#/state/connection';
 import {
   HostFileEditorController,
@@ -102,6 +103,7 @@ export function TextTabView({
 }) {
   const host = useHost();
   const { locale, t } = useI18n();
+  const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const client = connection?.client;
   const localKikiComputer = isLocalKikiComputer(connection);
@@ -111,6 +113,7 @@ export function TextTabView({
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [reloadKey, setReloadKey] = useState(0);
+  const [searchNonce, setSearchNonce] = useState(0);
   const [htmlRootDraft, setHtmlRootDraft] = useState<HtmlRootDraftState>(() => ({
     client,
     path,
@@ -468,9 +471,9 @@ export function TextTabView({
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {path}
+          {phoneMode ? name : path}
         </span>
-        {hasRenderedMode && !textReadFailed ? (
+        {!phoneMode && hasRenderedMode && !textReadFailed ? (
           <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
             {(['rendered', 'source'] as const).map((option) => (
               <button
@@ -492,7 +495,7 @@ export function TextTabView({
             ))}
           </span>
         ) : null}
-        {snap.status === 'ready' ? (
+        {!phoneMode && snap.status === 'ready' ? (
           <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
             {snap.saving
               ? t('preview.saving')
@@ -503,7 +506,7 @@ export function TextTabView({
                   : ''}
           </span>
         ) : null}
-        {editable && snap.status === 'ready' ? (
+        {!phoneMode && editable && snap.status === 'ready' ? (
           editing ? (
             <button
               type="button"
@@ -528,7 +531,7 @@ export function TextTabView({
               {t('preview.edit')}
             </button>
           )
-        ) : readOnlyReason !== undefined ? (
+        ) : !phoneMode && readOnlyReason !== undefined ? (
           <span
             data-readonly-reason
             className="shrink-0 text-[11px] text-ink-faint"
@@ -541,9 +544,23 @@ export function TextTabView({
           name={name}
           sessionId={sessionId}
           workspaceRoot={workspaceRoot}
+          resourceType={html ? 'html' : markdown ? 'markdown' : undefined}
           canDownload={!textReadFailed && snap.status === 'ready'}
           readFailed={textReadFailed}
           failureReason={snap.failureReason}
+          truncated={snap.oversized}
+          losslessUtf8={snap.lossless}
+          contentText={snap.status === 'ready' ? (fullText ?? snap.draft) : undefined}
+          renderedMode={hasRenderedMode && !textReadFailed ? mode : undefined}
+          onToggleRenderedMode={hasRenderedMode && !textReadFailed ? setMode : undefined}
+          onFindInFile={
+            snap.status === 'ready' && !html
+              ? () => {
+                  if (hasRenderedMode && mode !== 'source') setMode('source');
+                  setSearchNonce((n) => n + 1);
+                }
+              : undefined
+          }
           onReload={reloadTab}
         />
       </div>
@@ -648,6 +665,7 @@ export function TextTabView({
                       readOnly={!editing}
                       onChange={(text) => { controller?.setDraft(text); }}
                       onSaveShortcut={() => { void controller?.saveNow(); }}
+                      searchNonce={searchNonce}
                       ariaLabel={t('preview.openFile', { name })}
                     />
                   )}

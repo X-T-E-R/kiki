@@ -45,7 +45,7 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
-import { highlightSelectionMatches } from '@codemirror/search';
+import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search';
 
 import { basenameOf, type FileReference } from '@kiki/session-core/composer/media';
 
@@ -171,6 +171,8 @@ export interface CodeEditorProps {
   readonly onChange: (text: string) => void;
   /** Mod-S inside the editor. */
   readonly onSaveShortcut?: () => void;
+  /** Incrementing nonce that opens CodeMirror's in-file search panel. */
+  readonly searchNonce?: number;
   readonly ariaLabel: string;
 }
 
@@ -182,6 +184,7 @@ export function CodeEditor({
   readOnly,
   onChange,
   onSaveShortcut,
+  searchNonce,
   ariaLabel,
 }: CodeEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -213,6 +216,7 @@ export function CodeEditor({
       drawSelection(),
       history(),
       bracketMatching(),
+      search({ top: true }),
       highlightSelectionMatches(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       EditorView.lineWrapping,
@@ -233,6 +237,7 @@ export function CodeEditor({
           },
         },
         indentWithTab,
+        ...searchKeymap,
         ...defaultKeymap,
         ...historyKeymap,
       ]),
@@ -334,6 +339,16 @@ export function CodeEditor({
       ]),
     });
   }, [readOnly]);
+
+  const appliedSearchNonceRef = useRef<number | undefined>(searchNonce);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view === null || searchNonce === undefined || searchNonce === 0 || appliedSearchNonceRef.current === searchNonce) {
+      return;
+    }
+    appliedSearchNonceRef.current = searchNonce;
+    openSearchPanel(view);
+  }, [searchNonce]);
 
   return <div ref={containerRef} data-code-editor={path} className="min-h-0 flex-1 overflow-hidden" />;
 }

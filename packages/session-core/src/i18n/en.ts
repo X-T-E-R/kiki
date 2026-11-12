@@ -13394,4 +13394,9 @@ export const en = {
   'preview.webFailed': 'This page could not be opened here; open it in the browser',
   'preview.readFileTooLarge': 'This file is too large to read over this connection.',
   'preview.loadFailed': 'This preview could not be loaded.',
+  'preview.openTabsTitle': 'Open tabs',
+  'preview.tabPickerAria': '{name}, {count} open tabs',
+  'preview.findInFile': 'Find in file',
+  'preview.switchToSource': 'View source',
+  'preview.switchToRendered': 'View rendered',
 } as const;

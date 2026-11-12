@@ -435,4 +435,54 @@ describe('lightbox image menu', () => {
     expect(document.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
     expect(document.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
   });
+
+  it('shows a visible more-actions button on coarse pointer that opens the bottom sheet with download and copy (#36)', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('(pointer: coarse)'),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+    try {
+      act(() => {
+        root.render(
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <MediaLightbox
+                src="blob:shot"
+                name="shot.png"
+                sourcePath="/remote/space/shot.png"
+                localKikiComputer={false}
+                onClose={() => {}}
+              />
+            </HostProvider>
+          </I18nProvider>,
+        );
+      });
+      const moreButton = document.querySelector<HTMLButtonElement>('[data-lightbox-more]');
+      expect(moreButton).not.toBeNull();
+      act(() => {
+        moreButton!.click();
+      });
+      const sheet = document.querySelector('[data-lightbox-image-menu]');
+      expect(sheet).not.toBeNull();
+      expect(sheet?.classList.contains('kiki-action-sheet-layer')).toBe(true);
+      expect(sheet?.querySelector('[data-menu-item="copy-image"]')).not.toBeNull();
+      expect(sheet?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+      expect(sheet?.querySelector('[data-menu-item="save-image"]')).not.toBeNull();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
+  });
 });

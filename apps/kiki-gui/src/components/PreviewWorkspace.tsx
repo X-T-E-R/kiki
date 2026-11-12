@@ -686,6 +686,7 @@ function HostFileResourceTabView({
         <DocumentTabView
           source={{ kind: 'workspace', path: filePath }}
           sessionId={sessionId}
+          workspaceRoot={workspaceRoot}
           client={connection?.client}
           active={visible}
           externalReloadNonce={externalReloadNonce}

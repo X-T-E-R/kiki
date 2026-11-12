@@ -7,12 +7,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { basenameOf, formatBytes } from '@kiki/session-core/composer/media';
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
+import { usePhoneMode } from '#/lib/layoutHooks';
 import { useOptionalConnection } from '#/state/connection';
 import { classifyHostFileReadError } from '#/state/hostFileEditor';
 import type { PreviewReadFailureReason, PreviewReadState } from '#/state/previewResource';
 import { Icon } from '../icons';
 import { ImageViewport } from '../ImageViewport';
 import { useMessageImageMenu } from '../mediaParts';
+import { HeaderFileActions } from './ResourceHeader';
 import {
   CAPTION_ACTION_CLASS,
   ChangedOnDiskStrip,
@@ -46,6 +48,7 @@ export function ImageTabView({
 }) {
   const host = useHost();
   const { t } = useI18n();
+  const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const client = connection?.client;
   const localKikiComputer = isLocalKikiComputer(connection);
@@ -157,16 +160,30 @@ export function ImageTabView({
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
             {name}
           </span>
-          <button
-            type="button"
-            title={t('preview.reloadFile')}
-            aria-label={t('preview.reloadFile')}
-            data-header-reload
-            onClick={reload}
-            className={CAPTION_ACTION_CLASS}
-          >
-            <Icon name="refresh" size={12} />
-          </button>
+          {phoneMode ? (
+            <HeaderFileActions
+              path={path}
+              name={name}
+              sessionId={sessionId}
+              workspaceRoot={workspaceRoot}
+              resourceType="image"
+              canDownload={false}
+              readFailed={readFailed}
+              failureReason={failureReason}
+              onReload={reload}
+            />
+          ) : (
+            <button
+              type="button"
+              title={t('preview.reloadFile')}
+              aria-label={t('preview.reloadFile')}
+              data-header-reload
+              onClick={reload}
+              className={CAPTION_ACTION_CLASS}
+            >
+              <Icon name="refresh" size={12} />
+            </button>
+          )}
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
           {state.status === 'loading' ? (
@@ -197,12 +214,29 @@ export function ImageTabView({
 
   return (
     <>
+      {phoneMode ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+            {name}
+          </span>
+          <HeaderFileActions
+            path={path}
+            name={name}
+            sessionId={sessionId}
+            workspaceRoot={workspaceRoot}
+            resourceType="image"
+            canDownload
+            onReload={reload}
+          />
+        </div>
+      ) : null}
       {changedOnDisk ? <ChangedOnDiskStrip onReload={reload} /> : null}
       <ImageViewport
         src={state.url}
         alt={name}
         caption={<span title={path}>{name}</span>}
         meta={formatBytes(state.size)}
+        showHeader={!phoneMode}
         onContextMenu={imageMenu.openMenu}
         onError={() => { setState({ status: 'error', reason: 'corrupted' }); }}
         actions={
