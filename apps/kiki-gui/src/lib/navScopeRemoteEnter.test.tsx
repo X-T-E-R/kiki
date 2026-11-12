@@ -250,26 +250,66 @@ describe('a failed entry says why', () => {
 
   afterEach(async () => {
     await Promise.all(clients.splice(0).map((client) => client.klient.close()));
+    localStorage.removeItem('kiki.connection');
     vi.unstubAllGlobals();
   });
 
+  function typeInto(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
   /** The real adapter over a stubbed network, standing in for the window's own. */
-  function stubRealAdapter(active: NavScopeIdentity, answer: () => Response) {
-    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
+  function stubRealAdapter(
+    active: NavScopeIdentity,
+    answer: (input: RequestInfo | URL, init?: RequestInit) => Response,
+    overrides?: {
+      source?: ConnectionSelection['source'];
+      persist?: boolean;
+      local?: { scope: NavScopeIdentity; selection: ConnectionSelection };
+    },
+  ) {
+    const seenHeaders: string[] = [];
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
       const url = input instanceof Request ? input.url : input.toString();
+      const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+      const auth = headers.get('authorization');
+      if (auth !== null) seenHeaders.push(`${url} -> ${auth}`);
       if (url === `${ADDRESS}/api/remote-connections`) return Response.json({ code: 0, msg: 'success', data: [pairing], request_id: 'example' });
-      return answer();
+      return answer(input, init);
     }));
-    const selection: ConnectionSelection = { config: { url: ADDRESS, token: 'example-token' }, persist: false, source: 'stored', scopeId: active.scopeId };
+    const selection: ConnectionSelection = {
+      config: { url: ADDRESS, token: 'example-token' },
+      persist: overrides?.persist ?? false,
+      source: overrides?.source ?? 'stored',
+      scopeId: active.scopeId,
+    };
     const client = new KikiClient({ baseUrl: ADDRESS, token: 'example-token' }); clients.push(client);
     const source = { scope: active, selection, client };
+    const localSource = overrides?.local !== undefined
+      ? (() => {
+          const localClient = new KikiClient({ baseUrl: overrides.local.selection.config.url, token: overrides.local.selection.config.token });
+          clients.push(localClient);
+          return { scope: overrides.local.scope, selection: overrides.local.selection, client: localClient };
+        })()
+      : source;
+    const commit = vi.fn();
+    const reload = vi.fn(() => { mocks.reload = true; });
     const adapter = createScopeConnectionAdapter({ host: { connection: {} } as unknown as HostAdapter,
-      active: () => source, local: () => source, control: () => source, commit: vi.fn(), reload: vi.fn(),
+      active: () => source, local: () => localSource, control: () => localSource, commit, reload,
       createClient: (next) => {
-        const remote = createRemoteSpaceClient({ endpoint: next.config.url, token: next.config.token, connectionId: next.connectionId! });
-        clients.push(remote); return remote;
+        const created = next.source === 'remote'
+          ? createRemoteSpaceClient({ endpoint: next.config.url, token: next.config.token, connectionId: next.connectionId! })
+          : new KikiClient({ baseUrl: next.config.url, token: next.config.token });
+        if (next.source !== 'remote') {
+          vi.spyOn(created, 'getSession').mockResolvedValue({ id: 'example-session', work_dir: '/tmp' } as never);
+        }
+        clients.push(created); return created;
       } });
     mocks.prepare.mockReset().mockImplementation((scope: NavScopeIdentity, signal: AbortSignal, token?: string) => adapter.prepare(scope, signal, token));
+    return { seenHeaders, commit, reload };
   }
 
   it.each([
@@ -289,7 +329,7 @@ describe('a failed entry says why', () => {
     expect(surfaceTitle()).not.toBe('nav.scope.failed.auth-required.title');
   });
 
-  it('still asks for a token when a hand-entered address answers 401', async () => {
+  it('asks for a token when a hand-entered address answers 401, then retries with the typed token and closes recovery', async () => {
     await act(async () => { root?.unmount(); });
     router?.dispose();
     container.remove();
@@ -297,11 +337,152 @@ describe('a failed entry says why', () => {
     const direct = { homeId: 'main', scopeId: `direct:${ADDRESS}` };
     connection.scopeId = direct.scopeId;
     await mount();
-    stubRealAdapter(direct, () => Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 }));
+    const { seenHeaders, commit } = stubRealAdapter(direct, (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+      if (headers.get('authorization') !== 'Bearer fresh-valid-token') {
+        return Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 });
+      }
+      if (url.endsWith('/api/meta')) {
+        return Response.json({ code: 0, msg: 'success', data: { server_home_id: 'source-home' }, request_id: 'example' });
+      }
+      if (url.endsWith('/api/sessions/example-session')) {
+        return Response.json({ code: 0, msg: 'success', data: { id: 'example-session', work_dir: '/tmp' }, request_id: 'example' });
+      }
+      return Response.json({ code: 0, msg: 'success', data: {}, request_id: 'example' });
+    }, { source: 'manual', persist: true });
 
     await act(async () => { await requestScopeNavigation({ scope: direct, route: '/s/example-session' }).catch(() => {}); });
 
     expect(surfaceTitle()).toBe('nav.scope.failed.auth-required.title');
-    expect(surface()?.querySelector('input[type="password"]')).not.toBeNull();
+    const input = surface()?.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+
+    await act(async () => { typeInto(input!, 'fresh-valid-token'); });
+    const retryButton = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
+    expect(retryButton).toBeDefined();
+    await act(async () => { retryButton!.click(); });
+
+    expect(seenHeaders).toContain(`${ADDRESS}/api/meta -> Bearer fresh-valid-token`);
+    expect(surface()).toBeNull();
+    expect(router.state.location.pathname).toBe('/s/example-session');
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem('kiki.connection') ?? '{}')).toMatchObject({
+      url: ADDRESS,
+      token: 'fresh-valid-token',
+    });
+  });
+
+  it('persists the accepted typed token before reloading when returning from a remote space to a saved hand-entered address', async () => {
+    await act(async () => { root?.unmount(); });
+    router?.dispose();
+    container.remove();
+    clearNavHistory();
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: ADDRESS, token: 'stale-token' }));
+    const direct = { homeId: 'main', scopeId: `direct:${ADDRESS}` };
+    const remoteActive = { homeId: `remote:${CONNECTION}`, scopeId: `remote:${CONNECTION}` };
+    connection.spaceKey = remoteActive.homeId;
+    connection.scopeId = remoteActive.scopeId;
+    connection.connectionId = CONNECTION;
+    connection.meta = { server_home_id: REMOTE_HOME };
+    await mount();
+
+    const localSelection: ConnectionSelection = {
+      config: { url: ADDRESS, token: 'stale-token' },
+      persist: true,
+      source: 'stored',
+      scopeId: direct.scopeId,
+    };
+    const { seenHeaders, reload } = stubRealAdapter(remoteActive, (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+      if (headers.get('authorization') !== 'Bearer rotated-token') {
+        return Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 });
+      }
+      if (url.endsWith('/api/meta')) {
+        return Response.json({ code: 0, msg: 'success', data: { server_home_id: 'source-home' }, request_id: 'example' });
+      }
+      return Response.json({ code: 0, msg: 'success', data: {}, request_id: 'example' });
+    }, {
+      source: 'remote',
+      local: { scope: direct, selection: localSelection },
+    });
+
+    await act(async () => { await requestScopeNavigation({ scope: direct, route: '/new' }).catch(() => {}); });
+    expect(surfaceTitle()).toBe('nav.scope.failed.auth-required.title');
+    const input = surface()?.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+
+    await act(async () => { typeInto(input!, 'rotated-token'); });
+    const retryButton = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
+    await act(async () => { retryButton!.click(); });
+
+    expect(seenHeaders).toContain(`${ADDRESS}/api/meta -> Bearer rotated-token`);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem('kiki.connection') ?? '{}')).toEqual({
+      url: ADDRESS,
+      token: 'rotated-token',
+    });
+    const handoffRaw = sessionStorage.getItem('kiki.navScopeHandoff.v1') ?? '';
+    expect(handoffRaw).not.toContain('rotated-token');
+    expect(window.location.href).not.toContain('rotated-token');
+  });
+
+  it('keeps auth-required with an empty field and never writes a rejected typed token', async () => {
+    await act(async () => { root?.unmount(); });
+    router?.dispose();
+    container.remove();
+    clearNavHistory();
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: ADDRESS, token: 'original-saved-token' }));
+    const direct = { homeId: 'main', scopeId: `direct:${ADDRESS}` };
+    connection.spaceKey = 'main';
+    connection.scopeId = direct.scopeId;
+    connection.connectionId = null;
+    connection.meta = { server_home_id: 'source-home' };
+    await mount();
+    const { seenHeaders } = stubRealAdapter(direct, () =>
+      Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 }),
+      { source: 'stored', persist: true },
+    );
+
+    await act(async () => { await requestScopeNavigation({ scope: direct, route: '/s/example-session' }).catch(() => {}); });
+    const input = surface()?.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+    await act(async () => { typeInto(input!, 'wrong-token'); });
+    const retryButton = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
+    await act(async () => { retryButton!.click(); });
+
+    expect(seenHeaders).toContain(`${ADDRESS}/api/meta -> Bearer wrong-token`);
+    expect(surfaceTitle()).toBe('nav.scope.failed.auth-required.title');
+    expect(surface()?.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe('');
+    expect(JSON.parse(localStorage.getItem('kiki.connection') ?? '{}')).toEqual({
+      url: ADDRESS,
+      token: 'original-saved-token',
+    });
+  });
+
+  it.each(['web-cookie', 'app-shell'] as const)('never renders a token input when a %s session answers 401', async (nonTokenSource) => {
+    await act(async () => { root?.unmount(); });
+    router?.dispose();
+    container.remove();
+    clearNavHistory();
+    const direct = { homeId: 'main', scopeId: `direct:${ADDRESS}` };
+    connection.spaceKey = 'main';
+    connection.scopeId = direct.scopeId;
+    connection.connectionId = null;
+    connection.meta = { server_home_id: 'source-home' };
+    await mount();
+    stubRealAdapter(direct, () =>
+      Response.json({ code: 40101, msg: 'auth.invalid_token', data: null, request_id: 'example' }, { status: 401 }),
+      { source: nonTokenSource, persist: false },
+    );
+
+    await act(async () => { await requestScopeNavigation({ scope: direct, route: '/s/example-session' }).catch(() => {}); });
+
+    expect(surface()?.querySelector<HTMLElement>('h1')?.dataset['navScopeFailure']).toBe('session-expired');
+    expect(surfaceTitle()).toBe('nav.scope.failed.session-expired.title');
+    expect(surface()?.querySelector('input')).toBeNull();
+    const retryButton = Array.from(surface()?.querySelectorAll('button') ?? []).find((btn) => btn.textContent === 'nav.scope.retry');
+    expect(retryButton).toBeDefined();
   });
 });

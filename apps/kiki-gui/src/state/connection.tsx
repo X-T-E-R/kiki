@@ -1359,6 +1359,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       const sourceSelection = adapterActiveRef.current.selection;
       if (next.source === 'remote' && !desktopRuntime && sourceSelection !== null && sourceSelection.source !== 'remote' && sourceSelection.source !== 'ssh') {
         updateLocalSelection({ ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId });
+      } else if (!desktopRuntime && next.source !== 'remote' && next.source !== 'ssh' && localSelectionRef.current !== null) {
+        updateLocalSelection(next);
       }
       const nextTunnel = next.source === 'ssh' && next.profile && next.tunnelId ? { id: next.profile.id, tunnelId: next.tunnelId } : null;
       connectedSshProfileRef.current = nextTunnel;

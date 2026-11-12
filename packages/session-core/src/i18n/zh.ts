@@ -12143,6 +12143,8 @@ export const zh = {
   'nav.scope.failed.offline.body': '该空间现在没有响应。',
   'nav.scope.failed.auth-required.title': '该空间需要访问令牌',
   'nav.scope.failed.auth-required.body': '返回前需要该空间当前有效的访问令牌。',
+  'nav.scope.failed.session-expired.title': '该空间的登录已失效',
+  'nav.scope.failed.session-expired.body': '请在这台设备上重新登录或打开当前有效的访问链接，再重试。',
   'nav.scope.failed.scope-invalid.title': '这次返回无法恢复',
   'nav.scope.failed.scope-invalid.body': 'Kiki 无法在该空间重新打开你离开的那个位置。',
   'nav.scope.failed.identity-mismatch.title': '连接到了另一个空间',

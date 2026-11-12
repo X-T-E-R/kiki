@@ -50,6 +50,7 @@ type FailureAction = 'retry' | 'turn-on' | 'pair-again' | 'remove' | 'none';
 const FAILURE_COPY: Record<ScopeRestoreFailure, { readonly title: I18nKey; readonly body: I18nKey; readonly action: FailureAction }> = {
   offline: { title: 'nav.scope.failed.offline.title', body: 'nav.scope.failed.offline.body', action: 'retry' },
   'auth-required': { title: 'nav.scope.failed.auth-required.title', body: 'nav.scope.failed.auth-required.body', action: 'retry' },
+  'session-expired': { title: 'nav.scope.failed.session-expired.title', body: 'nav.scope.failed.session-expired.body', action: 'retry' },
   'scope-invalid': { title: 'nav.scope.failed.scope-invalid.title', body: 'nav.scope.failed.scope-invalid.body', action: 'retry' },
   'identity-mismatch': { title: 'nav.scope.failed.identity-mismatch.title', body: 'nav.scope.failed.identity-mismatch.body', action: 'retry' },
   'target-missing': { title: 'nav.scope.failed.target-missing.title', body: 'nav.scope.failed.target-missing.body', action: 'retry' },

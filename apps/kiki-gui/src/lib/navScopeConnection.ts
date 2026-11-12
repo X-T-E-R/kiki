@@ -1,7 +1,7 @@
 import { CONNECTION_PROTOCOL, type MetaResponse } from '@kiki/protocol';
 import { RPCError } from '@kiki/klient';
 import type { HostAdapter } from '../host';
-import type { ConnectionSelection } from '../state/connectionConfig';
+import { writeStoredConfig, type ConnectionSelection } from '../state/connectionConfig';
 import { API_CODES, ApiError, createRemoteSpaceClient, isSessionNotFoundMessage, KikiClient } from './client';
 import { ScopeRestoreError, type ScopeConnectionAdapter, type ScopeRestoreFailure } from './navScope';
 import type { NavScopeIdentity } from './navHistory';
@@ -45,6 +45,34 @@ function remoteScopeFailure(error: unknown): unknown {
   return new ScopeRestoreError(reason ?? 'remote-unreachable');
 }
 
+function acceptsTypedToken(source: ConnectionSelection['source'] | undefined): boolean {
+  return source !== 'web-cookie' && source !== 'app-shell' && source !== 'remote';
+}
+
+function authFailureFor(selection: ConnectionSelection | undefined): ScopeRestoreFailure {
+  return acceptsTypedToken(selection?.source) ? 'auth-required' : 'session-expired';
+}
+
+function applyTypedToken(selection: ConnectionSelection, typed: string): ConnectionSelection {
+  if (!acceptsTypedToken(selection.source)) throw new ScopeRestoreError('session-expired');
+  const trimmed = typed.trim();
+  if (trimmed === '' || /[\u0000-\u001F\u007F]/.test(trimmed)) throw new ScopeRestoreError('auth-required');
+  return { ...selection, config: { ...selection.config, token: trimmed } };
+}
+
+function persistSelectionToken(selection: ConnectionSelection): void {
+  if (
+    selection.persist &&
+    selection.source !== 'remote' &&
+    selection.source !== 'ssh' &&
+    selection.source !== 'web-cookie' &&
+    selection.source !== 'app-shell' &&
+    selection.source !== 'desktop'
+  ) {
+    writeStoredConfig(selection.config);
+  }
+}
+
 /** A guarded windows-mode action: no source selection or Router visit is committed. */
 export async function openRemoteScopeWindow(host: Pick<HostAdapter, 'openRemoteSpace'>, scope: NavScopeIdentity, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
@@ -67,7 +95,13 @@ export interface ScopeConnectionOptions {
   createClient?: (selection: ConnectionSelection) => KikiClient;
 }
 
-export async function validateScopeRoute(client: KikiClient, route: string, signal: AbortSignal, remote = false): Promise<void> {
+export async function validateScopeRoute(
+  client: KikiClient,
+  route: string,
+  signal: AbortSignal,
+  remote = false,
+  authFailure: ScopeRestoreFailure = 'auth-required',
+): Promise<void> {
   signal.throwIfAborted();
   const pathname = new URL(route, 'http://example.test').pathname;
   const sessionId = /^\/s\/([^/]+)/.exec(pathname)?.[1];
@@ -96,7 +130,7 @@ export async function validateScopeRoute(client: KikiClient, route: string, sign
     if (roomId !== undefined && error instanceof RPCError && error.code === API_CODES.REQUEST_INVALID &&
         error.message === `Room '${decodeURIComponent(roomId)}' does not exist.`) throw new ScopeRestoreError('target-missing');
     if (remote) throw remoteScopeFailure(error);
-    if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
+    if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError(authFailure);
     throw error;
   }
   signal.throwIfAborted();
@@ -111,11 +145,12 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
       const crossHome = source.scope.homeId !== scope.homeId;
       const remote = scope.scopeId.startsWith('remote:') || scope.homeId.startsWith('remote:');
       if (!crossHome && scope.scopeId === source.scope.scopeId && token === undefined) {
+        const fastAuthFailure = authFailureFor(source.selection);
         let meta: MetaResponse;
         try { meta = await source.client.meta(); }
         catch (error) {
           if (remote) throw remoteScopeFailure(error);
-          if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
+          if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError(fastAuthFailure);
           throw error;
         }
         signal.throwIfAborted();
@@ -123,10 +158,11 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
         if ((expectedHome !== undefined && expectedHome !== meta.server_home_id) ||
             (scope.connectionRef !== undefined && scope.connectionRef !== source.scope.connectionRef)) throw new ScopeRestoreError('identity-mismatch');
         return { scope: { ...source.scope, serverHomeId: meta.server_home_id },
-          validate: (route, nextSignal) => validateScopeRoute(source.client, route, nextSignal, remote),
+          validate: (route, nextSignal) => validateScopeRoute(source.client, route, nextSignal, remote, fastAuthFailure),
           commit: () => { signal.throwIfAborted(); }, dispose: () => {} };
       }
       let selection: ConnectionSelection;
+      let authSelection: ConnectionSelection | undefined = source.selection;
       let instance: KikiClient | undefined;
       let ownsClient = false;
       let switchedHome = false;
@@ -161,6 +197,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           if (record.state === 'identity_changed') throw new ScopeRestoreError('remote-identity-changed');
           selection = { config: control.selection.config, persist: false, source: 'remote', scopeId: scope.scopeId,
             connectionId: record.id, serverHomeId: record.target.homeId };
+          authSelection = selection;
           instance = options.createClient?.(selection) ?? createRemoteSpaceClient({ endpoint: selection.config.url,
             token: selection.config.token, connectionId: record.id });
           ownsClient = true;
@@ -238,21 +275,34 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           selection = { config: resolved.config, persist: false, source: 'ssh', scopeId: scope.scopeId, profile,
             tunnelId: resolved.tunnelId, serverHomeId: resolved.serverHomeId, serverInstanceId: resolved.serverInstanceId,
             serverVersion: resolved.serverVersion, buildId: resolved.buildId, buildChannel: resolved.buildChannel };
+          authSelection = selection;
         } else if (scope.scopeId === 'local' || (returningControl && scope.scopeId.startsWith('direct:'))) {
           if (crossHome && !returningControl) {
             const discovered = await options.host.connection.discover();
             if (discovered === null) throw new ScopeRestoreError('offline');
             selection = { config: discovered.config, persist: false, source: 'desktop', scopeId: 'local' };
+            authSelection = selection;
+            if (token !== undefined) selection = applyTypedToken(selection, token);
           } else {
             const local = returningControl ? options.control?.() ?? options.local() : options.local();
             if (local === null) throw new ScopeRestoreError('offline');
             if (scope.scopeId.startsWith('direct:') && scope.scopeId !== (local.selection.scopeId ?? `direct:${local.selection.config.url.trim().replace(/\/+$/, '')}`)) throw new ScopeRestoreError('scope-invalid');
-            selection = local.selection;
-            instance = local.client;
+            authSelection = local.selection;
+            if (token !== undefined) {
+              selection = applyTypedToken(local.selection, token);
+            } else {
+              selection = local.selection;
+              instance = local.client;
+            }
           }
         } else if (scope.homeId === source.scope.homeId && scope.scopeId === source.scope.scopeId) {
-          selection = source.selection;
-          instance = source.client;
+          authSelection = source.selection;
+          if (token !== undefined) {
+            selection = applyTypedToken(source.selection, token);
+          } else {
+            selection = source.selection;
+            instance = source.client;
+          }
         } else throw new ScopeRestoreError('scope-invalid');
         signal.throwIfAborted();
         if (instance === undefined) {
@@ -268,9 +318,10 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           throw new ScopeRestoreError('identity-mismatch');
         }
         const verified = instance;
+        const resolvedAuthFailure = authFailureFor(selection);
         return {
           scope: { ...scope, serverHomeId: meta.server_home_id, connectionRef: selection.source === 'ssh' ? selection.tunnelId : undefined },
-          validate: (route, nextSignal) => validateScopeRoute(verified, route, nextSignal),
+          validate: (route, nextSignal) => validateScopeRoute(verified, route, nextSignal, false, resolvedAuthFailure),
           commit: async () => {
             signal.throwIfAborted();
             if (selection.source === 'ssh' && selection.profile && selection.tunnelId) {
@@ -278,6 +329,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
               await options.host.connection.commitScopeConnection(scope.homeId, selection.profile.id, selection.tunnelId, crossHome);
               signal.throwIfAborted();
             }
+            if (token !== undefined) persistSelectionToken(selection);
             if (crossHome) {
               if (ownsClient) await verified.klient.close();
               signal.throwIfAborted();
@@ -295,7 +347,9 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
         // A 40101 left over on the remote branch came from this window's own
         // home (the pairing list), not from the paired space; the remote branch
         // never reads a typed token, so it must not ask for one.
-        if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError(remote ? 'offline' : 'auth-required');
+        if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) {
+          throw new ScopeRestoreError(remote ? 'offline' : authFailureFor(authSelection));
+        }
         throw error;
       }
     },

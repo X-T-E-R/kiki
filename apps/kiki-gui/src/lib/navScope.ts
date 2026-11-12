@@ -7,7 +7,7 @@ import { isSpaceViewRoute } from './spaceViewState';
  * typed token, so none of them asks for one; `remote-unreachable` is the
  * fallback for every pairing failure that cannot be told apart.
  */
-export type ScopeRestoreFailure = 'offline' | 'auth-required' | 'scope-invalid' | 'identity-mismatch' | 'target-missing'
+export type ScopeRestoreFailure = 'offline' | 'auth-required' | 'session-expired' | 'scope-invalid' | 'identity-mismatch' | 'target-missing'
   | 'remote-unreachable' | 'remote-closed' | 'remote-paused' | 'remote-not-approved' | 'remote-identity-changed'
   | 'remote-not-running' | 'remote-protocol';
 export interface ScopeDestination {

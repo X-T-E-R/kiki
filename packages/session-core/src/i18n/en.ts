@@ -12238,6 +12238,8 @@ export const en = {
   'nav.scope.failed.offline.body': 'That space isn’t answering right now.',
   'nav.scope.failed.auth-required.title': 'That space needs an access token',
   'nav.scope.failed.auth-required.body': 'Kiki needs a current access token for that space before it can go back.',
+  'nav.scope.failed.session-expired.title': 'That space is no longer signed in',
+  'nav.scope.failed.session-expired.body': 'Sign in again on this device or open a current access link, then try again.',
   'nav.scope.failed.scope-invalid.title': 'That return can’t be restored',
   'nav.scope.failed.scope-invalid.body': 'Kiki can’t reopen the place you came from in that space.',
   'nav.scope.failed.identity-mismatch.title': 'A different space answered',
