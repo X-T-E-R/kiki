@@ -18,7 +18,6 @@ import { TodoPanelComponent } from './components/chrome/todo-panel';
 import type { SessionRow } from './components/dialogs/session-picker';
 import { CustomEditor } from './components/editor/custom-editor';
 import { DEFAULT_TUI_CONFIG } from './config';
-import type { TasksBrowserState } from './controllers/tasks-browser';
 import { CHROME_GUTTER } from './constant/rendering';
 import { currentTheme, type Theme } from './theme';
 import { setMarkdownRenderLatex } from './utils/markdown-options';
@@ -82,7 +81,6 @@ export interface TUIState {
    * this flag to avoid starting a goal ahead of the user's earlier message.
    */
   queuedMessageDispatchPending: boolean;
-  tasksBrowser: TasksBrowserState | undefined;
 }
 
 export function createTUIState(options: KimiTUIOptions): TUIState {
@@ -189,6 +187,5 @@ export function createTUIState(options: KimiTUIOptions): TUIState {
     externalEditorRunning: false,
     queuedMessages: [],
     queuedMessageDispatchPending: false,
-    tasksBrowser: undefined,
   };
 }
