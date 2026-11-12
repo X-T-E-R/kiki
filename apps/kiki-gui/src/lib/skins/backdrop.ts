@@ -24,6 +24,7 @@
 import { objectPositionOf, readableSurfaceAlpha, sampleLuminance, type BackgroundMediaRef, type BackgroundSlot, type MediaSample } from './background';
 import { THUMBNAIL_EDGE, backdropEdge, displayBlob } from './displayMedia';
 import { getMedia } from './mediaStore';
+import { isPhoneMode, PHONE_QUERY } from '../layoutHooks';
 import { KIKI_ZOOM_CHANGE_EVENT, unzoomedRect } from '../uiZoom';
 
 export interface BackdropStatus {
@@ -143,6 +144,7 @@ function motionAllowed(): boolean {
 }
 
 let powerSaving = false;
+let drawerClosed = false;
 
 /** Battery Status API where it exists: pause video under 20% and unplugged. */
 function watchBattery(): void {
@@ -158,9 +160,12 @@ function watchBattery(): void {
   }).catch(() => undefined);
 }
 
-function pauseReason(): BackdropStatus['paused'] {
+type PauseReason = NonNullable<BackdropStatus['paused']> | 'offscreen';
+
+function pauseReason(): PauseReason | null {
   if (!motionAllowed()) return 'motion';
   if (document.visibilityState === 'hidden' || !document.hasFocus()) return 'hidden';
+  if (drawerClosed && activeSlot?.look.scope === 'sidebar' && isPhoneMode()) return 'offscreen';
   if (powerSaving) return 'power';
   return null;
 }
@@ -172,9 +177,10 @@ function syncPlayback(): void {
     return;
   }
   const reason = pauseReason();
-  // `hidden` is ordinary (blur, minimise) and not worth a status line; it
-  // still pauses. Only reasons the user can act on reach the settings page.
-  setStatus({ paused: reason === 'hidden' ? null : reason });
+  // `hidden` and `offscreen` are ordinary (blur, minimise, closed phone drawer)
+  // and not worth a status line; they still pause. Only reasons the user can
+  // act on reach the settings page.
+  setStatus({ paused: reason === 'hidden' || reason === 'offscreen' ? null : reason });
   if (reason === null) void video.play().catch(() => undefined);
   else video.pause();
 }
@@ -234,6 +240,12 @@ export function setBackdropMediaResolver(next: MediaResolver): void {
     inflight = null;
     void mountMedia(activeSlot, slideIndex, generation);
   }
+}
+
+export function setBackdropDrawerClosed(closed: boolean): void {
+  if (closed === drawerClosed) return;
+  drawerClosed = closed;
+  if (typeof document !== 'undefined') syncPlayback();
 }
 
 /** Fetch a ref's bytes the same way the backdrop does (thumbnails, previews). */
@@ -464,6 +476,8 @@ export function watchBackdropPlayback(): () => void {
   window.addEventListener('blur', onChange);
   const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
   motion?.addEventListener?.('change', onChange);
+  const phone = window.matchMedia?.(PHONE_QUERY);
+  phone?.addEventListener?.('change', onChange);
   watchBattery();
   const stopEdge = trackSidebarEdge();
   return () => {
@@ -473,6 +487,7 @@ export function watchBackdropPlayback(): () => void {
     window.removeEventListener('focus', onChange);
     window.removeEventListener('blur', onChange);
     motion?.removeEventListener?.('change', onChange);
+    phone?.removeEventListener?.('change', onChange);
     clearBackdrop();
   };
 }

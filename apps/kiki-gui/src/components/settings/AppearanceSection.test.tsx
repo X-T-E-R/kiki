@@ -24,6 +24,11 @@ import {
 } from '../../lib/skins';
 import { AppearanceSection } from './AppearanceSection';
 import { openOptions, openPanel } from './testControls';
+import { useUserSkins } from '../../lib/skins/useUserSkins';
+import { useAppearancePacks } from '../../lib/skins/useAppearancePacks';
+
+const listSkinsMock = vi.hoisted(() => vi.fn());
+const getSkinMock = vi.hoisted(() => vi.fn());
 
 const appearanceConnection = vi.hoisted(() => ({
   meta: null as { server_id: string; current_space_id?: string } | null,
@@ -34,8 +39,8 @@ vi.mock('../../state/connection', () => ({
     config: { url: 'http://127.0.0.1:1', token: 'test-token' },
     meta: appearanceConnection.meta,
     client: {
-      listSkins: vi.fn().mockResolvedValue({ items: [], directory: '/home/fixture/.kiki/themes', skipped: [] }),
-      getSkin: vi.fn(),
+      listSkins: listSkinsMock,
+      getSkin: getSkinMock,
     },
   }),
 }));
@@ -79,6 +84,8 @@ const PACK = {
 
 beforeEach(async () => {
   appearanceConnection.meta = null;
+  listSkinsMock.mockReset().mockResolvedValue({ items: [], directory: '/home/fixture/.kiki/themes', skipped: [] });
+  getSkinMock.mockReset();
   localStorage.clear();
   resetBackgroundPrefsCache();
   writeBackgroundPrefs({ light: null, dark: null, linked: true });
@@ -370,5 +377,127 @@ describe('AppearanceSection', () => {
     // The background half is an ordinary edit afterwards, and Restore drops it.
     await act(async () => { button('[data-appearance-restore]').click(); });
     expect(document.documentElement.dataset['kikiBg']).toBeUndefined();
+  });
+
+  it('fetches only the selected user skin or pack detail on cold start, then loads the rest when Appearance opens', async () => {
+    await act(async () => { root.unmount(); });
+    const coldClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const skinOf = (id: string, name: string) => ({
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id,
+      name,
+      variants: { light: { colors: { accent: '#2f6b58' } } },
+    });
+    const packOf = (id: string, name: string) => ({
+      kind: 'kiki-appearance-pack' as const,
+      version: 1 as const,
+      id,
+      name,
+      variants: { light: { colors: { accent: '#9a3f1c' } } },
+    });
+
+    listSkinsMock.mockReset().mockResolvedValue({
+      items: [
+        { id: 'moss', name: 'Moss' },
+        { id: 'linen-ink', name: 'Linen Ink' },
+        { id: 'amber-fog', name: 'Amber Fog' },
+      ],
+      directory: '/home/fixture/.kiki/themes',
+      skipped: [],
+    });
+    getSkinMock.mockReset().mockImplementation(async (id: string) => ({
+      skin: skinOf(id, id.toUpperCase()),
+    }));
+
+    const packDetailRequests: string[] = [];
+    let packListRequests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/appearance/packs')) {
+        packListRequests += 1;
+        return new Response(JSON.stringify({
+          code: 0,
+          msg: 'ok',
+          data: {
+            items: [
+              { id: 'dusk-harbor', name: 'Dusk Harbor', variants: ['light'], hasSkin: true, hasVideo: false, bytes: 1024 },
+              { id: 'rain-cedar', name: 'Rain Cedar', variants: ['light'], hasSkin: true, hasVideo: false, bytes: 1024 },
+            ],
+            directory: '/home/fixture/.kiki/themes',
+            skipped: [],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const match = /\/appearance\/packs\/([^/]+)$/.exec(url);
+      if (match !== null) {
+        const id = decodeURIComponent(match[1]!);
+        packDetailRequests.push(id);
+        return new Response(JSON.stringify({
+          code: 0,
+          msg: 'ok',
+          data: { pack: packOf(id, id === 'dusk-harbor' ? 'Dusk Harbor' : 'Rain Cedar'), bytes: 1024 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ code: 40409, msg: 'not found', data: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    writeSkinPrefs({ selection: { source: 'user', id: 'linen-ink' }, tweaks: {} });
+
+    function AppBootProbe() {
+      useUserSkins();
+      useAppearancePacks();
+      return null;
+    }
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={coldClient}>
+          <I18nProvider><AppBootProbe /></I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+
+    expect(listSkinsMock).toHaveBeenCalledTimes(1);
+    expect(packListRequests).toBe(1);
+    expect(getSkinMock.mock.calls.map((c) => c[0])).toEqual(['linen-ink']);
+    expect(packDetailRequests).toEqual([]);
+
+    // Switching selection to an appearance pack fetches only that pack's detail.
+    await act(async () => {
+      writeSkinPrefs({ selection: { source: 'pack', id: 'rain-cedar' }, tweaks: {} });
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    expect(packDetailRequests).toEqual(['rain-cedar']);
+    expect(getSkinMock).toHaveBeenCalledTimes(1);
+
+    // Opening Settings → Appearance loads the remaining details and renders every item.
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={coldClient}>
+          <I18nProvider><AppearanceSection /></I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+
+    expect(new Set(getSkinMock.mock.calls.map((c) => c[0]))).toEqual(new Set(['moss', 'linen-ink', 'amber-fog']));
+    expect(new Set(packDetailRequests)).toEqual(new Set(['dusk-harbor', 'rain-cedar']));
+    for (const id of ['moss', 'linen-ink', 'amber-fog', 'dusk-harbor', 'rain-cedar']) {
+      expect(container.querySelector(`[data-skin-choice="${id}"]`), id).not.toBeNull();
+    }
+    expect(container.querySelector('[data-pack="dusk-harbor"]')).not.toBeNull();
+    expect(container.querySelector('[data-pack="rain-cedar"]')).not.toBeNull();
   });
 });

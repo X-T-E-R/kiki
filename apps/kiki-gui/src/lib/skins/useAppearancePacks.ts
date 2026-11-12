@@ -4,8 +4,8 @@
  * route, so a pack selected on a previous launch repaints on this one.
  */
 
-import { useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo } from 'react';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 import type { AppearancePack, AppearancePackSummary, SkinFile } from '@kiki/protocol';
 
@@ -14,7 +14,7 @@ import { setBackdropMediaResolver } from './backdrop';
 import { getMedia } from './mediaStore';
 import { packSkinOf, parsePackMediaId } from './packs';
 import { fetchPackFile, getAppearancePack, listAppearancePacks, type ServerEndpoint } from './packsApi';
-import { setPackSkins } from './store';
+import { effectiveSkinPrefs, setPackSkins, subscribeSkinPrefs } from './store';
 
 export interface AppearancePackEntry {
   readonly summary: AppearancePackSummary;
@@ -28,7 +28,13 @@ export interface AppearancePackCatalog {
   readonly unsupported: boolean;
 }
 
-const EMPTY: AppearancePackCatalog = { packs: [], directory: null, skipped: [], unsupported: false };
+export interface UseAppearancePacksOptions {
+  /** Fetch every listed pack's detail (Settings → Appearance), not only the active selection. */
+  readonly allDetails?: boolean;
+}
+
+const EMPTY_PACKS: readonly AppearancePackEntry[] = [];
+const EMPTY_SKIPPED: readonly { file: string; reason: string }[] = [];
 
 export function useServerEndpoint(): ServerEndpoint {
   const { config } = useConnection();
@@ -97,49 +103,110 @@ export function resetPackMediaResolver(): void {
   shared = null;
 }
 
-export function useAppearancePacks(): {
+function selectedPackSkinIdSnapshot(): string | null {
+  const { selection } = effectiveSkinPrefs();
+  return selection.source === 'pack' ? selection.id : null;
+}
+
+function selectedPackSkinIdServerSnapshot(): string | null {
+  return null;
+}
+
+export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   data: AppearancePackCatalog;
   isLoading: boolean;
   error: unknown;
   refetch: () => void;
 } {
+  const { allDetails = false } = options;
   const endpoint = useServerEndpoint();
+  const queryClient = useQueryClient();
+  const selectedId = useSyncExternalStore(
+    subscribeSkinPrefs,
+    selectedPackSkinIdSnapshot,
+    selectedPackSkinIdServerSnapshot,
+  );
 
-  const query = useQuery({
-    queryKey: ['appearance-packs', endpoint.url],
+  const listQuery = useQuery({
+    queryKey: ['appearance-packs', endpoint.url, 'list'],
     staleTime: 30_000,
-    queryFn: async (): Promise<AppearancePackCatalog> => {
+    queryFn: async () => {
       const listing = await listAppearancePacks(endpoint);
-      if (listing === undefined) return { ...EMPTY, unsupported: true };
-      const packs = await Promise.all(listing.items.map(async (summary) => {
+      return listing ?? null;
+    },
+  });
+
+  const targetSummaries = useMemo(() => {
+    const listing = listQuery.data;
+    if (listing === undefined || listing === null) return [] as readonly AppearancePackSummary[];
+    if (allDetails) return listing.items;
+    if (selectedId !== null) {
+      const found = listing.items.find((item) => item.id === selectedId);
+      return found !== undefined ? [found] : ([] as readonly AppearancePackSummary[]);
+    }
+    return [] as readonly AppearancePackSummary[];
+  }, [allDetails, listQuery.data, selectedId]);
+
+  const detailQueries = useQueries({
+    queries: targetSummaries.map((summary) => ({
+      queryKey: ['appearance-packs', endpoint.url, 'detail', summary.id] as const,
+      staleTime: 30_000,
+      queryFn: async (): Promise<AppearancePack | null> => {
         try {
-          return { summary, pack: (await getAppearancePack(endpoint, summary.id)).pack };
+          return (await getAppearancePack(endpoint, summary.id)).pack;
         } catch {
           return null;
         }
-      }));
-      return {
-        packs: packs.filter((entry): entry is AppearancePackEntry => entry !== null),
-        directory: listing.directory,
-        skipped: listing.skipped,
-        unsupported: false,
-      };
-    },
+      },
+    })),
   });
+
+  const packsKey = detailQueries.map((q) => q.dataUpdatedAt).join(',');
+  const packs = useMemo(() => {
+    void packsKey;
+    return targetSummaries
+      .map((summary, index) => {
+        const pack = detailQueries[index]?.data ?? null;
+        return pack !== null ? { summary, pack } : null;
+      })
+      .filter((entry): entry is AppearancePackEntry => entry !== null);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [packsKey, targetSummaries]);
+
+  const data = useMemo<AppearancePackCatalog>(() => {
+    const listing = listQuery.data;
+    if (listing === undefined) {
+      return { packs: EMPTY_PACKS, directory: null, skipped: EMPTY_SKIPPED, unsupported: false };
+    }
+    if (listing === null) {
+      return { packs: EMPTY_PACKS, directory: null, skipped: EMPTY_SKIPPED, unsupported: true };
+    }
+    return {
+      packs,
+      directory: listing.directory,
+      skipped: listing.skipped,
+      unsupported: false,
+    };
+  }, [listQuery.data, packs]);
+
+  const detailsLoading = detailQueries.some((q) => q.isLoading);
+  const isLoading = listQuery.isLoading || detailsLoading;
 
   useEffect(() => {
     setBackdropMediaResolver(mediaResolverFor(endpoint));
   }, [endpoint]);
 
   useEffect(() => {
-    if (query.data === undefined) return;
-    setPackSkins(query.data.packs.map((entry) => packSkinOf(entry.pack)).filter((skin): skin is SkinFile => skin !== null));
-  }, [query.data]);
+    if (listQuery.data === undefined || detailsLoading) return;
+    setPackSkins(data.packs.map((entry) => packSkinOf(entry.pack)).filter((skin): skin is SkinFile => skin !== null));
+  }, [listQuery.data, detailsLoading, data.packs]);
 
   return {
-    data: query.data ?? EMPTY,
-    isLoading: query.isLoading,
-    error: query.error,
-    refetch: () => { void query.refetch(); },
+    data,
+    isLoading,
+    error: listQuery.error,
+    refetch: () => {
+      void queryClient.invalidateQueries({ queryKey: ['appearance-packs', endpoint.url] });
+    },
   };
 }

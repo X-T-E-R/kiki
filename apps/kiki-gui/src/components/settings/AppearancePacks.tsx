@@ -50,7 +50,7 @@ export function AppearancePacks() {
   const host = useHost();
   const endpoint = useServerEndpoint();
   const queryClient = useQueryClient();
-  const catalog = useAppearancePacks();
+  const catalog = useAppearancePacks({ allDetails: true });
   const skin = useSkinPrefs();
   const background = useBackgroundPrefs();
   const input = useRef<HTMLInputElement>(null);

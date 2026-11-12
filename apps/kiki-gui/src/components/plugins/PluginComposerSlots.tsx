@@ -65,6 +65,7 @@ function hasBrokerConnection(connection: ConnectionValue | null | undefined): co
 export interface PluginGuiSlotScope {
   readonly workspaceId?: string;
   readonly sessionId?: string;
+  readonly enabled?: boolean;
 }
 
 function buildBrokerApiUrl(connection: ConnectionValue, path: string, query?: Record<string, string | undefined>): URL {
@@ -212,7 +213,7 @@ export function usePluginGuiSlots(scope: PluginGuiSlotScope = {}): {
 } {
   const connection = useSafeOptionalConnection();
   const contextQueryClient = useContext(QueryClientContext);
-  const canQueryBroker = hasBrokerConnection(connection) && contextQueryClient !== undefined;
+  const canQueryBroker = hasBrokerConnection(connection) && contextQueryClient !== undefined && scope.enabled !== false;
   const scopeId = connection?.scopeId ?? 'disconnected';
   const query = useQuery(
     {

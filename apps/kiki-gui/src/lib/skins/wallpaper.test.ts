@@ -16,7 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BACKGROUND_LOOK } from '@kiki/protocol';
 
-import { applyBackdrop, setBackdropMediaResolver, type MediaResolver } from './backdrop';
+import {
+  applyBackdrop,
+  backdropStatus,
+  setBackdropDrawerClosed,
+  setBackdropMediaResolver,
+  watchBackdropPlayback,
+  type MediaResolver,
+} from './backdrop';
 import type { BackgroundMediaRef, BackgroundSlot } from './background';
 import { displayBlob, downscaleImage, resetDisplayMedia } from './displayMedia';
 import { getMedia, isPersistent, putMedia, resetMediaStore } from './mediaStore';
@@ -40,6 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setBackdropDrawerClosed(false);
   applyBackdrop(null);
   setBackdropMediaResolver((ref) => getMedia(ref.id));
   resetDisplayMedia();
@@ -485,5 +493,95 @@ describe('media durability', () => {
     await write;
     expect(await isPersistent()).toBe(false);
     expect(await getMedia('local-aborted-1')).toBe(blob);
+  });
+});
+
+describe('sidebar video playback in phone mode', () => {
+  const videoRef: BackgroundMediaRef = {
+    id: 'local-sidebar-vid',
+    kind: 'video',
+    mime: 'video/mp4',
+    name: 'drift.mp4',
+    bytes: 4096,
+  };
+
+  it('pauses a sidebar-scoped video while the phone drawer is closed, resumes on open or rotation, and leaves main/window/desktop alone', async () => {
+    let phoneMode = true;
+    const phoneListeners = new Set<() => void>();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      get matches() {
+        return query === '(pointer: coarse) and (max-width: 639px)' ? phoneMode : false;
+      },
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: () => void) => {
+        if (query === '(pointer: coarse) and (max-width: 639px)') phoneListeners.add(listener);
+      },
+      removeEventListener: (_type: string, listener: () => void) => {
+        phoneListeners.delete(listener);
+      },
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })));
+
+    let playing = false;
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async () => {
+      playing = true;
+    });
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      playing = false;
+    });
+
+    const stopWatch = watchBackdropPlayback();
+    try {
+      setBackdropMediaResolver(async () => new Blob(['v'], { type: 'video/mp4' }));
+      setBackdropDrawerClosed(true);
+      applyBackdrop(slot(videoRef, { scope: 'sidebar' }), true);
+      await flush();
+
+      expect(playing).toBe(false);
+      expect(pauseSpy).toHaveBeenCalled();
+      expect(backdropStatus().paused).toBeNull();
+
+      // Opening the drawer resumes playback.
+      playSpy.mockClear();
+      setBackdropDrawerClosed(false);
+      expect(playSpy).toHaveBeenCalledTimes(1);
+      expect(playing).toBe(true);
+
+      // Closing the drawer again pauses it.
+      pauseSpy.mockClear();
+      setBackdropDrawerClosed(true);
+      expect(pauseSpy).toHaveBeenCalledTimes(1);
+      expect(playing).toBe(false);
+      expect(backdropStatus().paused).toBeNull();
+
+      // Leaving phone mode (rotation to landscape / desktop) clears the pause reason immediately.
+      playSpy.mockClear();
+      phoneMode = false;
+      for (const listener of phoneListeners) listener();
+      expect(playSpy).toHaveBeenCalledTimes(1);
+      expect(playing).toBe(true);
+
+      // Back in phone mode with drawer closed: main and window scopes keep playing.
+      phoneMode = true;
+      for (const listener of phoneListeners) listener();
+      expect(playing).toBe(false);
+
+      for (const scope of ['main', 'window'] as const) {
+        playSpy.mockClear();
+        applyBackdrop(slot(videoRef, { scope }), true);
+        await flush();
+        expect(playSpy, scope).toHaveBeenCalledTimes(1);
+        expect(playing, scope).toBe(true);
+      }
+    } finally {
+      stopWatch();
+      playSpy.mockRestore();
+      pauseSpy.mockRestore();
+    }
   });
 });

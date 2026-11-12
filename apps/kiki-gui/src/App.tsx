@@ -87,6 +87,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
 import { useLayerHistory } from './lib/layerHistory';
+import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
@@ -275,6 +276,11 @@ function NormalApp() {
   // While the drawer is open on a phone it owns one history entry, so the
   // device back closes it before route navigation (lib/layerHistory).
   const drawerStage = useMediaQuery('(max-width: 767px)');
+  const drawerClosed = drawerStage && !sidebarOpen;
+  useEffect(() => {
+    setBackdropDrawerClosed(drawerClosed);
+    return () => { setBackdropDrawerClosed(false); };
+  }, [drawerClosed]);
   useLayerHistory('app-sidebar', sidebarOpen && drawerStage, closeSidebar);
   const layoutPrefs = useLayoutPreferences();
   // Sidebar filters persist in layoutPrefs. The fetch mirrors the two
@@ -874,7 +880,7 @@ function NormalApp() {
       <div className="flex h-full overflow-hidden bg-canvas">
       <Sidebar
         id="app-sidebar"
-        inert={drawerStage && !sidebarOpen}
+        inert={drawerClosed}
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}

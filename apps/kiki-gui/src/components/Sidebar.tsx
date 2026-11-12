@@ -322,6 +322,7 @@ function PrimaryNav({
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
     workspaceId: activeWorkspaceId,
+    enabled: !offscreen,
   });
   const pluginSidebarPanels = useMemo(
     () => selectSidebarPanelSlots(pluginGuiSlots),
@@ -485,10 +486,12 @@ function CollapsedSidebarRail({
   activeSessionId,
   activeWorkspaceId,
   onNewSession,
+  offscreen = false,
 }: {
   activeSessionId?: string;
   activeWorkspaceId: string | undefined;
   onNewSession: () => void;
+  offscreen?: boolean;
 }) {
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
@@ -496,6 +499,7 @@ function CollapsedSidebarRail({
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
     workspaceId: activeWorkspaceId,
+    enabled: !offscreen,
   });
   const pluginSidebarPanels = useMemo(
     () => selectSidebarPanelSlots(pluginGuiSlots),
@@ -1334,7 +1338,7 @@ export function Sidebar({
         data-sidebar-collapsed="true"
         aria-label={t('sidebar.navAria')}
       >
-        <CollapsedSidebarRail activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} />
+        <CollapsedSidebarRail activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} offscreen={inert === true} />
       </aside>
     );
   }

@@ -55,7 +55,11 @@ const setWorkspacePinnedCatalog = vi.fn(async () => {});
 const listEphemeralSessions = vi.fn(async (_query?: { before_id?: string; page_size?: number }): Promise<{ items: Session[]; has_more?: boolean; next_cursor?: string }> => ({ items: [] }));
 /** The persona roster the 角色 group reads; empty unless a test wants one. */
 const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
-const connectionScope = vi.hoisted(() => ({ id: 'local', ws: 'open' as 'open' | 'connecting' | 'closed' }));
+const connectionScope = vi.hoisted(() => ({
+  id: 'local',
+  ws: 'open' as 'open' | 'connecting' | 'closed',
+  brokerConfig: undefined as { url: string; token: string } | undefined,
+}));
 /** The runtime config the room entry reads; pending (unknown) unless a test settles it. */
 const getConfig = vi.fn<() => Promise<unknown>>();
 const listTasks = vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] }));
@@ -86,7 +90,11 @@ const roomRest = vi.hoisted(() => ({
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
-  useOptionalConnection: () => ({ client: { getSession } }),
+  useOptionalConnection: () => ({
+    client: { getSession },
+    scopeId: connectionScope.id,
+    config: connectionScope.brokerConfig,
+  }),
   useConnection: () => ({
     client: {
       getRequestGovernance: async () => ({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] }),
@@ -240,6 +248,7 @@ beforeEach(() => {
   getConfig.mockReturnValue(new Promise(() => {}));
   connectionScope.id = 'local';
   connectionScope.ws = 'open';
+  connectionScope.brokerConfig = undefined;
   // Workspace folds and the list scroll persist across mounts.
   localStorage.removeItem('kiki.sidebar.workspaceGroups');
   localStorage.removeItem('kiki.sidebar.topLevelThreads');
@@ -3394,5 +3403,106 @@ describe('sidebar on a phone', () => {
     expect(listEphemeralSessions).toHaveBeenCalled();
     expect(listPrompts).toHaveBeenCalledWith('s-busy', { observe: true });
     expect(listTasks).toHaveBeenCalled();
+  });
+
+  it('requests no plugin GUI slots across session switches while the drawer is closed, then reads once on open', async () => {
+    connectionScope.brokerConfig = { url: 'http://127.0.0.1:9999', token: 'tok' };
+    const slotRequests: string[] = [];
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/plugins/gui-slots')) {
+        slotRequests.push(url);
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: 'ok',
+            data: {
+              slots: [
+                {
+                  slot: 'sidebar-panel',
+                  pluginId: 'notes',
+                  id: 'board',
+                  title: { default: 'Notes board' },
+                  panelId: 'board',
+                  bridge: 'kiki.panel.v1',
+                  order: 1,
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ code: 40409, msg: 'not found', data: null }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    try {
+      const s1 = session('s-one');
+      const s2 = session('s-two');
+      const items = [threadItem(s1), threadItem(s2)];
+      const group = { key: 'today', label: 'Today', items };
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      const root = createRoot(container);
+      roots.push(root);
+
+      const renderDrawer = async (activeSessionId: string, inert: boolean) => {
+        await act(async () => {
+          root.render(
+            <QueryClientProvider client={client}>
+              <I18nProvider>
+                <HostProvider host={browserHost}>
+                  <MemoryRouter>
+                    <Sidebar
+                      inert={inert}
+                      activeSessionId={activeSessionId}
+                      sessions={[s1, s2]}
+                      sessionGroups={[group]}
+                      sessionsQuery={{
+                        isLoading: false,
+                        isError: false,
+                        error: null,
+                        hasNextPage: false,
+                        isFetchingNextPage: false,
+                        fetchNextPage: async () => {},
+                      }}
+                      workspaceOptions={[]}
+                      filters={DEFAULT_SESSION_LIST_FILTERS}
+                      onFiltersChange={() => {}}
+                      onNewSession={() => {}}
+                      groupBy="time"
+                      onGroupBy={() => {}}
+                      sortBy="updated-desc"
+                      onSortBy={() => {}}
+                    />
+                  </MemoryRouter>
+                </HostProvider>
+              </I18nProvider>
+            </QueryClientProvider>,
+          );
+        });
+      };
+
+      await renderDrawer('s-one', true);
+      await settle();
+      await renderDrawer('s-two', true);
+      await settle();
+      expect(slotRequests).toHaveLength(0);
+      expect(container.querySelector('[data-plugin-sidebar-panel="notes:board"]')).toBeNull();
+
+      await renderDrawer('s-two', false);
+      for (let index = 0; index < 3; index += 1) await settle();
+      expect(slotRequests).toHaveLength(1);
+      expect(slotRequests[0]).toContain('session_id=s-two');
+      expect(container.querySelector('[data-plugin-sidebar-panel="notes:board"]')?.textContent).toContain('Notes board');
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+    }
   });
 });

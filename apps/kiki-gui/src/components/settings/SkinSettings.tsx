@@ -61,9 +61,9 @@ function SkinSwatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
 
 export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labelledBy: string }) {
   const { t } = useI18n();
-  const userSkins = useUserSkins();
+  const userSkins = useUserSkins({ allDetails: true });
   const stored = useSkinPrefs();
-  const packs = useAppearancePacks();
+  const packs = useAppearancePacks({ allDetails: true });
   // Built-ins first, then the themes folder, plugin themes, and pack colors.
   // A pack is only listed here for its colors; "Use pack" on the packs card
   // is what also sets its background.
@@ -138,7 +138,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
 export function SkinFiles() {
   const { t, tp } = useI18n();
   const host = useHost();
-  const userSkins = useUserSkins();
+  const userSkins = useUserSkins({ allDetails: true });
   const stored = useSkinPrefs();
   const [exportName, setExportName] = useState('');
   const [feedback, setFeedback] = useState<Feedback>(null);
