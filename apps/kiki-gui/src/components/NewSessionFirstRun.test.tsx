@@ -499,7 +499,7 @@ describe('the /new page', () => {
     expect(before.overrides?.['executor_instance']).toBe('auto');
     const changed: ExecutionChoice = {
       ...before,
-      overrides: { ...(before.overrides ?? {}), executor_instance: 'instance-work' },
+      overrides: { ...before.overrides, executor_instance: 'instance-work' },
     };
     await act(async () => { composerFromSeat().props.onChangeExecution(changed); });
     expect(composerFromSeat().props.execution).toEqual(changed);
