@@ -25,6 +25,7 @@ import {
   type SelectionSourceAnchor,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
+import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { Icon } from './icons';
 
 const PILL_HEIGHT = 32;
@@ -79,16 +80,18 @@ export function SelectionQuoteButton({
       const container = containerRef.current;
       const selection = window.getSelection();
       const text = container === null || selection === null ? null : selectionTextWithin(container, selection);
-      const rect = text === null || selection === null ? null : selectionAnchorRect(selection);
-      if (text === null || rect === null || selection === null) {
+      const rawRect = text === null || selection === null ? null : selectionAnchorRect(selection);
+      if (text === null || rawRect === null || selection === null) {
         closeRef.current();
         return;
       }
+      const rect = unzoomedRect(rawRect);
+      const viewport = unzoomedViewport();
       setTarget({
         text,
         source: selectionSourceAnchor(selection),
         top: Math.max(rect.top - PILL_HEIGHT - 6, VIEWPORT_MARGIN),
-        left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - PILL_WIDTH),
+        left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), viewport.width - PILL_WIDTH),
       });
       setVisible(true);
     };
@@ -137,7 +140,7 @@ export function SelectionQuoteButton({
         ref={popoverRef}
         data-selection-quote
         data-selection-annotate
-        className="anim-enter fixed z-50 w-[min(18rem,calc(100vw-16px))] rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
+        className="anim-enter fixed z-50 w-[min(18rem,calc(100%-16px))] rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
         style={{ top: target.top, left: target.left }}
         onMouseDown={(event) => {
           if (event.target !== inputRef.current) event.preventDefault();
@@ -197,7 +200,7 @@ export function SelectionQuoteButton({
           setTarget({
             ...target,
             top: Math.max(target.top - 58, VIEWPORT_MARGIN),
-            left: Math.min(target.left, window.innerWidth - INPUT_WIDTH),
+            left: Math.min(target.left, unzoomedViewport().width - INPUT_WIDTH),
           });
           setMode('annotate');
           window.getSelection()?.removeAllRanges();

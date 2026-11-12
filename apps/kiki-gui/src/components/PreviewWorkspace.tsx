@@ -40,6 +40,7 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
 import { pushToast, runToastAction } from '../lib/toasts';
+import { cssZoomFactor, unzoomedViewport } from '../lib/uiZoom';
 import { errorToText } from '@kiki/session-core/util';
 import { useOptionalConnection } from '../state/connection';
 import {
@@ -235,12 +236,14 @@ export function PreviewWorkspace({
     handle.dataset['dragging'] = 'true';
     document.body.dataset['paneResizing'] = 'true';
     const onMovePointer = (move: Event) => {
-      const x = (move as PointerEvent).clientX;
-      onWidthChange(clampPreviewWidth(window.innerWidth - x, window.innerWidth), false);
+      const x = (move as PointerEvent).clientX / cssZoomFactor();
+      const viewportWidth = unzoomedViewport().width;
+      onWidthChange(clampPreviewWidth(viewportWidth - x, viewportWidth), false);
     };
     const onUp = (up: Event) => {
-      const x = (up as PointerEvent).clientX;
-      onWidthChange(clampPreviewWidth(window.innerWidth - x, window.innerWidth), true);
+      const x = (up as PointerEvent).clientX / cssZoomFactor();
+      const viewportWidth = unzoomedViewport().width;
+      onWidthChange(clampPreviewWidth(viewportWidth - x, viewportWidth), true);
       handle.dataset['dragging'] = 'false';
       delete document.body.dataset['paneResizing'];
       handle.removeEventListener('pointermove', onMovePointer);
@@ -260,7 +263,7 @@ export function PreviewWorkspace({
   // content area) and leaves the app sidebar in place; only the bare-provider
   // overlay, which has no row to fill, takes the whole window.
   const containerClasses = isFullscreen && overlay
-    ? 'fixed inset-0 z-40 flex h-screen w-screen flex-col bg-panel'
+    ? 'fixed inset-0 z-40 flex h-full w-full flex-col bg-panel'
     : `preview-workspace ${overlay ? 'preview-workspace--overlay' : ''} ${isFullscreen ? 'preview-workspace--fullscreen' : ''}`;
 
   // Inline `display:none` rather than the `hidden` class: the class rules on
@@ -268,7 +271,7 @@ export function PreviewWorkspace({
   // reliably wins regardless of stylesheet order.
   const hiddenStyle = hidden ? { display: 'none' as const } : undefined;
   const containerStyle = isFullscreen ? hiddenStyle : {
-    width: narrow ? '100vw' : width,
+    width: narrow ? '100%' : width,
     maxWidth: narrow ? 'none' : undefined,
     ...hiddenStyle,
   };

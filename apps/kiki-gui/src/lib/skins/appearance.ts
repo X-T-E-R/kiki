@@ -9,10 +9,12 @@
  */
 
 import {
+  DEFAULT_UI_ZOOM,
   readSettings,
   writeSettings,
   type MotionPreference,
   type ProseFontPreference,
+  type UiZoomPercent,
 } from '@kiki/session-core/settings';
 
 import {
@@ -38,6 +40,7 @@ export interface AppearanceSnapshot {
   readonly theme: ReturnType<typeof readSettings>['theme'];
   readonly motion: MotionPreference;
   readonly proseFont: ProseFontPreference;
+  readonly uiZoom: UiZoomPercent;
   readonly skin: SkinPrefs;
   readonly background: BackgroundPrefs;
 }
@@ -46,6 +49,7 @@ export const DEFAULT_APPEARANCE: AppearanceSnapshot = {
   theme: 'system',
   motion: 'system',
   proseFont: 'serif',
+  uiZoom: DEFAULT_UI_ZOOM,
   skin: DEFAULT_SKIN_PREFS,
   background: DEFAULT_BACKGROUND_PREFS,
 };
@@ -56,6 +60,7 @@ export function readAppearance(): AppearanceSnapshot {
     theme: settings.theme,
     motion: settings.motion,
     proseFont: settings.proseFont,
+    uiZoom: settings.uiZoom,
     skin: skinPrefsSnapshot(),
     background: backgroundPrefsSnapshot(),
   };
@@ -69,6 +74,7 @@ export function readAppearance(): AppearanceSnapshot {
 export function isDefaultAppearance(snapshot: AppearanceSnapshot): boolean {
   return snapshot.motion === DEFAULT_APPEARANCE.motion
     && snapshot.proseFont === DEFAULT_APPEARANCE.proseFont
+    && snapshot.uiZoom === DEFAULT_APPEARANCE.uiZoom
     && JSON.stringify(snapshot.skin) === JSON.stringify(DEFAULT_APPEARANCE.skin)
     && snapshot.background.light === null && snapshot.background.dark === null;
 }
@@ -83,7 +89,12 @@ export function defaultAppearanceFor(current: AppearanceSnapshot): AppearanceSna
 
 /** Write a whole snapshot back — used by "Restore defaults" and its undo. */
 export function writeAppearance(snapshot: AppearanceSnapshot): void {
-  writeSettings({ theme: snapshot.theme, motion: snapshot.motion, proseFont: snapshot.proseFont });
+  writeSettings({
+    theme: snapshot.theme,
+    motion: snapshot.motion,
+    proseFont: snapshot.proseFont,
+    uiZoom: snapshot.uiZoom,
+  });
   writeSkinPrefs(snapshot.skin);
   // Media bytes are kept until the next background pick prunes them, so
   // "Undo" after "Restore defaults" brings the same picture back.

@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
 import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
+import { unzoomedPoint, unzoomedViewport } from '../lib/uiZoom';
 
 export type MiniMenuEntry =
   | {
@@ -76,10 +77,8 @@ export function MiniContextMenu({
     if (trigger === null || trigger === document.body || !trigger.isConnected) return;
     trigger.focus();
   };
-  const position = clampOverlayPosition(x, y, size ?? { width: 200, height: 0 }, {
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
+  const point = unzoomedPoint(x, y);
+  const position = clampOverlayPosition(point.x, point.y, size ?? { width: 200, height: 0 }, unzoomedViewport());
 
   // Handlers read the latest onClose through a ref: callers pass inline
   // closures, and re-subscribing on every parent render opens a detach/attach

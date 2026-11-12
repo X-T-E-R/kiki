@@ -20,13 +20,14 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../../i18n';
+import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { placeAnchored } from '../overlays/anchoredPosition';
 import { Icon } from '../icons';
 
 const TRIGGER =
   'inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[1px] focus-visible:outline-selected-ink pointer-coarse:size-7';
 const BUBBLE =
-  'fixed z-50 w-72 max-w-[calc(100vw-1.5rem)] rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[12px] leading-relaxed text-ink shadow-[0_8px_24px_-12px_rgba(28,25,23,0.4)]';
+  'fixed z-50 w-72 max-w-[calc(100%-1.5rem)] rounded-lg border border-hairline bg-panel px-2.5 py-2 text-[12px] leading-relaxed text-ink shadow-[0_8px_24px_-12px_rgba(28,25,23,0.4)]';
 
 /** Long enough to cross the 6px gap between the `i` and its bubble. */
 const CLOSE_GRACE_MS = 150;
@@ -49,12 +50,13 @@ export function SettingHelp({ children, className = '' }: {
   // The shared anchored placement: below the `i` while it fits, flipped when
   // the viewport is tighter, clamped inside the window.
   const place = () => {
-    const anchor = triggerRef.current?.getBoundingClientRect();
+    const rawAnchor = triggerRef.current?.getBoundingClientRect();
     const bubble = bubbleRef.current;
-    if (anchor === undefined || bubble === null) return;
-    const size = bubble.getBoundingClientRect();
+    if (rawAnchor === undefined || bubble === null) return;
+    const anchor = unzoomedRect(rawAnchor);
+    const size = unzoomedRect(bubble.getBoundingClientRect());
     const placed = placeAnchored(anchor, { width: size.width, height: size.height },
-      { width: window.innerWidth, height: window.innerHeight }, { gap: 6 });
+      unzoomedViewport(), { gap: 6 });
     setPosition({ left: placed.left, top: placed.top });
   };
 

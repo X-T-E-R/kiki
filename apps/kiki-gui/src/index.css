@@ -615,7 +615,7 @@ body[data-pane-resizing='true'] {
     /* Fixed boxes resolve % heights against the layout viewport, which a
      * phone keyboard never shrinks — follow the visual viewport mirror. */
     height: var(--kiki-visual-height, 100%);
-    max-width: calc(100vw - 3rem);
+    max-width: calc(100% - 3rem);
     padding-top: var(--kiki-safe-top-inset);
     padding-bottom: var(--kiki-safe-bottom-inset);
     padding-left: env(safe-area-inset-left, 0px);
@@ -649,7 +649,7 @@ body[data-pane-resizing='true'] {
     top: 0;
     z-index: 30;
     height: var(--kiki-visual-height, 100%);
-    max-width: calc(100vw - 3rem);
+    max-width: calc(100% - 3rem);
     padding-top: var(--kiki-safe-top-inset);
     padding-right: env(safe-area-inset-right, 0px);
     padding-bottom: var(--kiki-safe-bottom-inset);
@@ -959,7 +959,7 @@ body[data-pane-resizing='true'] {
     left: 0;
     top: 0;
     z-index: 40;
-    max-width: calc(100vw - 3rem);
+    max-width: calc(100% - 3rem);
     box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
     animation: kiki-sidebar-in 200ms ease-out both;
   }

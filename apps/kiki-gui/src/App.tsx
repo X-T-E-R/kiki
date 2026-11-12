@@ -102,7 +102,8 @@ import { useLayerHistory } from './lib/layerHistory';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
-import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction, shortcutRecordingActive } from './lib/shortcuts';
+import { applyUiZoomAction, desktopZoomShortcut } from './lib/uiZoom';
 import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
@@ -675,11 +676,33 @@ function NormalApp() {
         event.preventDefault();
         setQuickSwitcherOpen(false);
         setShortcutsOpen((open) => !open);
+      } else if (desktop && !event.defaultPrevented && !shortcutRecordingActive()) {
+        const zoomAction = desktopZoomShortcut(event);
+        if (zoomAction !== null) {
+          event.preventDefault();
+          applyUiZoomAction(zoomAction);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [navigate, desktop, newSessionPath]);
+
+  // Desktop WebView2 disables Chromium's built-in accelerator zoom, so Ctrl/⌘ +
+  // wheel steps the app's interface scale cleanly (leaving browser mode's native
+  // pinch/wheel zoom untouched).
+  useEffect(() => {
+    if (!desktop) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented || shortcutRecordingActive()) return;
+      if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.deltaY === 0) return;
+      if (event.target instanceof Element && event.target.closest('[data-image-viewport], [data-media-lightbox]')) return;
+      event.preventDefault();
+      applyUiZoomAction(event.deltaY < 0 ? 'in' : 'out');
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => { window.removeEventListener('wheel', onWheel); };
+  }, [desktop]);
 
   // ⌘F / Ctrl+F: find in the conversation on screen (the composer included —
   // a selection there seeds the query); F3 / Shift+F3 step through it. On

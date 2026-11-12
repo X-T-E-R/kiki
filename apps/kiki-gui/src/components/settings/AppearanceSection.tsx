@@ -1,8 +1,12 @@
 import { useState, useSyncExternalStore } from 'react';
 
 import {
+  DEFAULT_UI_ZOOM,
+  MAX_UI_ZOOM,
+  MIN_UI_ZOOM,
   settingsServerSnapshot,
   settingsSnapshot,
+  stepUiZoom,
   subscribeSettings,
   writeSettings,
   type MotionPreference,
@@ -22,6 +26,7 @@ import {
 } from '../../lib/skins';
 import { prefersDark, resolveTheme } from '../../lib/theme';
 import { Hint } from '../controls';
+import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AppearancePacks } from './AppearancePacks';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
@@ -118,7 +123,7 @@ export function AppearanceSection() {
     writeSkinPrefs({ tweaks: value === undefined ? rest : { ...rest, [key]: value } });
     setUndo(null);
   };
-  const setLocal = (patch: Partial<Pick<AppearanceSnapshot, 'theme' | 'motion' | 'proseFont'>>) => {
+  const setLocal = (patch: Partial<Pick<AppearanceSnapshot, 'theme' | 'motion' | 'proseFont' | 'uiZoom'>>) => {
     writeSettings(patch);
     setUndo(null);
   };
@@ -128,6 +133,7 @@ export function AppearanceSection() {
     theme: settings.theme,
     motion: settings.motion,
     proseFont: settings.proseFont,
+    uiZoom: settings.uiZoom,
     skin: skinPrefs,
     background,
   };
@@ -277,6 +283,53 @@ export function AppearanceSection() {
 
       <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
         <SettingsBox>
+          <SettingField label={t('st.appearance.zoom')} labelId="ui-zoom-label" help={t('st.appearance.zoomHint')}>
+            <div
+              role="group"
+              aria-labelledby="ui-zoom-label"
+              data-ui-zoom-control
+              className="inline-flex items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
+            >
+              <button
+                type="button"
+                data-ui-zoom-out
+                aria-label={t('st.appearance.zoomOutAria')}
+                disabled={settings.uiZoom <= MIN_UI_ZOOM}
+                onClick={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, -1) }); }}
+                className="flex h-7 w-7 items-center justify-center rounded-[5px] text-ink-soft transition-colors hover:bg-panel hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+              >
+                <Icon name="dash" size={14} />
+              </button>
+              <span
+                data-ui-zoom-value
+                aria-live="polite"
+                className="min-w-[3.75rem] px-2 text-center text-[13px] font-medium tabular-nums text-ink select-none"
+              >
+                {settings.uiZoom}%
+              </span>
+              <button
+                type="button"
+                data-ui-zoom-in
+                aria-label={t('st.appearance.zoomInAria')}
+                disabled={settings.uiZoom >= MAX_UI_ZOOM}
+                onClick={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, 1) }); }}
+                className="flex h-7 w-7 items-center justify-center rounded-[5px] text-ink-soft transition-colors hover:bg-panel hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+              >
+                <Icon name="plus" size={14} />
+              </button>
+            </div>
+            {settings.uiZoom !== DEFAULT_UI_ZOOM ? (
+              <button
+                type="button"
+                data-ui-zoom-reset
+                className={SECONDARY_BUTTON}
+                onClick={() => { setLocal({ uiZoom: DEFAULT_UI_ZOOM }); }}
+              >
+                {t('st.appearance.zoomReset')}
+              </button>
+            ) : null}
+            {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
+          </SettingField>
           <FontRoleField
             role="sans"
             label={t('st.skin.font')}

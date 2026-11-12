@@ -7,6 +7,8 @@ import {
   type LayoutPreferences,
 } from '@kiki/session-core/settings';
 
+import { cssZoomFactor, KIKI_ZOOM_CHANGE_EVENT } from './uiZoom';
+
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
@@ -56,8 +58,9 @@ export function useVisualViewportHeightVar(): void {
     let frame = 0;
     const write = () => {
       frame = 0;
-      const height = Math.max(0, Math.round(viewport.height));
-      const imeInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      const zoom = cssZoomFactor();
+      const height = Math.max(0, Math.round(viewport.height / zoom));
+      const imeInset = Math.max(0, Math.round((window.innerHeight - viewport.height - viewport.offsetTop) / zoom));
       root.style.setProperty('--kiki-visual-height', `${height}px`);
       root.style.setProperty('--kiki-ime-offset', `${imeInset}px`);
     };
@@ -68,11 +71,13 @@ export function useVisualViewportHeightVar(): void {
     viewport.addEventListener('resize', schedule);
     viewport.addEventListener('scroll', schedule);
     window.addEventListener('orientationchange', schedule);
+    window.addEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
     return () => {
       if (frame !== 0) cancelAnimationFrame(frame);
       viewport.removeEventListener('resize', schedule);
       viewport.removeEventListener('scroll', schedule);
       window.removeEventListener('orientationchange', schedule);
+      window.removeEventListener(KIKI_ZOOM_CHANGE_EVENT, schedule);
       root.style.removeProperty('--kiki-visual-height');
       root.style.removeProperty('--kiki-ime-offset');
     };
@@ -119,7 +124,7 @@ export function usePaneResize(options: {
       let valueRef = startValue;
       const trackedMove = (moveEvent: Event) => {
         const clientX = (moveEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + (clientX - startX) * direction, min, max);
+        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, min, max);
         onChange(valueRef, false);
       };
       handle.addEventListener('pointermove', trackedMove);

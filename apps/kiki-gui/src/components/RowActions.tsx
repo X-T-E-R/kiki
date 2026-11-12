@@ -25,6 +25,7 @@ import { createContext, useContext, useEffect, useRef, useState, type MouseEvent
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { registerOverlay } from '../lib/uiBusy';
+import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { Icon } from './icons';
 import type { ComposerAttachment } from '@kiki/session-core/composer';
 import { Composer } from './Composer';
@@ -193,12 +194,13 @@ export function MessageRowActions({
 
   const toggleMenu = () => {
     if (!menuOpen) {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (rect !== undefined) {
+      const rawRect = triggerRef.current?.getBoundingClientRect();
+      if (rawRect !== undefined) {
         // Account for the docked composer bar at the bottom of the viewport so
         // an expanded overflow menu (including plugin message actions) flips
         // upward cleanly instead of slipping behind the composer card.
-        const spaceBelow = window.innerHeight - rect.bottom;
+        const rect = unzoomedRect(rawRect);
+        const spaceBelow = unzoomedViewport().height - rect.bottom;
         const spaceAbove = rect.top;
         setOpenUp(spaceBelow < 240 && spaceAbove > spaceBelow);
       }

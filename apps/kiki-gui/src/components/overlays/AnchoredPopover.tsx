@@ -38,6 +38,7 @@ import {
   resolveFloatingOwners,
 } from '../../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
+import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { placeAnchored } from './anchoredPosition';
 
@@ -91,9 +92,9 @@ export function AnchoredPopover({
       const anchor = anchorRef.current;
       const surface = surfaceRef.current;
       if (anchor === null || surface === null) return;
-      const placed = placeAnchored(anchor.getBoundingClientRect(),
+      const placed = placeAnchored(unzoomedRect(anchor.getBoundingClientRect()),
         { width: surface.offsetWidth, height: surface.scrollHeight },
-        { width: window.innerWidth, height: window.innerHeight }, { side, align });
+        unzoomedViewport(), { side, align });
       setStyle({ left: placed.left, top: placed.top, maxHeight: placed.maxHeight });
     };
     place();

@@ -55,4 +55,18 @@ describe('shortcutsGroups follows the saved bindings', () => {
     expect(all.some((entry) => entry.labelKey === 'shortcuts.reject')).toBe(true);
     resetShortcutRuntime('windows');
   });
+
+  it('lists fixed desktop zoom chords only in the desktop runtime', async () => {
+    const { resetShortcutRuntime, shortcutState } = await import('../lib/shortcuts');
+    resetShortcutRuntime('windows');
+    const browserLabels = shortcutsGroups('enter', false, shortcutState()).flatMap((g) => g.rows.map((r) => r.labelKey));
+    expect(browserLabels).not.toContain('shortcuts.zoomIn');
+    expect(browserLabels).not.toContain('shortcuts.zoomOut');
+    expect(browserLabels).not.toContain('shortcuts.zoomReset');
+
+    const desktopGlobal = shortcutsGroups('enter', true, shortcutState()).find((g) => g.titleKey === 'shortcuts.group.global')!;
+    expect(desktopGlobal.rows).toContainEqual({ keys: ['Ctrl', '='], labelKey: 'shortcuts.zoomIn' });
+    expect(desktopGlobal.rows).toContainEqual({ keys: ['Ctrl', '-'], labelKey: 'shortcuts.zoomOut' });
+    expect(desktopGlobal.rows).toContainEqual({ keys: ['Ctrl', '0'], labelKey: 'shortcuts.zoomReset' });
+  });
 });

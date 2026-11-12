@@ -107,6 +107,10 @@ import {
   validateProviderDraft,
   validateRequestTimeoutSeconds,
   validateServerDefaults,
+  DEFAULT_UI_ZOOM,
+  UI_ZOOM_STEPS,
+  normalizeUiZoom,
+  stepUiZoom,
   writeDesktopPrefs,
   writeSettings,
   type ProviderDraft,
@@ -1574,22 +1578,54 @@ describe('appearance leaf', () => {
     for (const [index, query, card] of [
       [en, 'dark mode', 'st-card-appearance'],
       [en, 'serif', 'st-card-appearance-type'],
+      [en, 'font size', 'st-card-appearance-type'],
+      [en, 'zoom', 'st-card-appearance-type'],
       [en, 'reduce motion', 'st-card-appearance-layout'],
       [zh, '皮肤', 'st-card-appearance'],
+      [zh, '字号', 'st-card-appearance-type'],
+      [zh, '放大', 'st-card-appearance-type'],
+      [zh, '界面缩放', 'st-card-appearance-type'],
       [zh, '动效', 'st-card-appearance-layout'],
     ] as const) {
       expect(searchSettings(index, query).some((hit) => hit.cardId === card), `${query}`).toBe(true);
     }
   });
 
-  it('normalizes the stored motion and prose preferences', () => {
-    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'wild', proseFont: 'comic' }));
+  it('normalizes the stored motion, prose, and device-local uiZoom preferences', () => {
+    expect(UI_ZOOM_STEPS).toEqual([80, 90, 100, 110, 125, 140, 150]);
+    expect(normalizeUiZoom(undefined)).toBe(DEFAULT_UI_ZOOM);
+    expect(normalizeUiZoom(Number.NaN)).toBe(DEFAULT_UI_ZOOM);
+    expect(normalizeUiZoom(40)).toBe(80);
+    expect(normalizeUiZoom(122)).toBe(125);
+    expect(normalizeUiZoom(200)).toBe(150);
+    expect(stepUiZoom(100, 1)).toBe(110);
+    expect(stepUiZoom(110, 1)).toBe(125);
+    expect(stepUiZoom(150, 1)).toBe(150);
+    expect(stepUiZoom(80, -1)).toBe(80);
+
+    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'wild', proseFont: 'comic', uiZoom: 'huge' }));
     expect(readSettings().motion).toBe('system');
     expect(readSettings().proseFont).toBe('serif');
-    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'reduce', proseFont: 'sans' }));
+    expect(readSettings().uiZoom).toBe(100);
+    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'reduce', proseFont: 'sans', uiZoom: 125 }));
     expect(readSettings().motion).toBe('reduce');
     expect(readSettings().proseFont).toBe('sans');
-    localStorage.removeItem('kiki.settings');
+    expect(readSettings().uiZoom).toBe(125);
+
+    const portableWrites: unknown[] = [];
+    configureSpacePortableSettings({
+      read: () => ({ theme: 'dark' }),
+      write: (patch) => { portableWrites.push(patch); },
+    });
+    try {
+      writeSettings({ uiZoom: 140, theme: 'light' });
+      expect(portableWrites).toEqual([{ theme: 'light' }]);
+      expect(readDeviceSettings().uiZoom).toBe(140);
+      expect(readSettings().uiZoom).toBe(140);
+    } finally {
+      configureSpacePortableSettings(undefined);
+      localStorage.removeItem('kiki.settings');
+    }
   });
 });
 

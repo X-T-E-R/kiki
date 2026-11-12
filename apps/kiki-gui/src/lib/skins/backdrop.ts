@@ -24,6 +24,7 @@
 import { objectPositionOf, readableSurfaceAlpha, sampleLuminance, type BackgroundMediaRef, type BackgroundSlot, type MediaSample } from './background';
 import { THUMBNAIL_EDGE, backdropEdge, displayBlob } from './displayMedia';
 import { getMedia } from './mediaStore';
+import { KIKI_ZOOM_CHANGE_EVENT, unzoomedRect } from '../uiZoom';
 
 export interface BackdropStatus {
   /** The media in the slot could not be loaded (deleted, or storage cleared). */
@@ -423,7 +424,7 @@ let edgeObserver: ResizeObserver | null = null;
 let edgeTarget: Element | null = null;
 
 function publishSidebarEdge(): void {
-  const width = edgeTarget?.getBoundingClientRect().right ?? 0;
+  const width = edgeTarget === null ? 0 : unzoomedRect(edgeTarget.getBoundingClientRect()).right;
   document.documentElement.style.setProperty('--kiki-backdrop-sidebar', `${Math.round(width)}px`);
 }
 
@@ -440,8 +441,10 @@ function attachSidebarEdge(): void {
 
 function trackSidebarEdge(): () => void {
   window.addEventListener('resize', publishSidebarEdge);
+  window.addEventListener(KIKI_ZOOM_CHANGE_EVENT, publishSidebarEdge);
   return () => {
     window.removeEventListener('resize', publishSidebarEdge);
+    window.removeEventListener(KIKI_ZOOM_CHANGE_EVENT, publishSidebarEdge);
     edgeObserver?.disconnect();
     edgeObserver = null;
     edgeTarget = null;

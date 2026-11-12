@@ -71,7 +71,12 @@ export function shortcutsGroups(
     ...rows('shortcuts-help'),
   ];
   if (desktop) {
-    globalRows.push({ keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' });
+    globalRows.push(
+      { keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' },
+      { keys: chordKeys({ key: '=', modifier: 'mod', shift: false, alt: false }, current.platform), labelKey: 'shortcuts.zoomIn' },
+      { keys: chordKeys({ key: '-', modifier: 'mod', shift: false, alt: false }, current.platform), labelKey: 'shortcuts.zoomOut' },
+      { keys: chordKeys({ key: '0', modifier: 'mod', shift: false, alt: false }, current.platform), labelKey: 'shortcuts.zoomReset' },
+    );
   }
   const groups: ShortcutGroup[] = [
     { titleKey: 'shortcuts.group.global', rows: globalRows },
