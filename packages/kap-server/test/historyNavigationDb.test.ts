@@ -1,14 +1,82 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { HISTORY_NAV_COLLECTION, type HistoryNavRow } from '../src/services/history/historyLocatorStore';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
-import { SqliteNavigationMap, SqliteNavigationSet } from '../src/services/history/historyNavigationState';
+import { navigationScope, SqliteNavigationMap, SqliteNavigationSet } from '../src/services/history/historyNavigationState';
+
+const APPLICATION_ID = 0x4b484e31;
+const FOREIGN_APPLICATION_ID = 0x554e4b4e;
+
+function createLegacyNavigationDb(path: string, version: 1 | 2): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      CREATE TABLE rows (
+        key TEXT PRIMARY KEY, workspace TEXT, session TEXT, agent TEXT, kind TEXT,
+        turn INTEGER, step TEXT, active INTEGER, position INTEGER, time INTEGER, value TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX nav_turn ON rows(workspace,session,agent,kind,active,turn);
+      CREATE INDEX nav_position ON rows(workspace,session,agent,turn,active,position);
+      CREATE INDEX nav_time ON rows(workspace,session,agent,kind,active,time);
+      CREATE TABLE state (
+        scope TEXT NOT NULL, bucket TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY(scope,bucket,key)
+      ) STRICT, WITHOUT ROWID;
+      CREATE TABLE turn_sequence (
+        scope TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
+        start_ordinal INTEGER NOT NULL, active INTEGER NOT NULL, PRIMARY KEY(scope,seq)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX nav_turn_sequence_id ON turn_sequence(scope,active,id);
+      CREATE INDEX nav_turn_sequence_start ON turn_sequence(scope,active,start_ordinal);
+      CREATE TABLE anchor_sequence (
+        scope TEXT NOT NULL, seq INTEGER NOT NULL, ordinal INTEGER NOT NULL,
+        turn_id TEXT, message_id TEXT, active INTEGER NOT NULL, PRIMARY KEY(scope,seq)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX nav_anchor_ordinal ON anchor_sequence(scope,active,ordinal DESC);
+      CREATE INDEX nav_anchor_turn ON anchor_sequence(scope,active,turn_id);
+    `);
+    if (version === 2) {
+      db.exec(`
+        CREATE INDEX nav_search_order ON rows(workspace,session,agent,coalesce(time,0),key)
+          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
+        CREATE INDEX nav_search_role_order ON rows(workspace,session,agent,
+          coalesce(json_extract(value,'$.role'),'user'),coalesce(time,0),key)
+          WHERE active=1 AND json_extract(value,'$.part') IN ('prompt','text','output');
+        CREATE INDEX nav_source ON rows(workspace,session,agent,active,json_extract(value,'$.anchor.start'));
+        CREATE INDEX nav_canonical_source ON state(scope,json_extract(value,'$.turnId'),CAST(key AS INTEGER))
+          WHERE bucket='canonicalRecords';
+        CREATE TABLE manifest (scope TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT, WITHOUT ROWID;
+      `);
+    }
+    const largeValue = JSON.stringify({ type: 'turn', payload: 'x'.repeat(6 << 20) });
+    db.prepare(`INSERT INTO rows(key,workspace,session,agent,kind,turn,step,active,position,time,value)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run('old-row', 'ws', 's', 'main', 'turn', 1, null, 1, 1, 1, largeValue);
+    db.prepare('INSERT INTO state(scope,bucket,key,value) VALUES(?,?,?,?)')
+      .run('ws\0s\0main', 'turnStart', 't1', '0');
+    if (version === 2) {
+      db.prepare('INSERT INTO state(scope,bucket,key,value) VALUES(?,?,?,?)')
+        .run('ws\0s\0main', 'canonicalRecords', '0', JSON.stringify({ turnId: 't1', ordinal: 0,
+          start: 0, end: 1, digest: 'a'.repeat(64) }));
+      db.prepare('INSERT INTO manifest(scope,value) VALUES(?,?)')
+        .run('ws\0s\0main', JSON.stringify({ v: 2, generation: 'old', incarnation: 'old', offset: 1,
+          ordinal: 1, complete: true, source: { identity: 'old', size: 1, head: 'a', tail: 'b' } }));
+    }
+    db.prepare('INSERT INTO turn_sequence(scope,seq,id,start_ordinal,active) VALUES(?,?,?,?,?)')
+      .run('ws\0s\0main', 1, 't1', 0, 1);
+    db.prepare('INSERT INTO anchor_sequence(scope,seq,ordinal,turn_id,message_id,active) VALUES(?,?,?,?,?,?)')
+      .run('ws\0s\0main', 1, 0, 't1', 'm1', 1);
+    db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${version};`);
+  } finally {
+    db.close();
+  }
+}
 
 describe('history navigation SQLite repository', () => {
   it('isolates fixed directory projections, shares rollback and retains two committed watermarks', async () => {
@@ -76,7 +144,7 @@ describe('history navigation SQLite repository', () => {
         expect(second.turnStart.has(`t${n}`)).toBe(true);
         db.addCanonicalSource('first', { turnId: `t${n}`, start: n, end: n + 1, ordinal: n, digest: 'fixture' }, { legacyTurn: n, ordinal: n });
       }
-      expect(prepare).toHaveBeenCalledTimes(5);
+      expect(prepare).toHaveBeenCalledTimes(7);
       const a = first.turnStart.entries();
       const b = second.turnStart.entries();
       expect(a.next().value).toEqual(['t0', 0]);
@@ -175,15 +243,16 @@ describe('history navigation SQLite repository', () => {
     try {
       const db = await HistoryNavigationDb.open(path);
       try {
-        const tools = new SqliteNavigationMap<{ turnId: string; stepId: string }>(db.db, 'scope', 'tools');
-        const turns = new SqliteNavigationSet(db.db, 'scope', 'canonical');
+        const scope = navigationScope(db.db, 'scope');
+        const tools = new SqliteNavigationMap<{ turnId: string; stepId: string }>(db.db, scope, 'tools');
+        const turns = new SqliteNavigationSet(db.db, scope, 'canonical');
         for (let i = 0; i < 300; i += 1) {
           tools.set(`tool-${i.toString().padStart(3, '0')}`, { turnId: `t${i}`, stepId: `s${i}` });
           turns.add(`t${i}`);
         }
         expect(tools.size).toBe(300);
         expect(turns.size).toBe(300);
-        const restored = new SqliteNavigationMap<{ turnId: string; stepId: string }>(db.db, 'scope', 'tools');
+        const restored = new SqliteNavigationMap<{ turnId: string; stepId: string }>(db.db, scope, 'tools');
         expect(restored.get('tool-240')).toEqual({ turnId: 't240', stepId: 's240' });
         for (const [key, value] of restored) if (Number(value.turnId.slice(1)) >= 150) restored.delete(key);
         expect(restored.size).toBe(150);
@@ -221,36 +290,61 @@ describe('history navigation SQLite repository', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
-  it('upgrades the earlier derived index without treating its non-atomic checkpoint as resumable', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'history-navigation-v1-'));
+  it.each([1, 2] as const)('rebuilds the entire recognized v%s derived database from canonical sources', async version => {
+    const home = await mkdtemp(join(tmpdir(), `history-navigation-v${version}-`));
     const path = join(home, 'navigation.sqlite');
     try {
-      const previous = await HistoryNavigationDb.open(path);
-      await previous.put(HISTORY_NAV_COLLECTION, 'old-row', { workspace: 'ws', session: 's',
-        agent: 'main', kind: 'turn', turn: 1, active: true, position: 1 });
-      previous.scalarState('ws\0s\0main\0old-query-hash').turnStart.set('t1', 0);
-      previous.scalarState('ws\0other\0main').turnStart.set('t2', 0);
-      previous.db.exec('DROP TABLE manifest; PRAGMA user_version=1');
-      previous.close();
-      const upgraded = await HistoryNavigationDb.open(path);
+      createLegacyNavigationDb(path, version);
+      const beforeBytes = (await stat(path)).size;
+      expect(beforeBytes).toBeGreaterThan(5 << 20);
+      let upgraded: HistoryNavigationDb | undefined;
       try {
-        expect((upgraded.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
-        expect(upgraded.readManifest('ws\0s\0main')).toBeUndefined();
-        upgraded.beginSlice();
-        upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
-        upgraded.rollbackSlice();
-        expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeDefined();
-        expect(upgraded.scalarState('ws\0s\0main\0old-query-hash').turnStart.has('t1')).toBe(true);
-        upgraded.beginSlice();
-        upgraded.clearProjection('ws\0s\0main', 'ws', 's', 'main');
-        upgraded.commitSlice('ws\0s\0main', { v: 2, generation: 'rebuilt', incarnation: 'new',
-          offset: 0, ordinal: 0, complete: false,
-          source: { identity: 'new', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' } },
-          { ordinal: 0, legacyTurn: 0 });
-        expect(await upgraded.get(HISTORY_NAV_COLLECTION, 'old-row')).toBeUndefined();
-        expect(upgraded.scalarState('ws\0s\0main\0old-query-hash').turnStart.has('t1')).toBe(false);
-        expect(upgraded.scalarState('ws\0other\0main').turnStart.has('t2')).toBe(true);
-      } finally { upgraded.close(); }
+        upgraded = await HistoryNavigationDb.open(path);
+        expect(upgraded.db.prepare('PRAGMA application_id').get()).toEqual({ application_id: APPLICATION_ID });
+        expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM rows').get()).toEqual({ count: 0 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM state').get()).toEqual({ count: 0 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM manifest').get()).toEqual({ count: 0 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM turn_sequence').get()).toEqual({ count: 0 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM anchor_sequence').get()).toEqual({ count: 0 });
+        expect(upgraded.db.prepare('SELECT count(*) AS count FROM canonical_spans').get()).toEqual({ count: 0 });
+        const scope = navigationScope(upgraded.db, 'ws\0s\0main');
+        for (const table of ['state', 'manifest', 'turn_sequence', 'anchor_sequence', 'canonical_spans']) {
+          expect(upgraded.db.prepare(`SELECT count(*) AS count FROM ${table} WHERE scope=?`).get(scope))
+            .toEqual({ count: 0 });
+        }
+        const scopeType = (table: string): string | undefined =>
+          (upgraded!.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string }>)
+            .find(column => column.name === 'scope')?.type;
+        for (const table of ['state', 'manifest', 'turn_sequence', 'anchor_sequence', 'canonical_spans']) {
+          expect(scopeType(table)).toBe('INTEGER');
+        }
+        expect((upgraded.db.prepare('PRAGMA table_info(canonical_spans)').all() as Array<{ name: string; type: string }>)
+          .map(({ name, type }) => [name, type])).toEqual([
+          ['scope', 'INTEGER'], ['turn_id', 'TEXT'], ['ordinal', 'INTEGER'], ['start_byte', 'INTEGER'],
+          ['end_byte', 'INTEGER'], ['digest', 'BLOB'],
+        ]);
+      } finally { upgraded?.close(); }
+      expect((await stat(path)).size).toBeLessThan(beforeBytes - (4 << 20));
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('does not modify an unrecognized SQLite library while refusing it as a navigation index', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-unknown-'));
+    const path = join(home, 'other-library.sqlite');
+    try {
+      const foreign = new DatabaseSync(path);
+      foreign.exec(`CREATE TABLE owned_data(value TEXT NOT NULL); INSERT INTO owned_data VALUES('keep me'); PRAGMA application_id=${FOREIGN_APPLICATION_ID}; PRAGMA user_version=7;`);
+      foreign.close();
+      const before = await readFile(path);
+      await expect(HistoryNavigationDb.open(path)).rejects.toThrow('unrecognized history navigation index');
+      expect(await readFile(path)).toEqual(before);
+      const verified = new DatabaseSync(path);
+      try {
+        expect(verified.prepare('SELECT value FROM owned_data').get()).toEqual({ value: 'keep me' });
+        expect(verified.prepare('PRAGMA application_id').get()).toEqual({ application_id: FOREIGN_APPLICATION_ID });
+        expect(verified.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 });
+      } finally { verified.close(); }
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
@@ -288,5 +382,58 @@ describe('history navigation SQLite repository', () => {
         expect(await reopened.get(HISTORY_NAV_COLLECTION, 'uncommitted')).toBeUndefined();
       } finally { reopened.close(); }
     } finally { await rm(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('history navigation schema recovery', () => {
+  it('retries a recognized migration after a reader releases its WAL lock', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-migration-lock-'));
+    const path = join(home, 'navigation.sqlite');
+    createLegacyNavigationDb(path, 2);
+    const reader = new DatabaseSync(path);
+    reader.exec('PRAGMA journal_mode=WAL; BEGIN');
+    reader.prepare('SELECT count(*) FROM rows').get();
+    const lazy = HistoryNavigationDb.lazy(path);
+    try {
+      await expect(lazy.ready()).rejects.toThrow('locked');
+      reader.exec('COMMIT');
+      reader.close();
+      const reopened = await lazy.ready();
+      expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+      expect(reopened.readManifest('absent')).toBeUndefined();
+      expect(reopened.db.prepare('SELECT count(*) AS n FROM scopes').get()).toEqual({ n: 0 });
+    } finally {
+      if (reader.isOpen) reader.close();
+      await lazy.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('never reuses an evicted directory identity across two open connections', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-directory-connections-'));
+    const path = join(home, 'navigation.sqlite');
+    const a = await HistoryNavigationDb.open(path);
+    const b = await HistoryNavigationDb.open(path);
+    const manifest = { v: 2 as const, generation: 'g', incarnation: 'i', ordinal: 0, offset: 0, complete: true,
+      source: { identity: 'i', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' } };
+    const scope = (db: HistoryNavigationDb) => `${db.projectionPrefix}ws\0s\0main`;
+    const commit = async (id: string) => {
+      const view = b.projected(id.repeat(64));
+      view.beginSlice();
+      await view.put(HISTORY_NAV_COLLECTION, ['ws', 's', 'main', 'turn', '1', '', '', ''].join('\0'), {
+        workspace: 'ws', session: 's', agent: 'main', kind: 'turn', turn: 1, active: true, excerpt: id,
+      });
+      view.commitSlice(scope(view), { ...manifest, generation: id }, { ordinal: 0, legacyTurn: 0 });
+    };
+    try {
+      await commit('1');
+      const first = a.projected('1'.repeat(64));
+      expect(first.readManifest(scope(first))?.generation).toBe('1');
+      await commit('2'); await commit('3'); await commit('4');
+      expect(first.readManifest(scope(first))).toBeUndefined();
+      expect(await first.get(HISTORY_NAV_COLLECTION, ['ws', 's', 'main', 'turn', '1', '', '', ''].join('\0'))).toBeUndefined();
+      const third = a.projected('3'.repeat(64));
+      expect(third.readManifest(scope(third))?.generation).toBe('3');
+    } finally { a.close(); b.close(); await rm(home, { recursive: true, force: true }); }
   });
 });

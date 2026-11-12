@@ -65,6 +65,12 @@ export const KAP_SQLITE_QUERY_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const KAP_HISTORY_NAVIGATION_WORKER_ASSET = Object.freeze({
+  key: 'kap-history-navigation-worker',
+  relativePath: 'runtime/kap-server/history-navigation-worker.mjs',
+  mode: 0o644,
+});
+
 export const PLUGIN_HOST_RUNNER_ASSET = Object.freeze({
   key: 'plugin-host-runner',
   relativePath: 'runtime/plugin/hostRunner.mjs',

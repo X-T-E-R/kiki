@@ -43,8 +43,7 @@ import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { historyArchiveSeed } from './services/historyArchive';
 import { historyDirectorySeed } from './services/history/historyDirectory';
-import { HistoryLocatorStore } from './services/history/historyLocatorStore';
-import { HistoryNavigationDb } from './services/history/historyNavigationDb';
+import { HistoryNavigation } from './services/history/historyNavigation';
 import './services/historyTools';
 import { NotificationService } from './services/notifications/notificationService';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
@@ -568,10 +567,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   let threadBridge: SpaceThreadBridge | undefined;
   let outboundPeerBridge: OutboundPeerBridgeClient | undefined;
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
-  const navigationDb = HistoryNavigationDb.lazy(join(homeDir, 'server', 'history-navigation.sqlite'));
-  let locator: HistoryLocatorStore | undefined;
-  const navigation = (): HistoryLocatorStore => locator ??= new HistoryLocatorStore(
-    navigationDb, transcriptService,
+  let locator: HistoryNavigation | undefined;
+  const navigation = (): HistoryNavigation => locator ??= new HistoryNavigation(
+    join(homeDir, 'server', 'history-navigation.sqlite'), transcriptService,
   );
   const { app: core } = bootstrap(
     {
@@ -881,7 +879,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => capabilityInstallSubscription.dispose() },
       { run: () => authFailureLimiter?.dispose() },
       { run: () => transcriptService.dispose() },
-      { run: () => navigationDb.close() },
+      { run: () => locator?.close() },
       { run: () => drainSessionMetadataWrites(), durable: true },
       { run: () => core.accessor.get(ISessionIndexMirror).drain(), durable: true },
       { run: () => core.accessor.get(IMcpOAuthService).shutdown() },

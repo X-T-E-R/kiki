@@ -1,10 +1,6 @@
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
-import {
-  openPinnedLogicalRead,
-  readLogicalRange,
-  readPinnedRange,
-  wireFileAddress,
-} from '@kiki/agent-core-v2';
+import { openPinnedLogicalRead } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import { readLogicalRange, readPinnedRange, wireFileAddress } from '@kiki/agent-core-v2/persistence/logicalWireFile';
 import {
   streamWireRecords,
   streamWireRecordsAwaited,

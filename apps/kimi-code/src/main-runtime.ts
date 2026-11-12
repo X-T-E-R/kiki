@@ -27,7 +27,15 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { SOURCE_OWNED_ADAPTER_ROOT_ENV } from '../../../scripts/external-harness/production-manifest.mjs';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile, getSourceOwnedAdapterRoot, getWindowsProcessHelperFile } from './native/native-assets';
+import {
+  cleanupStaleNativeCacheForCurrent,
+  getHistoryImportEntryFile,
+  getKapSqliteQueryWorkerFile,
+  getNativeRuntimeFile,
+  getPluginHostRunnerFile,
+  getSourceOwnedAdapterRoot,
+  getWindowsProcessHelperFile,
+} from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -153,6 +161,12 @@ function bootstrap(): void {
         ? `plugin-isolation-worker:failed code=${pluginIsolationWorkerInstall.errorCode} sha256=${pluginIsolationWorkerInstall.assetSha256 ?? 'unknown'}`
         : `plugin-isolation-worker:${pluginIsolationWorkerInstall.status}`,
   );
+  const historyNavigationWorker = isSea()
+    ? getNativeRuntimeFile('kap-history-navigation-worker')
+    : fileURLToPath(new URL('./history-navigation-worker.mjs', import.meta.url));
+  if (historyNavigationWorker !== null && existsSync(historyNavigationWorker)) {
+    process.env['KIKI_HISTORY_NAVIGATION_WORKER_ENTRY'] = historyNavigationWorker;
+  }
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
