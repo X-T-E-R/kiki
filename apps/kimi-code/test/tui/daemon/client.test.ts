@@ -87,7 +87,7 @@ describe('DaemonClient', () => {
     const fake = fakeKlient();
     fake.sessions.create.mockResolvedValue({ id: 'session-persona' });
     fake.personas.list.mockResolvedValue([
-      { id: 'lin-lan', name: 'Lin Lan', revision: '2', archived: false },
+      { id: 'xiao-you', name: 'Yuzu', revision: '2', archived: false },
       { id: 'old', name: 'Old', revision: '1', archived: true },
     ]);
     const client = new DaemonClient({
@@ -96,15 +96,15 @@ describe('DaemonClient', () => {
       klient: fake.klient as never,
     });
 
-    await client.createSession({ workDir: 'C:\\repo', persona: 'lin-lan' });
+    await client.createSession({ workDir: 'C:\\repo', persona: 'xiao-you' });
     await expect(client.listPersonas()).resolves.toEqual([
-      { id: 'lin-lan', name: 'Lin Lan', revision: '2', archived: false },
+      { id: 'xiao-you', name: 'Yuzu', revision: '2', archived: false },
       { id: 'old', name: 'Old', revision: '1', archived: true },
     ]);
 
     expect(fake.sessions.create).toHaveBeenCalledWith({
       workDir: 'C:\\repo',
-      persona: 'lin-lan',
+      persona: 'xiao-you',
     });
     expect(fake.personas.list).toHaveBeenCalledOnce();
   });

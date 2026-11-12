@@ -1239,22 +1239,22 @@ describe('DaemonTUI commands', () => {
   it('lists active personas and switches by starting a new session', async () => {
     const { tui, internal } = driver();
     internal.client.listPersonas.mockResolvedValue([
-      { id: 'lin-lan', name: 'Lin Lan', title: 'Release', revision: '2', archived: false },
+      { id: 'xiao-you', name: 'Yuzu', title: 'Release', revision: '2', archived: false },
       { id: 'archived', name: 'Archived', revision: '1', archived: true },
     ]);
     const openSession = vi.fn();
     internal.openSession = openSession;
 
     await internal.handleSlash('/persona list');
-    expect(transcriptText(tui)).toContain('lin-lan · Lin Lan · Release');
+    expect(transcriptText(tui)).toContain('xiao-you · Yuzu · Release');
     expect(transcriptText(tui)).not.toContain('Archived');
 
-    await internal.handleSlash('/persona switch lin-lan');
+    await internal.handleSlash('/persona switch xiao-you');
     expect(internal.client.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ persona: 'lin-lan' }),
+      expect.objectContaining({ persona: 'xiao-you' }),
     );
     expect(openSession).toHaveBeenCalledWith('session-created');
-    expect(internal.showStatus).toHaveBeenLastCalledWith('Started a new session with persona Lin Lan.');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('Started a new session with persona Yuzu.');
     await expect(internal.handleSlash('/persona switch archived')).rejects.toThrow(
       'Persona "archived" was not found.',
     );
