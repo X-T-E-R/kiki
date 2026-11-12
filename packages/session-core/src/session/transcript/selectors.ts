@@ -94,7 +94,12 @@ function turnLeftVisibleReply(blocks: readonly Block[], turn: string): boolean {
   });
 }
 
-function turnReplyIsUnloaded(state: Pick<SessionViewState, 'blocks' | 'contentRefs'>, turn: string): boolean {
+function turnReplyIsUnloaded(
+  state: Pick<SessionViewState, 'blocks' | 'contentRefs'> & Partial<Pick<SessionViewState, 'incompleteTurnIds' | 'turnGaps'>>,
+  turn: string,
+): boolean {
+  if (state.turnGaps !== undefined && Object.keys(state.turnGaps).some((id) => normalizeTurnId(id) === turn)) return true;
+  if (state.incompleteTurnIds?.some((id) => normalizeTurnId(id) === turn) === true) return true;
   return state.contentRefs?.some((ref) => {
     if (ref.source.kind === 'turn') return normalizeTurnId(ref.source.id) === turn && ref.path[0] === 'steps';
     if (ref.source.kind !== 'frame' || ref.path[0] !== 'text') return false;
@@ -109,7 +114,8 @@ function turnReplyIsUnloaded(state: Pick<SessionViewState, 'blocks' | 'contentRe
  * `connected: false` keeps stale execution facts unknown rather than idle.
  */
 export function turnReplyGap(
-  state: Pick<SessionViewState, 'blocks' | 'busy' | 'turnTail' | 'session' | 'loaded' | 'transcriptReady' | 'resyncing' | 'resyncFailed' | 'loadError' | 'contentRefs'>,
+  state: Pick<SessionViewState, 'blocks' | 'busy' | 'turnTail' | 'session' | 'loaded' | 'transcriptReady' | 'resyncing' | 'resyncFailed' | 'loadError' | 'contentRefs'> &
+    Partial<Pick<SessionViewState, 'incompleteTurnIds' | 'turnGaps'>>,
   options: { readonly connected?: boolean } = {},
 ): TurnReplyGap | undefined {
   const tail = state.turnTail;

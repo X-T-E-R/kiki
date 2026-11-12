@@ -8328,6 +8328,9 @@ describe('a finished turn that left nothing to read', () => {
     const ref = { source: { kind: 'turn' as const, id: 't25' }, revision: 'r1', path: ['steps'], kind: 'array' as const, offset: 0, total: 1 };
     expect(turnReplyGap({ ...ready, contentRefs: [ref] })).toBeUndefined();
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, path: ['steps', 0, 'frames'] }] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, turnGaps: { t25: { at: 'turn', reason: 'stale' } } })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, incompleteTurnIds: ['t25'] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, turnGaps: { t24: { at: 'turn', reason: 'partial' } } })?.work).toBe('unknown');
     const text = { ...ref, source: { kind: 'frame' as const, id: 'answer', turnId: 't25' }, path: ['text'], kind: 'text' as const };
     expect(turnReplyGap({ ...ready, contentRefs: [text] })).toBeUndefined();
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, source: { kind: 'turn', id: 't24' } }] })?.work).toBe('unknown');
