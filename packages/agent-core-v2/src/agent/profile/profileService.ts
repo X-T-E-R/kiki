@@ -1637,19 +1637,21 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   async prepareResumeBinding(input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]): Promise<import('./profile').PreparedModelSwitchBinding> {
     resolveResumeContextMode(input);
+    await this.catalog.ready;
     await this.ensureDelegationPosition();
     const previousState = this.profileState;
     const previous = this.data();
+    const currentRoleProfile = this.resolveCurrentRoleProfile();
     assertNativeToolOverride(previous.executorId, input.toolOverride);
     const toolOverride = mergeToolBindingOverride(previousState.toolOverride, input.toolOverride);
     const requestedModel = input.modelAlias ?? previous.modelAlias;
     const canonical = requestedModel === undefined || this.isExternalExecutor ? requestedModel : this.resolveModelId(requestedModel);
     if (canonical === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'The resumed agent has no bound model.');
-    const recipe = canonical !== undefined && canonical !== previous.modelAlias ? await this.selectedRecipe(canonical) : undefined;
+    const recipe = canonical !== undefined && canonical !== previous.modelAlias ? await this.selectedRecipe(canonical, this.isExternalExecutor, currentRoleProfile) : undefined;
     const effectiveModel = canonical === undefined || this.isExternalExecutor ? undefined : this.resolveUsageModel(canonical, canonical === previous.modelAlias ? undefined : recipe ?? null);
     const validated = this.requireValidBinding(this.isExternalExecutor ? this.validateBinding({ modelAlias: input.modelAlias, thinkingEffort: input.thinkingEffort }) : {
       ok: true, binding: { modelAlias: canonical, thinkingEffort: input.thinkingEffort ?? (canonical !== previous.modelAlias
-        ? this.resolveThinkingEffort(resolveProfileThinkingDefault(previous.boundProfile ?? this.resolveActiveProfile(), canonical, (id) => this.models.resolveId(id)), effectiveModel, true) : previous.thinkingLevel) },
+        ? this.resolveThinkingEffort(resolveProfileThinkingDefault(currentRoleProfile, canonical, (id) => this.models.resolveId(id)), effectiveModel, true) : previous.thinkingLevel) },
     });
     const model = validated.modelAlias;
     if (model === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'The resumed agent has no bound model.');
@@ -1768,7 +1770,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'context_mode',
           confirmationChoices: ['direct', 'compact', 'fresh'].map((mode) => ({ parameter: 'context_mode', value: mode, mode })) } });
     }
-    const constraints = previous.boundProfile ?? this.resolveActiveProfile();
+    const constraints = currentRoleProfile;
     if (constraints === undefined && changedModel) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the model.');
     }
@@ -1826,7 +1828,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const base = previous.boundProfile?.promptBase;
       if (base !== undefined) {
         try {
-          const assembled = await this.assembleModelSwitchPrompt(model, base, recipe);
+          const assembled = await this.assembleModelSwitchPrompt(model, base, recipe, this.asResolvedRoleProfile(constraints));
           systemPrompt = assembled.text;
           environmentDisclosure = assembled.environment;
           nextFields = assembled.promptFields;
@@ -1902,20 +1904,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async prepareModelSwitchBinding(alias: string, requestedThinking?: string | null): Promise<import('./profile').PreparedModelSwitchBinding> {
+    await this.catalog.ready;
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model switching requires an executor-specific binding and context adapter.');
     }
     const previous = this.profileState;
+    const currentRoleProfile = this.resolveCurrentRoleProfile();
     const model = this.resolveModelId(alias);
-    const recipe = await this.selectedRecipe(model);
+    const recipe = await this.selectedRecipe(model, false, currentRoleProfile);
     const record = this.resolveUsageModel(model, recipe ?? null);
     if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, model, this.models);
     const resetThinking = requestedThinking === null || requestedThinking === undefined && model !== previous.modelAlias;
     const defaultThinking = resetThinking ? resolveMainThinkingCandidate({
       personaThinking: this.currentPersona?.definition.thinkingEffort,
       routeLockedThinking: previous.lockedThinkingEffort,
-      profileThinking: resolveProfileThinkingDefault(previous.boundProfile ?? this.resolveActiveProfile(), model, (id) => this.models.resolveId(id)),
+      profileThinking: resolveProfileThinkingDefault(currentRoleProfile, model, (id) => this.models.resolveId(id)),
     }) : undefined;
     const thinkingLevel = resetThinking
       ? this.resolveThinkingEffort(defaultThinking, record, true)
@@ -1946,7 +1950,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     let nextCognitionRevision = oldCognitionRevision;
     if (base !== undefined) {
       try {
-        const assembled = await this.assembleModelSwitchPrompt(model, base, recipe);
+        const assembled = await this.assembleModelSwitchPrompt(model, base, recipe, this.asResolvedRoleProfile(currentRoleProfile));
         config.systemPrompt = assembled.text;
         config.environmentDisclosure = assembled.environment;
         config.promptBase = assembled.promptBase;
@@ -1960,7 +1964,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         this.cognitionRevision = oldCognitionRevision;
       }
     } else if (this.declaresCognitionOverlay(previous.modelAlias) || this.declaresCognitionOverlay(model)
-      || this.declaresModelProfilePrompt(previous.modelAlias) || this.declaresModelProfilePrompt(model)) {
+      || this.declaresModelProfilePrompt(previous.modelAlias, currentRoleProfile) || this.declaresModelProfilePrompt(model, currentRoleProfile)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved prompt base is unavailable; model switching cannot reconstruct its prompt.');
     }
     const assertConstraints = () => {
@@ -2018,6 +2022,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       await this.bind({ execution: this.profileState.execution.selection, model: alias }, assertCurrent);
       return { model: this.modelAlias! };
     }
+    await this.catalog.ready;
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
@@ -2026,7 +2031,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.assertCurrentBindingConstraints(externalAlias, this.thinkingLevel);
       const changed = this.modelAlias !== externalAlias;
       if (changed) {
-        const profile = this.resolveActiveProfile();
+        const profile = this.asResolvedRoleProfile(this.resolveCurrentRoleProfile()) ?? this.resolveActiveProfile();
         if (profile !== undefined) await this.resolvePromptFieldSnapshot(profile, externalAlias);
         assertCurrent?.();
         this.update({ modelAlias: externalAlias });
@@ -2644,7 +2649,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const forced = this.isExternalExecutor ? undefined
       : this.validatedForcedThinkingEffort(thinking as ThinkingEffort, this.resolveModelForThinking(model), model);
     this.collectBindingAdvisories({
-      profile: data.boundProfile ?? this.activeProfile,
+      profile: this.resolveCurrentRoleProfile() ?? this.activeProfile,
       profileName: data.profileName ?? 'saved',
       profileIncludesOverlays: true,
       model,
@@ -2665,7 +2670,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ? { source: 'environment-forced' as const, requestedValue: data.thinkingLevel }
       : thinkingSelection;
     const advisories = this.collectBindingAdvisories({
-      profile: data.boundProfile ?? this.activeProfile,
+      profile: this.resolveCurrentRoleProfile() ?? this.activeProfile,
       profileName: data.profileName ?? 'saved',
       profileIncludesOverlays: true,
       route: data.routeId === undefined ? undefined : {
@@ -2750,8 +2755,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.config, this.models, this.promptFields, recipe === undefined ? await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native', profile) : recipe ?? undefined);
   }
 
-  private async assembleModelSwitchPrompt(alias: string, base: import('./boundProfile').BoundPromptBase, recipe?: import('@kiki/protocol').ResolvedRecipe) {
-    const profile = this.resolveActiveProfile();
+  private async assembleModelSwitchPrompt(
+    alias: string,
+    base: import('./boundProfile').BoundPromptBase,
+    recipe?: import('@kiki/protocol').ResolvedRecipe,
+    roleProfile?: ResolvedAgentProfile,
+  ) {
+    const profile = roleProfile ?? this.resolveActiveProfile();
     if (profile === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role cannot be resolved for model switching.');
     const context = await this.buildSystemPromptContext(profile, undefined, this.currentPersona ?? null);
     const diagnostics = this.boundPromptDiagnostics;
@@ -3799,6 +3809,88 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         { details: { currentRoute, requestedRoute } },
       );
     }
+  }
+
+  resolveCurrentRoleProfile(): ResolvedAgentProfile | import('./boundProfile').BoundProfile | undefined {
+    const state = this.profileState;
+    const bound = state.boundProfile;
+    if (
+      bound?.fileSources !== undefined ||
+      state.execution?.selection.profile_file !== undefined ||
+      state.dispatchDecision?.selectionKind === 'profile_file'
+    ) {
+      return bound ?? this.resolveActiveProfile();
+    }
+    const profileName = this.profileName;
+    if (profileName === undefined && this.routeId === undefined) {
+      return bound ?? this.resolveActiveProfile();
+    }
+    let selection: { readonly profile: AgentProfile; readonly baseProfile: AgentProfile; readonly route?: ResolvedAgentProfileRoute } | undefined;
+    if (this.routeId !== undefined) {
+      try {
+        selection = this.catalog.resolveSelection({ route: this.routeId });
+      } catch {
+        selection = undefined;
+      }
+    } else if (profileName !== undefined) {
+      const snapshot = this.catalog.snapshot?.();
+      const catalogProfile =
+        state.profileDefinitionId !== undefined && snapshot !== undefined
+          ? resolveSnapshotProfileDefinition(snapshot, state.profileDefinitionId, profileName) ?? this.catalog.get(profileName)
+          : profileName === DEFAULT_AGENT_PROFILE_NAME
+            ? this.catalog.getDefault()
+            : this.catalog.get(profileName);
+      if (catalogProfile !== undefined && this.catalog.sourceRejection?.(catalogProfile) === undefined) {
+        selection = { profile: catalogProfile, baseProfile: catalogProfile };
+      }
+    }
+    if (selection === undefined) {
+      return bound ?? this.resolveActiveProfile();
+    }
+    const executorId = state.executorId ?? selection.profile.executor ?? 'native';
+    const external = executorId !== 'native';
+    const resolveId = external ? (id: string) => id : aliasIdentity(this.models);
+    const baseProfile = captureProfileModelMenu(
+      selection.baseProfile,
+      external ? (id) => id : (id) => this.models.resolveId(id),
+    );
+    const restrictModelsToMenu = bound !== undefined ? bound.restrictModelsToMenu : baseProfile.restrictModelsToMenu;
+    const modelMenuConstraint = bound !== undefined ? bound.modelMenuConstraint : baseProfile.modelMenuConstraint;
+    const modelMenuDiagnostics = bound !== undefined ? bound.modelMenuDiagnostics : baseProfile.modelMenuDiagnostics;
+    const routedProfile: AgentProfile = {
+      ...selection.profile,
+      restrictModelsToMenu,
+      modelMenuConstraint,
+      modelMenuDiagnostics,
+      thinkingEffort: selection.route === undefined
+        ? selection.profile.thinkingEffort
+        : selection.route.lockedThinkingEffort ?? resolveProfileThinkingDefault(
+            baseProfile,
+            selection.profile.modelAlias ?? '',
+            resolveId ?? ((id) => id),
+          ),
+    };
+    const leased = applyLease(routedProfile, state.appliedLease, resolveId);
+    const effective = applyFileCallerCeiling(applySpawnPolicy(leased, state.spawnPolicy, resolveId));
+    const restricted: ResolvedAgentProfile = state.executionRestriction === 'research-readonly'
+      ? { ...effective, toolAllowPolicies: [...(effective.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS] }
+      : effective;
+    const active = this.resolveActiveProfile();
+    return active === undefined
+      ? restricted
+      : { ...restricted, systemPrompt: active.systemPrompt, renderSystemPrompt: active.renderSystemPrompt };
+  }
+
+  private asResolvedRoleProfile(
+    profile: ResolvedAgentProfile | import('./boundProfile').BoundProfile | undefined,
+  ): ResolvedAgentProfile | undefined {
+    if (profile === undefined) return undefined;
+    if ('renderSystemPrompt' in profile && typeof profile.renderSystemPrompt === 'function') {
+      return profile;
+    }
+    const active = this.resolveActiveProfile();
+    if (active === undefined) return undefined;
+    return { ...profile, systemPrompt: active.systemPrompt, renderSystemPrompt: active.renderSystemPrompt };
   }
 
   private resolveActiveProfile(): ResolvedAgentProfile | undefined {

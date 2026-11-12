@@ -628,14 +628,16 @@ export class SessionDispatchService implements ISessionDispatchService {
     const inheritedModel = wantsInheritance
       ? resolveInheritedModelAlias(INHERIT_MODEL_ALIAS, callerData?.modelAlias)
       : undefined;
+    await this.profiles.ready;
     const childData = childProfile.data();
+    const childRoleProfile = childProfile.resolveCurrentRoleProfile?.() ?? childData.boundProfile;
     assertNativeToolOverride(childData.executorId, options.toolOverride);
-    const modelProfileThinking = childData.boundProfile === undefined || inheritedModel === undefined
+    const modelProfileThinking = childRoleProfile === undefined || inheritedModel === undefined
       ? undefined
-      : resolveRoleThinkingDefault(roleConstraintsFromProfile(childData.boundProfile), inheritedModel,
+      : resolveRoleThinkingDefault(roleConstraintsFromProfile(childRoleProfile), inheritedModel,
           childData.executorId === 'native' ? this.models : undefined);
     const pinnedThinking = childData.lockedThinkingEffort ?? childData.appliedLease?.thinkingEffort ??
-      modelProfileThinking ?? childData.boundProfile?.thinkingEffort;
+      modelProfileThinking ?? childRoleProfile?.thinkingEffort;
     const inheritedThinking = wantsInheritance
       ? options.bindingOverride?.thinkingEffort ?? pinnedThinking ?? callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel
       : options.bindingOverride?.thinkingEffort;
@@ -680,7 +682,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const wantsAuto = options.bindingOverride?.modelAlias?.trim() === AUTO_MODEL_ALIAS;
     let autoChoice: import('#/session/subagent/autoModel').AutoModelCandidate | undefined;
     if (wantsAuto && saved === undefined) {
-      const frozen = childData.boundProfile;
+      const frozen = childRoleProfile;
       if (frozen === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints are unavailable for automatic model selection.');
       if (originalRequest.kind !== 'prompt') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Automatic model selection on resume requires a prompt request.');
       const executor = childData.executorId ?? frozen.executor ?? 'native';

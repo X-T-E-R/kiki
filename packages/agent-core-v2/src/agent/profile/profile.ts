@@ -327,6 +327,7 @@ export interface IAgentProfileService {
   setThinking(level: string): void;
   /** Drops a user effort pin and stores the profile or model default. An execution binding clears through that binding instead. */
   restoreDefaultThinking(): void;
+  resolveCurrentRoleProfile(): ResolvedAgentProfile | import('./boundProfile').BoundProfile | undefined;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {
     readonly toolOverride?: ToolBindingOverride;

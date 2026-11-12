@@ -2180,6 +2180,47 @@ describe('AgentProfileService.bind', () => {
     await ctx.expectResumeMatches();
   });
 
+  it('hot-reloads allowed_models and model_profiles from the live catalog when resuming or switching a named role', async () => {
+    const fileDefinition = {
+      name: 'resume-profile',
+      description: 'Worker role',
+      sourcePath: `${homeDir}/worker.md`,
+      scope: 'user' as const,
+      allowedModels: [RESUME_OLD_MODEL],
+      modelAlias: RESUME_OLD_MODEL,
+      prompt: 'Base worker instructions.',
+    };
+    const original = resumeProfile({
+      definitionId: `user:${homeDir}/worker.md`,
+      sourcePath: `${homeDir}/worker.md`,
+      fileDefinition,
+      allowedModels: [RESUME_OLD_MODEL],
+    });
+    const catalog = singleProfileCatalog(original);
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass), sessionService(ISessionAgentProfileCatalog, catalog));
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: original.name, thinking: 'low', delegationPosition: 'sub' });
+    await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, contextMode: 'fresh' })).rejects.toMatchObject({
+      code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION,
+      details: expect.objectContaining({ ruleSource: `profile-file:${homeDir}/worker.md.allowed_models` }),
+    });
+
+    const reloaded = resumeProfile({
+      definitionId: `user:${homeDir}/worker.md`,
+      sourcePath: `${homeDir}/worker.md`,
+      fileDefinition: { ...fileDefinition, allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL] },
+      allowedModels: [RESUME_OLD_MODEL, RESUME_NEW_MODEL],
+      modelProfiles: [{ alias: RESUME_NEW_MODEL, thinkingEffort: 'high', promptMode: 'append', prompt: 'HOT_RELOADED_MODEL_OVERLAY' }],
+    });
+    vi.spyOn(catalog, 'get').mockReturnValue(reloaded);
+    vi.spyOn(catalog, 'resolveSelection').mockReturnValue({ profile: reloaded, baseProfile: reloaded });
+
+    await (await prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL, contextMode: 'fresh' }))();
+    expect(svc.data()).toMatchObject({ modelAlias: RESUME_NEW_MODEL, thinkingLevel: 'high' });
+    expect(svc.getSystemPrompt()).toContain('HOT_RELOADED_MODEL_OVERLAY');
+    await ctx.expectResumeMatches();
+  });
+
   it('keeps an allowed menu model change subject to resume confirmation', async () => {
     const svc = await bindNativeResumeProfile(resumeProfile({ restrictModelsToMenu: true, modelProfiles: [{ alias: RESUME_NEW_MODEL, when: 'An informational condition' }] }));
     await expect(prepareResumeBinding(svc, { modelAlias: RESUME_NEW_MODEL })).rejects.toThrow(/allow_model_change/);
