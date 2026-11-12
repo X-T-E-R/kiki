@@ -1,0 +1,252 @@
+/**
+ * Resource header action controls and the tab right-click context menu.
+ */
+
+import { appendToDraft } from '@kiki/session-core/composer';
+import { basenameOf, resolveHostPath } from '@kiki/session-core/composer/media';
+import { openExternalUrl, useHost } from '#/host';
+import { useI18n } from '#/i18n';
+import { copyTextToClipboard } from '#/lib/clipboard';
+import { useOptionalConnection } from '#/state/connection';
+import {
+  resourceActions,
+  resourceMutability,
+  type PreviewReadState,
+} from '#/state/previewResource';
+import type { PreviewTab as PreviewTabModel } from '#/state/previewWorkspace';
+import type { AgentWorkspaceNavigation } from '../agent-workspace/AgentWorkspace';
+import { Icon } from '../icons';
+import { saveMediaToDisk } from '../imageActions';
+import { safeImagePreviewName } from '../imagePreviewName';
+import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import {
+  buildAttachmentTabResource,
+  buildFileTabResource,
+  downloadHostFile,
+  HEADER_ACTION_CLASS,
+  mentionTokenFor,
+  relativeToCwd,
+  useFileOpeners,
+  usePreviewEnvironment,
+} from './shared';
+
+export function TabContextMenu({
+  menu,
+  cwd,
+  sessionId,
+  readState,
+  workspaceNavigation,
+  onOpenCurrentFile,
+  onCloseMenu,
+  onCloseTab,
+  onCloseOthers,
+  onCloseAll,
+}: {
+  readonly menu: { tab: PreviewTabModel; x: number; y: number };
+  readonly cwd: string | undefined;
+  readonly sessionId: string | undefined;
+  readonly readState: PreviewReadState | undefined;
+  readonly workspaceNavigation: AgentWorkspaceNavigation | undefined;
+  readonly onOpenCurrentFile: (path: string) => void;
+  readonly onCloseMenu: () => void;
+  readonly onCloseTab: () => void;
+  readonly onCloseOthers: () => void;
+  readonly onCloseAll: () => void;
+}) {
+  const host = useHost();
+  const { t } = useI18n();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const environment = usePreviewEnvironment(sessionId);
+  const tab = menu.tab;
+  const entries: MiniMenuEntry[] = [
+    { key: 'close-tab', label: t('preview.closeTab'), run: onCloseTab },
+    { key: 'close-others', label: t('preview.closeOthers'), run: onCloseOthers },
+    { key: 'close-all', label: t('preview.closeAll'), run: onCloseAll },
+  ];
+  if (tab.kind === 'file' || tab.kind === 'attachment') {
+    const resource =
+      tab.kind === 'file'
+        ? buildFileTabResource(tab.path, cwd)
+        : buildAttachmentTabResource(
+            tab.item,
+            tab.sessionId ?? sessionId,
+            tab.origin,
+            cwd,
+            tab.item.kind === 'image' ? t('media.image') : t('media.attachment'),
+          );
+    const effectiveReadState: PreviewReadState = readState ?? {
+      status: 'ready',
+      readableFromDevice: true,
+      originalReadable: true,
+    };
+    const actions = resourceActions(resource, environment, effectiveReadState);
+    const isCopy = resourceMutability(resource) === 'copy';
+    const trustedPath =
+      resource.origin !== undefined && resource.origin.trusted
+        ? resource.origin.path
+        : resource.source.kind === 'host-file'
+          ? resource.source.path
+          : undefined;
+    const actionEntries: MiniMenuEntry[] = [];
+    for (const action of actions) {
+      if (action.id === 'open-current-file' && trustedPath !== undefined) {
+        actionEntries.push({
+          key: 'open-current-file',
+          label: t('preview.openCurrentFile'),
+          run: () => { onOpenCurrentFile(trustedPath); },
+        });
+      } else if (action.id === 'download') {
+        if (tab.kind === 'file') {
+          const filePath = resolveHostPath(tab.path, cwd);
+          actionEntries.push({
+            key: 'download',
+            label: t('media.download'),
+            run: () => {
+              if (client !== undefined) return downloadHostFile(host, client, filePath, basenameOf(filePath));
+            },
+          });
+        } else {
+          const name = resource.name ?? t('media.attachment');
+          const downloadName = safeImagePreviewName({ name: tab.item.name, path: tab.item.path }) ?? name;
+          actionEntries.push({
+            key: 'download',
+            label: t('media.download'),
+            run: async () => {
+              await saveMediaToDisk(
+                {
+                  url: tab.item.url,
+                  path: tab.item.fileId !== undefined ? undefined : tab.item.path,
+                  fileId: tab.item.fileId,
+                },
+                downloadName,
+                host,
+                client as Parameters<typeof saveMediaToDisk>[3],
+                tab.sessionId ?? sessionId,
+              );
+            },
+          });
+        }
+      } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+        actionEntries.push({
+          key: 'add-to-chat',
+          label: t('preview.addToChat'),
+          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, cwd)); },
+        });
+      } else if (action.id === 'copy-path' && trustedPath !== undefined) {
+        const relativePath = relativeToCwd(trustedPath, cwd);
+        if (tab.kind === 'file' || relativePath !== trustedPath) {
+          actionEntries.push({
+            key: 'copy-relative',
+            label: t('file.copyRelativePath'),
+            run: () => copyTextToClipboard(relativePath),
+          });
+        }
+        actionEntries.push({
+          key: 'copy-absolute',
+          label: tab.kind === 'file' ? t('file.copyAbsolutePath') : t('file.copyPath'),
+          run: () => copyTextToClipboard(trustedPath),
+        });
+      } else if (action.id === 'show-on-this-computer' && trustedPath !== undefined && host.revealPath !== undefined) {
+        actionEntries.push({
+          key: 'show-in-folder',
+          label: isCopy ? t('preview.showOnThisComputer') : t('file.showInFolder'),
+          run: () => host.revealPath!(trustedPath),
+        });
+      } else if (action.id === 'open-with-default-app' && trustedPath !== undefined && host.openPath !== undefined) {
+        actionEntries.push({
+          key: 'open-default-app',
+          label: isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+          run: () => host.openPath!(trustedPath),
+        });
+      }
+    }
+    if (actionEntries.length > 0) {
+      entries.push({ separator: true }, ...actionEntries);
+    }
+  } else if (tab.kind === 'web') {
+    entries.push(
+      { separator: true },
+      { key: 'copy-url', label: t('preview.copyUrl'), run: () => copyTextToClipboard(tab.url) },
+      { key: 'open-browser', label: t('message.openInBrowser'), run: () => { void openExternalUrl(host, tab.url, t('common.popupBlocked')); } },
+    );
+  } else if (tab.kind === 'panel') {
+    entries.push({ separator: true });
+    if (workspaceNavigation !== undefined) {
+      entries.push({ key: 'open-agent-route', label: t('preview.openAgentFullscreen', { name: tab.title ?? tab.agentId }), run: () => { workspaceNavigation.openAgentRoute(tab.agentId); } });
+    }
+    entries.push({ key: 'copy-agent-id', label: t('preview.copyAgentId'), run: () => copyTextToClipboard(tab.agentId) });
+  }
+  return (
+    <MiniContextMenu
+      x={menu.x}
+      y={menu.y}
+      entries={entries}
+      onClose={onCloseMenu}
+      ariaLabel={t('preview.tabMenuAria')}
+      overlayId="preview-tab-menu"
+      dataAttribute="data-preview-tab-menu"
+    />
+  );
+}
+
+/**
+ * The header action trio: the download anchor (omitted when the read failed)
+ * plus, where desktop openers exist, "open with default app" and "reveal in
+ * file manager" sitting beside it.
+ */
+export function HeaderFileActions({
+  path,
+  name,
+  canDownload = true,
+}: {
+  readonly path: string;
+  readonly name: string;
+  readonly canDownload?: boolean;
+}) {
+  const host = useHost();
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const openers = useFileOpeners();
+  return (
+    <>
+      {canDownload ? (
+        <button
+          type="button"
+          title={t('media.download')}
+          aria-label={t('media.download')}
+          data-download-file
+          onClick={() => {
+            if (client !== undefined) void downloadHostFile(host, client, path, name);
+          }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="arrowDown" size={12} />
+        </button>
+      ) : null}
+      {openers?.open !== undefined ? (
+        <button
+          type="button"
+          title={t('file.openDefaultApp')}
+          data-open-default-app
+          onClick={() => { openers.open!(path); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          {t('file.open')}
+        </button>
+      ) : null}
+      {openers?.reveal !== undefined ? (
+        <button
+          type="button"
+          title={t('file.showInFolder')}
+          aria-label={t('file.showInFolder')}
+          data-reveal-file
+          onClick={() => { openers.reveal!(path); }}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="folder" size={12} />
+        </button>
+      ) : null}
+    </>
+  );
+}
