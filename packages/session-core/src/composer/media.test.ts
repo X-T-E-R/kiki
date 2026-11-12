@@ -469,6 +469,7 @@ describe('previewKindOf / extOf', () => {
     expect(previewKindOf('/x/shot.PNG')).toBe('image');
     expect(previewKindOf('/x/notes.md')).toBe('markdown');
     expect(previewKindOf('C:/x/app.tsx')).toBe('text');
+    expect(previewKindOf('/x/notebook.ipynb')).toBe('text');
     expect(previewKindOf('/x/Makefile')).toBe('text');
     expect(previewKindOf('/x/archive.zip')).toBe('binary');
     expect(previewKindOf('/x/no-extension')).toBe('text');

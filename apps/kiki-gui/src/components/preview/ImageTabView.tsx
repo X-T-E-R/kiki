@@ -2,84 +2,175 @@
  * Full-resolution image preview tab.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { basenameOf, formatBytes } from '@kiki/session-core/composer/media';
+import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { useOptionalConnection } from '#/state/connection';
-import type { PreviewReadState } from '#/state/previewResource';
+import { classifyHostFileReadError } from '#/state/hostFileEditor';
+import type { PreviewReadFailureReason, PreviewReadState } from '#/state/previewResource';
 import { Icon } from '../icons';
 import { ImageViewport } from '../ImageViewport';
 import { useMessageImageMenu } from '../mediaParts';
-import { TabPathCaption } from './shared';
+import {
+  CAPTION_ACTION_CLASS,
+  ChangedOnDiskStrip,
+  DelayedReadingNotice,
+  downloadHostFile,
+  PreviewReadFailureView,
+} from './shared';
 
 export function ImageTabView({
   path,
+  visible = true,
+  fileWriteEpoch = 0,
+  externalReloadNonce,
   onOpenImage,
+  onCloseTab,
   onReadStateChange,
 }: {
   readonly path: string;
+  readonly visible?: boolean;
+  readonly fileWriteEpoch?: number;
+  readonly externalReloadNonce?: number;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
+  readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
+  const host = useHost();
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
+  const [attempt, setAttempt] = useState(0);
+  const [changedOnDisk, setChangedOnDisk] = useState(false);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
-    | { readonly status: 'error' }
-    | { readonly status: 'ready'; readonly url: string; readonly size: number }
+    | { readonly status: 'error'; readonly reason: PreviewReadFailureReason }
+    | { readonly status: 'ready'; readonly url: string; readonly size: number; readonly etag?: string }
   >({ status: 'loading' });
-  const imageMenu = useMessageImageMenu({ kind: 'image', path, name }, state.status === 'ready' ? state.url : undefined, name);
+  const imageMenu = useMessageImageMenu(
+    { kind: 'image', path, name },
+    state.status === 'ready' ? state.url : undefined,
+    name,
+  );
+
+  const reload = useCallback(() => {
+    setChangedOnDisk(false);
+    setAttempt((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    if (externalReloadNonce !== undefined && externalReloadNonce > 0) reload();
+  }, [externalReloadNonce, reload]);
 
   useEffect(() => {
     const status = state.status === 'error' ? 'failed' : state.status;
+    const reason = state.status === 'error' ? state.reason : undefined;
     onReadStateChange?.({
       status,
-      readableFromDevice: status !== 'failed',
-      originalReadable: status !== 'failed',
+      readableFromDevice: status !== 'failed' && reason !== 'remote-unreadable',
+      originalReadable: status !== 'failed' && reason !== 'remote-unreadable',
+      failureReason: reason,
     });
-  }, [state.status, onReadStateChange]);
+  }, [state, onReadStateChange]);
 
-  // The tab shows the original bytes: a downscaled preview thumbnail here is
-  // what made full-size screenshots unreadable.
   useEffect(() => {
     if (client === undefined) {
-      setState({ status: 'error' });
+      setState({ status: 'error', reason: 'error' });
       return;
     }
     let cancelled = false;
     let objectUrl: string | undefined;
+    setChangedOnDisk(false);
     setState({ status: 'loading' });
     client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
+      ({ bytes, mime, etag }) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
+        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength, etag });
       },
-      () => {
-        if (!cancelled) setState({ status: 'error' });
+      (error: unknown) => {
+        if (!cancelled) setState({ status: 'error', reason: classifyHostFileReadError(error) });
       },
     );
     return () => {
       cancelled = true;
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, path]);
+  }, [attempt, client, path]);
+
+  const checkDiskChange = useCallback(async () => {
+    if (client === undefined || state.status !== 'ready' || state.etag === undefined) return;
+    try {
+      const probe = await client.readHostFileBytes(path, { ifNoneMatch: state.etag });
+      if (probe.notModified === true || probe.etag === state.etag) return;
+      if (probe.etag !== undefined && probe.etag !== state.etag) {
+        setChangedOnDisk(true);
+      }
+    } catch {
+      // Ignore transient conditional-probe errors; explicit Reload shows any failure.
+    }
+  }, [client, path, state]);
+
+  const prevVisibleRef = useRef(visible);
+  useEffect(() => {
+    const becameVisible = visible && !prevVisibleRef.current;
+    prevVisibleRef.current = visible;
+    if (becameVisible) void checkDiskChange();
+  }, [visible, checkDiskChange]);
+
+  const prevWriteEpochRef = useRef(fileWriteEpoch);
+  useEffect(() => {
+    if (fileWriteEpoch !== prevWriteEpochRef.current) {
+      prevWriteEpochRef.current = fileWriteEpoch;
+      void checkDiskChange();
+    }
+  }, [fileWriteEpoch, checkDiskChange]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const onFocus = () => { void checkDiskChange(); };
+    window.addEventListener('focus', onFocus);
+    return () => { window.removeEventListener('focus', onFocus); };
+  }, [visible, checkDiskChange]);
 
   if (state.status !== 'ready') {
+    const readFailed = state.status === 'error';
+    const failureReason = state.status === 'error' ? state.reason : undefined;
     return (
       <>
-        <TabPathCaption path={path} />
-        <div className="min-h-0 flex-1 overflow-auto p-3">
+        <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+            {name}
+          </span>
+          <button
+            type="button"
+            title={t('preview.reloadFile')}
+            aria-label={t('preview.reloadFile')}
+            data-header-reload
+            onClick={reload}
+            className={CAPTION_ACTION_CLASS}
+          >
+            <Icon name="refresh" size={12} />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
           {state.status === 'loading' ? (
-            <p className="flex items-center gap-2 text-[12px] text-ink-faint">
-              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-              {t('preview.loading')}
-            </p>
-          ) : (
-            <p className="text-[12.5px] text-danger">{t('preview.failed')}</p>
-          )}
+            <DelayedReadingNotice active />
+          ) : readFailed && failureReason !== undefined ? (
+            <PreviewReadFailureView
+              reason={failureReason}
+              path={path}
+              onReload={reload}
+              onCloseTab={onCloseTab}
+              onDownload={
+                failureReason === 'corrupted' && client !== undefined
+                  ? () => { void downloadHostFile(host, client, path, name, t); }
+                  : undefined
+              }
+            />
+          ) : null}
         </div>
       </>
     );
@@ -87,23 +178,36 @@ export function ImageTabView({
 
   return (
     <>
+      {changedOnDisk ? <ChangedOnDiskStrip onReload={reload} /> : null}
       <ImageViewport
         src={state.url}
         alt={name}
-        caption={<span title={path}>{path}</span>}
+        caption={<span title={path}>{name}</span>}
         meta={formatBytes(state.size)}
         onContextMenu={imageMenu.openMenu}
-        onError={() => { setState({ status: 'error' }); }}
+        onError={() => { setState({ status: 'error', reason: 'corrupted' }); }}
         actions={
-          <button
-            type="button"
-            onClick={() => { onOpenImage(state.url, name, path); }}
-            title={t('media.viewImage')}
-            aria-label={t('media.viewImage')}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <Icon name="eye" size={14} />
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={reload}
+              title={t('preview.reloadFile')}
+              aria-label={t('preview.reloadFile')}
+              data-header-reload
+              className={CAPTION_ACTION_CLASS}
+            >
+              <Icon name="refresh" size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => { onOpenImage(state.url, name, path); }}
+              title={t('media.viewImage')}
+              aria-label={t('media.viewImage')}
+              className={CAPTION_ACTION_CLASS}
+            >
+              <Icon name="eye" size={14} />
+            </button>
+          </>
         }
       />
       {imageMenu.menuElement}

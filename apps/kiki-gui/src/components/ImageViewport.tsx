@@ -187,40 +187,42 @@ export function ImageViewport({
 
   return (
     <>
-      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">{caption}</span>
+      <div className="@container flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-[6rem] flex-1 truncate font-mono text-[11px] text-ink-faint">{caption}</span>
         {detail !== '' ? (
-          <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-image-meta>{detail}</span>
+          <span className="hidden @[32rem]:inline shrink-0 font-mono text-[11px] text-ink-faint" data-image-meta>{detail}</span>
         ) : null}
-        <span role="group" aria-label={t('preview.zoomGroup')} className="flex shrink-0 items-center gap-1 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-          {(['fit', 'actual'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              aria-pressed={mode === option}
-              data-image-zoom={option}
-              onClick={() => { switchZoom(option === 'fit' ? 'fit' : 100); }}
-              className={`${SEGMENT_CLASS} ${
-                mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
-              }`}
-            >
-              {option === 'fit' ? t('preview.zoomFit') : t('preview.zoomActual')}
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <span role="group" aria-label={t('preview.zoomGroup')} className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+            {(['fit', 'actual'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={mode === option}
+                data-image-zoom={option}
+                onClick={() => { switchZoom(option === 'fit' ? 'fit' : 100); }}
+                className={`${SEGMENT_CLASS} ${
+                  mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
+                }`}
+              >
+                {option === 'fit' ? t('preview.zoomFit') : t('preview.zoomActual')}
+              </button>
+            ))}
+            <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={percent <= MIN_ZOOM} onClick={() => { zoomBy(-1); }}
+              className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              <Icon name="dash" size={12} />
             </button>
-          ))}
-          <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={percent <= MIN_ZOOM} onClick={() => { zoomBy(-1); }}
-            className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
-            <Icon name="dash" size={12} />
-          </button>
-          <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={1} value={percent} aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-image-zoom-slider
-            onChange={(event) => { switchZoom(Number(event.currentTarget.value)); }}
-            className="h-1 w-16 cursor-pointer accent-accent" />
-          <button type="button" aria-label={t('media.zoomIn')} title={t('media.zoomIn')} disabled={percent >= MAX_ZOOM} onClick={() => { zoomBy(1); }}
-            className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
-            <Icon name="plus" size={12} />
-          </button>
-          {mode === 'custom' ? <span data-image-zoom-percent className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint">{percent}%</span> : null}
-        </span>
-        {actions}
+            <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={1} value={percent} aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-image-zoom-slider
+              onChange={(event) => { switchZoom(Number(event.currentTarget.value)); }}
+              className="hidden @[26rem]:block h-1 w-14 cursor-pointer accent-accent" />
+            <button type="button" aria-label={t('media.zoomIn')} title={t('media.zoomIn')} disabled={percent >= MAX_ZOOM} onClick={() => { zoomBy(1); }}
+              className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              <Icon name="plus" size={12} />
+            </button>
+            {mode === 'custom' ? <span data-image-zoom-percent className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint">{percent}%</span> : null}
+          </span>
+          {actions}
+        </div>
       </div>
       <div
         ref={scrollerRef}

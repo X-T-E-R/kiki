@@ -1407,9 +1407,9 @@ describe('PreviewWorkspace media tabs', () => {
     await act(async () => { await Promise.resolve(); });
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/retry.wav"]')!;
     expect(panel.querySelector('audio[data-preview-audio]')).toBeNull();
-    expect(panel.querySelector('[data-preview-audio-retry]')).not.toBeNull();
+    expect(panel.querySelector('[data-preview-reload]')).not.toBeNull();
     await act(async () => {
-      panel.querySelector<HTMLButtonElement>('[data-preview-audio-retry]')!.click();
+      panel.querySelector<HTMLButtonElement>('[data-preview-reload]')!.click();
       await Promise.resolve();
     });
     expect(readHostFileBytes).toHaveBeenCalledTimes(2);
@@ -1594,7 +1594,7 @@ describe('PreviewWorkspace media tabs', () => {
     );
     await openFile(probe.container, '/work/bundles/release.zip');
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/bundles/release.zip"]')!;
-    expect(panel.textContent).toContain('No preview available for this file type.');
+    expect(panel.textContent).toContain('This kind of file cannot be previewed yet.');
     expect(panel.querySelector('[data-download-file]')?.textContent).toBe('Download');
     // Two reveal affordances: the caption-strip icon (tooltip/aria label) and
     // the text button beside the download.
@@ -2782,5 +2782,220 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     expect(sshProbe.container.querySelector('[data-edit-button]')).toBeNull();
     expect(sshProbe.container.querySelector('[data-save-button]')).toBeNull();
     expect(sshProbe.container.querySelector('[data-readonly-reason]')).toBeNull();
+  });
+
+  it('distinguishes 404, 403, 409, and remote-unreadable sentences while hiding download and @ on failed reads (#32)', async () => {
+    const codedError = (code: number, error: string, status: number) =>
+      Object.assign(new Error(error), { code, error, status });
+    const baseClient = connectionMock.defaultClient as Record<string, unknown>;
+    connectionMock.activeClient = {
+      ...baseClient,
+      previewHostFile: (path: string) => {
+        if (path === '/work/missing.ts') return Promise.reject(codedError(40409, 'FS_PATH_NOT_FOUND', 404));
+        if (path === '/work/secret.ts') return Promise.reject(codedError(40411, 'FS_PERMISSION_DENIED', 403));
+        if (path === '/work/subdir.ts') return Promise.reject(codedError(40906, 'FS_IS_DIRECTORY', 409));
+        if (path === '/work/remote-only.ts') return Promise.reject(codedError(40101, 'local_owner_required', 403));
+        return Promise.resolve({ text: 'ok', truncated: false, lossless: true });
+      },
+    };
+    hostMock.desktop = true;
+    localStorage.setItem('kiki.locale', 'zh');
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-32-err">
+        <OpenButton path="/work/missing.ts" />
+        <OpenButton path="/work/secret.ts" />
+        <OpenButton path="/work/subdir.ts" />
+        <OpenButton path="/work/remote-only.ts" />
+      </MediaPreviewProvider>,
+    );
+
+    const cases = [
+      { path: '/work/missing.ts', sentence: '这个文件不存在了。', state: 'missing' },
+      { path: '/work/secret.ts', sentence: '没有权限读取这个文件。', state: 'permission-denied' },
+      { path: '/work/subdir.ts', sentence: '这是一个文件夹。', state: 'folder' },
+      { path: '/work/remote-only.ts', sentence: '这个文件在运行 Kiki 的电脑上，这台设备读不到它。', state: 'remote-unreadable' },
+    ] as const;
+
+    for (const entry of cases) {
+      await openFile(probe.container, entry.path);
+      await settle();
+      const panel = probe.container.querySelector<HTMLElement>(`[data-preview-tabpanel="${entry.path}"]`)!;
+      expect(panel.querySelector(`[data-preview-read-state="${entry.state}"]`)?.textContent).toContain(entry.sentence);
+      expect(panel.querySelector('[data-download-file]')).toBeNull();
+      const tab = probe.container.querySelector<HTMLElement>(`[data-preview-tab="${entry.path}"]`)!;
+      expect(tab.querySelector('[data-mention-file]')).toBeNull();
+    }
+
+    const missingPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/missing.ts"]')!;
+    expect(missingPanel.textContent).toContain('/work/missing.ts');
+    expect(missingPanel.querySelector('[data-preview-reload]')).not.toBeNull();
+    expect(missingPanel.querySelector('[data-preview-close-missing]')).not.toBeNull();
+
+    const folderPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/subdir.ts"]')!;
+    expect(folderPanel.querySelector('[data-preview-read-state="folder"] [data-reveal-file]')?.textContent).toContain('在这台电脑上显示');
+
+    const remotePanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/remote-only.ts"]')!;
+    expect(remotePanel.querySelector('[data-copy-path]')?.textContent).toContain('复制路径');
+  });
+
+  it('shows 磁盘上的文件已更改。 with Reload when ETag changes on re-activation, and shows nothing on 304 (#32)', async () => {
+    let etag = '"etag-v1"';
+    let diskText = 'const v = 1;\n';
+    const baseClient = connectionMock.defaultClient as {
+      previewHostFile: (path: string) => Promise<{ text: string; truncated: boolean; lossless?: boolean; etag?: string; notModified?: boolean }>;
+      [key: string]: unknown;
+    };
+    connectionMock.activeClient = {
+      ...baseClient,
+      previewHostFile: (path: string, _maxBytes?: number, options?: { ifNoneMatch?: string }) => {
+        if (path === '/work/live.ts') {
+          if (options?.ifNoneMatch !== undefined && options.ifNoneMatch === etag) {
+            return Promise.resolve({ text: '', truncated: false, lossless: true, etag, notModified: true });
+          }
+          return Promise.resolve({ text: diskText, truncated: false, lossless: true, etag });
+        }
+        return baseClient.previewHostFile(path);
+      },
+    };
+    localStorage.setItem('kiki.locale', 'zh');
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-32-etag">
+        <OpenButton path="/work/live.ts" />
+        <OpenButton path="/work/docs/design.md" />
+      </MediaPreviewProvider>,
+    );
+
+    await openFile(probe.container, '/work/live.ts');
+    await settle();
+    const livePanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/live.ts"]')!;
+    expect(livePanel.querySelector('[data-changed-on-disk]')).toBeNull();
+    expect(livePanel.textContent).not.toContain('在桌面应用中打开即可编辑。');
+
+    // Switch away and back while ETag is unchanged -> 304, no changed-on-disk banner
+    await openFile(probe.container, '/work/docs/design.md');
+    await settle();
+    await openFile(probe.container, '/work/live.ts');
+    await settle();
+    expect(livePanel.querySelector('[data-changed-on-disk]')).toBeNull();
+
+    // Update ETag on disk, switch away and back -> shows 磁盘上的文件已更改。 without swapping editor text yet
+    etag = '"etag-v2"';
+    diskText = 'const v = 2;\n';
+    await openFile(probe.container, '/work/docs/design.md');
+    await settle();
+    await openFile(probe.container, '/work/live.ts');
+    await settle();
+    const changedBanner = livePanel.querySelector<HTMLElement>('[data-changed-on-disk]')!;
+    expect(changedBanner).not.toBeNull();
+    expect(changedBanner.textContent).toContain('磁盘上的文件已更改。');
+    expect(livePanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.value).toBe('const v = 1;\n');
+
+    // Clicking Reload swaps in the updated file and clears the banner
+    await act(async () => {
+      changedBanner.querySelector<HTMLButtonElement>('[data-changed-reload]')!.click();
+    });
+    await settle();
+    expect(livePanel.querySelector('[data-changed-on-disk]')).toBeNull();
+    expect(livePanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.value).toBe('const v = 2;\n');
+  });
+
+  it('routes truncated video decode errors to damaged rather than unsupported, opens .ipynb as text, and times out unembeddable web tabs (#32)', async () => {
+    FILES['/work/notebooks/demo.ipynb'] = '{"cells":[],"metadata":{},"nbformat":4}\n';
+    sessionMediaMock.bytesById['blobref:main:nb1'] = {
+      bytes: new TextEncoder().encode('{"cells":[{"cell_type":"code"}],"nbformat":4}\n'),
+      mime: 'application/x-ipynb+json',
+      name: 'analysis.ipynb',
+    };
+    localStorage.setItem('kiki.locale', 'zh');
+
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="sess-32-media">
+        <OpenButton path="/work/clips/intro.mp4" />
+        <OpenButton path="/work/notebooks/demo.ipynb" />
+        <AttachmentHarness
+          item={{
+            kind: 'file',
+            fileId: 'blobref:main:nb1',
+            sourceId: '9'.repeat(64),
+            name: 'analysis.ipynb',
+            mime: 'application/x-ipynb+json',
+          }}
+        />
+      </MediaPreviewProvider>,
+    );
+
+    // Truncated video -> damaged sentence, not unsupported
+    await openFile(probe.container, '/work/clips/intro.mp4');
+    await settle();
+    const videoPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/clips/intro.mp4"]')!;
+    const video = videoPanel.querySelector<HTMLVideoElement>('video[data-preview-video]')!;
+    await act(async () => {
+      video.dispatchEvent(new Event('error'));
+    });
+    await settle();
+    expect(videoPanel.querySelector('[data-preview-read-state="corrupted"]')?.textContent).toContain('这个文件损坏了，或者不是它声明的类型。');
+    expect(videoPanel.textContent).not.toContain('这种文件还不能预览。');
+
+    // .ipynb in file tab -> text editor
+    await openFile(probe.container, '/work/notebooks/demo.ipynb');
+    await settle();
+    const nbFilePanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/notebooks/demo.ipynb"]')!;
+    expect(nbFilePanel.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value).toContain('"nbformat":4');
+
+    // .ipynb in attachment tab -> text editor
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-attachment]')!.click();
+    });
+    await settle();
+    expect(probe.container.querySelector<HTMLTextAreaElement>('[data-attachment-preview] [data-testid="editor"]')?.value).toContain('"cell_type":"code"');
+
+    // Web tab failure fallback when no load arrives within timeout
+    vi.useFakeTimers();
+    const webProbe = makeRoot();
+    await act(async () => {
+      webProbe.root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <PreviewWorkspace
+              tabs={[{ kind: 'web', url: 'https://blocked.example.com', title: 'Blocked' }]}
+              active="web:https://blocked.example.com"
+              dirtyPaths={new Set()}
+              width={420}
+              onActivate={() => {}}
+              onClose={() => {}}
+              onCloseOthers={() => {}}
+              onCloseAll={() => {}}
+              onMove={() => {}}
+              onCollapse={() => {}}
+              onWidthChange={() => {}}
+              onOpenImage={() => {}}
+              reportDirty={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(350);
+    });
+    expect(webProbe.container.querySelector('[data-web-loading] [data-preview-reading]')?.textContent).toContain('正在读取…');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    const webFailed = webProbe.container.querySelector<HTMLElement>('[data-web-embed-failed]')!;
+    expect(webFailed).not.toBeNull();
+    expect(webFailed.textContent).toContain('没能打开这个网页，可以在浏览器里打开');
+    expect(webFailed.querySelector('[data-web-open-failed]')).not.toBeNull();
+    vi.useRealTimers();
+    delete FILES['/work/notebooks/demo.ipynb'];
+    delete sessionMediaMock.bytesById['blobref:main:nb1'];
   });
 });

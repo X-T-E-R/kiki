@@ -13,7 +13,7 @@ import { HostFileEditorController, type HostFileReadResult } from './hostFileEdi
 function makeController(overrides?: {
   path?: string;
   disk?: string;
-  readFile?: (path: string) => Promise<string | HostFileReadResult>;
+  readFile?: (path: string, options?: { ifNoneMatch?: string }) => Promise<string | HostFileReadResult>;
   writeFile?: (path: string, text: string) => Promise<void>;
   local?: boolean;
   knownTextType?: boolean;
@@ -361,6 +361,53 @@ describe('HostFileEditorController', () => {
     await controller.reload();
     expect(controller.getState().draft).toBe('v2');
     expect(controller.getState().etag).toBe('"etag-2"');
+    controller.dispose();
+  });
+
+  it('checkDiskChange() sends If-None-Match, ignores 304, marks changedOnDisk when clean, and marks conflict when dirty (#32)', async () => {
+    let etag = '"v1"';
+    let text = 'initial';
+    const seenIfNoneMatch: (string | undefined)[] = [];
+    const { controller } = makeController({
+      readFile: async (_path, options) => {
+        seenIfNoneMatch.push(options?.ifNoneMatch);
+        if (options?.ifNoneMatch !== undefined && options.ifNoneMatch === etag) {
+          return { text: '', truncated: false, lossless: true, etag, notModified: true };
+        }
+        return { text, truncated: false, lossless: true, etag };
+      },
+    });
+    await controller.load();
+    expect(seenIfNoneMatch).toEqual([undefined]);
+
+    // 304 Not Modified -> nothing changes
+    await controller.checkDiskChange();
+    expect(seenIfNoneMatch).toEqual([undefined, '"v1"']);
+    expect(controller.getState().changedOnDisk).toBe(false);
+    expect(controller.getState().conflict).toBe(false);
+
+    // ETag changes while clean -> changedOnDisk without swapping draft
+    etag = '"v2"';
+    text = 'updated externally';
+    await controller.checkDiskChange();
+    expect(controller.getState().changedOnDisk).toBe(true);
+    expect(controller.getState().draft).toBe('initial');
+
+    // Reload swaps in the new text and clears changedOnDisk
+    await controller.reload();
+    expect(controller.getState().changedOnDisk).toBe(false);
+    expect(controller.getState().draft).toBe('updated externally');
+    expect(controller.getState().etag).toBe('"v2"');
+
+    // ETag changes while dirty -> enters conflict choice instead of changedOnDisk
+    controller.beginEdit();
+    controller.setDraft('my local edit');
+    etag = '"v3"';
+    text = 'third external edit';
+    await controller.checkDiskChange();
+    expect(controller.getState().conflict).toBe(true);
+    expect(controller.getState().changedOnDisk).toBe(false);
+    expect(controller.getState().draft).toBe('my local edit');
     controller.dispose();
   });
 

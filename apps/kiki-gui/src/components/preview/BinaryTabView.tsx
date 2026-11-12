@@ -6,15 +6,22 @@ import { basenameOf } from '@kiki/session-core/composer/media';
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { useOptionalConnection } from '#/state/connection';
+import type { PreviewReadFailureReason } from '#/state/previewResource';
 import { Icon } from '../icons';
 import {
-  BODY_ACTION_CLASS,
   CAPTION_ACTION_CLASS,
   downloadHostFile,
+  PreviewReadFailureView,
   useFileOpeners,
 } from './shared';
 
-export function BinaryTabView({ path }: { readonly path: string }) {
+export function BinaryTabView({
+  path,
+  reason = 'unsupported',
+}: {
+  readonly path: string;
+  readonly reason?: Extract<PreviewReadFailureReason, 'unsupported' | 'corrupted'>;
+}) {
   const host = useHost();
   const { t } = useI18n();
   const connection = useOptionalConnection();
@@ -39,43 +46,14 @@ export function BinaryTabView({ path }: { readonly path: string }) {
           </button>
         ) : null}
       </div>
-      <div className="flex flex-1 flex-col items-start gap-3 p-4">
-        <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            data-download-file
-            onClick={() => {
-              const client = connection?.client;
-              if (client !== undefined) void downloadHostFile(host, client, path, name);
-            }}
-            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
-          >
-            {t('media.download')}
-          </button>
-          {openers?.open !== undefined ? (
-            <button
-              type="button"
-              title={t('file.openDefaultApp')}
-              data-open-default-app
-              onClick={() => { openers.open!(path); }}
-              className={BODY_ACTION_CLASS}
-            >
-              {t('file.open')}
-            </button>
-          ) : null}
-          {openers?.reveal !== undefined ? (
-            <button
-              type="button"
-              data-reveal-file
-              onClick={() => { openers.reveal!(path); }}
-              className={BODY_ACTION_CLASS}
-            >
-              {t('file.showInFolder')}
-            </button>
-          ) : null}
-        </div>
-      </div>
+      <PreviewReadFailureView
+        reason={reason}
+        path={path}
+        onDownload={() => {
+          const client = connection?.client;
+          if (client !== undefined) void downloadHostFile(host, client, path, name, t);
+        }}
+      />
     </>
   );
 }

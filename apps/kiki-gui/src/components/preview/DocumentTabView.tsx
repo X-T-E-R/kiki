@@ -17,11 +17,12 @@ import { basenameOf } from '@kiki/session-core/composer/media';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { Icon } from '../icons';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { documentSourceFor, sheetsOf, useDocumentPreview, type DocumentPreviewController } from './documentPreview';
 import { PreviewAssetImage } from './PreviewAssetImage';
 import { RendererInstall } from './RendererInstall';
 import { PdfPageView } from './PdfPageView';
+import { HEADER_ACTION_CLASS, INK_BUTTON_CLASS } from './shared';
 
 export type DocumentTabSource =
   | { readonly kind: 'workspace'; readonly path: string; readonly runtimeId?: string }
@@ -53,6 +54,7 @@ export interface DocumentTabViewProps {
   readonly headerSubtitle?: ReactNode;
   readonly headerActions?: ReactNode;
   readonly onReadStateChange?: (status: 'loading' | 'ready' | 'failed') => void;
+  readonly externalReloadNonce?: number;
   /** False while the tab is hidden. An in-flight render is cancelled; a finished page stays. */
   readonly active?: boolean;
 }
@@ -140,6 +142,7 @@ export function DocumentTabView({
   headerSubtitle,
   headerActions,
   onReadStateChange,
+  externalReloadNonce,
   active = true,
 }: DocumentTabViewProps) {
   const { t, locale } = useI18n();
@@ -153,7 +156,10 @@ export function DocumentTabView({
       : documentSourceFor({ fileId: source.fileId, name: source.name, mediaType: source.mediaType })
   ), [source]);
   const controller = useDocumentPreview(client, sessionId, documentSource, {}, active);
-  const { state } = controller;
+  const { state, retry } = controller;
+  useEffect(() => {
+    if (externalReloadNonce !== undefined && externalReloadNonce > 0) retry();
+  }, [externalReloadNonce, retry]);
   useEffect(() => {
     onReadStateChange?.(state.kind);
   }, [state.kind, onReadStateChange]);
@@ -175,6 +181,18 @@ export function DocumentTabView({
         <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-soft" data-preview-fidelity="source">
           {t('preview.fidelitySource')}
         </span>
+      ) : null}
+      {source.kind === 'workspace' ? (
+        <button
+          type="button"
+          title={t('preview.reloadFile')}
+          aria-label={t('preview.reloadFile')}
+          data-header-reload
+          onClick={retry}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
       ) : null}
       {state.kind === 'ready' && onDownload !== undefined ? (
         <button
@@ -343,7 +361,7 @@ export function DocumentTabView({
         <p className="text-[11.5px] leading-[1.5] text-ink-faint">{t('preview.legacyFormats')}</p>
         <div className="flex flex-wrap items-center gap-2">
           {onDownload !== undefined ? (
-            <button type="button" onClick={onDownload} className={PRIMARY_BUTTON} data-download-original>{t('media.download')}</button>
+            <button type="button" onClick={onDownload} className={INK_BUTTON_CLASS} data-download-original>{t('media.download')}</button>
           ) : null}
           {onOpenLocally !== undefined ? (
             <button type="button" onClick={onOpenLocally} className={SECONDARY_BUTTON} data-open-locally>{t('file.openDefaultApp')}</button>

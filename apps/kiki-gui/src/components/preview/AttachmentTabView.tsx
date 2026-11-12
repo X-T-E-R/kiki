@@ -31,10 +31,13 @@ import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
 import { DocumentTabView } from './DocumentTabView';
 import {
+  BODY_ACTION_CLASS,
   buildAttachmentTabResource,
   CAPTION_ACTION_CLASS,
   classifyHtmlPreviewError,
+  DelayedReadingNotice,
   HEADER_ACTION_CLASS,
+  INK_BUTTON_CLASS,
   isLocalKikiComputer,
   mentionTokenFor,
   relativeToCwd,
@@ -47,8 +50,8 @@ import {
 
 function isAttachmentTextPreview(mime: string, name: string): boolean {
   if (mime.startsWith('text/')) return true;
-  if (mime === 'application/json' || mime === 'application/xml' || mime.endsWith('+json')) return true;
-  return /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv|xml|html?|xhtml|css|jsx?|tsx?|py|rs|go|java|c|cc|cpp|h|hpp|sh|zsh|fish|ps1)$/iu.test(name);
+  if (mime === 'application/json' || mime === 'application/x-ipynb+json' || mime === 'application/xml' || mime.endsWith('+json')) return true;
+  return /\.(?:md|markdown|txt|log|json|jsonl|ipynb|ya?ml|toml|ini|csv|tsv|xml|html?|xhtml|css|jsx?|tsx?|py|rs|go|java|c|cc|cpp|h|hpp|sh|zsh|fish|ps1)$/iu.test(name);
 }
 
 function isAttachmentHtml(mime: string, name: string): boolean {
@@ -511,16 +514,33 @@ export function PreviewAttachmentView({
                 </div>
               ) : null
             ) : !viewable ? (
-              <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported>
-                <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
-                <button
-                  type="button"
-                  data-download-file
-                  onClick={() => { void downloadAttachment(); }}
-                  className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
-                >
-                  {t('media.download')}
-                </button>
+              <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported data-preview-read-state="unsupported">
+                <p className="text-[13px] text-ink-soft">{t('preview.readUnsupported')}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    data-download-file
+                    onClick={() => { void downloadAttachment(); }}
+                    className={INK_BUTTON_CLASS}
+                  >
+                    {t('media.download')}
+                  </button>
+                  {actionIds.has('open-with-default-app') && trustedPath !== undefined && host.openPath !== undefined ? (
+                    <button
+                      type="button"
+                      data-open-default-app
+                      onClick={() => {
+                        runToastAction(
+                          isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+                          () => host.openPath!(trustedPath),
+                        );
+                      }}
+                      className={BODY_ACTION_CLASS}
+                    >
+                      {isCopy ? t('preview.openOriginalFile') : t('file.open')}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : playback.status === 'ready' ? (
               <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
@@ -535,10 +555,7 @@ export function PreviewAttachmentView({
                 <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
               </div>
             ) : load.status === 'loading' ? (
-              <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
-                <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-                {t('preview.loading')}
-              </p>
+              <DelayedReadingNotice active />
             ) : load.status === 'failed' ? (
               <div className="flex min-h-0 flex-1 items-center justify-center p-4" data-preview-attachment-error>
                 <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
@@ -599,16 +616,33 @@ export function PreviewAttachmentView({
                 );
               })()
             ) : (
-              <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported>
-                <p className="text-[12.5px] text-ink-soft">{t('preview.unsupported')}</p>
-                <button
-                  type="button"
-                  data-download-file
-                  onClick={() => { void downloadAttachment(); }}
-                  className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
-                >
-                  {t('media.download')}
-                </button>
+              <div className="flex flex-1 flex-col items-start gap-3 p-4" data-preview-unsupported data-preview-read-state="unsupported">
+                <p className="text-[13px] text-ink-soft">{t('preview.readUnsupported')}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    data-download-file
+                    onClick={() => { void downloadAttachment(); }}
+                    className={INK_BUTTON_CLASS}
+                  >
+                    {t('media.download')}
+                  </button>
+                  {actionIds.has('open-with-default-app') && trustedPath !== undefined && host.openPath !== undefined ? (
+                    <button
+                      type="button"
+                      data-open-default-app
+                      onClick={() => {
+                        runToastAction(
+                          isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
+                          () => host.openPath!(trustedPath),
+                        );
+                      }}
+                      className={BODY_ACTION_CLASS}
+                    >
+                      {isCopy ? t('preview.openOriginalFile') : t('file.open')}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             )}
           </div>

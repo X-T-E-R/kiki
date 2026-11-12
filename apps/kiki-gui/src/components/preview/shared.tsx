@@ -1,25 +1,31 @@
 /**
- * Shared styling tokens, path/mention formatters, host openers, scroll
- * restoration, and HTML sandbox helpers for the preview renderers.
+ * Shared styling tokens, path/mention formatters, host openers, read-state
+ * views, scroll restoration, and HTML sandbox helpers for the preview renderers.
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import type { SessionViewState } from '@kiki/session-core/session';
+import { errorToText } from '@kiki/session-core/util';
 import { useHost, type HostAdapter } from '#/host';
 import { useI18n } from '#/i18n';
+import { copyTextToClipboard } from '#/lib/clipboard';
 import type { KikiClient } from '#/lib/client';
 import { usePhoneMode } from '#/lib/layoutHooks';
-import { runToastAction } from '#/lib/toasts';
+import { pushToast, runToastAction } from '#/lib/toasts';
 import { useNavVisitId } from '#/lib/useNavSnapshot';
 import { useOptionalConnection } from '#/state/connection';
 import {
   classifyResource,
   isKikiComputer,
+  normalizeHostFilePath,
   type PreviewEnvironment,
+  type PreviewReadFailureReason,
   type PreviewResource,
 } from '#/state/previewResource';
+import { imageDownloadFailureText, saveMediaToDisk } from '../imageActions';
 import { attachmentName } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 
@@ -168,25 +174,57 @@ export async function downloadHostFile(
   client: KikiClient,
   path: string,
   name: string,
+  translateError?: Parameters<typeof imageDownloadFailureText>[1],
 ): Promise<void> {
-  const { bytes, mime } = await client.readHostFileBytes(path);
-  const blob = new Blob([bytes as BlobPart], { type: mime });
-  if (host.saveBlob !== undefined) {
+  if (typeof (client as { downloadHostFile?: unknown }).downloadHostFile === 'function') {
     try {
-      await host.saveBlob(blob, name);
+      await saveMediaToDisk(
+        { path },
+        name,
+        host,
+        client as Parameters<typeof saveMediaToDisk>[3],
+        undefined,
+      );
       return;
-    } catch {
-      // Fall through to the browser download.
+    } catch (error) {
+      if (translateError !== undefined) {
+        pushToast({
+          tone: 'error',
+          text: imageDownloadFailureText(error, translateError),
+          detail: errorToText(error),
+        });
+      }
+      return;
     }
   }
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  try {
+    const { bytes, mime } = await client.readHostFileBytes(path);
+    const blob = new Blob([bytes as BlobPart], { type: mime });
+    if (host.saveBlob !== undefined) {
+      try {
+        await host.saveBlob(blob, name);
+        return;
+      } catch {
+        // Fall through to the browser download.
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    if (translateError !== undefined) {
+      pushToast({
+        tone: 'error',
+        text: imageDownloadFailureText(error, translateError),
+        detail: errorToText(error),
+      });
+    }
+  }
 }
 
 /**
@@ -234,9 +272,13 @@ export const HEADER_ACTION_CLASS =
 export const CAPTION_ACTION_CLASS =
   'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
-// Secondary body button beside the accent download (binary tab body).
+// Secondary body button beside the neutral ink download.
 export const BODY_ACTION_CLASS =
-  'rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+
+// Neutral ink primary button (used for unsupported/damaged download instead of vermilion accent).
+export const INK_BUTTON_CLASS =
+  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-medium text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 export function TabPathCaption({ path }: { readonly path: string }) {
   return (
@@ -244,6 +286,221 @@ export function TabPathCaption({ path }: { readonly path: string }) {
       {path}
     </p>
   );
+}
+
+/** Shows `正在读取…` / `Reading…` only after 300 ms so fast reads never flash. */
+export function DelayedReadingNotice({
+  active,
+  delayMs = 300,
+}: {
+  readonly active: boolean;
+  readonly delayMs?: number;
+}) {
+  const { t } = useI18n();
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setShown(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setShown(true);
+    }, delayMs);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [active, delayMs]);
+  if (!active || !shown) return null;
+  return (
+    <p className="flex items-center gap-2 p-4 text-[12px] text-ink-faint" data-preview-reading>
+      <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+      {t('preview.reading')}
+    </p>
+  );
+}
+
+/** Plain-language read failure view with the exact recovery offers from #32. */
+export function PreviewReadFailureView({
+  reason,
+  path,
+  onReload,
+  onCloseTab,
+  onDownload,
+}: {
+  readonly reason: PreviewReadFailureReason;
+  readonly path?: string;
+  readonly onReload?: () => void;
+  readonly onCloseTab?: () => void;
+  readonly onDownload?: () => void;
+}) {
+  const { t } = useI18n();
+  const openers = useFileOpeners();
+  const message =
+    reason === 'missing'
+      ? t('preview.readMissing')
+      : reason === 'permission-denied'
+        ? t('preview.readPermissionDenied')
+        : reason === 'folder'
+          ? t('preview.readIsFolder')
+          : reason === 'remote-unreadable'
+            ? t('preview.readRemoteUnreadable')
+            : reason === 'unsupported'
+              ? t('preview.readUnsupported')
+              : reason === 'corrupted'
+                ? t('preview.readCannotDecode')
+                : t('preview.failed');
+
+  return (
+    <div
+      className="flex flex-1 flex-col items-start gap-3 p-4"
+      data-preview-read-state={reason}
+      data-preview-unsupported={reason === 'unsupported' ? '' : undefined}
+    >
+      <div className="flex flex-col gap-1">
+        <p className="text-[13px] text-ink-soft" role="alert">
+          {message}
+        </p>
+        {reason === 'missing' && path !== undefined ? (
+          <p className="break-all font-mono text-[11px] text-ink-faint">{path}</p>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {(reason === 'missing' || reason === 'permission-denied' || reason === 'error') && onReload !== undefined ? (
+          <button
+            type="button"
+            data-preview-reload
+            onClick={onReload}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('preview.reloadFile')}
+          </button>
+        ) : null}
+        {reason === 'missing' && onCloseTab !== undefined ? (
+          <button
+            type="button"
+            data-preview-close-missing
+            onClick={onCloseTab}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('preview.closeTab')}
+          </button>
+        ) : null}
+        {reason === 'folder' && path !== undefined && openers?.reveal !== undefined ? (
+          <button
+            type="button"
+            data-reveal-file
+            onClick={() => { openers.reveal!(path); }}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('preview.showOnThisComputer')}
+          </button>
+        ) : null}
+        {reason === 'remote-unreadable' && path !== undefined ? (
+          <button
+            type="button"
+            data-copy-path
+            onClick={() => { void copyTextToClipboard(path); }}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('file.copyPath')}
+          </button>
+        ) : null}
+        {(reason === 'unsupported' || reason === 'corrupted') && onDownload !== undefined ? (
+          <button
+            type="button"
+            data-download-file
+            onClick={onDownload}
+            className={INK_BUTTON_CLASS}
+          >
+            {t('media.download')}
+          </button>
+        ) : null}
+        {reason === 'unsupported' && path !== undefined && openers?.open !== undefined ? (
+          <button
+            type="button"
+            title={t('file.openDefaultApp')}
+            data-open-default-app
+            onClick={() => { openers.open!(path); }}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('file.open')}
+          </button>
+        ) : null}
+        {reason === 'unsupported' && path !== undefined && openers?.reveal !== undefined ? (
+          <button
+            type="button"
+            data-reveal-file
+            onClick={() => { openers.reveal!(path); }}
+            className={BODY_ACTION_CLASS}
+          >
+            {t('file.showInFolder')}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** Notice strip shown when a clean live file's ETag changed on disk. */
+export function ChangedOnDiskStrip({ onReload }: { readonly onReload: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div
+      data-changed-on-disk
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink"
+    >
+      <span className="min-w-0 flex-1">{t('preview.readChangedOnDisk')}</span>
+      <button
+        type="button"
+        data-changed-reload
+        onClick={onReload}
+        className="rounded-full border border-amber-rule/60 px-2.5 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
+      >
+        {t('preview.reloadFile')}
+      </button>
+    </div>
+  );
+}
+
+function canonicalComparablePath(path: string, cwd: string | undefined): string {
+  const normalized = normalizeHostFilePath(path, cwd);
+  return /^[A-Za-z]:\//u.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
+/**
+ * Counts completed file-writing tool blocks per canonical host path so open
+ * tabs can run a bounded conditional ETag check when an agent finishes writing
+ * their file.
+ */
+export function computeFileWriteCounts(
+  blocks: SessionViewState['blocks'] | undefined,
+  cwd: string | undefined,
+): Readonly<Record<string, number>> {
+  if (blocks === undefined || blocks.length === 0) return {};
+  const counts: Record<string, number> = {};
+  for (const block of blocks) {
+    if (block.kind !== 'tool' || block.status !== 'done' || block.isError === true) continue;
+    const display = block.display;
+    if (display === undefined) continue;
+    const isFileWrite =
+      display.kind === 'diff' ||
+      (display.kind === 'file_io' && (display.operation === 'edit' || display.operation === 'write'));
+    if (!isFileWrite) continue;
+    const key = canonicalComparablePath(display.path, cwd);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export function fileWriteEpochFor(
+  counts: Readonly<Record<string, number>> | undefined,
+  path: string,
+  cwd: string | undefined,
+): number {
+  if (counts === undefined) return 0;
+  return counts[canonicalComparablePath(path, cwd)] ?? 0;
 }
 
 /** The scroller inside a preview tab: the editor's own box, or a rendered page. */

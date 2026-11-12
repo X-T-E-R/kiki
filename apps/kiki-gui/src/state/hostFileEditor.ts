@@ -50,6 +50,8 @@ export interface HostFileEditorSnapshot {
   readonly saving: boolean;
   /** A save found the on-disk content diverged from the baseline. */
   readonly conflict: boolean;
+  /** Conditional ETag check saw a new ETag while no local edits are pending. */
+  readonly changedOnDisk: boolean;
   /** Loaded file exceeded the edit cap — view-only, never autosaves. */
   readonly oversized: boolean;
   /** Whether the loaded bytes decoded losslessly as UTF-8 text. */
@@ -133,6 +135,7 @@ export class HostFileEditorController {
     dirty: false,
     saving: false,
     conflict: false,
+    changedOnDisk: false,
     oversized: false,
     lossless: true,
     etag: undefined,
@@ -194,6 +197,7 @@ export class HostFileEditorController {
         editing: nextCanStayEditing,
         dirty: false,
         conflict: false,
+        changedOnDisk: false,
         oversized,
         lossless,
         etag,
@@ -213,8 +217,38 @@ export class HostFileEditorController {
   /** Re-read the file from disk, clearing any conflict or error notice. */
   async reload(): Promise<void> {
     this.clearAutosave();
-    this.patch({ conflict: false });
+    this.patch({ conflict: false, changedOnDisk: false });
     await this.load();
+  }
+
+  /**
+   * Conditional ETag check on bounded triggers (tab activated, window focus, or
+   * a file-writing tool finishing on this path). On 304 nothing changes; on a
+   * new ETag with no local edits sets `changedOnDisk` (preserving the visible
+   * text until the user presses Reload); with local edits sets `conflict`.
+   */
+  async checkDiskChange(): Promise<void> {
+    const snap = this.snapshot;
+    if (this.disposed || snap.status !== 'ready' || snap.saving || snap.etag === undefined) return;
+    const baselineEtag = snap.etag;
+    const baselineText = snap.savedText;
+    try {
+      const probed = await this.options.readFile(this.options.path, { ifNoneMatch: baselineEtag });
+      if (this.disposed || this.snapshot.status !== 'ready' || this.snapshot.etag !== baselineEtag) return;
+      if (typeof probed === 'string') {
+        if (probed === baselineText) return;
+      } else {
+        if (probed.notModified === true || probed.etag === baselineEtag) return;
+        if (probed.etag === undefined && probed.text === baselineText && !probed.truncated) return;
+      }
+      if (this.snapshot.dirty) {
+        this.patch({ conflict: true, changedOnDisk: false });
+      } else {
+        this.patch({ changedOnDisk: true });
+      }
+    } catch {
+      // Transient probe failures leave the open buffer untouched; explicit Reload surfaces read errors.
+    }
   }
 
   /** Enter edit mode explicitly. Succeeds only when the loaded file is safely editable. */

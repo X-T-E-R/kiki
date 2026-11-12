@@ -2291,8 +2291,8 @@ export class KikiClient {
     return result;
   }
 
-  /** Binary variant of readHostFile, retaining the server MIME. */
-  readHostFileBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
+  /** Binary variant of readHostFile, retaining the server MIME and ETag. */
+  readHostFileBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<import('@kiki/klient').HttpRestBinaryFile> {
     return this.run(this.rest.filesystem.readHostFileBytes(path, { ...this.readingOptions(), ...options }));
   }
 

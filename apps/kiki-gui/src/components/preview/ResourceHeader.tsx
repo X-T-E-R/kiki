@@ -13,7 +13,10 @@ import {
   resourceMutability,
   type PreviewReadState,
 } from '#/state/previewResource';
-import type { PreviewTab as PreviewTabModel } from '#/state/previewWorkspace';
+import {
+  previewTabKey,
+  type PreviewTab as PreviewTabModel,
+} from '#/state/previewWorkspace';
 import type { AgentWorkspaceNavigation } from '../agent-workspace/AgentWorkspace';
 import { Icon } from '../icons';
 import { saveMediaToDisk } from '../imageActions';
@@ -37,6 +40,7 @@ export function TabContextMenu({
   readState,
   workspaceNavigation,
   onOpenCurrentFile,
+  onReloadTab,
   onCloseMenu,
   onCloseTab,
   onCloseOthers,
@@ -48,6 +52,7 @@ export function TabContextMenu({
   readonly readState: PreviewReadState | undefined;
   readonly workspaceNavigation: AgentWorkspaceNavigation | undefined;
   readonly onOpenCurrentFile: (path: string) => void;
+  readonly onReloadTab?: (key: string) => void;
   readonly onCloseMenu: () => void;
   readonly onCloseTab: () => void;
   readonly onCloseOthers: () => void;
@@ -103,7 +108,7 @@ export function TabContextMenu({
             key: 'download',
             label: t('media.download'),
             run: () => {
-              if (client !== undefined) return downloadHostFile(host, client, filePath, basenameOf(filePath));
+              if (client !== undefined) return downloadHostFile(host, client, filePath, basenameOf(filePath), t);
             },
           });
         } else {
@@ -159,6 +164,12 @@ export function TabContextMenu({
           label: isCopy ? t('preview.openOriginalFile') : t('file.openDefaultApp'),
           run: () => host.openPath!(trustedPath),
         });
+      } else if (action.id === 'reload' && onReloadTab !== undefined) {
+        actionEntries.push({
+          key: 'reload',
+          label: t('preview.reloadFile'),
+          run: () => { onReloadTab(previewTabKey(tab)); },
+        });
       }
     }
     if (actionEntries.length > 0) {
@@ -167,6 +178,9 @@ export function TabContextMenu({
   } else if (tab.kind === 'web') {
     entries.push(
       { separator: true },
+      ...(onReloadTab === undefined
+        ? []
+        : [{ key: 'reload', label: t('preview.reloadFile'), run: () => { onReloadTab(previewTabKey(tab)); } }]),
       { key: 'copy-url', label: t('preview.copyUrl'), run: () => copyTextToClipboard(tab.url) },
       { key: 'open-browser', label: t('message.openInBrowser'), run: () => { void openExternalUrl(host, tab.url, t('common.popupBlocked')); } },
     );
@@ -191,40 +205,59 @@ export function TabContextMenu({
 }
 
 /**
- * The header action trio: the download anchor (omitted when the read failed)
- * plus, where desktop openers exist, "open with default app" and "reveal in
- * file manager" sitting beside it.
+ * The header action trio: optional Reload, the download anchor (omitted when
+ * the read failed) plus, where desktop openers apply, "open with default app"
+ * and "reveal in file manager" sitting beside it.
  */
 export function HeaderFileActions({
   path,
   name,
   canDownload = true,
+  readFailed = false,
+  failureReason,
+  onReload,
 }: {
   readonly path: string;
   readonly name: string;
   readonly canDownload?: boolean;
+  readonly readFailed?: boolean;
+  readonly failureReason?: PreviewReadState['failureReason'];
+  readonly onReload?: () => void;
 }) {
   const host = useHost();
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const openers = useFileOpeners();
+  const showOpeners = !readFailed || failureReason === 'folder' || failureReason === 'unsupported';
   return (
     <>
-      {canDownload ? (
+      {onReload !== undefined ? (
+        <button
+          type="button"
+          title={t('preview.reloadFile')}
+          aria-label={t('preview.reloadFile')}
+          data-header-reload
+          onClick={onReload}
+          className={HEADER_ACTION_CLASS}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+      ) : null}
+      {canDownload && !readFailed ? (
         <button
           type="button"
           title={t('media.download')}
           aria-label={t('media.download')}
           data-download-file
           onClick={() => {
-            if (client !== undefined) void downloadHostFile(host, client, path, name);
+            if (client !== undefined) void downloadHostFile(host, client, path, name, t);
           }}
           className={HEADER_ACTION_CLASS}
         >
           <Icon name="arrowDown" size={12} />
         </button>
       ) : null}
-      {openers?.open !== undefined ? (
+      {showOpeners && failureReason !== 'folder' && openers?.open !== undefined ? (
         <button
           type="button"
           title={t('file.openDefaultApp')}
@@ -235,7 +268,7 @@ export function HeaderFileActions({
           {t('file.open')}
         </button>
       ) : null}
-      {openers?.reveal !== undefined ? (
+      {showOpeners && openers?.reveal !== undefined ? (
         <button
           type="button"
           title={t('file.showInFolder')}

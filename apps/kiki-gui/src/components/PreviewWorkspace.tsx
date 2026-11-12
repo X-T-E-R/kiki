@@ -56,7 +56,9 @@ import { AudioTabView, VideoTabView } from './preview/MediaTabView';
 import { TabContextMenu } from './preview/ResourceHeader';
 import {
   clampPreviewWidth,
+  computeFileWriteCounts,
   downloadHostFile,
+  fileWriteEpochFor,
   MAX_PREVIEW_WIDTH,
   relativeToCwd,
   useFileOpeners,
@@ -178,6 +180,14 @@ export function PreviewWorkspace({
   if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
 
   const [tabReadStates, setTabReadStates] = useState<Readonly<Record<string, PreviewReadState>>>({});
+  const [reloadNonces, setReloadNonces] = useState<Readonly<Record<string, number>>>({});
+  const bumpTabReload = useCallback((key: string) => {
+    setReloadNonces((previous) => ({ ...previous, [key]: (previous[key] ?? 0) + 1 }));
+  }, []);
+  const fileWriteCounts = useMemo(
+    () => computeFileWriteCounts(sessionViewState?.blocks, cwd),
+    [sessionViewState?.blocks, cwd],
+  );
   const reportTabReadState = useCallback((key: string, state: PreviewReadState) => {
     setTabReadStates((previous) => {
       const current = previous[key];
@@ -399,6 +409,7 @@ export function PreviewWorkspace({
               url={tab.url}
               title={tab.title}
               visible={isTabActive && !hidden}
+              externalReloadNonce={reloadNonces[key]}
             />
           );
         }
@@ -411,6 +422,9 @@ export function PreviewWorkspace({
             workspaceRoot={cwd}
             visible={isTabActive && !hidden}
             navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
+            fileWriteEpoch={fileWriteEpochFor(fileWriteCounts, tab.path, cwd)}
+            externalReloadNonce={reloadNonces[key]}
+            onCloseTab={() => { onClose(key); }}
             onOpenImage={onOpenImage}
             reportDirty={reportDirty}
             onReadStateChange={(state) => { reportTabReadState(key, state); }}
@@ -428,6 +442,7 @@ export function PreviewWorkspace({
           readState={tabReadStates[previewTabKey(menu.tab)]}
           workspaceNavigation={workspaceNavigation}
           onOpenCurrentFile={openLiveFile}
+          onReloadTab={bumpTabReload}
           onCloseMenu={() => { setMenu(null); }}
           onCloseTab={() => { onClose(previewTabKey(menu.tab)); }}
           onCloseOthers={() => { onCloseOthers(previewTabKey(menu.tab)); }}
@@ -533,6 +548,9 @@ function PreviewTabView({
   workspaceRoot,
   visible,
   navigation,
+  fileWriteEpoch = 0,
+  externalReloadNonce,
+  onCloseTab,
   onOpenImage,
   reportDirty,
   onReadStateChange,
@@ -546,6 +564,9 @@ function PreviewTabView({
   readonly workspaceRoot?: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
+  readonly fileWriteEpoch?: number;
+  readonly externalReloadNonce?: number;
+  readonly onCloseTab?: () => void;
   readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
@@ -558,6 +579,7 @@ function PreviewTabView({
   const filePath = resolveHostPath(path, workspaceRoot);
   const kind = previewKindOf(filePath);
   const host = useHost();
+  const { t } = useI18n();
   const connection = useOptionalConnection();
   const openers = useFileOpeners();
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
@@ -570,17 +592,37 @@ function PreviewTabView({
       data-preview-tabpanel={path}
     >
       {kind === 'image' ? (
-        <ImageTabView path={filePath} onOpenImage={onOpenImage} onReadStateChange={onReadStateChange} />
+        <ImageTabView
+          path={filePath}
+          visible={visible}
+          fileWriteEpoch={fileWriteEpoch}
+          externalReloadNonce={externalReloadNonce}
+          onOpenImage={onOpenImage}
+          onCloseTab={onCloseTab}
+          onReadStateChange={onReadStateChange}
+        />
       ) : kind === 'video' ? (
-        <VideoTabView path={filePath} onReadStateChange={onReadStateChange} />
+        <VideoTabView
+          path={filePath}
+          externalReloadNonce={externalReloadNonce}
+          onCloseTab={onCloseTab}
+          onReadStateChange={onReadStateChange}
+        />
       ) : kind === 'audio' ? (
-        <AudioTabView path={filePath} scopeId={connection?.scopeId} onReadStateChange={onReadStateChange} />
+        <AudioTabView
+          path={filePath}
+          scopeId={connection?.scopeId}
+          externalReloadNonce={externalReloadNonce}
+          onCloseTab={onCloseTab}
+          onReadStateChange={onReadStateChange}
+        />
       ) : kind === 'pdf' || kind === 'office' ? (
         <DocumentTabView
           source={{ kind: 'workspace', path: filePath }}
           sessionId={sessionId}
           client={connection?.client}
           active={visible}
+          externalReloadNonce={externalReloadNonce}
           onReadStateChange={
             onReadStateChange === undefined
               ? undefined
@@ -595,7 +637,7 @@ function PreviewTabView({
           onOpenLocally={openers?.open === undefined ? undefined : () => { openers.open!(filePath); }}
           onDownload={() => {
             const target = connection?.client;
-            if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath));
+            if (target !== undefined) void downloadHostFile(host, target, filePath, basenameOf(filePath), t);
           }}
         />
       ) : kind === 'binary' ? (
@@ -607,6 +649,9 @@ function PreviewTabView({
           visible={visible}
           markdown={kind === 'markdown'}
           navigation={navigation}
+          fileWriteEpoch={fileWriteEpoch}
+          externalReloadNonce={externalReloadNonce}
+          onCloseTab={onCloseTab}
           reportDirty={reportDirty}
           onReadStateChange={onReadStateChange}
           onReadingReady={onReadingReady}

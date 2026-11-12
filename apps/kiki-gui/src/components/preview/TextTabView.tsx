@@ -23,8 +23,11 @@ import { Markdown } from '../Markdown';
 import { HeaderFileActions } from './ResourceHeader';
 import {
   buildFileTabResource,
+  ChangedOnDiskStrip,
   classifyHtmlPreviewError,
+  DelayedReadingNotice,
   isLocalKikiComputer,
+  PreviewReadFailureView,
   SandboxedHtmlPreview,
   type HtmlPreviewState,
 } from './shared';
@@ -52,6 +55,7 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
   dirty: false,
   saving: false,
   conflict: false,
+  changedOnDisk: false,
   oversized: false,
   lossless: true,
   etag: undefined,
@@ -71,6 +75,9 @@ export function TextTabView({
   visible,
   markdown,
   navigation,
+  fileWriteEpoch = 0,
+  externalReloadNonce,
+  onCloseTab,
   reportDirty,
   onReadStateChange,
   onReadingReady,
@@ -80,6 +87,9 @@ export function TextTabView({
   readonly visible: boolean;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
+  readonly fileWriteEpoch?: number;
+  readonly externalReloadNonce?: number;
+  readonly onCloseTab?: () => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
   readonly onReadingReady: () => void;
@@ -192,6 +202,37 @@ export function TextTabView({
       setController(null);
     };
   }, [client, host, localKikiComputer, path]);
+
+  const reloadTab = useCallback(() => {
+    void controller?.reload();
+    if (html) setReloadKey((k) => k + 1);
+  }, [controller, html]);
+
+  useEffect(() => {
+    if (externalReloadNonce !== undefined && externalReloadNonce > 0) reloadTab();
+  }, [externalReloadNonce, reloadTab]);
+
+  const prevVisibleRef = useRef(visible);
+  useEffect(() => {
+    const becameVisible = visible && !prevVisibleRef.current;
+    prevVisibleRef.current = visible;
+    if (becameVisible) void controller?.checkDiskChange();
+  }, [visible, controller]);
+
+  const prevWriteEpochRef = useRef(fileWriteEpoch);
+  useEffect(() => {
+    if (fileWriteEpoch !== prevWriteEpochRef.current) {
+      prevWriteEpochRef.current = fileWriteEpoch;
+      void controller?.checkDiskChange();
+    }
+  }, [fileWriteEpoch, controller]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const onFocus = () => { void controller?.checkDiskChange(); };
+    window.addEventListener('focus', onFocus);
+    return () => { window.removeEventListener('focus', onFocus); };
+  }, [visible, controller]);
 
   const subscribe = useMemo(
     () => controller?.subscribe ?? (() => () => {}),
@@ -312,12 +353,7 @@ export function TextTabView({
     }
   }, [visible, markdown, snap.status, snap.oversized, fullText, fullError, loadFullMarkdown]);
 
-  const htmlLoadingNotice = (
-    <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
-      <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-      {t('preview.loading')}
-    </p>
-  );
+  const htmlLoadingNotice = <DelayedReadingNotice active />;
 
   const renderHtmlError = (error: unknown) => {
     const kind = classifyHtmlPreviewError(error);
@@ -389,13 +425,15 @@ export function TextTabView({
     );
   };
 
+  const showOversizedNotice = snap.status === 'ready' && snap.oversized && fullText === undefined && !html;
+
   return (
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
           {path}
         </span>
-        {hasRenderedMode ? (
+        {hasRenderedMode && !textReadFailed ? (
           <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
             {(['rendered', 'source'] as const).map((option) => (
               <button
@@ -461,7 +499,14 @@ export function TextTabView({
             {readOnlyReason}
           </span>
         ) : null}
-        <HeaderFileActions path={path} name={name} canDownload={!textReadFailed} />
+        <HeaderFileActions
+          path={path}
+          name={name}
+          canDownload={!textReadFailed && snap.status === 'ready'}
+          readFailed={textReadFailed}
+          failureReason={snap.failureReason}
+          onReload={reloadTab}
+        />
       </div>
       {snap.conflict ? (
         <div
@@ -483,7 +528,7 @@ export function TextTabView({
             onClick={() => { void controller?.resolveConflict('reload'); }}
             className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
           >
-            {t('preview.reload')}
+            {t('preview.reloadFile')}
           </button>
           <button
             type="button"
@@ -493,6 +538,8 @@ export function TextTabView({
             {t('preview.keepEditing')}
           </button>
         </div>
+      ) : snap.changedOnDisk ? (
+        <ChangedOnDiskStrip onReload={reloadTab} />
       ) : null}
       {snap.error !== undefined && snap.status !== 'error' ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/5 px-3 py-1.5 text-[11px] text-danger">
@@ -507,15 +554,13 @@ export function TextTabView({
           </button>
         </div>
       ) : null}
-      {!editable && snap.status === 'ready' && ((snap.oversized && fullText === undefined && !html) || readOnlyReason === undefined) ? (
-        <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[11px] ${
-          snap.oversized && fullText === undefined && !html
-            ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
-            : 'border-hairline bg-paper/60 text-ink-faint'
-        }`} data-preview-size-notice>
-          <span>{snap.oversized && fullText === undefined && !html
-            ? t('preview.oversized') : t('preview.editUnsupported')}</span>
-          {markdown && snap.oversized && fullText === undefined ? (
+      {showOversizedNotice ? (
+        <div
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink"
+          data-preview-size-notice
+        >
+          <span>{t('preview.readTooLarge')}</span>
+          {markdown ? (
             <button
               type="button"
               data-load-full-markdown
@@ -523,7 +568,7 @@ export function TextTabView({
               onClick={() => { void loadFullMarkdown(); }}
               className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium disabled:opacity-50"
             >
-              {loadingFull ? t('preview.loading') : t('preview.loadFullFile')}
+              {loadingFull ? t('preview.reading') : t('preview.loadFullFile')}
             </button>
           ) : null}
           {fullError ? <span role="alert">{t('preview.failed')}</span> : null}
@@ -531,12 +576,14 @@ export function TextTabView({
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {!html && snap.status === 'loading' ? (
-          <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-            {t('preview.loading')}
-          </p>
+          <DelayedReadingNotice active />
         ) : !html && snap.status === 'error' ? (
-          <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
+          <PreviewReadFailureView
+            reason={snap.failureReason ?? 'error'}
+            path={path}
+            onReload={reloadTab}
+            onCloseTab={onCloseTab}
+          />
         ) : (
           <>
             {navigation?.invalidTarget || (navigation?.heading !== undefined && !headingFound) || referenceOutside ? (
@@ -545,8 +592,14 @@ export function TextTabView({
             {sourceMounted || showEditor ? (
               <div hidden={!showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'flex' : 'hidden'}`}>
                 {html && snap.status === 'loading' ? htmlLoadingNotice
-                  : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-                  : (
+                  : html && snap.status === 'error' ? (
+                    <PreviewReadFailureView
+                      reason={snap.failureReason ?? 'error'}
+                      path={path}
+                      onReload={reloadTab}
+                      onCloseTab={onCloseTab}
+                    />
+                  ) : (
                     <CodeEditor
                       key={fullText !== undefined ? `${path}:full` : path}
                       path={path}

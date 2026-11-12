@@ -2,15 +2,16 @@
  * Audio and video HTML5 preview tabs.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { basenameOf, formatBytes } from '@kiki/session-core/composer/media';
-import { useI18n } from '#/i18n';
 import type { KikiClient } from '#/lib/client';
 import { useOptionalConnection } from '#/state/connection';
-import type { PreviewReadState } from '#/state/previewResource';
+import { classifyHostFileReadError } from '#/state/hostFileEditor';
+import type { PreviewReadFailureReason, PreviewReadState } from '#/state/previewResource';
 import { BinaryTabView } from './BinaryTabView';
 import { HeaderFileActions } from './ResourceHeader';
+import { DelayedReadingNotice, PreviewReadFailureView } from './shared';
 
 interface PlayableMedia {
   readonly url: string;
@@ -53,18 +54,21 @@ function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal
  * Audio tab: play the host file through a short-lived media URL when the
  * connection can mint one, otherwise from the original bytes. A failed read
  * stays actionable so the same tab can retry; a browser decode failure uses
- * the ordinary file fallback.
+ * the damaged-file state with download.
  */
 export function AudioTabView({
   path,
   scopeId,
+  externalReloadNonce,
+  onCloseTab,
   onReadStateChange,
 }: {
   readonly path: string;
   readonly scopeId?: string;
+  readonly externalReloadNonce?: number;
+  readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
-  const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
   const mediaKey = `${scopeId ?? ''}\0${path}`;
@@ -73,7 +77,7 @@ export function AudioTabView({
   const [blobFallbackKey, setBlobFallbackKey] = useState<string | undefined>(undefined);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
-    | { readonly status: 'error' }
+    | { readonly status: 'error'; readonly reason: PreviewReadFailureReason }
     | {
       readonly status: 'ready';
       readonly client: KikiClient;
@@ -85,19 +89,40 @@ export function AudioTabView({
     }
   >({ status: 'loading' });
 
+  const reload = useCallback(() => {
+    setUnplayable(false);
+    setBlobFallbackKey(undefined);
+    setAttempt((value) => value + 1);
+  }, []);
+
   useEffect(() => {
+    if (externalReloadNonce !== undefined && externalReloadNonce > 0) reload();
+  }, [externalReloadNonce, reload]);
+
+  useEffect(() => {
+    if (unplayable) {
+      onReadStateChange?.({
+        status: 'ready',
+        readableFromDevice: true,
+        originalReadable: true,
+        failureReason: 'corrupted',
+      });
+      return;
+    }
     const status = state.status === 'error' ? 'failed' : state.status;
+    const reason = state.status === 'error' ? state.reason : undefined;
     onReadStateChange?.({
       status,
-      readableFromDevice: status !== 'failed',
-      originalReadable: status !== 'failed',
+      readableFromDevice: status !== 'failed' && reason !== 'remote-unreadable',
+      originalReadable: status !== 'failed' && reason !== 'remote-unreadable',
+      failureReason: reason,
     });
-  }, [state.status, onReadStateChange]);
+  }, [unplayable, state, onReadStateChange]);
 
   useEffect(() => {
     setUnplayable(false);
     if (client === undefined) {
-      setState({ status: 'error' });
+      setState({ status: 'error', reason: 'error' });
       return;
     }
     const abort = new AbortController();
@@ -111,8 +136,10 @@ export function AudioTabView({
       }
       release = ready.release;
       setState({ status: 'ready', client, path, scopeId, url: ready.url, size: ready.size, via: ready.via });
-    }, () => {
-      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    }, (error: unknown) => {
+      if (!cancelled && !abort.signal.aborted) {
+        setState({ status: 'error', reason: classifyHostFileReadError(error) });
+      }
     });
     return () => {
       cancelled = true;
@@ -124,7 +151,10 @@ export function AudioTabView({
   const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
     ? state
     : undefined;
-  if (unplayable) return <BinaryTabView path={path} />;
+  if (unplayable) return <BinaryTabView path={path} reason="corrupted" />;
+
+  const readFailed = readyState === undefined && state.status === 'error';
+  const failureReason = state.status === 'error' ? state.reason : undefined;
 
   return (
     <>
@@ -137,39 +167,40 @@ export function AudioTabView({
             {formatBytes(readyState.size)}
           </span>
         ) : null}
-        <HeaderFileActions path={path} name={name} canDownload={state.status !== 'error'} />
+        <HeaderFileActions
+          path={path}
+          name={name}
+          canDownload={!readFailed}
+          readFailed={readFailed}
+          failureReason={failureReason}
+          onReload={reload}
+        />
       </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {readyState === undefined && state.status === 'loading' ? (
-          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-            {t('preview.loading')}
-          </p>
-        ) : readyState === undefined && state.status === 'error' ? (
-          <div className="flex items-center gap-2 text-[12.5px] text-danger">
-            <span>{t('preview.failed')}</span>
-            <button
-              type="button"
-              data-preview-audio-retry
-              onClick={() => { setAttempt((value) => value + 1); }}
-              className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-            >
-              {t('common.retry')}
-            </button>
-          </div>
-        ) : readyState !== undefined ? (
-          <audio
-            src={readyState.url}
-            controls
-            preload="metadata"
-            aria-label={name}
-            data-preview-audio
-            onError={() => {
-              if (readyState.via === 'capability') setBlobFallbackKey(mediaKey);
-              else setUnplayable(true);
-            }}
-            className="w-full max-w-2xl"
+          <DelayedReadingNotice active />
+        ) : readFailed && failureReason !== undefined ? (
+          <PreviewReadFailureView
+            reason={failureReason}
+            path={path}
+            onReload={reload}
+            onCloseTab={onCloseTab}
           />
+        ) : readyState !== undefined ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+            <audio
+              src={readyState.url}
+              controls
+              preload="metadata"
+              aria-label={name}
+              data-preview-audio
+              onError={() => {
+                if (readyState.via === 'capability') setBlobFallbackKey(mediaKey);
+                else setUnplayable(true);
+              }}
+              className="w-full max-w-2xl"
+            />
+          </div>
         ) : null}
       </div>
     </>
@@ -179,35 +210,61 @@ export function AudioTabView({
 /**
  * Video tab: the file's own bytes in a plain HTML5 player — native controls,
  * no frame around the picture, intrinsic size capped by the panel rather than
- * stretched to fill it. A container the runtime cannot decode (codec missing)
- * degrades to the binary fallback, whose opener buttons are the recovery.
+ * stretched to fill it. A truncated or unplayable video lands in the
+ * damaged-file state ("corrupted") with a neutral ink download button, not
+ * "unsupported".
  */
 export function VideoTabView({
   path,
+  externalReloadNonce,
+  onCloseTab,
   onReadStateChange,
 }: {
   readonly path: string;
+  readonly externalReloadNonce?: number;
+  readonly onCloseTab?: () => void;
   readonly onReadStateChange?: (state: PreviewReadState) => void;
 }) {
-  const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
+  const [attempt, setAttempt] = useState(0);
   const [unplayable, setUnplayable] = useState(false);
   const [blobFallback, setBlobFallback] = useState(false);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
-    | { readonly status: 'error' }
+    | { readonly status: 'error'; readonly reason: PreviewReadFailureReason }
     | { readonly status: 'ready'; readonly url: string; readonly size: number; readonly via: 'capability' | 'blob' }
   >({ status: 'loading' });
 
+  const reload = useCallback(() => {
+    setUnplayable(false);
+    setBlobFallback(false);
+    setAttempt((value) => value + 1);
+  }, []);
+
   useEffect(() => {
+    if (externalReloadNonce !== undefined && externalReloadNonce > 0) reload();
+  }, [externalReloadNonce, reload]);
+
+  useEffect(() => {
+    if (unplayable) {
+      onReadStateChange?.({
+        status: 'ready',
+        readableFromDevice: true,
+        originalReadable: true,
+        failureReason: 'corrupted',
+      });
+      return;
+    }
     const status = state.status === 'error' ? 'failed' : state.status;
+    const reason = state.status === 'error' ? state.reason : undefined;
     onReadStateChange?.({
       status,
-      readableFromDevice: status !== 'failed',
-      originalReadable: status !== 'failed',
+      readableFromDevice: status !== 'failed' && reason !== 'remote-unreadable',
+      originalReadable: status !== 'failed' && reason !== 'remote-unreadable',
+      failureReason: reason,
     });
-  }, [state.status, onReadStateChange]);
+  }, [unplayable, state, onReadStateChange]);
 
   useEffect(() => {
     setBlobFallback(false);
@@ -216,7 +273,7 @@ export function VideoTabView({
   useEffect(() => {
     setUnplayable(false);
     if (client === undefined) {
-      setState({ status: 'error' });
+      setState({ status: 'error', reason: 'error' });
       return;
     }
     const abort = new AbortController();
@@ -230,17 +287,22 @@ export function VideoTabView({
       }
       release = ready.release;
       setState({ status: 'ready', url: ready.url, size: ready.size, via: ready.via });
-    }, () => {
-      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    }, (error: unknown) => {
+      if (!cancelled && !abort.signal.aborted) {
+        setState({ status: 'error', reason: classifyHostFileReadError(error) });
+      }
     });
     return () => {
       cancelled = true;
       abort.abort();
       release?.();
     };
-  }, [blobFallback, client, path]);
+  }, [attempt, blobFallback, client, path]);
 
-  if (unplayable) return <BinaryTabView path={path} />;
+  if (unplayable) return <BinaryTabView path={path} reason="corrupted" />;
+
+  const readFailed = state.status === 'error';
+  const failureReason = state.status === 'error' ? state.reason : undefined;
 
   return (
     <>
@@ -253,30 +315,41 @@ export function VideoTabView({
             {formatBytes(state.size)}
           </span>
         ) : null}
-        <HeaderFileActions path={path} name={name} canDownload={state.status !== 'error'} />
+        <HeaderFileActions
+          path={path}
+          name={name}
+          canDownload={!readFailed}
+          readFailed={readFailed}
+          failureReason={failureReason}
+          onReload={reload}
+        />
       </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {state.status === 'loading' ? (
-          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
-            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-            {t('preview.loading')}
-          </p>
-        ) : state.status === 'error' ? (
-          <p className="text-[12.5px] text-danger">{t('preview.failed')}</p>
-        ) : (
-          <video
-            src={state.url}
-            controls
-            playsInline
-            aria-label={name}
-            data-preview-video
-            onError={() => {
-              if (state.status === 'ready' && state.via === 'capability') setBlobFallback(true);
-              else setUnplayable(true);
-            }}
-            className="max-h-full max-w-full"
+          <DelayedReadingNotice active />
+        ) : readFailed && failureReason !== undefined ? (
+          <PreviewReadFailureView
+            reason={failureReason}
+            path={path}
+            onReload={reload}
+            onCloseTab={onCloseTab}
           />
-        )}
+        ) : state.status === 'ready' ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+            <video
+              src={state.url}
+              controls
+              playsInline
+              aria-label={name}
+              data-preview-video
+              onError={() => {
+                if (state.via === 'capability') setBlobFallback(true);
+                else setUnplayable(true);
+              }}
+              className="max-h-full max-w-full"
+            />
+          </div>
+        ) : null}
       </div>
     </>
   );

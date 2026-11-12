@@ -662,7 +662,7 @@ const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx']);
 const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi', 'mpg', 'mpeg', '3gp', 'ogv']);
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus']);
 const TEXT_EXTS = new Set([
-  'txt', 'log', 'csv', 'tsv', 'json', 'jsonc', 'jsonl', 'xml', 'yml', 'yaml', 'toml',
+  'txt', 'log', 'csv', 'tsv', 'json', 'jsonc', 'jsonl', 'ipynb', 'xml', 'yml', 'yaml', 'toml',
   'ini', 'cfg', 'conf', 'env', 'properties', 'lock',
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts', 'css', 'scss', 'less',
   'html', 'htm', 'xhtml', 'vue', 'svelte', 'astro',
