@@ -45,7 +45,7 @@ const TAG_OUTLINE = 'shrink-0 rounded-[4px] border border-hairline px-1.5 text-[
  * Problems are said once, above the list, next to the agent they are about,
  * with the way to fix them; the row itself only carries the warning mark.
  */
-export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActions, loading = false }: {
+export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActions, loading = false, hideEmpty = false }: {
   rows: readonly TeamRow[];
   models: readonly ModelCatalogItem[];
   /** The model new conversations use, which an agent without its own model answers with. */
@@ -56,6 +56,8 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
   newActions?: React.ReactNode;
   /** While the catalog is still answering, an empty list is not the empty state. */
   loading?: boolean;
+  /** Suppress the empty box when a load failure is rendered below instead. */
+  hideEmpty?: boolean;
 }) {
   const { t, locale } = useI18n();
   const modelsById = useMemo(() => new Map(models.map((model) => [model.id, model])), [models]);
@@ -94,7 +96,7 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
             <li key={row.key} data-team-attention={row.profile.name}
               className="flex flex-wrap items-start gap-x-3 gap-y-1 py-1.5">
               <span className="w-full shrink-0 truncate text-[13px] font-medium text-ink sm:w-32">{displayName(row.profile, locale)}</span>
-              <div className="min-w-0 flex-1"><DiagnosticsList diagnostics={warnings} /></div>
+              <div className="min-w-0 flex-1"><DiagnosticsList diagnostics={warnings} surface="attention" profile={row.profile} /></div>
               <button type="button" data-team-attention-open={row.profile.name} onClick={() => onOpen(row)}
                 className={`h-7 shrink-0 pointer-coarse:h-10 ${TEXT_BUTTON}`}>
                 {t('st.profiles.openThere')}
@@ -117,7 +119,7 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
       })}
     </div>
     {onlyMain ? <ListEmpty kind="none" title={t('st.agents.empty')} /> : null}
-    {view.visible.length === 0 && !loading ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
+    {view.visible.length === 0 && !loading && !hideEmpty ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
       title={t(view.narrowed ? 'st.profiles.teamNoMatch' : 'st.profiles.teamEmpty')}
       action={view.narrowed ? undefined : newButton} onClear={view.narrowed ? view.clear : undefined} /> : null}
   </div>;

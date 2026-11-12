@@ -55,11 +55,19 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
 
 describe('safe automation drafts', () => {
-  it('lists ThreadCreate separately, defaults to inherited on and can disable only that tool', async () => {
+  it('shows the one-line all-follow summary when no per-tool policy is set, and expands on Adjust per tool', async () => {
     await mount();
+    const summary = container.querySelector('[data-tools-all-follow]');
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent).toContain("Every tool follows each agent's settings.");
+    expect(container.querySelector('[data-tool-mode]')).toBeNull();
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-tools-adjust]')!.click(); });
+    await flush();
+
+    expect(container.querySelector('[data-tools-all-follow]')).toBeNull();
     expect(policyValue('ThreadCreate')).toBe('inherited');
     expect(policyValue('ThreadList')).toBe('inherited');
-    // An available tool carries no state line; only exceptions are labelled.
     expect(policy('ThreadCreate').closest('div.grid')?.querySelector('[data-tool-state]')).toBeNull();
     await pick(policy('ThreadCreate'), 'Deny');
     await click('Save tool policy');
@@ -69,6 +77,8 @@ describe('safe automation drafts', () => {
 
   it('preserves tool edits across failed saves', async () => {
     await mount();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-tools-adjust]')!.click(); });
+    await flush();
     await pick(policy('Write'), 'Deny');
     client.patchConfig.mockRejectedValueOnce(new Error('offline'));
     await click('Save tool policy');
@@ -78,7 +88,7 @@ describe('safe automation drafts', () => {
     expect(config.tools.disabled).toEqual(['Write']);
   });
 
-  it('lets profile mode restore an inactive platform-default-off tool into tools.restored', async () => {
+  it('groups unavailable tools under one subheading without repeating off per row, and lets profile mode restore one', async () => {
     client.listTools.mockResolvedValueOnce({
       tools: [
         { name: 'Read', description: 'Read', active: true },
@@ -86,6 +96,14 @@ describe('safe automation drafts', () => {
       ],
     });
     await mount();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-tools-adjust]')!.click(); });
+    await flush();
+
+    const heading = container.querySelector('[data-tools-unavailable-heading]');
+    expect(heading?.textContent).toBe('Tools not available on this Kiki (1)');
+    expect(container.querySelector('[data-tool-row="Bash"] [data-tool-state="unavailable"]')).toBeNull();
+    expect(container.querySelector('[data-tool-row="Bash"]')?.textContent).not.toContain('currently off');
+
     expect(policyValue('Bash')).toBe('inherited');
     await pick(policy('Bash'), 'Selected');
     expect(policyValue('Bash')).toBe('enabled');

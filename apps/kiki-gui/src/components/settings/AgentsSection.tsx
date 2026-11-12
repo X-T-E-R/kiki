@@ -1,30 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
-  AGENTS_SETTINGS_DEFAULT_TAB,
-  AGENTS_SETTINGS_TABS,
-  agentsTabLabelKey,
   disabledProfilePatch,
   mergeNamedAgentProfiles,
   namedAgentNewSessionBlocked,
   namedAgentOverrideRelations,
   namedAgentSessionHref,
-  normalizeAgentsTab,
   partitionNamedAgentProfiles,
   shippedEntryForProfile,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   workspaceChipDisplay,
-  type AgentsSettingsTab,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { prefersReducedMotion } from '../../lib/motion';
 import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import { DiskDefinitionSummary } from '../agent-panel/DiskDefinitionSummary';
 import { SubagentLeaseList } from '../agent-panel/LeaseList';
@@ -39,6 +35,7 @@ import type {
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { DisclosureChevron } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
@@ -716,14 +713,13 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   );
 }
 
+const AGENTS_ADVANCED_CARDS = new Set(['#st-card-subagents', '#st-card-prompt-config']);
+
 export function SubagentsSection() {
   return (
     <div className="space-y-4">
       <SubagentDefaultTargetCard />
-      <SubagentGovernanceCard />
-      {/* Thread messages and progress notes travel between the agents this
-          tab dispatches, so their switches live here (they used to be on
-          Sessions). */}
+      <SubagentLimitsSettings />
       <AgentMessagingCard />
       <SubagentOpenModeCard />
       <SubagentToolSettingsCard />
@@ -733,53 +729,54 @@ export function SubagentsSection() {
 
 export function AgentsSection() {
   const { t } = useI18n();
-  const navigate = useGuardedNavigate();
-  const { search } = useLocation();
-  const rawTab = new URLSearchParams(search).get('tab');
-  const tab: AgentsSettingsTab = normalizeAgentsTab(rawTab) ?? AGENTS_SETTINGS_DEFAULT_TAB;
+  const { hash, search } = useLocation();
+  const params = new URLSearchParams(search);
+  const detailOpen = params.has(AGENT_QUERY_PARAM);
+  const rawTab = params.get('tab');
+  const advancedLinked = AGENTS_ADVANCED_CARDS.has(hash);
+  const [advancedOpen, setAdvancedOpen] = useState(advancedLinked);
+  const dispatchRef = useRef<HTMLElement>(null);
 
-  const selectTab = (next: AgentsSettingsTab) => {
-    if (next === tab) return;
-    const params = new URLSearchParams(search);
-    params.set('tab', next);
-    params.delete('object');
-    void navigate(`/settings/agents?${params.toString()}`);
-  };
+  useEffect(() => {
+    if (advancedLinked) setAdvancedOpen(true);
+  }, [advancedLinked]);
+
+  useEffect(() => {
+    if (detailOpen || rawTab !== 'dispatch' || hash !== '') return;
+    if (dispatchRef.current !== null && typeof dispatchRef.current.scrollIntoView === 'function') {
+      dispatchRef.current.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    }
+  }, [detailOpen, rawTab, hash]);
 
   return (
-    <div className="space-y-4">
-      <div role="tablist" aria-label={t('st.section.agents')} className="flex flex-wrap gap-1 border-b border-hairline">
-        {AGENTS_SETTINGS_TABS.map((candidate) => {
-          const active = candidate === tab;
-          return (
-            <button
-              key={candidate}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              data-agents-tab={candidate}
-              onClick={() => { selectTab(candidate); }}
-              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-                active
-                  ? 'border-ink font-medium text-ink'
-                  : 'border-transparent text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t(agentsTabLabelKey(candidate))}
-            </button>
-          );
-        })}
-      </div>
-      {tab === 'dispatch' ? (
-        <SubagentsSection />
-      ) : (
-        <div className="space-y-4">
-          <UnifiedAgentManager />
-          {/* While one profile is open the page is about that profile; the
-              page-wide card comes back with the list. Server identity and
-              agent loading moved to Developer & labs › Engine parameters. */}
-          {new URLSearchParams(search).has(AGENT_QUERY_PARAM) ? null : <PromptConfigCard />}
-        </div>
+    <div className="space-y-6" data-agents-page>
+      <UnifiedAgentManager />
+      {detailOpen ? null : (
+        <>
+          <section ref={dispatchRef} data-agents-dispatch className="space-y-3">
+            <h2 className="text-[13px] font-semibold tracking-tight text-ink">
+              {t('st.agents.dispatch.title')}
+            </h2>
+            <SubagentsSection />
+          </section>
+          <details
+            className="group"
+            data-agents-advanced
+            open={advancedOpen}
+            onToggle={(event) => { setAdvancedOpen(event.currentTarget.open); }}
+          >
+            <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12.5px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+              <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
+              {t('st.agents.advanced.fold')}
+            </summary>
+            {advancedOpen ? (
+              <div className="space-y-4 pt-3">
+                <SubagentModelGovernanceCard />
+                <PromptConfigCard />
+              </div>
+            ) : null}
+          </details>
+        </>
       )}
     </div>
   );

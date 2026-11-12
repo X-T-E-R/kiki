@@ -16,7 +16,7 @@ import { INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { SettingHelp } from './SettingHelp';
-import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
+import { SettingsDraftFooter, SettingsSelect, TEXT_BUTTON } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 /**
@@ -31,6 +31,7 @@ export function ToolPolicyCard() {
   const [draft, setDraft] = useState<ToolPolicyDraft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [mode, setMode] = useState<'profile' | 'allowlist'>('profile');
+  const [adjusting, setAdjusting] = useState(false);
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -57,6 +58,34 @@ export function ToolPolicyCard() {
   }, [draft?.toolsDisabled, draft?.toolsEnabled, draft?.toolsRestored, toolsQuery.data?.tools]);
 
   const emptyAllowlist = mode === 'allowlist' && draft?.toolsEnabled.length === 0;
+  const hasPerToolOverrides = draft !== null && (
+    draft.toolsEnabled.length > 0
+    || draft.toolsDisabled.length > 0
+    || (draft.toolsRestored?.length ?? 0) > 0
+  );
+  const showAllFollowSummary = draft !== null
+    && mode === 'profile'
+    && !hasPerToolOverrides
+    && !dirty
+    && !adjusting;
+
+  const filteredTools = useMemo(
+    () => toolNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())),
+    [search, toolNames],
+  );
+  const descriptorsByName = useMemo(
+    () => new Map((toolsQuery.data?.tools ?? []).map((tool) => [tool.name, tool])),
+    [toolsQuery.data?.tools],
+  );
+  const availableTools = useMemo(
+    () => filteredTools.filter((name) => descriptorsByName.get(name)?.active !== false),
+    [descriptorsByName, filteredTools],
+  );
+  const unavailableTools = useMemo(
+    () => filteredTools.filter((name) => descriptorsByName.get(name)?.active === false),
+    [descriptorsByName, filteredTools],
+  );
+
   const edit = (next: ToolPolicyDraft) => { setDraft(next); setDirty(true); setFeedback(null); };
   const save = async () => {
     if (draft === null || emptyAllowlist) return;
@@ -76,78 +105,98 @@ export function ToolPolicyCard() {
     }
   };
 
+  const renderToolRow = (name: string) => {
+    const descriptor = descriptorsByName.get(name);
+    return (
+      <div key={name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-hairline py-2">
+        <div className="min-w-0" data-tool-row={name}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="break-all text-[13px] font-medium text-ink">{name}</p>
+            {descriptor !== undefined && descriptor.description.trim() !== '' ? (
+              <SettingHelp>{descriptor.description}</SettingHelp>
+            ) : null}
+          </div>
+          {descriptor === undefined ? (
+            <p data-tool-state="config-only" className="text-[11px] text-ink-faint">
+              {t('st.tools.configOnly')}
+            </p>
+          ) : null}
+        </div>
+        <SettingsSelect<'enabled' | 'disabled' | 'inherited'>
+          dataAttr="data-tool-policy"
+          ariaLabel={t('st.tools.policyAria', { name })}
+          value={draft === null ? 'inherited' : toolPolicyValue(draft, name)}
+          onChange={(next) => { if (draft !== null) edit(setToolPolicy(draft, name, next, mode)); }}
+          choices={[
+            { value: 'inherited', label: t(mode === 'profile' ? 'st.tools.inherited' : 'st.tools.excluded') },
+            ...(mode === 'allowlist' || descriptor?.active === false || draft?.toolsRestored?.includes(name) === true
+              ? [{ value: 'enabled' as const, label: t('st.tools.enabled') }]
+              : []),
+            { value: 'disabled', label: t('st.tools.disabled') },
+          ]}
+        />
+      </div>
+    );
+  };
+
   return (
     <SectionCard id="st-card-tools" title={t('st.tools.title')}>
       <div className="space-y-3">
-        <Hint>{t('st.tools.policyHint')}</Hint>
         {draft === null ? (
           configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
+        ) : showAllFollowSummary ? (
+          <div data-tools-all-follow className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+            <p className="text-[13px] leading-5 text-ink">{t('st.permissions.tools.allFollow')}</p>
+            <button
+              type="button"
+              data-tools-adjust
+              className={`min-h-7 shrink-0 pointer-coarse:min-h-10 ${TEXT_BUTTON}`}
+              onClick={() => { setAdjusting(true); }}
+            >
+              {t('st.permissions.tools.adjust')}
+            </button>
+          </div>
         ) : (
-          <fieldset disabled={saving} className="min-w-0 space-y-3">
-            <SettingField label={t('st.tools.mode')} help={t(mode === 'profile' ? 'st.tools.profileImpact' : 'st.tools.allowlistImpact')}>
-              <SettingsSelect<typeof mode>
-                dataAttr="data-tool-mode"
-                ariaLabel={t('st.tools.mode')}
-                value={mode}
-                onChange={(next) => {
-                  setMode(next);
-                  edit({ ...draft, toolsEnabled: next === 'profile' ? [] : draft.toolsEnabled });
-                }}
-                choices={[
-                  { value: 'profile', label: t('st.tools.followAgent') },
-                  { value: 'allowlist', label: t('st.tools.allowlist') },
-                ]}
-              />
-            </SettingField>
-            {emptyAllowlist ? <FeedbackLine feedback={{ tone: 'error', text: t('st.tools.emptyAllowlist') }} /> : null}
-            <input type="search" className={INPUT} aria-label={t('st.tools.search')} placeholder={t('st.tools.search')} value={search} onChange={(event) => setSearch(event.target.value)} />
-            <div className="max-h-[28rem] overflow-y-auto">
-              {toolNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())).map((name) => {
-                const descriptor = toolsQuery.data?.tools.find((tool) => tool.name === name);
-                return (
-                  <div key={name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-hairline py-2">
-                    {/* An available tool needs no state line; only the
-                        exceptions (unavailable here, or configured but not in
-                        the catalog) say so. What the tool does is one tap away
-                        behind its name instead of a fold on every row. */}
-                    <div className="min-w-0" data-tool-row={name}>
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <p className="break-all text-[13px] font-medium text-ink">{name}</p>
-                        {descriptor !== undefined && descriptor.description.trim() !== '' ? (
-                          <SettingHelp>{descriptor.description}</SettingHelp>
-                        ) : null}
-                      </div>
-                      {descriptor === undefined || !descriptor.active ? (
-                        <p data-tool-state={descriptor === undefined ? 'config-only' : 'unavailable'} className="text-[11px] text-ink-faint">
-                          {descriptor === undefined ? t('st.tools.configOnly') : t('st.tools.currentOff')}
-                        </p>
-                      ) : null}
-                    </div>
-                    <SettingsSelect<'enabled' | 'disabled' | 'inherited'>
-                      dataAttr="data-tool-policy"
-                      ariaLabel={t('st.tools.policyAria', { name })}
-                      value={toolPolicyValue(draft, name)}
-                      onChange={(next) => edit(setToolPolicy(draft, name, next, mode))}
-                      choices={[
-                        { value: 'inherited', label: t(mode === 'profile' ? 'st.tools.inherited' : 'st.tools.excluded') },
-                        ...(mode === 'allowlist' || descriptor?.active === false || draft.toolsRestored?.includes(name) === true
-                          ? [{ value: 'enabled' as const, label: t('st.tools.enabled') }]
-                          : []),
-                        { value: 'disabled', label: t('st.tools.disabled') },
-                      ]}
-                    />
+          <>
+            <Hint>{t('st.tools.policyHint')}</Hint>
+            <fieldset disabled={saving} className="min-w-0 space-y-3">
+              <SettingField label={t('st.tools.mode')} help={t(mode === 'profile' ? 'st.tools.profileImpact' : 'st.tools.allowlistImpact')}>
+                <SettingsSelect<typeof mode>
+                  dataAttr="data-tool-mode"
+                  ariaLabel={t('st.tools.mode')}
+                  value={mode}
+                  onChange={(next) => {
+                    setMode(next);
+                    edit({ ...draft, toolsEnabled: next === 'profile' ? [] : draft.toolsEnabled });
+                  }}
+                  choices={[
+                    { value: 'profile', label: t('st.tools.followAgent') },
+                    { value: 'allowlist', label: t('st.tools.allowlist') },
+                  ]}
+                />
+              </SettingField>
+              {emptyAllowlist ? <FeedbackLine feedback={{ tone: 'error', text: t('st.tools.emptyAllowlist') }} /> : null}
+              <input type="search" className={INPUT} aria-label={t('st.tools.search')} placeholder={t('st.tools.search')} value={search} onChange={(event) => setSearch(event.target.value)} />
+              <div className="max-h-[28rem] overflow-y-auto">
+                {availableTools.map(renderToolRow)}
+                {unavailableTools.length > 0 ? (
+                  <div className={availableTools.length > 0 ? 'pt-3' : undefined}>
+                    <p data-tools-unavailable-heading className="border-b border-hairline pb-1.5 text-[12px] font-medium text-ink-soft">
+                      {t('st.permissions.tools.unavailable', { count: unavailableTools.length })}
+                    </p>
+                    {unavailableTools.map(renderToolRow)}
                   </div>
-                );
-              })}
-            </div>
-            {!toolNames.some((name) => name.toLowerCase().includes(search.toLowerCase())) && !toolsQuery.isLoading ? <Hint>{t('st.tools.noMatches')}</Hint> : null}
-            {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
-            {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
-            <SettingsDraftFooter saved={justSaved} id="tool-policy" dirty={dirty} saving={saving} saveDisabled={emptyAllowlist} saveLabel={t('st.tools.savePolicy')}
-              onSave={() => void save()}
-              onDiscard={() => { if (configQuery.data !== undefined) { const next = toolPolicyDraftFromConfig(configQuery.data); setDraft(next); setMode(next.toolsEnabled.length > 0 ? 'allowlist' : 'profile'); } setDirty(false); setFeedback(null); }} />
-            <FeedbackLine feedback={feedback} />
-          </fieldset>
+                ) : null}
+              </div>
+              {filteredTools.length === 0 && !toolsQuery.isLoading ? <Hint>{t('st.tools.noMatches')}</Hint> : null}
+              {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
+              {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
+              <SettingsDraftFooter saved={justSaved} id="tool-policy" dirty={dirty} saving={saving} saveDisabled={emptyAllowlist} saveLabel={t('st.tools.savePolicy')}
+                onSave={() => void save()}
+                onDiscard={() => { if (configQuery.data !== undefined) { const next = toolPolicyDraftFromConfig(configQuery.data); setDraft(next); setMode(next.toolsEnabled.length > 0 ? 'allowlist' : 'profile'); } setDirty(false); setFeedback(null); }} />
+              <FeedbackLine feedback={feedback} />
+            </fieldset>
+          </>
         )}
       </div>
     </SectionCard>

@@ -447,8 +447,25 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         </button>
       </div>
     </header>
-    {!writable ? <p data-profile-readonly className="text-[12.5px] text-ink-soft">{t('st.profiles.readOnlyExplain')} <button type="button" onClick={onDuplicate}
-      className="underline decoration-ink-faint underline-offset-2 hover:text-ink">{t('st.profiles.duplicateToEdit')}</button></p> : null}
+    {!writable ? (
+      <p data-profile-readonly className="text-[12.5px] text-ink-soft">
+        {profile.source === 'builtin' ? (
+          <>
+            {t('st.agents.builtinHint')}{' '}
+            <button type="button" onClick={onDuplicate} className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+              {t('st.profiles.duplicate')}
+            </button>
+          </>
+        ) : (
+          <>
+            {t('st.profiles.readOnlyExplain')}{' '}
+            <button type="button" onClick={onDuplicate} className="underline decoration-ink-faint underline-offset-2 hover:text-ink">
+              {t('st.profiles.duplicateToEdit')}
+            </button>
+          </>
+        )}
+      </p>
+    ) : null}
     <DiagnosticsList diagnostics={diagnostics} onOpenWinner={onOpenWinner} />
     <div role="tablist" aria-label={t('st.profiles.editMode')} data-profile-tabs
       className="sticky top-[calc(-1*var(--settings-scroll-pt,0px))] z-10 -mx-1 flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-hairline bg-canvas px-1">

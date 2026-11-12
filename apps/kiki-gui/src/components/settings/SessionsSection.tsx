@@ -480,7 +480,7 @@ function ConversationHistoryCard() {
     : empty ? t('st.sessions.archive.none')
     : tp('st.sessions.archive.count', archived.count);
   return (
-    <SectionCard id="st-card-archived" title={t('st.sessions.historyTitle')}>
+    <SectionCard id="st-card-archived" title={t('st.sessions.card.archive')}>
       <SettingsBox>
         <div data-settings-archive-row={archived.known ? String(archived.count) : 'unknown'}>
           <SettingField label={label} help={empty ? undefined : t('st.sessions.archivedRowHint')}>

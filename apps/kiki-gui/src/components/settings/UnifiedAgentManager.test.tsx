@@ -173,7 +173,8 @@ describe('agents team view', () => {
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
     const warnings = container.querySelector('[data-team-warnings]')!;
     expect(warnings.textContent).toContain('Needs attention (1)');
-    expect(warnings.querySelector('[data-team-attention="reviewer"]')?.textContent).toContain('typo/model');
+    expect(warnings.querySelector('[data-team-attention="reviewer"]')?.textContent)
+      .toContain("The model “typo/model” doesn't exist, so the default model is used.");
     await act(async () => warnings.querySelector<HTMLButtonElement>('[data-team-attention-open="reviewer"]')!.click());
     await settle();
     expect(currentSearch).toBe('?agent=reviewer');
@@ -284,6 +285,29 @@ describe('agents team view', () => {
     await act(async () => buttonIn(sheet(), 'Open it').click());
     await settle();
     expect(sheet().querySelector('[data-profile-editor]')?.textContent).toContain('/fixture/reviewer/SYSTEM.md');
+  });
+
+  it('states a shadowed project profile with the built-in sentence in Needs attention', async () => {
+    const projectExplore: NamedAgentProfile = { ...explore, source: 'workspace', source_file: '/fixture/.kiki/agents/explore.md' };
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>
+      typeof query === 'object' && query !== null && 'effective' in query
+        ? { items: [main, explore], complete: true }
+        : { items: [main, explore, projectExplore], complete: true });
+    await render();
+    const warnings = container.querySelector('[data-team-warnings]')!;
+    expect(warnings.textContent).toContain("The project's explore has the same name as the built-in explore and isn't in effect.");
+  });
+
+  it('shows SettingsLoadFailure with Retry when the agent list fails to load', async () => {
+    client.listNamedAgentProfiles.mockRejectedValueOnce(new Error('disk offline'));
+    await render();
+    const failed = container.querySelector('[data-agents-load-failed]')!;
+    expect(failed).not.toBeNull();
+    expect(failed.textContent).toContain("Couldn't load agents: disk offline");
+    await act(async () => { buttonIn(failed, 'Retry').click(); });
+    await settle();
+    expect(container.querySelector('[data-agents-load-failed]')).toBeNull();
+    expect(container.querySelector('[data-team-row="agent"]')).not.toBeNull();
   });
 });
 
@@ -640,12 +664,14 @@ describe('profile editor detail', () => {
     expect(sheet().querySelector<HTMLTextAreaElement>('#profile-description')!.value).toBe('Raw edited');
   });
 
-  it('shows a built-in as read-only with a duplicate path', async () => {
+  it('shows a built-in as read-only with the built-in sentence and Duplicate', async () => {
     await render();
     await open('explore');
     expect(sheet().querySelector('#profile-prompt')?.tagName).toBe('DIV');
-    expect(sheet().querySelector('[data-profile-readonly]')).not.toBeNull();
-    await act(async () => buttonIn(sheet(), 'Duplicate to edit').click());
+    const readonlyLine = sheet().querySelector<HTMLElement>('[data-profile-readonly]')!;
+    expect(readonlyLine).not.toBeNull();
+    expect(readonlyLine.textContent).toContain("Built-in agents can't be edited directly. Duplicate one to change it.");
+    await act(async () => buttonIn(readonlyLine, 'Duplicate').click());
     expect(sheet().querySelector<HTMLInputElement>('#new-profile-name')!.value).toBe('explore-copy');
   });
 });

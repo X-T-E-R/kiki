@@ -2242,35 +2242,6 @@ export function developerTabLabelKey(tab: DeveloperSettingsTab): I18nKey {
     : 'st.section.developer';
 }
 
-export const AGENTS_SETTINGS_TABS = ['profiles', 'dispatch'] as const;
-export type AgentsSettingsTab = (typeof AGENTS_SETTINGS_TABS)[number];
-export const AGENTS_SETTINGS_DEFAULT_TAB: AgentsSettingsTab = 'profiles';
-
-const AGENTS_TAB_BY_CARD: Readonly<Record<string, AgentsSettingsTab>> = {
-  'st-card-main-agents': 'profiles',
-  'st-card-prompt-config': 'profiles',
-  'st-card-subagent-default-target': 'dispatch',
-  'st-card-subagent-limits': 'dispatch',
-  'st-card-subagents': 'dispatch',
-  // Thread messages and progress notes travel between agents, so they sit
-  // with dispatch; the handoff notices beside them went to Engine parameters.
-  'st-card-agent-messaging': 'dispatch',
-  'st-card-subagent-open-mode': 'dispatch',
-  'st-card-subagent-tool-defaults': 'dispatch',
-};
-
-export function agentsTabForCard(cardId: string): AgentsSettingsTab | undefined {
-  return AGENTS_TAB_BY_CARD[cardId];
-}
-
-export function normalizeAgentsTab(value: string | null | undefined): AgentsSettingsTab | undefined {
-  return AGENTS_SETTINGS_TABS.find((tab) => tab === value);
-}
-
-export function agentsTabLabelKey(tab: AgentsSettingsTab): I18nKey {
-  return `st.agents.tab.${tab}` as I18nKey;
-}
-
 export const EXTENSIONS_SETTINGS_TABS = ['plugins', 'skills', 'mcp'] as const;
 export type ExtensionsSettingsTab = (typeof EXTENSIONS_SETTINGS_TABS)[number];
 export const EXTENSIONS_SETTINGS_DEFAULT_TAB: ExtensionsSettingsTab = 'plugins';
@@ -2325,25 +2296,6 @@ export function normalizeBrowserControlTab(value: string | null | undefined): Br
 
 export function browserControlTabLabelKey(tab: BrowserControlSettingsTab): I18nKey {
   return `st.browserControl.tab.${tab}` as I18nKey;
-}
-
-/**
- * The tabs the "Sessions" leaf used to have. The page is one page of five
- * cards now (new conversations, titles, agent questions, background work,
- * history), so no card maps to a tab and the page draws no strip; the ids
- * stay only so an old `?tab=` address still parses and the settings page's
- * default-tab table keeps compiling. Remove them once nothing reads them.
- */
-export const SESSIONS_SETTINGS_TABS = ['conversations', 'behavior', 'runtime'] as const;
-export type SessionsSettingsTab = (typeof SESSIONS_SETTINGS_TABS)[number];
-export const SESSIONS_SETTINGS_DEFAULT_TAB: SessionsSettingsTab = 'conversations';
-
-export function normalizeSessionsTab(value: string | null | undefined): SessionsSettingsTab | undefined {
-  return SESSIONS_SETTINGS_TABS.find((tab) => tab === value);
-}
-
-export function sessionsTabLabelKey(tab: SessionsSettingsTab): I18nKey {
-  return `st.sessions.tab.${tab}` as I18nKey;
 }
 
 /**
@@ -2421,15 +2373,13 @@ export function connectionTabLabelKey(tab: ConnectionSettingsTab): I18nKey {
 export const SEARCH_SETTINGS_TABS = ['overview', 'search', 'fetch', 'advanced'] as const;
 export type SearchSettingsTab = (typeof SEARCH_SETTINGS_TABS)[number];
 
-/** Tab id inside a tabbed settings section; `ai`, `agents`, `extensions`, `browser-control`, `connection`, `search` and `developer` own tabs. */
+/** Tab id inside a tabbed settings section; `ai`, `extensions`, `browser-control`, `connection`, `connection-services`, `search` and `developer` own tabs. */
 export type SettingsTab =
   | AiSettingsTab
   | DeveloperSettingsTab
-  | AgentsSettingsTab
   | ExtensionsSettingsTab
   | BrowserControlSettingsTab
   | ConnectionSettingsTab
-  | SessionsSettingsTab
   | ConnectionServicesSettingsTab
   | SearchSettingsTab;
 
@@ -2454,11 +2404,9 @@ export function searchTabForCard(cardId: string): SearchSettingsTab | undefined 
 export function settingsTabLabelKey(section: string, tab: SettingsTab): I18nKey {
   if (section === 'ai') return aiTabLabelKey(tab as AiSettingsTab);
   if (section === 'developer') return developerTabLabelKey(tab as DeveloperSettingsTab);
-  if (section === 'agents') return agentsTabLabelKey(tab as AgentsSettingsTab);
   if (section === 'extensions') return extensionsTabLabelKey(tab as ExtensionsSettingsTab);
   if (section === 'browser-control') return browserControlTabLabelKey(tab as BrowserControlSettingsTab);
   if (section === 'connection') return connectionTabLabelKey(tab as ConnectionSettingsTab);
-  if (section === 'sessions') return sessionsTabLabelKey(tab as SessionsSettingsTab);
   if (section === 'connection-services') return connectionServicesTabLabelKey(tab as ConnectionServicesSettingsTab);
   return `st.nbSearch.tab.${tab}` as I18nKey;
 }
@@ -2739,11 +2687,11 @@ const EXPERIMENTAL_SEARCH_ENTRIES: readonly SettingsSearchSpecEntry[] = [
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'sessions', cardId: 'st-card-defaults', titleKey: 'st.sessions.card.newSessions', keywordKeys: ['st.sessions.plan.label', 'st.defaults.planMode', 'st.plan.title'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-default-target', titleKey: 'st.subagentDefault.title', keywordKeys: ['st.subagentDefault.label', 'st.subagentDefault.hint'], synonyms: ['default profile', '默认 profile', '默认子代理', 'general'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
+  { section: 'agents', cardId: 'st-card-subagent-default-target', titleKey: 'st.subagentDefault.title', keywordKeys: ['st.subagentDefault.label', 'st.subagentDefault.hint'], synonyms: ['default profile', '默认 profile', '默认子代理', 'general'] },
+  { section: 'agents', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
+  { section: 'agents', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
   { section: 'developer', tab: 'engine', cardId: 'st-card-subagent-agent-list-fields', titleKey: 'st.agentListFields.label', keywordKeys: ['st.agentListFields.help', 'st.agentListFields.reset'], synonyms: ['AgentList', 'agent_list_fields', 'telemetry', '遥测字段', '观测字段'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-tool-defaults', titleKey: 'st.subagentTools.title', keywordKeys: ['st.subagentTools.hint'], synonyms: ['subagent tools', '子代理工具', 'tool defaults', '工具权限', 'board', '看板'] },
+  { section: 'agents', cardId: 'st-card-subagent-tool-defaults', titleKey: 'st.subagentTools.title', keywordKeys: ['st.subagentTools.hint'], synonyms: ['subagent tools', '子代理工具', 'tool defaults', '工具权限', 'board', '看板'] },
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.regionTitle', keywordKeys: ['st.language.title'] },
   { section: 'general', cardId: 'st-card-settings-transfer', titleKey: 'st.settingsTransfer.title', keywordKeys: ['st.settingsTransfer.description', 'st.settingsTransfer.export', 'st.settingsTransfer.import'], synonyms: ['settings transfer', 'export settings', 'import settings', '设置迁移', '导出设置', '导入设置', '备份', 'backup'] },
   { section: 'appearance', cardId: 'st-card-appearance', titleKey: 'st.appearance.colorTitle', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system', 'st.skin.title', 'st.skin.accent'], synonyms: ['skin', '皮肤', '换肤', 'dark mode', '暗色模式', 'accent color', '强调色', 'color', '颜色'] },
@@ -2754,7 +2702,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-permission-defaults', titleKey: 'st.perm.defaultTitle', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.permission.manual', 'st.defaults.permission.yolo', 'st.perm.dangerousBash', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['permission defaults', '权限默认值', 'permission mode', '权限模式', 'yolo', 'full access', '完全访问', 'dangerous_bash', '危险命令', 'plan approval', '计划审批'] },
   { section: 'permissions', cardId: 'st-card-permission-rules', titleKey: 'st.perm.rulesTitle', keywordKeys: ['st.perm.pattern', 'st.perm.decision'], synonyms: ['permission rules', '权限规则', 'always allow', '总是允许'] },
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
-  { section: 'sessions', cardId: 'st-card-archived', titleKey: 'st.sessions.archivedTitle', keywordKeys: ['st.sessions.archivedHint', 'st.sessions.archivedOpen', 'st.sessions.archive.view'], synonyms: ['archive', 'archived', 'archived conversation', 'delete archived', '归档', '归档对话', '删除归档'] },
+  { section: 'sessions', cardId: 'st-card-archived', titleKey: 'st.sessions.card.archive', keywordKeys: ['st.sessions.archivedHint', 'st.sessions.archivedOpen', 'st.sessions.archive.view'], synonyms: ['archive', 'archived', 'archived conversation', 'delete archived', '归档', '归档对话', '删除归档'] },
   { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.sessions.ask.label', 'st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.communication.appendTimingTitle'], synonyms: ['send shortcut', '发送快捷键', 'draft', '草稿', 'queue', '排队消息'] },
   { section: 'general', cardId: 'st-card-ui-behavior', titleKey: 'st.uiBehavior.title', keywordKeys: ['st.transcript.foldSteps', 'st.layout.railOpenByDefault', 'st.composer.worktreeConfirm'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏', 'worktree'] },
@@ -2801,7 +2749,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'developer', tab: 'overview', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
   // The two handoff notices left the messaging card for Engine parameters.
   { section: 'developer', tab: 'engine', cardId: 'st-card-handoff-notices', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['handoff', '交接', 'delegation notice', '交接说明'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-agent-messaging', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
+  { section: 'agents', cardId: 'st-card-agent-messaging', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.dev.tokenHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-concurrency', titleKey: 'usage.governance.limitsTitle', keywordKeys: ['usage.governance.addRule', 'usage.governance.emptyBody', 'usage.governance.models'], synonyms: ['concurrency', 'concurrency limits', 'concurrency rules', 'queue', 'rate limit', '并发', '并发限制', '并发规则', '排队'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
@@ -2813,10 +2761,10 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'developer', tab: 'overview', cardId: 'st-card-labs', titleKey: 'st.labs.indexTitle', keywordKeys: ['st.exp.tag'], synonyms: ['experimental features', '实验特性', '实验功能', 'flags', 'beta', 'labs'] },
   ...EXPERIMENTAL_SEARCH_ENTRIES,
   { section: 'developer', tab: 'overview', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'], synonyms: ['json', 'config', '配置文件', 'loop_control', 'background'] },
-  { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
+  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
   { section: 'permissions', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: ['st.tools.allowlist', 'st.tools.followAgent'], synonyms: ['allowlist', '白名单', 'tool policy', '工具策略', 'disable tool', '禁用工具'] },
-  { section: 'agents', tab: 'profiles', cardId: 'st-card-main-agents', titleKey: 'st.agentManager.title', keywordKeys: ['st.agentManager.subagent', 'st.agentManager.new', 'st.agentManager.instructions', 'st.namedAgents.modelPin'], synonyms: ['主 agent', '子 agent', '子智能体', 'profiles', 'profile'] },
-  { section: 'agents', tab: 'profiles', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
+  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.agentManager.title', keywordKeys: ['st.agentManager.subagent', 'st.agentManager.new', 'st.agentManager.instructions', 'st.namedAgents.modelPin'], synonyms: ['主 agent', '子 agent', '子智能体', 'profiles', 'profile'] },
+  { section: 'agents', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
   { section: 'memory', cardId: 'st-card-memory', titleKey: 'st.memory.title', keywordKeys: ['st.memory.hint', 'memory.toggle', 'st.memory.approval', 'st.memory.budget', 'st.memory.open'], synonyms: ['memory', '记忆', 'remember', '长期记忆', 'memory approval', '记忆审批'] },
   { section: 'memory', cardId: 'st-card-memory-advisor', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.switchHint', 'memory.advisor.model', 'memory.advisor.protocol', 'memory.advisor.test', 'memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor', '记忆顾问', 'advisor', '顾问', 'selector', '记忆推荐', 'proactive memory', '主动记忆', 'memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'memory', cardId: 'st-card-memory-workspaces', titleKey: 'st.memory.workspaces', keywordKeys: ['memory.ws.label', 'memory.ws.follow', 'memory.ws.off'], synonyms: ['memory workspace', '工作区记忆', '记忆覆盖'] },
@@ -3017,13 +2965,11 @@ const LEGACY_SECTION_TABS: Readonly<Record<string, SettingsTab>> = {
   providers: 'providers',
   recipes: 'recipes',
   identity: 'identity',
-  subagents: 'dispatch',
   skills: 'skills',
   capabilities: 'skills',
   mcp: 'mcp',
   plugins: 'plugins',
   'computer-control': 'computer',
-  communication: 'dispatch',
   'external-clients': 'clients',
   external_clients: 'clients',
 };
@@ -3040,6 +2986,8 @@ const MOVED_SETTINGS_TABS: Readonly<Record<string, Readonly<Record<string, { rea
 const LEGACY_SECTION_DEFAULT_CARDS: Readonly<Record<string, string>> = {
   labs: 'st-card-labs',
   experimental: 'st-card-labs',
+  subagents: 'st-card-subagent-default-target',
+  communication: 'st-card-agent-messaging',
 };
 
 /** Canonical section owning a card id; the search spec is the one list that knows every card. */
@@ -3050,7 +2998,6 @@ export function settingsSectionForCard(cardId: string): string | undefined {
 export function settingsTabForCard(cardId: string): SettingsTab | undefined {
   return aiTabForCard(cardId)
     ?? developerTabForCard(cardId)
-    ?? agentsTabForCard(cardId)
     ?? extensionsTabForCard(cardId)
     ?? browserControlTabForCard(cardId)
     ?? searchTabForCard(cardId)

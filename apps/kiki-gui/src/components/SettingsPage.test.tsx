@@ -1416,7 +1416,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/subagents');
     await flush();
     expect(container.querySelector('#st-card-subagent-profiles')).toBeNull();
-    expect(container.querySelector('#st-card-subagents')).not.toBeNull();
+    expect(container.querySelector('#st-card-subagents')).toBeNull();
     const limits = container.querySelector('#st-card-subagent-limits')!;
     expect(limits.querySelector<HTMLInputElement>('input')!.value).toBe('1');
     expect(container.querySelector('#st-card-subagent-timeout')).toBeNull();
@@ -1488,6 +1488,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     client.patchConfig.mockClear();
     const card = container.querySelector('#st-card-tools')!;
+    expect(card.querySelector('[data-tools-all-follow]')).not.toBeNull();
+    await click(card.querySelector('[data-tools-adjust]')!);
+    await flush();
     const mode = card.querySelector('[data-tool-mode]')!;
     await pickOption(mode, 'Only allow selected tools');
     await pickOption(mode, 'Follow each agent');
@@ -1541,17 +1544,43 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(legacyComputer.querySelector('#st-card-computer-enabled')).not.toBeNull();
   });
 
-  it('switches between Agents & profiles and Dispatch & subagents tabs on Agents', async () => {
-    const agents = await renderSettings('/settings/agents', { guarded: true });
-    await flush();
-    expect(agents.querySelector('[data-agents-tab="profiles"]')?.getAttribute('aria-selected')).toBe('true');
-    expect(agents.querySelector('#st-card-main-agents')).not.toBeNull();
+  it('renders Agents as one page without tabs, scrolls ?tab=dispatch to Dispatch, and opens the Advanced fold on #st-card-subagents and #st-card-prompt-config', async () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    try {
+      const agents = await renderSettings('/settings/agents', { guarded: true });
+      await flush();
+      expect(agents.querySelector('[role="tablist"]')).toBeNull();
+      expect(agents.querySelector('#st-card-main-agents')).not.toBeNull();
+      expect(agents.querySelector('[data-agents-dispatch] #st-card-subagent-default-target')).not.toBeNull();
+      expect(agents.querySelector('[data-agents-dispatch] #st-card-subagent-limits')).not.toBeNull();
+      expect(agents.querySelector('[data-agents-dispatch] #st-card-agent-messaging')).not.toBeNull();
+      expect(agents.querySelector('[data-agents-dispatch] #st-card-subagent-open-mode')).not.toBeNull();
+      expect(agents.querySelector('[data-agents-dispatch] #st-card-subagent-tool-defaults')).not.toBeNull();
+      expect(agents.querySelector<HTMLDetailsElement>('[data-agents-advanced]')?.open).toBe(false);
 
-    await click(agents.querySelector('[data-agents-tab="dispatch"]')!);
-    await flush();
-    expect(agents.querySelector('[data-test-location]')?.textContent).toBe('/settings/agents?tab=dispatch');
-    expect(agents.querySelector('#st-card-subagents')).not.toBeNull();
-    expect(agents.querySelector('#st-card-subagent-tool-defaults')).not.toBeNull();
+      scrollIntoView.mockClear();
+      const dispatchLegacy = await renderSettings('/settings/agents?tab=dispatch', { guarded: true });
+      await flush();
+      expect(dispatchLegacy.querySelector('[role="tablist"]')).toBeNull();
+      expect(scrollIntoView).toHaveBeenCalled();
+
+      for (const cardId of ['st-card-subagents', 'st-card-prompt-config']) {
+        scrollIntoView.mockClear();
+        const linked = await renderSettings(`/settings/agents#${cardId}`, { guarded: true });
+        await flush();
+        expect(linked.querySelector<HTMLDetailsElement>('[data-agents-advanced]')?.open, cardId).toBe(true);
+        const card = linked.querySelector(`#${cardId}`);
+        expect(card, cardId).not.toBeNull();
+        expect(card?.className, cardId).toContain('settings-card-flash');
+      }
+
+      const residencyLegacy = await renderSettings('/settings/sessions?tab=runtime#st-card-session-residency', { guarded: true });
+      await flush();
+      expect(residencyLegacy.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer?tab=engine#st-card-session-residency');
+      expect(residencyLegacy.querySelector('#st-card-session-residency')).not.toBeNull();
+    } finally {
+      scrollIntoView.mockRestore();
+    }
   });
 });
 

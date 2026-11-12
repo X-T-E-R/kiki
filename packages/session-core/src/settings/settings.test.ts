@@ -1385,7 +1385,7 @@ describe('settings search index', () => {
     // Cards that were split: the anchor stays with the everyday half, the
     // engine half is found by search.
     expect(resolveSettingsRoute('sessions', '#st-card-agent-messaging'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('sessions', '#st-card-session-title'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title' });
     const index = buildSettingsSearchIndex({}, (key) => translate('en', key));
@@ -1534,7 +1534,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(resolveSettingsRoute('plugins', '')).toMatchObject({ section: 'extensions', tab: 'plugins' });
     expect(resolveSettingsRoute('identity', '')).toMatchObject({ section: 'developer', tab: 'identity' });
     expect(resolveSettingsRoute('recipes', '')).toMatchObject({ section: 'ai', tab: 'recipes' });
-    expect(resolveSettingsRoute('subagents', '')).toMatchObject({ section: 'agents', tab: 'dispatch' });
+    expect(resolveSettingsRoute('subagents', '')).toMatchObject({ section: 'agents', cardId: 'st-card-subagent-default-target' });
     expect(resolveSettingsRoute('tasks', '')).toMatchObject({ section: 'sessions' });
     expect(resolveSettingsRoute('computer-control', '')).toMatchObject({ section: 'browser-control', tab: 'computer' });
     expect(resolveSettingsRoute('labs', '')).toMatchObject({ section: 'developer', cardId: 'st-card-labs' });
@@ -1917,7 +1917,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('automation', '#st-card-hooks'))
       .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
     // Its two switches are agent-to-agent messages, on Agents › Dispatch now.
-    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'agents', cardId: undefined, tab: 'dispatch' });
+    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-token-counting', tab: 'defaults' });
     // Cards the Developer page used to hold land on their owning pages.
@@ -1931,7 +1931,7 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'memory', cardId: 'st-card-memory-advisor', tab: undefined });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
-        .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
+        .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: undefined });
     }
     // Permission defaults and the reviewer left the Models & providers tab.
     expect(resolveSettingsRoute('ai', '#st-card-permission-defaults'))
@@ -1970,11 +1970,11 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'extensions', cardId: 'st-card-caps', tab: 'skills' });
     // The duplicate timeout card was removed; legacy links land on its editor.
     expect(resolveSettingsRoute('agents', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: undefined });
     expect(resolveSettingsRoute('subagents', '#st-card-subagent-timeout'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: undefined });
     // The AgentList return fields are an engine parameter now.
     expect(resolveSettingsRoute('agents', '#st-card-subagent-agent-list-fields'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-subagent-agent-list-fields', tab: 'engine' });
@@ -1991,7 +1991,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: 'overview' });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: 'dispatch' });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: 'engine' });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))

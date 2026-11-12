@@ -13,9 +13,11 @@ const FIELD_KEYS = {
  * The profile's problems and provenance notes, stated as facts with the
  * file or alias involved. Warnings first; nothing renders when all is well.
  */
-export function DiagnosticsList({ diagnostics, onOpenWinner }: {
+export function DiagnosticsList({ diagnostics, onOpenWinner, surface = 'detail', profile }: {
   diagnostics: readonly ProfileDiagnostic[];
   onOpenWinner?: () => void;
+  surface?: 'detail' | 'attention';
+  profile?: { readonly name: string; readonly source: string };
 }) {
   const { t, tp } = useI18n();
   if (diagnostics.length === 0) return null;
@@ -23,11 +25,18 @@ export function DiagnosticsList({ diagnostics, onOpenWinner }: {
   const line = (item: ProfileDiagnostic) => {
     switch (item.kind) {
       case 'aliasMissing':
+        if (surface === 'attention' && item.field === 'model_alias' && item.via === undefined) {
+          return t('st.agents.issue.missingModel', { model: item.alias });
+        }
         return item.via === undefined
           ? t('st.profiles.diag.aliasMissing', { alias: item.alias, field: t(FIELD_KEYS[item.field]) })
           : t('st.profiles.diag.leaseAliasMissing', { alias: item.alias, name: item.via });
       case 'subagentMissing': return t('st.profiles.diag.subagentMissing', { name: item.name });
-      case 'shadowedBy': return t('st.profiles.diag.shadowedBy', { file: profileLocation(item.winner) });
+      case 'shadowedBy':
+        if (surface === 'attention' && item.winner.source === 'builtin' && profile !== undefined) {
+          return t('st.agents.issue.shadowed', { name: profile.name });
+        }
+        return t('st.profiles.diag.shadowedBy', { file: profileLocation(item.winner) });
       case 'shadows': return tp('st.profiles.diag.shadowsList', item.hidden.length);
       case 'builtinModified': return t(item.status === 'update-available' ? 'st.profiles.diag.builtinUpdate' : 'st.profiles.diag.builtinModified');
       case 'overridesBuiltin': return t('st.namedAgents.overridesBuiltin');

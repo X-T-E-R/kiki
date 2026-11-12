@@ -2,13 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
-  AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
   BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
   CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB,
   DEVELOPER_SETTINGS_DEFAULT_TAB,
   DEVELOPER_SETTINGS_TABS,
-  SESSIONS_SETTINGS_DEFAULT_TAB,
   EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
@@ -429,14 +427,11 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const currentTab = active === 'developer' ? developerTab
     : active === 'ai' ? aiTab
-    : rawTab
-    ?? (active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
-      : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
-      : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
-      : active === 'sessions' ? SESSIONS_SETTINGS_DEFAULT_TAB
-      : active === 'connection-services' ? CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB
-      : active === 'search' ? 'overview'
-      : null);
+    : active === 'extensions' ? (rawTab ?? EXTENSIONS_SETTINGS_DEFAULT_TAB)
+    : active === 'browser-control' ? (rawTab ?? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB)
+    : active === 'connection-services' ? (rawTab ?? CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB)
+    : active === 'search' ? (rawTab ?? 'overview')
+    : null;
 
   // A tab switch on a page whose strip this page draws: guarded like a section
   // switch, keeping the rest of the query (server/token deep-link params) but

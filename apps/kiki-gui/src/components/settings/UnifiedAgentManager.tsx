@@ -24,7 +24,7 @@ import { SearchableSelect } from '../SearchableSelect';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
-import { SETTINGS_SELECT_TRIGGER, TEXT_BUTTON } from './SettingsPrimitives';
+import { SETTINGS_SELECT_TRIGGER, SettingsLoadFailure, TEXT_BUTTON } from './SettingsPrimitives';
 import { diagnosticTone, profileDiagnostics, sameProfile } from './profileEditor/diagnostics';
 import { engineLabel, useExecutorCatalog } from './profileEditor/engines';
 import { NewProfile } from './profileEditor/NewProfile';
@@ -279,7 +279,7 @@ export function UnifiedAgentManager() {
             }}
           />
         }
-        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending} />
+        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending} hideEmpty={profilesQuery.isError} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>
         {removed.map((entry) => <div key={entry.template_id} data-shipped-removed={entry.template_id}
           className="flex flex-wrap items-center justify-between gap-2 rounded-md px-1 py-1.5">
@@ -288,7 +288,15 @@ export function UnifiedAgentManager() {
             onError={(error) => setFeedback({ tone: 'error', text: errorText(locale, error) })} />
         </div>)}
       </div> : null}
-      {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
+      {profilesQuery.isError ? (
+        <div data-agents-load-failed>
+          <SettingsLoadFailure
+            message={t('st.agents.loadFailed', { detail: errorText(locale, profilesQuery.error) })}
+            retrying={profilesQuery.isFetching}
+            onRetry={() => { void profilesQuery.refetch(); }}
+          />
+        </div>
+      ) : null}
       {effectiveQuery.isError ? <InlineError error={effectiveQuery.error} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       {/* The handoff is disabled while this is unresolved; say why rather than
