@@ -813,7 +813,7 @@ export function ApprovalCard({
       {answered === null ? (
         external === undefined ? (
           <TrayDecisionFooter pinned={stickyDecisions}>
-            <div className={`${stickyDecisions ? '' : 'mt-2 '}flex flex-wrap items-center gap-x-2 gap-y-2`} aria-busy={submitting !== null}>
+            <div className={`${stickyDecisions ? '' : 'mt-2 '}flex flex-wrap items-center gap-x-2 ${noteOpen ? 'gap-y-1.5' : 'gap-y-2'}`} aria-busy={submitting !== null}>
               <button
                 type="button"
                 disabled={submitting !== null}
@@ -836,7 +836,7 @@ export function ApprovalCard({
                   disabled={submitting !== null}
                   onClick={allowAlways}
                   title={t('ia.alwaysAllow.title', { rule: approvalRule })}
-                  className={`${SECONDARY_BUTTON} max-sm:order-1`}
+                  className={`${SECONDARY_BUTTON} max-sm:order-1 ${noteOpen ? 'max-sm:hidden' : ''}`}
                 >
                   {submitting === 'allow-rule'
                     ? savedRule === null ? t('ia.alwaysAllow.saving') : t('ia.approving')
@@ -865,7 +865,7 @@ export function ApprovalCard({
                 {t('ia.rejectWithNote')}
               </button>
               {/* Its own row on a phone, under the three decisions. */}
-              <label className="ml-1 flex min-h-8 pointer-coarse:min-h-10 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft max-sm:order-2 max-sm:ml-0 max-sm:basis-full">
+              <label className={`ml-1 flex min-h-8 pointer-coarse:min-h-10 cursor-pointer items-center gap-1.5 text-[12px] text-ink-soft max-sm:order-2 max-sm:ml-0 max-sm:basis-full ${noteOpen ? 'max-sm:hidden' : ''}`}>
                 <input
                   type="checkbox"
                   checked={forSession}
