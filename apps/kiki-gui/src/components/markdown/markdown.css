@@ -247,7 +247,7 @@
 /* ---- narrow phone typography & spacing ---- */
 @media (max-width: 639px) {
   .kiki-prose .kiki-md {
-    font-size: 15px;
+    font-size: var(--kiki-prose-font-size, 15px);
     line-height: 1.68;
   }
 

@@ -80,6 +80,75 @@ export function stepUiZoom(current: number, direction: 1 | -1): UiZoomPercent {
   return UI_ZOOM_STEPS[nextIndex]!;
 }
 
+/** Device-local conversation prose font size steps in CSS pixels (`15.5` is the default). */
+export const PROSE_FONT_SIZE_STEPS = [14, 15, 15.5, 17, 18, 20] as const;
+export type ProseFontSizePx = (typeof PROSE_FONT_SIZE_STEPS)[number];
+export const DEFAULT_PROSE_FONT_SIZE: ProseFontSizePx = 15.5;
+export const MIN_PROSE_FONT_SIZE: ProseFontSizePx = 14;
+export const MAX_PROSE_FONT_SIZE: ProseFontSizePx = 20;
+
+export function isProseFontSize(value: unknown): value is ProseFontSizePx {
+  return typeof value === 'number' && (PROSE_FONT_SIZE_STEPS as readonly number[]).includes(value);
+}
+
+/** Snap any finite pixel value to the nearest conversation prose step; non-finite values fall back to 15.5px. */
+export function normalizeProseFontSize(value: unknown): ProseFontSizePx {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PROSE_FONT_SIZE;
+  if (isProseFontSize(value)) return value;
+  return PROSE_FONT_SIZE_STEPS.reduce((best, step) =>
+    Math.abs(step - value) < Math.abs(best - value) ? step : best,
+  );
+}
+
+/** Step one notch up or down on `PROSE_FONT_SIZE_STEPS`, clamping at the ends. */
+export function stepProseFontSize(current: number, direction: 1 | -1): ProseFontSizePx {
+  const normalized = normalizeProseFontSize(current);
+  const index = PROSE_FONT_SIZE_STEPS.indexOf(normalized);
+  const nextIndex = Math.max(0, Math.min(PROSE_FONT_SIZE_STEPS.length - 1, index + direction));
+  return PROSE_FONT_SIZE_STEPS[nextIndex]!;
+}
+
+/** Device-local code & terminal font size steps in CSS pixels (`12.5` is the default). */
+export const CODE_FONT_SIZE_STEPS = [11, 12, 12.5, 13, 14, 15, 16] as const;
+export type CodeFontSizePx = (typeof CODE_FONT_SIZE_STEPS)[number];
+export const DEFAULT_CODE_FONT_SIZE: CodeFontSizePx = 12.5;
+export const MIN_CODE_FONT_SIZE: CodeFontSizePx = 11;
+export const MAX_CODE_FONT_SIZE: CodeFontSizePx = 16;
+
+export function isCodeFontSize(value: unknown): value is CodeFontSizePx {
+  return typeof value === 'number' && (CODE_FONT_SIZE_STEPS as readonly number[]).includes(value);
+}
+
+/** Snap any finite pixel value to the nearest code/terminal step; non-finite values fall back to 12.5px. */
+export function normalizeCodeFontSize(value: unknown): CodeFontSizePx {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CODE_FONT_SIZE;
+  if (isCodeFontSize(value)) return value;
+  return CODE_FONT_SIZE_STEPS.reduce((best, step) =>
+    Math.abs(step - value) < Math.abs(best - value) ? step : best,
+  );
+}
+
+/** Step one notch up or down on `CODE_FONT_SIZE_STEPS`, clamping at the ends. */
+export function stepCodeFontSize(current: number, direction: 1 | -1): CodeFontSizePx {
+  const normalized = normalizeCodeFontSize(current);
+  const index = CODE_FONT_SIZE_STEPS.indexOf(normalized);
+  const nextIndex = Math.max(0, Math.min(CODE_FONT_SIZE_STEPS.length - 1, index + direction));
+  return CODE_FONT_SIZE_STEPS[nextIndex]!;
+}
+
+/** Device-local conversation column measure; mirrored onto `<html data-kiki-chat-width>`. */
+export const CHAT_WIDTH_CHOICES = ['standard', 'wide', 'full'] as const;
+export type ChatWidthPreference = (typeof CHAT_WIDTH_CHOICES)[number];
+export const DEFAULT_CHAT_WIDTH: ChatWidthPreference = 'standard';
+
+export function isChatWidthPreference(value: unknown): value is ChatWidthPreference {
+  return value === 'standard' || value === 'wide' || value === 'full';
+}
+
+export function normalizeChatWidth(value: unknown): ChatWidthPreference {
+  return isChatWidthPreference(value) ? value : DEFAULT_CHAT_WIDTH;
+}
+
 export function isThemePreference(value: unknown): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system';
 }
@@ -123,6 +192,12 @@ export interface DesktopSettings {
   proseFont: ProseFontPreference;
   /** Device-local interface zoom in percent (`100` is 1:1). */
   uiZoom: UiZoomPercent;
+  /** Device-local conversation prose font size in CSS pixels (`15.5` is default). */
+  proseFontSize: ProseFontSizePx;
+  /** Device-local code & terminal font size in CSS pixels (`12.5` is default). */
+  codeFontSize: CodeFontSizePx;
+  /** Device-local conversation column measure (`standard` is default). */
+  chatWidth: ChatWidthPreference;
   /**
    * Which kinds of away notifications this device shows. The master switch
    * is the desktop `notifications` preference (the native side reads it too);
@@ -446,6 +521,9 @@ const DEFAULTS: DesktopSettings = {
   motion: 'system',
   proseFont: 'serif',
   uiZoom: DEFAULT_UI_ZOOM,
+  proseFontSize: DEFAULT_PROSE_FONT_SIZE,
+  codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  chatWidth: DEFAULT_CHAT_WIDTH,
   awayNotifications: DEFAULT_AWAY_NOTIFICATION_KINDS,
 };
 
@@ -553,6 +631,9 @@ function normalizeSettings(stored: Partial<DesktopSettings>): DesktopSettings {
     motion: isMotionPreference(stored.motion) ? stored.motion : DEFAULTS.motion,
     proseFont: stored.proseFont === 'sans' ? 'sans' : DEFAULTS.proseFont,
     uiZoom: normalizeUiZoom(stored.uiZoom),
+    proseFontSize: normalizeProseFontSize(stored.proseFontSize),
+    codeFontSize: normalizeCodeFontSize(stored.codeFontSize),
+    chatWidth: normalizeChatWidth(stored.chatWidth),
     awayNotifications: readAwayNotificationKinds(stored.awayNotifications),
   };
 }
@@ -2666,7 +2747,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-settings-transfer', titleKey: 'st.settingsTransfer.title', keywordKeys: ['st.settingsTransfer.description', 'st.settingsTransfer.export', 'st.settingsTransfer.import'], synonyms: ['settings transfer', 'export settings', 'import settings', '设置迁移', '导出设置', '导入设置', '备份', 'backup'] },
   { section: 'appearance', cardId: 'st-card-appearance', titleKey: 'st.appearance.colorTitle', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system', 'st.skin.title', 'st.skin.accent'], synonyms: ['skin', '皮肤', '换肤', 'dark mode', '暗色模式', 'accent color', '强调色', 'color', '颜色'] },
   { section: 'appearance', cardId: 'st-card-appearance-background', titleKey: 'st.bg.title', keywordKeys: ['st.bg.hint', 'st.bg.chooseFile', 'st.bg.opacity', 'st.bg.blur', 'st.bg.scrim', 'st.bg.surface', 'st.bg.perTheme'], synonyms: ['wallpaper', '壁纸', '背景', 'background image', '背景图', 'video background', '视频背景', 'anime', '二次元', 'opacity', '不透明度', 'blur', '模糊'] },
-  { section: 'appearance', cardId: 'st-card-appearance-type', titleKey: 'st.appearance.typeTitle', keywordKeys: ['st.appearance.zoom', 'st.appearance.zoomHint', 'st.skin.font', 'st.skin.fontMono', 'st.appearance.prose'], synonyms: ['font', '字体', 'font size', 'text size', 'zoom', 'scale', 'ui scale', '字号', '字体大小', '文字大小', '界面缩放', '缩放', '放大', '缩小', 'serif', '衬线', 'typeface'] },
+  { section: 'appearance', cardId: 'st-card-appearance-type', titleKey: 'st.appearance.typeTitle', keywordKeys: ['st.appearance.zoom', 'st.appearance.zoomHint', 'st.appearance.proseSize', 'st.appearance.proseSizeHint', 'st.appearance.codeSize', 'st.appearance.codeSizeHint', 'st.appearance.chatWidth', 'st.appearance.chatWidth.standard', 'st.appearance.chatWidth.wide', 'st.appearance.chatWidth.full', 'st.skin.font', 'st.skin.fontMono', 'st.appearance.prose'], synonyms: ['font', '字体', 'font size', 'text size', 'chat font', 'code font', 'terminal font', 'column width', 'reading width', 'widescreen', 'zoom', 'scale', 'ui scale', '字号', '字体大小', '文字大小', '聊天字号', '时间线字号', '对话字号', '代码字号', '终端字号', '对话宽度', '阅读宽度', '宽屏', '铺满', '界面缩放', '缩放', '放大', '缩小', 'serif', '衬线', 'typeface'] },
   { section: 'appearance', cardId: 'st-card-appearance-layout', titleKey: 'st.appearance.layoutTitle', keywordKeys: ['st.skin.radius', 'st.skin.density', 'st.appearance.motion'], synonyms: ['radius', '圆角', 'density', '密度', 'animation', '动画', 'reduce motion', '减少动态效果'] },
   { section: 'appearance', cardId: 'st-card-skin-files', titleKey: 'st.skin.filesTitle', keywordKeys: ['st.pack.hint', 'st.pack.import', 'st.pack.export', 'st.pack.use', 'st.skin.folder', 'st.skin.export'], synonyms: ['appearance pack', '外观包', 'theme pack', '主题包', 'skin pack', '皮肤包', 'import theme', '导入主题', 'theme file', '主题文件', 'themes folder', '主题文件夹', 'export skin', '导出皮肤'] },
   { section: 'permissions', cardId: 'st-card-permission-defaults', titleKey: 'st.perm.defaultTitle', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.permission.manual', 'st.defaults.permission.yolo', 'st.perm.dangerousBash', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['permission defaults', '权限默认值', 'permission mode', '权限模式', 'yolo', 'full access', '完全访问', 'dangerous_bash', '危险命令', 'plan approval', '计划审批'] },

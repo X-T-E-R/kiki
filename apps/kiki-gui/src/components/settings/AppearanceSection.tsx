@@ -1,14 +1,24 @@
 import { useState, useSyncExternalStore } from 'react';
 
 import {
+  CHAT_WIDTH_CHOICES,
+  DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_PROSE_FONT_SIZE,
   DEFAULT_UI_ZOOM,
+  MAX_CODE_FONT_SIZE,
+  MAX_PROSE_FONT_SIZE,
   MAX_UI_ZOOM,
+  MIN_CODE_FONT_SIZE,
+  MIN_PROSE_FONT_SIZE,
   MIN_UI_ZOOM,
   settingsServerSnapshot,
   settingsSnapshot,
+  stepCodeFontSize,
+  stepProseFontSize,
   stepUiZoom,
   subscribeSettings,
   writeSettings,
+  type ChatWidthPreference,
   type MotionPreference,
   type ThemePreference,
 } from '@kiki/session-core/settings';
@@ -31,7 +41,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { AppearancePacks } from './AppearancePacks';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
-import { SettingField, SettingsBox } from './fields';
+import { SettingField, SettingsBox, SettingsGroup } from './fields';
 import { FontRoleField } from './FontRoleField';
 import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -99,6 +109,89 @@ function skinFaceName(variable: '--font-sans' | '--font-mono', tweak: string | u
   return face === '' || face.startsWith('ui-') ? null : face;
 }
 
+const STEPPER_BTN =
+  'flex h-7 w-7 items-center justify-center rounded-[5px] text-ink-soft transition-colors hover:bg-panel hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+
+function ScaleStepper({
+  prefix,
+  labelId,
+  valueText,
+  canStepOut,
+  canStepIn,
+  isModified,
+  outAria,
+  inAria,
+  resetLabel,
+  deviceBadge,
+  onStepOut,
+  onStepIn,
+  onReset,
+}: {
+  prefix: 'ui-zoom' | 'prose-size' | 'code-size';
+  labelId: string;
+  valueText: string;
+  canStepOut: boolean;
+  canStepIn: boolean;
+  isModified: boolean;
+  outAria: string;
+  inAria: string;
+  resetLabel: string;
+  deviceBadge: string | undefined;
+  onStepOut: () => void;
+  onStepIn: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <>
+      <div
+        role="group"
+        aria-labelledby={labelId}
+        {...{ [`data-${prefix}-control`]: '' }}
+        className="inline-flex items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
+      >
+        <button
+          type="button"
+          {...{ [`data-${prefix}-out`]: '' }}
+          aria-label={outAria}
+          disabled={!canStepOut}
+          onClick={onStepOut}
+          className={STEPPER_BTN}
+        >
+          <Icon name="dash" size={14} />
+        </button>
+        <span
+          {...{ [`data-${prefix}-value`]: '' }}
+          aria-live="polite"
+          className="min-w-[3.75rem] px-2 text-center text-[13px] font-medium tabular-nums text-ink select-none"
+        >
+          {valueText}
+        </span>
+        <button
+          type="button"
+          {...{ [`data-${prefix}-in`]: '' }}
+          aria-label={inAria}
+          disabled={!canStepIn}
+          onClick={onStepIn}
+          className={STEPPER_BTN}
+        >
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      {isModified ? (
+        <button
+          type="button"
+          {...{ [`data-${prefix}-reset`]: '' }}
+          className={SECONDARY_BUTTON}
+          onClick={onReset}
+        >
+          {resetLabel}
+        </button>
+      ) : null}
+      {deviceBadge !== undefined ? <span className="text-[12px] text-ink-faint">{deviceBadge}</span> : null}
+    </>
+  );
+}
+
 /**
  * Settings → Appearance. Every control applies the moment it changes, so the
  * app itself is the feedback; there is no draft to save. The first choice is
@@ -113,6 +206,7 @@ export function AppearanceSection() {
   const spaceTarget = spaceSettingsTargetOf(client, meta);
   const appearanceScope = spaceSettingsTargetIsSpace(spaceTarget) ? 'space' : 'app';
   const inSpace = appearanceScope === 'space';
+  const deviceBadge = inSpace ? t('st.scope.device') : undefined;
   const skinPrefs = useSkinPrefs();
   const tweaks = skinPrefs.tweaks;
   const [undo, setUndo] = useState<AppearanceSnapshot | null>(null);
@@ -123,7 +217,9 @@ export function AppearanceSection() {
     writeSkinPrefs({ tweaks: value === undefined ? rest : { ...rest, [key]: value } });
     setUndo(null);
   };
-  const setLocal = (patch: Partial<Pick<AppearanceSnapshot, 'theme' | 'motion' | 'proseFont' | 'uiZoom'>>) => {
+  const setLocal = (
+    patch: Partial<Pick<AppearanceSnapshot, 'theme' | 'motion' | 'proseFont' | 'proseFontSize' | 'codeFontSize' | 'chatWidth' | 'uiZoom'>>,
+  ) => {
     writeSettings(patch);
     setUndo(null);
   };
@@ -133,6 +229,9 @@ export function AppearanceSection() {
     theme: settings.theme,
     motion: settings.motion,
     proseFont: settings.proseFont,
+    proseFontSize: settings.proseFontSize,
+    codeFontSize: settings.codeFontSize,
+    chatWidth: settings.chatWidth,
     uiZoom: settings.uiZoom,
     skin: skinPrefs,
     background,
@@ -282,91 +381,110 @@ export function AppearanceSection() {
       </SectionCard>
 
       <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
-        <SettingsBox>
-          <SettingField label={t('st.appearance.zoom')} labelId="ui-zoom-label" help={t('st.appearance.zoomHint')}>
-            <div
-              role="group"
-              aria-labelledby="ui-zoom-label"
-              data-ui-zoom-control
-              className="inline-flex items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
-            >
-              <button
-                type="button"
-                data-ui-zoom-out
-                aria-label={t('st.appearance.zoomOutAria')}
-                disabled={settings.uiZoom <= MIN_UI_ZOOM}
-                onClick={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, -1) }); }}
-                className="flex h-7 w-7 items-center justify-center rounded-[5px] text-ink-soft transition-colors hover:bg-panel hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-              >
-                <Icon name="dash" size={14} />
-              </button>
-              <span
-                data-ui-zoom-value
-                aria-live="polite"
-                className="min-w-[3.75rem] px-2 text-center text-[13px] font-medium tabular-nums text-ink select-none"
-              >
-                {settings.uiZoom}%
-              </span>
-              <button
-                type="button"
-                data-ui-zoom-in
-                aria-label={t('st.appearance.zoomInAria')}
-                disabled={settings.uiZoom >= MAX_UI_ZOOM}
-                onClick={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, 1) }); }}
-                className="flex h-7 w-7 items-center justify-center rounded-[5px] text-ink-soft transition-colors hover:bg-panel hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-              >
-                <Icon name="plus" size={14} />
-              </button>
-            </div>
-            {settings.uiZoom !== DEFAULT_UI_ZOOM ? (
-              <button
-                type="button"
-                data-ui-zoom-reset
-                className={SECONDARY_BUTTON}
-                onClick={() => { setLocal({ uiZoom: DEFAULT_UI_ZOOM }); }}
-              >
-                {t('st.appearance.zoomReset')}
-              </button>
-            ) : null}
-            {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
-          </SettingField>
-          <FontRoleField
-            role="sans"
-            label={t('st.skin.font')}
-            presets={fontPresets(FONT_CHOICES, '--font-sans')}
-            presetValue={sans.preset}
-            custom={sans.custom}
-            fallback={SANS_FALLBACK}
-            onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
-            onCustom={(stack) => { setTweak('fontSans', stack); }}
-          />
-          {/* The mark belongs to this row, not to the interface font above it. */}
-          <FontRoleField
-            role="prose"
-            label={t('st.appearance.prose')}
-            help={t('st.appearance.proseHint')}
-            note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
-            presets={[
-              { value: 'serif', label: t('st.appearance.prose.serif') },
-              { value: 'sans', label: t('st.appearance.prose.sans') },
-            ]}
-            presetValue={settings.proseFont}
-            custom={tweaks.fontProse}
-            fallback={PROSE_FALLBACK}
-            onPreset={(value) => { setLocal({ proseFont: value === 'sans' ? 'sans' : 'serif' }); }}
-            onCustom={(stack) => { setTweak('fontProse', stack); }}
-          />
-          <FontRoleField
-            role="mono"
-            label={t('st.skin.fontMono')}
-            presets={fontPresets(MONO_CHOICES, '--font-mono')}
-            presetValue={mono.preset}
-            custom={mono.custom}
-            fallback={MONO_FALLBACK}
-            onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
-            onCustom={(stack) => { setTweak('fontMono', stack); }}
-          />
-        </SettingsBox>
+        <div>
+          <SettingsGroup title={t('st.appearance.scaleGroup')}>
+            <SettingField label={t('st.appearance.zoom')} labelId="ui-zoom-label" help={t('st.appearance.zoomHint')}>
+              <ScaleStepper
+                prefix="ui-zoom"
+                labelId="ui-zoom-label"
+                valueText={`${settings.uiZoom}%`}
+                canStepOut={settings.uiZoom > MIN_UI_ZOOM}
+                canStepIn={settings.uiZoom < MAX_UI_ZOOM}
+                isModified={settings.uiZoom !== DEFAULT_UI_ZOOM}
+                outAria={t('st.appearance.zoomOutAria')}
+                inAria={t('st.appearance.zoomInAria')}
+                resetLabel={t('st.appearance.zoomReset')}
+                deviceBadge={deviceBadge}
+                onStepOut={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, -1) }); }}
+                onStepIn={() => { setLocal({ uiZoom: stepUiZoom(settings.uiZoom, 1) }); }}
+                onReset={() => { setLocal({ uiZoom: DEFAULT_UI_ZOOM }); }}
+              />
+            </SettingField>
+            <SettingField label={t('st.appearance.proseSize')} labelId="prose-size-label" help={t('st.appearance.proseSizeHint')}>
+              <ScaleStepper
+                prefix="prose-size"
+                labelId="prose-size-label"
+                valueText={`${settings.proseFontSize}px`}
+                canStepOut={settings.proseFontSize > MIN_PROSE_FONT_SIZE}
+                canStepIn={settings.proseFontSize < MAX_PROSE_FONT_SIZE}
+                isModified={settings.proseFontSize !== DEFAULT_PROSE_FONT_SIZE}
+                outAria={t('st.appearance.proseSizeOutAria')}
+                inAria={t('st.appearance.proseSizeInAria')}
+                resetLabel={t('st.appearance.zoomReset')}
+                deviceBadge={deviceBadge}
+                onStepOut={() => { setLocal({ proseFontSize: stepProseFontSize(settings.proseFontSize, -1) }); }}
+                onStepIn={() => { setLocal({ proseFontSize: stepProseFontSize(settings.proseFontSize, 1) }); }}
+                onReset={() => { setLocal({ proseFontSize: DEFAULT_PROSE_FONT_SIZE }); }}
+              />
+            </SettingField>
+            <SettingField label={t('st.appearance.codeSize')} labelId="code-size-label" help={t('st.appearance.codeSizeHint')}>
+              <ScaleStepper
+                prefix="code-size"
+                labelId="code-size-label"
+                valueText={`${settings.codeFontSize}px`}
+                canStepOut={settings.codeFontSize > MIN_CODE_FONT_SIZE}
+                canStepIn={settings.codeFontSize < MAX_CODE_FONT_SIZE}
+                isModified={settings.codeFontSize !== DEFAULT_CODE_FONT_SIZE}
+                outAria={t('st.appearance.codeSizeOutAria')}
+                inAria={t('st.appearance.codeSizeInAria')}
+                resetLabel={t('st.appearance.zoomReset')}
+                deviceBadge={deviceBadge}
+                onStepOut={() => { setLocal({ codeFontSize: stepCodeFontSize(settings.codeFontSize, -1) }); }}
+                onStepIn={() => { setLocal({ codeFontSize: stepCodeFontSize(settings.codeFontSize, 1) }); }}
+                onReset={() => { setLocal({ codeFontSize: DEFAULT_CODE_FONT_SIZE }); }}
+              />
+            </SettingField>
+            <SettingField label={t('st.appearance.chatWidth')} labelId="chat-width-label">
+              <SettingsSegmented<ChatWidthPreference>
+                ariaLabelledBy="chat-width-label"
+                dataAttr="data-chat-width-choice"
+                value={settings.chatWidth}
+                onChange={(choice) => { setLocal({ chatWidth: choice }); }}
+                choices={CHAT_WIDTH_CHOICES.map((choice) => ({
+                  value: choice, label: t(`st.appearance.chatWidth.${choice}`),
+                }))}
+              />
+              {deviceBadge !== undefined ? <span className="text-[12px] text-ink-faint">{deviceBadge}</span> : null}
+            </SettingField>
+          </SettingsGroup>
+          <SettingsGroup title={t('st.appearance.fontGroup')}>
+            <FontRoleField
+              role="sans"
+              label={t('st.skin.font')}
+              presets={fontPresets(FONT_CHOICES, '--font-sans')}
+              presetValue={sans.preset}
+              custom={sans.custom}
+              fallback={SANS_FALLBACK}
+              onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
+              onCustom={(stack) => { setTweak('fontSans', stack); }}
+            />
+            <FontRoleField
+              role="prose"
+              label={t('st.appearance.prose')}
+              help={t('st.appearance.proseHint')}
+              note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
+              presets={[
+                { value: 'serif', label: t('st.appearance.prose.serif') },
+                { value: 'sans', label: t('st.appearance.prose.sans') },
+              ]}
+              presetValue={settings.proseFont}
+              custom={tweaks.fontProse}
+              fallback={PROSE_FALLBACK}
+              onPreset={(value) => { setLocal({ proseFont: value === 'sans' ? 'sans' : 'serif' }); }}
+              onCustom={(stack) => { setTweak('fontProse', stack); }}
+            />
+            <FontRoleField
+              role="mono"
+              label={t('st.skin.fontMono')}
+              presets={fontPresets(MONO_CHOICES, '--font-mono')}
+              presetValue={mono.preset}
+              custom={mono.custom}
+              fallback={MONO_FALLBACK}
+              onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
+              onCustom={(stack) => { setTweak('fontMono', stack); }}
+            />
+          </SettingsGroup>
+        </div>
       </SectionCard>
 
       <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>

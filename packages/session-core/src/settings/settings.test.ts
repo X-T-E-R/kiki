@@ -113,6 +113,17 @@ import {
   UI_ZOOM_STEPS,
   normalizeUiZoom,
   stepUiZoom,
+  DEFAULT_PROSE_FONT_SIZE,
+  PROSE_FONT_SIZE_STEPS,
+  normalizeProseFontSize,
+  stepProseFontSize,
+  DEFAULT_CODE_FONT_SIZE,
+  CODE_FONT_SIZE_STEPS,
+  normalizeCodeFontSize,
+  stepCodeFontSize,
+  CHAT_WIDTH_CHOICES,
+  DEFAULT_CHAT_WIDTH,
+  normalizeChatWidth,
   writeDesktopPrefs,
   writeSettings,
   type ProviderDraft,
@@ -1647,10 +1658,20 @@ describe('appearance leaf', () => {
       [en, 'dark mode', 'st-card-appearance'],
       [en, 'serif', 'st-card-appearance-type'],
       [en, 'font size', 'st-card-appearance-type'],
+      [en, 'chat font', 'st-card-appearance-type'],
+      [en, 'code font', 'st-card-appearance-type'],
+      [en, 'terminal font', 'st-card-appearance-type'],
+      [en, 'column width', 'st-card-appearance-type'],
       [en, 'zoom', 'st-card-appearance-type'],
       [en, 'reduce motion', 'st-card-appearance-layout'],
       [zh, '皮肤', 'st-card-appearance'],
       [zh, '字号', 'st-card-appearance-type'],
+      [zh, '聊天字号', 'st-card-appearance-type'],
+      [zh, '时间线字号', 'st-card-appearance-type'],
+      [zh, '代码字号', 'st-card-appearance-type'],
+      [zh, '终端字号', 'st-card-appearance-type'],
+      [zh, '对话宽度', 'st-card-appearance-type'],
+      [zh, '宽屏', 'st-card-appearance-type'],
       [zh, '放大', 'st-card-appearance-type'],
       [zh, '界面缩放', 'st-card-appearance-type'],
       [zh, '动效', 'st-card-appearance-layout'],
@@ -1659,8 +1680,11 @@ describe('appearance leaf', () => {
     }
   });
 
-  it('normalizes the stored motion, prose, and device-local uiZoom preferences', () => {
+  it('normalizes the stored motion, prose, and device-local uiZoom / reading / code preferences', () => {
     expect(UI_ZOOM_STEPS).toEqual([80, 90, 100, 110, 125, 140, 150]);
+    expect(PROSE_FONT_SIZE_STEPS).toEqual([14, 15, 15.5, 17, 18, 20]);
+    expect(CODE_FONT_SIZE_STEPS).toEqual([11, 12, 12.5, 13, 14, 15, 16]);
+    expect(CHAT_WIDTH_CHOICES).toEqual(['standard', 'wide', 'full']);
     expect(normalizeUiZoom(undefined)).toBe(DEFAULT_UI_ZOOM);
     expect(normalizeUiZoom(Number.NaN)).toBe(DEFAULT_UI_ZOOM);
     expect(normalizeUiZoom(40)).toBe(80);
@@ -1671,14 +1695,59 @@ describe('appearance leaf', () => {
     expect(stepUiZoom(150, 1)).toBe(150);
     expect(stepUiZoom(80, -1)).toBe(80);
 
-    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'wild', proseFont: 'comic', uiZoom: 'huge' }));
+    expect(normalizeProseFontSize(undefined)).toBe(DEFAULT_PROSE_FONT_SIZE);
+    expect(normalizeProseFontSize(Number.NaN)).toBe(DEFAULT_PROSE_FONT_SIZE);
+    expect(normalizeProseFontSize(10)).toBe(14);
+    expect(normalizeProseFontSize(17.6)).toBe(18);
+    expect(normalizeProseFontSize(30)).toBe(20);
+    expect(stepProseFontSize(15.5, 1)).toBe(17);
+    expect(stepProseFontSize(15.5, -1)).toBe(15);
+    expect(stepProseFontSize(20, 1)).toBe(20);
+    expect(stepProseFontSize(14, -1)).toBe(14);
+
+    expect(normalizeCodeFontSize(undefined)).toBe(DEFAULT_CODE_FONT_SIZE);
+    expect(normalizeCodeFontSize(Number.POSITIVE_INFINITY)).toBe(DEFAULT_CODE_FONT_SIZE);
+    expect(normalizeCodeFontSize(8)).toBe(11);
+    expect(normalizeCodeFontSize(13.8)).toBe(14);
+    expect(normalizeCodeFontSize(24)).toBe(16);
+    expect(stepCodeFontSize(12.5, 1)).toBe(13);
+    expect(stepCodeFontSize(12.5, -1)).toBe(12);
+    expect(stepCodeFontSize(16, 1)).toBe(16);
+    expect(stepCodeFontSize(11, -1)).toBe(11);
+
+    expect(normalizeChatWidth(undefined)).toBe(DEFAULT_CHAT_WIDTH);
+    expect(normalizeChatWidth('narrow')).toBe('standard');
+    expect(normalizeChatWidth('wide')).toBe('wide');
+    expect(normalizeChatWidth('full')).toBe('full');
+
+    localStorage.setItem('kiki.settings', JSON.stringify({
+      motion: 'wild',
+      proseFont: 'comic',
+      uiZoom: 'huge',
+      proseFontSize: 'giant',
+      codeFontSize: null,
+      chatWidth: 'cinema',
+    }));
     expect(readSettings().motion).toBe('system');
     expect(readSettings().proseFont).toBe('serif');
     expect(readSettings().uiZoom).toBe(100);
-    localStorage.setItem('kiki.settings', JSON.stringify({ motion: 'reduce', proseFont: 'sans', uiZoom: 125 }));
+    expect(readSettings().proseFontSize).toBe(15.5);
+    expect(readSettings().codeFontSize).toBe(12.5);
+    expect(readSettings().chatWidth).toBe('standard');
+    localStorage.setItem('kiki.settings', JSON.stringify({
+      motion: 'reduce',
+      proseFont: 'sans',
+      uiZoom: 125,
+      proseFontSize: 18,
+      codeFontSize: 14,
+      chatWidth: 'wide',
+    }));
     expect(readSettings().motion).toBe('reduce');
     expect(readSettings().proseFont).toBe('sans');
     expect(readSettings().uiZoom).toBe(125);
+    expect(readSettings().proseFontSize).toBe(18);
+    expect(readSettings().codeFontSize).toBe(14);
+    expect(readSettings().chatWidth).toBe('wide');
 
     const portableWrites: unknown[] = [];
     configureSpacePortableSettings({
@@ -1686,10 +1755,26 @@ describe('appearance leaf', () => {
       write: (patch) => { portableWrites.push(patch); },
     });
     try {
-      writeSettings({ uiZoom: 140, theme: 'light' });
+      writeSettings({
+        uiZoom: 140,
+        proseFontSize: 18,
+        codeFontSize: 15,
+        chatWidth: 'full',
+        theme: 'light',
+      });
       expect(portableWrites).toEqual([{ theme: 'light' }]);
-      expect(readDeviceSettings().uiZoom).toBe(140);
-      expect(readSettings().uiZoom).toBe(140);
+      expect(readDeviceSettings()).toMatchObject({
+        uiZoom: 140,
+        proseFontSize: 18,
+        codeFontSize: 15,
+        chatWidth: 'full',
+      });
+      expect(readSettings()).toMatchObject({
+        uiZoom: 140,
+        proseFontSize: 18,
+        codeFontSize: 15,
+        chatWidth: 'full',
+      });
     } finally {
       configureSpacePortableSettings(undefined);
       localStorage.removeItem('kiki.settings');

@@ -26,8 +26,7 @@ import { useMermaidEngine } from './streamdown-plugins';
 const COLLAPSE_AFTER_LINES = 40;
 /** Lines a collapsed fence still shows. */
 const PREVIEW_LINES = 12;
-/** JetBrains Mono 12.5px × 1.55 line-height + vertical padding. */
-const LINE_HEIGHT_PX = 19.4;
+const CODE_LINE_HEIGHT = 1.55;
 const BODY_PADDING_PX = 20;
 
 function codeText(node: ReactNode): string {
@@ -151,7 +150,9 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       <div
         className="kiki-cb-body overflow-x-auto"
         style={{
-          maxHeight: collapsed ? `${PREVIEW_LINES * LINE_HEIGHT_PX + BODY_PADDING_PX}px` : undefined,
+          maxHeight: collapsed
+            ? `calc(${PREVIEW_LINES * CODE_LINE_HEIGHT} * var(--kiki-code-font-size, 12.5px) + ${BODY_PADDING_PX}px)`
+            : undefined,
           overflowY: collapsed ? 'hidden' : undefined,
         }}
       >

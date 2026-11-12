@@ -806,7 +806,7 @@ const UserMessage = memo(function UserMessage({
               <div
                 key={segment.key}
                 data-steer-status={block.steerStatus}
-                className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+                className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
                   block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
                 }`}
               >
@@ -832,7 +832,7 @@ const UserMessage = memo(function UserMessage({
       ) : textRange || promptTextRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
-          className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+          className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
             block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
           }`}
         >
@@ -1284,7 +1284,7 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
       onToggle={() => { setOpen((value) => !value); }}
     >
       {open ? (
-        <div className="border-l border-hairline pl-3 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink-soft italic">
+        <div className="border-l border-hairline pl-3 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] whitespace-pre-wrap text-ink-soft italic">
           {(block.fragments ?? [block]).map((fragment, index) => (
             <div key={fragment.id} data-block-id={fragment.id} className={index === 0 ? undefined : 'mt-3'}>
               {fragment.text}

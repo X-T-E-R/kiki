@@ -621,7 +621,7 @@ function SystemRow({
 function UserRoomRow({ entry, spaced }: { readonly entry: RoomMessage; readonly spaced: boolean }) {
   return (
     <div data-room-message={entry.id} data-room-from="user" className={`anim-enter group/msg flex flex-col items-end ${spaced ? 'mt-5' : ''}`}>
-      <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[14px] leading-[1.6] break-words whitespace-pre-wrap text-ink">
+      <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] break-words whitespace-pre-wrap text-ink">
         {entry.text}
       </div>
       <span className="mt-1 text-[12px] text-ink-faint tabular-nums opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100">

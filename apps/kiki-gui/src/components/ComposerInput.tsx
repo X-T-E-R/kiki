@@ -274,5 +274,10 @@ export function ComposerInput(props: ComposerInputProps) {
     if (view !== null && !view.composing) view.dispatch({ effects: refreshSkillTokens.of(null) });
   }, [props.skillSpans]);
 
-  return <div ref={containerRef} className="composer-input text-[14.5px] pointer-coarse:text-[16px]" />;
+  return (
+    <div
+      ref={containerRef}
+      className="composer-input text-[length:calc(var(--kiki-prose-font-size,15.5px)-1px)] pointer-coarse:text-[length:max(16px,calc(var(--kiki-prose-font-size,15.5px)-1px))]"
+    />
+  );
 }

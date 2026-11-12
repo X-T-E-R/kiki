@@ -21,7 +21,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as XTerm } from '@xterm/xterm';
 
-import { clampTerminalPanelHeight } from '@kiki/session-core/settings';
+import { clampTerminalPanelHeight, normalizeCodeFontSize, readSettings, subscribeSettings } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
@@ -86,7 +86,7 @@ function TerminalCanvas({
     const term = new XTerm({
       theme: xtermTheme(),
       fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace",
-      fontSize: 12.5,
+      fontSize: normalizeCodeFontSize(readSettings().codeFontSize),
       lineHeight: 1.45,
       scrollback: 2000,
       cursorBlink: true,
@@ -164,10 +164,23 @@ function TerminalCanvas({
     const stopThemeFollow = onThemeChange(() => {
       term.options.theme = xtermTheme();
     });
+    const stopSettingsFollow = subscribeSettings(() => {
+      const nextSize = normalizeCodeFontSize(readSettings().codeFontSize);
+      if (term.options.fontSize === nextSize) return;
+      term.options.fontSize = nextSize;
+      if (host.offsetParent === null) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      manager.resize(tabId, term.cols, term.rows);
+    });
 
     return () => {
       observer.disconnect();
       stopThemeFollow();
+      stopSettingsFollow();
       if (resizeTimer !== undefined) clearTimeout(resizeTimer);
       dataSub.dispose();
       unbind();

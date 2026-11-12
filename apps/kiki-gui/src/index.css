@@ -810,15 +810,29 @@ body[data-pane-resizing='true'] {
 
 /* ---- conversation shell (/new + /s/:id layout route) ---- */
 /* One width axis for the whole conversation column: the transcript content
- * column, the composer card, and the dock cards (queue strip) all read
- * --kiki-chat-content-width (the historical 760px shared cap), and no row
- * inside the transcript sets a narrower measure of its own. Declared on
- * the shell root because the transcript and the composer seat are sibling
- * subtrees; every consumer carries a `760px` fallback so the width stays
- * sane on any surface rendered outside the shell. */
-.conversation-shell {
+ * column, the composer card, the room timeline, and the dock cards (queue
+ * strip) all read --kiki-chat-content-width, while assistant replies read
+ * --kiki-agent-column (120px narrower so user bubbles retain right-edge
+ * asymmetry). Declared on :root so both .conversation-shell and standalone
+ * surfaces (such as rooms) follow the user's reading width preference, with
+ * defensive 760px / 640px fallbacks at every consumer. */
+:root,
+:root[data-kiki-chat-width='standard'] {
   --kiki-chat-content-width: 760px;
+  --kiki-agent-column: 640px;
+}
 
+:root[data-kiki-chat-width='wide'] {
+  --kiki-chat-content-width: 960px;
+  --kiki-agent-column: 840px;
+}
+
+:root[data-kiki-chat-width='full'] {
+  --kiki-chat-content-width: 1280px;
+  --kiki-agent-column: 1160px;
+}
+
+.conversation-shell {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -1626,7 +1640,7 @@ input[data-add-search]:focus-visible {
 
 /* ---- assistant markdown typography ---- */
 .kiki-md {
-  font-size: 14px;
+  font-size: calc(var(--kiki-prose-font-size, 15.5px) - 1.5px);
   line-height: 1.65;
   overflow-wrap: break-word;
 }
@@ -1647,7 +1661,7 @@ input[data-add-search]:focus-visible {
 .kiki-prose {
   font-family: var(--kiki-prose-font);
   font-optical-sizing: auto;
-  font-size: 15.5px;
+  font-size: var(--kiki-prose-font-size, 15.5px);
   line-height: 1.65;
   color: var(--color-ink);
 }
@@ -1735,7 +1749,7 @@ input[data-add-search]:focus-visible {
   background: transparent;
   border: none;
   padding: 0;
-  font-size: 12.5px;
+  font-size: var(--kiki-code-font-size, 12.5px);
   line-height: 1.55;
 }
 .kiki-md a {
@@ -1864,7 +1878,7 @@ input[data-add-search]:focus-visible {
   margin: 0;
   padding: 0;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--kiki-code-font-size, 12.5px);
   line-height: 1.55;
 }
 /* Streamdown's highlighted body draws its own frame — kiki's chrome owns it. */

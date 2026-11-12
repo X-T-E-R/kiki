@@ -173,7 +173,7 @@ export function RoomComposer({
               void send();
             }
           }}
-          className="max-h-[200px] min-h-6 flex-1 resize-none self-center bg-transparent py-1.5 text-[14px] leading-6 text-ink outline-none placeholder:text-ink-faint"
+          className="max-h-[200px] min-h-6 flex-1 resize-none self-center bg-transparent py-1.5 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-6 text-ink outline-none placeholder:text-ink-faint"
         />
         <button
           type="button"

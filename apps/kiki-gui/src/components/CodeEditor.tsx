@@ -54,7 +54,7 @@ const KIKI_THEME = EditorView.theme({
   '&': {
     backgroundColor: 'transparent',
     color: 'var(--color-ink)',
-    fontSize: '12px',
+    fontSize: 'calc(var(--kiki-code-font-size, 12.5px) - 0.5px)',
     height: '100%',
   },
   '.cm-content': {
@@ -72,7 +72,7 @@ const KIKI_THEME = EditorView.theme({
     border: 'none',
     borderRight: '1px solid var(--color-hairline)',
     fontFamily: 'var(--font-mono)',
-    fontSize: '10.5px',
+    fontSize: 'calc(var(--kiki-code-font-size, 12.5px) - 2px)',
   },
   '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--color-accent) 5%, transparent)' },
   '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--color-ink-soft)' },

@@ -72,7 +72,7 @@ export function DiffCard({
   const gutterWidth = numbered ? String(maxLine).length : undefined;
 
   return (
-    <div className={`overflow-x-auto rounded-md py-1 font-mono text-[12px] leading-[1.6] ${surface}`}>
+    <div className={`overflow-x-auto rounded-md py-1 font-mono text-[length:calc(var(--kiki-code-font-size,12.5px)-0.5px)] leading-[1.6] ${surface}`}>
       {hunks.map((hunk, hunkIndex) => {
         const previous = hunkIndex > 0 ? hunks[hunkIndex - 1] : undefined;
         const gap = previous !== undefined && numbered ? hunkGapLines(previous, hunk) : undefined;
