@@ -2,12 +2,6 @@
 
 一次一个能力地看 Kiki 工作台。[返回 README](../README.zh-CN.md) · [功能一览](features.zh-CN.md) · [在线功能一览 →](https://x-t-e-r.github.io/kiki/zh/features/)
 
-## 工作台
-
-整个窗口：左侧是会话列表，中间是正在进行的对话，右侧是派发树，底部是进行中的目标和一条排队消息。
-
-![浅色主题下的 Kiki 工作台。](../docs/public/shots/index/hero-workbench.zh.png)
-
 ## 一个工作台，好几条线
 
 派发树里每个角色各用各的模型：思考用 Astra xhigh，审查用 Fable，执行用 DeepSeek，探查用 GLM，都在同一个会话里。
@@ -21,6 +15,12 @@
 耗时的活转到后台任务：状态、输出、停止按钮都在。
 
 ![会话任务页，一个运行中的任务已展开。](../docs/public/shots/workbench/d03-tasks-page.zh.png)
+
+## 工作台
+
+整个窗口：左侧是会话列表，中间是正在进行的对话，右侧是派发树，底部是进行中的目标和一条排队消息。
+
+![浅色主题下的 Kiki 工作台。](../docs/public/shots/index/hero-workbench.zh.png)
 
 ## 长时间的活
 

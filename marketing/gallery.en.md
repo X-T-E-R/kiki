@@ -2,16 +2,6 @@
 
 The Kiki workbench, one capability at a time. [Back to the README](../README.md) · [All features](features.en.md) · [Online features →](https://x-t-e-r.github.io/kiki/en/features/)
 
-## The workbench
-
-The whole window: sessions on the left, the working transcript in the center, the dispatch tree on the right, and a goal with a queued message at the bottom.
-
-![The Kiki workbench in light theme.](../docs/public/shots/index/hero-workbench.en.png)
-
-The same workbench in dark theme:
-
-![The Kiki workbench in dark theme.](../docs/public/shots/theme-dark/hero-workbench.en.dark.png)
-
 ## One workbench, many lines
 
 Each role in the dispatch tree runs its own model. Here the thinker runs Astra at xhigh, the reviewer runs Fable, the builders run DeepSeek, and the scouts run GLM, all in one session.
@@ -25,6 +15,16 @@ Open any dispatched agent to read its own transcript: what it was asked, what it
 Long-running work moves into background tasks, each with its status, output, and a stop control.
 
 ![The per-session tasks page with a running task expanded.](../docs/public/shots/workbench/d03-tasks-page.en.png)
+
+## The workbench
+
+The whole window: sessions on the left, the working transcript in the center, the dispatch tree on the right, and a goal with a queued message at the bottom.
+
+![The Kiki workbench in light theme.](../docs/public/shots/index/hero-workbench.en.png)
+
+The same workbench in dark theme:
+
+![The Kiki workbench in dark theme.](../docs/public/shots/theme-dark/hero-workbench.en.dark.png)
 
 ## Work that runs long
 

@@ -58,7 +58,7 @@ After writing the plan the agent pauses for you: approve it, reject it, or ask f
 
 `/permission` switches between Manual, Auto, Approve for me, and YOLO.
 
-**YOLO mode** (`/yolo`) approves agent file access without asking, including sensitive targets such as `.env` or SSH keys. An explicit deny rule still wins, and Git-control paths may still prompt. Leaving Plan mode still asks, and the agent can still put questions to you.
+**YOLO mode** (`/yolo`) approves agent file access without asking, including sensitive targets such as `.env` or SSH keys. An explicit deny rule still wins. Leaving Plan mode still asks, and the agent can still put questions to you.
 
 **Auto mode** (`/auto`) approves ordinary tool actions and plan exits without prompting, and asks before sensitive files and workspace links to external targets. Explicit deny rules still block matching calls, and dangerous Bash commands still request approval unless that guard is turned off.
 

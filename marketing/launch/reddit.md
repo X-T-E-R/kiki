@@ -4,52 +4,49 @@ Post as a text post with the image inline. Reply to every question in the first 
 
 ## r/LocalLLaMA
 
-**Title:** I built an open-source agent workbench where each subagent can run a different model, and you can rewrite every tool description per model
+**Title:** I wanted planning, implementation and review on different vendors' models, so I built an open-source local agent workbench
 
 **Body:**
 
-Kiki is an MIT-licensed AI agent workbench that runs on your machine: a desktop app, a TUI, and a browser UI on one local daemon, with sessions, history, and configuration in a local Kiki home. Your project folders stay where they are. Two parts matter for this sub:
+I wanted planning, implementation and review on different vendors' models, so I built this. Kiki (`kiki-agent`, MIT) is an open-source agent workbench running as one service on your own machine, so the desktop app, the terminal (`kiki`), the browser (`kiki web`), and your phone all show the same work. One task, several models, each doing its part. Your agents, your call.
 
-**Model binding is per role.** Your lead agent can run a frontier API model while the workers run whatever cheap or self-hosted OpenAI-compatible endpoint you point them at, and a reviewer uses a third. A subagent with no model bound and no default does not silently inherit the lead's model: the dispatch fails instead.
+On a real coding task, the lead agent runs a frontier reasoning model to plan and accept the result, dispatches a fast read-only `explore` subagent on another model to inspect the codebase, sends scoped edits to an `implementer` bound to a cheap or self-hosted OpenAI-compatible endpoint, and runs a `reviewer` on a third vendor so it does not share the implementer's blind spots. Each role is a Markdown file (`tools`, `model_alias`, `thinking_effort`, permitted children in frontmatter; system prompt in the body). A subagent with no model bound and no `[subagent].default_model` fails loudly with `model.not_configured` instead of silently falling back to the lead's model.
 
-**Prompt fields are overridable per model.** Every named piece of the built-in prompt, including individual tool descriptions, can be overridden globally, per model alias, or per agent. If a smaller model keeps misusing a tool, you rewrite that tool's description for that model only:
+**Fitted to each model.** Claude Code is tuned for Claude and Codex for GPT. For models Kiki runs natively, it tunes itself to each model you connect through a Recipe: prompts plus model settings (and optional script hooks), installed once, bound to that model, with per-binding options. The author has published five recipes (GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, Gemini 3.8 Flash) in `https://github.com/X-T-E-R/kiki-recipes` (MIT) — for example, pushing DeepSeek V4.1 to work out the mechanism and counter-examples before acting, or anchoring Gemini 3.8 Flash on a sample first. Recipes apply to native models, not external executors.
+
+**Override any built-in prompt field per model.** If a smaller local model keeps misusing a tool, you can replace that tool's description only for that model alias:
 
 ```toml
 [models.cheap-worker.prompt_overrides]
 files = ["prompt/cheap-worker.toml"]   # holds e.g. "tool.web-search.description" = "..."
 ```
 
-`kiki prompt-fields explain <field> --model cheap-worker` shows the effective value and which layer it came from.
+`kiki prompt-fields explain <field> --model cheap-worker` shows the effective value and which layer it came from. Saved edits apply to the next dispatch; a running session keeps its startup snapshot until you rebuild its context.
 
-Agents themselves are Markdown files (frontmatter = tools/model/dispatch, body = system prompt). A file from another tool has to be migrated rather than dropped in: frontmatter keys are closed, and the loader names any key it does not recognise. On the other side, conversation history from Claude Code, Codex, Pi, Grok Build, or OpenCode imports as a session you can keep working in, or as a read-only archive.
+[image: `docs/public/shots/workbench/workbench-per-role-models.en.png`]
 
-Saved edits apply to the next dispatch. A session already running keeps the snapshot it started with until you rebuild its context.
-
-[image: r05 multi-model fleet]
-
-Caveats: early (0.x); unsigned, unnotarized macOS build; Windows needs Git for Windows; npm install requires Node.js 24.22.1+ or 26.12.1+. The screenshots are rendered example scenes, not benchmarks. Repo: https://github.com/X-T-E-R/kiki
+Other details: conversation history from Claude Code, Codex, Pi, Grok Build, or OpenCode imports as a continuable session or read-only archive, while agent files from other tools have closed frontmatter keys and must be migrated (the loader names any unrecognised key). Caveats: early (`0.5.1`, `0.x`); unsigned, unnotarized macOS build; Windows needs Git for Windows; npm install requires Node.js 24.22.1+ or 26.12.1+. Screenshots are rendered example scenes, not benchmarks. Repo: https://github.com/X-T-E-R/kiki
 
 Question: which roles would you hand to a local model first, and which tool descriptions trip your local models up?
 
 ## r/ChatGPTCoding
 
-**Title:** Mix vendors per role and import your Claude Code or Codex history: I built an open workbench where each agent gets its own model and prompts
+**Title:** One task, several models, each doing its part: an open-source local agent workbench with per-role models and Recipes
 
 **Body:**
 
-Kiki is an open-source (MIT) AI agent workbench that runs on your machine.
+I wanted planning, implementation and review on different vendors' models, so I built this. Kiki (`kiki-agent`, MIT) runs as one service on your own machine so the desktop app, the terminal (`kiki`), the browser (`kiki web`), and your phone all show the same work. Your agents, your call.
 
-- **Mix vendors per role.** The lead plans on one model, workers run on cheaper ones (DeepSeek, GLM, …), and a reviewer runs on another vendor, all in one session.
+For a multi-file change, the lead session splits the work: a reasoning model plans and verifies the final result, an `explore` subagent searches the repo on a fast model, an `implementer` handles scoped edits on DeepSeek or another OpenAI-compatible model, and a `reviewer` checks the diff on a different vendor.
+
+- **Fitted to each model.** For models Kiki runs natively, a Recipe packages prompts plus model settings (and optional script hooks), installed once, bound to a model, with per-binding options. The author has published five recipes (GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, Gemini 3.8 Flash) at `https://github.com/X-T-E-R/kiki-recipes` (MIT). Recipes do not apply when an external executor like Claude Code or Codex runs the turn.
 - **Agent definitions are files you edit.** Each agent is a Markdown file: frontmatter for tools, model, effort, and which agents it may dispatch; body for the system prompt. Save it and the next dispatch uses it; a running session keeps its starting snapshot until you rebuild its context.
-- **Bring your history.** Claude Code, Codex, Pi, Grok Build, and OpenCode conversations import as continuable Kiki sessions or read-only archives, with a preview of what the import drops. Bringing an agent file over is a migration instead: frontmatter keys are closed, and an unrecognised key fails the load and gets named.
 - **Rewrite a single tool description for one model.** Every built-in prompt field can be overridden globally, per model alias, or per agent. `kiki prompt-fields explain` prints what the model receives.
 - **Keep working while it works.** The lead dispatches subagents and background tasks and gets notified when they finish. Messages you send meanwhile queue up, and each one can wait until the agent is idle, until subagents finish, or until tasks finish.
-- **Work that lasts.** Goals across turns, cron prompts while a Kiki process holds that session open, and requirement cards from the optional `kiki-task-board` plugin.
-- **Not only code.** Catalog plugins read local PDFs and Office files into Markdown (`Kiki Extract`, needs Python with MarkItDown), edit Word/Excel/PowerPoint (`Kiki Office Suite`), and check CSVs locally (`Kiki Work`).
-- Desktop app, TUI, browser UI on one local daemon; Zed/JetBrains over ACP.
+- **Bring your history and tools.** Claude Code, Codex, Pi, Grok Build, and OpenCode conversations import as continuable Kiki sessions or read-only archives, with a preview of what the import drops. Catalog plugins handle local PDFs and Office files (`Kiki Extract`, needing Python with MarkItDown), Word/Excel/PowerPoint (`Kiki Office Suite`), local CSV checks (`Kiki Work`), and `kiki-task-board`. Desktop app, TUI, and browser UI share one local daemon; Zed and JetBrains connect over `kiki acp`.
 
-[video: 30 s real recording, or image: h01]
+[video: 30 s real recording, or image: `docs/public/shots/workbench/workbench-per-role-models.en.png`]
 
-Early (0.x), rough edges. Screenshots are rendered example scenes. https://github.com/X-T-E-R/kiki
+Early (`0.5.1`, `0.x`), rough edges. Screenshots are rendered example scenes. https://github.com/X-T-E-R/kiki
 
 What does your planner / worker / reviewer split look like today?

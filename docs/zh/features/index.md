@@ -17,6 +17,7 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 当一件事超过单轮对话或单个模型的承载范围时，Kiki 把工作拆给不同的角色和模型同时推进，并把长线目标与项目记忆留存下来。
 
 - **[子智能体与多模型分工](/zh/features/workbench)**：主智能体派发上下文隔离的子智能体，支持把规划、探索和审查分别绑到不同模型或不同厂商；你可以随时点开任意子智能体的独立记录或直接给它发消息，后台任务跑完会自动带回结果通知主会话。
+- **每个模型都有自己的专武（[Recipe](/zh/customization/recipes)）**：Recipe 将提示词、模型设置和可选脚本 Hook 打包在一起，安装一次，绑在单个模型上，每个绑定可独立选选项。作者已在 [`kiki-recipes`](https://github.com/X-T-E-R/kiki-recipes) 发布了五套（GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon、Gemini 3.8 Flash），适用于 Kiki 原生运行的模型，可照着改或自己写。
 - **[智能体配置与复用](/zh/features/agent-workflows)**：每个智能体由一份纯文本 Markdown 配置（Profile）定义模型、思考档位、工具白名单、系统提示词与可派发的子智能体。支持开箱即用的内置配置与 `implementer`、`reviewer` 模板，保存后即热刷新。
 - **[目标、队列、定时与记忆](/zh/features/long-work)**：用 `/goal` 挂起跨轮次目标；智能体正忙时新消息进入队列并可逐条选择送达时机；配合本地时区定时任务（Cron）、可选的 `kiki-task-board` 需求看板、上下文续接（`Summarize`、`Fresh`、`Auto`）以及全局、工作区、角色三层可逐条撤销的长期记忆，并可由你选定的决策服务或模型推荐相关条目。
 - **[常驻角色与讨论房间](/zh/features/people)**：给常驻搭档（Persona）独立身份、专属记忆与固定日常对话入口；或把两到六个角色与现有会话线程拉进同一个房间，在主持人和发言预算下围绕同一话题展开讨论。
@@ -36,7 +37,7 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 
 - **本地文档提取与 Office 办公**：从 **Official** 插件目录按需安装 `Kiki Extract`（本地 PDF、Office、HTML 转 Markdown，不改原件）、`Kiki Office Suite`（本机创建与编辑 Word、Excel、PowerPoint）、`Kiki Work`（本机核对 CSV/TSV 与比对两张表，不上传）与 `Kiki Writing`（手稿面板与续写命令）。
 - **专业数据、外部服务与媒体生成**：安装 `Kimi Datasource` 用自然语言查股票行情、宏观指标、企业工商、学术文献与中国法律法规；用 `Kiki Notion` 检索并写回指定 Notion 页面；通过 `Kiki Media` 配置图像、视频、语音生成服务或本地脚本。
-- **网页搜索、抓取通道、Skills 与 MCP**：用 `WebSearch` 搜索网页，用 `FetchURL` 读取页面内容；默认通道无需密钥，也可接入代码库与文档等专用通道，并在**设置 → 能力 → 搜索与抓取**中查看凭据来源、多密钥轮换与提取器回退顺序。支持用 Markdown 编写 [Agent Skills](/zh/customization/skills)，或通过 `stdio`、`HTTP`、`SSE` 接入 [MCP 服务器](/zh/server/mcp)。
+- **网页搜索、抓取通道、会话搜索、Skills 与 MCP**：用 `WebSearch` 搜索网页，用 `FetchURL` 读取页面内容，并在会话内用 `HistorySearch`、`HistoryRead`（或侧栏搜索与 `Ctrl-K`）检索历史消息和工具输出；默认网页通道无需密钥，也可接入代码库与文档等专用通道，并在**设置 → 能力 → 搜索与抓取**中查看凭据来源、多密钥轮换与提取器回退顺序。支持用 Markdown 编写 [Agent Skills](/zh/customization/skills)，或通过 `stdio`、`HTTP`、`SSE` 接入 [MCP 服务器](/zh/server/mcp)。
 
 ![抓取通道页签：一个网址按顺序经过哪些提取器，以及每一级回退到哪里。](/shots/extend/ce-20261005-extend-fetch-chain.zh.png)
 

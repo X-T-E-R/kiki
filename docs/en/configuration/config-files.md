@@ -284,7 +284,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Default model alias; must be defined in `models` |
-| `default_permission_mode` | `string` | `auto` | Default for new sessions: `manual` asks for unapproved actions; `auto` approves routine work but asks for protected actions; `review` routes those requests to a reviewer first; `yolo` approves most tool actions, though Git-control paths may still ask |
+| `default_permission_mode` | `string` | `auto` | Default for new sessions: `manual` asks for unapproved actions; `auto` approves routine work but asks for protected actions; `review` routes those requests to a reviewer first; `yolo` approves most tool actions without asking; explicit deny rules still apply |
 | `default_plan_mode` | `boolean` | `false` | Whether new sessions start in Plan mode (produce a plan before executing) by default |
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |

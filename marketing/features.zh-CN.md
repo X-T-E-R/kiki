@@ -5,12 +5,13 @@
 ## 从这里开始
 
 - **安装与首次运行。** npm 需要 Node.js 24.22.1+ 或 26.12.1+，也可以从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载桌面版。新会话默认是「自动」；`/permission` 在「每步询问」（`manual`）、「自动」（`auto`）、「替我审批」（`review`）和「完全放行」（`yolo`）之间切换。[安装 →](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
-- **首次运行先讲能做什么。** 桌面版欢迎页先介绍 Kiki 能帮你做什么，再给几条导览路线；侧栏的 **发现 Kiki** 一直留着它们，起步建议没连模型也能填进草稿。[首次启动 →](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
+- **首次运行先连上模型。** 如果没有可用的登录、模型或外部执行器，新会话页会显示一张连接卡片，提供三种入口——用账号登录、填写 API 密钥（发一次小请求验证通过后才算连上），或检查这台电脑上已有的登录（只读，仅在按下后检查）——同时提供不调用模型的一分钟导览、侧栏的 **发现 Kiki**、第一次遇到审批时的「自动」模式说明，以及离开时有事完成后的系统通知询问。[首次启动 →](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
 - **三个界面，一个守护进程。** 桌面应用、终端里的 `kiki` 和 `kiki web` 读写同一批会话。[桌面版 →](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app) · [本地服务 →](https://x-t-e-r.github.io/kiki/zh/server/local-server)
 - **登录。** Kimi Code OAuth 或 Kimi 开放平台 API 密钥开箱即用；Anthropic、OpenAI 兼容服务、OpenAI Responses API、Gemini、Vertex AI 都能接。[平台与模型 →](https://x-t-e-r.github.io/kiki/zh/configuration/providers)
 
 ## 每个智能体各用各的模型
 
+- **每个模型都有自己的专武。** 配方（Recipe）把提示词、模型设置和可选脚本 Hook 打包在一起，安装一次，绑在单个模型上，每个绑定可独立选选项。作者已在公开仓库 [`kiki-recipes`](https://github.com/X-T-E-R/kiki-recipes) 发布了五套（GPT-6.1 Sol、GPT-6 Astra、DeepSeek V4.1、Gemini 4 Argon、Gemini 3.8 Flash），适用于 Kiki 原生运行的模型，可照着改或自己写。[Recipe →](https://x-t-e-r.github.io/kiki/zh/customization/recipes)
 - **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。没绑模型、也没有配默认模型的角色不会借用主会话那个贵模型：派发直接报 `model.not_configured`。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#具名子-agent)
 - **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存后，下一次派发就用新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。Frontmatter 字段集合是封闭的，从别的工具带过来的字段会在加载时报错并点名，迁移就从那里开始。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#agent-文件格式)
 - **把别的智能体当引擎用。** 一个 profile 可以通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。[派遣能力 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#派遣能力)

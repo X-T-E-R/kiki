@@ -284,7 +284,7 @@ api_key = "YOUR_API_KEY"
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | 默认模型别名，必须在 `models` 中定义 |
-| `default_permission_mode` | `string` | `auto` | 新会话默认权限模式：`manual` 询问未经批准的操作；`auto` 自动批准普通操作、询问受保护操作；`review` 先交给审查者；`yolo` 批准大部分工具操作，但 Git 控制路径仍可能询问 |
+| `default_permission_mode` | `string` | `auto` | 新会话默认权限模式：`manual` 询问未经批准的操作；`auto` 自动批准普通操作、询问受保护操作；`review` 先交给审查者；`yolo` 免询问批准大部分工具操作，显式 deny 规则仍优先 |
 | `default_plan_mode` | `boolean` | `false` | 新会话是否默认以 Plan 模式（先出计划再执行）启动 |
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |

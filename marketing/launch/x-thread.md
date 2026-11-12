@@ -1,47 +1,39 @@
-# X thread (6 posts)
+# X thread (5 posts)
 
-Attach media to posts 1, 2, 4, 5. Post 1 media is the 30 s real recording if it exists; otherwise h01 (and don't call it a recording).
+Attach media to posts 1, 2, 3, 4. Post 1 opens with the multi-model fleet screenshot (`docs/public/shots/workbench/workbench-per-role-models.en.png`), or the 30 s real recording if it exists alongside it.
 
 **1/**
-Hand Kiki a folder: a codebase, a stack of PDFs and spreadsheets, a draft.
-An open-source AI agent workbench on your machine. The lead dispatches subagents on the models you pick.
-Agents that answer to you. 🧵
-[video: 30 s real recording, or image: h01]
+One task, several models. Each doing its part.
+Your agents, your call.
+
+Kiki is an open-source (MIT) agent workbench running as a service on your own machine: desktop, terminal (`kiki`), browser (`kiki web`), and phone all show the same work.
+[`docs/public/shots/workbench/workbench-per-role-models.en.png`]
 
 **2/**
-An agent is a Markdown file.
-Frontmatter: tools, model, effort, which agents it may dispatch.
-Body: its system prompt.
+Claude Code is tuned for Claude; Codex is tuned for GPT.
+Fitted to each model: Kiki tunes itself to each native model you connect through a Recipe — prompts + model settings (+ optional script hooks), installed once, bound to a model, with per-binding options.
 
-Saved edits apply to the next dispatch. A running session keeps its startup snapshot until you rebuild its context.
-[image: r01]
+5 recipes published (MIT): GPT-6.1 Sol, GPT-6 Astra, DeepSeek V4.1, Gemini 4 Argon, Gemini 3.8 Flash → github.com/X-T-E-R/kiki-recipes
+[`docs/public/shots/freedom/d02-prompt-fields.en.png`]
 
 **3/**
-Each role picks its own model.
-The lead runs a frontier model, workers run DeepSeek or GLM, the reviewer runs another vendor.
-
-No silent fallback: with no model bound and no default, the dispatch fails loudly.
+Each agent is a Markdown file you own.
+Frontmatter sets tools, `model_alias`, effort, and permitted child agents; body is the system prompt.
+Saved edits apply to the next dispatch; no silent fallback when a subagent has no model bound.
+Any built-in prompt field can also be overridden per model (`kiki prompt-fields explain`).
+[`docs/public/shots/agents/r01-reviewer-profile.en.png`]
 
 **4/**
-Every built-in prompt field can be overridden, down to one tool's description, and layered globally → per model → per agent.
-
-`kiki prompt-fields explain` shows the value the model actually receives and where it came from.
-
-Handy when a cheap model keeps misusing a tool.
-[image: d02]
+Built for long, many-threaded work on your machine:
+- subagents and background tasks notify the lead when done
+- messages you type while it is busy queue per-message: when idle, after subagents, or after tasks
+- `/goal` across turns, cron while a session is held open, and optional `kiki-task-board`
+[`docs/public/shots/long-work/long-work-goal-queue.en.png`]
 
 **5/**
-For long, many-threaded work:
-- the lead dispatches subagents + background tasks and is notified when done
-- keep typing while it's busy: each message waits for idle, subagents, or tasks
-- goals, cron while a session is held open, and the optional kiki-task-board plugin
-[image: r02]
+Sessions, history, and config stay in your local Kiki home; work files stay in your folder; model requests go only to providers or local servers you connect.
+Import Claude Code / Codex / OpenCode history, connect Zed or JetBrains via `kiki acp`.
 
-**6/**
-Desktop, TUI, browser on one local daemon. Sessions stay in your Kiki home; models use your providers. Plugins handle PDFs, spreadsheets, drafts. MIT.
-
-Early (0.x), rough edges.
-npm i -g kiki-agent (Node 24.22.1+ or 26.12.1+)
+Early `0.x` (`0.5.1`).
+`npm i -g kiki-agent` (Node 24.22.1+ or 26.12.1+)
 github.com/X-T-E-R/kiki
-
-What would you rewrite first?
