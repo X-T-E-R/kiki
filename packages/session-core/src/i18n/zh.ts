@@ -716,6 +716,8 @@ export const zh = {
   'select.search': '搜索…',
   'select.noMatches': '没有匹配“{query}”的选项。',
   'select.empty': '暂无可选项。',
+  'select.summaryMore': '{first} +{count}',
+  'select.useCustom': '使用“{value}”',
 
   // ---- connect screen ----
   'connect.tagline': '连接本机的 Kiki。',

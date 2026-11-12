@@ -1,18 +1,17 @@
 /**
- * SearchableSelect — a single-value combobox for long option lists (workspace
- * and model pickers), following the QuickSwitcher's keyboard idiom: the
- * trigger opens a panel with a filter input, ↑/↓ cycles the active row, Enter
- * commits it, Esc closes, and the list scrolls inside a bounded max-height.
+ * SearchableSelect — single- and multi-value select base for option lists
+ * (workspace and model pickers), following the QuickSwitcher's keyboard idiom:
+ * the trigger opens a panel, ↑/↓ cycles the active row, Enter commits or
+ * toggles it, Esc closes, and the list scrolls inside a bounded max-height.
  *
- * Container: unless a caller passes `panelClassName` (the composer, which
- * anchors its panel itself), the panel is portaled to <body> and positioned
- * against the viewport. It is never laid out inside the trigger, so a scrolling
- * sheet, a scrolling page column or an `overflow-hidden` shell frame can no
- * longer clip it or trap it behind a page edge.
+ * Search visibility: unless `hideFilter` overrides it, the filter input renders
+ * once `options.length >= LIST_TOOLS_MIN_ITEMS` (8) or `allowCustomValue` is on.
  *
- * ARIA: the trigger is a button with aria-haspopup="listbox"; the filter
- * input carries role="combobox" with aria-activedescendant pointing at the
- * active option, which is also scrolled into view while arrowing.
+ * Container: in phone mode (`usePhoneMode`) an owned panel opens as a bottom
+ * sheet over a scrim with thumb-sized rows, closing on scrim tap, Escape, and
+ * the phone's back gesture (one layer-history entry). On desktop, unless a
+ * caller passes `panelClassName` (the composer, which anchors its panel
+ * itself), the panel is portaled to <body> and positioned against the viewport.
  */
 
 import { type CSSProperties, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -20,7 +19,8 @@ import { createPortal } from 'react-dom';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { isCoarsePointer } from '../lib/layoutHooks';
+import { useLayerHistory } from '../lib/layerHistory';
+import { isCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
 import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import {
@@ -36,6 +36,7 @@ import {
 } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
+import { LIST_TOOLS_MIN_ITEMS } from './settings/list';
 
 /**
  * The one floating-surface look shared by composer pickers and popovers:
@@ -114,15 +115,9 @@ function useViewportPlacement(
       const left = Math.max(VIEWPORT_MARGIN, Math.min(preferredLeft, viewportWidth - width - VIEWPORT_MARGIN));
       const below = viewportHeight - rect.bottom - PANEL_GAP - VIEWPORT_MARGIN;
       const above = rect.top - PANEL_GAP - VIEWPORT_MARGIN;
-      // `prefer` names the side to take when the other is no better: on a tie
-      // the preference wins, which is what keeps a picker docked near the
-      // bottom (the composer) opening upward. The default also takes below
-      // whenever it holds a usable list, so a short trigger does not flip.
       const openBelow = prefer === 'below'
         ? below >= Math.min(PANEL_MAX_HEIGHT, 200) || below >= above
         : below > above;
-      // Never taller than the room actually there: a floor here would push the
-      // panel past the viewport edge on a trigger that has almost no space.
       const room = openBelow ? below : above;
       const maxHeight = Math.max(0, Math.min(PANEL_MAX_HEIGHT, room));
       setStyle(openBelow
@@ -140,41 +135,13 @@ function useViewportPlacement(
   return style;
 }
 
-export function SearchableSelect({
-  id,
-  options,
-  value,
-  onChange,
-  ariaLabel,
-  title,
-  disabled = false,
-  emptyText,
-  searchPlaceholder,
-  noMatchText,
-  buttonClassName,
-  panelClassName,
-  placement = 'below',
-  align = 'start',
-  triggerLabel,
-  triggerIcon,
-  triggerSuffix,
-  hideChevron = false,
-  panelHeader,
-  panelFooter,
-  hideFilter = false,
-  allowCustomValue = false,
-  customValueLabel,
-  openSignal,
-  density = 'comfortable',
-}: {
+export interface SearchableSelectBaseProps {
   id?: string;
   readonly options: readonly SearchableSelectOption[];
-  readonly value: string;
-  readonly onChange: (value: string) => void;
   readonly ariaLabel: string;
   readonly title?: string;
   readonly disabled?: boolean;
-  /** Row shown when there are no options at all. */
+  /** Row shown when there are no options at all (and on an empty multi trigger). */
   readonly emptyText?: string;
   readonly searchPlaceholder?: string;
   /** Rendered with the trimmed query when filtering removes every option. */
@@ -184,21 +151,17 @@ export function SearchableSelect({
    * Hands panel positioning to the caller: the panel then renders inline, in
    * the trigger's own flow, with these classes verbatim. The composer uses it
    * to anchor the panel to its card through inherited CSS variables. Leave it
-   * unset to get the shared popover, which is portaled to <body> and placed
-   * against the viewport.
+   * unset to get the shared popover (or bottom sheet on phones).
    */
   readonly panelClassName?: string;
   /**
    * Which side of the trigger the panel prefers. `above` for triggers docked
-   * near the viewport bottom (the composer). A portaled panel measures the
-   * room on both sides and keeps the preferred one unless the other holds
-   * strictly more, so it never runs past a viewport edge.
+   * near the viewport bottom (the composer).
    */
   readonly placement?: 'below' | 'above' | 'auto';
   /**
    * Which trigger edge the panel hangs from. `end` for triggers that sit at
-   * the right edge of their row (settings controls), so the panel opens
-   * inward instead of past the container.
+   * the right edge of their row (settings controls).
    */
   readonly align?: 'start' | 'end';
   /**
@@ -217,27 +180,71 @@ export function SearchableSelect({
   /** Rows below the option list — related settings that share this trigger. */
   readonly panelFooter?: ReactNode;
   /**
-   * Drops the filter input for option sets short enough to read at a glance;
-   * with no options at all the list goes too, leaving a slot-only panel.
+   * Overrides automatic search visibility (`options.length >= LIST_TOOLS_MIN_ITEMS`
+   * or `allowCustomValue`). Pass `true` to hide search even on long lists, or
+   * `false` to show search even below 8 items.
    */
   readonly hideFilter?: boolean;
   /** Adds the trimmed search text as a final selectable row when no option has that exact value. */
   readonly allowCustomValue?: boolean;
   readonly customValueLabel?: (value: string) => string;
-  /**
-   * Bump to open the panel from outside — a recovery affordance that shares
-   * this trigger's menu (the invalid-model diagnostic) instead of building a
-   * second selector. Mirrors the trigger click: the list starts from the top.
-   */
+  /** Bump to open the panel from outside. */
   readonly openSignal?: number;
   /**
    * `compact`: a dense two-line row (label, then badges as faint inline facts
-   * followed by the mono hint) for long pickers opened from a tight spot such
-   * as the composer status line. Descriptions stay in the row tooltip.
+   * followed by the mono hint) for long pickers opened from a tight spot.
    */
   readonly density?: 'comfortable' | 'compact';
-}) {
+}
+
+export interface SearchableSingleSelectProps extends SearchableSelectBaseProps {
+  readonly multiple?: false;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly values?: never;
+}
+
+export interface SearchableMultiSelectProps extends SearchableSelectBaseProps {
+  readonly multiple: true;
+  readonly values: readonly string[];
+  readonly onChange: (values: string[]) => void;
+  readonly value?: never;
+}
+
+export type SearchableSelectProps = SearchableSingleSelectProps | SearchableMultiSelectProps;
+
+export function SearchableSelect(props: SearchableSelectProps) {
+  const {
+    id,
+    options,
+    ariaLabel,
+    title,
+    disabled = false,
+    emptyText,
+    searchPlaceholder,
+    noMatchText,
+    buttonClassName,
+    panelClassName,
+    placement = 'below',
+    align = 'start',
+    triggerLabel,
+    triggerIcon,
+    triggerSuffix,
+    hideChevron = false,
+    panelHeader,
+    panelFooter,
+    hideFilter,
+    allowCustomValue = false,
+    customValueLabel,
+    openSignal,
+    density = 'comfortable',
+  } = props;
+  const isMultiple = props.multiple === true;
+  const singleValue = isMultiple ? '' : props.value;
+  const multiValues = isMultiple ? props.values : [];
+
   const { t } = useI18n();
+  const phoneMode = usePhoneMode();
   const selectUid = useId().replace(/:/g, '');
   const surfaceOwnerId = `select:${id ?? selectUid}`;
   const [open, setOpen] = useState(false);
@@ -247,20 +254,10 @@ export function SearchableSelect({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  /**
-   * A `panelClassName` means the caller positions the panel itself — the
-   * composer anchors it to its card through inherited CSS variables — so that
-   * panel stays inline, in the trigger's own flow. Otherwise this component
-   * owns the placement and portals the panel to <body>.
-   */
+
   const ownsPanel = panelClassName === undefined;
-  /**
-   * Which dialog owns this picker, read from the trigger rather than the
-   * panel: the panel renders in <body> and has no dialog ancestor left to
-   * ask. The id goes on the portaled panel so an enclosing dialog's focus trap
-   * accepts this surface and only this one — a picker under a lower dialog, or
-   * on the page behind one, is not exempt while another dialog is on top.
-   */
+  const asSheet = ownsPanel && phoneMode;
+
   const ownerId = open && ownsPanel ? owningModalId(triggerRef.current) : undefined;
   const floatingOwners = open && ownsPanel ? resolveFloatingOwners(triggerRef.current) : undefined;
   const openSignalRef = useRef(openSignal);
@@ -271,31 +268,52 @@ export function SearchableSelect({
     setActiveIndex(0);
     setOpen(true);
   }, [openSignal, disabled]);
+
   const panelStyle = useViewportPlacement(
-    ownsPanel && open,
+    ownsPanel && !asSheet && open,
     triggerRef,
     align,
     placement === 'above' ? 'above' : 'below',
   );
-  /**
-   * The panel renders in `<body>`, so its stacking is decided here rather than
-   * by where the trigger sits. Opening it from inside a dialog has to clear
-   * that dialog's own overlay: a first-run wizard sits one depth up, and a
-   * panel at the page-level z-index painted *under* it — present in the DOM,
-   * invisible on screen, and unclickable. Resolved from the trigger's owning
-   * modal so any nesting depth is covered, and re-read when the panel opens
-   * because that is when a dialog above it may have appeared.
-   */
+
   const [panelZIndex, setPanelZIndex] = useState<number | undefined>(undefined);
   useEffect(() => {
     if (!open) { setPanelZIndex(undefined); return; }
     setPanelZIndex(floatingSurfaceZIndex(triggerRef.current));
   }, [open]);
 
-  const selected = options.find((option) => option.value === value);
-  const visible = useMemo(() => filterSelectOptions(options, query), [options, query]);
+  const showFilter = hideFilter !== undefined
+    ? !hideFilter
+    : (options.length >= LIST_TOOLS_MIN_ITEMS || allowCustomValue);
+
+  const selectedSet = useMemo(
+    () => new Set(isMultiple ? multiValues : (singleValue !== '' ? [singleValue] : [])),
+    [isMultiple, multiValues, singleValue],
+  );
+  const isValueSelected = (candidate: string) =>
+    isMultiple ? selectedSet.has(candidate) : candidate === singleValue;
+
+  const selected = isMultiple ? undefined : options.find((option) => option.value === singleValue);
+  const multiSummary = useMemo(() => {
+    if (!isMultiple || multiValues.length === 0) return undefined;
+    const labelFor = (val: string) => options.find((opt) => opt.value === val)?.label ?? val;
+    const first = labelFor(multiValues[0]!);
+    return multiValues.length === 1
+      ? first
+      : t('select.summaryMore', { first, count: multiValues.length - 1 });
+  }, [isMultiple, multiValues, options, t]);
+  const multiTooltip = useMemo(() => {
+    if (!isMultiple || multiValues.length === 0) return undefined;
+    return multiValues.map((val) => options.find((opt) => opt.value === val)?.label ?? val).join(', ');
+  }, [isMultiple, multiValues, options]);
+
+  const visible = useMemo(
+    () => (showFilter ? filterSelectOptions(options, query) : options),
+    [options, query, showFilter],
+  );
   const customValue = query.trim();
-  const customRow = allowCustomValue
+  const customRow = showFilter
+    && allowCustomValue
     && customValue !== ''
     && !options.some((option) => option.value === customValue)
     ? customValue
@@ -314,7 +332,7 @@ export function SearchableSelect({
     if (!open) return;
     setActiveIndex((index) => rowEnabled(index) ? index : nextEnabledIndex(-1, 1));
   }, [open, visible, customRow]);
-  // Group headers earn their row only when the set actually spans groups.
+
   const showGroups = useMemo(
     () => new Set(options.map((option) => option.group)).size > 1,
     [options],
@@ -325,13 +343,23 @@ export function SearchableSelect({
     setQuery('');
   };
 
-  // Clicking anywhere outside the trigger root or the panel dismisses it. A
-  // portaled panel is outside the root, so it is checked explicitly: clicking
-  // an option is a commit, not a dismissal.
+  useLayerHistory(surfaceOwnerId, open && asSheet, () => {
+    close();
+    triggerRef.current?.focus();
+  });
+
+  // Focus listbox on open when there is no filter input so keyboard navigation works immediately.
+  useLayoutEffect(() => {
+    if (!open || showFilter) return;
+    if (isCoarsePointer() && !asSheet) return;
+    listRef.current?.focus();
+  }, [open, showFilter, asSheet]);
+
   useEffect(() => {
     if (!open) return;
     const release = registerOverlay(surfaceOwnerId);
     const onPointerDown = (event: PointerEvent) => {
+      if (asSheet) return;
       if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return;
       if (containsOrOwnsFloatingTarget(panelRef.current, event.target, surfaceOwnerId)) return;
       close();
@@ -358,19 +386,39 @@ export function SearchableSelect({
       document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open, surfaceOwnerId]);
+  }, [open, surfaceOwnerId, asSheet]);
 
-  // Keep the active row visible while arrowing through a long list.
   useEffect(() => {
     if (!open) return;
     const row = listRef.current?.querySelector(`[data-index="${activeIndex}"]`);
-    // jsdom (unit tests) lacks scrollIntoView; browsers all have it.
     (row as HTMLElement | null | undefined)?.scrollIntoView?.({ block: 'nearest' });
   }, [open, activeIndex]);
 
+  const toggleMultiValue = (val: string) => {
+    if (!props.multiple) return;
+    const next = props.values.includes(val)
+      ? props.values.filter((entry) => entry !== val)
+      : [...props.values, val];
+    props.onChange(next);
+  };
+
   const commit = (option: SearchableSelectOption | undefined) => {
     if (option === undefined || option.disabled === true) return;
-    onChange(option.value);
+    if (props.multiple) {
+      toggleMultiValue(option.value);
+      return;
+    }
+    props.onChange(option.value);
+    close();
+  };
+
+  const commitCustom = (val: string) => {
+    if (props.multiple) {
+      toggleMultiValue(val);
+      setQuery('');
+      return;
+    }
+    props.onChange(val);
     close();
   };
 
@@ -381,14 +429,11 @@ export function SearchableSelect({
       return;
     }
     if (customRow !== undefined && index === visible.length) {
-      onChange(customRow);
-      close();
+      commitCustom(customRow);
     }
   };
 
-  const onSearchKeyDown = (event: React.KeyboardEvent) => {
-    // Enter, Escape and the arrows belong to an open IME candidate window:
-    // committing a candidate must not commit the highlighted row.
+  const onNavKeyDown = (event: React.KeyboardEvent) => {
     if (isImeKeyEvent(event)) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -397,6 +442,14 @@ export function SearchableSelect({
       event.preventDefault();
       setActiveIndex((index) => nextEnabledIndex(index, -1));
     } else if (event.key === 'Enter') {
+      if (!showFilter && event.target instanceof HTMLElement && event.target.getAttribute('role') === 'option') {
+        const indexAttr = Number(event.target.getAttribute('data-index'));
+        if (Number.isInteger(indexAttr)) {
+          event.preventDefault();
+          commitRow(indexAttr);
+          return;
+        }
+      }
       event.preventDefault();
       commitRow(activeIndex);
     } else if (event.key === 'Escape') {
@@ -408,28 +461,23 @@ export function SearchableSelect({
   };
 
   const listId = `${id ?? 'searchable-select'}-list`;
+  const rowPadClass = asSheet ? 'min-h-11 py-2.5 text-[14px]' : 'py-1.5 text-[13px]';
 
-  // The panel body, shared by both hosts: a caller-owned inline panel and the
-  // portaled one render exactly the same children, so search, the custom-value
-  // row, grouping and density cannot drift between the two paths.
   const panel = (
     <>
       {panelHeader}
-      {hideFilter ? null : (
+      {!showFilter ? null : (
       <div className="border-b border-hairline px-3 py-2">
         <input
           type="text"
           data-autofocus
-          // A touch tap on the trigger is a request to see the list. Focusing
-          // the filter there would raise the keyboard over it; the field
-          // still filters once it is tapped.
           ref={(input) => { if (!isCoarsePointer()) input?.focus(); }}
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
             setActiveIndex(0);
           }}
-          onKeyDown={onSearchKeyDown}
+          onKeyDown={onNavKeyDown}
           placeholder={searchPlaceholder ?? t('select.search')}
           aria-label={ariaLabel}
           role="combobox"
@@ -438,19 +486,21 @@ export function SearchableSelect({
           aria-activedescendant={
             rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
           }
-          className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-faint"
+          className={`w-full bg-transparent text-ink outline-none placeholder:text-ink-faint ${asSheet ? 'min-h-8 text-[15px]' : 'text-[13px]'}`}
         />
       </div>
       )}
-      {hideFilter && options.length === 0 ? null : (
+      {hideFilter === true && options.length === 0 && (panelHeader !== undefined || panelFooter !== undefined) ? null : (
       <div
         ref={listRef}
         id={listId}
         role="listbox"
+        tabIndex={showFilter ? undefined : -1}
         aria-label={ariaLabel}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 ${
-          // A caller-owned panel keeps the trigger-flow height cap; the
-          // portaled one is capped by the placement's own maxHeight.
+        aria-multiselectable={isMultiple ? true : undefined}
+        aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
+        onKeyDown={showFilter ? undefined : onNavKeyDown}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 outline-none ${
           ownsPanel ? '' : 'max-h-[min(340px,55vh)]'
         }`}
       >
@@ -464,7 +514,7 @@ export function SearchableSelect({
           <>
             {visible.map((option, index) => {
               const active = index === activeIndex;
-              const isSelected = option.value === value;
+              const isSelected = isValueSelected(option.value);
               const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
               const groupHeader =
                 showGroups && option.group !== undefined && option.group !== previousGroup
@@ -479,13 +529,14 @@ export function SearchableSelect({
                       {groupHeader}
                     </p>
                   ) : null}
-                  {density === 'compact' ? (
+                  {density === 'compact' && !asSheet ? (
                     <CompactOptionRow
                       id={`${listId}-option-${index}`}
                       index={index}
                       option={option}
                       active={active}
                       selected={isSelected}
+                      multiple={isMultiple}
                       onCommit={() => { commit(option); }}
                       onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
                     />
@@ -502,36 +553,48 @@ export function SearchableSelect({
                     title={option.title ?? option.label}
                     onClick={() => { commit(option); }}
                     onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                    className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
-                      isSelected
+                    className={`flex w-full flex-col justify-center gap-0.5 rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 disabled:cursor-not-allowed ${rowPadClass} ${
+                      isSelected && !isMultiple
                         ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
-                        : active ? 'bg-ink/[0.04]' : ''
+                        : isSelected && isMultiple
+                          ? 'bg-ink/[0.05]'
+                          : active ? 'bg-ink/[0.04]' : ''
                     }`}
                   >
-                    <span className="flex items-center gap-2">
+                    <span className="flex w-full min-w-0 items-center gap-2">
+                      {isMultiple ? (
+                        <span
+                          aria-hidden
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                            isSelected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+                          }`}
+                        >
+                          <Icon name="check" size={12} />
+                        </span>
+                      ) : null}
                       <span
-                        className={`min-w-0 truncate text-[13px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
+                        className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
                           isSelected ? 'font-medium' : ''
                         }`}
                       >
                         {option.label}
                       </span>
-                      {isSelected ? (
-                        <Icon name="check" size={12} className="ml-auto text-ink-soft" />
+                      {!isMultiple && isSelected ? (
+                        <Icon name="check" size={12} className="ml-auto shrink-0 text-ink-soft" />
                       ) : null}
                     </span>
                     {option.description !== undefined ? (
-                      <span className="line-clamp-2 text-[12px] leading-snug text-ink-faint">
+                      <span className={`line-clamp-2 text-[12px] leading-snug text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
                         {option.description}
                       </span>
                     ) : null}
                     {option.hint !== undefined ? (
-                      <span className="truncate font-mono text-[11px] text-ink-faint">
+                      <span className={`truncate font-mono text-[11px] text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
                         {option.hint}
                       </span>
                     ) : null}
                     {option.badges !== undefined && option.badges.length > 0 ? (
-                      <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                      <span className={`mt-0.5 flex flex-wrap items-center gap-1 ${isMultiple ? 'pl-6' : ''}`}>
                         {option.badges.map((badge) => (
                           <span
                             key={badge.label}
@@ -559,11 +622,11 @@ export function SearchableSelect({
                 id={`${listId}-option-${visible.length}`}
                 data-index={visible.length}
                 role="option"
-                aria-selected={customRow === value}
+                aria-selected={isValueSelected(customRow)}
                 title={customRow}
-                onClick={() => { onChange(customRow); close(); }}
+                onClick={() => { commitCustom(customRow); }}
                 onMouseMove={() => { setActiveIndex(visible.length); }}
-                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] ${
+                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 ${
                   activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
                 }`}
               >
@@ -581,6 +644,12 @@ export function SearchableSelect({
     </>
   );
 
+  const resolvedTriggerText = triggerLabel ?? (
+    isMultiple
+      ? (multiSummary ?? (emptyText ?? t('select.empty')))
+      : (selected?.label ?? (singleValue !== '' ? singleValue : (emptyText ?? t('select.empty'))))
+  );
+
   return (
     <div
       ref={rootRef}
@@ -590,7 +659,6 @@ export function SearchableSelect({
       onKeyDown={(event) => {
         if (!open || event.key !== 'Escape' || isImeKeyEvent(event)) return;
         event.preventDefault();
-        // Keep the global Escape handler (turn abort) out of a panel dismissal.
         event.stopPropagation();
         close();
         triggerRef.current?.focus();
@@ -604,7 +672,7 @@ export function SearchableSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
-        title={title ?? selected?.title ?? selected?.label}
+        title={title ?? (isMultiple ? multiTooltip : (selected?.title ?? selected?.label))}
         onClick={() => {
           if (open) {
             close();
@@ -619,10 +687,8 @@ export function SearchableSelect({
         }
       >
         {triggerIcon}
-        <span className="min-w-0 truncate">
-          {/* A value outside the option set (e.g. a session-bound model absent
-              from the catalog) still displays verbatim instead of the empty text. */}
-          {triggerLabel ?? selected?.label ?? (value !== '' ? value : (emptyText ?? t('select.empty')))}
+        <span className={`min-w-0 truncate ${isMultiple && multiValues.length === 0 && triggerLabel === undefined ? 'text-ink-faint font-sans' : ''}`}>
+          {resolvedTriggerText}
         </span>
         {triggerSuffix}
         {hideChevron ? null : (
@@ -635,43 +701,75 @@ export function SearchableSelect({
         )}
       </button>
       {open
-        ? ownsPanel
-          // The panel carries its own Escape handler because it is no longer a
-          // DOM child of this root: the root's keydown never sees its keys.
+        ? asSheet
           ? createPortal(
             <div
-              ref={panelRef}
-              data-select-panel
-              {...{
-                [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
-                [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
-                [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
-                event.preventDefault();
-                // Keep the global Escape handler (turn abort) and the dialog's
-                // own close-out of a panel dismissal.
-                event.stopPropagation();
-                close();
-                triggerRef.current?.focus();
-              }}
-              className={`anim-enter fixed flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
-              style={{ ...panelStyle, zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
+              data-select-sheet
+              className="kiki-action-sheet-layer"
+              style={{ zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
+              onClick={(event) => { event.stopPropagation(); }}
             >
-              {panel}
+              <div
+                aria-hidden
+                data-select-scrim
+                className="kiki-action-sheet-scrim"
+                onClick={() => { close(); triggerRef.current?.focus(); }}
+              />
+              <div
+                ref={panelRef}
+                data-select-panel
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                  [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  close();
+                  triggerRef.current?.focus();
+                }}
+                className="kiki-action-sheet flex flex-col overflow-hidden"
+              >
+                {panel}
+              </div>
             </div>,
             document.body,
           )
-          : (
-            <div
-              ref={panelRef}
-              data-select-panel
-              className={panelClassName}
-            >
-              {panel}
-            </div>
-          )
+          : ownsPanel
+            ? createPortal(
+              <div
+                ref={panelRef}
+                data-select-panel
+                {...{
+                  [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                  [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  close();
+                  triggerRef.current?.focus();
+                }}
+                className={`anim-enter fixed flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+                style={{ ...panelStyle, zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
+              >
+                {panel}
+              </div>,
+              document.body,
+            )
+            : (
+              <div
+                ref={panelRef}
+                data-select-panel
+                className={panelClassName}
+              >
+                {panel}
+              </div>
+            )
         : null}
     </div>
   );
@@ -681,8 +779,7 @@ export function SearchableSelect({
  * Two-line option row (`density="compact"`). Line one is the label (it owns
  * the width and truncates last-resort) with any accent badge and the check;
  * line two is the mono hint, truncating, then the plain badges as short faint
- * facts that never shrink. Nothing wraps sideways, so the list cannot scroll
- * horizontally however long a name, id, or fact set gets.
+ * facts that never shrink.
  */
 function CompactOptionRow({
   id,
@@ -690,6 +787,7 @@ function CompactOptionRow({
   option,
   active,
   selected,
+  multiple,
   onCommit,
   onHover,
 }: {
@@ -698,6 +796,7 @@ function CompactOptionRow({
   readonly option: SearchableSelectOption;
   readonly active: boolean;
   readonly selected: boolean;
+  readonly multiple: boolean;
   readonly onCommit: () => void;
   readonly onHover: () => void;
 }) {
@@ -721,9 +820,19 @@ function CompactOptionRow({
       onMouseMove={onHover}
       className={`flex w-full min-w-0 flex-col justify-center gap-px rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed ${
         hasSecondLine ? 'min-h-10 py-1 pointer-coarse:min-h-12' : 'h-8 pointer-coarse:h-10'
-      } ${selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : active ? 'bg-ink/[0.04]' : ''}`}
+      } ${selected && !multiple ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : selected && multiple ? 'bg-ink/[0.05]' : active ? 'bg-ink/[0.04]' : ''}`}
     >
       <span className="flex w-full min-w-0 items-center gap-2">
+        {multiple ? (
+          <span
+            aria-hidden
+            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border ${
+              selected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+            }`}
+          >
+            <Icon name="check" size={12} />
+          </span>
+        ) : null}
         <span
           data-option-label
           className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${selected ? 'font-medium' : ''}`}
@@ -735,10 +844,12 @@ function CompactOptionRow({
             {badge.label}
           </span>
         ))}
-        <Icon name="check" size={12} className={`shrink-0 ${selected ? 'text-ink-soft' : 'text-transparent'}`} />
+        {!multiple ? (
+          <Icon name="check" size={12} className={`shrink-0 ${selected ? 'text-ink-soft' : 'text-transparent'}`} />
+        ) : null}
       </span>
       {hasSecondLine ? (
-        <span data-option-meta className="flex w-full min-w-0 items-center gap-2 text-[11.5px] leading-4 text-ink-faint">
+        <span data-option-meta className={`flex w-full min-w-0 items-center gap-2 text-[11.5px] leading-4 text-ink-faint ${multiple ? 'pl-6' : ''}`}>
           {option.hint !== undefined ? (
             <span className="min-w-0 truncate font-mono text-[11px]">{option.hint}</span>
           ) : null}

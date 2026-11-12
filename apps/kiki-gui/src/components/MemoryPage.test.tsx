@@ -761,7 +761,6 @@ describe('MemoryPage scope switcher', () => {
     expect(scopeKind(container)).toBe('persona');
     expect(rowIds(container)).toEqual(['m_current', 'm_persona']);
     await click(container, '#memory-shard-picker');
-    await typeCombobox(container, 'long');
     await click(container, '[data-option-value=""]');
     expect(rowIds(container)).toEqual(['m_persona']);
   });
@@ -907,8 +906,8 @@ describe('MemoryPage scope switcher', () => {
   });
 
   it('does not commit an empty workspace search result and recovers the option list after clearing the query', async () => {
-    seedMemories({ 'global::': [], 'workspace:wd_current:': [] });
-    const container = await renderPage('/memory?workspace=wd_current', [workspace]);
+    seedMemories({ 'global::': [], 'workspace:wd_000:': [] });
+    const container = await renderPage('/memory?workspace=wd_000', manyWorkspaces.slice(0, 8));
     await click(container, '#memory-workspace-picker');
     await typeCombobox(container, 'not-a-workspace');
     expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(0);
@@ -917,11 +916,11 @@ describe('MemoryPage scope switcher', () => {
     expect(input.hasAttribute('aria-activedescendant')).toBe(false);
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     await flush();
-    expect(routeParams(container).get('workspace')).toBe(workspace.id);
+    expect(routeParams(container).get('workspace')).toBe('wd_000');
     expect(container.querySelector('#memory-workspace-picker')?.getAttribute('aria-expanded')).toBe('true');
     await typeCombobox(container, '');
-    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(1);
-    await click(container, '[data-option-value="wd_current"]');
+    expect(document.querySelectorAll('[data-select-panel] [data-option-value]').length).toBe(8);
+    await click(container, '[data-option-value="wd_000"]');
     expect(container.querySelector('#memory-workspace-picker')?.getAttribute('aria-expanded')).toBe('false');
   });
 

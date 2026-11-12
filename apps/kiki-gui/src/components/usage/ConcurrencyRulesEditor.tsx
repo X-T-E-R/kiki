@@ -18,7 +18,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { RequestGovernanceSnapshot } from '@kiki/protocol';
+import type { ModelCatalogItem, RequestGovernanceSnapshot } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -27,6 +27,7 @@ import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Toggle } from '../controls';
 import { InlineEditor } from '../InlineEditor';
+import { ModelPicker } from '../ModelPicker';
 import { LIST_TOOLS_MIN_ITEMS } from '../settings/list';
 import { SettingsSelect } from '../settings/SettingsPrimitives';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -87,7 +88,7 @@ interface RuleDraft {
   readonly id: string;
   readonly resource: 'model_request' | 'agent_execution' | 'live_agent';
   readonly scope: 'global' | 'each_session';
-  readonly models: string;
+  readonly models: readonly string[];
   readonly providers: string;
   readonly executors: string;
   readonly profiles: string;
@@ -114,7 +115,7 @@ function draftOf(rule: GovernanceRule): RuleDraft {
     id: rule.id,
     resource,
     scope: rule.scope,
-    models: rule.models?.join(', ') ?? '',
+    models: rule.models ? [...rule.models] : [],
     providers: rule.providers?.join(', ') ?? '',
     executors: rule.executors?.join(', ') ?? '',
     profiles: rule.profiles?.join(', ') ?? '',
@@ -136,7 +137,7 @@ function freshDraft(rules: readonly GovernanceRule[]): RuleDraft {
     id: `rule-${index}`,
     resource: 'model_request',
     scope: 'global',
-    models: '',
+    models: [],
     providers: '',
     executors: '',
     profiles: '',
@@ -163,6 +164,9 @@ function ruleFromDraft(draft: RuleDraft, otherIds: ReadonlySet<string>): { rule:
   const waitSeconds = waitText === '' ? undefined : Number(waitText);
   if (waitSeconds !== undefined && (!Number.isFinite(waitSeconds) || waitSeconds <= 0)) return { invalid: 'wait' };
 
+  const models = [...new Set(draft.models.map((entry) => entry.trim()).filter(Boolean))];
+  const ruleModels = models.length > 0 ? models : undefined;
+
   if (draft.resource === 'agent_execution' || draft.resource === 'live_agent') {
     const roles = draft.roles.length > 0 ? [...draft.roles] : undefined;
     return {
@@ -172,7 +176,7 @@ function ruleFromDraft(draft: RuleDraft, otherIds: ReadonlySet<string>): { rule:
         scope: draft.scope,
         executors: parseIdList(draft.executors),
         profiles: parseIdList(draft.profiles),
-        models: parseIdList(draft.models),
+        models: ruleModels,
         ...(roles !== undefined ? { roles } : {}),
         subagentsOnly: roles?.length === 1 && roles[0] === 'subagent',
         maxConcurrent: cap,
@@ -188,7 +192,7 @@ function ruleFromDraft(draft: RuleDraft, otherIds: ReadonlySet<string>): { rule:
       id,
       resource: 'model_request',
       scope: draft.scope,
-      models: parseIdList(draft.models),
+      models: ruleModels,
       providers: parseIdList(draft.providers),
       subagentsOnly: draft.subagentsOnly,
       maxConcurrent: cap,
@@ -235,11 +239,11 @@ function ruleSummary(rule: GovernanceRule, t: (key: I18nKey, params?: Record<str
   ].filter((part) => part !== undefined).join(' · ');
 }
 
-function RuleEditor({ initial, otherIds, isNew, modelOptions, providerOptions, onSubmit, onCancel, onDelete }: {
+function RuleEditor({ initial, otherIds, isNew, models, providerOptions, onSubmit, onCancel, onDelete }: {
   readonly initial: RuleDraft;
   readonly otherIds: ReadonlySet<string>;
   readonly isNew: boolean;
-  readonly modelOptions: readonly string[];
+  readonly models: readonly ModelCatalogItem[];
   readonly providerOptions: readonly string[];
   readonly onSubmit: (rule: GovernanceRule) => Promise<void>;
   readonly onCancel: () => void;
@@ -345,17 +349,19 @@ function RuleEditor({ initial, otherIds, isNew, modelOptions, providerOptions, o
                 className={FIELD_INPUT}
               />
             </label>
-            <label className="block space-y-1">
+            <div className="block space-y-1">
               <span className="block text-[11.5px] text-ink-soft">{t('usage.governance.models')}</span>
-              <input
-                value={draft.models}
-                spellCheck={false}
-                list="governance-model-options"
-                placeholder={t('usage.governance.targetHint')}
-                onChange={(event) => { patch({ models: event.target.value }); }}
-                className={FIELD_INPUT}
+              <ModelPicker
+                multiple
+                id={`governance-models-${initial.id}`}
+                models={models}
+                values={draft.models}
+                onChange={(nextModels) => { patch({ models: nextModels }); }}
+                emptyText={t('usage.governance.all')}
+                ariaLabel={t('usage.governance.models')}
+                buttonClassName={`${FIELD_INPUT} flex items-center justify-between gap-2 text-left`}
               />
-            </label>
+            </div>
             <div className="space-y-1.5 sm:col-span-2" data-governance-role-preset={rolePreset}>
               <span className="block text-[11.5px] text-ink-soft">{t('usage.governance.roles')}</span>
               <div className="flex flex-wrap items-center gap-2">
@@ -421,17 +427,19 @@ function RuleEditor({ initial, otherIds, isNew, modelOptions, providerOptions, o
           </>
         ) : (
           <>
-            <label className="block space-y-1">
+            <div className="block space-y-1">
               <span className="block text-[11.5px] text-ink-soft">{t('usage.governance.models')}</span>
-              <input
-                value={draft.models}
-                spellCheck={false}
-                list="governance-model-options"
-                placeholder={t('usage.governance.targetHint')}
-                onChange={(event) => { patch({ models: event.target.value }); }}
-                className={FIELD_INPUT}
+              <ModelPicker
+                multiple
+                id={`governance-models-${initial.id}`}
+                models={models}
+                values={draft.models}
+                onChange={(nextModels) => { patch({ models: nextModels }); }}
+                emptyText={t('usage.governance.all')}
+                ariaLabel={t('usage.governance.models')}
+                buttonClassName={`${FIELD_INPUT} flex items-center justify-between gap-2 text-left`}
               />
-            </label>
+            </div>
             <label className="block space-y-1">
               <span className="block text-[11.5px] text-ink-soft">{t('usage.governance.providers')}</span>
               <input
@@ -470,9 +478,6 @@ function RuleEditor({ initial, otherIds, isNew, modelOptions, providerOptions, o
         <option value="acp" />
         <option value="claude-code" />
         <option value="codex" />
-      </datalist>
-      <datalist id="governance-model-options">
-        {modelOptions.map((id) => <option key={id} value={id} />)}
       </datalist>
       <datalist id="governance-provider-options">
         {providerOptions.map((id) => <option key={id} value={id} />)}
@@ -513,7 +518,7 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
 
   const modelOptions = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const providerOptions = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
-  const modelIds = useMemo(() => (modelOptions.data?.items ?? []).map((item) => item.id), [modelOptions.data]);
+  const catalogModels = modelOptions.data?.items ?? [];
   const providerIds = useMemo(() => (providerOptions.data?.items ?? []).map((item) => item.id), [providerOptions.data]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-governance'] });
@@ -641,7 +646,7 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
             initial={freshDraft(rules)}
             otherIds={new Set(rules.map((rule) => rule.id))}
             isNew
-            modelOptions={modelIds}
+            models={catalogModels}
             providerOptions={providerIds}
             onSubmit={saveEdited(null)}
             onCancel={() => { setEditorFor(null); }}
@@ -684,7 +689,7 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
                   initial={draftOf(rule)}
                   otherIds={new Set(rules.filter((entry) => entry.id !== rule.id).map((entry) => entry.id))}
                   isNew={false}
-                  modelOptions={modelIds}
+                  models={catalogModels}
                   providerOptions={providerIds}
                   onSubmit={saveEdited(rule.id)}
                   onCancel={() => { setEditorFor(null); }}

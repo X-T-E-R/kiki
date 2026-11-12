@@ -5,6 +5,7 @@ import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings';
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
 import { buildCatalogModelOptions } from '../../modelSelectOptions';
+import { buildModelPickerOptions, ModelPicker as SharedModelPicker } from '../../ModelPicker';
 import { SearchableSelect, type SearchableSelectOption } from '../../SearchableSelect';
 import { FORM_SELECT_TRIGGER } from '../SettingsPrimitives';
 import type { NamedAgentExecutorField } from '@kiki/protocol';
@@ -38,11 +39,7 @@ export function modelOptions(
   t: ReturnType<typeof useI18n>['t'],
   { allowInherit, unsetLabel }: { allowInherit: boolean; unsetLabel?: string },
 ): SearchableSelectOption[] {
-  return [
-    ...(unsetLabel === undefined ? [] : [{ value: '', label: unsetLabel }]),
-    ...(allowInherit ? [{ value: 'inherit', label: t('st.namedAgents.followCallerModel'), description: t('st.namedAgents.followCallerModelHint') }] : []),
-    ...buildCatalogModelOptions(models, t),
-  ];
+  return buildModelPickerOptions(models, t, { allowInherit, unsetLabel });
 }
 
 /** One model alias. Custom values are allowed: external engines use their own ids. */
@@ -57,11 +54,9 @@ export function ModelPicker({ id, value, onChange, models, allowInherit, disable
 }) {
   const { t } = useI18n();
   // The trigger shows the alias as written in the file, like the team table.
-  return <SearchableSelect id={id} value={value} disabled={disabled} allowCustomValue
-    triggerLabel={value !== '' && value !== 'inherit' ? value : value === '' ? unsetTrigger : undefined}
-    options={modelOptions(models, t, { allowInherit, unsetLabel: unsetLabel ?? t('st.profiles.modelUnset') })}
+  return <SharedModelPicker id={id} value={value} disabled={disabled} models={models} allowInherit={allowInherit}
+    missing={missing} rawAliasTrigger unsetLabel={unsetLabel ?? t('st.profiles.modelUnset')} unsetTrigger={unsetTrigger}
     ariaLabel={ariaLabel ?? t('st.profiles.model')} searchPlaceholder="provider/model"
-    triggerSuffix={missing === true ? <span data-alias-missing className="shrink-0 text-[11px] text-amber-ink">{t('st.profiles.aliasMissingShort')}</span> : undefined}
     buttonClassName={`${FORM_SELECT_TRIGGER} font-mono ${missing === true ? 'border-amber-ink/50' : ''}`}
     onChange={onChange} />;
 }

@@ -715,6 +715,69 @@ describe('limit rules editor', () => {
     expect(container.querySelector('[data-governance-rule="provider-cap"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rule="agent-cap"]')).toBeNull();
   });
+
+  it('picks multiple models from the model picker and preserves missing catalog ids', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.client.listModels.mockResolvedValue({
+      items: [
+        { id: 'fixture/pro', provider_id: 'fixture', remote_id: 'pro', display_name: 'Fixture Pro', max_context_size: 200000 },
+        { id: 'fixture/lite', provider_id: 'fixture', remote_id: 'lite', display_name: 'Fixture Lite', max_context_size: 128000 },
+      ],
+    });
+    const ruleWithMissing = {
+      ...RULE,
+      id: 'model-cap',
+      models: ['legacy/missing-model'],
+      providers: undefined,
+    };
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      rules: [ruleWithMissing],
+    });
+
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-rule="model-cap"] button')!.click();
+    });
+    const editor = container.querySelector('[data-governance-editor]')!;
+    const trigger = editor.querySelector<HTMLButtonElement>('#governance-models-model-cap')!;
+    expect(trigger.textContent).toContain('legacy/missing-model');
+    expect(trigger.querySelector('[data-alias-missing]')?.textContent).toContain('not in catalog');
+
+    await act(async () => { trigger.click(); });
+    const panel = document.querySelector<HTMLElement>('[data-select-panel]')!;
+    const missingRow = panel.querySelector<HTMLButtonElement>('[role="option"][data-option-value="legacy/missing-model"]')!;
+    expect(missingRow.getAttribute('aria-selected')).toBe('true');
+    expect(missingRow.textContent).toContain('not in catalog');
+
+    // Toggle Fixture Pro and Fixture Lite on without closing the panel
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/pro"]')!.click();
+    });
+    expect(document.querySelector('[data-select-panel]')).not.toBeNull();
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/lite"]')!.click();
+    });
+    expect(trigger.textContent).toContain('legacy/missing-model +2');
+
+    // Close picker and save
+    await act(async () => {
+      panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'model-cap',
+        models: ['legacy/missing-model', 'fixture/pro', 'fixture/lite'],
+      }),
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

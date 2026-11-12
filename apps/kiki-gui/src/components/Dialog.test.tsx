@@ -126,11 +126,16 @@ it('closes a clean editor directly without a confirmation', async () => {
  * the dialog's own: otherwise the first keystroke in the filter is yanked back
  * out to the dialog's first control and the field is unusable.
  */
+const SHORT_PICKER_OPTIONS = Array.from({ length: 8 }, (_, index) => ({
+  value: index === 0 ? 'a' : index === 1 ? 'b' : `opt-${index}`,
+  label: index === 0 ? 'Alpha' : index === 1 ? 'Beta' : `Option ${index}`,
+}));
+
 function DialogWithPortaledField() {
   const [sheet, setSheet] = useState(true);
   return <I18nProvider>
     {sheet ? <Dialog stacked ariaLabel="Picker sheet" overlayId="picker-sheet-test" onClose={() => setSheet(false)}>
-      <SearchableSelect id="sheet-model" value="a" options={[{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }]}
+      <SearchableSelect id="sheet-model" value="a" options={SHORT_PICKER_OPTIONS}
         ariaLabel="Pick a model" onChange={() => {}} />
     </Dialog> : null}
   </I18nProvider>;
@@ -159,7 +164,7 @@ it('leaves focus in a portaled picker panel instead of pulling it back into the 
  */
 function Picker({ id }: { id: string }) {
   return <SearchableSelect id={id} value="a" ariaLabel={`pick ${id}`}
-    options={[{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }]} onChange={() => {}} />;
+    options={SHORT_PICKER_OPTIONS} onChange={() => {}} />;
 }
 
 function TwoDialogs() {

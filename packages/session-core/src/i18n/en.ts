@@ -725,6 +725,8 @@ export const en = {
   'select.search': 'Search…',
   'select.noMatches': 'No matches for “{query}”.',
   'select.empty': 'Nothing to choose from.',
+  'select.summaryMore': '{first} +{count}',
+  'select.useCustom': 'Use “{value}”',
 
   // ---- connect screen ----
   'connect.tagline': 'Connect to Kiki on this computer.',
