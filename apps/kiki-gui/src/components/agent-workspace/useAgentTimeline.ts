@@ -262,20 +262,22 @@ export function useAgentTimeline(
     [controller],
   );
   const cancelQueued = useCallback(
-    (promptId: string): Promise<void> => {
-      if (controller === null) return Promise.resolve();
+    async (promptId: string): Promise<void> => {
+      if (controller === null) return;
       const abort =
         agentId === MAIN_AGENT_ID
           ? controller.abortPrompt(promptId)
           : controller.abortPrompt(promptId, agentId);
-      return abort.catch((error: unknown) => {
+      try {
+        await abort;
+      } catch (error: unknown) {
         pushToast({
           tone: 'error',
           text: t('sv.cancelQueuedFailed', {
             detail: error instanceof Error ? error.message : String(error),
           }),
         });
-      });
+      }
     },
     [controller, agentId, t],
   );
