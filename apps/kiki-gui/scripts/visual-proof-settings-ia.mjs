@@ -20,7 +20,7 @@ const EXPERIMENTAL_PAGES = [
 /** Old section URLs and card hashes that other code or bookmarks still use. */
 const REDIRECTS = [
   ['/settings/automation', 'permissions', null],
-  ['/settings/communication#st-card-notify-parent', 'sessions', 'st-card-agent-messaging'],
+  ['/settings/communication#st-card-notify-parent', 'agents', 'st-card-agent-messaging'],
   ['/settings/advanced', 'developer', null],
   ['/settings/experimental#st-card-tool-experiments', 'developer', 'st-card-labs'],
   ['/settings/labs#st-card-mcp-delegation', 'extensions', 'st-card-exp-extensions'],
@@ -56,9 +56,25 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
       if (HOST_PORT.test(head) || SCOPE_WORDS.test(head)) throw new Error(`${section}: page head says where it saves: ${head}`);
       const overflow = await page.evaluate(() => {
         const pane = document.querySelector('[data-settings-scroll]');
-        return pane === null ? 0 : pane.scrollWidth - pane.clientWidth;
+        if (pane === null) return { delta: 0, offenders: [] };
+        const paneRect = pane.getBoundingClientRect();
+        const nodes = Array.from(pane.querySelectorAll('*'));
+        const overhanging = nodes.filter((node) => node.getBoundingClientRect().right > paneRect.right + 1).slice(0, 8);
+        const scrollable = nodes.filter((node) => node.scrollWidth > node.clientWidth + 1).slice(0, 8);
+        const describe = (node) => ({
+          tag: node.tagName.toLowerCase(),
+          id: node.id,
+          data: Array.from(node.attributes).filter((attribute) => attribute.name.startsWith('data-')).map((attribute) => attribute.name),
+          className: node.className,
+          width: `${node.scrollWidth}/${node.clientWidth}`,
+          right: Math.round(node.getBoundingClientRect().right - paneRect.right),
+        });
+        return {
+          delta: pane.scrollWidth - pane.clientWidth,
+          offenders: [...overhanging.map(describe), ...scrollable.map(describe)],
+        };
       });
-      if (overflow > 1) throw new Error(`${section} overflows horizontally by ${overflow}px at ${width}`);
+      if (overflow.delta > 1) throw new Error(`${section} overflows horizontally by ${overflow.delta}px at ${width}: ${JSON.stringify(overflow.offenders)}`);
       await shot(`ia-${section}-${theme}-${width}`);
     }
     await open('/settings/ai?tab=identity');
@@ -118,7 +134,7 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
     if (await page.locator('#st-card-labs [data-experimental-row]').count() > 0) throw new Error('labs still holds switches');
     // Follow one link: it must land on the flag's own row.
     await page.locator('[data-labs-entry="external_delegation_mcp"] a').click();
-    await page.waitForURL(/\/settings\/extensions/, { timeout: 10_000 });
+    await page.waitForFunction((expected) => location.pathname === expected, '/settings/extensions', { timeout: 10_000 });
     await page.waitForSelector('#st-card-exp-extensions.settings-card-flash', { timeout: 5000 });
     await page.waitForTimeout(700);
     await shot(`ia-labs-landed-${theme}-1440`);
@@ -126,7 +142,7 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
 
   async function unsaved(theme, width) {
     // A typed number with its own Save: the page intro flags the draft.
-    await open('/settings/tasks');
+    await open('/settings/developer?tab=engine');
     const input = page.locator('#st-card-task-policy input').first();
     await input.fill('7');
     await page.waitForSelector('[data-settings-unsaved]', { timeout: 5000 });
@@ -146,14 +162,14 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
     await shot(`ia-search-${theme}-1440`);
     await page.keyboard.press('Enter');
     await page.waitForSelector('#st-card-agent-messaging.settings-card-flash', { timeout: 5000 });
-    if (!page.url().includes('/settings/sessions')) throw new Error(`search landed on ${page.url()}`);
+    if (!page.url().includes('/settings/agents#st-card-agent-messaging')) throw new Error(`search landed on ${page.url()}`);
     await shot(`ia-search-landed-${theme}-1440`);
   }
 
   async function redirects(theme) {
     for (const [from, section, card] of REDIRECTS) {
       await page.goto(url(from), { waitUntil: 'domcontentloaded' });
-      await page.waitForURL(new RegExp(`/settings/${section}`), { timeout: 10_000 });
+      await page.waitForFunction((expected) => location.pathname === expected, `/settings/${section}`, { timeout: 10_000 });
       if (card !== null) {
         await page.waitForSelector(`#${card}`, { timeout: 10_000 });
         if (!page.url().includes(`#${card}`)) throw new Error(`${from} kept hash ${page.url()}`);
@@ -165,14 +181,17 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
   }
 
   async function mobileNav(theme) {
-    await open('/settings/sessions');
-    await page.locator('[data-settings-nav-trigger]').click();
-    await page.waitForSelector('[role="dialog"] [data-settings-nav-group="advanced"]', { timeout: 5000 });
-    if (await page.locator('[role="dialog"] [data-settings-nav-storage]').count() > 0) throw new Error('drawer still draws scope blocks');
+    await page.goto(url('/settings'), { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-settings-index] [data-settings-nav-tree]', { timeout: 10_000 });
+    if (await page.locator('[data-settings-index] [data-settings-nav-group="advanced"]').count() !== 1) {
+      throw new Error('mobile settings index is missing its advanced group');
+    }
+    if (await page.locator('[data-settings-index] [data-settings-nav-leaf]').count() < 10) {
+      throw new Error('mobile settings index is missing section links');
+    }
+    if (await page.locator('[role="dialog"]').count() !== 0) throw new Error('the mobile settings index must not be a drawer');
     await page.waitForTimeout(300);
-    await shot(`ia-nav-drawer-${theme}-390`);
-    await page.keyboard.press('Escape');
-    await page.locator('[role="dialog"] button[aria-label]').first().click().catch(() => undefined);
+    await shot(`ia-nav-index-${theme}-390`);
   }
 
   return async function walk() {

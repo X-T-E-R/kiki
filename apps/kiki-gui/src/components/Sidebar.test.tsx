@@ -864,6 +864,28 @@ describe('Sidebar session row states', () => {
     expect(container.querySelector('[data-session-row="s-question-path"] [data-session-needs-you]')?.textContent)
       .toBe('Awaiting answer');
   });
+
+  it('formats runs over a day as whole localized day counts', async () => {
+    const startedAt = new Date(Date.now() - 50 * 60 * 60 * 1000).toISOString();
+    listPrompts.mockResolvedValue({ active: { created_at: startedAt, content: 'Run the checks' }, queued: [] });
+    listTasks.mockResolvedValue({ items: [] });
+    const running = { ...session('s-running-50h'), busy: true, executing: true, main_turn_active: true };
+    const props = { sessions: [running], sessionGroups: [{ key: 'today', label: 'Today', items: [running] }] };
+
+    try {
+      localStorage.setItem('kiki.locale', 'en');
+      const english = await mount(props);
+      for (let index = 0; index < 4; index += 1) await settle();
+      expect(english.container.querySelector('[data-session-live]')?.textContent).toBe('Running for 2d');
+
+      localStorage.setItem('kiki.locale', 'zh');
+      const chinese = await mount(props);
+      for (let index = 0; index < 4; index += 1) await settle();
+      expect(chinese.container.querySelector('[data-session-live]')?.textContent).toBe('已运行 2 天');
+    } finally {
+      localStorage.setItem('kiki.locale', 'en');
+    }
+  });
 });
 
 describe('Sidebar archive feedback', () => {

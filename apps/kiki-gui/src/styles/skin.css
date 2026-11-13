@@ -465,9 +465,6 @@
   margin: 0 var(--kiki-block-inset) var(--kiki-block-inset);
   padding: 0 2px;
 }
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-footer] [data-connection-status] {
-  right: 6px;
-}
 /* Sticky group headers sit inside their block: no fill or blur of their own
  * (a blur over the translucent sidebar repaints its canvas a second time and
  * shows as a denser band). They read as a plain row of the block. */

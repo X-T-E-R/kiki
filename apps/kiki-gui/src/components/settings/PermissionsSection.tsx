@@ -101,30 +101,34 @@ function PermissionDefaultCard() {
             </span>
           }
         >
-          <SavedTick show={saved} />
-          <SettingsSegmented<PermissionMode>
-            ariaLabelledBy="permission-default-mode-label"
-            value={mode}
-            disabled={saving || configQuery.data === undefined}
-            onChange={(next) => void apply(next)}
-            choices={MODES.map((value) => ({ value, label: t(`st.defaults.permission.${value}`), caution: value === 'yolo' }))}
-          />
+          <div className="flex min-w-0 max-w-[calc(100vw-2rem)] flex-wrap items-center gap-2">
+            <SavedTick show={saved} />
+            <SettingsSegmented<PermissionMode>
+              ariaLabelledBy="permission-default-mode-label"
+              value={mode}
+              disabled={saving || configQuery.data === undefined}
+              onChange={(next) => void apply(next)}
+              choices={MODES.map((value) => ({ value, label: t(`st.defaults.permission.${value}`), caution: value === 'yolo' }))}
+            />
+          </div>
         </SettingField>
         <SettingField
           label={t('st.perm.dangerousBash')}
           labelId="permission-dangerous-bash-label"
           help={t('st.perm.dangerousBashHint')}
         >
-          <SettingsSegmented ariaLabelledBy="permission-dangerous-bash-label" value={dangerousBash}
-            disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}
-            choices={(['default', 'on', 'off'] as const).map((value) => ({
-              value,
-              // "Default" says what it resolves to: the engine guards every
-              // mode except Full access (isDangerousBashGuardEnabled).
-              label: value === 'default'
-                ? t('st.permissions.dangerBash.followMode', { effect: t(mode === 'yolo' ? 'st.perm.dangerousBash.off' : 'st.perm.dangerousBash.on') })
-                : t(`st.perm.dangerousBash.${value}`),
-            }))} />
+          <div className="min-w-0 max-w-[calc(100vw-2rem)]">
+            <SettingsSegmented ariaLabelledBy="permission-dangerous-bash-label" value={dangerousBash}
+              disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}
+              choices={(['default', 'on', 'off'] as const).map((value) => ({
+                value,
+                // "Default" says what it resolves to: the engine guards every
+                // mode except Full access (isDangerousBashGuardEnabled).
+                label: value === 'default'
+                  ? t('st.permissions.dangerBash.followMode', { effect: t(mode === 'yolo' ? 'st.perm.dangerousBash.off' : 'st.perm.dangerousBash.on') })
+                  : t(`st.perm.dangerousBash.${value}`),
+              }))} />
+          </div>
         </SettingField>
         <PlanGateFields />
       </SettingsBox>

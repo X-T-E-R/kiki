@@ -468,7 +468,7 @@ function AgentSetupLine() {
   const [installHost, setInstallHost] = useState<HostSkillTarget | null>(null);
   const [installedHost, setInstalledHost] = useState<HostSkillTarget | null>(null);
   const hostName = (id: HostSkillTarget) => t(HOST_SKILL_HOSTS.find((candidate) => candidate.id === id)!.name);
-  const pasteLine = t('onboarding.depart.agent.line');
+  const pasteLine = t('firstRun.agent.pasteLine');
 
   return (
     <div className="border-t border-hairline px-4 py-3" data-first-run-agent>
@@ -488,7 +488,7 @@ function AgentSetupLine() {
               key={candidate.id}
               type="button"
               data-first-run-agent-host={candidate.id}
-              aria-label={t('onboarding.depart.agent.installFor', { host: t(candidate.name) })}
+              aria-label={t('firstRun.agent.installFor', { host: t(candidate.name) })}
               className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
               onClick={() => { setInstallHost(candidate.id); }}
             >
@@ -500,11 +500,11 @@ function AgentSetupLine() {
       {installedHost !== null ? (
         <div className="mt-3" data-first-run-agent-installed={installedHost}>
           <p className="text-[12px] leading-relaxed text-ink-soft">
-            {t('onboarding.depart.agent.installed', { host: hostName(installedHost) })}
+            {t('firstRun.agent.installed', { host: hostName(installedHost) })}
           </p>
           <div className="mt-1.5 inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-hairline bg-paper pl-2.5">
             <code className="truncate font-mono text-[12px] text-ink" title={pasteLine}>{pasteLine}</code>
-            <CopyButton text={pasteLine} label={t('onboarding.depart.agent.copy')} />
+            <CopyButton text={pasteLine} label={t('firstRun.agent.copy')} />
           </div>
         </div>
       ) : null}

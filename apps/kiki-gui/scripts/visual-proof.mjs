@@ -205,16 +205,6 @@ const SOURCES = {
   savedTick: { key: 'st.savedTick' },
   planModeToggle: { key: 'st.defaults.planMode' },
   permissionModeAuto: { key: 'st.defaults.permission.auto' },
-  onboardingTitle: { key: 'onboarding.title' },
-  onboardingNext: { key: 'onboarding.next' },
-  onboardingBack: { key: 'onboarding.back' },
-  onboardingSaveNext: { key: 'onboarding.saveNext' },
-  onboardingDiscover: { key: 'discovery.title' },
-  onboardingSkipForNow: { key: 'onboarding.skipForNow' },
-  onboardingSkip: { key: 'onboarding.skip' },
-  onboardingRecommended: { key: 'onboarding.permissions.recommended' },
-  onboardingReenter: { key: 'onboarding.reenter' },
-  onboardingTest: { key: 'onboarding.model.test' },
   fetchModelsButton: { key: 'st.fetchModels.button' },
   requestIdentityLabel: { key: 'st.section.identity' },
   saveProvider: { key: 'st.providers.save' },
@@ -394,8 +384,6 @@ const SOURCES = {
 const LITERALS = {
   // Short probes: the walk matches a fragment inside a longer rendered row.
   externalChanges: { en: 'granted change', zh: '授予', anchor: 'ia.external.changes.one' },
-  onboardingReady: { en: 'A model provider is connected', zh: '已连接模型供应商', anchor: 'onboarding.model.ready' },
-  onboardingTestedOk: { en: 'Connection works', zh: '连接成功', anchor: 'onboarding.model.testedOk' },
   disabledMainHint: { en: 'Still available for main sessions', zh: '仍可用于主会话', anchor: 'st.namedAgents.disabledMainHint' },
   overriddenNote: { en: 'Built-in agent overridden by', zh: '内置智能体已被', anchor: 'st.namedAgents.overriddenByFile' },
   overridesBuiltinNote: { en: 'overrides the built-in agent', zh: '已覆盖同名的内置智能体', anchor: 'st.namedAgents.overridesBuiltin' },
@@ -1989,8 +1977,7 @@ async function scenarioDraftFlow() {
  * and 390: the ＋ menu, the Mode menu (exactly Normal / Plan / Goal, plan
  * gate nested under Plan), the mode chip with ✕, the permission menu, and the
  * "Needs you" card that takes the composer over (the walk releases it back to
- * the input before touching the menus). Then the /new hero and the
- * onboarding wizard's permissions step in dark.
+ * the input before touching the menus). The dark job also checks the /new hero.
  */
 async function scenarioComposerModes() {
   const modeShots = async (suffix) => {
@@ -2058,47 +2045,21 @@ async function scenarioComposerModes() {
     if (overflows) throw new Error(`composer overflows the 390 viewport (${theme})`);
     return;
   }
-  // The dark-only blocks below are not a theme × width matrix; they run once,
-  // in the dark job, and shoot both widths themselves.
+  // The dark-only /new hero walk runs once in the 1440 job.
   if (theme !== 'dark') return;
-  // /new hero with the Goal objective field (dark), both widths.
+  await resizeViewport(1440);
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
-  for (const width of [1440, 390]) {
-    await resizeViewport(width);
-    await page.locator('[data-add-menu-trigger]').click();
-    await page.locator('[data-add-menu-mode]').click();
-    await page.click('[data-goal-mode-toggle]');
-    await page.waitForSelector('[data-goal-open]', { timeout: 5000 });
-    await page.waitForTimeout(250);
-    await shot(`composer-new-goal-dark-${width}`);
-    await page.keyboard.press('Escape');
-    await page.locator('[data-run-mode-chip="goal"] button').last().click();
-    await page.waitForTimeout(200);
-    await shot(`composer-hero-dark-${width}`);
-  }
-  // Onboarding (dark): replayed from Settings › About; Auto is preselected.
-  await resizeViewport(1440);
-  await page.evaluate(() => { try { localStorage.removeItem('kiki.onboarding'); } catch { /* ignore */ } });
-  await page.goto(`${WEB_URL}/settings/about?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
-  const replay = page.getByRole('button', { name: S.onboardingReenter, exact: true });
-  await replay.waitFor({ timeout: 15_000 });
-  await replay.click();
-  const wizard = page.locator('[role="dialog"]');
-  await wizard.waitFor({ timeout: 10_000 });
-  await page.waitForTimeout(450);
-  await shot('composer-onboarding-welcome-dark-1440');
-  // Walk forward until the permissions step; a step count would break when a
-  // step is added.
-  for (let step = 0; step < 6 && await wizard.locator('[data-permission-choice]').count() === 0; step += 1) {
-    await wizard.locator('button[data-autofocus]').last().click();
-    await page.waitForTimeout(350);
-  }
-  await wizard.locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
-  await shot('composer-onboarding-permissions-dark-1440');
-  await resizeViewport(390);
-  await shot('composer-onboarding-permissions-dark-390');
+  await page.locator('[data-add-menu-trigger]').click();
+  await page.locator('[data-add-menu-mode]').click();
+  await page.click('[data-goal-mode-toggle]');
+  await page.waitForSelector('[data-goal-open]', { timeout: 5000 });
+  await page.waitForTimeout(250);
+  await shot('composer-new-goal-dark-1440');
   await page.keyboard.press('Escape');
+  await page.locator('[data-run-mode-chip="goal"] button').last().click();
+  await page.waitForTimeout(200);
+  await shot('composer-hero-dark-1440');
 }
 
 async function scenarioHeroShell() {
@@ -3741,12 +3702,15 @@ async function scenarioSidebarWorkspaceActivity() {
   await location.waitFor({ timeout: 10_000 });
   await page.waitForFunction((id) => {
     const text = document.querySelector(`[data-session-row="${id}"] [data-session-live]`)?.textContent ?? '';
-    return /\d:\d{2}/.test(text) && text.includes('·') && text.includes('1');
+    return /^(Running for|已运行) /.test(text);
   }, sessionId, { timeout: 10_000 });
 
   const assertWorkspaceRow = async (label) => {
     if ((await location.textContent()) !== '…/fixture/workshop') throw new Error(`${label}: short workspace path missing`);
     if (await location.getAttribute('title') !== 'C:/fixture/workshop') throw new Error(`${label}: full workspace tooltip missing`);
+    const runningText = (await live.textContent())?.trim() ?? '';
+    if (!/^(Running for|已运行) /.test(runningText)) throw new Error(`${label}: running duration is missing: ${runningText}`);
+    if (/·|queued|排队/.test(runningText)) throw new Error(`${label}: the running row still includes a queue count: ${runningText}`);
     const geometry = await row.evaluate((node) => {
       const path = node.querySelector('[data-session-location]');
       const activity = node.querySelector('[data-session-live]');
@@ -7283,106 +7247,48 @@ async function scenarioToolGroupsDark() {
 }
 
 /**
- * first-run — the onboarding wizard walk on a freshly installed kiki: the
- * auto-popup opens on boot, "Save & continue" persists the API-key form
- * before advancing, the permissions step preselects auto, finish lands on
- * /new with an empty composer and starter chips, and a reload proves the run is
- * marked completed (no second popup) with the provider still saved.
+ * first-run — /new shows ModelConnectCard in the composer's place when the
+ * fixture has no providers or models. Each connection lane opens in place and
+ * no dialog interrupts the next step.
  */
 async function scenarioFirstRun() {
-  const wizard = () => page.locator('[role="dialog"]');
-  const wizardButton = (name) => wizard().getByRole('button', { name, exact: true });
+  const link = `${WEB_URL}/new?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+  await page.evaluate(() => { localStorage.removeItem('kiki.newSessionDraft'); });
+  await page.goto(link, { waitUntil: 'domcontentloaded' });
 
-  // First-run means a clean slate: the generic harness boots /new under the
-  // previous scenario, which persists a workspace draft that is meaningless
-  // here (and renders a stale "workspace unavailable" line in every shot).
-  await page.evaluate(() => {
-    try {
-      localStorage.removeItem('kiki.onboarding');
-      localStorage.removeItem('kiki.newSessionDraft');
-    } catch { /* ignore */ }
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
-  await page.waitForSelector('[role="dialog"]', { timeout: 15_000 });
-  if (!(await wizard().getAttribute('aria-label'))?.includes('Kiki')) {
-    throw new Error('first-run dialog did not auto-open');
+  const seat = page.locator('[data-first-run-card-seat]');
+  await seat.locator('[data-first-run-card="lanes"]').waitFor({ timeout: 15_000 });
+  const lanes = await seat.locator('[data-first-run-lane]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-first-run-lane')));
+  if (lanes.join(',') !== 'account,key,local') throw new Error(`connect lanes: ${lanes.join(',')}`);
+  if (await page.locator('[role="dialog"], [aria-modal="true"]').count() !== 0) {
+    throw new Error('the model connect card must not open a dialog');
   }
-  // Let the dialog's entrance animation settle before the first shot.
-  await page.waitForTimeout(450);
-  await shot('onboarding-1-welcome');
-
-  // Welcome (language + theme, palette, picture on one page) → approvals:
-  // there is no model page in between, so the advance lands on the permission
-  // default. Connecting a model is a row on the closing guide, and the settings
-  // card it opens is the connections proofs' subject.
-  await wizard().locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
-  await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
-  if (await wizard().locator('[data-onboarding-model-id]').count() !== 0) {
-    throw new Error('the run must not hold a model form of its own');
+  if (await page.locator('textarea:not([disabled])').count() !== 0) {
+    throw new Error('the composer must stay replaced while no model is configured');
   }
-  await shot('onboarding-2-permissions');
+  await shot('first-run-model-connect');
 
-  // The look is applied live from the welcome page, so the dark view is one
-  // Back away rather than a second pass through a connection form.
-  await wizardButton(S.onboardingBack).click();
-  await wizardButton(job().view.locale === 'zh' ? '暗色' : 'Dark').click();
-  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
-  await shot('onboarding-1-welcome-dark');
-  await wizardButton(job().view.locale === 'zh' ? '亮色' : 'Light').click();
-  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
-  await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
-  await shot('onboarding-2-permissions-light');
-
-  // Mobile width: the dialog stays single-column and inside the viewport.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(250);
-  const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  if (overflows) throw new Error('onboarding dialog overflows the mobile viewport');
-  await shot('onboarding-2-permissions-mobile');
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(250);
-
-  await waitForText(S.onboardingRecommended);
-  if (await wizard().locator('[data-workspace-choice]').count() !== 0) {
-    throw new Error('onboarding must not ask for a workspace');
+  await seat.locator('[data-first-run-lane="account"]').click();
+  await seat.locator('[data-first-run-card="account"]').waitFor({ timeout: 10_000 });
+  if (await seat.locator('[data-first-run-open-lane="account"]').count() !== 1) {
+    throw new Error('the account lane did not open in place');
   }
-  // Fresh runs preselect auto, and every wire mode is offered.
-  const checked = await wizard().locator('[data-permission-choice][aria-checked="true"]').getAttribute('data-permission-choice');
-  if (checked !== 'auto') throw new Error(`permissions step must preselect auto, saw "${checked}"`);
-  const offered = await wizard().locator('[data-permission-choice]').count();
-  console.log(`[check] onboarding offers ${offered} permission modes`);
-  await shot('onboarding-2-permissions-checked');
-
-  // The last step is one invitation and one action, and the action is the real
-  // /discover hub — which owns the capability list, the routes and the model
-  // connection, so the welcome carries none of them.
-  await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-onboarding-discover]').waitFor({ timeout: 5000 });
-  await shot('onboarding-5-discover');
-
-  await wizardButton(S.onboardingDiscover).click();
-  await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
-  await page.waitForURL(/\/discover/, { timeout: 15_000 });
-  await page.waitForSelector('[data-discovery-page]', { timeout: 15_000 });
-  await page.waitForTimeout(400);
-  await shot('onboarding-6-discover-hub');
-
-  // Nothing is configured in this fixture, and the hub states that instead of
-  // greeting the user with a stale selection. Creating a provider is the
-  // connections proofs' subject (visual-proof-models-page.mjs), not this walk's.
-  const hubModelState = await page.locator('[data-discovery-model-connection] [data-model-connection]').getAttribute('data-model-connection');
-  if (hubModelState !== 'missing') {
-    throw new Error(`with nothing configured the hub must say so, saw "${hubModelState}"`);
+  await shot('first-run-account-lane');
+  if (await page.locator('[role="dialog"], [aria-modal="true"]').count() !== 0) {
+    throw new Error('opening the account lane must not open a dialog');
   }
-  console.log(`[first-run] model connection on the hub with nothing configured=${hubModelState}`);
 
-  // No reload check here: this fixture's own context script clears
-  // `kiki.onboarding` on every load (that is what makes the wizard auto-open at
-  // all), so a reload cannot prove the run is never offered twice. The rule
-  // itself is `shouldOfferOnboarding`, covered by the unit tests.
+  await seat.locator('[data-first-run-switch]').click();
+  await seat.locator('[data-first-run-card="lanes"]').waitFor({ timeout: 5000 });
+  await seat.locator('[data-first-run-lane="key"]').click();
+  await seat.locator('[data-first-run-card="key"]').waitFor({ timeout: 10_000 });
+  if (await seat.locator('[data-first-run-open-lane="key"]').count() !== 1) {
+    throw new Error('the key lane did not open in place');
+  }
+  await shot('first-run-key-lane');
+  if (await page.locator('[role="dialog"], [aria-modal="true"]').count() !== 0) {
+    throw new Error('opening the key lane must not open a dialog');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -7809,15 +7715,8 @@ function scenario(name, run, extra = {}) {
   };
 }
 
-/**
- * Registry fields a scenario needs beyond name and body.
- *
- * `onboarding`: the runner seeds a completed `kiki.onboarding` so the wizard
- * does not auto-open over a fixture that has no provider; the first-run
- * scenario is the one that must meet the wizard.
- */
+/** Registry fields a scenario needs beyond name and body. */
 const ENTRY_EXTRA = {
-  'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
   'composer-caret': { fixture: 'thread-links' },
   'sidebar-workspace-activity': { fixture: 'sidebar-workspace-groups' },

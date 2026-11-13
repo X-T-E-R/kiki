@@ -1,14 +1,13 @@
 /**
  * Visual proof for thread rooms (fixture `thread-rooms`): a room of existing
  * threads with its members rail (busy thread, wait-while-busy switches,
- * leave), the Threads tab of Add member, the sidebar multi-select bar and
- * row menu, the new-room dialog, the join-room dialog, the session rail's
- * room deliveries, Activity › Thread messages with a room row, and the
- * disabled entries once thread communication is turned off.
+ * leave), the Threads tab of Add member, ThreadRefChip's room menu and new-room
+ * dialog, the join-room dialog, session rail deliveries, Activity › Thread
+ * messages, and the state once thread communication is turned off.
  *
- *   node scripts/visual-proof-thread-rooms.mjs [--widths=1440] [--themes=light,dark]
+ *   node scripts/visual-proof-thread-rooms.mjs [--widths=1440,390] [--themes=light,dark]
  *
- * Screenshots land in .tmp/thread-rooms-proof/<stamp>/ as `<surface>-<theme>-<width>.png`.
+ * Screenshots land in `.tmp/thread-rooms-proof/<stamp>/` as `<surface>-<theme>-<width>.png`.
  * Mock-only: the fixture server stands in for kap-server.
  */
 
@@ -22,7 +21,10 @@ import { createServer } from 'vite';
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const output = join(root, '.tmp', 'thread-rooms-proof', String(Date.now()));
+const outputRoot = process.env.KIKI_PROOF_OUTPUT_DIR === undefined
+  ? join(root, '.tmp', 'thread-rooms-proof')
+  : resolve(process.env.KIKI_PROOF_OUTPUT_DIR, 'thread-rooms');
+const output = join(outputRoot, String(Date.now()));
 await mkdir(output, { recursive: true });
 const widths = (process.argv.find((arg) => arg.startsWith('--widths='))?.slice('--widths='.length) ?? '1440').split(',').map(Number);
 const themes = (process.argv.find((arg) => arg.startsWith('--themes='))?.slice('--themes='.length) ?? 'light,dark').split(',');
@@ -42,13 +44,18 @@ const api = (path, init) => fetch(`${endpoint}/api${path}`, { ...init, headers: 
 const url = (path) => `${web}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(endpoint)}&token=${FIXTURE_TOKEN}`;
 
 async function withPage(theme, width, run) {
-  const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({
+    viewport: { width, height: width <= 639 ? 844 : 900 },
+    deviceScaleFactor: 1,
+    ...(width <= 639 ? { isMobile: true, hasTouch: true } : {}),
+  });
+  const page = await context.newPage();
   page.on('pageerror', (error) => { errors.push(`${theme}-${width}: ${error.message}`); });
   await page.addInitScript((next) => {
     localStorage.setItem('kiki.locale', 'zh');
     localStorage.setItem('kiki.settings', JSON.stringify({ theme: next }));
   }, theme);
-  try { await run(page); } finally { await page.close(); }
+  try { await run(page); } finally { await context.close(); }
 }
 
 async function shot(page, name) {
@@ -65,8 +72,10 @@ async function shot(page, name) {
 }
 
 async function walk(page, tag) {
-  // Room with thread members, rail open (1440 opens it by default).
+  // Room with thread members; on phones the member rail starts behind its roster button.
   await page.goto(url('/rooms/api-contract'), { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  const rosterToggle = page.locator('[data-room-roster]');
+  if (await rosterToggle.getAttribute('aria-expanded') === 'false') await rosterToggle.click();
   await page.waitForSelector('[data-room-member="session_thread_backend"]', { timeout: 30_000 });
   await page.waitForSelector('[data-room-queued]', { timeout: 10_000 });
   await shot(page, `room-threads-${tag}`);
@@ -85,22 +94,30 @@ async function walk(page, tag) {
   await page.waitForFunction(() => document.querySelectorAll('[data-room-system="member_joined"]').length >= 5, null, { timeout: 10_000 });
   await shot(page, `room-thread-added-${tag}`);
 
-  // Sidebar multi-select → selection bar → row menu.
-  await page.locator('[data-session-row="session_thread_backend"] > button').first().click({ modifiers: ['Control'] });
-  await page.locator('[data-session-row="session_thread_frontend"] > button').first().click({ modifiers: ['Control'] });
-  await page.waitForSelector('[data-session-selection]');
-  await page.locator('[data-session-row="session_thread_frontend"]').click({ button: 'right' });
-  await page.waitForSelector('[data-menu-item="new-thread-room"]');
-  await shot(page, `sidebar-selection-menu-${tag}`);
-  await page.locator('[data-menu-item="new-thread-room"]').click();
+  // Open a new room from ThreadRefChip's own context menu, not the retired
+  // sidebar multi-select entry.
+  await page.goto(url('/s/session_thread_tests'), { waitUntil: 'domcontentloaded' });
+  const composerInput = page.locator('[data-composer-card] [data-composer-input]').first();
+  await composerInput.waitFor({ state: 'visible', timeout: 15_000 });
+  await composerInput.fill('Pair this thread with /s/session_thread_release');
+  const chip = page.locator('[data-composer-card] [data-thread-ref-chip="session_thread_release"]');
+  await chip.waitFor({ timeout: 10_000 });
+  await chip.click({ button: 'right' });
+  await page.waitForSelector('[data-thread-ref-chip-menu] [data-menu-item="room-with-threads"]', { timeout: 10_000 });
+  await shot(page, `thread-ref-chip-menu-${tag}`);
+  await page.locator('[data-thread-ref-chip-menu] [data-menu-item="room-with-threads"]').click();
   await page.waitForSelector('[data-new-thread-room]');
-  await page.waitForSelector('[data-room-add-thread]', { timeout: 10_000 });
-  await shot(page, `new-thread-room-${tag}`);
+  await page.waitForFunction(() => document.querySelectorAll('[data-new-thread-room-member]').length === 2);
+  await shot(page, `new-thread-room-chip-${tag}`);
   await page.keyboard.press('Escape');
   await page.waitForSelector('[data-new-thread-room]', { state: 'detached' });
 
-  // Join room dialog from a single row.
-  await page.locator('[data-session-row="session_thread_release"]').click({ button: 'right' });
+  // Join room dialog from a single row. The sidebar is a drawer on phones.
+  const sidebarMenu = page.locator('[data-sidebar-menu]');
+  if (await sidebarMenu.isVisible()) await sidebarMenu.click();
+  const releaseRow = page.locator('[data-session-row="session_thread_release"]');
+  await releaseRow.waitFor({ state: 'visible', timeout: 10_000 });
+  await releaseRow.click({ button: 'right' });
   await page.locator('[data-menu-item="join-room"]').click();
   await page.waitForSelector('[data-join-room="api-contract"]');
   await shot(page, `join-room-${tag}`);
@@ -108,6 +125,14 @@ async function walk(page, tag) {
 
   // Session rail: room deliveries grouped by room.
   await page.goto(url('/s/session_thread_backend'), { waitUntil: 'domcontentloaded' });
+  if ((page.viewportSize()?.width ?? 1440) <= 639) {
+    await page.locator('[data-session-actions] > button').click();
+    await page.locator('[data-session-overview-open]').click();
+  }
+  const commsSection = page.locator('[data-inspector-comms]');
+  await commsSection.waitFor({ timeout: 30_000 });
+  const commsToggle = commsSection.locator('button[aria-expanded]');
+  if (await commsToggle.getAttribute('aria-expanded') === 'false') await commsToggle.click();
   await page.waitForSelector('[data-comms-room="api-contract"]', { timeout: 30_000 });
   await page.locator('[data-comms-room="api-contract"]').scrollIntoViewIfNeeded();
   await shot(page, `rail-comms-room-${tag}`);
@@ -117,17 +142,28 @@ async function walk(page, tag) {
   await page.waitForSelector('[data-activity-comms-item="rm_1"]', { timeout: 30_000 });
   await shot(page, `activity-comms-room-${tag}`);
 
-  // Communication off: entries disabled with the reason.
+  // Communication off: the ThreadRefChip menu explains why room creation is unavailable.
   await api('/config', { method: 'POST', body: JSON.stringify({ thread_communication: { enabled: false } }) });
   await page.goto(url('/rooms/api-contract'), { waitUntil: 'domcontentloaded' });
+  const offRosterToggle = page.locator('[data-room-roster]');
+  if (await offRosterToggle.getAttribute('aria-expanded') === 'false') await offRosterToggle.click();
   await page.waitForSelector('[data-room-member="session_thread_backend"]', { timeout: 30_000 });
   await page.locator('[data-room-add-tab="threads"]').click();
   await page.waitForSelector('[data-thread-room-comms-off]', { timeout: 10_000 });
   await page.locator('[data-room-add]').scrollIntoViewIfNeeded();
   await shot(page, `room-comms-off-${tag}`);
-  await page.locator('[data-session-row="session_thread_tests"]').click({ button: 'right' });
-  await page.waitForSelector('[data-menu-item="new-thread-room"][disabled]', { timeout: 10_000 });
-  await shot(page, `sidebar-menu-comms-off-${tag}`);
+  await page.goto(url('/s/session_thread_tests'), { waitUntil: 'domcontentloaded' });
+  const offInput = page.locator('[data-composer-card] [data-composer-input]').first();
+  await offInput.waitFor({ state: 'visible', timeout: 15_000 });
+  await offInput.fill('Pair this thread with /s/session_thread_release');
+  const offChip = page.locator('[data-composer-card] [data-thread-ref-chip="session_thread_release"]');
+  await offChip.waitFor({ timeout: 10_000 });
+  await offChip.click({ button: 'right' });
+  await page.waitForSelector('[data-thread-ref-chip-menu] [data-menu-item="room-comms-off"]', { timeout: 10_000 });
+  if (await page.locator('[data-thread-ref-chip-menu] [data-menu-item="room-with-threads"]').count() !== 0) {
+    throw new Error(`${tag}: room creation remained available with thread communication off`);
+  }
+  await shot(page, `thread-ref-chip-comms-off-${tag}`);
 }
 
 try {

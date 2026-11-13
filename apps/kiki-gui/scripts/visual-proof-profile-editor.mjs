@@ -13,12 +13,37 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
   // Creating an agent is a side panel over the list.
   const createPanel = () => page.locator('[data-agent-create-panel]');
   const assertNoOverflow = async (label) => {
-    const overflow = await page.evaluate(() => {
+    const geometry = await page.evaluate(() => {
       const panel = document.querySelector('[data-agent-detail]');
-      const doc = document.documentElement.scrollWidth > window.innerWidth + 1;
-      return doc || (panel instanceof HTMLElement && panel.scrollWidth > panel.clientWidth + 1);
+      const panelRect = panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
+      const panelOverflowChildren = panel instanceof HTMLElement && panelRect !== null
+        ? Array.from(panel.querySelectorAll('*'))
+          .filter((element) => element.getBoundingClientRect().right > panelRect.right + 1)
+          .slice(0, 8)
+          .map((element) => ({
+            tag: element.tagName.toLowerCase(),
+            id: element.id,
+            data: Array.from(element.attributes).filter((attribute) => attribute.name.startsWith('data-')).map((attribute) => attribute.name),
+            className: element.className,
+            right: Math.round(element.getBoundingClientRect().right),
+            panelRight: Math.round(panelRect.right),
+          }))
+        : [];
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        panelScrollWidth: panel instanceof HTMLElement ? panel.scrollWidth : null,
+        panelClientWidth: panel instanceof HTMLElement ? panel.clientWidth : null,
+        panelOverflowChildren,
+      };
     });
-    if (overflow) throw new Error(`${label} overflows horizontally`);
+    const documentOverflows = geometry.documentWidth > geometry.viewportWidth + 1;
+    const panelOverflows = geometry.panelScrollWidth !== null
+      && geometry.panelClientWidth !== null
+      && geometry.panelScrollWidth > geometry.panelClientWidth + 1;
+    if (documentOverflows || panelOverflows) {
+      throw new Error(`${label} overflows horizontally (document ${geometry.documentWidth}/${geometry.viewportWidth}; panel ${geometry.panelScrollWidth}/${geometry.panelClientWidth}; children ${JSON.stringify(geometry.panelOverflowChildren)})`);
+    }
   };
   const openTeam = async () => {
     await page.goto(url('/settings/agents'), { waitUntil: 'domcontentloaded' });
@@ -31,7 +56,11 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await page.waitForTimeout(300);
   };
   const closeSheet = async () => {
-    await sheet().locator('[data-agent-back]').first().click();
+    const back = sheet().locator('[data-agent-back]:visible').first();
+    const close = sheet().locator('[data-detail-close]:visible').first();
+    const control = await back.count() > 0 ? back : close;
+    await control.scrollIntoViewIfNeeded();
+    await control.click();
     await page.waitForSelector('[data-agent-detail]', { state: 'detached', timeout: 5000 });
   };
   // The editor is tabbed: open the tab that owns the target before scrolling to it.
@@ -59,13 +88,8 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     if (await page.locator('[data-team-row="reviewer"] [data-team-warning]').count() !== 1) throw new Error('missing-alias row is not flagged');
     if (await page.locator('[data-team-source="extra"] [data-team-model] button').count() !== 0) throw new Error('shadowed file must not quick-edit');
     await page.locator('#st-card-main-agents').scrollIntoViewIfNeeded();
-    const dispatch = page.locator('[data-team-row="lead"] [data-team-dispatch]');
-    if ((await dispatch.locator('[data-team-dispatch-more]').textContent())?.startsWith('+3') !== true) throw new Error('long dispatch list must collapse to +N');
-    const escapes = await page.evaluate(() => {
-      const card = document.querySelector('#st-card-main-agents')?.getBoundingClientRect();
-      return [...document.querySelectorAll('[data-team-dispatch] > span')].some((cell) => card !== undefined && cell.getBoundingClientRect().right > card.right + 0.5);
-    });
-    if (escapes) throw new Error('May call cell overflows the card');
+    const dispatchable = page.locator('[data-team-row="implementer"] [data-team-dispatchable]');
+    if ((await dispatchable.textContent())?.trim() === '') throw new Error('dispatchable word is missing');
     const groupOrder = await page.locator('[data-team-group]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-team-group')));
     if (groupOrder.join(',') !== 'main,subagent') throw new Error(`unexpected group order ${groupOrder.join(',')}`);
     await shot(`profile-team-${theme}`);

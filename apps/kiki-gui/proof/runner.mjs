@@ -339,7 +339,8 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
   };
 
   const context = await browser.newContext({
-    viewport: { width: view.width, height: view.width <= 600 ? 844 : 900 },
+    viewport: { width: view.width, height: view.width <= 639 ? 844 : 900 },
+    ...(view.width <= 639 ? { isMobile: true, hasTouch: true } : {}),
     reducedMotion: 'reduce',
   });
   let page;

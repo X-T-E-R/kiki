@@ -1,15 +1,14 @@
 /**
  * Visual proof for backgrounds and appearance packs.
  *
- *   node scripts/visual-proof-appearance.mjs [--only=surfaces,matrix,scopes,pack,video,settings,onboarding]
+ *   node scripts/visual-proof-appearance.mjs [--only=surfaces,matrix,scopes,pack,video,settings,geometry,regression]
  *
  * Boots the fixture server (scenario `appearance-bg`) and its own vite, then
  * drives the real GUI: no background, a picture at three strengths, the
  * example pack (light picture, dark video), the settings page, the pack list,
- * the onboarding welcome page's appearance rows, and a loud 4K picture and a short video
- * generated for the proof (fixtures/appearance-media). Light and dark, 1440
- * and 390, locale from KIKI_PROOF_LOCALE (en default). Screenshots land in
- * .tmp/appearance2/ (gitignored).
+ * and a loud 4K picture and a short video generated for the proof
+ * (fixtures/appearance-media). Light and dark, 1440 and 390, locale from
+ * KIKI_PROOF_LOCALE (en default). Screenshots land in .tmp/appearance2/ (gitignored).
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -53,6 +52,7 @@ const webPort = await freePort();
 const fixtureUrl = `http://127.0.0.1:${fixturePort}`;
 const webUrl = `http://127.0.0.1:${webPort}`;
 const fixture = await startFixtureServer({ port: fixturePort, scenario: 'appearance-bg' });
+process.env.KIKI_SERVER_URL = fixtureUrl;
 // A shared worktree can change during the walk; HMR must not navigate a page
 // in the middle of an IndexedDB write or geometry assertion.
 const vite = await createViteServer({ root: ROOT, server: { host: '127.0.0.1', port: webPort, strictPort: true, hmr: false } });
@@ -506,60 +506,6 @@ async function scenarioSettingsPage(page) {
   check(/kiki-office/.test(plugin), `plugin skin listed with its origin ("${plugin.replace(/\s+/g, ' ')}")`);
 }
 
-/**
- * The onboarding welcome page's appearance rows, replayed from Settings › About: pick
- * dark, a palette, add a picture and lower its strength — each choice must
- * land in the real settings (no preview-only state) — then move on.
- */
-async function scenarioOnboarding(page) {
-  const wizard = page.locator('[role="dialog"]');
-  const stepOpen = async (theme) => {
-    await clearBackground(page);
-    await setTheme(page, theme);
-    await page.evaluate(() => { localStorage.removeItem('kiki.skin'); });
-    await open(page, '/settings/about', 'text=Replay setup wizard');
-    await page.getByRole('button', { name: 'Replay setup wizard', exact: true }).click();
-    await wizard.waitFor({ timeout: 10_000 });
-    await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
-    await page.waitForTimeout(400);
-  };
-  for (const theme of ['light', 'dark']) {
-    for (const width of [1440, 390]) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-      await stepOpen(theme);
-      await shot(page, `onboarding-appearance-${theme}-${width}`);
-    }
-  }
-  // Choices take effect for real.
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await stepOpen('light');
-  await wizard.locator('[data-theme-choice="dark"]').click();
-  check(await page.evaluate(() => document.documentElement.dataset.theme === 'dark'), 'onboarding: Dark switches the window to dark');
-  await wizard.locator('[data-onboarding-palette="iris"]').click();
-  check(await page.evaluate(() => JSON.parse(localStorage.getItem('kiki.skin') ?? '{}').selection?.id === 'iris'), 'onboarding: a swatch selects that palette');
-  await wizard.locator('[data-onboarding-bg-open]').click();
-  await wizard.locator('[data-bg-file]').setInputFiles(join(MEDIA, 'loud-4k.jpg'));
-  await page.waitForSelector('[data-kiki-backdrop-item]', { timeout: 15_000 });
-  await wizard.locator('#onboarding-bg-opacity').focus();
-  for (let i = 0; i < 6; i += 1) await page.keyboard.press('ArrowLeft');
-  const strength = await page.evaluate(() => {
-    const prefs = JSON.parse(localStorage.getItem('kiki.background') ?? '{}');
-    return (prefs.dark ?? prefs.light)?.look?.opacity;
-  });
-  check(typeof strength === 'number' && strength < 1, `onboarding: the strength slider writes the picture's strength (${strength})`);
-  await page.waitForTimeout(300);
-  await shot(page, 'onboarding-appearance-chosen-dark-1440');
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(300);
-  await shot(page, 'onboarding-appearance-chosen-dark-390');
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await wizard.getByRole('button', { name: 'Next', exact: true }).click();
-  await wizard.locator('[data-onboarding-appearance]').waitFor({ state: 'detached', timeout: 5000 });
-  check(true, 'onboarding: Next leaves the welcome page');
-  await page.keyboard.press('Escape');
-  await page.evaluate(() => { localStorage.removeItem('kiki.skin'); localStorage.removeItem('kiki.background'); });
-}
-
 /** Exercise the production DOM/CSS in Chromium: jsdom cannot size replaced media. */
 async function scenarioGeometry(page) {
   await setTheme(page, 'light');
@@ -783,8 +729,7 @@ const browser = await chromium.launch();
 try {
   await waitForServer(webUrl, 180_000);
   const context = await browser.newContext({ locale: LOCALE === 'zh' ? 'zh-CN' : 'en-US', viewport: { width: 1440, height: 900 } });
-  // Keep the first-run popup out of the way (the onboarding scenario replays
-  // it explicitly) and pin the locale.
+  // Keep first-run setup out of the way and pin the locale.
   await context.addInitScript((locale) => {
     try {
       if (localStorage.getItem('kiki.onboarding') === null) localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: new Date().toISOString() }));
@@ -802,7 +747,6 @@ try {
     pack: scenarioPack,
     video: scenarioVideoPolicy,
     settings: scenarioSettingsPage,
-    onboarding: scenarioOnboarding,
     geometry: scenarioGeometry,
     regression: scenarioRegression,
   };

@@ -34,8 +34,8 @@ export const HOST_SKILL_HOSTS: readonly { readonly id: HostSkillTarget; readonly
 
 /** The skills the server will write into a host, with what each one is for. */
 export const HOST_SKILL_NAMES: readonly { readonly id: HostSkillName; readonly nameKey: I18nKey; readonly purposeKey: I18nKey }[] = [
-  { id: 'kiki-as-subagent', nameKey: 'onboarding.skill.kikiAsSubagent.name', purposeKey: 'onboarding.skill.kikiAsSubagent.purpose' },
-  { id: 'kiki-ops', nameKey: 'onboarding.skill.kikiOps.name', purposeKey: 'onboarding.skill.kikiOps.purpose' },
+  { id: 'kiki-as-subagent', nameKey: 'firstRun.skill.kikiAsSubagent.name', purposeKey: 'firstRun.skill.kikiAsSubagent.purpose' },
+  { id: 'kiki-ops', nameKey: 'firstRun.skill.kikiOps.name', purposeKey: 'firstRun.skill.kikiOps.purpose' },
 ];
 
 type Phase =

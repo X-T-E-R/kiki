@@ -6,8 +6,6 @@
  * Every check here is an assertion about something that used to fail with no
  * error at all, which is why a green test run was not evidence:
  *
- *  - onboarding-set-up-later — "Set up later" steps past the current step and
- *    keeps the run open; on the last step it still closes.
  *  - engine-visibility — an engine nobody configured is not offered; hiding one
  *    removes it from the list but leaves it installed and checkable.
  */
@@ -21,17 +19,6 @@ import { spaceDesktopMock } from './space-desktop-mock.mjs';
 import { FIXTURE_TOKEN } from './fixture-server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-const TEXT = {
-  en: {
-    setUpLater: 'Set up later',
-    closeSetup: 'Close setup',
-  },
-  zh: {
-    setUpLater: '稍后配置',
-    closeSetup: '关闭引导',
-  },
-};
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -49,13 +36,6 @@ function walkSources(root) {
   };
   visit(root);
   return found;
-}
-
-async function openWizard(page) {
-  const wizard = page.locator('[role="dialog"][aria-label]').first();
-  await wizard.waitFor({ timeout: 20_000 });
-  await page.waitForTimeout(450);
-  return wizard;
 }
 
 /**
@@ -256,29 +236,6 @@ const scenarios = [
       expect((await code.innerText()).trim() === userCode,
         'a failed open must leave the device code on screen so the flow can be finished by hand');
       await shot('ui033-14-oauth-open-refused');
-    },
-  },
-  {
-    name: 'onboarding-set-up-later',
-    fixture: 'first-run',
-    onboarding: false,
-    async run({ page, view, shot }) {
-      const text = TEXT[view.locale];
-      const wizard = await openWizard(page);
-      await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 8000 });
-
-      // "Set up later" is about this step, so it steps past it and keeps going.
-      await wizard.getByRole('button', { name: text.setUpLater, exact: true }).click();
-      await wizard.locator('[data-permission-choice]').first().waitFor({ timeout: 8000 });
-      expect(await page.locator('[role="dialog"][aria-label]').count() === 1, 'the wizard stays open');
-      await shot('ui033-6-after-skip-step');
-
-      // Past the last step there is nowhere to go, so it keeps its original job.
-      await wizard.getByRole('button', { name: text.setUpLater, exact: true }).click();
-      await wizard.locator('[data-onboarding-discover]').waitFor({ timeout: 8000 });
-      await wizard.getByRole('button', { name: text.closeSetup, exact: true }).first().click();
-      await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 8000 });
-      expect(page.url().includes('/new'), `closing returns to where the user was, saw ${page.url()}`);
     },
   },
   {

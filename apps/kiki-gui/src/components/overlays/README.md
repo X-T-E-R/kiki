@@ -10,7 +10,7 @@ Pick the lowest tier that fits. Moving up a tier costs the user context; it must
 | 4. Side panel | Creating something, or a multi-step flow; deeper steps push inside the panel | `SidePanel` (`back`, `stepKey`) + `usePanelStack` | `UnifiedAgentManager.tsx` (新建智能体), `settings/notifications/AddChannelPanel.tsx` |
 | 5. Dialog | A rare, short, self-contained task that is not an object edit | `Dialog` + `dialogPanelClass('sm'｜'md'｜'lg')` | `settings/spaces/SpaceDialogs.tsx` |
 | 6. Confirm | Irreversible only: deletes stored data, uninstalls, signs out of an external account, discards a large draft | `ConfirmDialog` | `ModelsSection.tsx` (remove model) |
-| 7. Undo toast | Everything reversible: run it now, offer the inverse | `pushUndoToast` (`lib/toasts.ts`) | `settings/SpacesSection.tsx`, `RequestGovernanceView.tsx`, `settings/SessionTitlePromptField.tsx` |
+| 7. Undo toast | Everything reversible: run it now, offer the inverse | `pushUndoToast` (`lib/toasts.ts`) | `settings/SpacesSection.tsx`, `usage/ConcurrencyRulesEditor.tsx`, `settings/SessionTitlePromptField.tsx` |
 
 **Global rule: at most one overlay layer plus one confirm.** A side panel never opens another panel or a dialog. A dialog never opens a dialog. The only thing allowed on top of either is one `ConfirmDialog` (or the app's leave prompt).
 

@@ -2151,14 +2151,19 @@ function SessionRow({
   const rowState = sessionRowState(session, seen);
   const label = resolveTitle(sessionLabel(session, untitled));
   const elapsed = useElapsedSince(activity === undefined ? undefined : anchorFor(activity));
-  // A running row says one thing: that it runs, and for how long — a ticking
-  // m:ss inside the first hour, "3h 12m" after it (a clock past an hour does
-  // not read at a glance). The workspace stays on the same second line so a
-  // running row never becomes anonymous. Nested rows keep their single-line
-  // relation, and workspace groups already name the location in their header.
-  const runningText = elapsed === undefined
+  // A running row says how long: m:ss in the first hour, a compact duration
+  // through the first day, then whole days. The workspace stays on the same
+  // second line so a running row never becomes anonymous.
+  const duration = elapsed === undefined
+    ? undefined
+    : elapsed < 3_600_000
+      ? formatElapsedClock(elapsed)
+      : elapsed >= 86_400_000
+        ? t('time.durationDaysOnly', { d: Math.floor(elapsed / 86_400_000) })
+        : time.formatDuration(elapsed);
+  const runningText = duration === undefined
     ? t('sidebar.status.working')
-    : t('sidebar.row.runningFor', { duration: elapsed < 3_600_000 ? formatElapsedClock(elapsed) : time.formatDuration(elapsed) });
+    : t('sidebar.row.runningFor', { duration });
   // Queued prompts and background tasks are the session's own business and
   // left the row; a desktop hover over the running word still lists them.
   const runningDetail = activity === undefined || status !== 'running'
