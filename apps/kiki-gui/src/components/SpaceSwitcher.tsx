@@ -8,7 +8,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { appShellConnectUrl } from '../lib/appShell';
 import type { PreparedScope } from '../lib/navScope';
-import { browsableRemote, connectionsApi, hasGuiPurpose, remoteConnectionKeys, useRemoteConnections } from '../lib/remoteConnections';
+import { browsableRemote, connectionsApi, fingerprint, hasGuiPurpose, remoteConnectionKeys, useRemoteConnections } from '../lib/remoteConnections';
 import { useSpaceLocation } from '../lib/spaceLocation';
 import { useSpacePreferencesFrame } from '../lib/spacePreferences';
 import { spaceSettingsTargetOf } from '../lib/spaceSettings';
@@ -398,7 +398,9 @@ export function SpaceSwitcher() {
             void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
             pushToast({
               tone: 'success',
-              text: t('st.remote.added', { name: record.label }),
+              text: record.fingerprintToVerify === undefined
+                ? t('st.remote.added', { name: record.label })
+                : t('st.remote.addedWithFingerprint', { name: record.label, fingerprint: fingerprint(record.fingerprintToVerify, 16, 8) }),
               durationMs: UNDO_TOAST_MS,
               action: browsableRemote(record)
                 ? { label: t('st.remote.enter'), run: () => { void enterRemoteSpace(record.id, record.label); } }

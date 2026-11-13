@@ -19,11 +19,18 @@ const identity = () => ({ homeId: randomUUID(), hostId: randomUUID(), protocol: 
 async function fixture() {
   const home = await mkdtemp(join(tmpdir(), 'kiki-broker-budget-'));
   cleanups.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
-  const targetIdentity = identity(); const sourceIdentity = identity(); const grantId = randomUUID();
+  const targetIdentity = identity(); const sourceIdentity = identity();
   const target = Fastify({ forceCloseConnections: true }); const source = Fastify({ forceCloseConnections: true });
-  const owner = randomUUID(); const grant = randomUUID();
-  target.get('/api/remote-connections/handshake', async () => ({ code: 0, data: { identity: targetIdentity, serverId: randomUUID(), inboundEnabled: true } }));
-  target.post('/api/remote-connections/claim', async () => ({ code: 0, data: { grantId, revision: 1, grant, target: targetIdentity } }));
+  const owner = randomUUID();
+  const targetAdmission = new ConnectionAdmission(join(home, 'target'), targetIdentity);
+  await targetAdmission.setEnabled(true);
+  const invitation = await targetAdmission.invite(sourceIdentity, 'Fixture');
+  target.get('/api/remote-connections/handshake', async (request, reply) => {
+    const proof = targetAdmission.inspectHandshakeProof({ nonce: String(request.headers['x-kiki-handshake-nonce']), proof: String(request.headers['x-kiki-handshake-proof']) });
+    if (proof !== undefined) reply.header('x-kiki-handshake-proof', proof.proof).header('x-kiki-handshake-status', proof.status);
+    return { code: 0, data: { identity: targetIdentity, serverId: randomUUID(), inboundEnabled: true } };
+  });
+  target.post('/api/remote-connections/claim', async () => ({ code: 0, data: await targetAdmission.claim(invitation.invitation, sourceIdentity) }));
   const manager = new RemoteConnectionManager(home, sourceIdentity); await manager.ready();
   const admission = new ConnectionAdmission(home, sourceIdentity); await admission.ready();
   const broker = registerRemoteConnectionRoutes(source, admission, manager, randomUUID(), () => owner);
@@ -35,7 +42,7 @@ async function fixture() {
     const targetUrl = await target.listen({ port: 0, host: '127.0.0.1' });
     const sourceUrl = await source.listen({ port: 0, host: '127.0.0.1' });
     cleanups.push(() => target.close(), () => source.close());
-    const record = await manager.add({ label: 'Adversarial fixture', endpoint: targetUrl, target: targetIdentity, ownerToken: owner, invitation: randomUUID(), backgroundSummary: false });
+    const record = await manager.add({ label: 'Adversarial fixture', endpoint: targetUrl, target: targetIdentity, ownerToken: owner, invitation: invitation.invitation, backgroundSummary: false });
     const call = (suffix: string, body: unknown, signal?: AbortSignal) => fetch(`${sourceUrl}/api/remote-connections/${record.id}/${suffix}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     return { sourceUrl, record, call };
   };

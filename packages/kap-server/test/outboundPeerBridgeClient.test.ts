@@ -103,6 +103,9 @@ async function fixture(random: () => number = () => 0): Promise<Fixture> {
     list: () => listed ? [record] : [],
     get: () => record,
     secrets: { read: async () => ({ ...credential }) },
+    credentialEpoch: () => 0,
+    lease: (_id: string, signal: AbortSignal) => ({ signal, release: () => {} }),
+    connect: async () => ({ record, credential: { ...credential }, transport: record }),
     onDidChange: (listener: () => void) => {
       connectionListeners.add(listener);
       return { dispose: () => { connectionListeners.delete(listener); } };

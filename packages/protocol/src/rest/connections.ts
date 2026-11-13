@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const CONNECTION_PROTOCOL = 1;
 const safeText = (max: number) => z.string().min(1).max(max).regex(/^[^\u0000-\u001F\u007F]+$/);
 export const sshRemoteProfileSchema = z.object({
@@ -51,13 +52,17 @@ export function normalizePairingCode(raw: string): string | undefined {
   if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(compact)) return undefined;
   return `${compact.slice(0, 4)}-${compact.slice(4)}`;
 }
-export function formatPairingUri(input: { readonly endpoint: string; readonly code: string }): string {
+export function formatPairingUri(input: { readonly endpoint: string; readonly code: string; readonly fingerprint?: string }): string {
   const endpoint = input.endpoint.trim();
   const code = normalizePairingCode(input.code);
-  if (endpoint === '' || code === undefined) throw new Error('Invalid pairing URI payload');
-  return `${PAIRING_URI_PREFIX}?endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`;
+  const fingerprint = input.fingerprint;
+  if (endpoint === '' || code === undefined || (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))) {
+    throw new Error('Invalid pairing URI payload');
+  }
+  const payload = `endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`;
+  return `${PAIRING_URI_PREFIX}?${payload}${fingerprint === undefined ? '' : `&fp=${encodeURIComponent(fingerprint)}`}`;
 }
-export function parsePairingUri(raw: string): { readonly endpoint: string; readonly code: string } | undefined {
+export function parsePairingUri(raw: string): { readonly endpoint: string; readonly code: string; readonly fingerprint?: string } | undefined {
   const text = raw.trim();
   if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(text)) return undefined;
   try {
@@ -68,8 +73,9 @@ export function parsePairingUri(raw: string): { readonly endpoint: string; reado
     if (!((host === 'pair' && (path === '' || path === '/')) || (host === '' && path === '/pair'))) return undefined;
     const endpoint = url.searchParams.get('endpoint')?.trim() ?? '';
     const code = normalizePairingCode(url.searchParams.get('code') ?? '');
-    if (endpoint === '' || code === undefined) return undefined;
-    return { endpoint, code };
+    const fingerprint = url.searchParams.get('fp') ?? undefined;
+    if (endpoint === '' || code === undefined || (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))) return undefined;
+    return fingerprint === undefined ? { endpoint, code } : { endpoint, code, fingerprint };
   } catch {
     return undefined;
   }
@@ -103,6 +109,7 @@ export const pairCodeCreateOutputSchema = z.object({
   expiresAt: z.number().int().positive(),
   target: connectionIdentitySchema,
   suggestedEndpoints: z.array(z.string()),
+  tlsFingerprint: fingerprintSchema.optional(),
 }).strict();
 export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
 export const connectionPairInputSchema = z.object({
@@ -111,6 +118,7 @@ export const connectionPairInputSchema = z.object({
   label: z.string().max(128).optional(),
   backgroundSummary: z.boolean().default(true),
   requestBridge: z.boolean().optional(),
+  fingerprint: fingerprintSchema.optional(),
 }).strict();
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
 export const pairClaimInputSchema = z.object({
@@ -142,11 +150,12 @@ export const remoteConnectionSchema = z.object({
   credentialRef: z.string(), enabled: z.boolean(), backgroundSummary: z.boolean(),
   purposes: z.array(z.enum(['gui', 'bridge'])), transport: connectionTransportSchema.optional(),
   state: z.enum(['offline', 'online', 'authentication_required', 'identity_changed', 'disabled']),
+  pinnedFingerprint: fingerprintSchema.optional(), fingerprintToVerify: fingerprintSchema.optional(),
   lastError: z.string().optional(), lastConnectedAt: z.number().optional(), activeLeases: z.number().int().nonnegative(),
   summary: z.object({ value: spaceSummarySchema, lastSeen: z.number(), stale: z.boolean() }).optional(),
 });
 export type RemoteConnection = z.infer<typeof remoteConnectionSchema>;
 export const connectionBrokerInputSchema = z.object({ operation: z.string().min(1).max(128), params: z.record(z.string(), z.string()).optional(), query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(), headers: z.object({ ifNoneMatch: z.string().max(1024).regex(/^[^\r\n]*$/).optional(), range: z.string().max(128).regex(/^bytes=\d*-\d*$/).optional() }).strict().optional(), body: z.unknown().optional() }).strict();
 export type ConnectionBrokerInput = z.infer<typeof connectionBrokerInputSchema>;
-export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean() });
+export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean(), tlsFingerprint: fingerprintSchema.optional(), capabilities: z.array(z.string().min(1).max(64)).max(64).optional() });
 export type ConnectionHandshake = z.infer<typeof connectionHandshakeSchema>;

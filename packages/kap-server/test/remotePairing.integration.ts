@@ -6,6 +6,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
+import { connect, createServer, type Socket } from 'node:net';
+import { once } from 'node:events';
 import { createConnectionKlient, createKlient } from '@kiki/klient/http';
 import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
 import { IConfigService, ISessionManager, IThreadCommunicationService, IThreadMailboxStore, IWorkspaceService } from '@kiki/agent-core-v2';
@@ -36,6 +38,64 @@ async function claim(server: RunningServer, body: unknown, token?: string) {
 }
 
 describe('short-code pairing on two real servers', () => {
+  it('encrypts pairing, hello, broker HTTP and WS on the LAN wire and rotates the grant in place', async () => {
+    const source = await boot(); const target = await boot();
+    const client = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
+    const targetClient = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    const issued = await targetClient.rest!.connections.createPairCode({ allowBridge: false });
+    const lan = new URL(issued.suggestedEndpoints[0]!);
+    const captured: Buffer[] = []; const firstBytes: number[] = []; const sockets = new Set<Socket>();
+    const relay = createServer((socket) => {
+      const upstream = connect({ host: lan.hostname, port: Number(lan.port) });
+      for (const active of [socket, upstream]) { sockets.add(active); active.once('close', () => sockets.delete(active)); active.on('error', () => active.destroy()); }
+      socket.once('data', (data: Buffer) => firstBytes.push(data[0]!));
+      socket.on('data', (data: Buffer) => captured.push(Buffer.from(data)));
+      upstream.on('data', (data: Buffer) => captured.push(Buffer.from(data)));
+      socket.pipe(upstream); upstream.pipe(socket);
+    });
+    relay.listen(0, '127.0.0.1'); await once(relay, 'listening');
+    const address = relay.address(); if (address === null || typeof address === 'string') throw new Error('No relay address');
+    const via = `http://127.0.0.1:${address.port}`;
+    const body = 'unique encrypted broker message';
+    let ws: WebSocket | undefined;
+    try {
+      const record = await client.rest!.connections.pair({ endpoint: formatPairingUri({ endpoint: via, code: issued.code, fingerprint: issued.tlsFingerprint }), code: issued.code, label: 'My target', backgroundSummary: false, requestBridge: false });
+      expect(record.endpoint).toBe(via.replace(/^http:/, 'https:'));
+      expect(record.pinnedFingerprint).toBe(issued.tlsFingerprint);
+      const secret = await source.remoteConnections.secrets.read<{ ownerToken: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
+      const lease = source.remoteConnections.lease(record.id);
+      try {
+        const response = await source.remoteConnections.forward(record.id, { operation: 'sessionCreate', body: { work_dir: join(homes[1]!, 'workspace'), session_id: 'encrypted-session', title: body } }, lease.signal);
+        expect(response.status).toBe(200); await response.body?.cancel();
+      } finally { lease.release(); }
+      ws = new WebSocket(`${endpoint(source).replace(/^http:/, 'ws:')}/api/remote-connections/${record.id}/events`, `${WS_BEARER_PROTOCOL_PREFIX}${source.localOwnerToken}`);
+      ws.on('error', () => {});
+      await once(ws, 'open');
+      const ready = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('No broker subscription acknowledgement')), 15000);
+        ws!.on('message', (raw) => { if (raw.toString().includes(body)) { clearTimeout(timer); resolve(); } });
+      });
+      ws.send(JSON.stringify({ type: 'subscribe', id: body, scope: 'core', service: 'modelService', event: 'onDidChangeModels' })); await ready;
+      const oldClosed = once(ws, 'close');
+      const next = await targetClient.rest!.connections.createPairCode({ allowBridge: false });
+      const replacement = await client.rest!.connections.pair({ endpoint: via, fingerprint: next.tlsFingerprint, code: next.code, backgroundSummary: true, requestBridge: false });
+      await oldClosed;
+      expect(replacement).toMatchObject({ id: record.id, label: 'My target', backgroundSummary: false, enabled: true });
+      expect(source.remoteConnections.list().filter((entry) => entry.purposes.includes('gui'))).toHaveLength(1);
+      expect(target.admission.status().grants.filter((grant) => grant.status === 'approved')).toHaveLength(1);
+      const oldToken = await fetch(lan.origin + '/api/meta', { headers: { authorization: `Bearer ${secret.ownerToken}` } });
+      expect(oldToken.status).toBe(401);
+      expect((await oldToken.json() as { msg: string }).msg).toBe('connection_not_approved');
+      const bytes = Buffer.concat(captured);
+      expect(firstBytes.length).toBeGreaterThanOrEqual(5);
+      expect(firstBytes.every((byte) => byte === 0x16)).toBe(true);
+      for (const sensitive of [issued.code, secret.ownerToken, body, 'Authorization:', 'kimi-code.bearer.']) expect(bytes.includes(Buffer.from(sensitive))).toBe(false);
+    } finally {
+      ws?.terminate(); for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+      await client.close(); await targetClient.close();
+    }
+  }, 120_000);
   it('pairs GUI and bridge over a real non-loopback endpoint, defers thread enablement until claim succeeds, and revokes only the paired bridge grant', async () => {
     const source = await boot(); const target = await boot();
     const sourceClient = createKlient({ endpoint: endpoint(source), token: source.localOwnerToken });
@@ -75,7 +135,9 @@ describe('short-code pairing on two real servers', () => {
       expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
       expect(targetConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).not.toBe(true);
       const record = await sourceClient.rest!.connections.pair({ endpoint: pairUri, code: created.code, backgroundSummary: true });
-      expect(record.endpoint).toBe(nonLoopback);
+      expect(record.endpoint).toBe(nonLoopback.replace(/^http:/, 'https:'));
+      expect(record.pinnedFingerprint).toBe(created.tlsFingerprint);
+      expect(record.fingerprintToVerify).toBe(created.tlsFingerprint);
       expect(record.purposes).toEqual(['gui', 'bridge']);
       expect(record.label.length).toBeGreaterThan(0);
       expect(sourceConfig.get<{ enabled?: boolean }>(THREAD_COMMUNICATION_SECTION)?.enabled).toBe(true);
@@ -207,14 +269,18 @@ describe('short-code pairing on two real servers', () => {
       expect(mailboxBefore.items[0]!.message.producer).toMatchObject({ kind: 'bridged_peer', sourceHomeId: source.admission.identity.homeId, bridgeId: targetBridgesBefore.inbound[0]!.id });
       const paired = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: record.id });
       expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
-      const invitation = await targetClient.rest!.connections.invite({ source: source.admission.identity, label: 'Legacy' });
-      const legacy = await sourceClient.rest!.connections.add({ label: 'Legacy', endpoint: nonLoopback, target: target.admission.identity, ownerToken: target.authTokenService.getToken(), invitation: invitation.invitation, backgroundSummary: false });
-      const legacySecret = await source.remoteConnections.secrets.read<{ ownerToken: string }>({ connectionId: legacy.credentialRef, purpose: 'gui' });
+      const legacySource = await boot();
+      const invitation = await targetClient.rest!.connections.invite({ source: legacySource.admission.identity, label: 'Legacy' });
+      const legacy = await legacySource.remoteConnections.add({ label: 'Legacy', endpoint: nonLoopback, target: target.admission.identity, ownerToken: target.authTokenService.getToken(), invitation: invitation.invitation, backgroundSummary: false });
+      const legacySecret = await legacySource.remoteConnections.secrets.read<{ ownerToken: string }>({ connectionId: legacy.credentialRef, purpose: 'gui' });
       expect(legacySecret.ownerToken).toBe(target.authTokenService.getToken());
-      const legacyView = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: legacy.id });
+      const legacyView = createConnectionKlient({ endpoint: endpoint(legacySource), token: legacySource.localOwnerToken, connectionId: legacy.id });
+      expect((await legacyView.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
+      expect(legacy.endpoint).toBe(nonLoopback);
+      expect(legacy.pinnedFingerprint).toBeUndefined();
       await rotateServerToken(homes[1]!);
       await expect(legacyView.rest!.meta()).rejects.toThrow();
-      expect(source.remoteConnections.get(legacy.id).state).toBe('authentication_required');
+      expect(legacySource.remoteConnections.get(legacy.id).state).toBe('authentication_required');
       expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
       await target.admission.setEnabled(false);
       await expect(paired.rest!.meta()).rejects.toThrow('inbound_disabled');
@@ -225,17 +291,22 @@ describe('short-code pairing on two real servers', () => {
       const recoveredList = await sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, connectionId: record.id });
       expect(recoveredList.threads.some((item) => item.ref.sessionId === 'pair-target')).toBe(true);
       expect((await targetMailbox.readMessages({ group: 'session:pair-target', limit: 10 })).items).toHaveLength(1);
-      await target.admission.revoke(secret.grantId);
-      await expect(paired.rest!.meta()).rejects.toThrow('connection_not_approved');
-      expect(source.remoteConnections.get(record.id).state).toBe('authentication_required');
-      await expect(sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, bridgeId: targetBridgesBefore.inbound[0]!.id, connectionId: record.id })).rejects.toThrow('bridge_revoked');
-      const revokedSend = await peerSend[SEND_PEER_THREAD_MESSAGE]({
+      const legacyBridge = targetBridgesBefore.inbound[0]!;
+      const legacyBridgeSecret = await source.remoteConnections.secrets.read<{ credential: string }>({ connectionId: legacyBridge.id, purpose: 'bridge' });
+      await sourceClient.rest!.threadBridges.install({ connectionId: record.id, grant: { ...legacyBridge, revision: legacyBridge.revision + 1 }, credential: legacyBridgeSecret.credential });
+      const reissue = await targetClient.rest!.connections.createPairCode({ allowBridge: false });
+      const replacement = await sourceClient.rest!.connections.pair({ endpoint: nonLoopback, code: reissue.code, fingerprint: reissue.tlsFingerprint, backgroundSummary: false, requestBridge: false });
+      expect(replacement).toMatchObject({ id: record.id, purposes: ['gui'], backgroundSummary: true, state: 'online' });
+      expect(target.admission.status().grants.find((grant) => grant.id === secret.grantId)?.status).toBe('revoked');
+      expect((await paired.rest!.meta()).server_home_id).toBe(target.admission.identity.homeId);
+      expect((await sourceClient.rest!.threadBridges.status()).outbound.find((link) => link.grant.id === targetBridgesBefore.inbound[0]!.id)?.grant.revoked).toBe(true);
+      await expect(sourceThreads.listThreads({ caller: { workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' }, bridgeId: targetBridgesBefore.inbound[0]!.id, connectionId: record.id })).rejects.toThrow('bridge_operation_denied');
+      await expect(peerSend[SEND_PEER_THREAD_MESSAGE]({
         source: { hostId: source.admission.identity.hostId, workspaceId: primarySourceWorkspace.id, sessionId: 'pair-source' },
         target: targetThread!.ref,
         content: 'after pair revoke',
         idempotencyKey: 'pair-send-revoked',
-      });
-      expect(revokedSend.delivery).toBe('undeliverable');
+      })).rejects.toThrow('bridge_operation_denied');
       expect((await targetMailbox.readMessages({ group: 'session:pair-target', limit: 10 })).items).toHaveLength(1);
       const targetBridgesAfter = await targetClient.rest!.threadBridges.status();
       expect(targetBridgesAfter.inbound.find((g) => g.id === targetBridgesBefore.inbound[0]!.id)?.revoked).toBe(true);

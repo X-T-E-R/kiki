@@ -250,6 +250,10 @@ export class ConnectionAudience {
       if (/^\/api\/usage-export(?:\/|$)/.test(path)) throw new AdmissionError(403, 'local_owner_required');
       if (this.admission.unavailableReason === undefined && ((path === '/api/remote-connections/handshake' && request.method === 'GET') || (path === '/api/remote-connections/claim' && request.method === 'POST'))) return true;
       const peer = this.admission.authorize(peerGrant(request.headers));
+      if (request.method === 'POST' && path === '/api/remote-connections/pair/cancel') {
+        const audience = { grantId: peer.id, revision: peer.revision };
+        peers.set(request, audience); peers.set(request.raw, audience); return true;
+      }
       return this.bindPeer({ id: peer.id, revision: peer.revision }, request, reply);
     } catch (error) {
       if (!(error instanceof AdmissionError)) throw error;

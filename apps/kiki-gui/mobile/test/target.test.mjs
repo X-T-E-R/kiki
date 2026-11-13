@@ -109,6 +109,28 @@ await test('kiki://pair URI round-trips endpoint and short code', () => {
   });
   assert.equal(parsePairingUri('kiki://pair?endpoint=ftp://example.test&code=2345-6789'), null);
   assert.equal(parsePairingUri('kiki://pair?endpoint=http://192.168.1.5:5494&code=bad'), null);
+
+  const fingerprint = '0123456789abcdef'.repeat(4);
+  const fingerprintUri = formatPairingUri({
+    endpoint: 'http://192.168.1.5:5494',
+    code: '2345-6789',
+    fingerprint,
+  });
+  assert.equal(new URL(fingerprintUri).searchParams.get('fp'), fingerprint);
+  assert.deepEqual(parsePairingUri(fingerprintUri), {
+    endpoint: 'http://192.168.1.5:5494',
+    code: '2345-6789',
+  });
+  assert.deepEqual(readScanPayload(fingerprintUri), {
+    ok: true,
+    kind: 'pair',
+    origin: 'http://192.168.1.5:5494',
+    endpoint: 'http://192.168.1.5:5494',
+    code: '2345-6789',
+    entry: 'http://192.168.1.5:5494/',
+  });
+  assert.equal(parsePairingUri(`${uri}&fp=${'A'.repeat(64)}`), null);
+  assert.throws(() => formatPairingUri({ endpoint: 'http://192.168.1.5:5494', code: '2345-6789', fingerprint: 'A'.repeat(64) }));
 });
 
 await test('scan payload accepts kiki://pair and explicit http(s) links while rejecting stray text', () => {

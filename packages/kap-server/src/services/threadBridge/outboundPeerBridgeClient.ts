@@ -12,7 +12,8 @@ import {
 } from '@kiki/protocol';
 import { okEnvelope, errEnvelope } from '../../envelope';
 import { AdmissionError } from '../connections/admission';
-import { BROKER_WS_MESSAGE_BYTES, type RemoteConnectionManager } from '../connections/manager';
+import { BROKER_WS_MESSAGE_BYTES, type ConnectionLease, type RemoteConnectionManager } from '../connections/manager';
+import { peerFetch, pinnedAgent, requirePinnedTls } from '../connections/peerTls';
 import { machineLabel } from '../connections/pairing';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
 import { WS_BEARER_PROTOCOL_PREFIX } from '../../transport/ws/bearerProtocol';
@@ -156,6 +157,7 @@ export class OutboundPeerBridgeClient {
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let stableAttachmentTimer: ReturnType<typeof setTimeout> | undefined;
     let connectController: AbortController | undefined;
+    let socketLease: ConnectionLease | undefined;
     let socket: WebSocket | undefined;
     let registeredKey: string | undefined;
     let lastCredentialFingerprint: string | undefined;
@@ -190,6 +192,7 @@ export class OutboundPeerBridgeClient {
 
     const teardownSocket = (): void => {
       clearTimers();
+      const lease = socketLease; socketLease = undefined; lease?.release();
       connectController?.abort();
       connectController = undefined;
       abortInflight();
@@ -346,14 +349,15 @@ export class OutboundPeerBridgeClient {
       if (!isEligiblePeerBridgeRecord(record)) return;
 
       const controller = new AbortController();
+      const epoch = this.connections.credentialEpoch(connectionId);
+      const current = () => !controller.signal.aborted && this.connections.credentialEpoch(connectionId) === epoch;
       connectController = controller;
+      let lease: ConnectionLease | undefined;
       try {
-        const credential = await this.connections.secrets.read<StoredPeerCredential>({
-          connectionId: record.credentialRef,
-          purpose: 'gui',
-        });
-        lastCredentialFingerprint = credentialFingerprint(record, credential);
-        if (controller.signal.aborted) {
+        lease = this.connections.lease(connectionId, AbortSignal.any([controller.signal, this.shutdownSignal]));
+        const { credential, transport } = await this.connections.connect(connectionId, lease.signal);
+        if (current()) lastCredentialFingerprint = credentialFingerprint(record, credential);
+        if (!current()) {
           connectController = undefined;
           resumeCredentialChange();
           return;
@@ -367,8 +371,9 @@ export class OutboundPeerBridgeClient {
           connectionId: record.id,
           target: record.target,
           label: machineLabel(),
+          signal: lease.signal,
         });
-        if (controller.signal.aborted) {
+        if (!current()) {
           connectController = undefined;
           resumeCredentialChange();
           return;
@@ -379,10 +384,9 @@ export class OutboundPeerBridgeClient {
         }
         const nextKey = `${reverse.grant.id}:${reverse.grant.revision}`;
         if (registeredKey !== nextKey) {
-          const signal = AbortSignal.any([controller.signal, this.shutdownSignal, AbortSignal.timeout(15_000)]);
-          const response = await fetch(`${record.endpoint}/api/thread-bridges/peer/outbound`, {
+          const signal = AbortSignal.any([lease.signal, AbortSignal.timeout(15_000)]);
+          const response = await peerFetch(`${transport.endpoint}/api/thread-bridges/peer/outbound`, {
             method: 'POST',
-            redirect: 'error',
             signal,
             headers: {
               authorization: `Bearer ${credential.ownerToken}`,
@@ -390,15 +394,16 @@ export class OutboundPeerBridgeClient {
               'content-type': 'application/json',
             },
             body: JSON.stringify({ grant: reverse.grant, credential: reverse.credential }),
-          });
-          if (controller.signal.aborted) {
+          }, record.pinnedFingerprint);
+          if (!current()) {
+            await response.body?.cancel();
             connectController = undefined;
             resumeCredentialChange();
             return;
           }
           if (!response.ok) {
             const envelope = await readBoundedJsonBody(response, 8192).catch(() => undefined) as { msg?: unknown } | undefined;
-            if (controller.signal.aborted) {
+            if (!current()) {
               connectController = undefined;
               resumeCredentialChange();
               return;
@@ -406,7 +411,7 @@ export class OutboundPeerBridgeClient {
             if (response.status === 401 || (response.status === 403 && envelope?.msg !== 'inbound_disabled')) {
               connectController = undefined;
               setAuthCooldown();
-              this.connections.failed(record.id, new AdmissionError(response.status, 'connection_not_approved'));
+              this.connections.failed(record.id, new AdmissionError(response.status, 'connection_not_approved'), epoch);
               return;
             }
             throw new AdmissionError(response.status, typeof envelope?.msg === 'string' ? envelope.msg : 'peer_bridge_register_failed');
@@ -415,15 +420,17 @@ export class OutboundPeerBridgeClient {
           registeredKey = nextKey;
         }
 
-        if (stopped || paused || this.closed || controller.signal.aborted) {
+        if (stopped || paused || this.closed || !current()) {
           connectController = undefined;
           resumeCredentialChange();
           return;
         }
 
-        const wsUrl = new URL('/api/klient/events', record.endpoint);
+        const wsUrl = new URL('/api/klient/events', transport.endpoint);
         wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        requirePinnedTls(wsUrl, record.pinnedFingerprint);
         const ws = new WebSocket(wsUrl, [`${WS_BEARER_PROTOCOL_PREFIX}${credential.ownerToken}`], {
+          agent: record.pinnedFingerprint === undefined ? undefined : pinnedAgent(record.pinnedFingerprint, undefined, lease.signal),
           headers: { 'x-kiki-connection-grant': credential.grant },
           maxPayload: BROKER_WS_MESSAGE_BYTES,
           perMessageDeflate: false,
@@ -431,6 +438,10 @@ export class OutboundPeerBridgeClient {
           handshakeTimeout: 15_000,
         });
         socket = ws;
+        const activeLease = lease;
+        socketLease = activeLease;
+        lease = undefined;
+        activeLease.signal.addEventListener('abort', () => { if (socketLease === activeLease) teardownSocket(); }, { once: true });
         connectController = undefined;
 
         let lastInboundAt = Date.now();
@@ -478,7 +489,7 @@ export class OutboundPeerBridgeClient {
             teardownSocket();
             if (frame.code === 40301) {
               setAuthCooldown();
-              this.connections.failed(record.id, new AdmissionError(403, 'connection_not_approved'));
+              this.connections.failed(record.id, new AdmissionError(403, 'connection_not_approved'), epoch);
             } else scheduleReconnect();
             return;
           }
@@ -501,7 +512,7 @@ export class OutboundPeerBridgeClient {
           teardownSocket();
           if (res.statusCode === 401 || res.statusCode === 403) {
             setAuthCooldown();
-            this.connections.failed(record.id, new AdmissionError(res.statusCode, 'connection_not_approved'));
+            this.connections.failed(record.id, new AdmissionError(res.statusCode, 'connection_not_approved'), epoch);
             return;
           }
           scheduleReconnect();
@@ -512,23 +523,26 @@ export class OutboundPeerBridgeClient {
           teardownSocket();
           if (code === 4001 || code === 1008) {
             setAuthCooldown();
-            this.connections.failed(record.id, new AdmissionError(401, 'connection_not_approved'));
+            this.connections.failed(record.id, new AdmissionError(401, 'connection_not_approved'), epoch);
             return;
           }
           registeredKey = undefined;
           scheduleReconnect(code === 1012 || code === 4002);
         });
 
-        ws.on('error', () => {
+        ws.on('error', (error) => {
           if (socket !== ws) return;
           teardownSocket();
-          scheduleReconnect();
+          if (error instanceof AdmissionError && error.reason === 'identity_changed') this.connections.failed(record.id, error, epoch);
+          else scheduleReconnect();
         });
-      } catch {
-        connectController = undefined;
-        if (resumeCredentialChange()) return;
-        scheduleReconnect();
-      }
+      } catch (error) {
+        if (connectController === controller) connectController = undefined;
+        if (resumeCredentialChange() || !current()) return;
+        if (error instanceof AdmissionError && error.reason === 'identity_changed') this.connections.failed(record.id, error, epoch);
+        else if (error instanceof AdmissionError && error.status === 401) setAuthCooldown();
+        else scheduleReconnect();
+      } finally { lease?.release(); }
     };
 
     const wakeForCredentialChange = async (): Promise<void> => {

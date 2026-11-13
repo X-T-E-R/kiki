@@ -14,6 +14,7 @@ const LOCAL_HOST = /^(localhost|\[[0-9a-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}|[^.]+|.+\
 export const PAIRING_URI_PREFIX = 'kiki://pair';
 export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const PAIRING_CODE_PATTERN = new RegExp(`^[${PAIRING_CODE_ALPHABET}]{8}$`);
+const TLS_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
 
 export const STORE_ORIGIN_KEY = 'kiki.shell.origin';
 export const STORE_SERVERS_KEY = 'kiki.shell.servers';
@@ -91,16 +92,21 @@ function normalizePairingEndpoint(raw) {
 export function formatPairingUri(input) {
   const endpoint = normalizePairingEndpoint(input?.endpoint ?? '');
   const code = normalizePairingCode(input?.code ?? '');
+  const fingerprint = input?.fingerprint;
   if (!endpoint) throw new Error('Invalid pairing endpoint');
   if (!code) throw new Error('Invalid pairing code');
+  if (fingerprint !== undefined && !TLS_FINGERPRINT_PATTERN.test(fingerprint)) {
+    throw new Error('Invalid TLS fingerprint');
+  }
   const params = new URLSearchParams({
     endpoint,
     code,
   });
+  if (fingerprint !== undefined) params.set('fp', fingerprint);
   return `${PAIRING_URI_PREFIX}?${params.toString()}`;
 }
 
-/** Parses a `kiki://pair?endpoint=<encoded>&code=<encoded>` URI or returns null. */
+/** Parses a pairing URI or returns null; the device path intentionally keeps its legacy result shape. */
 export function parsePairingUri(raw) {
   const trimmed = String(raw ?? '').trim();
   if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(trimmed)) return null;
@@ -126,7 +132,8 @@ export function parsePairingUri(raw) {
   }
   const endpoint = normalizePairingEndpoint(parsed.searchParams.get('endpoint') ?? '');
   const code = normalizePairingCode(parsed.searchParams.get('code') ?? '');
-  if (!endpoint || !code) return null;
+  const fingerprint = parsed.searchParams.get('fp');
+  if (!endpoint || !code || (fingerprint !== null && !TLS_FINGERPRINT_PATTERN.test(fingerprint))) return null;
   return {
     endpoint,
     code,

@@ -22,6 +22,7 @@ import {
   completeConnectionEndpoint,
   connectionsApi,
   endpointIssue,
+  fingerprint,
   formatPairingCode,
   labelIssue,
   pairingCodeIssue,
@@ -133,6 +134,7 @@ function OutboundPairSheet({
   const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
   const [endpoint, setEndpoint] = useState('');
+  const [pairingFingerprint, setPairingFingerprint] = useState('');
   const [requestBridge, setRequestBridge] = useState(false);
   const [background, setBackground] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -162,6 +164,7 @@ function OutboundPairSheet({
         ...(label.trim() === '' ? {} : { label: label.trim() }),
         backgroundSummary: background,
         requestBridge,
+        fingerprint: pairingFingerprint || undefined,
       });
       onPaired?.(record);
     } catch (error) {
@@ -278,8 +281,10 @@ function OutboundPairSheet({
               if (parsed !== undefined) {
                 setEndpoint(completeConnectionEndpoint(parsed.endpoint));
                 setCode(parsed.code);
+                setPairingFingerprint(parsed.fingerprint ?? '');
                 return;
               }
+              setPairingFingerprint('');
               setEndpoint(event.target.value);
             }}
             onBlur={() => {
@@ -314,8 +319,10 @@ function OutboundPairSheet({
               if (parsed !== undefined) {
                 setEndpoint(completeConnectionEndpoint(parsed.endpoint));
                 setCode(parsed.code);
+                setPairingFingerprint(parsed.fingerprint ?? '');
                 return;
               }
+              setPairingFingerprint('');
               setCode(formatPairingCode(event.target.value));
             }}
             onBlur={() => { setTouched((state) => ({ ...state, code: true })); }}
@@ -533,7 +540,7 @@ function InboundPairSheet({
     ? selectedEndpoint
     : issued.suggestedEndpoints[0];
   const qrUri = !expired && newlyPairedGrant === undefined && activeEndpoint !== undefined
-    ? formatPairingUri({ endpoint: activeEndpoint, code: issued.code })
+    ? formatPairingUri({ endpoint: activeEndpoint, code: issued.code, fingerprint: issued.tlsFingerprint })
     : undefined;
   const qrImage = qrUri === undefined ? undefined : wechatQrImage(qrUri);
 
@@ -583,6 +590,11 @@ function InboundPairSheet({
               copiedLabel={t('st.inbound.codeCopied')}
               hint={t('st.inbound.codeOnce')}
             />
+            {issued.tlsFingerprint !== undefined ? (
+              <p className="break-all text-[12px] text-ink-soft" data-inbound-tls-fingerprint>
+                {t('st.inbound.tlsFingerprint')}: <span className="font-mono text-ink" title={issued.tlsFingerprint}>{fingerprint(issued.tlsFingerprint, 16, 8)}</span>
+              </p>
+            ) : null}
             <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft" data-inbound-code-remaining>
               {expired ? (
                 <>

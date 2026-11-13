@@ -24,13 +24,14 @@ What people met as a result:
 
 ### What the code already has
 
-These are the pieces the model is built from. None of them changes in the first three phases.
+These are the pieces the model is built from. The pairing-security work adds a per-home TLS identity and an optional certificate pin to outbound records; it does not change the space registry.
 
 | Piece | What it is | Where its state lives |
 | --- | --- | --- |
 | Home | One Kiki data directory and its server process, identity `{ homeId, hostId, protocol }` | That machine's disk |
+| Peer TLS identity | One P-256 private key and self-signed certificate per home; its fingerprint is SHA-256 of the certificate's DER-encoded SPKI | That home's `server/peer-tls.json` |
 | Space | A home registered in the main home's `homes.json`; the main home's own id is `main` (`packages/protocol/src/rest/space.ts`, `apps/kiki-gui/src/lib/spaces.ts`) | The list is per computer; only the main space's server writes it |
-| Outbound pairing record | This home's pointer to another home: label, endpoint, target identity, `purposes ⊆ {gui, bridge}`, transport, state, background summary (`packages/protocol/src/rest/connections.ts`) | The current home's `server/outbound-connections.json` and connection secrets |
+| Outbound pairing record | This home's pointer to another home: label, endpoint, target identity, optional `pinnedFingerprint`, `purposes ⊆ {gui, bridge}`, transport, state, background summary (`packages/protocol/src/rest/connections.ts`); a manual first-use TLS connection may also expose `fingerprintToVerify` | The current home's `server/outbound-connections.json` and connection secrets |
 | Space on another computer | An enabled outbound record with `gui`, entered as scope `remote:<connectionId>`; every read and write goes through the current home's broker, limited to `CONNECTION_OPERATIONS` (`packages/protocol/src/rest/connection-operations.ts`) | As above |
 | Inbound gate, grants and pairing codes | Who may connect to the current home; the gate is off by default; a code is 8 characters, ten minutes by default, single use | The current home's server |
 | Thread bridge | A one-way thread-message permission between two homes: source and target scopes, `operations ⊆ {read, send, wait, wake}`, expiry (`packages/protocol/src/rest/thread-bridge.ts`) | The current home's `server/thread-bridges.json` |
@@ -228,6 +229,18 @@ The zh copy is 「对方用配对码配对后可以：」, 「打开这个空间
 
 Removing and revoking say exactly what changes: 「移除后，这个空间不能再打开 {名称}，保存的凭据会被删除。不会关掉对方，也不改对方的设置。」 and 「{名称} 正在进行的连接会中断，以后也不能再打开这里。不影响其他配对。」. Pairing codes stay the one regular way to pair.
 
+### Direct pairing security and re-pairing
+
+Each home persists one P-256 private key and self-signed TLS certificate in `server/peer-tls.json`. Its fingerprint is SHA-256 of the certificate's DER-encoded Subject Public Key Info (SPKI). One LAN listener accepts HTTP for browsers and the phone app and TLS for space-to-space connections on the same port; suggested endpoints remain `http://`. Refresh the available network interfaces every five seconds, adding new bindings and closing bindings for addresses that disappeared.
+
+A pairing QR carries the certificate fingerprint, and the source pins it before sending the pairing code or any bearer token. Manual direct-code entry has no supplied fingerprint, so the source tries TLS on first use and exposes the observed value as `fingerprintToVerify` on the saved record. It may fall back to unpinned HTTP only when a manually entered legacy endpoint does not support TLS. Existing unpinned HTTP records remain supported; a record with a pin requires TLS and never downgrades on a connection or fingerprint failure.
+
+Every saved GUI connection proves the peer before sending bearer credentials: use a fresh nonce and mutual HMAC with the UTF-8 hex encoding of `SHA-256(grant)` as key material, then verify both the target identity and the status-bound response proof. Run this zero-token preflight on every connect, including background summary reads. Invitation-based `add` uses a separate preflight with the invitation itself and requires the `invited` status before sending the owner's token.
+
+The handshake may return a bounded string array named `capabilities`. The current names are `tls-spki-pin-v1`, advertised only by a TLS-enabled peer listener, and `handshake-mutual-proof-v1`. Capability names are append-only; clients ignore unknown names. A missing array means the peer is legacy, not that a required pin or mutual proof may be bypassed.
+
+Re-pairing the same source to this home revokes every previously approved grant for that source, closes its active leases, and revokes only thread bridges bound to those pairing grants; standalone bridges remain. The new pairing's bridge choice controls any new pairing-bound bridge grants. The GUI reuses its pairing record id, keeps the old label when no new label is supplied, and preserves background-summary, sharing and bookmark state.
+
 ### Phone
 
 The phone app's launcher keeps its tabs (Connect, Computers, Network) and the word "computer", which already fit the model; only its directions change, to 「在电脑上打开 设置 → 接入 → 其他空间 → 配对码。」 / "On your computer, open Settings → Access → Other spaces → Pairing code." In the app, the bar sits at the top of the drawer and the switch panel rises from the bottom. A phone browser's connect screen does not offer to find Kiki on this device when the page was not served from this device, and shows errors in plain words with the raw text under "Details".
@@ -243,8 +256,9 @@ The phone app's launcher keeps its tabs (Connect, Computers, Network) and the wo
 | Not done | Why |
 | --- | --- |
 | Merge every space's conversations into one sidebar | Spaces exist to keep work apart, and each scope keeps its own caches, drafts and reading positions. |
-| Cloud accounts or a relay | Kiki promises not to route through someone else's server. |
-| Several addresses per pairing with automatic route choice | It introduces the system changing routes by itself, which needs its own decision; each pairing has one address. |
+| Merge sessions across computers into one list | Sessions stay in their owning space; the person switches spaces to see another computer's sessions. |
+| Central hub, single-primary mesh, or embedded overlay network | Keep connections point-to-point under explicit grants and a hop limit; Kiki does not route through a central service or manage an overlay network. |
+| Automatic multi-path rerouting | Each pairing has one endpoint; route changes remain an explicit choice rather than an automatic failover. |
 | Fine-grained permissions | Open and thread messages cover what exists. |
 | Entering other spaces on the same computer from a browser or phone | Each space is a separate server process with its own gate; it would need the main space to relay, which is a different feature. |
 | Unifying "thread" and "conversation" in this work | It reaches rooms, the activity page, the CLI and the docs; only the permission is named "thread messages" here. |
@@ -254,18 +268,18 @@ The phone app's launcher keeps its tabs (Connect, Computers, Network) and the wo
 
 ## Data, protocol and phases
 
-Every phase leaves a usable product and can ship alone. No `localStorage` key changes, and `homes.json`, outbound records, inbound grants and `thread-bridges.json` are untouched in the first three phases.
+Every phase leaves a usable product and can ship alone. No `localStorage` key changes. Phases 1 and 2 leave storage and protocol unchanged; Phase 3 adds the peer TLS identity and optional fingerprint pin while keeping existing unpinned records usable.
 
 | Phase | Scope | Storage | Protocol |
 | --- | --- | --- | --- |
 | 1 · Say the truth | No internal ids in the settings band, pairing source line or grant details; per-reason failures for paired spaces with no token field; the launcher's directions; the phone browser's connect screen; the main space's name on the switcher; the corrected thread-message note | Unchanged | Unchanged |
 | 2 · One place | Position bar and switch panel; failures in the row; Spaces & devices settings; settings limited to what works in a space on another computer; no "New space" in browsers and on phones | Unchanged | Unchanged |
-| 3 · One pairing flow | The pairing sheet; the gate explanation; opt-in thread messages; thread-message facts and per-permission revoke on rows | Unchanged | The outbound pairing request (`POST /api/remote-connections/pair`) gains an optional `requestBridge`, forwarded to the other side's existing `pair/claim` field; absent means requested, as before. Generating a code already accepts `allowBridge` and `bridgeOperations` |
+| 3 · One pairing flow | The pairing sheet; the gate explanation; opt-in thread messages; thread-message facts and per-permission revoke on rows; direct peer TLS and safe re-pairing | A per-home `server/peer-tls.json`; optional `pinnedFingerprint` on outbound records, with existing unpinned records retained | The outbound pairing request (`POST /api/remote-connections/pair`) gains an optional `requestBridge`, forwarded to the other side's existing `pair/claim` field; absent means requested, as before. The pairing URI gains an optional `fp`; the handshake uses the bounded `capabilities` array described above, reports the TLS fingerprint, and proves the peer grant before bearer credentials are sent. Generating a code already accepts `allowBridge` and `bridgeOperations` |
 | 4 · Data changes | Paired phones as devices; renaming a pairing | Optional `kind` on incoming grants; a persisted label change | Both additive; records without `kind` show as spaces |
 
-Two points correct the premise the plan was first written on. A pairing's default thread-message operations are `read`, `send` and `wait`, without `wake` (`DEFAULT_PAIR_BRIDGE_OPERATIONS` in `packages/kap-server/src/services/connections/admission.ts`); without `wake`, a bridged message stays pending instead of starting a turn (`packages/kap-server/src/services/threadBridge/bridge.ts`). The user docs (`docs/en/features/spaces.md` and its zh mirror) still say pairing includes `wake` and need correcting. And the machine running the server is 「这台电脑」 in the desktop app, never 「本机」, as the glossary in `apps/kiki-gui/docs/i18n-glossary.md` requires.
+Two points correct the premise the plan was first written on. A pairing's default thread-message operations are `read`, `send` and `wait`, without `wake` (`DEFAULT_PAIR_BRIDGE_OPERATIONS` in `packages/kap-server/src/services/connections/admission.ts`); without `wake`, a bridged message stays pending instead of starting a turn (`packages/kap-server/src/services/threadBridge/bridge.ts`). The feature docs now make that distinction: only explicitly granting `wake` starts a model run. The desktop app calls the machine running the server 「这台电脑」, never 「本机」, as required by `apps/kiki-gui/docs/i18n-glossary.md`.
 
-Changing the GUI's default for thread messages ends "pair, and agents can already message each other" for GUI pairings. `kiki pair` keeps today's default (requested and allowed), and the docs and CLI notes must say so.
+The GUI asks for thread messages only when selected. `kiki pair` keeps its existing default of requesting and allowing them; its command reference must keep that difference clear.
 
 ## What is built
 
@@ -278,6 +292,8 @@ Phase 1 items shipped in the November GUI interaction & mobile pass live on the 
 - In a browser, the connect screen offers to find a local Kiki only when the page was served from this device, and it shows errors in plain words with the raw text under "Details" (`apps/kiki-gui/src/components/ConnectScreen.tsx`).
 - The glossary rule for 「这台电脑」 / 「运行 Kiki 的电脑」 is in `apps/kiki-gui/docs/i18n-glossary.md`.
 
+- Direct space pairing uses pinned TLS, a zero-token handshake and grant rotation. Real isolated KAP servers exercise the LAN listener, broker HTTP and WebSocket traffic, and bidirectional peer bridges in `packages/kap-server/test/remotePairing.integration.ts`.
+
 Not built from phase 1: the main space still shows no name on the switcher (`shownName` is `null` in the main space); that moves into the position bar work.
 
 ## What is not built
@@ -289,15 +305,12 @@ Each remaining follow-up item is tracked by an issue with the title given (#3–
 - **"Turn the space menu into a switch panel that reports failures in the row"**: the panel, the bottom sheet, in-row failures, and dropping "New space…" in browsers.
 - **"Merge the connection settings into a "Spaces & devices" group"**: the group is still "Connection & remote" (`st.group.connection`), outbound rows still sit under Access from elsewhere, the owner (SSH) form is still on Settings › Workspaces, and the Spaces page still requests a `remote:` space's settings.
 - **"Show which space each settings page acts on when in another computer's space"**: the segmented connection page, the visibility rule and the band with the computer name.
-- **"Let an outbound pairing say whether it asks for thread messages"**: `connectionPairInputSchema` has no `requestBridge`, and `pairOutbound` sends `requestBridge: true` (`packages/kap-server/src/services/connections/pairing.ts`).
-- **"Show each pairing's thread-message permission and let it be revoked alone"**: no GUI file uses the thread-bridge API yet, although klient has it (`rest.threadBridges`).
-- **"Make pairing one sheet that says what it allows before it happens"**: the code dialog still generates a code on mount with `createPairCode({})` (`apps/kiki-gui/src/components/settings/remote/InviteSourceDialog.tsx`).
-- **"Update the spaces docs and phone launcher to the new settings names"**, which also removes the `wake` claim from the feature docs and adds the four words to the glossary.
+- **"Update the phone launcher to the new settings names"**: its directions still use "Access from elsewhere → Other Kiki" (`apps/kiki-gui/mobile/launcher/launcher.js`, `index.html`). The feature docs now use "Spaces & devices" and no longer imply that `wake` is granted by default.
 - **"List paired phones as devices and allow renaming a pairing"**, which waits for the rulings below.
 
 ## What was never verified
 
-- No two real Kikis were paired for this design. Every "other computer" was a browser-level stand-in answering with the shapes the route code defines; `apps/kiki-gui/scripts/remote-broker-chat.mjs` was not run.
+- The browser-level remote chat proof (`apps/kiki-gui/scripts/remote-broker-chat.mjs`) was not run; the LAN wire and broker were verified with real KAP servers.
 - The real desktop shell, the "one window per space" mode and the desktop SSH profile's connect flow were only read in code. Check the window-mode control in that mode when the settings move.
 - The native Android app's screens were not seen, and the launcher's Computers and Network tabs were only read in source.
 - That switching to another local space changes the list of other computers is inferred from where records are stored; that phones appear in the inbound list is inferred from the shells calling the same `pair/claim` that writes grants.
@@ -314,3 +327,4 @@ Each remaining follow-up item is tracked by an issue with the title given (#3–
 - **Retiring owner (SSH) profiles** (not ruled on). They move into the Spaces page and stay. The recommendation is to retire them only once SSH pairing is shown to cover the owner case, and then to give each saved profile a "Use pairing (SSH) instead…" action the person runs one by one, never a silent conversion: the two hold different credentials with different rights.
 - **Reconnect threshold.** How many failed attempts turn the banner into "Still can’t reach {space}" is not fixed; the socket's retry diagnostic exposes the attempt count.
 - **One name per pairing record.** A record stores one `label`, so a space on another computer cannot show both a space name and a machine name. Keeping the machine name (`targetLabel`, already returned by `pair/claim`) would need a stored field.
+- **Approved-grant lifetime (not implemented).** Approved peer grants remain approved until revoked and do not expire automatically; `lastConnectedAt` is updated in memory but not persisted. Recommendation: choose between permanent-by-default grants with debounced persisted last activity and a stale-at-30-days badge/revoke action, or a sliding 30/90-day TTL with a hard cap or configurable policy. Do not claim a hard TTL before it is implemented.
