@@ -2,31 +2,31 @@
 
 The Kiki desktop app exposes preferences in the **Settings** dialog and activity on separate pages such as **Usage** in the sidebar. This page helps you find each control and what it changes; the linked pages hold the full reference.
 
-The settings sidebar groups twenty entries under seven headings: **App**, **Models & agents**, **Sessions & work**, **Capabilities**, **Permissions & rules**, **Spaces & devices**, and **Advanced**. Four of them merge what used to be separate pages and are switched by tab — **Models & providers**, **Agents**, **Extensions & tools**, and **Browser & computer** — so a path below that ends in a tab name is one click inside the entry.
+The Settings navigation has twenty entries across seven groups: **App**, **Models & agents**, **Sessions & work**, **Capabilities**, **Permissions & security**, **Spaces & devices**, and **Advanced**. Under **Models & agents**, **Models** has **Connections**, **Defaults**, and **Recipes** tabs, while **Agents** is a single page. **Extensions & tools** and **Browser & computer** also use tabs.
 
 **"I want to change X" quick lookup:**
 
 | I want to change… | Go to |
 | --- | --- |
-| Sign in with a subscription, or add an API key | **Models & agents → Models & providers → Providers & accounts** |
-| How outbound requests identify themselves | **Models & agents → Models & providers → Identity** |
+| Sign in or add an API key | **Models & agents → Models → [Connections](#connections)** |
+| How outbound requests identify themselves | **Advanced → Developer & labs → [Request identity](#request-identity)** |
 | Version and update channel (Stable / Beta) | **Advanced → About & updates** |
-| Agent profiles, prompt-field overrides | **Models & agents → Agents → Agent profiles** |
+| Agent list, dispatch defaults, and shared prompt fields | **Models & agents → [Agents](#agents)** |
 | Low-frequency long-term memory reminders | [`loop_control.continuity_cadence.memory_maintenance`](../configuration/config-files.md#continuity-reminder-settings) in `config.toml` |
 | Whether input drafts are remembered | **App → General** |
 | Move selected settings to another home or device | **App → General → Settings transfer** |
-| Background-task limits and scheduled tasks | **Sessions & work → Sessions** |
+| Background-task limits and other engine internals | **Advanced → Developer & labs → [Engine parameters](#engine-parameters)** |
+| Scheduled-task runtime diagnostics | **Advanced → Developer & labs** |
 | Search and retrieval configuration source | **Capabilities → Search & retrieval** |
-| Installed plugins, skills, and MCP servers | **Capabilities → Extensions & tools** |
-| Subagent dispatch configuration | **Models & agents → Agents → Subagents & dispatch** for server-wide defaults; **Child agents** on a single profile remains in **Agent profiles** |
+| Installed plugins and skills | **Capabilities** (`/capabilities`); **Extensions & tools** shows a summary and links there |
 | Run a browser for agent tasks | **Capabilities → Browser & computer → Browser control** |
 | Drive the server's own desktop | **Capabilities → Browser & computer → Computer control** |
 | Experimental features | **Advanced → Developer & labs**, under **Where experimental features live** |
 | Inspect this session's prompt sources | Session header **⋯ → Effective prompts** |
 | Temporarily use the preview space for the cockpit | Right-panel header **Cockpit** |
 | Token usage and cost | **Usage → History** |
-| Running or queued model requests | **Usage → Live** |
-| Model/provider request concurrency | **Usage → Live → Concurrency limits** |
+| Running or queued model requests and current counts | **Usage → Live**; its concurrency summary links to **Models → Defaults → Concurrency** |
+| Change request concurrency limits | **Models → Defaults → Concurrency** (`/settings/ai?tab=defaults#st-card-concurrency`) |
 | Send usage to another service | **Usage → Export** |
 | TUI theme, editor, and other CLI-side preferences | The `/config` commands in the terminal, see [CLI counterpart](#cli-counterpart) |
 
@@ -44,35 +44,26 @@ After **Apply**, Kiki reads the saved values back and reports each changed item'
 
 ## Connections
 
-**Settings → Models & agents → Models & providers** opens **Providers & accounts** (`/settings/ai?tab=providers`), the default tab; **Defaults** (`/settings/ai?tab=defaults`) and **Identity** (`/settings/ai?tab=identity`) sit beside it. `/settings/providers` and `/settings/models` open the same tab. The page has three blocks, in this order, plus a folded **Maintenance** section at the bottom.
+**Settings → Models & agents → Models** opens **Connections** (`/settings/ai?tab=providers`) by default. The other tabs are **Defaults** (`/settings/ai?tab=defaults`) and **Recipes** (`/settings/ai?tab=recipes`). The old `/settings/models` and `/settings/providers` addresses redirect to Connections. The status card reports which model new conversations use (or that none is connected) and shows connection and attention counts. When a connection needs a fix, a **Needs attention** list appears before the single **Connections** list. The **Command-line agents** and **Decision models** folds follow the list, then **Maintenance**.
 
-**① API key providers** lists hosted APIs you reach with a key. An empty list in this block does not mean the page has no connections.
+**Add connection** opens three choices: **Sign in with an account**, **Enter an API key**, and **Check for a sign-in already on this computer**. The account choice offers subscriptions such as Kimi Code, ChatGPT (Codex), Grok Build and GitHub Copilot; an account already connected is not offered again, and an expired sign-in is repaired on its existing row. For an API connection, choose **From the directory** to fill in an address and model list from models.dev, or **Enter it myself** to supply a protocol, address and key, including for a local server. Add a model in the form with **Add model**, then choose **Save provider**. Search covers every connection and the IDs and names of its models.
 
-**Add connection** adds a service you reach with a key. With nothing connected yet, the form is the page; otherwise it opens beside the lists. It asks which service, and how:
+The **Command-line agents** fold holds local engines such as AGY CLI, Codex and Claude Code. Enable an engine there, then choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Spaces & devices → Access → External clients** (`/settings/connection-services?tab=clients`); the old `/settings/external-clients` address redirects there. The **Devices** tab holds web access and the Cloudflare tunnel; **Other spaces** holds the spaces allowed to connect here.
 
-- **From the directory** — pick a service from models.dev and Kiki fills in its address and model list. An id that already exists updates that connection, and the form says so before you press.
-- **Enter it myself** — a protocol, an address and a key, for a service the directory does not have, including a local server.
-
-For either path, use **Add model** inside the connection form, then choose **Save provider**. Once any connection exists, search covers every configured connection and also finds a connection by the IDs and names of its models. The new row appears in the block for how it is reached.
-
-**② Account sign-in (subscription)** lists the subscription accounts already connected: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account that is not connected yet has **Sign in** in this block. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
-
-**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Spaces & devices → Access → External clients** (`/settings/connection-services?tab=clients`). `/settings/external-clients` opens the same tab. The **Devices** tab holds web access and the Cloudflare tunnel; **Other spaces** holds the spaces allowed to connect here.
-
-An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
+An account connection is created by its sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 
 - **Connected** — the credential works, and Kiki renews it on its own. **Sign out** ends that sign-in inside Kiki and removes the models it added; at the provider you stay signed in.
 - **Sign-in expired** — the provider no longer accepts it. **Sign in again** replaces it on this same connection; nothing is added to the list.
 - **Sign-in didn't finish** — the flow ended without a credential: you declined it, the code expired, or it failed. One line says which, and the row is left as the server reports it.
 - **Waiting for you** — a sign-in is running, with the code, **Open verification page**, how long it stays valid, and **Cancel sign-in**.
 
-A completed sign-in adds that account's models to the catalog on the server. In **Providers & accounts**, expand the connection row to see its **Models** list and sign-in state.
+A completed sign-in adds that account's models to the catalog on the server. Expand its connection row to see its **Models** list and sign-in state.
 
 Signing out here affects Kiki only. The provider keeps its own record of your subscription, and signing in again reconnects the same account.
 
 ### Reusing a sign-in this machine already has
 
-For ChatGPT (Codex) and Grok Build, a connection can use the sign-in their own app already holds on this machine instead of a new one. Kiki reuses it and renews it when it runs out; it does not copy the credential, does not start the other app, and signing in or out here does not change anything there.
+For Codex, Grok Build, and Kimi Code, a connection can reuse the sign-in their app already holds on this machine instead of creating another one. Kiki renews the credential when needed, but does not copy it or start the other app; signing in or out here does not change the app's own sign-in.
 
 "This machine" is the machine Kiki's **server** runs on. That is usually the one you are looking at; when it is not, **Look somewhere else on the server** takes a directory to read from instead.
 
@@ -93,11 +84,11 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 ## Models and Recipes
 
-**Settings → Models & agents → Models & providers** opens **Providers & accounts**. To edit a model, expand its connection row, open its **Models** list, and click the model; the full editor opens in a side panel. **Defaults** (`/settings/ai?tab=defaults`) is where the other task models are set. **Identity** (`/settings/ai?tab=identity`) decides how outbound requests introduce themselves. `/settings/ai?tab=models` and `/settings/models` open **Providers & accounts**, while `/settings/ai?tab=providers&model=<model id>` opens that model's editor directly.
+**Settings → Models & agents → Models** opens **Connections** (`/settings/ai?tab=providers`). To edit a model, expand its connection row, open its **Models** list, and click the model; the full editor opens in a side panel. **Defaults** (`/settings/ai?tab=defaults`) sets the models used for other tasks, and **Recipes** (`/settings/ai?tab=recipes`) holds the Recipe library. `/settings/ai?tab=providers&model=<model id>` opens that model's editor directly.
 
 Above the tabs, the **New sessions use** bar and the star on a model row set the global model for new sessions. The titles, fast model, and subagents listed beside it open **Defaults**, where you change them.
 
-In **Providers & accounts → Decision models**, choose a decision connection or existing chat model independently for permission review and Memory Advisor, and use **Add decision service** in the same card to add Jev, a compatible System One service or a reranker using the existing connection credentials. Decision services need a remote model name, not a chat-model entry. A connection keeps its protocol, endpoint and key; each job can override its remote model name. Pair-score services are offered only for memory ranking. See [decision connections](../configuration/providers.md#decision-connections).
+In [**Connections → Decision models**](#connections), choose a decision connection or existing chat model independently for permission review and Memory Advisor, and use **Add decision service** in the same card to add Jev, a compatible System One service or a reranker using the existing connection credentials. Decision services need a remote model name, not a chat-model entry. A connection keeps its protocol, endpoint and key; each job can override its remote model name. Pair-score services are offered only for memory ranking. See [decision connections](../configuration/providers.md#decision-connections).
 
 In the model editor, change request settings and prompt text, then **Save** once. The identity selector keeps **Shared**, **Main agent**, and **Delegated agent** drafts separate; saving includes edits made in all three. Advanced fields edit the same model rather than a second form. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. **Remove model** is at the bottom of the editor and asks for confirmation.
 
@@ -116,7 +107,9 @@ A [Recipe](../customization/recipes.md) contributes a reusable set of prompt and
 
 Recipe values cover only the fields or prompt slots they declare; uncovered settings keep their lower-layer values, and explicit profile differences still apply. A running conversation keeps its bound revision. Use [Rebuild context](../customization/agents-and-subagents.md#rebuilding-a-session-context) while idle to adopt current sources.
 
-The **Identity** tab is the central page for request identity: the global default, the built-in and custom identities, client versions, where each identity is used, and recent requests. A provider or a single model carries its own identity in that editor's **Request identity** section, and the later layer wins. An old `/settings/identity` address opens this tab. See [Request identity](../configuration/providers.md#where-to-configure-it).
+### Request identity
+
+**Settings → Advanced → Developer & labs → Request identity** (`/settings/developer?tab=identity`) is the central page for the global default, built-in and custom identities, client versions, where each identity is used, and recent requests. A provider or model can also set its own identity in that editor's **Request identity** section; the later layer wins. The old `/settings/identity` and `/settings/ai?tab=identity` addresses redirect here. See [Request identity](../configuration/providers.md#where-to-configure-it).
 
 ## About
 
@@ -126,13 +119,17 @@ The dialog's three choices are saved rather than repeated each time: **Remind me
 
 ## Memory
 
-**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Providers & accounts → Decision models** to change it. Choose a source and enable the advisor to start using it, or test the saved source with sample data. **Advanced** contains selection and request budgets and diagnostics. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the configuration and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup.
+**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to [**Connections → Decision models**](#connections) to change it. Choose a source and enable the advisor to start using it, or test the saved source with sample data. **Advanced** contains selection and request budgets and diagnostics. The advisor switch is in Settings → Memory and in the `Ctrl-K` command. The separate Memory page header shows a status sentence for the advisor, not a switch. Turning off the Settings switch retains the configuration and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup.
 
 ## Agents
 
-**Settings → Models & agents → Agents** has two tabs. **Agent profiles** (`/settings/agents?tab=profiles`), the default, lists the selected workspace's main and subagent profiles in one table — role, engine, model, effort, and who may dispatch whom — and marks the file each profile comes from. Open a row to edit its instructions and settings; a file-backed profile can also be edited at the source shown. The same tab holds **Identity and agent loading** and **Prompt fields**, which edits the `[prompt]` prompt-field overrides section in `config.toml`; expand the card first. **Subagents & dispatch** (`/settings/agents?tab=dispatch`) holds the defaults that apply across profiles — see [Dispatch capabilities](#dispatch-capabilities). See [Agents and subagents](../customization/agents-and-subagents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
+**Settings → Models & agents → Agents** (`/settings/agents`) is one page with no tabs. When a profile needs a fix, a **Needs attention** block appears. The agent list groups **Main agents** and **Helpers** for the selected workspace; open an entry to edit it. An agent's own **Child agents** policy stays with that entry, while the **Dispatch** section holds defaults that apply across agents. The **Advanced** fold contains subagent model rules and shared prompt fields, including the `[prompt]` overrides in `config.toml`. Agent identity and loading controls are under [**Advanced → Developer & labs → Engine parameters**](#engine-parameters). See [Agents and subagents](../customization/agents-and-subagents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
 
-The periodic long-term memory reminders run on their own schedule. To stop just those while keeping the new standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`; memory tools, approval and task notes stay available. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings).
+## Engine parameters
+
+**Advanced → Developer & labs → Engine parameters** (`/settings/developer?tab=engine`) holds background-task limits and other engine internals, including agent identity and loading controls moved off everyday pages. Scheduled-task runtime diagnostics remain on the **Developer & labs** overview (`/settings/developer#st-card-cron`); older links to that card redirect there.
+
+Periodic memory-maintenance reminders run on their own schedule. To stop just those while keeping standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`; memory tools, approval and task notes remain available. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings).
 
 ## Notifications & messages
 
@@ -142,7 +139,7 @@ The periodic long-term memory reminders run on their own schedule. To stop just 
 
 **When to notify** has **Notification rules**: the master **Send notifications** switch, quiet hours, **Skip the session you are viewing**, and **Skip short work**. Its **Which channel hears what** table has one row per push channel and one checkbox column for each event, **The conversation finishes** and **A question is waiting**; **The conversation finishes** uses the same work-completion decision. This table is the only place to choose which events a channel receives; per-channel event checkboxes are no longer in each channel row. Previously disabled masters, connections and channels stay disabled. New configurations default to on with **Skip short work** at `0` seconds, so short replies qualify too. Raising it filters short-work notices for those channels, without changing what completion means. Channel rules are saved by the connected server.
 
-Under **This device**, **System notifications**, **Allow system notifications** controls session notifications and pending-input reminders from other spaces on this device. The default-on **Notify when the conversation finishes** switch notifies when you are not viewing that conversation, including when another conversation or Settings is open in Kiki. Completion means the assigned work has settled: the main agent has finished, finite background tasks and subagents have settled, and their results and any automatic continuation have been handled. A turn ending alone does not notify. Resident servers, watchers and future schedules do not keep work unfinished; approvals, questions, failures and user stops are not completion notices. In a browser, allow this site to send notifications; if you previously denied permission, restore it in the address bar’s site permissions.
+Under **This device**, **System notifications**, **Allow system notifications** controls session notifications and pending-input reminders from other spaces on this device. When notifications are supported, a status line states whether system permission is allowed, not asked yet, or blocked. The default-on **Notify when the conversation finishes** switch notifies when you are not viewing that conversation, including when another conversation or Settings is open in Kiki. Completion means the assigned work has settled: the main agent has finished, finite background tasks and subagents have settled, and their results and any automatic continuation have been handled. A turn ending alone does not notify. Resident servers, watchers and future schedules do not keep work unfinished; approvals, questions, failures and user stops are not completion notices. In a browser, allow this site to send notifications; if you previously denied permission, restore it in the address bar’s site permissions.
 
 Open the notified conversation, or a child-agent view within it, to clear its unread badge and its Windows Notification Center entries. Windows can hide the banner automatically without marking the conversation read; its Notification Center entry remains until you view the conversation or dismiss the notification yourself. Focusing Kiki, visiting Home or Settings, or opening another conversation does not mark it read. Notification clicks open the same conversation in its original home and connection; other conversations remain unread. A conversation left open in a hidden or unfocused window is not marked read until you return to it.
 
@@ -150,7 +147,7 @@ After a brief disconnect or app reopen, Kiki catches up completion receipts reta
 
 ## Search & retrieval
 
-**Settings → Capabilities → Search & retrieval** opens **Overview & source** (`/settings/search`). An old `/settings/environment-tools` address opens this page, and a `tab` there selects a search tab (`overview`, `search`, `fetch`, `providers`, or `advanced`). It inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
+**Settings → Capabilities → Search & retrieval** opens **Overview & source** (`/settings/search`). The old `/settings/environment-tools` address redirects to this page; its `tab` value selects a search tab (`overview`, `search`, `fetch`, `providers`, or `advanced`). It inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
 
 The same section's **Advanced & diagnostics** tab carries a **Full-text index** card for searching your own session history. The first index is built in the background, newest sessions first, and the card counts what is done so far. If the index stops for a reason you can fix, that card is where **Restart the indexer** appears; when indexing is off or unavailable by configuration, there is nothing to restart and the reason is stated instead.
 
@@ -189,27 +186,27 @@ The driver, and any browser Kiki starts, run on the Kiki server — not on the d
 
 Agents use these connections through the [browser tools](../reference/tools.md#browser-tools), naming a connection by its id — never by display name. The capability flag and the connections themselves live under [`[experimental]`](../configuration/config-files.md#experimental) and [`[browser_control]`](../configuration/config-files.md#browser-control) respectively.
 
-## Plugins
+## Extensions & tools
 
-**Settings → Capabilities → Extensions & tools** (`/settings/extensions`) has three tabs: **Plugins** (the default, `/settings/plugins`), **Skills** (`/settings/skills`), and **MCP** (`/settings/mcp`). The **Plugins** tab lists installed plugins. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
+**Settings → Capabilities → Extensions & tools** (`/settings/extensions`) keeps source and default controls for Skills and MCP. Its **Plugins**, **Skills**, and **MCP** tabs remain; the summary line above them reports installed plugin and skill counts and links to the main **Capabilities** page (`/capabilities`), where installed plugins and skills are listed. The old `/settings/plugins`, `/settings/skills`, and `/settings/mcp` addresses redirect to their tabs on this page.
 
-Select a plugin to open **its settings page** (`/settings/plugins?plugin=<id>`). If it has its own settings panel, use **Enable** to open it when the plugin is off, or **Retry** if the panel fails to load. The panel uses this app's colors and language when it supports them.
+Selecting a plugin on the Capabilities page opens its own Settings page (`/settings/extensions?plugin=<id>`). The old `/settings/plugins?plugin=<id>` address redirects there. If a plugin has its own settings panel, use **Enable** to open it when the plugin is off, or **Retry** if the panel fails to load. The panel uses this app's colors and language when it supports them.
 
 For plugins without a dedicated settings panel, Kiki shows their declared fields, grouped where applicable. Use a model or connection picker where one is offered. A stored secret is marked as configured without showing its value. **Save** and **Discard** appear after you make a change. A failed save keeps your draft and the last saved values; leaving with unsaved changes asks first. If the plugin manages its settings in a workspace panel, use the **Open** link named for that panel.
 
 **Remove plugin** is at the bottom of the page; it asks first and names what it takes with it, as the [plugin manager](../customization/plugins.md#install-and-manage) does. A plugin with neither settings fields nor its own settings interface still gets a page with its switch and Remove plugin.
 
-The page has its own address, so you can copy it, refresh, or use the browser's back button and come back to the same plugin. The plugin's **Plugin settings** entry on the **Extensions & tools** page leads to it, and so does the package button on a [media source](../customization/plugins.md#configuring-a-source).
+A plugin's Settings page has its own address, so you can copy it, refresh, or use the browser's back button and return to the same plugin. The page can also be opened from the plugin's Capabilities entry and from the package button on a [media source](../customization/plugins.md#configuring-a-source).
 
 ## Workspaces
 
-**Settings → Sessions & work → Workspaces** (`/settings/workspaces`) lists the folders known to this server. Open a row to configure that workspace on its own page (`/settings/workspaces?workspace=<id>`): rename it, pin it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. Its root path is shown for identification, not edited here.
+**Settings → Sessions & work → Workspaces** (`/settings/workspaces`) lists the folders known to this server. Each row has one visible verb, **New session**; its name opens that workspace's page (`/settings/workspaces?workspace=<id>`) to rename it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. **Pin to the top** is in the row's **⋯** menu. Choose **Select** to show checkboxes and bulk actions. The root path identifies the workspace but is not edited here.
 
 **Workspace trust** controls whether Kiki loads that project's configuration, MCP servers and hooks, and permits its project profiles to name external executors. Trust changes only when you explicitly use the switch; opening the page grants nothing and does not change tool approval mode. The **Agents**, **MCP servers** and **Skills** links keep this workspace as their target. Profiles retain their file source and write scope. MCP entries from plugins or project files are read-only here; editable user entries still save to the user configuration, not a new workspace copy. A missing workspace is reported rather than silently switching to another one.
 
 ## Computer control
 
-**Settings → Capabilities → Browser & computer**, then the **Computer control** tab (`/settings/computer-control` opens that tab), leads with the overall desktop verdict and the allow switch, then the computer MCP connections; the machine facts, executor install details, and model usage preference sit in the **Advanced** fold under the connection list. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
+**Settings → Capabilities → Browser & computer** has a **Computer control** tab (`/settings/browser-control?tab=computer`); the old `/settings/computer-control` address redirects to it. The tab leads with the overall desktop verdict and the allow switch, then the computer MCP connections; the machine facts, executor install details, and model usage preference sit in the **Advanced** fold under the connection list. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
 
 **Allow computer control** sits at the top of this tab beside a single verdict line that states whether the agent can currently drive the desktop, which connection is active, or the first gate to resolve (such as **Install executor** when the active CUA path is not installed yet). It stays allowed unless this server has turned it off. **On for new sessions** chooses whether a new conversation starts with the tools. Off for one conversation leaves them out of that conversation. Turning allow off leaves them out everywhere, including a task that names them. Changing allow updates the tools a computer connection that is already running offers. Tool policy can still deny those tools, or only some of them, and the page says so. The switch does not install the executor or connect the desktop. The usage preference below does not grant or remove the tools.
 
@@ -229,13 +226,11 @@ The main agent of each session uses the executor's own tools through the existin
 
 ## Dispatch capabilities
 
-On **Settings → Models & agents → Agents → Agent profiles** (`/settings/agents`), open a profile and use **Child agents** to decide what that agent may start. The **Subagents & dispatch** tab (`/settings/agents?tab=dispatch`) sets what applies across profiles: the default subagent, subagent model governance, the subagent panel's open mode, and the subagent tool settings. **Allow creating child agents** is **Not declared**, **Allowed**, or **Off**. **Not declared** follows the layer above this profile. **Off** stops this agent from starting child agents, including a definition supplied by path. **Preset list** chooses the named presets and routes it may start; a grey value is the child's own until you set one here. **Recommended first** is only an order, and does not allow or forbid a child. **Never dispatch** refuses those names even when the preset list would allow them. A missing model or preset is reported on the profile, separately from whether creating child agents is allowed. See [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
+On **Settings → Models & agents → Agents** (`/settings/agents`), open an agent and use **Child agents** to decide what it may start. The **Dispatch** section holds defaults that apply across agents: the default helper, the helper panel's open mode, and its tool settings. **Advanced** contains the subagent model rules. **Allow creating child agents** is **Not declared**, **Allowed**, or **Off**. **Not declared** follows the layer above this profile. **Off** stops this agent from starting child agents, including a definition supplied by path. **Preset list** chooses the named presets and routes it may start; a grey value is the child's own until you set one here. **Recommended first** is only an order, and does not allow or forbid a child. **Never dispatch** refuses those names even when the preset list would allow them. A missing model or preset is reported on the profile, separately from whether creating child agents is allowed. See [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
 
-## Session controls
+## Sessions
 
-Session controls stay at `/settings/sessions` (**Sessions & work → Sessions**). **Sessions & work → Workspaces** opens workspaces and does not replace these addresses.
-
-That page also carries **Task and background policy** — how many background tasks may run, the timeout that applies to Bash tasks, and what a non-interactive run does with work still in flight. The task fields are stored under [`background`](../configuration/config-files.md#background). **Cron operations**, the scheduled-task runtime's read-only diagnostics, lives under **Advanced → Developer & labs** (`/settings/developer#st-card-cron`). Existing cron links open the card there.
+**Settings → Sessions & work → Sessions** (`/settings/sessions`) has five cards: **New conversations**, **Titles**, **Agent questions**, **Background work**, and **Archive**. **Sessions & work → Workspaces** opens a separate page. Background-task limits, Bash task timeouts, and policy for unfinished work are under [Engine parameters](#engine-parameters), with fields stored under [`background`](../configuration/config-files.md#background).
 
 **Import history** (`/settings/sessions/import`) opens Kiki's built-in importer, also available from **New session**. No plugin installation or activation is needed for the built-in formats; see [Session history import](../customization/plugins.md#session-history-import).
 
@@ -255,9 +250,9 @@ On desktop-width screens, **Standard / Cockpit** in the right-panel header switc
 
 ## Usage
 
-Open **Usage** in the sidebar (`/usage`). The tabs are **Live**, **History**, **Quotas**, and **Export**, in that order. With no history filter and no `panel=` choice, the page opens **Live**. An address that already filters history, or `panel=history`, opens **History**. `panel=realtime` and `panel=limits` open **Live**.
+Open **Usage** in the sidebar (`/usage`). The tabs are **Live**, **History**, **Quotas**, and **Export**, in that order. With no history filter and no `panel=` choice, the page opens **Live**. An address that already filters history, or `panel=history`, opens **History**; `panel=realtime` opens **Live**. The old `/usage?panel=limits` address redirects to **Models → Defaults → Concurrency** (`/settings/ai?tab=defaults#st-card-concurrency`).
 
-- **Live:** model requests and live agents appear as two vertically arranged groups. The model-request group leads with running and queued totals across this service and a **By dimension** switch for model, provider or role, and its waiting rows name the blocking rule IDs with elapsed queue time. Agent details show main, subagent and independent execution counts, with breakdowns by executor, profile, model or role. If the connection fails, the last counts are marked stale. On the same tab, **Concurrency limits** lets you add or edit rules, choose a model or provider target, and set a shared or per-session cap. The switch pauses a rule without deleting it. Saving applies the rule to new and queued requests without stopping active streams.
+- **Live:** model requests and live agents appear as two vertically arranged groups. The model-request group leads with running and queued totals across this service and a **By dimension** switch for model, provider or role; waiting rows name the blocking rule IDs with elapsed queue time. Agent details show main, subagent and independent execution counts, with breakdowns by executor, profile, model or role. If the connection fails, the last counts are marked stale. When concurrency rules limit requests, Live shows the rule count and links to the **Concurrency** card under **Models → Defaults**. Add or edit rules there, choose a model or provider target, and set a shared or per-session cap. The switch pauses a rule without deleting it; saving applies rules to new and queued requests without stopping active streams.
 - **History:** costs and token usage for a date range, defaulting to today. Follow a trend bar to its consumption sources, then open session records and recorded turns on demand; filters stay with the view. Previous-period comparisons are read only when requested. Token usage and cost have separate completeness indicators; **Data reliability** distinguishes unknown accounting from empty ranges. Existing filtered usage links open History. See [Usage statistics](./sessions.md#gui-usage-statistics).
 - **Quotas:** balances, credits, usage windows and other metrics reported by configured providers and services, separate from Kiki's local usage accounting. Cards show the source account, status and available meters. A source that requires authentication offers the appropriate sign-in or settings action. Signing in rereads the account and locally cached quota status without querying the vendor or turning on a paused check. Use **Refresh quotas** to refresh eligible sources, or a card's refresh action for one source. Missing or unsupported metrics are not treated as a zero balance.
 - **Export:** destinations that receive this server's own usage. Three kinds are available: **vibecafe.ai**, **Kiki webhook**, and **Script**. Only the model, the UTC half-hour, the four token counts, quality and cost go out — never a prompt, answer, title, workspace name or path.
@@ -265,8 +260,6 @@ Open **Usage** in the sidebar (`/usage`). The tabs are **Live**, **History**, **
   A **vibecafe.ai** destination signs in from the page itself. When automatic upload is checked, press **Agree, sign in and enable** and a successful sign-in applies the current scope and schedule. When it is unchecked, sign-in only saves the credential and does not enable upload; a failed sign-in never enables it. No address, client id, key or storage choice is needed. Kiki saves the credential on the connected server, using its system keyring or, if unavailable, a private file protected by filesystem permissions rather than encryption at rest. The saved connection survives a restart. If saving fails, use **Try again**; the previous credential is kept. To supply your own endpoint or key, choose **Kiki webhook** instead.
 
 A **Kiki webhook** destination takes your own HTTPS endpoint, with `none`, `bearer`, or `hmac` authentication and optional gzip. A secret is stored either in the system keyring or, if you choose that explicitly, in a private file on the server — the keyring is not silently substituted if it fails, and the file is protected by filesystem permissions rather than encrypted at rest.
-
-Existing `/usage?panel=limits` links open Live and focus the concurrency-rule section; there is no separate Limits tab.
 
 External sync needs no experimental switch; without a destination nothing is sent. New destinations start with automatic upload checked and a two-hour schedule. Saving with it checked via **Agree and save** is the one-time agreement for the current destination and scope; preview is optional. Uncheck it and save to disable. Routine syncs and schedule-only edits for the same destination reuse that agreement.
 

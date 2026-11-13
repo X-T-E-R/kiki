@@ -116,7 +116,7 @@ While a proposal waits, the original entry keeps its current content and stays i
 
 ## Memory Advisor
 
-Memory Advisor uses a source you choose to recommend saved entries for the current request. Choose its source in **Settings → Models & providers → Providers & accounts → Decision models** (`/settings/ai?tab=providers#st-card-decision-connections`); **Settings → Memory** keeps its switch, budgets and runtime status. Choose a source and enable the advisor to start using it.
+Memory Advisor uses a source you choose to recommend saved entries for the current request. Choose its source in **[Settings → Models & agents → Models → Connections → Decision models](./settings.md#connections)** (`/settings/ai?tab=providers#st-card-decision-connections`); **[Settings → Memory](./settings.md#memory)** keeps its switch, budgets and runtime status. Choose a source and enable the advisor to start using it.
 
 1. Choose a [decision connection](../configuration/providers.md#decision-connections) or an existing chat model for **Memory Advisor**. A connection owns its protocol, endpoint and existing Kiki credentials; an optional model name on this row overrides its remote default. **System One** uses a compatible decision service, **Pair score** uses a reranker, and chat models return structured answers. Saving the source preserves an existing off switch and does not change the permission reviewer's source. Existing `selector` configurations remain usable until you replace or clear the source.
 2. In **Settings → Memory**, turn on **Memory Advisor**. It sends the current request, task notes, memory titles, short excerpts and selected complete entries to that source. Common secret patterns are masked before sending.

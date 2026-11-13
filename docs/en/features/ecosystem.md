@@ -34,7 +34,7 @@ See [Using Kiki in IDEs](/en/server/ide), [`kiki acp`](/en/server/acp), and [`ki
 
 ## External engines
 
-The direction reverses: another agent harness runs *your* subagent. An agent profile can carry an `executor` and run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build over ACP or the Codex app-server. Settings → Models & providers → Providers & accounts → External engines checks whether each one is installed and shows the setup steps that remain.
+The direction reverses: another agent harness runs *your* subagent. An agent profile can carry an `executor` and run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build over ACP or the Codex app-server. **[Settings → Models & agents → Models → Connections → Command-line agents → External engines](../guides/settings.md#connections)** checks whether each one is installed and shows the setup steps that remain.
 
 ![The external engines list, with each engine's install state, what Kiki can set on it, and any check details that remain.](/shots/ecosystem/ce-20261005-ecosystem-engines.en.png)
 

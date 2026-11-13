@@ -26,7 +26,7 @@ You do not need a fork of a profile to change a sentence. **Prompt field overrid
 
 ## Connections & OAuth
 
-**Settings → Models & providers → Providers & accounts** is a single list, and every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine. Each connection is one row saying how it is reached, what it carries, and whether it works. How a connection authenticates is part of that row, not a second list you have to keep in step.
+**[Settings → Models & agents → Models → Connections](/en/guides/settings#connections)** is a single list, and every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine. Each connection is one row saying how it is reached, what it carries, and whether it works. How a connection authenticates is part of that row, not a second list you have to keep in step.
 
 **Add connection** asks one question: which service, by what means.
 
@@ -40,7 +40,7 @@ Account connections use **OAuth**. The device flow shows you a code, an **Open v
 
 **Reusing a sign-in this machine already has** is one way to get an OAuth credential, not a rival to it. For ChatGPT (Codex) and Grok Build, a connection can use the sign-in their own app already holds on this machine. Kiki reuses it and renews it; it does not copy the credential, does not start the other app, and signing in or out here does not change anything there. The order is deliberate: **Check this machine** first reports which account is on the other side and where it is kept, and only then is **Use this sign-in** offered — carrying the account it just showed you, so a credential replaced in between is refused rather than adopted silently. When the machine cannot be used, the page says why in terms you can act on.
 
-A sign-in that completes adds that account's models to the catalog. **Providers & accounts** is the authority on what you can actually use right now: expand a connection to inspect its **Models** list. See [Connections](/en/guides/settings#connections).
+A sign-in that completes adds that account's models to the catalog. **[Connections](/en/guides/settings#connections)** is the authority on what you can actually use right now: expand a connection to inspect its **Models** list.
 
 ![The connections list: each connection is one row, and its authentication is part of that row.](/shots/freedom/freedom-connections.en.png)
 

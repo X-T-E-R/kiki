@@ -32,7 +32,7 @@ The right panel describes one agent at a time: whichever you last clicked into o
 
 It shows the agent's head over what it is doing now, "needs you" items as plain rows you can decide from, the activity feed, and a folded capabilities block. That block's **Subagents** list names each child profile and route, and whether that child can be launched. Who may be started is **Child agents** on the profile — see [Dispatch capabilities](/en/guides/settings#dispatch-capabilities). On wide windows the panel is open by default, and **Standard / Cockpit** in the header lets it temporarily take over the preview space; exiting cockpit restores your previous preview content, tabs, draft, and width.
 
-See [Interface overview](/en/guides/interface#right-rail) and [Session controls](/en/guides/settings#session-controls).
+See [Interface overview](/en/guides/interface#right-rail) and [Sessions](/en/guides/settings#sessions).
 
 ## The usage page {#the-usage-page-answers-three-different-questions}
 

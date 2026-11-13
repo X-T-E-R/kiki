@@ -175,7 +175,7 @@ Send the same snake_case fields in `POST /api/config`. JSON `null` removes only 
 
 ### Named harness instances
 
-To use the same harness with separate accounts or proxies, open its entry in **Settings → Models & providers → Providers & accounts → External engines** and choose **Add instance**. Give it a name, select the configuration source the harness supports, and choose its proxy. The instance appears as its own engine in the existing execution and profile selectors. Creating one does not change the original entry. Without instance configuration, AGY keeps its single global `agy-cli` entry.
+To use the same harness with separate accounts or proxies, open its entry in **[Settings → Models & agents → Models → Connections](../guides/settings.md#connections) → Command-line agents → External engines** and choose **Add instance**. Give it a name, select the configuration source the harness supports, and choose its proxy. The instance appears as its own engine in the existing execution and profile selectors. Creating one does not change the original entry. Without instance configuration, AGY keeps its single global `agy-cli` entry.
 
 Instances reuse their source engine's installation and protocol, including an explicitly chosen program path. AGY CLI instances also inherit `AGY_ACP_SDK_PATH` and `AGY_CLI_PATH` from the original entry's environment overrides as program dependencies. They do not copy its other environment overrides, configuration-home or extra arguments; credentials such as `GEMINI_API_KEY` and proxy overrides stay with the original entry. Each instance has its own model defaults, capability checks and saved execution identity. The global external-engine visibility switch and an explicit per-instance `show_in_profile_list = false` still hide new choices; otherwise creating an instance makes it available for selection when its engine is runnable.
 
@@ -389,7 +389,7 @@ max_context_size = 1048576
 
 ### Legacy model parameter migration
 
-Older configurations put `temperature` / `top_p` and `max_completion_tokens` / `service_tier` in different places. **Settings → Models & providers → Providers & accounts → Maintenance → Legacy model parameter migration** can copy them into a model's `parameters` table.
+Older configurations put `temperature` / `top_p` and `max_completion_tokens` / `service_tier` in different places. **[Settings → Models & agents → Models → Connections](../guides/settings.md#connections) → Maintenance → Legacy model parameter migration** can copy them into a model's `parameters` table.
 
 **Preview migration** first, which lists the model aliases, parameter names, review reasons, a revision and the backup name it would use, and writes nothing. Unambiguous values are copied; ambiguous or conflicting ones are left for you to decide. Your existing fields are not removed, so read the preview instead of assuming anything changed.
 
@@ -574,7 +574,7 @@ the bound model's `overrides.default_effort` → its `default_effort` → global
 
 ## `model_switch`
 
-`[model_switch]` decides what happens to the current context when you change models. The desktop control is **Model switching** under **Settings → Models & providers → Defaults**; this table is the saved configuration.
+`[model_switch]` decides what happens to the current context when you change models. The desktop control is **Model switching** under **[Settings → Models & agents → Models → Defaults](../guides/settings.md#models-and-recipes)**; this table is the saved configuration.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -1238,7 +1238,7 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-For a decision service, set `source = { kind = "connection", connection = "judgment" }`. It uses that connection's existing credentials and remote `default_model`; add `model` to the source to override the remote name. Reviewer accepts `system_one`, while `pair_score` is only for memory ranking. Choosing a source permits the limited reviewer input above to be sent to it; Memory Advisor keeps its own source and enable switch. In **Settings → Models & providers → Providers & accounts → Decision models**, select the two sources independently. The permission settings keep the review thresholds and timeout.
+For a decision service, set `source = { kind = "connection", connection = "judgment" }`. It uses that connection's existing credentials and remote `default_model`; add `model` to the source to override the remote name. Reviewer accepts `system_one`, while `pair_score` is only for memory ranking. Choosing a source permits the limited reviewer input above to be sent to it; Memory Advisor keeps its own source and enable switch. In **[Settings → Models & agents → Models → Connections](../guides/settings.md#connections) → Decision models**, select the two sources independently. The permission settings keep the review thresholds and timeout.
 
 `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects the System One yes/no checks from the five names above. `timeout_ms` accepts 100–30,000 milliseconds. Without an override, the existing `backend` setting supplies the timeout default: 8 seconds for `model` (the default), 4 seconds for `jev`.
 

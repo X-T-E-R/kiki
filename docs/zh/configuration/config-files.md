@@ -175,7 +175,7 @@ discovery_initialized = true
 
 ### 具名 harness 实例
 
-要为同一个 harness 使用不同账号或代理，在 **设置 → 模型与提供方 → 提供方与账号 → 外部引擎** 中打开对应引擎，选择 **添加实例**。填写名称、选择该引擎支持的配置来源，再设置代理。实例会作为独立引擎进入现有的执行与 profile 选择器，原入口保持原样。没有实例配置时，AGY 仍只有原来的全局 `agy-cli` 入口。
+要为同一个 harness 使用不同账号或代理，在 **[设置 → 模型与智能体 → 模型 → 连接](../guides/settings.md#连接) → 命令行智能体 → 外部引擎** 中打开对应引擎，选择 **添加实例**。填写名称、选择该引擎支持的配置来源，再设置代理。实例会作为独立引擎进入现有的执行与 profile 选择器，原入口保持原样。没有实例配置时，AGY 仍只有原来的全局 `agy-cli` 入口。
 
 实例复用来源引擎的安装与协议，包括显式指定的程序路径。AGY CLI 实例还会从原入口的环境覆盖中继承 `AGY_ACP_SDK_PATH` 和 `AGY_CLI_PATH`，作为程序运行依赖。原入口的其他环境覆盖、配置目录和额外启动参数不会复制到实例；`GEMINI_API_KEY` 等凭据与代理覆盖仍留在原入口。每个实例分别保存模型默认值、检查结果和执行身份。全部外部引擎的显示开关，以及实例上明确设置的 `show_in_profile_list = false`，仍可隐藏新选择；除此之外，显式创建的实例会在引擎可运行时进入选择器。
 
@@ -389,7 +389,7 @@ max_context_size = 1048576
 
 ### 显式迁移旧版模型参数
 
-旧版配置把 `temperature` / `top_p` 和 `max_completion_tokens` / `service_tier` 放在不同位置。**设置 → 模型与提供商 → 服务与账号 → 维护 → 旧版模型参数迁移** 可以把它们复制到某个模型的 `parameters` 表里。
+旧版配置把 `temperature` / `top_p` 和 `max_completion_tokens` / `service_tier` 放在不同位置。**设置 → 模型与智能体 → 模型 → [连接](../guides/settings.md#连接) → 维护 → 旧版模型参数迁移** 可以把它们复制到某个模型的 `parameters` 表里。
 
 先点**预览迁移**：它只读列出模型别名、参数名、需要你人工判断的原因、一个修订标识和将使用的备份名称，不写任何文件。没有歧义的值会被复制；有歧义或冲突的值留给你决定。你原有的字段不会被删除，所以请读预览，而不是假设配置已经变了。
 
@@ -560,7 +560,7 @@ thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随�
 
 ## `model_switch`
 
-`[model_switch]` 决定切换模型时如何处理当前上下文。桌面入口是 **设置 → 模型与提供商 → 默认值** 上的 **切换模型**；这张表是保存下来的配置。
+`[model_switch]` 决定切换模型时如何处理当前上下文。桌面入口是 [**设置 → 模型与智能体 → 模型 → 默认值**](../guides/settings.md#模型与-recipe) 上的 **切换模型**；这张表是保存下来的配置。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -1224,7 +1224,7 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-使用决策服务时，设置 `source = { kind = "connection", connection = "judgment" }`，复用该连接的现有凭证及远端 `default_model`；可在 source 中加 `model` 覆盖远端名称。权限审查接受 `system_one`，`pair_score` 只用于记忆排序。选择来源即允许将上述有限审查内容发送给它；记忆顾问保留自身的来源及启用开关。在**设置 → 模型与提供商 → 服务与账号 → 决策模型**中分别选择两处来源；权限设置保留审查阈值和超时。
+使用决策服务时，设置 `source = { kind = "connection", connection = "judgment" }`，复用该连接的现有凭证及远端 `default_model`；可在 source 中加 `model` 覆盖远端名称。权限审查接受 `system_one`，`pair_score` 只用于记忆排序。选择来源即允许将上述有限审查内容发送给它；记忆顾问保留自身的来源及启用开关。在 **设置 → 模型与智能体 → 模型 → [连接](../guides/settings.md#连接) → 决策模型**中分别选择两处来源；权限设置保留审查阈值和超时。
 
 `allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 System One 的是非检查项。`timeout_ms` 接受 100–30,000 毫秒；未覆盖时沿用 `backend` 的默认超时：`model`（默认）为 8 秒，`jev` 为 4 秒。
 
