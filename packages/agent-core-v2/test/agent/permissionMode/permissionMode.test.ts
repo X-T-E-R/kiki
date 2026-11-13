@@ -203,7 +203,7 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     await dispatcher.flush();
     expect(statuses.map((event) => event.permission)).toEqual(['manual', 'review', 'auto']);
     expect((await readRecords()).map((record) => record.type)).toEqual([
-      'permission.set_mode', 'permission.set_mode', 'permission.set_mode',
+      'permission.set_mode', 'permission.set_mode', 'permission.set_ceiling', 'permission.set_mode',
     ]);
   });
 

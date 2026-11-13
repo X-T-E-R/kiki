@@ -95,7 +95,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     const wasAuto = this.mode === 'auto';
     this.setMode(mode);
     if (this.scopeContext.agentId === MAIN_AGENT_ID) {
-      this.agentLifecycle.broadcastPermissionMode(mode);
+      this.agentLifecycle.broadcastPermissionMode(this.mode);
     }
     const yoloEnabled = this.mode === 'yolo';
     if (yoloEnabled !== wasYolo) {

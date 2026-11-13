@@ -100,8 +100,9 @@ it('creates workspace-pinned threads over HTTP and shares the send rate budget',
   ] as const) expect(await create(grant, body)).toMatchObject({ status: 403, envelope: { msg } });
   expect(await create(link, { cwd: '/other' })).toMatchObject({ status: 400, envelope: { msg: 'invalid_bridge_request' } });
   expect(await create(link, { fromSubagent: 'child' })).toMatchObject({ status: 400, envelope: { msg: 'invalid_bridge_request' } });
-
   const tool = f.main.accessor.get(IThreadCreateTool);
+  await expect(execute(tool, { bridge_id: link.grant.id, idempotency_key: 'initial', profile: 'explore' })).rejects.toThrow('not a main-agent profile');
+
   const input = { bridge_id: link.grant.id, workspace_id: f.target.workspaceId, idempotency_key: 'initial', prompt: 'Initial bridge prompt.\nSecond line.' };
   type Created = { id: string; title: string; profile: string; prompt_started: boolean; thread: ReturnType<typeof toolRef> };
   const [created, replay] = await Promise.all([execute<Created>(tool, input), execute<Created>(tool, input)]);

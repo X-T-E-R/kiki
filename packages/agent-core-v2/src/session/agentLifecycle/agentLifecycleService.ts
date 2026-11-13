@@ -69,6 +69,7 @@ import {
   type CreateAgentOptions,
   type ForkAgentOptions,
   IAgentLifecycleService,
+  MAIN_AGENT_ID,
 } from './agentLifecycle';
 import {
   delegatorRef,
@@ -793,12 +794,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   broadcastPermissionMode(mode: PermissionMode): void {
+    const mainCeiling = this.get(MAIN_AGENT_ID)?.accessor.get(IAgentPermissionModeService).modeCeiling;
+    const cappedMode = mainCeiling === undefined ? mode : constrainPermissionMode(mode, mainCeiling);
     for (const handle of this.liveHandles()) {
       const perm = handle.accessor.get(IAgentPermissionModeService);
-      if (handle.accessor.get(IAgentScopeContext).isBranch === true) {
-        perm.setModeCeiling(mode);
+      const scopeCtx = handle.accessor.get(IAgentScopeContext);
+      if (scopeCtx.isBranch === true) {
+        const parentPerm = scopeCtx.parentAgentId === undefined ? undefined : this.get(scopeCtx.parentAgentId)?.accessor.get(IAgentPermissionModeService);
+        const cap = parentPerm?.modeCeiling === undefined ? cappedMode : constrainPermissionMode(cappedMode, parentPerm.modeCeiling);
+        perm.setModeCeiling(cap);
       }
-      perm.setMode(mode, 'ambient');
+      perm.setMode(cappedMode, 'ambient');
     }
   }
 

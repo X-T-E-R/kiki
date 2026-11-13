@@ -2446,6 +2446,28 @@ describe('AgentLifecycleService', () => {
     expect(main.accessor.get(IAgentStateService).get(permissionModeKey)).toBe('auto');
   });
 
+  it('broadcastPermissionMode and setModeAndBroadcast preserve main modeCeiling on branches', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const main = await svc.create({ agentId: 'main' });
+    const mainPerm = main.accessor.get(IAgentPermissionModeService);
+    mainPerm.setModeCeiling('auto');
+    mainPerm.setMode('manual');
+
+    const branch = await svc.fork('main', { agentId: 'branch-1', labels: { branch: 'true' } });
+    const branchPerm = branch.accessor.get(IAgentPermissionModeService);
+    expect(branchPerm.modeCeiling).toBe('manual');
+    expect(branchPerm.mode).toBe('manual');
+
+    mainPerm.setModeAndBroadcast('yolo');
+    expect(mainPerm.mode).toBe('auto');
+    expect(branchPerm.modeCeiling).toBe('auto');
+    expect(branchPerm.mode).toBe('auto');
+
+    svc.broadcastPermissionMode('yolo');
+    expect(branchPerm.modeCeiling).toBe('auto');
+    expect(branchPerm.mode).toBe('auto');
+  });
+
   it('wires MCP OAuth credentials through the session atomic document store', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const main = await svc.create({ agentId: 'main' });

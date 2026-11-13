@@ -378,9 +378,18 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
       }
       await writePrivateFile(this.path, JSON.stringify(this.state));
       this.checkInbound(grant, input, 'create');
-      const result = await createBridgedThread(this.core, workspace, this.admission.identity.hostId, input, entry.sessionId, key);
-      entry.result = result;
-      return result;
+      try {
+        const result = await createBridgedThread(this.core, workspace, this.admission.identity.hostId, input, entry.sessionId, key);
+        entry.result = result;
+        return result;
+      } catch (error) {
+        if ((await this.sessions.get(entry.sessionId)) === undefined) {
+          const idx = creates.indexOf(entry);
+          if (idx >= 0) creates.splice(idx, 1);
+          await writePrivateFile(this.path, JSON.stringify(this.state));
+        }
+        throw error;
+      }
     });
   }
   private pruneInboundReceipts(now: number): void {
