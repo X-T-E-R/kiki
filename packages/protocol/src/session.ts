@@ -251,9 +251,55 @@ export const expectedSessionCursorSchema = z.object({
 });
 export type ExpectedSessionCursor = z.infer<typeof expectedSessionCursorSchema>;
 
+export const sessionSeedModeSchema = z.enum(['fresh', 'compact', 'verbatim']);
+export type SessionSeedMode = z.infer<typeof sessionSeedModeSchema>;
+
+export const sessionSeedCarrySchema = z.union([
+  z.object({ last: z.number().int().nonnegative() }).strict(),
+  z.object({ fromMessageId: z.string().min(1) }).strict(),
+]);
+export type SessionSeedCarry = z.infer<typeof sessionSeedCarrySchema>;
+
+export const sessionBranchCreateSchema = z.object({
+  parent_agent_id: z.string().min(1).optional(),
+  task: z.string().optional(),
+  prompt: z.string().optional(),
+  seed: sessionSeedModeSchema.optional(),
+  carry: sessionSeedCarrySchema.optional(),
+  title: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  thinking: z.string().nullable().optional(),
+  executor: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  tools_locked: z.boolean().optional(),
+}).strict();
+export type SessionBranchCreate = z.infer<typeof sessionBranchCreateSchema>;
+
+export const sessionBranchFoldSchema = z.object({
+  branch_id: z.string().min(1),
+  summary: z.string().optional(),
+  context: z.string().optional(),
+  asks: z.array(z.string().min(1)).optional(),
+  done: z.boolean().optional(),
+}).strict();
+export type SessionBranchFold = z.infer<typeof sessionBranchFoldSchema>;
+
+export const sessionBranchDiscardSchema = z.object({
+  branch_id: z.string().min(1),
+}).strict();
+export type SessionBranchDiscard = z.infer<typeof sessionBranchDiscardSchema>;
+
+export const sessionBranchToolsLockSchema = z.object({
+  branch_id: z.string().min(1),
+  locked: z.boolean(),
+}).strict();
+export type SessionBranchToolsLock = z.infer<typeof sessionBranchToolsLockSchema>;
+
 export const sessionForkSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  seed: sessionSeedModeSchema.optional(),
+  carry: sessionSeedCarrySchema.optional(),
   through_message_id: z.string().min(1).optional(),
   expected_cursor: expectedSessionCursorSchema.optional(),
 }).superRefine((value, ctx) => {

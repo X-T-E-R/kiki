@@ -344,6 +344,7 @@ export function compactionUserMessageDisposition(
     case 'peer_thread':
     case 'bridged_peer':
     case 'agent_message':
+    case 'branch_fold':
       return 'keep';
     case 'system_trigger':
       return origin.name === 'thread_create' ? 'keep' : 'drop';

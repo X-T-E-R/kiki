@@ -8,7 +8,7 @@ import {
   sessionMetadataSchema,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
-import { personaAvatarDataSchema, executorCapabilitiesSchema, usageAccountingSnapshotSchema } from '@kiki/protocol';
+import { personaAvatarDataSchema, executorCapabilitiesSchema, usageAccountingSnapshotSchema, sessionSeedModeSchema, sessionSeedCarrySchema } from '@kiki/protocol';
 import { workspaceIdSchema } from './workspace';
 
 export const sessionUsageSchema = z.object({
@@ -136,6 +136,8 @@ export type ExpectedSessionCursor = z.infer<typeof expectedSessionCursorSchema>;
 export const sessionForkSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  seed: sessionSeedModeSchema.optional(),
+  carry: sessionSeedCarrySchema.optional(),
   through_message_id: z.string().min(1).optional(),
   expected_cursor: expectedSessionCursorSchema.optional(),
 }).superRefine((value, ctx) => {

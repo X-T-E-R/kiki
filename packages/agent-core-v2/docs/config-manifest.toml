@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (58 sections · 1 overlay(s))
+# Index (59 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
@@ -16,6 +16,7 @@
 #   agents                          src/session/agentCollaboration/configSection.ts
 #   background                      src/agent/task/configSection.ts
 #   bot                             src/app/bot/configSection.ts
+#   branch                          src/app/branch/configSection.ts
 #   browserControl                  src/app/browser/browserConfig.ts
 #   builtinProductSkills            src/app/skillCatalog/configSection.ts
 #   computerControl                 src/app/computer/configSection.ts
@@ -258,6 +259,19 @@ notify_parent = true
 enabled = false
 max_handoffs_per_hour = 30
 room_budget = 12
+
+# ##########################################################################
+# branch
+#   owner: src/app/branch/configSection.ts
+#   scope: core
+#   hooks: stripEnv
+#   env:
+#     enabled <- KIKI_BRANCH_ENABLED (custom parse)
+# ##########################################################################
+
+[branch]
+enabled = true
+usage_preference = "balanced"
 
 # ##########################################################################
 # browserControl (config.toml: browser_control)
@@ -735,7 +749,7 @@ credential_values = {  }
 # ##########################################################################
 
 [optional_capabilities]
-defaults = { browser = false, computer = false, memory = true, thread = true, web = true, send_message = false }
+defaults = { browser = false, computer = false, memory = true, thread = true, branch = true, web = true, send_message = false }
 web = { allowed = true }
 
 # ##########################################################################

@@ -447,6 +447,22 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         })),
       });
     },
+    async resolveAgentId(sessionId, selector) {
+      const trimmed = selector.trim();
+      if (trimmed.length === 0) return undefined;
+      if (trimmed === 'main') return 'main';
+      const transcript = getTranscript();
+      const live = transcript.forSessionLive(sessionId);
+      let roster = live === undefined ? undefined : live.agents();
+      if (roster === undefined || roster.length === 0) {
+        roster = await transcript.readColdRoster(sessionId).catch(() => undefined);
+      }
+      if (roster === undefined) return undefined;
+      const direct = roster.find((item) => item.agentId === trimmed);
+      if (direct !== undefined) return direct.agentId;
+      const lower = trimmed.toLowerCase();
+      return roster.find((item) => item.label?.toLowerCase() === lower)?.agentId;
+    },
   };
   return [[IHistoryArchive, archive]];
 }

@@ -45,16 +45,32 @@ export const resumeSessionOptionsSchema = z.object({
 });
 
 /** Same fields as `ForkSessionOptions` in the engine — keep in sync. */
+export const sessionSeedModeWireSchema = z.enum(['fresh', 'compact', 'verbatim']);
+export const sessionSeedCarryWireSchema = z.union([
+  z.object({ last: z.number().int().nonnegative() }).strict(),
+  z.object({ fromMessageId: z.string().min(1) }).strict(),
+]);
+
 export const forkSessionOptionsSchema = z.object({
   sourceSessionId: z.string(),
   newSessionId: z.string().optional(),
   title: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   turnIndex: z.number().optional(),
+  throughUserMessage: z.boolean().optional(),
+  externalMaterialOnly: z.boolean().optional(),
+  seed: sessionSeedModeWireSchema.optional(),
+  carry: sessionSeedCarryWireSchema.optional(),
 });
 
 /** Same fields as `ForkSessionOptions` in the engine, minus the fork-only truncation. */
-export const createChildSessionOptionsSchema = forkSessionOptionsSchema.omit({ turnIndex: true });
+export const createChildSessionOptionsSchema = forkSessionOptionsSchema.omit({
+  turnIndex: true,
+  throughUserMessage: true,
+  externalMaterialOnly: true,
+  seed: true,
+  carry: true,
+});
 
 /** `IScopeHandle` as it survives JSON — `{ id, kind }` plus extras. */
 export const handleWireSchema = z.looseObject({

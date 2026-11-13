@@ -136,6 +136,16 @@ export interface AgentMessageOrigin {
   readonly senderTaskName: string;
 }
 
+export interface BranchFoldOrigin {
+  readonly kind: 'branch_fold';
+  readonly foldId: string;
+  readonly branchId: string;
+  readonly branchTitle?: string;
+  readonly asks?: readonly string[];
+  readonly throughTurnId: number;
+  readonly done?: boolean;
+}
+
 export interface PersonaGreetingOrigin {
   readonly kind: 'persona_greeting';
   readonly personaId: string;
@@ -183,6 +193,7 @@ export type PromptOrigin =
   | PeerThreadOrigin
   | BridgedPeerOrigin
   | AgentMessageOrigin
+  | BranchFoldOrigin
   | PersonaGreetingOrigin
   | RoomMessageOrigin;
 
@@ -199,6 +210,7 @@ export type ContextMessage = Message & {
   readonly id?: string;
   readonly providerMessageId?: string;
   readonly origin?: PromptOrigin | undefined;
+  readonly inheritedSeed?: boolean;
   readonly isError?: boolean;
   readonly note?: string;
   readonly runtimeId?: string;

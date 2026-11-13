@@ -76,7 +76,7 @@ import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcp
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { IRecipeService } from '@kiki/agent-core-v2/app/recipes/recipes';
-import { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
+import { ISessionBranchService, ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
@@ -129,6 +129,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   sessionOptionalCapabilityService: ISessionOptionalCapabilityService,
   agentCollaborationMessagingService: IAgentCollaborationMessagingService,
   sessionActivityView: ISessionActivityView,
+  sessionBranchService: ISessionBranchService,
   sessionBtwService: ISessionBtwService,
   sessionInitService: ISessionInitService,
   sessionTodoService: ISessionTodoService,

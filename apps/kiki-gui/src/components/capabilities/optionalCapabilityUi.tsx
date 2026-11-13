@@ -20,7 +20,7 @@ import {
   type PendingOptionalCapabilityId,
 } from './newSessionCapabilities';
 
-export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'web'] as const;
+export const OPTIONAL_CAPABILITY_IDS = ['browser', 'branch', 'computer', 'memory', 'thread', 'web'] as const;
 export type OptionalCapabilityId = PendingOptionalCapabilityId;
 
 export interface OptionalCapabilityState {
@@ -32,6 +32,7 @@ export interface OptionalCapabilityState {
 
 const LABEL: Record<OptionalCapabilityId, I18nKey> = {
   browser: 'cap.browser',
+  branch: 'cap.branch',
   computer: 'cap.computer',
   memory: 'cap.memory',
   thread: 'cap.thread',
@@ -40,6 +41,7 @@ const LABEL: Record<OptionalCapabilityId, I18nKey> = {
 
 const FACTORY_DEFAULT: Record<OptionalCapabilityId, boolean> = {
   browser: false,
+  branch: true,
   computer: false,
   memory: true,
   thread: true,
@@ -125,7 +127,7 @@ function draftRows(config: KikiConfigResponse | undefined, pending: readonly { i
       effective,
       reason,
       source,
-      applies: id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
+      applies: id === 'memory' || id === 'thread' || id === 'branch' ? 'next-step' : 'next-model-request',
     };
   });
 }

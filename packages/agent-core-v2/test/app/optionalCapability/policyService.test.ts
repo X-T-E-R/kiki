@@ -7,6 +7,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
+import { BRANCH_CONFIG_SECTION } from '#/app/branch/configSection';
 import type { ConfigOrigin } from '#/app/config/config';
 import { IConfigService } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION } from '#/app/computer/configSection';
@@ -162,6 +163,7 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().globalState('memory')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
     expect(policy().globalState('web')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default' });
     expect(policy().globalState('thread')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
+    expect(policy().globalState('branch')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
     expect(policy().globalState('browser')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
     expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
     expect(policy().globalState('send_message')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default', unresolved: false });
@@ -189,6 +191,14 @@ describe('OptionalCapabilityPolicyService', () => {
     origins[OPTIONAL_CAPABILITIES_SECTION] = { 'defaults.send_message': 'home' };
     values[OPTIONAL_CAPABILITIES_SECTION] = { defaults: { send_message: true } };
     expect(policy().globalState('send_message')).toMatchObject({ allowed: true, defaultOn: true });
+    origins[BRANCH_CONFIG_SECTION] = { enabled: 'env' };
+    values[BRANCH_CONFIG_SECTION] = { enabled: false };
+    expect(policy().globalState('branch')).toMatchObject({ allowed: false, defaultOn: false, hostLocked: true, origin: 'env' });
+    origins[BRANCH_CONFIG_SECTION] = {};
+    values[BRANCH_CONFIG_SECTION] = {};
+    origins[OPTIONAL_CAPABILITIES_SECTION] = { 'defaults.branch': 'home' };
+    values[OPTIONAL_CAPABILITIES_SECTION] = { defaults: { branch: false } };
+    expect(policy().globalState('branch')).toMatchObject({ allowed: true, defaultOn: false, hostLocked: false, origin: 'default' });
   });
 
   it('reports an unreadable origin instead of opening, including an unreadable defaults map', () => {

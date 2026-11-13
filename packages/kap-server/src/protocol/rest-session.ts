@@ -17,9 +17,50 @@ import {
   sessionSchema,
 } from './session';
 
-import { updateSessionProfileRequestSchema, type UpdateSessionProfileRequest } from '@kiki/protocol';
-export { sessionWarningSchema, sessionWarningsResponseSchema, updateSessionProfileRequestSchema };
-export type { UpdateSessionProfileRequest };
+import {
+  createSessionBranchRequestSchema,
+  createSessionBranchResponseSchema,
+  discardSessionBranchRequestSchema,
+  discardSessionBranchResponseSchema,
+  foldSessionBranchRequestSchema,
+  foldSessionBranchResponseSchema,
+  setSessionBranchToolsLockRequestSchema,
+  setSessionBranchToolsLockResponseSchema,
+  updateSessionProfileRequestSchema,
+  type CreateSessionBranchRequest,
+  type CreateSessionBranchResponse,
+  type DiscardSessionBranchRequest,
+  type DiscardSessionBranchResponse,
+  type FoldSessionBranchRequest,
+  type FoldSessionBranchResponse,
+  type SetSessionBranchToolsLockRequest,
+  type SetSessionBranchToolsLockResponse,
+  type UpdateSessionProfileRequest,
+} from '@kiki/protocol';
+export {
+  createSessionBranchRequestSchema,
+  createSessionBranchResponseSchema,
+  discardSessionBranchRequestSchema,
+  discardSessionBranchResponseSchema,
+  foldSessionBranchRequestSchema,
+  foldSessionBranchResponseSchema,
+  sessionWarningSchema,
+  sessionWarningsResponseSchema,
+  setSessionBranchToolsLockRequestSchema,
+  setSessionBranchToolsLockResponseSchema,
+  updateSessionProfileRequestSchema,
+};
+export type {
+  CreateSessionBranchRequest,
+  CreateSessionBranchResponse,
+  DiscardSessionBranchRequest,
+  DiscardSessionBranchResponse,
+  FoldSessionBranchRequest,
+  FoldSessionBranchResponse,
+  SetSessionBranchToolsLockRequest,
+  SetSessionBranchToolsLockResponse,
+  UpdateSessionProfileRequest,
+};
 export type {
   SessionWarning,
   SessionWarningsResponse,

@@ -314,6 +314,7 @@ export function bindSessionTranscript(
       event.type === 'interaction.request' ||
       event.type === 'interaction.resolved' ||
       event.type === 'turn.cancel' ||
+      event.type === 'branch.base' ||
       (event.type === 'executor.runtime.update' && event['kind'] === 'usage')
     ) {
       return;
@@ -566,6 +567,14 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
     (parentAgentId === undefined ? undefined : { kind: 'agent' as const, agentId: parentAgentId });
   const userLabel = subagentUserLabel(meta);
   const type = meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub');
+  const labels = meta?.labels;
+  const isBranch = labels?.['branch'] === 'true' ? true : undefined;
+  const rawSeed = labels?.['branchSeed'];
+  const branchSeed = rawSeed === 'fresh' || rawSeed === 'compact' || rawSeed === 'verbatim' ? rawSeed : undefined;
+  const rawInitiator = labels?.['branchInitiator'];
+  const branchInitiator = rawInitiator === 'user' || rawInitiator === 'agent' ? rawInitiator : undefined;
+  const toolsLocked = labels?.['toolsLocked'] === 'true' ? true : labels?.['toolsLocked'] === 'false' ? false : undefined;
+  const branchSealed = labels?.['branchSealed'] === 'true' ? true : undefined;
   return {
     agentId,
     createdAt: meta?.createdAt === undefined ? undefined : new Date(meta.createdAt).toISOString(),
@@ -573,8 +582,13 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
     parentAgentId,
     delegator,
     label:
-      type === 'sub'
+      type === 'sub' || isBranch === true
         ? resolveSubagentDisplayName(userLabel, meta?.displayName, agentId)
         : undefined,
+    isBranch,
+    branchSeed,
+    branchInitiator,
+    toolsLocked,
+    branchSealed,
   };
 }

@@ -24,10 +24,15 @@ import { cursorQuerySchema, pageResponseSchema } from '../pagination';
 import { worktreeRemovalOutcomeSchema } from './worktree';
 import {
   sessionAgentPromoteSchema,
+  sessionBranchCreateSchema,
+  sessionBranchDiscardSchema,
+  sessionBranchFoldSchema,
+  sessionBranchToolsLockSchema,
   sessionChildCreateSchema,
   sessionCreateSchema,
   sessionForkSchema,
   sessionSchema,
+  sessionSeedModeSchema,
   sessionUpdateSchema,
 } from '../session';
 
@@ -162,6 +167,55 @@ export const startBtwSessionResponseSchema = z.object({
   agent_id: z.string().min(1),
 });
 export type StartBtwSessionResponse = z.infer<typeof startBtwSessionResponseSchema>;
+
+export const createSessionBranchRequestSchema = z.preprocess(
+  (value) => value === undefined ? {} : value,
+  sessionBranchCreateSchema,
+);
+export type CreateSessionBranchRequest = z.infer<typeof createSessionBranchRequestSchema>;
+
+export const createSessionBranchResponseSchema = z.object({
+  agent_id: z.string().min(1),
+  parent_agent_id: z.string().min(1),
+  seed: sessionSeedModeSchema,
+  tools_locked: z.boolean(),
+  title: z.string().optional(),
+  started: z.boolean().optional(),
+  turn_id: z.number().int().nonnegative().optional(),
+});
+export type CreateSessionBranchResponse = z.infer<typeof createSessionBranchResponseSchema>;
+
+export const foldSessionBranchRequestSchema = sessionBranchFoldSchema;
+export type FoldSessionBranchRequest = z.infer<typeof foldSessionBranchRequestSchema>;
+
+export const foldSessionBranchResponseSchema = z.object({
+  branch_id: z.string().min(1),
+  fold_id: z.string().min(1).optional(),
+  status: z.enum(['merged', 'folded', 'prompted']),
+  done: z.boolean().optional(),
+  sealed: z.boolean(),
+  handed_back_prompts: z.number().int().nonnegative(),
+  through_turn_id: z.number().int().nonnegative().optional(),
+});
+export type FoldSessionBranchResponse = z.infer<typeof foldSessionBranchResponseSchema>;
+
+export const discardSessionBranchRequestSchema = sessionBranchDiscardSchema;
+export type DiscardSessionBranchRequest = z.infer<typeof discardSessionBranchRequestSchema>;
+
+export const discardSessionBranchResponseSchema = z.object({
+  branch_id: z.string().min(1),
+  discarded: z.boolean(),
+});
+export type DiscardSessionBranchResponse = z.infer<typeof discardSessionBranchResponseSchema>;
+
+export const setSessionBranchToolsLockRequestSchema = sessionBranchToolsLockSchema;
+export type SetSessionBranchToolsLockRequest = z.infer<typeof setSessionBranchToolsLockRequestSchema>;
+
+export const setSessionBranchToolsLockResponseSchema = z.object({
+  branch_id: z.string().min(1),
+  tools_locked: z.boolean(),
+});
+export type SetSessionBranchToolsLockResponse = z.infer<typeof setSessionBranchToolsLockResponseSchema>;
 
 // Child lists intentionally omit exclude_empty: the /sessions/{id}/children route
 // does not filter by it, so advertising it would mislead generated clients.

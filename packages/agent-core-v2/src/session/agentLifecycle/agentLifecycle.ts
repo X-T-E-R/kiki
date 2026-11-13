@@ -27,6 +27,11 @@ export interface CreateAgentOptions {
 export interface ForkAgentOptions {
   readonly agentId?: string;
   readonly binding?: Partial<BindAgentInput>;
+  readonly labels?: Readonly<Record<string, string>>;
+  readonly userLabel?: string;
+  readonly workspaceRoots?: RuntimeWorkspaceRoots;
+  readonly skipMessageSeed?: boolean;
+  readonly deferCreateEvent?: boolean;
 }
 
 export interface AgentRestoreBinding {

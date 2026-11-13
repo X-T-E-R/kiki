@@ -1,9 +1,12 @@
 import type {
-  ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, EditMessageRequest, ForkSessionRequest,
+  ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, CreateSessionBranchRequest,
+  CreateSessionBranchResponse, DiscardSessionBranchRequest, DiscardSessionBranchResponse,
+  EditMessageRequest, FoldSessionBranchRequest, FoldSessionBranchResponse, ForkSessionRequest,
   PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult, PromoteAgentRequest,
   PromptSteerResult, PromptTimingRequest, PromptTimingResult, PromptHoldRequest, PromptHoldResult, TurnAbortResponse,
   PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
-  QuestionResolveResult, RegenerateMessageRequest, Session,
+  QuestionResolveResult, RegenerateMessageRequest, Session, SetSessionBranchToolsLockRequest,
+  SetSessionBranchToolsLockResponse, StartBtwSessionResponse,
 } from '@kiki/protocol';
 import type { z } from 'zod';
 import type { CallOptions } from '../channel.js';
@@ -16,6 +19,11 @@ export interface SessionCommandsFacade {
   edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   fork(body?: ForkSessionRequest): Promise<Session>;
+  btw(): Promise<StartBtwSessionResponse>;
+  branch(body?: CreateSessionBranchRequest): Promise<CreateSessionBranchResponse>;
+  foldBranch(body: FoldSessionBranchRequest): Promise<FoldSessionBranchResponse>;
+  discardBranch(body: DiscardSessionBranchRequest): Promise<DiscardSessionBranchResponse>;
+  setBranchToolsLock(body: SetSessionBranchToolsLockRequest): Promise<SetSessionBranchToolsLockResponse>;
   /** Copies a subagent's conversation into a new top-level thread; the source session is untouched. */
   promoteAgent(agentId: string, body?: PromoteAgentRequest): Promise<Session>;
   abort(promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
@@ -56,6 +64,11 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     edit: (target, body) => invoke('edit', { target, body }),
     regenerate: (target, body) => invoke('regenerate', { target, body }),
     fork: (body = {}) => invoke('fork', { body }),
+    btw: () => invoke('btw', {}),
+    branch: (body = {}) => invoke('branch', { body }),
+    foldBranch: (body) => invoke('foldBranch', { body }),
+    discardBranch: (body) => invoke('discardBranch', { body }),
+    setBranchToolsLock: (body) => invoke('setBranchToolsLock', { body }),
     promoteAgent: (target, body = {}) => invoke('promoteAgent', { target, body }),
     abort: (target, agentId, queuedOnly) => invoke('abort', queuedOnly ? { target, query: { agent_id: agentId === 'main' ? undefined : agentId, queued_only: 'true' } } : agentScoped(target, agentId)),
     abortTurn: (turnId) => invoke('abortTurn', { target: String(turnId) }),

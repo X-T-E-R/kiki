@@ -1,5 +1,6 @@
 export * from './agentCapabilitiesSettings';
 export * from './agentSettings';
+export * from './branchControl';
 export * from './browserControl';
 export * from './computerControl';
 export * from './decisionSource';

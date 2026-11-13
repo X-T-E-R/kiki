@@ -5,13 +5,13 @@
  * kap-server `routes/sessionExport.ts`.
  */
 
-import { compactSessionResponseSchema, type CompactSessionResponse, type Session } from '@kiki/protocol';
+import { compactSessionResponseSchema, type CompactSessionResponse, type Session, type SessionSeedMode } from '@kiki/protocol';
 
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError } from '../transport';
 
 export interface SessionActionClient {
-  forkSession(sessionId: string, body: Record<string, never>): Promise<Session>;
+  forkSession(sessionId: string, body: { readonly seed?: SessionSeedMode }): Promise<Session>;
   /** Optional: transports without the promote route leave it out and the action stays hidden. */
   promoteAgent?(sessionId: string, agentId: string): Promise<Session>;
   undoSession(sessionId: string, body: { readonly count: number }): Promise<unknown>;
@@ -41,8 +41,12 @@ export function notifySessionRewritten(sessionId: string): void {
 }
 
 /** Fork → open the copy. The sidebar list catches up via invalidation. */
-export async function forkSession(ctx: SessionActionContext, session: Session): Promise<void> {
-  const fork = await ctx.client.forkSession(session.id, {});
+export async function forkSession(
+  ctx: SessionActionContext,
+  session: Session,
+  options?: { readonly seed?: SessionSeedMode },
+): Promise<void> {
+  const fork = await ctx.client.forkSession(session.id, options?.seed === undefined ? {} : { seed: options.seed });
   ctx.refreshSessions();
   ctx.navigate(`/s/${fork.id}`);
 }

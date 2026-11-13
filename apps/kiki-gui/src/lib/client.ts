@@ -26,8 +26,14 @@ import type {
   ConfigResponse,
   CreateModelRequest,
   CreateProviderRequest,
+  CreateSessionBranchRequest,
+  CreateSessionBranchResponse,
   CreateTerminalRequest,
+  DiscardSessionBranchRequest,
+  DiscardSessionBranchResponse,
   FileMeta,
+  FoldSessionBranchRequest,
+  FoldSessionBranchResponse,
   FsSearchResponse,
   GetTaskQuery,
   GetTerminalResponse,
@@ -111,6 +117,8 @@ import type {
   SessionPersonaSettings,
   ApplyPersonaSettingsRequest,
   SetDefaultModelResponse,
+  SetSessionBranchToolsLockRequest,
+  SetSessionBranchToolsLockResponse,
   ShippedAgentProfile as ProtocolShippedAgentProfile,
   Task,
   TaskStatus,
@@ -271,6 +279,8 @@ export interface KikiForkSessionRequest {
   readonly metadata?: Record<string, unknown>;
   readonly through_message_id?: string;
   readonly expected_cursor?: SessionCursor;
+  readonly seed?: 'fresh' | 'compact' | 'verbatim';
+  readonly carry?: { readonly last: number } | { readonly fromMessageId: string };
 }
 
 export interface RuntimeConfigProjection {
@@ -3410,6 +3420,26 @@ export class KikiClient {
    */
   forkSession(sessionId: string, body: KikiForkSessionRequest = {}): Promise<Session> {
     return this.sessions.forkSession(sessionId, body);
+  }
+
+  createBranch(sessionId: string, body: CreateSessionBranchRequest = {}): Promise<CreateSessionBranchResponse> {
+    if (this.sessions.createBranch === undefined) throw new Error('createBranch is unavailable on this transport');
+    return this.sessions.createBranch(sessionId, body);
+  }
+
+  foldBranch(sessionId: string, body: FoldSessionBranchRequest): Promise<FoldSessionBranchResponse> {
+    if (this.sessions.foldBranch === undefined) throw new Error('foldBranch is unavailable on this transport');
+    return this.sessions.foldBranch(sessionId, body);
+  }
+
+  discardBranch(sessionId: string, body: DiscardSessionBranchRequest): Promise<DiscardSessionBranchResponse> {
+    if (this.sessions.discardBranch === undefined) throw new Error('discardBranch is unavailable on this transport');
+    return this.sessions.discardBranch(sessionId, body);
+  }
+
+  setBranchToolsLock(sessionId: string, body: SetSessionBranchToolsLockRequest): Promise<SetSessionBranchToolsLockResponse> {
+    if (this.sessions.setBranchToolsLock === undefined) throw new Error('setBranchToolsLock is unavailable on this transport');
+    return this.sessions.setBranchToolsLock(sessionId, body);
   }
 
   /**

@@ -1,6 +1,7 @@
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
+import { BRANCH_CONFIG_SECTION, type BranchConfig } from '#/app/branch/configSection';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from '#/app/threadCommunication/configSection';
 
@@ -8,6 +9,7 @@ import { ICapabilitySnapshotService, type CapabilitySnapshotChange } from './cap
 
 const MEMORY_TOOLS = new Set(['MemoryWrite', 'MemorySearch', 'MemoryRead']);
 const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'RoomRead', 'RoomAdd']);
+const BRANCH_TOOLS = new Set(['Branch']);
 
 interface SessionSnapshot {
   readonly workspaceId: string;
@@ -51,6 +53,7 @@ export class CapabilitySnapshotService implements ICapabilitySnapshotService {
     if (name === 'MemoryWrite') return this.snapshot(workspaceId, sessionId).memoryWrite;
     if (MEMORY_TOOLS.has(name)) return this.memoryAvailable(workspaceId, sessionId);
     if (THREAD_TOOLS.has(name)) return this.threadEnabled(workspaceId, sessionId);
+    if (BRANCH_TOOLS.has(name)) return this.config.get<BranchConfig>(BRANCH_CONFIG_SECTION)?.enabled !== false;
     return true;
   }
 

@@ -41,6 +41,8 @@ export type DaemonCommandName =
   | 'experiments'
   | 'export-view'
   | 'btw'
+  | 'branch'
+  | 'merge'
   | 'copy'
   | 'editor'
   | 'init'
@@ -134,7 +136,9 @@ const SUPPORTED_COMMANDS = [
   command('attach', [], 'Attach a local file to the next prompt', 'optional-rest', '<path>'),
   command('experiments', ['experimental'], 'List experimental features (read-only)', 'none'),
   command('export-view', ['export'], EXPORT_VIEW_DESCRIPTION, 'optional-rest', '[path]'),
-  command('btw', [], 'Ask a forked side agent a question', 'optional-rest', '<question>'),
+  command('btw', [], 'Ask a read-only in-session branch a question', 'optional-rest', '<question>'),
+  command('branch', [], 'Open or switch to an in-session branch', 'optional-rest', '[task]'),
+  command('merge', ['fold'], 'Fold the active branch back into main', 'optional-rest', '[summary]'),
   command('copy', [], 'Copy the last assistant message to the clipboard', 'none'),
   command('editor', [], 'Set the external editor for this TUI session', 'optional-rest', '[command]'),
   command('init', [], 'Analyze the codebase and generate AGENTS.md', 'none'),

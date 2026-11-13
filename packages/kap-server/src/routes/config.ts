@@ -25,6 +25,7 @@ import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catal
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, computerToolsEnabled, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import { BRANCH_CONFIG_SECTION, DEFAULT_BRANCH_USAGE_PREFERENCE, type BranchConfig } from '@kiki/agent-core-v2/app/branch/configSection';
 import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, type BrowserConfig, type BrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
 import { IBrowserConnectionStore } from '@kiki/agent-core-v2/app/browser/browserConnectionStore';
 import { EXPERIMENTAL_SECTION, IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
@@ -255,6 +256,17 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             await applySubagentPatchWithClears(config, camelPatch[domain] as Record<string, unknown>);
           } else if (domain === THREAD_COMMUNICATION_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['enabled'] === null) {
             await config.removeOverride(THREAD_COMMUNICATION_SECTION, ['enabled']);
+          } else if (domain === BRANCH_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && (camelPatch[domain]['enabled'] === null || camelPatch[domain]['usagePreference'] === null)) {
+            const patch = { ...camelPatch[domain] };
+            if (patch['enabled'] === null) {
+              await config.removeOverride(BRANCH_CONFIG_SECTION, ['enabled']);
+              delete patch['enabled'];
+            }
+            if (patch['usagePreference'] === null) {
+              await config.removeOverride(BRANCH_CONFIG_SECTION, ['usagePreference']);
+              delete patch['usagePreference'];
+            }
+            if (Object.keys(patch).length > 0) await config.set(BRANCH_CONFIG_SECTION, patch);
           } else if (domain === SEND_MESSAGE_SECTION && isPlainObject(camelPatch[domain])) {
             const patch = { ...camelPatch[domain] };
             for (const [key, value] of Object.entries(patch)) {
@@ -463,15 +475,18 @@ async function applySubagentPatchWithClears(config: IConfigService, patch: Recor
   }
 }
 
-function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; mobile: boolean } {
+function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; branchEnabledSource: ConfigOrigin; branchPreferenceSource: ConfigOrigin; mobile: boolean } {
   const config = core.accessor.get(IConfigService);
   const browser = config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
+  const branchOrigins = config.origins(BRANCH_CONFIG_SECTION);
   return {
     browser: readBrowserControlSettings(core.accessor.get(IFlagService), {
       experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
       allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
     }, browser?.allowedBrowsers, browser?.disabledSources),
     computerEnabledSource: config.origins(COMPUTER_CONFIG_SECTION)['enabled'] ?? 'default',
+    branchEnabledSource: branchOrigins['enabled'] ?? 'default',
+    branchPreferenceSource: branchOrigins['usagePreference'] ?? 'default',
     mobile: core.accessor.get(IBootstrapService).mobilePlatform !== undefined,
   };
 }
@@ -499,7 +514,7 @@ async function applyOptionalCapabilityPatch(config: IConfigService, patch: Recor
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; mobile?: boolean }, capabilities?: Record<string, unknown>, catalog?: IModelCatalog): ConfigResponse {
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin; branchEnabledSource?: ConfigOrigin; branchPreferenceSource?: ConfigOrigin; mobile?: boolean }, capabilities?: Record<string, unknown>, catalog?: IModelCatalog): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -589,6 +604,15 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
     ...computerWire,
     connection,
     connectionSource: config?.origins(COMPUTER_CONFIG_SECTION)['connection'] ?? 'home',
+  };
+  const branch = resolved[BRANCH_CONFIG_SECTION] as BranchConfig | undefined;
+  wire['branch'] = {
+    enabled: branch?.enabled ?? true,
+    enabledSource: projection?.branchEnabledSource ?? 'default',
+    usagePreference: branch?.usagePreference ?? DEFAULT_BRANCH_USAGE_PREFERENCE,
+    usagePreferenceSource: projection?.branchPreferenceSource ?? 'default',
+    appliesOn: 'next-model-request' as const,
+    toolsApplyOn: 'next-step' as const,
   };
   return configResponseWireSchema.parse(wire);
 }

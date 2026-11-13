@@ -16,7 +16,8 @@ export interface TodoState {
   readonly remindedEpoch?: number;
 }
 
-export function readTodoState(value: TodoState | readonly TodoItem[]): TodoState {
+export function readTodoState(value: TodoState | readonly TodoItem[] | undefined): TodoState {
+  if (value === undefined) return { items: [] };
   return Array.isArray(value) ? { items: value as readonly TodoItem[] } : value as TodoState;
 }
 

@@ -11,7 +11,8 @@ export function steeringInputSource(origin: PromptOrigin | undefined): SteeringI
     case 'peer_thread':
     case 'bridged_peer': return 'thread';
     case 'room_message': return 'room';
-    case 'agent_message': return 'agent';
+    case 'agent_message':
+    case 'branch_fold': return 'agent';
     case 'task': return 'task';
     case 'cron_job':
     case 'cron_missed': return 'cron';

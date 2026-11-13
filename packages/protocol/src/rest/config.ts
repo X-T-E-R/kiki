@@ -32,6 +32,23 @@ export const computerControlConfigPatchSchema = z.object({
   connection: z.string().trim().min(1).nullable().optional(),
 }).strict();
 
+export const branchUsagePreferenceSchema = z.enum(['conservative', 'balanced', 'proactive']);
+export type BranchUsagePreference = z.infer<typeof branchUsagePreferenceSchema>;
+export const branchConfigResponseSchema = z.object({
+  enabled: z.boolean().optional(),
+  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  usagePreference: branchUsagePreferenceSchema.optional(),
+  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
+  appliesOn: z.literal('next-model-request').optional(),
+  toolsApplyOn: z.literal('next-step').optional(),
+}).strict();
+export type BranchConfigResponse = z.infer<typeof branchConfigResponseSchema>;
+export const branchConfigPatchSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
+  usage_preference: branchUsagePreferenceSchema.nullable().optional(),
+}).strict();
+export type BranchConfigPatch = z.infer<typeof branchConfigPatchSchema>;
+
 export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
 
 const modelSwitchPatternSchema = z.string().min(1).refine((value) => value.trim().length > 0, {
@@ -319,6 +336,7 @@ export const optionalCapabilitiesResponseSchema = z.object({
   computer: optionalCapabilityStateSchema,
   memory: optionalCapabilityStateSchema,
   thread: optionalCapabilityStateSchema,
+  branch: optionalCapabilityStateSchema,
   web: optionalCapabilityStateSchema,
   send_message: optionalCapabilityStateSchema,
 }).strict();
@@ -328,6 +346,7 @@ export const optionalCapabilitiesPatchSchema = z.object({
     computer: z.boolean().nullable().optional(),
     memory: z.boolean().nullable().optional(),
     thread: z.boolean().nullable().optional(),
+    branch: z.boolean().nullable().optional(),
     web: z.boolean().nullable().optional(),
     send_message: z.boolean().nullable().optional(),
   }).strict().optional(),
@@ -335,7 +354,7 @@ export const optionalCapabilitiesPatchSchema = z.object({
 }).strict();
 export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
 export const optionalCapabilitySessionRowSchema = z.object({
-  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
   effective: z.boolean(),
   source: z.enum(['session', 'default', 'off']),
@@ -353,7 +372,7 @@ export const optionalCapabilitySessionResponseSchema = z.object({
 }).strict();
 export type OptionalCapabilitySessionResponse = z.infer<typeof optionalCapabilitySessionResponseSchema>;
 export const optionalCapabilitySessionRequestSchema = z.object({
-  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
 }).strict();
 export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;
@@ -392,6 +411,8 @@ export const configResponseSchema = z.object({
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   send_message: sendMessageConfigResponseSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
+  branch: branchConfigResponseSchema.optional(),
+  thread_communication: z.object({ enabled: z.boolean().optional() }).optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   agent_executor_instances: executorInstancesResponseSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
@@ -444,6 +465,8 @@ export type ConfigResponse = z.infer<typeof configResponseSchema>;
 export const patchConfigRequestSchema = z.object({
   browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
+  branch: branchConfigPatchSchema.optional(),
+  thread_communication: z.object({ enabled: z.boolean().nullable().optional() }).strict().optional(),
   agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),

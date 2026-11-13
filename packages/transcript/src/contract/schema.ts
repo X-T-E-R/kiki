@@ -836,6 +836,11 @@ export const agentDescriptorSchema = z.object({
     ])
     .optional(),
   label: z.string().optional(),
+  isBranch: z.boolean().optional(),
+  branchSeed: z.enum(['fresh', 'compact', 'verbatim']).optional(),
+  branchInitiator: z.enum(['user', 'agent']).optional(),
+  toolsLocked: z.boolean().optional(),
+  branchSealed: z.boolean().optional(),
   createdAt: z.string().optional(),
   disposedAt: z.string().optional(),
 });

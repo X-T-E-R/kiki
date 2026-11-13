@@ -179,8 +179,16 @@ export interface PendingRuntimeControls {
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
 /** `/btw` is listed only where a side question can be opened (not in a side agent's own composer). */
-function withoutUnhandledActions(items: readonly SlashItem[], canAskSideQuestion: boolean): readonly SlashItem[] {
-  return canAskSideQuestion ? items : items.filter((item) => item.action !== 'btw');
+function withoutUnhandledActions(
+  items: readonly SlashItem[],
+  canAskSideQuestion: boolean,
+  canOpenBranch: boolean,
+): readonly SlashItem[] {
+  return items.filter((item) => {
+    if (item.action === 'btw') return canAskSideQuestion;
+    if (item.action === 'branch') return canOpenBranch;
+    return true;
+  });
 }
 
 const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
@@ -188,6 +196,7 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
   goal: 'composer.slash.goal',
   new: 'composer.slash.new',
   btw: 'composer.slash.btw',
+  branch: 'composer.slash.branch',
   fork: 'composer.slash.fork',
   undo: 'composer.slash.undo',
   compact: 'composer.slash.compact',
@@ -309,8 +318,9 @@ export interface ComposerEngine {
 
 /** `/fork` leaves the slash menu when the engine's handshake refused forking. */
 function withoutRefusedActions<T extends { readonly kind: string; readonly action?: string }>(items: T[], engine: ComposerEngine | undefined): T[] {
-  // A side question (/btw) is a fork of the main agent, refused with it.
-  return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || (item.action !== 'fork' && item.action !== 'btw')) : items;
+  return engine?.fork === false
+    ? items.filter((item) => item.kind !== 'action' || (item.action !== 'fork' && item.action !== 'btw' && item.action !== 'branch'))
+    : items;
 }
 
 type ComposerMenu =
@@ -381,6 +391,7 @@ export function Composer({
   onActivateSkill,
   onSessionAction,
   onSideQuestion,
+  onOpenBranch,
   onCompactContext,
   onChangeModel,
   personaPick,
@@ -572,6 +583,8 @@ export function Composer({
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
   /** `/btw [question]`: open a side question beside the session; the text, when given, is sent to it. */
   onSideQuestion?: (question?: string) => void;
+  /** `/branch [task]`: open an in-session branch with an optional task. */
+  onOpenBranch?: (task?: string) => void;
   /** The context meter's click target (asks the session to compact). */
   onCompactContext?: () => void;
   /** Model picked in the panel; a bound agent rebinds on the server, so the
@@ -1239,8 +1252,9 @@ export function Composer({
         engine,
       ),
       onSideQuestion !== undefined,
+      onOpenBranch !== undefined,
     ),
-    [skills, sessionId, pluginGuiSlots.slots, locale, engine, onSideQuestion],
+    [skills, sessionId, pluginGuiSlots.slots, locale, engine, onSideQuestion, onOpenBranch],
   );
   const skillMenuItems = useMemo(() => slashItems.filter((item) => item.kind === 'skill'), [slashItems]);
   const filteredSlashItems = useMemo(() => {
@@ -1729,6 +1743,9 @@ export function Composer({
         break;
       case 'btw':
         onSideQuestion?.();
+        break;
+      case 'branch':
+        onOpenBranch?.();
         break;
       case 'fork':
       case 'undo':
@@ -2226,6 +2243,12 @@ export function Composer({
             onSideQuestion(classified.args);
             return;
           }
+          if (classified.item.action === 'branch' && classified.args !== '' && onOpenBranch !== undefined) {
+            recordSubmission(true);
+            onChange('');
+            onOpenBranch(classified.args);
+            return;
+          }
           // Prose after a client shortcut (`/plan do it`) is a message, not a
           // command — only a bare action token runs the shortcut.
           if (classified.args === '') {
@@ -2319,6 +2342,7 @@ export function Composer({
               engine,
             ),
             onSideQuestion !== undefined,
+            onOpenBranch !== undefined,
           ),
           true,
         );

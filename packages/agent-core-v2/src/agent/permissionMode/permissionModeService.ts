@@ -22,10 +22,12 @@ import {
   type PermissionModeChangedContext,
 } from './permissionMode';
 import {
+  permissionModeCeilingKey,
   permissionModeConfiguredKey,
   permissionModeExternalOverrideKey,
   permissionModeKey,
   PermissionSetMode,
+  PermissionSetModeCeiling,
 } from './permissionModeOps';
 
 export const PERMISSION_MODE_REMINDER_ENV = 'KIKI_PERMISSION_MODE_REMINDER';
@@ -35,7 +37,6 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
 
   private readonly _onDidChangeMode = this._register(new Emitter<PermissionModeChangedContext>());
   readonly onDidChangeMode: Event<PermissionModeChangedContext> = this._onDidChangeMode.event;
-  private ceiling: PermissionMode | undefined;
   readonly interactive: boolean;
 
   constructor(
@@ -51,6 +52,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     this.interactive = bootstrap.interactive ?? true;
     this.agentState.contributeState(permissionModeKey);
     this.agentState.contributeState(permissionModeConfiguredKey);
+    this.agentState.contributeState(permissionModeCeilingKey);
     this.agentState.contributeState(permissionModeExternalOverrideKey);
     if (parseBooleanEnv(bootstrap.getEnv(PERMISSION_MODE_REMINDER_ENV)) !== false) {
       this._register(instantiation.createInstance(PermissionModeInjection, this));
@@ -66,11 +68,12 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
   }
 
   get modeCeiling(): PermissionMode | undefined {
-    return this.ceiling;
+    return this.agentState.get(permissionModeCeilingKey) ?? undefined;
   }
 
   setMode(mode: PermissionMode, source: 'runtime' | 'ambient' | 'binding' = 'runtime'): void {
-    const effective = this.ceiling === undefined ? mode : constrainPermissionMode(mode, this.ceiling);
+    const ceiling = this.modeCeiling;
+    const effective = ceiling === undefined ? mode : constrainPermissionMode(mode, ceiling);
     const previousMode = this.mode;
     const changed = effective !== previousMode;
     const override = source === 'runtime' ? effective : source === 'binding' ? undefined : this.externalOverride;
@@ -81,7 +84,9 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
   }
 
   setModeCeiling(mode: PermissionMode): void {
-    this.ceiling = mode;
+    if (this.modeCeiling !== mode) {
+      void this.dispatcher.dispatch(new PermissionSetModeCeiling({ ceiling: mode }));
+    }
     this.setMode(this.mode, this.externalOverride === undefined ? 'ambient' : 'runtime');
   }
 

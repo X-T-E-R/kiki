@@ -78,6 +78,9 @@ describe('admitOptionalCapability', () => {
     expect(optionalCapabilityForTool('mcp__other__tool', ['desktop'])).toBeUndefined();
     expect(optionalCapabilityForTool('MemoryWrite')).toBe('memory');
     expect(optionalCapabilityForTool('FetchURL')).toBe('web');
+    expect(optionalCapabilityForTool('Branch')).toBe('branch');
+    expect(namesOptionalCapability('branch', ['Branch'])).toBe(true);
+    expect(optionalCapabilityForTool('Merge')).toBeUndefined();
     for (const name of ['RoomRead', 'RoomAdd']) {
       expect(optionalCapabilityForTool(name)).toBe('thread');
       expect(namesOptionalCapability('thread', [name])).toBe(true);

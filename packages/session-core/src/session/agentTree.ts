@@ -92,6 +92,11 @@ export interface AgentRosterDescriptor {
   readonly parentToolCallId?: string;
   readonly name?: string;
   readonly label?: string;
+  readonly isBranch?: boolean;
+  readonly branchSeed?: 'fresh' | 'compact' | 'verbatim';
+  readonly branchInitiator?: 'user' | 'agent';
+  readonly toolsLocked?: boolean;
+  readonly branchSealed?: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
@@ -176,6 +181,11 @@ export interface AgentTreeNode {
   readonly parentToolCallId?: string;
   readonly name: string;
   readonly label: string;
+  readonly isBranch?: boolean;
+  readonly branchSeed?: 'fresh' | 'compact' | 'verbatim';
+  readonly branchInitiator?: 'user' | 'agent';
+  readonly toolsLocked?: boolean;
+  readonly branchSealed?: boolean;
   readonly nameSource?: SnapshotNameSource;
   readonly statusSource?: SnapshotSubagent['status_source'];
   readonly model?: string;
@@ -270,6 +280,11 @@ interface DraftNode {
   parentToolCallId: string | undefined;
   name: string | undefined;
   label: string | undefined;
+  isBranch: boolean | undefined;
+  branchSeed: ('fresh' | 'compact' | 'verbatim') | undefined;
+  branchInitiator: ('user' | 'agent') | undefined;
+  toolsLocked: boolean | undefined;
+  branchSealed: boolean | undefined;
   model: string | undefined;
   thinkingEffort: string | undefined;
   thinkingEffortExplicit: boolean | undefined;
@@ -380,6 +395,11 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.parentToolCallId === b.parentToolCallId &&
     a.name === b.name &&
     a.label === b.label &&
+    a.isBranch === b.isBranch &&
+    a.branchSeed === b.branchSeed &&
+    a.branchInitiator === b.branchInitiator &&
+    a.toolsLocked === b.toolsLocked &&
+    a.branchSealed === b.branchSealed &&
     a.nameSource === b.nameSource &&
     a.statusSource === b.statusSource &&
     a.model === b.model &&
@@ -569,6 +589,11 @@ export function buildAgentForest(
       parentToolCallId: draft.parentToolCallId,
       name,
       label: present(draft.label) ? draft.label : name,
+      isBranch: draft.isBranch,
+      branchSeed: draft.branchSeed,
+      branchInitiator: draft.branchInitiator,
+      toolsLocked: draft.toolsLocked,
+      branchSealed: draft.branchSealed,
       model: draft.model,
       thinkingEffort: draft.thinkingEffort,
       thinkingEffortExplicit: draft.thinkingEffortExplicit,
@@ -770,6 +795,11 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     parentToolCallId: undefined,
     name: undefined,
     label: undefined,
+    isBranch: undefined,
+    branchSeed: undefined,
+    branchInitiator: undefined,
+    toolsLocked: undefined,
+    branchSealed: undefined,
     model: undefined,
     thinkingEffort: undefined,
     thinkingEffortExplicit: undefined,
@@ -858,6 +888,11 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.parentToolCallId = firstPresent(entry.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(entry.name, entry.label) ?? draft.name;
   draft.label = firstPresent(entry.label) ?? draft.label;
+  if (entry.isBranch !== undefined) draft.isBranch = entry.isBranch;
+  if (entry.branchSeed !== undefined) draft.branchSeed = entry.branchSeed;
+  if (entry.branchInitiator !== undefined) draft.branchInitiator = entry.branchInitiator;
+  if (entry.toolsLocked !== undefined) draft.toolsLocked = entry.toolsLocked;
+  if (entry.branchSealed !== undefined) draft.branchSealed = entry.branchSealed;
   draft.description = firstPresent(entry.description) ?? draft.description;
   applyToolCallCount(
     draft,

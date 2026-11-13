@@ -526,6 +526,15 @@ function enrichSnapshotSubagents(
       executor_protocol: meta?.executor !== undefined ? meta.executorProtocol : subagent.executor_protocol,
       parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
       label: userLabel,
+      is_branch: meta?.labels?.['branch'] === 'true' ? true : subagent.is_branch,
+      branch_seed: (meta?.labels?.['branchSeed'] as SnapshotSubagent['branch_seed']) ?? subagent.branch_seed,
+      branch_initiator: (meta?.labels?.['branchInitiator'] as SnapshotSubagent['branch_initiator']) ?? subagent.branch_initiator,
+      tools_locked: meta?.labels?.['branch'] === 'true'
+        ? meta.labels['toolsLocked'] === 'true'
+        : subagent.tools_locked,
+      branch_sealed: meta?.labels?.['branch'] === 'true'
+        ? meta.labels['branchSealed'] === 'true'
+        : subagent.branch_sealed,
       status,
       subagent_phase: currentOutcome
         ? status === 'completed' || status === 'failed' ? status : undefined

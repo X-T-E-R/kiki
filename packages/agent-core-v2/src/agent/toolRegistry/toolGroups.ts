@@ -5,6 +5,8 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   AgentNotify: 'agent',
   AgentRun: 'agent',
   AgentSend: 'agent',
+  Branch: 'agent',
+  Merge: 'agent',
   AskUserQuestion: 'question',
   Bash: 'shell',
   CallTool: 'toolSelect',

@@ -50,8 +50,13 @@ export function findDirectChild(
   children: readonly DirectChildAgent[],
   ref: string,
 ): DirectChildAgent | undefined {
-  const matches = children.filter((child) => child.name === ref || child.agentId === ref);
-  return matches.length === 1 ? matches[0] : undefined;
+  const exact = children.filter((child) => child.name === ref || child.agentId === ref);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return undefined;
+  const labelMatches = children.filter(
+    (child) => child.meta.userLabel === ref || child.meta.displayName === ref,
+  );
+  return labelMatches.length === 1 ? labelMatches[0] : undefined;
 }
 
 function byNameThenId(left: DirectChildAgent, right: DirectChildAgent): number {

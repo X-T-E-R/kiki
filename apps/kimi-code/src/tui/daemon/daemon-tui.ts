@@ -518,7 +518,10 @@ export class DaemonTUI {
       const armed = this.pendingConfirm?.kind === 'escape';
       this.clearPendingConfirm();
       if (editor.restoreHistoryDraft()) return;
-      if (this.controller?.getState().busy !== true) return;
+      const busy = this.focusedAgentId === 'main'
+        ? this.controller?.getState().busy === true
+        : this.controller?.getAgentState(this.focusedAgentId).busy === true;
+      if (!busy) return;
       if (editor.getText().length === 0 || armed) {
         void this.abortActivePrompt();
         return;
@@ -792,7 +795,10 @@ export class DaemonTUI {
       this.armConfirm('draft-cleared');
       return;
     }
-    if (this.controller?.getState().busy === true) {
+    const busy = this.focusedAgentId === 'main'
+      ? this.controller?.getState().busy === true
+      : this.controller?.getAgentState(this.focusedAgentId).busy === true;
+    if (busy) {
       this.clearPendingConfirm();
       await this.abortActivePrompt();
       return;
@@ -802,7 +808,13 @@ export class DaemonTUI {
 
   private async abortActivePrompt(): Promise<void> {
     try {
-      await this.controller?.abortActive();
+      const controller = this.controller;
+      if (controller === undefined) return;
+      if (this.focusedAgentId !== 'main') {
+        await this.client.klient.session(controller.sessionId).agent(this.focusedAgentId).cancel();
+        return;
+      }
+      await controller.abortActive();
     } catch (error) {
       this.showStatus(formatErrorMessage(error), 'error');
     }
@@ -1389,6 +1401,7 @@ export class DaemonTUI {
       let acknowledged = false;
       const result = await controller
         .sendPromptNow({
+          agentId: this.focusedAgentId,
           text,
           content: prepared?.content,
           promptId,
@@ -1440,14 +1453,19 @@ export class DaemonTUI {
     const editor = this.state.editor;
     const text = editor.getExpandedText().trim();
     const controller = this.controller;
-    if (controller?.getState().busy !== true || (editor.inputMode !== 'bash' && text.startsWith('/'))) {
+    const focusedBusy = controller !== undefined && (
+      this.focusedAgentId === 'main'
+        ? controller.getState().busy
+        : controller.getAgentState(this.focusedAgentId).busy
+    );
+    if (!focusedBusy || (editor.inputMode !== 'bash' && text.startsWith('/'))) {
       if (text !== '') editor.handleInput('\r');
       else this.showStatus('No prompt to steer.', { transient: true });
       return;
     }
     let result: Awaited<ReturnType<SessionController['steerQueued']>> | Awaited<ReturnType<SessionController['sendPromptNow']>>;
     if (text !== '' && editor.inputMode !== 'bash' && !text.startsWith('!')) {
-      if (controller.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+      if (controller.getPendingSteers(this.focusedAgentId).some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
         this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
         return;
       }
@@ -1467,6 +1485,7 @@ export class DaemonTUI {
         const skills = extractInlineSkillActivations(text, skillMap);
         const promptId = newSteerPromptId();
         result = await controller.sendPromptNow({
+          agentId: this.focusedAgentId,
           text,
           content: prepared?.content,
           promptId,
@@ -1490,7 +1509,7 @@ export class DaemonTUI {
         editor.disableSubmit = false;
       }
     } else {
-      const promptId = controller.getState().queuedPromptIds[0];
+      const promptId = this.focusedAgentId === 'main' ? controller.getState().queuedPromptIds[0] : undefined;
       if (promptId === undefined) {
         this.showStatus('No prompt to steer.', { transient: true });
         return;
@@ -1540,7 +1559,7 @@ export class DaemonTUI {
       await this.handleSlash(text);
       return;
     }
-    if (this.controller?.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+    if (this.controller?.getPendingSteers(this.focusedAgentId).some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
       if (submission !== undefined) submission.accepted = true;
       if (this.state.editor.getText() === '') this.state.editor.setText(raw);
       this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
@@ -1555,7 +1574,8 @@ export class DaemonTUI {
     submission?: { accepted: boolean },
   ): Promise<void> {
     const controller = await this.ensureSession();
-    if (profile === undefined && !this.state.appState.agentProfile && !this.state.appState.model &&
+    const targetAgentId = this.focusedAgentId;
+    if (targetAgentId === 'main' && profile === undefined && !this.state.appState.agentProfile && !this.state.appState.model &&
       controller.getState().goal?.status !== 'active') {
       if (this.state.editor.getText() === '') this.state.editor.setText(text);
       await this.showModelPicker();
@@ -1565,13 +1585,29 @@ export class DaemonTUI {
       refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
       refreshFile: (attachment) => this.refreshFileAttachment(attachment),
     });
-    if (profile === undefined) {
-      const skillMap = new Map<string, string>();
-      for (const skill of this.skillCommands.values()) {
-        skillMap.set(skill.commandName, skill.name);
-        skillMap.set(skill.name, skill.name);
+    const skillMap = new Map<string, string>();
+    for (const skill of this.skillCommands.values()) {
+      skillMap.set(skill.commandName, skill.name);
+      skillMap.set(skill.name, skill.name);
+    }
+    const inlineSkills = profile === undefined ? extractInlineSkillActivations(text, skillMap) : [];
+    if (targetAgentId !== 'main') {
+      const result = await this.client.submitPrompt(controller.sessionId, {
+        agent_id: targetAgentId,
+        content: prepared?.content ?? [{ type: 'text', text }],
+        skills: inlineSkills.length === 0 ? undefined : inlineSkills.map((skill) => ({ name: skill.skillName })),
+      });
+      if (submission !== undefined) submission.accepted = true;
+      if (prepared !== undefined) {
+        this.handoffPreparedMedia(prepared, controller, {
+          promptId: result.prompt_id,
+          promptState: result.status,
+        });
       }
-      const inlineSkills = extractInlineSkillActivations(text, skillMap);
+      await controller.resync();
+      return;
+    }
+    if (profile === undefined) {
       if (inlineSkills.length > 0) {
         if (prepared?.hasFileAttachment === true) {
           throw new Error('File attachments cannot be combined with inline skills.');
@@ -2046,13 +2082,17 @@ export class DaemonTUI {
       case 'exit':
         await this.stop();
         return;
-      case 'stop':
-        if (this.controller?.getState().busy !== true) {
+      case 'stop': {
+        const stopBusy = this.focusedAgentId === 'main'
+          ? this.controller?.getState().busy === true
+          : this.controller?.getAgentState(this.focusedAgentId).busy === true;
+        if (!stopBusy) {
           this.showStatus('Nothing is running.', { transient: true });
           return;
         }
         await this.abortActivePrompt();
         return;
+      }
       case 'unqueue':
         await this.unqueuePrompt();
         return;
@@ -2177,6 +2217,12 @@ export class DaemonTUI {
       case 'btw':
         await this.askBtw(args);
         return;
+      case 'branch':
+        await this.handleBranchCommand(args);
+        return;
+      case 'merge':
+        await this.handleMergeCommand(args);
+        return;
       case 'copy':
         await this.copyLastAssistantMessage();
         return;
@@ -2292,6 +2338,7 @@ export class DaemonTUI {
     this.showResult(
       [
         `Session: ${state.sessionId === '' ? 'not started' : state.sessionId}`,
+        `Conversation: ${this.focusedAgentId}`,
         `Working directory: ${state.workDir}`,
         `Daemon: ${this.connection.url}`,
         `Daemon ID: ${this.connection.serverId ?? 'unavailable from this connection'}`,
@@ -2924,7 +2971,7 @@ export class DaemonTUI {
     if (question === '') throw new Error('/btw requires a question.');
     const controller = await this.ensureSession();
     const title = `btw · ${question}`;
-    const note = new TranscriptNoteComponent(`${title}\nAsking a side agent…`);
+    const note = new TranscriptNoteComponent(`${title}\nAsking a side branch…`);
     this.renderer.addNote(note);
     const settle = (message: string, answer?: string): void => {
       note.update(message, answer);
@@ -2944,19 +2991,22 @@ export class DaemonTUI {
     title: string,
     settle: (message: string, answer?: string) => void,
   ): Promise<void> {
-    const child = await this.client.klient.session(controller.sessionId).fork({ title: 'BTW' });
-    const side = new SessionController(this.client, this.client.klient.session(child.id).view, child.id);
-    this.sideControllers.add(side);
-    await side.open();
+    const branch = await this.client.createBranch(controller.sessionId, {
+      parent_agent_id: this.focusedAgentId,
+      seed: 'verbatim',
+      tools_locked: true,
+      title: `btw · ${question.slice(0, 48)}`,
+    });
+    const branchId = branch.agent_id;
     let turnId: string | undefined;
     await new Promise<void>((resolve, reject) => {
+      let unsubscribe: (() => void) | undefined;
       const cleanup = () => {
-        unsubscribe();
-        side.close();
-        this.sideControllers.delete(side);
+        unsubscribe?.();
+        unsubscribe = undefined;
       };
       const finish = () => {
-        const view = side.getState();
+        const view = controller.getAgentState(branchId);
         if (turnId === undefined || view.turnTail?.turnId !== turnId) return;
         const answer = view.blocks.findLast(
           (block) => block.kind === 'assistant' && block.turnId === turnId && !block.streaming,
@@ -2965,26 +3015,26 @@ export class DaemonTUI {
           (block) => block.kind === 'notice' && block.tone === 'danger',
         );
         if (answer?.kind === 'assistant') {
-          settle(title, answer.text);
+          settle(`${title} (${branchId})`, answer.text);
         } else {
           const reason = failure?.kind === 'notice'
             ? failure.text
-            : `Side session ${child.id} ended without an answer.`;
+            : `Side branch ${branchId} ended without an answer.`;
           settle(`${title}\n${reason}`);
           this.showStatus(reason, 'error');
         }
         cleanup();
         resolve();
       };
-      const unsubscribe = side.subscribe(finish);
+      unsubscribe = controller.subscribeAgent(branchId, finish);
       void this.client.klient
-        .session(child.id)
-        .agent('main')
+        .session(controller.sessionId)
+        .agent(branchId)
         .prompt({ input: [{ type: 'text', text: question }] })
         .then((result) => {
           if (result === undefined || result === null) {
-            settle(`${title}\nSide session ${child.id} did not start.`);
-            this.showStatus(`Side session ${child.id} did not start.`, 'error');
+            settle(`${title}\nSide branch ${branchId} did not start.`);
+            this.showStatus(`Side branch ${branchId} did not start.`, 'error');
             cleanup();
             resolve();
             return;
@@ -2997,6 +3047,68 @@ export class DaemonTUI {
           reject(error);
         });
     });
+  }
+
+  private async handleBranchCommand(task: string): Promise<void> {
+    const controller = await this.ensureSession();
+    if (task === 'main') {
+      await this.openAgentTranscript('main');
+      this.showStatus('Switched to main conversation.');
+      return;
+    }
+    const created = await this.client.createBranch(controller.sessionId, {
+      parent_agent_id: this.focusedAgentId,
+      seed: 'fresh',
+      tools_locked: false,
+      task: task === '' ? undefined : task,
+      title: task === '' ? undefined : task.slice(0, 64),
+    });
+    await controller.resync();
+    await this.openAgentTranscript(created.agent_id);
+    this.showStatus(
+      `Switched to branch ${created.agent_id} — use /merge to fold back or /branch main to return.`,
+    );
+  }
+
+  private async handleMergeCommand(summary: string): Promise<void> {
+    const controller = await this.ensureSession();
+    let targetBranchId = this.focusedAgentId !== 'main' ? this.focusedAgentId : undefined;
+    if (targetBranchId === undefined) {
+      const roster = await this.client.klient.session(controller.sessionId).agents();
+      const forest = controller.getForest();
+      const openBranches = new Set<string>();
+      for (const [id, meta] of Object.entries(roster)) {
+        if (meta.labels?.['branch'] === 'true' && meta.labels?.['branchSealed'] !== 'true') openBranches.add(id);
+      }
+      for (const [id, node] of Object.entries(forest?.byId ?? {})) {
+        if (node.isBranch === true && node.branchSealed !== true) openBranches.add(id);
+      }
+      if (openBranches.size === 1) {
+        const [onlyBranch] = openBranches;
+        targetBranchId = onlyBranch;
+      } else if (openBranches.size === 0) {
+        throw new Error('No open branch to merge. Open one with /branch first.');
+      } else {
+        throw new Error('Multiple branches are open. Focus a branch with /agents before running /merge.');
+      }
+    }
+    if (targetBranchId === undefined) {
+      throw new Error('No open branch to merge. Open one with /branch first.');
+    }
+    const folded = await this.client.foldBranch(controller.sessionId, {
+      branch_id: targetBranchId,
+      summary: summary === '' ? undefined : summary,
+      done: true,
+    });
+    await controller.resync();
+    if (folded.status === 'prompted') {
+      this.showStatus(`Asked ${targetBranchId} to summarize and merge back into main.`);
+      return;
+    }
+    if (this.focusedAgentId === targetBranchId && folded.sealed) {
+      await this.openAgentTranscript('main');
+    }
+    this.showStatus(`Merged ${targetBranchId} into main.`);
   }
 
   private async copyLastAssistantMessage(): Promise<void> {
@@ -3182,10 +3294,20 @@ export class DaemonTUI {
       options: [...ids].map((agentId) => {
         const meta = roster[agentId];
         const node = forest?.byId[agentId];
+        const isBranch = node?.isBranch === true || meta?.labels?.['branch'] === 'true';
+        const sealed = node?.branchSealed === true || meta?.labels?.['branchSealed'] === 'true';
+        const locked = node?.toolsLocked === true || meta?.labels?.['toolsLocked'] === 'true';
+        const kindTag = isBranch
+          ? sealed
+            ? 'branch · merged'
+            : locked
+              ? 'branch · read-only'
+              : 'branch'
+          : undefined;
         return {
           value: agentId,
           label: node?.label ?? node?.name ?? meta?.userLabel ?? meta?.displayName ?? agentId,
-          description: [node?.status, node?.model ?? meta?.model, agentId]
+          description: [kindTag, node?.status, node?.model ?? meta?.model, agentId]
             .filter((value): value is string => value !== undefined)
             .join(' · '),
         };

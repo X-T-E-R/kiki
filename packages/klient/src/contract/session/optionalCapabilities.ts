@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { ServiceContract } from '../types.js';
 
-export const optionalCapabilityIdSchema = z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']);
+export const optionalCapabilityIdSchema = z.enum(['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message']);
 export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
 export const optionalCapabilitySessionRowSchema = z.object({
   id: optionalCapabilityIdSchema,

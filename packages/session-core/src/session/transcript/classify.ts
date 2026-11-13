@@ -37,6 +37,12 @@ export interface PromptOriginLike {
   readonly event?: string;
   readonly senderAgentId?: string;
   readonly senderTaskName?: string;
+  readonly foldId?: string;
+  readonly branchId?: string;
+  readonly branchTitle?: string;
+  readonly asks?: readonly string[];
+  readonly throughTurnId?: number;
+  readonly done?: boolean;
   readonly messageId?: string;
   readonly source?: { readonly hostId?: string; readonly workspaceId?: string; readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
   readonly sourceHomeId?: string;
@@ -459,7 +465,7 @@ export function classifyTranscriptText(input: {
   ) {
     return { lane: 'you', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
-  if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message') {
+  if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message' || kind === 'branch_fold') {
     return { lane: 'peer', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {

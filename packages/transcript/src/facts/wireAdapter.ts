@@ -530,6 +530,29 @@ export class TranscriptWireAdapter {
       return operations;
     }
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
+    if (record.type === 'branch.base') {
+      const operations = this.removeTurns(this.#turns.length);
+      this.#undoAnchors.clear();
+      this.#deliveryUndoRecords.clear();
+      this.#legacyTurnOrdinal = 0;
+      operations.push({
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker',
+          markerId: 'branch.base',
+          marker: 'branch.base',
+          at: isoOf(record.time),
+          payload: {
+            version: numberOf(record['version']) ?? 1,
+            parentAgentId: stringOf(record['parentAgentId']),
+            seed: stringOf(record['seed']),
+            inheritedCount: numberOf(record['inheritedCount']) ?? 0,
+            baseAnchor: objectOf(record['baseAnchor']),
+          },
+        },
+      });
+      return operations;
+    }
     const compaction = this.#compaction.project(record, ordinal);
     if (compaction !== undefined) return compaction;
     if (record.type.startsWith('prompt.')) return this.promptRecord(record);
@@ -1593,6 +1616,7 @@ export class TranscriptWireAdapter {
       if (
         notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
+        origin?.['kind'] === 'branch_fold' ||
         origin?.['kind'] === 'injection' ||
         (!opensTurn && this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
       ) return this.deliveredMessage(record, message, ordinal);
@@ -2784,6 +2808,7 @@ function externalTextOf(record: TranscriptWireRecord): ExternalTextRecord | unde
 
 function durableRecord(type: string): boolean {
   return (
+    type === 'branch.base' ||
     type === 'external.activity' ||
     type === 'external.text' ||
     type === 'agent.model_switch' ||

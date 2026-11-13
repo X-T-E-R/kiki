@@ -4,6 +4,7 @@ import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
+import { branchAllowPatch, branchUsagePreference, branchUsagePreferencePatch, isBranchEnabled } from './branchControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorNumberValue, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
 
@@ -495,6 +496,17 @@ describe('settings persistence and validation', () => {
     });
     expect(threadAllowPatch(null)).toEqual({ thread_communication: { enabled: null } });
     expect(threadAllowPatch(false)).toEqual({ thread_communication: { enabled: false } });
+    expect(isBranchEnabled(undefined)).toBe(true);
+    expect(isBranchEnabled({ branch: { enabled: false, usagePreference: 'balanced' } })).toBe(false);
+    expect(branchAllowPatch(null)).toEqual({ branch: { enabled: null } });
+    expect(branchAllowPatch(false)).toEqual({ branch: { enabled: false } });
+    expect(branchUsagePreference(undefined)).toBe('balanced');
+    expect(branchUsagePreference({ branch: { enabled: true, usagePreference: 'proactive' } })).toBe('proactive');
+    expect(branchUsagePreferencePatch('conservative')).toEqual({ branch: { usage_preference: 'conservative' } });
+    expect(branchUsagePreferencePatch(null)).toEqual({ branch: { usage_preference: null } });
+    expect(patchConfigRequestSchema.parse(branchUsagePreferencePatch('proactive'))).toEqual({
+      branch: { usage_preference: 'proactive' },
+    });
     expect(tokenCountingPatch('estimated')).toEqual({
       token_counting: { strategy: 'estimated' },
       replace_domains: ['token_counting'],

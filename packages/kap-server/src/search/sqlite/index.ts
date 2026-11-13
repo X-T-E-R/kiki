@@ -101,17 +101,28 @@ async function identity(dir: string): Promise<string | undefined> {
   }
 }
 
-async function titleAt(dir: string): Promise<string> {
+async function sessionMetaInfo(dir: string): Promise<{ title: string; branchAgents: ReadonlySet<string> }> {
   for (const path of [join(dir, 'state.json'), join(dir, 'session-meta', 'state.json')]) {
     try {
       const value: unknown = JSON.parse(await readFile(path, 'utf8'));
-      return typeof value === 'object' && value !== null && 'title' in value && typeof value.title === 'string'
-        ? value.title : '';
+      if (typeof value !== 'object' || value === null) return { title: '', branchAgents: new Set() };
+      const title = 'title' in value && typeof value.title === 'string' ? value.title : '';
+      const branchAgents = new Set<string>();
+      if ('agents' in value && typeof value.agents === 'object' && value.agents !== null) {
+        for (const [agentId, raw] of Object.entries(value.agents as Record<string, unknown>)) {
+          if (typeof raw === 'object' && raw !== null && 'labels' in raw &&
+              typeof raw.labels === 'object' && raw.labels !== null &&
+              (raw.labels as Record<string, unknown>)['branch'] === 'true') {
+            branchAgents.add(agentId);
+          }
+        }
+      }
+      return { title, branchAgents };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return '';
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { title: '', branchAgents: new Set() };
     }
   }
-  return '';
+  return { title: '', branchAgents: new Set() };
 }
 
 async function wireFiles(dir: string): Promise<{ path: string; agentId: string }[]> {
@@ -371,7 +382,7 @@ export class SqliteSearchIndex {
     const id = await identity(session.dir);
     if (id === undefined) { await this.removeSession(session.id); return; }
     const db = this.db;
-    const title = await titleAt(session.dir);
+    const { title, branchAgents } = await sessionMetaInfo(session.dir);
     const existing = db.prepare('SELECT title,identity,dir FROM sessions WHERE id=?').get(session.id) as
       { title: string; identity: string; dir: string } | undefined;
     if (existing !== undefined && (existing.identity !== id || existing.dir !== session.dir)) {
@@ -402,7 +413,7 @@ export class SqliteSearchIndex {
     for (const file of files) {
       if (this.options.isStopped?.()) return;
       if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
-      await this.syncFile(session, file.path, file.agentId);
+      await this.syncFile(session, file.path, file.agentId, branchAgents.has(file.agentId));
     }
     if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
     const paths = new Set(files.map((file) => file.path));
@@ -421,11 +432,11 @@ export class SqliteSearchIndex {
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
 
-  private async syncFile(session: SqliteSessionInput, path: string, agentId: string): Promise<void> {
+  private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
     const db = this.db;
     const st = await stat(path);
     let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
-    const policy = agentId === 'main' || this.indexSubagents ? 'full' : 'skip';
+    const policy = agentId === 'main' || isBranch || this.indexSubagents ? 'full' : 'skip';
     if (policy === 'skip') {
       if (file?.policy === 'quarantined') {
         if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
@@ -517,9 +528,9 @@ export class SqliteSearchIndex {
           offset = position - bytesRead + nl + 1;
           if (pending.length && !dropping) {
             const line = pending.toString('utf8');
-            if (line.includes('"type":"context.append_') || line.includes('"type":"context.undo"')) {
+            if (line.includes('"type":"context.append_') || line.includes('"type":"context.undo"') || line.includes('"type":"branch.base"')) {
               const analysis = analyzeWireLine(line);
-              if (analysis.turn.kind === 'open' || (analysis.turn.kind === 'ensure' && !hasTurn) || analysis.turn.kind === 'undo') {
+              if (analysis.turn.kind === 'open' || (analysis.turn.kind === 'ensure' && !hasTurn) || analysis.turn.kind === 'undo' || analysis.turn.kind === 'reset') {
                 step = EMPTY_STEP;
               }
               if (analysis.turn.kind === 'open') {
@@ -538,6 +549,12 @@ export class SqliteSearchIndex {
                   next = opener.turn;
                   hasTurn = !!(db.prepare('SELECT 1 FROM turn_openers WHERE file_id=? LIMIT 1').get(file!.id));
                 }
+              } else if (analysis.turn.kind === 'reset') {
+                this.deleteDocs('file_id', file!.id);
+                db.prepare('DELETE FROM turn_openers WHERE file_id=?').run(file!.id);
+                this.bumpGeneration();
+                next = 0;
+                hasTurn = false;
               }
               if (analysis.step.kind === 'begin') {
                 const begins = step.begins + 1;
@@ -551,7 +568,7 @@ export class SqliteSearchIndex {
               for (let i = 0; i < messages.length; i++) {
                 const message = messages[i]!;
                 const text = message.text.replace(BINARY, '[binary]').slice(0,
-                  agentId !== 'main' || message.role === 'tool' ? 4096 : MAX_DOC_TEXT_CHARS);
+                  (!isBranch && agentId !== 'main') || message.role === 'tool' ? 4096 : MAX_DOC_TEXT_CHARS);
                 if (!text) continue;
                 const ordinal = message.stepUuid !== undefined ? step.byUuid[message.stepUuid] :
                   message.toolCallId !== undefined ? step.byToolCall[message.toolCallId] : undefined;

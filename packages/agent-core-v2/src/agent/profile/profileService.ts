@@ -370,7 +370,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IHarnessQuotaService private readonly quota?: IHarnessQuotaService,
   ) {
     super();
-    this.delegationPosition = resolveDelegationPosition(this.agentScope.agentId, undefined);
+    this.delegationPosition = resolveDelegationPosition(
+      this.agentScope.agentId,
+      undefined,
+      this.agentScope.isBranch === true ? { branch: 'true' } : undefined,
+    );
     this.states.contributeState(profileKey);
     this.states.contributeState(dynamicPromptKey);
     if (eventBus !== undefined) this._register(eventBus.subscribe(ContextSpliced, (event) => {
@@ -2900,8 +2904,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async resolveCurrentDelegationPosition(): Promise<DelegationPosition> {
+    if (this.agentScope.isBranch === true) return 'main';
     const meta = await this.metadata.read();
-    return resolveDelegationPosition(this.agentScope.agentId, meta.agents?.[this.agentScope.agentId]?.delegator);
+    const agentMeta = meta.agents?.[this.agentScope.agentId];
+    return resolveDelegationPosition(this.agentScope.agentId, agentMeta?.delegator, agentMeta?.labels);
   }
 
   private async ensureDelegationPosition(): Promise<void> {

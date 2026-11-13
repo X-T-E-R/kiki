@@ -2,6 +2,7 @@ import { registerUndoableProtocol } from '#/state/state';
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 
 import {
+  BranchBase,
   ContextAppendMessage,
   ContextApplyCompaction,
   ContextClear,
@@ -19,6 +20,7 @@ export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
     origin.kind === 'peer_thread' ||
     origin.kind === 'bridged_peer' ||
     origin.kind === 'agent_message' ||
+    origin.kind === 'branch_fold' ||
     (origin.kind === 'system_trigger' && origin.name === 'thread_create') ||
     (origin.kind === 'room_message' && origin.targeted)
   ) return true;
@@ -29,7 +31,7 @@ export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
 }
 
 export function isUndoAnchor(message: ContextMessage): boolean {
-  if (message.role !== 'user') return false;
+  if (message.role !== 'user' || message.inheritedSeed === true) return false;
   return isUndoAnchorOrigin(message.origin);
 }
 
@@ -56,14 +58,17 @@ registerUndoableProtocol({
     clear: ContextClear,
     undo: ContextUndo,
   },
-  checkpointBoundaries: [{ event: AgentModelSwitch, shouldClear: (event) => (event as AgentModelSwitch).context !== undefined }],
+  checkpointBoundaries: [
+    { event: AgentModelSwitch, shouldClear: (event) => (event as AgentModelSwitch).context !== undefined },
+    { event: BranchBase, shouldClear: () => true },
+  ],
   anchorStateName: 'contextMemory',
   undoDepth: (state) => {
     const messages = state as readonly ContextMessage[];
     let depth = 0;
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]!;
-      if (message.origin?.kind === 'compaction_summary') break;
+      if (message.origin?.kind === 'compaction_summary' || message.inheritedSeed === true) break;
       if (isUndoAnchor(message)) depth++;
     }
     return depth;

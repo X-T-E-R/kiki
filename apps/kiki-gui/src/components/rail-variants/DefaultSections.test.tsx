@@ -603,14 +603,14 @@ describe.each(['zh', 'en'] as const)('ActivityFeed compaction labels (%s)', (loc
 });
 
 function buildSessionCapabilities(
-  overrides: Partial<Record<'browser' | 'computer' | 'memory' | 'thread' | 'web', Partial<OptionalCapabilitySessionResponse['rows'][number]>>> = {},
+  overrides: Partial<Record<OptionalCapabilityId, Partial<OptionalCapabilitySessionResponse['rows'][number]>>> = {},
   revision = 1,
 ): OptionalCapabilitySessionResponse {
-  const defaults = { browser: false, computer: false, memory: true, thread: true, web: true } as const;
+  const defaults = { browser: false, branch: true, computer: false, memory: true, thread: true, web: true } as const;
   return {
     revision,
     host_id: 'local',
-    rows: (['browser', 'computer', 'memory', 'thread', 'web'] as const).map((id) => {
+    rows: (['browser', 'branch', 'computer', 'memory', 'thread', 'web'] as const).map((id) => {
       const defaultOn = defaults[id];
       const base: OptionalCapabilitySessionResponse['rows'][number] = {
         id,
@@ -622,7 +622,7 @@ function buildSessionCapabilities(
         host_locked: false,
         default_on: defaultOn,
         unresolved: false,
-        applies: id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
+        applies: id === 'branch' || id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
       };
       return { ...base, ...overrides[id] };
     }),
@@ -630,7 +630,7 @@ function buildSessionCapabilities(
 }
 
 describe('OptionalCapabilityRows', () => {
-  it('applies the factory default matrix on draft (thread/web/memory on, browser/computer off) and isolates draft choices', async () => {
+  it('applies the factory default matrix on draft (branch/thread/web/memory on, browser/computer off) and isolates draft choices', async () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -644,6 +644,7 @@ describe('OptionalCapabilityRows', () => {
     await settle();
     expect(container.querySelector('[data-optional-capabilities]')?.getAttribute('data-optional-capabilities')).toBe('draft');
     expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-capability="branch"]')?.getAttribute('data-optional-effective')).toBe('true');
     expect(container.querySelector('[data-optional-capability="computer"]')?.getAttribute('data-optional-effective')).toBe('false');
     expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
     expect(container.querySelector('[data-optional-capability="thread"]')?.getAttribute('data-optional-effective')).toBe('true');

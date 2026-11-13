@@ -24,7 +24,7 @@ import {
 } from '../plugins/guiSlots';
 import { isAppRouteLink } from '../composer/threadRefs';
 
-export type SlashActionId = 'plan' | 'goal' | 'new' | 'btw' | 'fork' | 'undo' | 'compact';
+export type SlashActionId = 'plan' | 'goal' | 'new' | 'btw' | 'branch' | 'fork' | 'undo' | 'compact';
 
 export interface SlashItem {
   kind: 'skill' | 'action' | 'plugin';
@@ -61,6 +61,7 @@ const SLASH_ACTIONS: readonly SlashActionSpec[] = [
   { id: 'goal', name: 'goal', description: 'Set the goal objective', needsSession: false },
   { id: 'new', name: 'new', description: 'Start a new session', needsSession: false },
   { id: 'btw', name: 'btw', description: 'Ask a side question without interrupting this session', needsSession: true },
+  { id: 'branch', name: 'branch', description: 'Open an in-session branch for a side investigation', needsSession: true },
   { id: 'fork', name: 'fork', description: 'Fork this session into a copy', needsSession: true },
   { id: 'undo', name: 'undo', description: 'Undo the last turn', needsSession: true },
   { id: 'compact', name: 'compact', description: 'Compact older context into a summary', needsSession: true },

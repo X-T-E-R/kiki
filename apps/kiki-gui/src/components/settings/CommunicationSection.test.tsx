@@ -20,6 +20,10 @@ vi.mock('../../state/connection', () => ({
 
 const INITIAL_CONFIG: KikiConfigResponse = {
   thread_communication: { enabled: true },
+  branch: { enabled: true, usagePreference: 'balanced' },
+  optional_capabilities: {
+    branch: { allowed: true, host_locked: false, default_on: true, unresolved: false },
+  },
   token_counting: { strategy: 'measured' },
   agents: { enabled: true, notify_parent: true },
   workspace_instance: { idleTtlMs: 300_000 },
@@ -42,10 +46,28 @@ beforeAll(() => {
 
 beforeEach(() => {
   getConfig.mockReset().mockResolvedValue(INITIAL_CONFIG);
-  patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => ({
-    ...INITIAL_CONFIG,
-    ...patch,
-  }));
+  patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => {
+    const branchPatch = patch['branch'] as { enabled?: boolean | null; usage_preference?: string | null } | undefined;
+    const nextBranch = branchPatch === undefined
+      ? INITIAL_CONFIG.branch
+      : {
+          ...INITIAL_CONFIG.branch,
+          enabled: branchPatch.enabled === undefined ? (INITIAL_CONFIG.branch?.enabled ?? true) : (branchPatch.enabled ?? true),
+          usagePreference: branchPatch.usage_preference === undefined ? INITIAL_CONFIG.branch?.usagePreference : (branchPatch.usage_preference ?? 'balanced'),
+        };
+    const nextOptionalCaps = branchPatch?.enabled === false
+      ? {
+          ...INITIAL_CONFIG.optional_capabilities,
+          branch: { allowed: false, host_locked: false, default_on: true, unresolved: false },
+        }
+      : INITIAL_CONFIG.optional_capabilities;
+    return {
+      ...INITIAL_CONFIG,
+      ...patch,
+      branch: nextBranch,
+      optional_capabilities: nextOptionalCaps,
+    };
+  });
 });
 
 afterEach(() => {
@@ -91,17 +113,43 @@ async function setValue(input: HTMLInputElement, value: string): Promise<void> {
   });
 }
 
-function switchIn(container: Element, which: 'thread' | 'notify'): HTMLInputElement {
+function switchIn(container: Element, which: 'thread' | 'branch' | 'notify'): HTMLInputElement {
   return container.querySelector<HTMLInputElement>(`[data-agent-messaging="${which}"] input[type="checkbox"]`)!;
 }
 
 describe('Agent messaging and token counting', () => {
-  it('shows both messaging channels in one card with no save button', async () => {
+  it('shows messaging and session-branch controls in one card with no save button', async () => {
     const container = await renderComponent(<AgentMessagingCard />);
     const card = container.querySelector('#st-card-agent-messaging')!;
     expect(switchIn(card, 'thread').checked).toBe(true);
+    expect(switchIn(card, 'branch').checked).toBe(true);
     expect(switchIn(card, 'notify').checked).toBe(true);
+    expect(card.querySelector('[data-branch-preference="balanced"]')?.getAttribute('aria-pressed')).toBe('true');
     expect([...card.querySelectorAll('button')].some((button) => button.textContent?.includes('Save'))).toBe(false);
+  });
+
+  it('patches session branch enablement, default-on, and usage preference immediately', async () => {
+    const container = await renderComponent(<AgentMessagingCard />);
+    const card = container.querySelector('#st-card-agent-messaging')!;
+    const proactiveBtn = card.querySelector<HTMLButtonElement>('[data-branch-preference="proactive"]')!;
+    await click(proactiveBtn);
+    expect(patchConfig).toHaveBeenCalledWith({
+      branch: { usage_preference: 'proactive' },
+    });
+    expect(card.querySelector('[data-branch-preference="proactive"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    const defaultOnToggle = card.querySelector<HTMLInputElement>('[data-capability-default-switch="branch"] input[type="checkbox"]')!;
+    await click(defaultOnToggle);
+    expect(patchConfig).toHaveBeenCalledWith({
+      optional_capabilities: { defaults: { branch: false } },
+    });
+
+    await click(switchIn(card, 'branch'));
+    expect(patchConfig).toHaveBeenCalledWith({
+      branch: { enabled: false },
+    });
+    expect(switchIn(card, 'branch').checked).toBe(false);
+    expect(card.querySelector<HTMLButtonElement>('[data-branch-preference="conservative"]')?.disabled).toBe(true);
   });
 
   it('patches thread communication on its own when that switch flips', async () => {

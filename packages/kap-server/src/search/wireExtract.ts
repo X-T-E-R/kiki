@@ -17,6 +17,7 @@ export type TurnEffect =
   | { readonly kind: 'open'; readonly anchor: boolean }
   | { readonly kind: 'ensure' }
   | { readonly kind: 'undo'; readonly count: number }
+  | { readonly kind: 'reset' }
   | { readonly kind: 'none' };
 
 /**
@@ -61,6 +62,7 @@ const MARKER_USER_ORIGINS: ReadonlySet<string> = new Set([
   'skill_activation',
   'plugin_command',
   'compaction_summary',
+  'branch_fold',
 ]);
 
 interface OriginLike {
@@ -252,6 +254,10 @@ export function analyzeWireLine(line: string): WireLineAnalysis {
       return { messages: [], turn: { kind: 'undo', count }, step: STEP_NONE };
     }
     return { messages: [], turn: NONE, step: STEP_NONE };
+  }
+
+  if (r.type === 'branch.base') {
+    return { messages: [], turn: { kind: 'reset' }, step: STEP_NONE };
   }
 
   return { messages: [], turn: NONE, step: STEP_NONE };
