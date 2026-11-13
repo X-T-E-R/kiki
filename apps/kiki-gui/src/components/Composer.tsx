@@ -1048,7 +1048,8 @@ export function Composer({
     const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
       : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
     return state === 'allowed' ? row : {
-      ...row, disabled: state === 'blocked', hint: state === 'unknown' ? reason : source,
+      ...row, disabled: state === 'blocked',
+      hint: state === 'unknown' || source === row.hint ? undefined : source,
       description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
   }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
