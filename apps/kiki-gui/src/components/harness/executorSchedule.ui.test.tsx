@@ -13,6 +13,7 @@ import type { HostAdapter } from '../../host';
 import { ExecutorLabelProvider, TurnExecutionBadge } from '../timeline/ExecutorNotes';
 import { EngineDefaults } from '../settings/EngineDefaults';
 import { EngineInstanceForm } from '../settings/EngineInstanceForm';
+import { optionValues, pickValue, selectText } from '../settings/testControls';
 import { ProfileSelect } from './ProfileSelect';
 
 const patchConfig = vi.fn(async () => ({ agent_executor_instances: {} }));
@@ -50,7 +51,7 @@ const work = {
 } as ExecutorCatalogItem;
 const catalog = [family, other, work];
 
-function setControl(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string) {
+function setControl(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set?.call(element, value);
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
@@ -95,13 +96,13 @@ describe('executor schedule controls', () => {
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-execution-passthrough="agy-cli"]')!.click(); });
     expect(seen.at(-1)?.overrides).toEqual({ executor_instance: 'instance-work' });
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-profile-trigger]')!.click(); });
-    const schedule = host.querySelector<HTMLSelectElement>('[data-executor-schedule="agy-cli"]')!;
-    expect(schedule.value).toBe('instance-work');
-    await act(async () => { setControl(schedule, 'auto'); });
+    const schedule = host.querySelector<HTMLElement>('[data-executor-schedule="agy-cli"]')!;
+    expect(selectText(schedule)).toBe('Work');
+    await pickValue(schedule, 'data-option-value', 'auto');
     expect(seen.at(-1)).toMatchObject({ executor: 'agy-cli', overrides: { executor_instance: 'auto' } });
-    await act(async () => { setControl(host.querySelector<HTMLSelectElement>('[data-executor-schedule="agy-cli"]')!, 'main'); });
+    await pickValue(host.querySelector<HTMLElement>('[data-executor-schedule="agy-cli"]')!, 'data-option-value', 'main');
     expect(seen.at(-1)?.overrides).toEqual({ executor_instance: 'main' });
-    await act(async () => { setControl(host.querySelector<HTMLSelectElement>('[data-executor-schedule="agy-cli"]')!, 'instance-work'); });
+    await pickValue(host.querySelector<HTMLElement>('[data-executor-schedule="agy-cli"]')!, 'data-option-value', 'instance-work');
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-execution-passthrough="fixture-acp"]')!.click(); });
     expect(seen.at(-1)).toMatchObject({ executor: 'fixture-acp' });
     expect(seen.at(-1)?.overrides).toBeUndefined();
@@ -116,12 +117,10 @@ describe('executor schedule controls', () => {
       </>,
     );
     await act(async () => { host.querySelector<HTMLElement>('[data-engine-defaults] summary')!.click(); });
-    await vi.waitFor(() => expect(host.querySelector('[data-engine-quota-source] option[value="plugin:fixture-quota/example"]')).not.toBeNull());
-    await act(async () => {
-      setControl(host.querySelector<HTMLSelectElement>('#agy-cli-default-instance')!, 'auto');
-      setControl(host.querySelector<HTMLSelectElement>('[data-engine-quota-source]')!, 'plugin:fixture-quota/example');
-      setControl(host.querySelector<HTMLSelectElement>('#agy-cli-auto-continuation')!, 'prefer_current');
-    });
+    await vi.waitFor(async () => expect(await optionValues(host.querySelector('[data-engine-quota-source]')!)).toContain('plugin:fixture-quota/example'));
+    await pickValue(host.querySelector('#agy-cli-default-instance')!, 'data-option-value', 'auto');
+    await pickValue(host.querySelector('[data-engine-quota-source]')!, 'data-option-value', 'plugin:fixture-quota/example');
+    await pickValue(host.querySelector('#agy-cli-auto-continuation')!, 'data-option-value', 'prefer_current');
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-engine-defaults-save]')!.click(); });
     expect(patchConfig).toHaveBeenCalledWith({ agent_executor_overrides: { 'agy-cli': {
       defaults: expect.objectContaining({ executor_instance: 'auto', auto_continuation_policy: 'prefer_current' }),

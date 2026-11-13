@@ -28,11 +28,12 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
+import { ModelPicker } from '../ModelPicker';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { SettingField } from '../settings/fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../settings/SecretField';
-import { SettingsDraftFooter } from '../settings/SettingsPrimitives';
+import { FORM_SELECT_TRIGGER, SettingsDraftFooter } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
 
 interface Property extends SettingTextSource {
@@ -293,14 +294,24 @@ function PluginSettingsFields({ pluginId, showEmptyNote = false }: PluginSetting
     const border = invalid ? 'border-danger' : '';
     if (isCatalogField(property)) {
       const model = property.format === 'kiki-model';
-      const options: SearchableSelectOption[] = model
-        ? models.map((item) => ({ value: item.id, label: item.display_name ?? item.id, group: item.provider_id, hint: item.remote_id, keywords: `${item.id} ${item.provider_id}` }))
-        : connections.map((item) => ({ value: item.id, label: item.id, hint: item.type, keywords: `${item.type} ${item.id}` }));
-      if (currentText !== '' && !options.some((item) => item.value === currentText)) options.unshift({ value: currentText, label: currentText, hint: '', keywords: currentText });
-      options.unshift({ value: '', label: t(model ? 'cap.media.setting.notSet' : 'cap.settings.selfManaged'), hint: '', keywords: '' });
+      const connectionOptions: SearchableSelectOption[] = model
+        ? []
+        : [
+          { value: '', label: t('cap.settings.selfManaged'), hint: '', keywords: '' },
+          ...(currentText !== '' && !connections.some((item) => item.id === currentText)
+            ? [{ value: currentText, label: currentText, hint: '', keywords: currentText }]
+            : []),
+          ...connections.map((item) => ({ value: item.id, label: item.id, hint: item.type, keywords: `${item.type} ${item.id}` })),
+        ];
       return (
         <div className="w-64 max-w-full space-y-1" data-plugin-setting-catalog={key}>
-          <SearchableSelect id={fieldId} options={options} value={currentText} onChange={(value) => { edit(key, value); }} ariaLabel={label} />
+          {model ? (
+            <ModelPicker id={fieldId} models={models} value={currentText} unsetLabel={t('cap.media.setting.notSet')}
+              allowCustomValue={false} onChange={(value) => { edit(key, value); }} ariaLabel={label} />
+          ) : (
+            <SearchableSelect id={fieldId} options={connectionOptions} value={currentText}
+              buttonClassName={FORM_SELECT_TRIGGER} onChange={(value) => { edit(key, value); }} ariaLabel={label} />
+          )}
           {catalogQuery.isPending ? <p className="text-[12px] text-ink-soft" role="status">{t('cap.settings.connectionsLoading')}</p> : null}
           {catalogQuery.isError ? (
             <div className="space-y-1">
@@ -317,12 +328,16 @@ function PluginSettingsFields({ pluginId, showEmptyNote = false }: PluginSetting
       );
     }
     if (choices !== undefined) {
+      const enumOptions: SearchableSelectOption[] = [
+        { value: '', label: property.default === undefined ? t('cap.media.setting.notSet') : String(property.default) },
+        ...(currentText !== '' && !choices.includes(currentText) ? [{ value: currentText, label: currentText }] : []),
+        ...choices.map((choice) => ({ value: choice, label: choice })),
+      ];
       return (
-        <select id={fieldId} className={`${INPUT_BOX} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
-          value={currentText} onChange={(event) => { edit(key, event.target.value); }}>
-          <option value="">{property.default === undefined ? t('cap.media.setting.notSet') : String(property.default)}</option>
-          {choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
-        </select>
+        <div className="w-64 max-w-full">
+          <SearchableSelect id={fieldId} options={enumOptions} value={currentText} ariaLabel={label} ariaInvalid={invalid}
+            buttonClassName={`${FORM_SELECT_TRIGGER} ${border}`} onChange={(next) => { edit(key, next); }} />
+        </div>
       );
     }
     if (property.multiline === true) {

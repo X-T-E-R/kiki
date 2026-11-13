@@ -36,6 +36,8 @@ import { isImeKeyEvent } from '../../lib/shortcuts';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
+import { SearchableSelect } from '../SearchableSelect';
+import { FORM_SELECT_TRIGGER } from '../settings/SettingsPrimitives';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 
 /**
@@ -203,13 +205,18 @@ export function ExternalNoteComposer({ sessionId, disabled = false }: {
         <input data-xs-note-title className={`${INPUT} min-w-0 flex-1`} value={title} disabled={disabled || busy}
           placeholder={t('st.xs.noteTitle')}
           onChange={(event) => { setTitle(event.target.value); }} />
-        <select data-xs-note-kind className={`${INPUT} sm:w-auto`} value={kind}
+        <SearchableSelect
+          ariaLabel={t(TEXT_KIND_KEY[kind])}
+          triggerData={{ 'data-xs-note-kind': '' }}
+          value={kind}
           disabled={disabled || busy}
-          onChange={(event) => { setKind(event.target.value as ExternalTextKind); }}>
-          {(['note', 'user_excerpt', 'assistant_excerpt', 'handoff'] as const).map((value) => (
-            <option key={value} value={value}>{t(TEXT_KIND_KEY[value])}</option>
-          ))}
-        </select>
+          options={(['note', 'user_excerpt', 'assistant_excerpt', 'handoff'] as const).map((value) => ({
+            value,
+            label: t(TEXT_KIND_KEY[value]),
+          }))}
+          onChange={(next) => { setKind(next as ExternalTextKind); }}
+          buttonClassName={`${FORM_SELECT_TRIGGER} sm:w-auto`}
+        />
         <button type="button" data-xs-note-save className={SECONDARY_BUTTON} disabled={disabled || busy} aria-busy={busy}
           onClick={() => { void save(); }}>
           {busy ? t('st.xs.noteSaving') : t('st.xs.noteSave')}

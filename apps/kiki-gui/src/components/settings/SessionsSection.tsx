@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -13,8 +13,7 @@ import { useI18n } from '../../i18n';
 import { useImportHistoryEnabled } from '../../lib/importHistory';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
-import { buildCatalogModelOptions } from '../modelSelectOptions';
-import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
+import { ModelPicker } from '../ModelPicker';
 import { mergeConfigEcho } from './configEcho';
 import { SettingField, SettingsBox, SettingsGroup } from './fields';
 import { PlanSettings } from './PlanSettings';
@@ -272,15 +271,6 @@ function SessionTitlesCard() {
   const modelItem = (modelsQuery.data?.items ?? []).find((item) => item.id === model);
   const modelName = modelItem?.display_name ?? model;
 
-  const modelOptions = useMemo<readonly SearchableSelectOption[]>(() => [
-    {
-      value: '',
-      label: t('st.sessionTitleModel.noneDefault'),
-      description: t('st.sessionTitleModel.noneDesc'),
-    },
-    ...buildCatalogModelOptions(modelsQuery.data?.items ?? [], t),
-  ], [modelsQuery.data, t]);
-
   const setEnabled = (next: boolean) => write((latest) => ({
     experimental: { ...latest.experimental, auto_session_title: next },
     replace_domains: ['experimental'],
@@ -306,15 +296,20 @@ function SessionTitlesCard() {
             <div data-settings-field className="py-1">
               <SettingField label={t('st.sessions.titleModel')} htmlFor="session-title-model"
                 detail={configured ? t('st.sessionTitleModel.fallbackDetail') : t('st.sessionTitleModel.noneDetail')}>
-                <SearchableSelect
+                <ModelPicker
                   id="session-title-model"
+                  models={modelsQuery.data?.items ?? []}
                   disabled={saving}
                   value={model}
-                  options={modelOptions}
                   allowCustomValue
+                  customValueLabel={(custom) => custom}
+                  unsetLabel={t('st.sessionTitleModel.noneDefault')}
+                  unsetDescription={t('st.sessionTitleModel.noneDesc')}
                   searchPlaceholder={t('st.sessionTitleModel.placeholder')}
                   ariaLabel={t('st.sessions.titleModel')}
                   emptyText={t('st.sessionTitleModel.noneDefault')}
+                  align="end"
+                  placement="auto"
                   buttonClassName={`${SETTINGS_SELECT_TRIGGER} w-full sm:w-64`}
                   onChange={(next) => { if (next !== model) void setModel(next); }}
                 />

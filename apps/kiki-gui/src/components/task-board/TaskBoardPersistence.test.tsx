@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardCard, BoardClient, BoardReadInput, BoardResult, BoardSummary } from '@kiki/klient/contract/board/types';
 import { createViewState, type AgentForest, type AgentTreeNode, type SessionViewState } from '@kiki/session-core/session';
 import { I18nProvider } from '../../i18n';
+import { optionValues, pickValue, selectText } from '../settings/testControls';
 import { BoardAssociatedTodos, BoardAssociatedTodosProvider, createBoardAssociatedTodoManager, type BoardTodoController } from './BoardAssociatedTodos';
 import { TaskBoardContainer } from './TaskBoardContainer';
 import { boardCardKey, TaskBoardController } from './TaskBoardController';
@@ -31,10 +32,6 @@ function change(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-}
-function changeSelect(select: HTMLSelectElement, value: string) {
-  select.value = value;
-  select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function button(text: string): HTMLButtonElement {
   const value = [...document.body.querySelectorAll('button')].find((entry) => entry.textContent?.includes(text));
@@ -217,13 +214,11 @@ describe('board container and controlled forms (mock transport, no persistence c
         sessions={[{ id: 'session-a', title: 'First' }, { id: 'session-b', title: 'Second' }]}
       />,
     ));
-    const workspaceFilter = document.body.querySelector('select') as HTMLSelectElement;
-    expect(workspaceFilter.value).toBe('all');
+    expect(document.body.querySelector('[data-task-board-scope]')?.getAttribute('data-task-board-scope')).toBe('all');
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(3);
-    const sessionFilter = [...document.body.querySelectorAll('select')].find((entry) => entry.textContent?.includes('All associated sessions')) as HTMLSelectElement;
-    expect(sessionFilter.value).toBe('all');
-    sessionFilter.value = 'session-a';
-    await act(async () => sessionFilter.dispatchEvent(new Event('change', { bubbles: true })));
+    const sessionFilter = document.body.querySelector<HTMLElement>('[data-task-board-session-filter]')!;
+    expect(selectText(sessionFilter)).toContain('All associated sessions');
+    await pickValue(sessionFilter, 'data-option-value', 'session-a');
     expect(document.body.querySelectorAll('[data-board-task-card]')).toHaveLength(1);
   });
 
@@ -268,13 +263,10 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(boardCard).not.toBeNull();
     await act(async () => (boardCard as HTMLElement).click());
     await act(async () => button('Edit Task').click());
-    const statusSelect = [...document.body.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
-      .find((select) => [...select.options].some((option) => option.value === 'in_progress'));
-    expect(statusSelect).not.toBeUndefined();
-    await act(async () => {
-      changeSelect(statusSelect!, 'active');
-      changeSelect(statusSelect!, 'in_progress');
-    });
+    const statusSelect = document.body.querySelector<HTMLButtonElement>('[data-task-detail-modal] #task-detail-status')!;
+    expect(await optionValues(statusSelect)).toContain('in_progress');
+    await pickValue(statusSelect, 'data-option-value', 'active');
+    await pickValue(statusSelect, 'data-option-value', 'in_progress');
     await act(async () => button('Save Changes').click());
     expect(write).toHaveBeenCalledWith(expect.objectContaining({
       action: 'update',
@@ -302,11 +294,10 @@ describe('board container and controlled forms (mock transport, no persistence c
     expect(boardCard).not.toBeNull();
     await act(async () => (boardCard as HTMLElement).click());
     await act(async () => button('Edit Task').click());
-    const statusSelect = [...document.body.querySelectorAll<HTMLSelectElement>('[data-task-detail-modal] select')]
-      .find((select) => [...select.options].some((option) => option.value === 'active'));
-    expect(statusSelect).not.toBeUndefined();
-    expect(statusSelect!.disabled).toBe(false);
-    await act(async () => changeSelect(statusSelect!, 'active'));
+    const statusSelect = document.body.querySelector<HTMLButtonElement>('[data-task-detail-modal] #task-detail-status')!;
+    expect(await optionValues(statusSelect)).toContain('active');
+    expect(statusSelect.disabled).toBe(false);
+    await pickValue(statusSelect, 'data-option-value', 'active');
     await act(async () => button('Save Changes').click());
     expect(write).toHaveBeenCalledWith(expect.objectContaining({
       action: 'update',

@@ -207,12 +207,29 @@ export function SettingsSegmented<T extends string>({ choices, value, onChange, 
  * Short fixed-option dropdown on the shared SearchableSelect popover (the
  * composer's picker look). The filter row only appears for long lists.
  */
-export function SettingsSelect<T extends string>({ id, choices, value, onChange, ariaLabel, disabled, className, variant = 'row', emptyText, dataAttr, mono = false }: {
+export function SettingsSelect<T extends string>({
+  id,
+  choices,
+  value,
+  onChange,
+  ariaLabel,
+  ariaLabelledBy,
+  ariaInvalid,
+  disabled,
+  className,
+  variant = 'row',
+  emptyText,
+  dataAttr,
+  triggerData,
+  mono = false,
+}: {
   id?: string;
-  choices: readonly { value: T; label: string; hint?: string; group?: string }[];
+  choices: readonly { value: T; label: string; hint?: string; group?: string; disabled?: boolean }[];
   value: T;
   onChange: (value: T) => void;
-  ariaLabel: string;
+  ariaLabel?: string;
+  ariaLabelledBy?: string;
+  ariaInvalid?: boolean;
   disabled?: boolean;
   className?: string;
   /**
@@ -225,12 +242,15 @@ export function SettingsSelect<T extends string>({ id, choices, value, onChange,
   emptyText?: string;
   /** Data attribute name put on the wrapper, carrying the current value. */
   dataAttr?: string;
+  /** Extra `data-*` attributes put directly on the select trigger button. */
+  triggerData?: Readonly<Record<string, string | boolean | undefined>>;
   /** Monospace trigger for machine values (enum ids, paths). */
   mono?: boolean;
 }) {
   const trigger = variant === 'form' ? FORM_SELECT_TRIGGER : SETTINGS_SELECT_TRIGGER;
-  const select = <SearchableSelect id={id} options={choices} value={value} ariaLabel={ariaLabel} disabled={disabled}
-    emptyText={emptyText} hideFilter={choices.length <= 8} onChange={(next) => { onChange(next as T); }}
+  const select = <SearchableSelect id={id} options={choices} value={value} ariaLabel={ariaLabel}
+    ariaLabelledBy={ariaLabelledBy} ariaInvalid={ariaInvalid} disabled={disabled}
+    emptyText={emptyText} triggerData={triggerData} onChange={(next) => { onChange(next as T); }}
     // A row control sits on the right edge of its field: open inward, and
     // flip or shrink against the viewport instead of covering a neighbour.
     align={variant === 'row' ? 'end' : 'start'}

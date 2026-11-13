@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalClientMaterial, ExternalClientMaterialsPreview } from '../../lib/externalClients';
 import { readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../../i18n';
+import { pickValue } from '../settings/testControls';
 import { ContinueInKiki, ExternalClientMark, ExternalNoteComposer } from './ExternalClientSession';
 
 const { client, facade } = vi.hoisted(() => {
@@ -132,12 +133,7 @@ describe('the note composer on an externally driven session', () => {
   it('marks a user excerpt as a source, not as a verified message from the user', async () => {
     await render(<ExternalNoteComposer sessionId="sess_ext_1" />);
     expect(container.textContent).toContain('is a source, not a verified message');
-    const select = one<HTMLSelectElement>('[data-xs-note-kind]');
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(select, 'user_excerpt');
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await pickValue(one<HTMLElement>('[data-xs-note-kind]'), 'data-option-value', 'user_excerpt');
     await settle();
     await setValue(one<HTMLTextAreaElement>('[data-xs-note]'), 'The user asked for a rollback.');
     (one<HTMLElement>('[data-xs-note-save]')).click();

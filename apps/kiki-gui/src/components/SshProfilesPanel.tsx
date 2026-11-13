@@ -3,6 +3,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import type { SshProfile } from '../state/connectionConfig';
+import { SearchableSelect } from './SearchableSelect';
+import { FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
 
 export function SshProfilesPanel({
   onConnect,
@@ -190,14 +192,23 @@ export function SshProfilesPanel({
             maxLength={36} autoComplete="off" spellCheck={false} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
             className="mt-1 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 font-mono text-[12px] text-ink" />
         </label>
-        <label className="text-[11px] text-ink-soft">{t('st.about.channel')}
-          <select value={releaseChannel} onChange={(event) => setReleaseChannel(event.target.value as 'stable' | 'beta')}
-            className="mt-1 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink">
-            <option value="stable">{t('st.about.stable')}</option>
-            <option value="beta">{t('st.about.beta')}</option>
-          </select>
+        <div className="text-[11px] text-ink-soft">
+          <label htmlFor="ssh-profile-channel" className="block">{t('st.about.channel')}</label>
+          <div className="mt-1">
+            <SearchableSelect
+              id="ssh-profile-channel"
+              ariaLabel={t('st.about.channel')}
+              value={releaseChannel}
+              options={[
+                { value: 'stable', label: t('st.about.stable') },
+                { value: 'beta', label: t('st.about.beta') },
+              ]}
+              onChange={(next) => setReleaseChannel(next as 'stable' | 'beta')}
+              buttonClassName={`${FORM_SELECT_TRIGGER} text-[12px]`}
+            />
+          </div>
           <span className="mt-1 block leading-relaxed">{t('connect.sshChannelHint')}</span>
-        </label>
+        </div>
         <div className="flex gap-2">
           <button type="submit" disabled={busy !== null}
             className="rounded-md border border-hairline-strong px-2 py-1.5 text-[12px] text-ink disabled:opacity-50">

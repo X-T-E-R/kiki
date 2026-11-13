@@ -25,6 +25,8 @@ export function buildModelPickerOptions(
     allowInherit = false,
     unsetLabel,
     unsetDescription,
+    unsetGroup,
+    unsetKeywords,
     groupLabel,
     currentId,
     preserveValues = [],
@@ -32,6 +34,8 @@ export function buildModelPickerOptions(
     readonly allowInherit?: boolean;
     readonly unsetLabel?: string;
     readonly unsetDescription?: string;
+    readonly unsetGroup?: string;
+    readonly unsetKeywords?: string;
     readonly groupLabel?: (providerId: string) => string;
     readonly currentId?: string;
     readonly preserveValues?: readonly string[];
@@ -61,6 +65,8 @@ export function buildModelPickerOptions(
       value: '',
       label: unsetLabel,
       description: unsetDescription,
+      group: unsetGroup,
+      keywords: unsetKeywords,
     }]),
     ...(allowInherit ? [{
       value: 'inherit',
@@ -74,20 +80,36 @@ export function buildModelPickerOptions(
 
 export interface ModelPickerBaseProps {
   readonly id?: string;
-  readonly models: readonly ModelCatalogItem[];
+  readonly models?: readonly ModelCatalogItem[];
+  /** Explicit option rows when a surface augments or replaces the catalog list (e.g. composer projections, external engines, or hybrid decision sources). */
+  readonly options?: readonly SearchableSelectOption[];
   readonly allowInherit?: boolean;
   readonly allowCustomValue?: boolean;
+  readonly customValueLabel?: (value: string) => string;
   readonly disabled?: boolean;
   readonly missing?: boolean;
   /** Label for the empty value `""` when an unset/default row should be shown. */
   readonly unsetLabel?: string;
   readonly unsetDescription?: string;
+  readonly unsetGroup?: string;
+  readonly unsetKeywords?: string;
   /** Trigger content while unset (e.g. an inherited value, muted). */
   readonly unsetTrigger?: ReactNode;
   readonly emptyText?: string;
   readonly ariaLabel?: string;
+  readonly ariaLabelledBy?: string;
+  readonly ariaInvalid?: boolean;
+  readonly ariaDescribedBy?: string;
+  readonly title?: string;
   readonly searchPlaceholder?: string;
+  readonly rootClassName?: string;
   readonly buttonClassName?: string;
+  readonly labelClassName?: string;
+  readonly panelClassName?: string;
+  readonly panelHeader?: ReactNode;
+  readonly panelFooter?: ReactNode;
+  readonly triggerData?: Readonly<Record<string, string | boolean | undefined>>;
+  readonly panelData?: Readonly<Record<string, string | boolean | undefined>>;
   readonly triggerLabel?: ReactNode;
   readonly triggerIcon?: ReactNode;
   readonly triggerSuffix?: ReactNode;
@@ -97,6 +119,7 @@ export interface ModelPickerBaseProps {
   readonly placement?: 'below' | 'above' | 'auto';
   readonly density?: 'comfortable' | 'compact';
   readonly openSignal?: number;
+  readonly closeSignal?: number;
   readonly currentId?: string;
   /** Use exact alias as the trigger label in single mode (profile editor convention). */
   readonly rawAliasTrigger?: boolean;
@@ -121,18 +144,33 @@ export type ModelPickerProps = SingleModelPickerProps | MultiModelPickerProps;
 export function ModelPicker(props: ModelPickerProps) {
   const {
     id,
-    models,
+    models = [],
+    options: explicitOptions,
     allowInherit = false,
     allowCustomValue = true,
+    customValueLabel,
     disabled = false,
     missing,
     unsetLabel,
     unsetDescription,
+    unsetGroup,
+    unsetKeywords,
     unsetTrigger,
     emptyText,
     ariaLabel,
+    ariaLabelledBy,
+    ariaInvalid,
+    ariaDescribedBy,
+    title,
     searchPlaceholder,
+    rootClassName,
     buttonClassName,
+    labelClassName,
+    panelClassName,
+    panelHeader,
+    panelFooter,
+    triggerData,
+    panelData,
     triggerLabel,
     triggerIcon,
     triggerSuffix,
@@ -142,6 +180,7 @@ export function ModelPicker(props: ModelPickerProps) {
     placement,
     density,
     openSignal,
+    closeSignal,
     currentId,
     rawAliasTrigger = false,
   } = props;
@@ -155,23 +194,25 @@ export function ModelPicker(props: ModelPickerProps) {
   );
 
   const options = useMemo(
-    () => buildModelPickerOptions(models, t, {
+    () => explicitOptions ?? buildModelPickerOptions(models, t, {
       allowInherit,
       unsetLabel,
       unsetDescription,
+      unsetGroup,
+      unsetKeywords,
       groupLabel,
       currentId,
       preserveValues,
     }),
-    [models, t, allowInherit, unsetLabel, unsetDescription, groupLabel, currentId, preserveValues],
+    [explicitOptions, models, t, allowInherit, unsetLabel, unsetDescription, unsetGroup, unsetKeywords, groupLabel, currentId, preserveValues],
   );
 
   const hasMissingSelection = useMemo(() => {
     if (missing !== undefined) return missing;
-    if (models.length === 0) return false;
+    if (explicitOptions !== undefined || models.length === 0) return false;
     const known = new Set(models.map((item) => item.id));
     return preserveValues.some((val) => val !== '' && val !== 'inherit' && !known.has(val));
-  }, [missing, models, preserveValues]);
+  }, [missing, explicitOptions, models, preserveValues]);
 
   const resolvedSuffix = triggerSuffix ?? (
     hasMissingSelection
@@ -182,7 +223,11 @@ export function ModelPicker(props: ModelPickerProps) {
   const resolvedClassName = buttonClassName
     ?? `${FORM_SELECT_TRIGGER} ${hasMissingSelection ? 'border-amber-ink/50' : ''}`;
 
-  const customLabel = (val: string) => t('select.useCustom', { value: val });
+  const customLabel = customValueLabel ?? ((val: string) => t('select.useCustom', { value: val }));
+  const resolvedTriggerData = useMemo(
+    () => ({ 'data-model-picker': '', ...triggerData }),
+    [triggerData],
+  );
 
   if (props.multiple) {
     return (
@@ -197,17 +242,29 @@ export function ModelPicker(props: ModelPickerProps) {
         customValueLabel={customLabel}
         hideFilter={hideFilter}
         emptyText={emptyText ?? unsetLabel}
-        ariaLabel={ariaLabel ?? t('usage.governance.models')}
+        ariaLabel={ariaLabel ?? (ariaLabelledBy === undefined ? t('usage.governance.models') : undefined)}
+        ariaLabelledBy={ariaLabelledBy}
+        ariaInvalid={ariaInvalid}
+        ariaDescribedBy={ariaDescribedBy}
+        title={title}
         searchPlaceholder={searchPlaceholder ?? t('st.models.searchPlaceholder')}
         triggerLabel={triggerLabel ?? (props.values.length === 0 ? unsetTrigger : undefined)}
         triggerIcon={triggerIcon}
         triggerSuffix={resolvedSuffix}
         hideChevron={hideChevron}
+        rootClassName={rootClassName}
         buttonClassName={resolvedClassName}
+        labelClassName={labelClassName}
+        panelClassName={panelClassName}
+        panelHeader={panelHeader}
+        panelFooter={panelFooter}
+        triggerData={resolvedTriggerData}
+        panelData={panelData}
         align={align}
         placement={placement}
         density={density}
         openSignal={openSignal}
+        closeSignal={closeSignal}
       />
     );
   }
@@ -229,17 +286,29 @@ export function ModelPicker(props: ModelPickerProps) {
       customValueLabel={customLabel}
       hideFilter={hideFilter}
       emptyText={emptyText ?? unsetLabel}
-      ariaLabel={ariaLabel ?? t('st.profiles.model')}
+      ariaLabel={ariaLabel ?? (ariaLabelledBy === undefined ? t('st.profiles.model') : undefined)}
+      ariaLabelledBy={ariaLabelledBy}
+      ariaInvalid={ariaInvalid}
+      ariaDescribedBy={ariaDescribedBy}
+      title={title}
       searchPlaceholder={searchPlaceholder ?? t('st.models.searchPlaceholder')}
       triggerLabel={resolvedSingleTrigger}
       triggerIcon={triggerIcon}
       triggerSuffix={resolvedSuffix}
       hideChevron={hideChevron}
+      rootClassName={rootClassName}
       buttonClassName={resolvedClassName}
+      labelClassName={labelClassName}
+      panelClassName={panelClassName}
+      panelHeader={panelHeader}
+      panelFooter={panelFooter}
+      triggerData={resolvedTriggerData}
+      panelData={panelData}
       align={align}
       placement={placement}
       density={density}
       openSignal={openSignal}
+      closeSignal={closeSignal}
     />
   );
 }

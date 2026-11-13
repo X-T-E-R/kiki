@@ -31,7 +31,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { ErrorCode, type Session, type WorkspaceCatalogEntry } from '@kiki/protocol';
+import { ErrorCode, type ModelCatalogItem, type Session, type WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { formatBytes } from '@kiki/session-core/composer/media';
 import { readLastSessionId } from '@kiki/session-core/settings';
@@ -83,6 +83,8 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
+import { ModelPicker } from './ModelPicker';
+import { SearchableSelect } from './SearchableSelect';
 import { SettingsSelect } from './settings/SettingsPrimitives';
 import { SECONDARY_BUTTON } from './ui';
 import { PAGE_WIDTH, PageHeader, PageMoreMenu } from './PageChrome';
@@ -398,7 +400,7 @@ function FilterBar({
 }: {
   filters: UsageFilters;
   workspaces: readonly WorkspaceCatalogEntry[];
-  models: readonly { id: string; display_name?: string | null }[];
+  models: readonly ModelCatalogItem[];
   providers: readonly { id: string }[];
   comparing: boolean;
   compareAvailable: boolean;
@@ -425,7 +427,7 @@ function FilterBar({
     chips.push({ key: `profile:${profile}`, label: t('usage.filter.profileChip', { value: profile }), clear: () => { onChange({ ...filters, profiles: filters.profiles.filter((entry) => entry !== profile) }); } });
   }
 
-  const selectClass = `h-8 max-w-44 appearance-none truncate rounded-md border border-hairline bg-paper pr-7 pl-3 text-[13px] cursor-pointer pointer-coarse:h-11`;
+  const selectClass = 'flex h-8 max-w-44 min-w-0 items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink pointer-coarse:min-h-11';
   const changeRange = (range: UsageFilters['range']) => {
     setRangeInvalid(false);
     if (range === 'custom') {
@@ -565,34 +567,35 @@ function FilterBar({
         }
       >
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1">
-          <label className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.model')}</span>
-            <select
-              data-usage-filter-model
+          <div className="flex min-w-0 items-center gap-2">
+            <label htmlFor="usage-filter-model" className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.model')}</label>
+            <ModelPicker
+              id="usage-filter-model"
+              triggerData={{ 'data-usage-filter-model': '' }}
+              ariaLabel={t('usage.filter.model')}
+              models={models}
+              allowCustomValue={false}
+              unsetLabel={t('usage.filter.any')}
               value={filters.model ?? ''}
-              onChange={(event) => { onChange({ ...filters, model: event.target.value === '' ? undefined : event.target.value }); }}
-              className={selectClass}
-            >
-              <option value="">{t('usage.filter.any')}</option>
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>{model.display_name ?? model.id}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.provider')}</span>
-            <select
-              data-usage-filter-provider
+              onChange={(next) => { onChange({ ...filters, model: next === '' ? undefined : next }); }}
+              buttonClassName={selectClass}
+            />
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <label htmlFor="usage-filter-provider" className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.provider')}</label>
+            <SearchableSelect
+              id="usage-filter-provider"
+              triggerData={{ 'data-usage-filter-provider': '' }}
+              ariaLabel={t('usage.filter.provider')}
               value={filters.provider ?? ''}
-              onChange={(event) => { onChange({ ...filters, provider: event.target.value === '' ? undefined : event.target.value }); }}
-              className={selectClass}
-            >
-              <option value="">{t('usage.filter.any')}</option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.id}</option>
-              ))}
-            </select>
-          </label>
+              onChange={(next) => { onChange({ ...filters, provider: next === '' ? undefined : next }); }}
+              options={[
+                { value: '', label: t('usage.filter.any') },
+                ...providers.map((provider) => ({ value: provider.id, label: provider.id })),
+              ]}
+              buttonClassName={selectClass}
+            />
+          </div>
           <label className="flex min-w-0 flex-1 items-center gap-2">
             <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.profile')}</span>
             <input

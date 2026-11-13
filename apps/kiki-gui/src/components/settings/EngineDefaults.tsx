@@ -31,6 +31,7 @@ import { harnessQuotaQueryKey, readCachedHarnessQuota } from '../../lib/provider
 import { EXECUTORS_QUERY_KEY, useExecutorCatalog } from './profileEditor/engines';
 import { KIKI_CONTEXT_ORDER } from './profileEditor/profileDraft';
 import { CONTEXT_BLOCKS, DELIVERIES, type ExecutorPromptDelivery } from './profileEditor/executorPromptDraft';
+import { SettingsSelect } from './SettingsPrimitives';
 
 /** One engine's `agent_executor_overrides.<id>.defaults` as the editor holds it. */
 export interface EngineDefaultsDraft {
@@ -260,21 +261,25 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
             onChange={(next) => { set('executorInstance', next === '' ? '' : scheduleChoiceValue(next)); }} />
         </Field>
         <Field label={t('st.engines.quotaSource')} htmlFor={`${item.id}-quota-source`} hint={t('st.engines.quotaSourceHint')}>
-          <select id={`${item.id}-quota-source`} data-engine-quota-source className={`${INPUT} min-w-0 text-[12px]`} value={quotaDraft} disabled={saving}
-            onChange={(event) => { setQuotaDraft(event.target.value); }}>
-            <option value="">{t('st.engines.quotaSource.none')}</option>
-            {quotaDraft !== '' && !quotaSources.some((source) => source.id === quotaDraft) ? <option value={quotaDraft}>{quotaDraft}</option> : null}
-            {quotaSources.map((source) => <option key={source.id} value={source.id}>{source.label}</option>)}
-          </select>
+          <SettingsSelect id={`${item.id}-quota-source`} variant="form" className="min-w-0 text-[12px]"
+            ariaLabel={t('st.engines.quotaSource')} triggerData={{ 'data-engine-quota-source': '' }}
+            value={quotaDraft} disabled={saving} onChange={setQuotaDraft}
+            choices={[
+              { value: '', label: t('st.engines.quotaSource.none') },
+              ...(quotaDraft !== '' && !quotaSources.some((source) => source.id === quotaDraft) ? [{ value: quotaDraft, label: quotaDraft }] : []),
+              ...quotaSources.map((source) => ({ value: source.id, label: source.label })),
+            ]} />
         </Field>
         <Field label={t('st.engines.autoContinuation.label')} htmlFor={`${item.id}-auto-continuation`} hint={t('st.engines.autoContinuation.hint')}>
-          <select id={`${item.id}-auto-continuation`} data-engine-default="auto_continuation_policy" disabled={saving}
-            className={`${INPUT} min-w-0 text-[12px]`} value={draft.autoContinuationPolicy}
-            onChange={(event) => { set('autoContinuationPolicy', event.target.value as EngineDefaultsDraft['autoContinuationPolicy']); }}>
-            <option value="">{t('st.engines.defaults.inheritPlaceholder')}</option>
-            <option value="prefer_current">{t('st.engines.autoContinuation.prefer_current')}</option>
-            <option value="prefer_quota">{t('st.engines.autoContinuation.prefer_quota')}</option>
-          </select>
+          <SettingsSelect id={`${item.id}-auto-continuation`} variant="form" className="min-w-0 text-[12px]"
+            ariaLabel={t('st.engines.autoContinuation.label')} triggerData={{ 'data-engine-default': 'auto_continuation_policy' }}
+            value={draft.autoContinuationPolicy} disabled={saving}
+            onChange={(next) => { set('autoContinuationPolicy', next); }}
+            choices={[
+              { value: '', label: t('st.engines.defaults.inheritPlaceholder') },
+              { value: 'prefer_current', label: t('st.engines.autoContinuation.prefer_current') },
+              { value: 'prefer_quota', label: t('st.engines.autoContinuation.prefer_quota') },
+            ]} />
         </Field>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -292,15 +297,17 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
             onChange={(event) => { set('thinkingEffort', event.target.value); }} />
         </Field>
         <Field label={t('st.engines.defaults.permissionMode')} htmlFor={`${item.id}-default-permission`}>
-          <select id={`${item.id}-default-permission`} data-engine-default="permission_mode" disabled={saving}
-            className={`${INPUT} min-w-0 text-[12px]`} value={draft.permissionMode}
-            onChange={(event) => { set('permissionMode', event.target.value as EngineDefaultsDraft['permissionMode']); }}>
-            <option value="">{t('st.engines.defaults.inheritPlaceholder')}</option>
-            <option value="manual">{t('composer.perm.manual')}</option>
-            <option value="auto">{t('composer.perm.auto')}</option>
-            <option value="review">{t('composer.perm.review')}</option>
-            <option value="yolo">{t('composer.perm.yolo')}</option>
-          </select>
+          <SettingsSelect id={`${item.id}-default-permission`} variant="form" className="min-w-0 text-[12px]"
+            ariaLabel={t('st.engines.defaults.permissionMode')} triggerData={{ 'data-engine-default': 'permission_mode' }}
+            value={draft.permissionMode} disabled={saving}
+            onChange={(next) => { set('permissionMode', next); }}
+            choices={[
+              { value: '', label: t('st.engines.defaults.inheritPlaceholder') },
+              { value: 'manual', label: t('composer.perm.manual') },
+              { value: 'auto', label: t('composer.perm.auto') },
+              { value: 'review', label: t('composer.perm.review') },
+              { value: 'yolo', label: t('composer.perm.yolo') },
+            ]} />
         </Field>
       </div>
       <div className="space-y-2 pt-3">
@@ -332,12 +339,14 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
       <div className="space-y-2 pt-3">
         <p className="text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.title')}</p>
         <Field label={t('st.executorPrompt.delivery')} htmlFor={`${item.id}-default-delivery`}>
-          <select id={`${item.id}-default-delivery`} data-engine-default="executor_prompt.delivery" disabled={saving}
-            className={`${INPUT} min-w-0 text-[12px]`} value={draft.promptDelivery}
-            onChange={(event) => { set('promptDelivery', event.target.value as EngineDefaultsDraft['promptDelivery']); }}>
-            <option value="">{t('st.engines.defaults.inheritPlaceholder')}</option>
-            {DELIVERIES.map((delivery) => <option key={delivery} value={delivery}>{t(`st.executorPrompt.delivery.${delivery}`)}</option>)}
-          </select>
+          <SettingsSelect id={`${item.id}-default-delivery`} variant="form" className="min-w-0 text-[12px]"
+            ariaLabel={t('st.executorPrompt.delivery')} triggerData={{ 'data-engine-default': 'executor_prompt.delivery' }}
+            value={draft.promptDelivery} disabled={saving}
+            onChange={(next) => { set('promptDelivery', next); }}
+            choices={[
+              { value: '', label: t('st.engines.defaults.inheritPlaceholder') },
+              ...DELIVERIES.map((delivery) => ({ value: delivery, label: t(`st.executorPrompt.delivery.${delivery}`) })),
+            ]} />
         </Field>
         <fieldset className="min-w-0 space-y-2">
           <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.include')}</legend>

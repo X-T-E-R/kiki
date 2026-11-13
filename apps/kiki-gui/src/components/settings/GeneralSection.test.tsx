@@ -28,6 +28,7 @@ const listTools = vi.fn(async () => ({ tools: [] }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client: { getConfig, patchConfig, meta, listModels, listTools } }),
+  useOptionalConnection: () => ({ client: { getConfig, patchConfig, meta, listModels, listTools } }),
 }));
 vi.mock('../../host', () => ({
   useHost: () => ({ kind: 'browser' }),

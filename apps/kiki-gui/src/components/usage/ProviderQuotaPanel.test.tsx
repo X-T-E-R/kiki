@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { providerQuotaSnapshotSchema, type OAuthFlowSnapshot, type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
+import { pickValue } from '../settings/testControls';
 import { ProviderQuotaPanel } from './ProviderQuotaPanel';
 
 const mockUseProviderQuotas = vi.fn();
@@ -67,12 +68,9 @@ async function click(container: Element, selector: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
 }
 async function selectOption(container: Element, selector: string, value: string) {
-  const select = container.querySelector<HTMLSelectElement>(selector)!;
+  const select = container.querySelector<HTMLElement>(selector)!;
   expect(select).not.toBeNull();
-  await act(async () => {
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await pickValue(select, 'data-option-value', value);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
 }
 beforeEach(() => {

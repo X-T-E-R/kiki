@@ -18,6 +18,7 @@ import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import { Icon } from '../icons';
+import { SearchableSelect } from '../SearchableSelect';
 import { SECONDARY_BUTTON } from '../ui';
 import { documentSourceFor, sheetsOf, useDocumentPreview, type DocumentPreviewController } from './documentPreview';
 import { PreviewAssetImage } from './PreviewAssetImage';
@@ -122,16 +123,13 @@ function PageControl({ controller, response }: { controller: DocumentPreviewCont
   const sheets = sheetsOf(response);
   if (sheets.length === 0) return null;
   return (
-    <label className="flex items-center gap-1.5 text-[11px] text-ink-faint">
-      <span className="sr-only">{t('preview.sheet')}</span>
-      <select
-        value={nav.sheet ?? ''}
-        onChange={(event) => { controller.goTo({ sheet: event.target.value, page: undefined }); }}
-        className="max-w-[9rem] truncate rounded-md border border-hairline bg-paper px-1.5 py-0.5 text-[11.5px] text-ink outline-none focus:border-accent"
-      >
-        {sheets.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}
-      </select>
-    </label>
+    <SearchableSelect
+      ariaLabel={t('preview.sheet')}
+      value={nav.sheet ?? ''}
+      options={sheets.map((sheet) => ({ value: sheet, label: sheet }))}
+      onChange={(next) => { controller.goTo({ sheet: next, page: undefined }); }}
+      buttonClassName="flex max-w-[9rem] items-center justify-between gap-1 rounded-md border border-hairline bg-paper px-1.5 py-0.5 text-[11.5px] text-ink outline-none focus:border-accent"
+    />
   );
 }
 

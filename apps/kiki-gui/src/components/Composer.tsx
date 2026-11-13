@@ -132,7 +132,8 @@ import { OutputLayerSelect } from './output-layer';
 import { engineLabel, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
-import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { ModelPicker } from './ModelPicker';
+import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from './SearchableSelect';
 import { SessionRemainder } from './SessionRemainder';
 import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
@@ -4370,12 +4371,13 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
   </span>;
   return (
     <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
-      <SearchableSelect
+      <ModelPicker
         id="composer-engine-model-select"
         value={model ?? ''}
         options={modelOptions}
         searchPlaceholder={t('composer.engineModelId')}
         allowCustomValue
+        customValueLabel={(custom) => custom}
         onChange={(next) => { onChange(next === '' ? undefined : next); }}
         ariaLabel={t('composer.modelAria')}
         title={engineLabel}
@@ -4472,9 +4474,10 @@ function ModelChip({
 
   return (
     <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
-    <SearchableSelect
+    <ModelPicker
       id="composer-model-select"
       options={hasCatalog ? modelOptions : []}
+      allowCustomValue={false}
       hideFilter={!hasCatalog}
       // With no catalog the raw value renders verbatim — the read-only label.
       value={hasCatalog ? (resolvedModelKey ?? model ?? '') : (effectiveModel ?? '')}

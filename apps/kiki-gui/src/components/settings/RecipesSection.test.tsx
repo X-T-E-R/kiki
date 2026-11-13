@@ -18,6 +18,7 @@ import type { RecipeDetail } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
 import { I18nProvider } from '../../i18n';
+import { pickValue, selectText } from './testControls';
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
@@ -198,18 +199,14 @@ describe('the Recipe library', () => {
     const row = container.querySelector('[data-recipes-row="inst-clear-work"]')!;
     expect(row.textContent).toContain('Clear work');
     expect(row.querySelector('[data-recipes-used-by="inst-clear-work"]')?.textContent ?? '').toContain('example/kimi-k2');
-    expect(row.querySelector<HTMLSelectElement>('[data-recipes-update-mode="inst-clear-work"]')?.value).toBe('follow');
+    expect(selectText(row.querySelector('[data-recipes-update-mode="inst-clear-work"]')!)).toBe('Following updates');
   });
 
   it('writes only the package when the update rule changes; no model is touched', async () => {
     await renderLibrary();
-    const select = container.querySelector<HTMLSelectElement>('[data-recipes-update-mode="inst-clear-work"]')!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
-      setter.call(select, 'pinned');
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
+    const select = container.querySelector<HTMLElement>('[data-recipes-update-mode="inst-clear-work"]')!;
+    await pickValue(select, 'data-option-value', 'pinned');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
     expect(updateRecipeCalls).toEqual([[{ installation_id: 'inst-clear-work', expected_revision: 'sha256:a91d', update_mode: 'pinned' }]]);
   });
 

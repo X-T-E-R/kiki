@@ -171,7 +171,7 @@ describe('PluginSettingsForm', () => {
     const container = await render();
     expect(container.textContent).not.toContain('openai__cleared');
     expect(container.textContent).not.toContain('openai__removed');
-    expect(container.querySelector('[data-plugin-setting="defaultImageProvider"] select')?.textContent).toContain('openai-image');
+    expect(container.querySelector('[data-plugin-setting="defaultImageProvider"] [data-searchable-select]')?.textContent).toContain('openai-image');
     // Groups are rows; their fields stay closed until the row is opened.
     expect(container.querySelector('[data-plugin-setting="openai__baseUrl"]')).toBeNull();
     // A removed source is a quiet row with Restore, in place of its fields.

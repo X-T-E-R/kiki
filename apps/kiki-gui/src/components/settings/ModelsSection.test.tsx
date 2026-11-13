@@ -1040,6 +1040,10 @@ describe('GlobalDefaultsCard', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(container.querySelector('[data-default-model-others]')).toBeNull();
+    expect(container.querySelector('button#st-default-model[data-model-picker]')).not.toBeNull();
+    expect(container.querySelector('button#st-default-subagent-model[data-model-picker]')).not.toBeNull();
+    expect(container.querySelector('button#st-default-fast-model[data-model-picker]')).not.toBeNull();
+    expect(container.querySelector('button#st-default-title-model[data-model-picker]')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('#st-default-model')!.click(); });
     const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K1'))!;
     await act(async () => { option.click(); });

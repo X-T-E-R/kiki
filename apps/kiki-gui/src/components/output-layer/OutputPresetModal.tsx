@@ -10,9 +10,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptionalConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
+import { ModelPicker } from '../ModelPicker';
 import { SearchableSelect } from '../SearchableSelect';
+import { FORM_SELECT_TRIGGER } from '../settings/SettingsPrimitives';
 import { SidePanel } from '../SidePanel';
-import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import type { OutputLayerPreset, OutputLayerSettings } from './types';
 import { useOutputLayer } from './outputLayerStore';
@@ -96,23 +97,25 @@ export function OutputPresetModal({
     staleTime: 60_000,
   });
 
-  const providerGroupLabel = useProviderGroupLabel();
-
-  const modelOptions = useMemo(() => {
-    const items = modelsQuery.data?.items ?? [];
-    return [
-      {
-        value: '',
-        label: t('outputPreset.noModelLabel'),
-        group: t('outputPreset.noModelGroup'),
-        keywords: t('outputPreset.noModelKeywords'),
-      },
-      ...buildCatalogModelOptions(items, t, {
-        groupLabel: providerGroupLabel,
-        currentId: modelId,
-      }),
+  const templateOptions = useMemo(
+    () => templates.map((template) => ({ value: template.id, label: template.label })),
+    [templates],
+  );
+  const connectionOptions = useMemo(() => {
+    const items = providersQuery.data?.items ?? [];
+    const base = [
+      { value: '', label: t('outputPreset.connectionPlaceholder') },
+      ...items.map((provider) => ({
+        value: provider.id,
+        label: `${provider.id} (${provider.type})`,
+        keywords: `${provider.id} ${provider.type}`,
+      })),
     ];
-  }, [modelsQuery.data, t, providerGroupLabel, modelId]);
+    if (connectionId !== '' && !base.some((option) => option.value === connectionId)) {
+      base.splice(1, 0, { value: connectionId, label: connectionId });
+    }
+    return base;
+  }, [providersQuery.data, t, connectionId]);
 
   if (!open) return null;
 
@@ -225,13 +228,14 @@ export function OutputPresetModal({
         {!isEditing && templates.length > 0 ? (
           <div>
             <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.templateLabel')}</label>
-            <select
+            <SearchableSelect
               id={`${overlayId}-template`}
-              aria-label={t('outputPreset.templateLabel')}
-              className={INPUT}
+              ariaLabel={t('outputPreset.templateLabel')}
+              buttonClassName={FORM_SELECT_TRIGGER}
+              options={templateOptions}
               value={templateId}
-              onChange={(event) => {
-                const template = templates.find((item) => item.id === event.target.value);
+              onChange={(nextValue) => {
+                const template = templates.find((item) => item.id === nextValue);
                 if (!template) return;
                 setTemplateId(template.id);
                 setLabel(template.label);
@@ -244,9 +248,7 @@ export function OutputPresetModal({
                 setMaxOutputTokens('');
                 setSaveError(null);
               }}
-            >
-              {templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
-            </select>
+            />
           </div>
         ) : null}
 
@@ -290,9 +292,14 @@ export function OutputPresetModal({
           </div>
 
           {modelMode === 'catalog' ? (
-            <SearchableSelect
+            <ModelPicker
+              models={modelsQuery.data?.items ?? []}
               value={modelId}
-              options={modelOptions}
+              currentId={modelId}
+              allowCustomValue={false}
+              unsetLabel={t('outputPreset.noModelLabel')}
+              unsetGroup={t('outputPreset.noModelGroup')}
+              unsetKeywords={t('outputPreset.noModelKeywords')}
               onChange={setModelId}
               ariaLabel={t('outputPreset.selectModelAria')}
             />
@@ -300,19 +307,14 @@ export function OutputPresetModal({
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label htmlFor={`${overlayId}-connection`} className="sr-only">{t('outputPreset.connectionLabel')}</label>
-                <select
+                <SearchableSelect
                   id={`${overlayId}-connection`}
+                  ariaLabel={t('outputPreset.connectionLabel')}
+                  options={connectionOptions}
                   value={connectionId}
-                  onChange={(e) => setConnectionId(e.target.value)}
-                  className={INPUT}
-                >
-                  <option value="">{t('outputPreset.connectionPlaceholder')}</option>
-                  {(providersQuery.data?.items ?? []).map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.id} ({provider.type})
-                    </option>
-                  ))}
-                </select>
+                  onChange={setConnectionId}
+                  buttonClassName={FORM_SELECT_TRIGGER}
+                />
               </div>
               <div>
                 <label htmlFor={`${overlayId}-custom-model`} className="sr-only">{t('outputPreset.customModelLabel')}</label>

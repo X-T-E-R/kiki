@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SshProfilesPanel } from './SshProfilesPanel';
+import { pickValue } from './settings/testControls';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -104,8 +105,8 @@ describe('SshProfilesPanel', () => {
     expect(JSON.stringify(mocks.save.mock.calls[0]?.[0])).not.toContain('token');
 
     await act(async () => { button('goal.edit').click(); });
-    const channel = container.querySelector<HTMLSelectElement>('select')!;
-    await act(async () => { channel.value = 'beta'; channel.dispatchEvent(new Event('change', { bubbles: true })); });
+    const channel = container.querySelector<HTMLElement>('#ssh-profile-channel')!;
+    await pickValue(channel, 'data-option-value', 'beta');
     await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({
       id: 'host-old', releaseChannel: 'beta', serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed',

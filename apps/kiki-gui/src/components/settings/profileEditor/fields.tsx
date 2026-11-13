@@ -4,7 +4,6 @@ import type { ModelCatalogItem } from '@kiki/protocol';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings';
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
-import { buildCatalogModelOptions } from '../../modelSelectOptions';
 import { buildModelPickerOptions, ModelPicker as SharedModelPicker } from '../../ModelPicker';
 import { SearchableSelect, type SearchableSelectOption } from '../../SearchableSelect';
 import { FORM_SELECT_TRIGGER } from '../SettingsPrimitives';
@@ -85,8 +84,12 @@ export function AliasChips({ id, values, onChange, models, disabled, addLabel, c
 }) {
   const { t } = useI18n();
   const known = new Set(models.map((model) => model.id));
-  const options = choices?.filter((choice) => !values.includes(choice.value))
-    ?? buildCatalogModelOptions(models.filter((model) => !values.includes(model.id)), t);
+  const triggerLabel = <span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{addLabel}</span>;
+  const buttonClassName = 'inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50';
+  const commitAlias = (next: string) => {
+    const alias = next.trim();
+    if (alias !== '' && !values.includes(alias)) onChange([...values, alias]);
+  };
   return <div className="flex flex-wrap items-center gap-1.5" data-alias-chips={id}>
     {values.map((alias) => {
       const missing = models.length > 0 && !known.has(alias) && alias !== '*';
@@ -102,11 +105,16 @@ export function AliasChips({ id, values, onChange, models, disabled, addLabel, c
         </button>
       </span>;
     })}
-    <SearchableSelect id={`${id}-add`} value="" options={options} allowCustomValue disabled={disabled}
-      ariaLabel={addLabel} searchPlaceholder={choices === undefined ? 'provider/model' : addLabel} hideChevron
-      triggerLabel={<span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{addLabel}</span>}
-      buttonClassName="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50"
-      onChange={(next) => { const alias = next.trim(); if (alias !== '' && !values.includes(alias)) onChange([...values, alias]); }} />
+    {choices === undefined ? (
+      <SharedModelPicker id={`${id}-add`} value="" models={models.filter((model) => !values.includes(model.id))}
+        allowCustomValue customValueLabel={(custom) => custom} disabled={disabled} ariaLabel={addLabel}
+        searchPlaceholder="provider/model" hideChevron triggerLabel={triggerLabel} buttonClassName={buttonClassName}
+        onChange={commitAlias} />
+    ) : (
+      <SearchableSelect id={`${id}-add`} value="" options={choices.filter((choice) => !values.includes(choice.value))}
+        allowCustomValue disabled={disabled} ariaLabel={addLabel} searchPlaceholder={addLabel} hideChevron
+        triggerLabel={triggerLabel} buttonClassName={buttonClassName} onChange={commitAlias} />
+    )}
   </div>;
 }
 

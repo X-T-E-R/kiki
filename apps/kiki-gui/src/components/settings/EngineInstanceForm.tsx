@@ -8,6 +8,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { executorCatalogQueryKey } from './profileEditor/engines';
+import { SettingsSelect } from './SettingsPrimitives';
 
 const PROXY_KINDS = ['inherit', 'direct', 'url', 'env'] as const;
 type Proxy = ExecutorInstanceResponse['proxy'];
@@ -155,11 +156,13 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       <div className="grid min-w-0 gap-3 lg:grid-cols-2">
         <div className="min-w-0 space-y-1.5">
           <label htmlFor={`${id}-configuration`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.configuration')}</label>
-          <select id={`${id}-configuration`} data-instance-configuration className={INPUT} value={configuration.kind} disabled={saving}
-            onChange={(event) => selectConfiguration(event.target.value as ExecutorInstanceConfiguration['kind'])}>
-            {unsupported ? <option value={configuration.kind} disabled>{t(`st.engines.instance.config.${configuration.kind}`)}</option> : null}
-            {configOptions.map((kind) => <option key={kind} value={kind}>{t(`st.engines.instance.config.${kind}`)}</option>)}
-          </select>
+          <SettingsSelect id={`${id}-configuration`} variant="form" ariaLabel={t('st.engines.instance.configuration')}
+            triggerData={{ 'data-instance-configuration': '' }} value={configuration.kind} disabled={saving}
+            onChange={(next) => selectConfiguration(next)}
+            choices={[
+              ...(unsupported ? [{ value: configuration.kind, label: t(`st.engines.instance.config.${configuration.kind}`), disabled: true }] : []),
+              ...configOptions.map((kind) => ({ value: kind, label: t(`st.engines.instance.config.${kind}`) })),
+            ]} />
           {configuration.kind === 'config_directory' || configuration.kind === 'claude_settings' ? <>
             <input data-instance-configuration-value aria-label={t(`st.engines.instance.config.${configuration.kind}`)} className={`${INPUT} font-mono`}
               required spellCheck={false} disabled={saving || unsupported} value={configuration.path}
@@ -173,18 +176,27 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
             <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.config.envHint')}</p>
           </> : account !== undefined ? <>
             <label htmlFor={`${id}-account-source`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.source')}</label>
-            <select id={`${id}-account-source`} data-instance-account-source className={INPUT} value={account.source} disabled={saving || unsupported}
-              onChange={(event) => setConfiguration({ kind: 'plugin_account', source: event.target.value, account_id: '' })}>
-              {!knownSource && account.source ? <option value={account.source} disabled>{account.source}</option> : null}
-              {accountSources.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-            </select>
+            <SettingsSelect id={`${id}-account-source`} variant="form" ariaLabel={t('st.engines.instance.account.source')}
+              triggerData={{ 'data-instance-account-source': '' }} value={account.source} disabled={saving || unsupported}
+              onChange={(next) => setConfiguration({ kind: 'plugin_account', source: next, account_id: '' })}
+              choices={[
+                ...(!knownSource && account.source ? [{ value: account.source, label: account.source, disabled: true }] : []),
+                ...accountSources.map((entry) => ({ value: entry.id, label: entry.label })),
+              ]} />
             <label htmlFor={`${id}-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.label')}</label>
-            <select id={`${id}-account`} data-instance-account className={INPUT} value={account.account_id} disabled={saving || !knownSource || accountsQuery.isPending || accountsQuery.isError}
-              onChange={(event) => setConfiguration({ ...account, account_id: event.target.value })}>
-              <option value="">{t('st.engines.instance.account.choose')}</option>
-              {!selectedAccount && account.account_id ? <option value={account.account_id} disabled>{account.account_id}</option> : null}
-              {accounts.map((entry) => <option key={entry.id} value={entry.id} disabled={entry.status !== 'ready'}>{entry.label}{entry.status !== 'ready' ? ` · ${t(`st.engines.instance.account.${entry.status}`)}` : ''}</option>)}
-            </select>
+            <SettingsSelect id={`${id}-account`} variant="form" ariaLabel={t('st.engines.instance.account.label')}
+              triggerData={{ 'data-instance-account': '' }} value={account.account_id}
+              disabled={saving || !knownSource || accountsQuery.isPending || accountsQuery.isError}
+              onChange={(next) => setConfiguration({ ...account, account_id: next })}
+              choices={[
+                { value: '', label: t('st.engines.instance.account.choose') },
+                ...(!selectedAccount && account.account_id ? [{ value: account.account_id, label: account.account_id, disabled: true }] : []),
+                ...accounts.map((entry) => ({
+                  value: entry.id,
+                  label: `${entry.label}${entry.status !== 'ready' ? ` · ${t(`st.engines.instance.account.${entry.status}`)}` : ''}`,
+                  disabled: entry.status !== 'ready',
+                })),
+              ]} />
             {sourceQuery.isLoading || (knownSource && accountsQuery.isPending)
               ? <p role="status" className="text-[12px] leading-4 text-ink-soft">{t('st.engines.instance.account.loading')}</p>
               : sourceQuery.isError || !knownSource || accountsQuery.isError
@@ -196,10 +208,10 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
         </div>
         <div className="min-w-0 space-y-1.5">
           <label htmlFor={`${id}-proxy`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy')}</label>
-          <select id={`${id}-proxy`} data-instance-proxy className={INPUT} value={proxy.kind} disabled={saving}
-            onChange={(event) => selectProxy(event.target.value as Proxy['kind'])}>
-            {PROXY_KINDS.map((kind) => <option key={kind} value={kind}>{t(`st.engines.instance.proxy.${kind}`)}</option>)}
-          </select>
+          <SettingsSelect id={`${id}-proxy`} variant="form" ariaLabel={t('st.engines.instance.proxy')}
+            triggerData={{ 'data-instance-proxy': '' }} value={proxy.kind} disabled={saving}
+            onChange={(next) => selectProxy(next)}
+            choices={PROXY_KINDS.map((kind) => ({ value: kind, label: t(`st.engines.instance.proxy.${kind}`) }))} />
           {proxy.kind === 'url' || proxy.kind === 'env' ? <>
             <input data-instance-proxy-value aria-label={t(`st.engines.instance.proxy.${proxy.kind}`)} className={`${INPUT} font-mono`}
               required spellCheck={false} disabled={saving} value={proxy.kind === 'url' ? proxy.url : proxy.name}

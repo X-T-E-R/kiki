@@ -7,6 +7,7 @@ import { OutputPresetModal } from './OutputPresetModal';
 import { outputLayerStore } from './outputLayerStore';
 import { setActiveOutputLayerClient } from './useOutputLayerClient';
 import { I18nProvider } from '../../i18n';
+import { optionValues, pickValue, selectText } from '../settings/testControls';
 import { OUTPUT_LAYER_DEFAULT_PRESETS, OUTPUT_LAYER_DEFAULT_SETTINGS, type OutputLayerConfiguration, type OutputLayerPreset } from './types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,9 +55,9 @@ function button(text: string) {
   if (!found) throw new Error(`Missing button ${text}`);
   return found;
 }
-async function change(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string) {
+async function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
-    const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true })); element.dispatchEvent(new Event('change', { bubbles: true }));
   });
@@ -80,11 +81,12 @@ function labeled(labelText: string): HTMLElement {
 describe('OutputPresetModal', () => {
   it('uses all six installed templates and saves a new unconfigured preset without replacing saved edits', async () => {
     const { onSaved, onClose } = await renderModal();
-    const picker = document.body.querySelector<HTMLSelectElement>('select[aria-label="内置模板"]')!;
-    expect(Array.from(picker.options).map(option => option.value)).toEqual(OUTPUT_LAYER_DEFAULT_PRESETS.map(template => template.id));
+    const picker = document.body.querySelector<HTMLButtonElement>('button[aria-label="内置模板"]')!;
+    expect(await optionValues(picker)).toEqual(OUTPUT_LAYER_DEFAULT_PRESETS.map(template => template.id));
+    expect(document.body.querySelector('button[data-model-picker]')).not.toBeNull();
     expect(document.body.textContent).toContain('未选择模型 (保持原文，不触发处理)');
     expect((await budgetInput()).value).toBe('');
-    await change(picker, 'translate-en');
+    await pickValue(picker, 'data-option-value', 'translate-en');
     const template = OUTPUT_LAYER_DEFAULT_PRESETS.find(item => item.id === 'translate-en')!;
     expect(document.body.querySelector('textarea')!.value).toBe(template.instruction);
     await save();
@@ -95,7 +97,7 @@ describe('OutputPresetModal', () => {
     expect(serverConfiguration.presets).toEqual([savedPreset, added]);
     expect(onClose).toHaveBeenCalledTimes(1);
     await renderModal({ preset: added });
-    expect(document.body.querySelector('select[aria-label="内置模板"]')).toBeNull();
+    expect(document.body.querySelector('button[aria-label="内置模板"]')).toBeNull();
     await change(document.body.querySelector('textarea')!, 'Edited English translation');
     await save();
     expect(serverConfiguration.presets).toHaveLength(2);
@@ -127,12 +129,12 @@ describe('OutputPresetModal', () => {
 
   it('allows an empty custom pair but rejects either half without clearing the selected field', async () => {
     const { onSaved } = await renderModal({ preset: { ...savedPreset, modelId: undefined, connectionId: 'existing' } });
-    const picker = document.body.querySelector<HTMLSelectElement>('select:not([aria-label])')!;
+    const picker = labeled('已有连接') as HTMLButtonElement;
     const custom = document.body.querySelector<HTMLInputElement>('input[placeholder^="输入自定义模型"]')!;
     await save();
     expect(document.body.textContent).toContain('自定义模型需要同时选择已有连接并填写模型 ID');
-    expect(picker.value).toBe('existing'); expect(fixture.configure).not.toHaveBeenCalled();
-    await change(picker, ''); await change(custom, 'remote/model'); await save();
+    expect(selectText(picker)).toContain('existing'); expect(fixture.configure).not.toHaveBeenCalled();
+    await pickValue(picker, 'data-option-value', ''); await change(custom, 'remote/model'); await save();
     expect(custom.value).toBe('remote/model'); expect(fixture.configure).not.toHaveBeenCalled();
     await change(custom, ''); await save();
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ modelId: undefined, connectionId: undefined, customModelId: undefined }));
@@ -181,7 +183,7 @@ describe('OutputPresetModal', () => {
     expect(labeled('提示词指令').tagName).toBe('TEXTAREA');
     // The custom-model pair appears in custom mode; both controls carry sr-only labels.
     await act(async () => { document.body.querySelectorAll<HTMLInputElement>('input[name="modelMode"]')[1]!.click(); });
-    expect(labeled('已有连接').tagName).toBe('SELECT');
+    expect(labeled('已有连接').getAttribute('aria-haspopup')).toBe('listbox');
     expect(labeled('自定义模型 ID').tagName).toBe('INPUT');
     await act(async () => button('高级参数').click());
     expect(labeled('单组字符数 (Unicode)').tagName).toBe('INPUT');

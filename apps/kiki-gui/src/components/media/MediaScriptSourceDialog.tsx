@@ -34,6 +34,7 @@ import { useMediaScriptSourceAdd, type MediaScriptSourceInput, type MediaSourceW
 import { useConnection } from '../../state/connection';
 import { FeedbackLine } from '../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SettingsSelect } from '../settings/SettingsPrimitives';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 const MEDIA_KINDS = ['image', 'video', 'tts'] as const;
@@ -235,16 +236,18 @@ export function MediaScriptSourceDialog({
             />
           </Field>
           <Field id="media-script-protocol" label={t('cap.media.script.protocol')}>
-            <select
+            <SettingsSelect
               id="media-script-protocol"
-              data-media-script-field="protocol"
-              className={INPUT}
+              variant="form"
+              ariaLabel={t('cap.media.script.protocol')}
+              triggerData={{ 'data-media-script-field': 'protocol' }}
               value={draft.protocol}
-              onChange={(event) => { set('protocol', event.target.value === 'json' ? 'json' : 'file'); }}
-            >
-              <option value="file">{t('cap.media.script.protocolFile')}</option>
-              <option value="json">{t('cap.media.script.protocolJson')}</option>
-            </select>
+              onChange={(next) => { set('protocol', next === 'json' ? 'json' : 'file'); }}
+              choices={[
+                { value: 'file', label: t('cap.media.script.protocolFile') },
+                { value: 'json', label: t('cap.media.script.protocolJson') },
+              ]}
+            />
           </Field>
         </div>
 

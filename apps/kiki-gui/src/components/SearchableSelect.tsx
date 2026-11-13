@@ -74,6 +74,8 @@ export interface SearchableSelectOption {
   readonly title?: string;
   /** Extra match text the filter sees but the row never renders (e.g. a model id). */
   readonly keywords?: string;
+  /** Extra `data-*` attributes attached to the rendered option button. */
+  readonly dataAttrs?: Readonly<Record<string, string | boolean | undefined>>;
 }
 
 const PANEL_GAP = 4;
@@ -138,7 +140,10 @@ function useViewportPlacement(
 export interface SearchableSelectBaseProps {
   id?: string;
   readonly options: readonly SearchableSelectOption[];
-  readonly ariaLabel: string;
+  readonly ariaLabel?: string;
+  readonly ariaLabelledBy?: string;
+  readonly ariaInvalid?: boolean;
+  readonly ariaDescribedBy?: string;
   readonly title?: string;
   readonly disabled?: boolean;
   /** Row shown when there are no options at all (and on an empty multi trigger). */
@@ -146,7 +151,11 @@ export interface SearchableSelectBaseProps {
   readonly searchPlaceholder?: string;
   /** Rendered with the trimmed query when filtering removes every option. */
   readonly noMatchText?: (query: string) => string;
+  readonly rootClassName?: string;
   readonly buttonClassName?: string;
+  readonly labelClassName?: string;
+  readonly triggerData?: Readonly<Record<string, string | boolean | undefined>>;
+  readonly panelData?: Readonly<Record<string, string | boolean | undefined>>;
   /**
    * Hands panel positioning to the caller: the panel then renders inline, in
    * the trigger's own flow, with these classes verbatim. The composer uses it
@@ -190,6 +199,8 @@ export interface SearchableSelectBaseProps {
   readonly customValueLabel?: (value: string) => string;
   /** Bump to open the panel from outside. */
   readonly openSignal?: number;
+  /** Bump to close the panel from inside a header/footer slot. */
+  readonly closeSignal?: number;
   /**
    * `compact`: a dense two-line row (label, then badges as faint inline facts
    * followed by the mono hint) for long pickers opened from a tight spot.
@@ -218,12 +229,19 @@ export function SearchableSelect(props: SearchableSelectProps) {
     id,
     options,
     ariaLabel,
+    ariaLabelledBy,
+    ariaInvalid,
+    ariaDescribedBy,
     title,
     disabled = false,
     emptyText,
     searchPlaceholder,
     noMatchText,
+    rootClassName,
     buttonClassName,
+    labelClassName,
+    triggerData,
+    panelData,
     panelClassName,
     placement = 'below',
     align = 'start',
@@ -237,6 +255,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
     allowCustomValue = false,
     customValueLabel,
     openSignal,
+    closeSignal,
     density = 'comfortable',
   } = props;
   const isMultiple = props.multiple === true;
@@ -256,10 +275,11 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const listRef = useRef<HTMLDivElement>(null);
 
   const ownsPanel = panelClassName === undefined;
-  const asSheet = ownsPanel && phoneMode;
+  const asSheet = phoneMode;
+  const isPortaled = ownsPanel || asSheet;
 
-  const ownerId = open && ownsPanel ? owningModalId(triggerRef.current) : undefined;
-  const floatingOwners = open && ownsPanel ? resolveFloatingOwners(triggerRef.current) : undefined;
+  const ownerId = open && isPortaled ? owningModalId(triggerRef.current) : undefined;
+  const floatingOwners = open && isPortaled ? resolveFloatingOwners(triggerRef.current) : undefined;
   const openSignalRef = useRef(openSignal);
   useEffect(() => {
     if (openSignal === undefined || openSignal === openSignalRef.current) return;
@@ -268,6 +288,13 @@ export function SearchableSelect(props: SearchableSelectProps) {
     setActiveIndex(0);
     setOpen(true);
   }, [openSignal, disabled]);
+  const closeSignalRef = useRef(closeSignal);
+  useEffect(() => {
+    if (closeSignal === undefined || closeSignal === closeSignalRef.current) return;
+    closeSignalRef.current = closeSignal;
+    setOpen(false);
+    setQuery('');
+  }, [closeSignal]);
 
   const panelStyle = useViewportPlacement(
     ownsPanel && !asSheet && open,
@@ -480,6 +507,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
           onKeyDown={onNavKeyDown}
           placeholder={searchPlaceholder ?? t('select.search')}
           aria-label={ariaLabel}
+          aria-labelledby={ariaLabel === undefined ? ariaLabelledBy : undefined}
           role="combobox"
           aria-expanded="true"
           aria-controls={listId}
@@ -497,11 +525,12 @@ export function SearchableSelect(props: SearchableSelectProps) {
         role="listbox"
         tabIndex={showFilter ? undefined : -1}
         aria-label={ariaLabel}
+        aria-labelledby={ariaLabel === undefined ? ariaLabelledBy : undefined}
         aria-multiselectable={isMultiple ? true : undefined}
         aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
         onKeyDown={showFilter ? undefined : onNavKeyDown}
         className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 outline-none ${
-          ownsPanel ? '' : 'max-h-[min(340px,55vh)]'
+          isPortaled ? '' : 'max-h-[min(340px,55vh)]'
         }`}
       >
         {rowCount === 0 ? (
@@ -547,6 +576,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
                     data-index={index}
                     role="option"
                     data-option-value={option.value}
+                    {...option.dataAttrs}
                     aria-selected={isSelected}
                     aria-disabled={option.disabled ? true : undefined}
                     disabled={option.disabled}
@@ -653,7 +683,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
   return (
     <div
       ref={rootRef}
-      className="relative"
+      className={rootClassName ?? 'relative'}
       data-searchable-select
       // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape for the open panel, which can hold slot rows outside the filter input
       onKeyDown={(event) => {
@@ -672,6 +702,10 @@ export function SearchableSelect(props: SearchableSelectProps) {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
+        {...triggerData}
         title={title ?? (isMultiple ? multiTooltip : (selected?.title ?? selected?.label))}
         onClick={() => {
           if (open) {
@@ -687,7 +721,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
         }
       >
         {triggerIcon}
-        <span className={`min-w-0 truncate ${isMultiple && multiValues.length === 0 && triggerLabel === undefined ? 'text-ink-faint font-sans' : ''}`}>
+        <span className={`min-w-0 truncate ${isMultiple && multiValues.length === 0 && triggerLabel === undefined ? 'text-ink-faint font-sans' : ''} ${labelClassName ?? ''}`.trim()}>
           {resolvedTriggerText}
         </span>
         {triggerSuffix}
@@ -718,6 +752,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
               <div
                 ref={panelRef}
                 data-select-panel
+                {...panelData}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
                   [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
@@ -742,6 +777,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
               <div
                 ref={panelRef}
                 data-select-panel
+                {...panelData}
                 {...{
                   [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
                   [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
@@ -765,6 +801,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
               <div
                 ref={panelRef}
                 data-select-panel
+                {...panelData}
                 className={panelClassName}
               >
                 {panel}
@@ -811,6 +848,7 @@ function CompactOptionRow({
       data-index={index}
       data-option-density="compact"
       data-option-value={option.value}
+      {...option.dataAttrs}
       role="option"
       aria-selected={selected}
       aria-disabled={option.disabled ? true : undefined}

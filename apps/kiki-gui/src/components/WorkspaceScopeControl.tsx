@@ -12,7 +12,7 @@
 import type { Workspace } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
-import { Icon } from './icons';
+import { SearchableSelect } from './SearchableSelect';
 
 /** At or below this count every workspace gets its own segment. */
 const INLINE_SEGMENT_LIMIT = 4;
@@ -108,22 +108,18 @@ export function WorkspaceScopeControl({
             );
           })
         ) : (
-          <span className={`relative ${SEGMENT} p-0 ${selected !== undefined ? SEGMENT_ON : SEGMENT_OFF}`}>
-            <span className="pointer-events-none absolute left-3"><FolderGlyph active={selected !== undefined} /></span>
-            <select
-              data-scope-picker
-              aria-label={t('scope.switchAria')}
-              value={selected?.id ?? ''}
-              onChange={(event) => { onChange(event.target.value === '' ? undefined : event.target.value); }}
-              className="h-8 min-w-0 max-w-48 cursor-pointer appearance-none truncate rounded-[7px] bg-transparent pr-6 pl-7 text-[13px] text-inherit focus-visible:outline-none"
-            >
-              <option value="">{t('scope.label')}…</option>
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-              ))}
-            </select>
-            <Icon name="chevron" size={12} className="pointer-events-none absolute right-2 rotate-90 text-ink-faint" />
-          </span>
+          <SearchableSelect
+            triggerData={{ 'data-scope-picker': '' }}
+            ariaLabel={t('scope.switchAria')}
+            value={selected?.id ?? ''}
+            onChange={(next) => { onChange(next === '' ? undefined : next); }}
+            triggerIcon={<FolderGlyph active={selected !== undefined} />}
+            options={[
+              { value: '', label: `${t('scope.label')}…` },
+              ...workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
+            ]}
+            buttonClassName={`${SEGMENT} ${selected !== undefined ? SEGMENT_ON : SEGMENT_OFF}`}
+          />
         )}
       </div>
     </div>

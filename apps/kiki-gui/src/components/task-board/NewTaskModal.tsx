@@ -2,6 +2,7 @@ import { memo, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useThreadTitleResolver } from '../../lib/threadTitles';
+import { SearchableSelect } from '../SearchableSelect';
 import { SidePanel } from '../SidePanel';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
@@ -19,7 +20,7 @@ const FIELD_LABEL =
 const TEXT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[12.5px] text-ink focus:border-accent focus:outline-hidden';
+  'mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12.5px] text-ink outline-hidden transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint pointer-coarse:min-h-11';
 const AREA_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 
@@ -122,36 +123,37 @@ export const NewTaskModal = memo(function NewTaskModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className={FIELD_LABEL}>
+              <label htmlFor="new-task-priority" className={FIELD_LABEL}>
                 {t('taskBoard.new.priority')}
               </label>
-              <select
+              <SearchableSelect
+                id="new-task-priority"
+                ariaLabel={t('taskBoard.new.priority')}
                 value={priority}
-                onChange={(e) => setPriority(e.target.value as TaskPriority)}
-                className={SELECT_INPUT}
-              >
-                {(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => (
-                  <option key={value} value={value}>{t(PRIORITY_LABEL_KEYS[value])}</option>
-                ))}
-              </select>
+                onChange={(next) => setPriority(next as TaskPriority)}
+                options={(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => ({
+                  value,
+                  label: t(PRIORITY_LABEL_KEYS[value]),
+                }))}
+                buttonClassName={SELECT_INPUT}
+              />
             </div>
 
             <div>
-              <label className={FIELD_LABEL}>
+              <label htmlFor="new-task-workspace" className={FIELD_LABEL}>
                 {t('taskBoard.new.workspaceTarget')}
               </label>
-              <select
+              <SearchableSelect
+                id="new-task-workspace"
+                ariaLabel={t('taskBoard.new.workspaceTarget')}
                 value={workspaceId}
-                onChange={(e) => setWorkspaceId(e.target.value)}
-                className={SELECT_INPUT}
-              >
-                <option value="">{t('taskBoard.new.currentWorkspace')}</option>
-                {workspaces.map((ws) => (
-                  <option key={ws.id} value={ws.id}>
-                    {ws.title}
-                  </option>
-                ))}
-              </select>
+                onChange={setWorkspaceId}
+                options={[
+                  { value: '', label: t('taskBoard.new.currentWorkspace') },
+                  ...workspaces.map((ws) => ({ value: ws.id, label: ws.title })),
+                ]}
+                buttonClassName={SELECT_INPUT}
+              />
             </div>
           </div>
 
@@ -183,21 +185,24 @@ export const NewTaskModal = memo(function NewTaskModal({
           </div>
 
           <div>
-            <label className={FIELD_LABEL}>
+            <label htmlFor="new-task-session" className={FIELD_LABEL}>
               {t('taskBoard.new.associateSession')}
             </label>
-            <select
+            <SearchableSelect
+              id="new-task-session"
+              ariaLabel={t('taskBoard.new.associateSession')}
               value={associatedSessionId}
-              onChange={(e) => setAssociatedSessionId(e.target.value)}
-              className={SELECT_INPUT}
-            >
-              <option value="">{t('taskBoard.new.noSession')}</option>
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {resolveTitle(s.title)} ({s.id})
-                </option>
-              ))}
-            </select>
+              onChange={setAssociatedSessionId}
+              options={[
+                { value: '', label: t('taskBoard.new.noSession') },
+                ...sessions.map((s) => ({
+                  value: s.id,
+                  label: `${resolveTitle(s.title)} (${s.id})`,
+                  keywords: s.id,
+                })),
+              ]}
+              buttonClassName={SELECT_INPUT}
+            />
           </div>
         </div>
       </form>

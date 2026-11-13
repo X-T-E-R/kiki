@@ -43,6 +43,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { Icon } from './icons';
 import { SidePanel } from './SidePanel';
 import { SearchableSelect } from './SearchableSelect';
+import { FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /** Options for "every N hours"; 1 is the plain hourly case. */
@@ -516,32 +517,28 @@ export function CronTaskEditor({
 
               {draft.form.cadence === 'hourly' ? (
                 <div data-cron-hourly className="flex flex-wrap items-center gap-2">
-                  <select
-                    data-cron-hour-step
-                    aria-label={t('cron.form.repeat')}
-                    value={draft.form.hourStep}
-                    onChange={(event) => { patch({ form: { ...draft.form, hourStep: Number(event.target.value) } }); }}
-                    className={`${INPUT} w-auto`}
-                  >
-                    {HOUR_STEPS.map((step) => (
-                      <option key={step} value={step}>
-                        {step === 1 ? t('cron.form.everyHour') : t('cron.form.everyNHours', { n: step })}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    data-cron-minute
-                    aria-label={t('cron.form.minuteOf', { m: draft.form.minute })}
-                    value={draft.form.minute}
-                    onChange={(event) => { patch({ form: { ...draft.form, minute: Number(event.target.value) } }); }}
-                    className={`${INPUT} w-auto`}
-                  >
-                    {MINUTES.map((minute) => (
-                      <option key={minute} value={minute}>
-                        {minute === 0 ? t('cron.form.minuteOnTheHour') : t('cron.form.minuteOf', { m: minute })}
-                      </option>
-                    ))}
-                  </select>
+                  <SearchableSelect
+                    triggerData={{ 'data-cron-hour-step': '' }}
+                    ariaLabel={t('cron.form.repeat')}
+                    value={String(draft.form.hourStep)}
+                    options={HOUR_STEPS.map((step) => ({
+                      value: String(step),
+                      label: step === 1 ? t('cron.form.everyHour') : t('cron.form.everyNHours', { n: step }),
+                    }))}
+                    onChange={(next) => { patch({ form: { ...draft.form, hourStep: Number(next) } }); }}
+                    buttonClassName={`${FORM_SELECT_TRIGGER} w-auto`}
+                  />
+                  <SearchableSelect
+                    triggerData={{ 'data-cron-minute': '' }}
+                    ariaLabel={t('cron.form.minuteOf', { m: draft.form.minute })}
+                    value={String(draft.form.minute)}
+                    options={MINUTES.map((minute) => ({
+                      value: String(minute),
+                      label: minute === 0 ? t('cron.form.minuteOnTheHour') : t('cron.form.minuteOf', { m: minute }),
+                    }))}
+                    onChange={(next) => { patch({ form: { ...draft.form, minute: Number(next) } }); }}
+                    buttonClassName={`${FORM_SELECT_TRIGGER} w-auto`}
+                  />
                 </div>
               ) : null}
 
@@ -580,17 +577,17 @@ export function CronTaskEditor({
 
               {draft.form.cadence === 'monthly' ? (
                 <div data-cron-monthly className="flex flex-wrap items-center gap-2">
-                  <select
-                    data-cron-day-of-month
-                    aria-label={t('cron.form.dayOfMonth', { day: draft.form.dayOfMonth })}
-                    value={draft.form.dayOfMonth}
-                    onChange={(event) => { patch({ form: { ...draft.form, dayOfMonth: Number(event.target.value) } }); }}
-                    className={`${INPUT} w-auto`}
-                  >
-                    {DAYS.map((day) => (
-                      <option key={day} value={day}>{t('cron.form.dayOfMonth', { day })}</option>
-                    ))}
-                  </select>
+                  <SearchableSelect
+                    triggerData={{ 'data-cron-day-of-month': '' }}
+                    ariaLabel={t('cron.form.dayOfMonth', { day: draft.form.dayOfMonth })}
+                    value={String(draft.form.dayOfMonth)}
+                    options={DAYS.map((day) => ({
+                      value: String(day),
+                      label: t('cron.form.dayOfMonth', { day }),
+                    }))}
+                    onChange={(next) => { patch({ form: { ...draft.form, dayOfMonth: Number(next) } }); }}
+                    buttonClassName={`${FORM_SELECT_TRIGGER} w-auto`}
+                  />
                 </div>
               ) : null}
 

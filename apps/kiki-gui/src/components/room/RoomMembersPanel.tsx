@@ -22,6 +22,8 @@ import { Toggle } from '../controls';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
+import { SearchableSelect } from '../SearchableSelect';
+import { FORM_SELECT_TRIGGER } from '../settings/SettingsPrimitives';
 import { SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { AddThreadMember } from './AddThreadMember';
 import { ROOM_MAX_MEMBERS, threadMemberFace, threadMemberName, type ThreadRoomMember } from './threadRooms';
@@ -181,12 +183,18 @@ export function RoomMembersPanel({
             {addTab === 'personas' ? (
               candidates.length > 0 ? (
                 <div className="flex items-center gap-2" role="tabpanel">
-                  <select value={adding} aria-label={t('room.addTab.personas')} disabled={rosterLocked}
-                    onChange={(event) => { setAdding(event.target.value); }}
-                    className={`${SMALL_INPUT} min-h-8 min-w-0 flex-1 text-[12.5px]`}>
-                    <option value="">{t('room.addMember')}</option>
-                    {candidates.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
-                  </select>
+                  <SearchableSelect
+                    rootClassName="relative min-w-0 flex-1"
+                    value={adding}
+                    ariaLabel={t('room.addTab.personas')}
+                    disabled={rosterLocked}
+                    options={[
+                      { value: '', label: t('room.addMember') },
+                      ...candidates.map((persona) => ({ value: persona.id, label: persona.name })),
+                    ]}
+                    onChange={setAdding}
+                    buttonClassName={`${FORM_SELECT_TRIGGER} min-h-8 text-[12.5px]`}
+                  />
                   <button type="button" className={SECONDARY_BUTTON} disabled={rosterLocked || adding === ''} data-room-add-member
                     onClick={() => {
                       onUpdate({ members: [...membersInput(room.members), { kind: 'persona', personaId: adding, muted: false }] });

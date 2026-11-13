@@ -51,7 +51,7 @@ import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../settings/SecretField';
-import { SettingsDraftFooter } from '../settings/SettingsPrimitives';
+import { SettingsDraftFooter, SettingsSelect } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
 
 type Draft = Record<string, string | boolean | SecretDraft>;
@@ -364,19 +364,24 @@ function SettingField({
   // types "2K" into a field the package declared as ["768P","2K"] has made a
   // typo the host would reject three layers down.
   if (property.enum !== undefined && property.enum.length > 0) {
+    const currentVal = (value as string) ?? '';
     return (
       <div data-media-setting={fieldKey} className="max-w-md space-y-1">
         <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
-        <select
+        <SettingsSelect
           id={fieldId}
-          className={`${INPUT} ${issue !== undefined ? 'border-danger' : ''}`}
-          value={(value as string) ?? ''}
-          aria-invalid={issue !== undefined}
-          onChange={(event) => { onChange(event.target.value); }}
-        >
-          <option value="">{t('cap.media.setting.notSet')}</option>
-          {property.enum.map((option) => <option key={option} value={option}>{option}</option>)}
-        </select>
+          variant="form"
+          ariaLabel={label}
+          ariaInvalid={issue !== undefined}
+          className={issue !== undefined ? 'border-danger' : undefined}
+          value={currentVal}
+          onChange={(next) => { onChange(next); }}
+          choices={[
+            { value: '', label: t('cap.media.setting.notSet') },
+            ...(currentVal !== '' && !property.enum.includes(currentVal) ? [{ value: currentVal, label: currentVal }] : []),
+            ...property.enum.map((option) => ({ value: option, label: option })),
+          ]}
+        />
         {issue !== undefined ? <p role="alert" className="text-[12px] text-danger">{issue}</p> : null}
         {help}
       </div>
@@ -460,22 +465,24 @@ function ConnectionSettingField({
           />
         </>
       ) : (
-        <select
+        <SettingsSelect
           id={fieldId}
-          className={`${INPUT} ${issue !== undefined ? 'border-danger' : ''}`}
+          variant="form"
+          ariaLabel={label}
+          ariaInvalid={issue !== undefined}
+          className={issue !== undefined ? 'border-danger' : undefined}
+          triggerData={{ 'data-media-connection-select': '' }}
           value={value}
-          aria-invalid={issue !== undefined}
-          data-media-connection-select
-          onChange={(event) => { onChange(event.target.value); }}
-        >
-          <option value="">{t('cap.media.connection.selfManaged')}</option>
-          {connections.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.id} · {t(`st.connections.kind.${item.type === 'account' ? 'account' : 'api'}` as Parameters<typeof t>[0])}
-              {item.has_api_key || item.oauth?.signed_in === true ? ` · ${tp('cap.media.connection.hasCredential', 1)}` : ''}
-            </option>
-          ))}
-        </select>
+          onChange={onChange}
+          choices={[
+            { value: '', label: t('cap.media.connection.selfManaged') },
+            ...(value !== '' && !connections.some((item) => item.id === value) ? [{ value, label: value }] : []),
+            ...connections.map((item) => ({
+              value: item.id,
+              label: `${item.id} · ${t(`st.connections.kind.${item.type === 'account' ? 'account' : 'api'}` as Parameters<typeof t>[0])}${item.has_api_key || item.oauth?.signed_in === true ? ` · ${tp('cap.media.connection.hasCredential', 1)}` : ''}`,
+            })),
+          ]}
+        />
       )}
       {issue !== undefined ? <p role="alert" className="text-[12px] text-danger">{issue}</p> : null}
       {selected ? (

@@ -16,6 +16,7 @@ import type { UsageExportDestination, UsageExportItem, UsageExportPreview, Usage
 import { translate } from '@kiki/session-core/i18n';
 
 import { I18nProvider } from '../../../i18n';
+import { pickValue, selectText } from '../../settings/testControls';
 import { UsageExportPanel } from './UsageExportPanel';
 
 const usageExport = {
@@ -393,7 +394,7 @@ describe('VibeCafe connection', () => {
     expect(q('[data-usage-export-form-endpoint]')).toBeNull();
     expect(q('[data-usage-export-form-secret]')).toBeNull();
     expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe('true');
-    expect(q<HTMLSelectElement>('[data-usage-export-form-schedule]')!.value).toBe('120');
+    expect(selectText(q('[data-usage-export-form-schedule]')!)).toBe(translate('en', 'usage.export.schedule.120'));
     if (!autoUpload) await click(q('[data-usage-export-form-auto-upload]'));
     expect(q('[data-usage-export-vibe-login]')!.textContent).toBe(translate('en', autoUpload ? 'usage.export.vibeAuth.authorize' : 'usage.export.vibeAuth.login'));
     await click(q('[data-usage-export-vibe-login]'));
@@ -564,7 +565,7 @@ describe('automatic upload on explicit save', () => {
     await render(); await click(row(ID_A)); await click(q('[data-usage-export-edit]'));
     expect(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!.value).toBe(source.target.kind === 'vibe' ? source.target.endpoint : '');
     expect(q('[data-usage-export-vibe-login]')).toBeNull();
-    await act(async () => { const select = q<HTMLSelectElement>('[data-usage-export-form-schedule]')!; select.value = '60'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await pickValue(q('[data-usage-export-form-schedule]')!, 'data-option-value', '60');
     await click(q('[data-usage-export-form-save]'));
     expect(usageExport.saveDraft.mock.calls[0]![0]).toMatchObject({ auto_upload: true, draft: { target: source.target, scope: source.scope, schedule_minutes: 60 } });
   });
@@ -586,7 +587,7 @@ describe('automatic upload on explicit save', () => {
   it.each([true, false])('saves a new webhook with auto_upload=%s in one action, without mandatory preview', async (autoUpload) => {
     await render(); await click(q('[data-usage-export-add]'));
     expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe('true');
-    expect(q<HTMLSelectElement>('[data-usage-export-form-schedule]')!.value).toBe('120');
+    expect(selectText(q('[data-usage-export-form-schedule]')!)).toBe(translate('en', 'usage.export.schedule.120'));
     await click(q('[data-axis="export-kind"] [data-axis-value="webhook"]'));
     await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'Example receiver');
     await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://example.test/usage');
@@ -605,7 +606,7 @@ describe('automatic upload on explicit save', () => {
     expect(detail(ID_A).textContent).toContain('Every 2 hours');
     await click(q('[data-usage-export-edit]'));
     expect(q('[data-usage-export-form-auto-upload]')!.getAttribute('aria-checked')).toBe(String(enabled));
-    await act(async () => { const select = q<HTMLSelectElement>('[data-usage-export-form-schedule]')!; select.value = '60'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await pickValue(q('[data-usage-export-form-schedule]')!, 'data-option-value', '60');
     expect(q('[data-usage-export-form-save]')!.textContent).toBe('Save');
     await click(q('[data-usage-export-form-save]'));
     expect(usageExport.saveDraft.mock.calls.at(-1)![0]).toMatchObject({ auto_upload: enabled, draft: { id: ID_A, schedule_minutes: 60 } });

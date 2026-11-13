@@ -17,6 +17,8 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
 import { sortPersonas, usePersonaList } from '../persona/usePersonas';
+import { SearchableSelect } from '../SearchableSelect';
+import { FORM_SELECT_TRIGGER } from '../settings/SettingsPrimitives';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 const MIN_MEMBERS = 2;
@@ -135,24 +137,34 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
         </fieldset>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="text-[12.5px] font-medium text-ink-soft">{t('room.host')}</span>
-            <select value={effectiveHost ?? ''} disabled={members.length === 0}
-              onChange={(event) => { setHost(event.target.value); }}
-              className={`${INPUT} mt-1.5 text-[13px]`}>
-              {members.map((id) => (
-                <option key={id} value={id}>{personas.find((item) => item.id === id)?.name ?? id}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-[12.5px] font-medium text-ink-soft">{t('room.workspace')}</span>
-            <select value={workspaceRoot ?? ''} disabled={workspaces.length === 0}
-              onChange={(event) => { setWorkspace(event.target.value); }}
-              className={`${INPUT} mt-1.5 text-[13px]`}>
-              {workspaces.map((item) => <option key={item.id} value={item.root}>{item.name}</option>)}
-            </select>
-          </label>
+          <div className="min-w-0">
+            <label htmlFor="create-room-host" className="block text-[12.5px] font-medium text-ink-soft">{t('room.host')}</label>
+            <div className="mt-1.5">
+              <SearchableSelect
+                id="create-room-host"
+                ariaLabel={t('room.host')}
+                value={effectiveHost ?? ''}
+                disabled={members.length === 0}
+                options={members.map((id) => ({ value: id, label: personas.find((item) => item.id === id)?.name ?? id }))}
+                onChange={setHost}
+                buttonClassName={FORM_SELECT_TRIGGER}
+              />
+            </div>
+          </div>
+          <div className="min-w-0">
+            <label htmlFor="create-room-workspace" className="block text-[12.5px] font-medium text-ink-soft">{t('room.workspace')}</label>
+            <div className="mt-1.5">
+              <SearchableSelect
+                id="create-room-workspace"
+                ariaLabel={t('room.workspace')}
+                value={workspaceRoot ?? ''}
+                disabled={workspaces.length === 0}
+                options={workspaces.map((item) => ({ value: item.root, label: item.name, hint: item.root }))}
+                onChange={setWorkspace}
+                buttonClassName={FORM_SELECT_TRIGGER}
+              />
+            </div>
+          </div>
         </div>
 
         {create.isError ? (

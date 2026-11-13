@@ -17,6 +17,7 @@ import { TaskDetailModal } from './TaskDetailModal';
 import { NewTaskModal } from './NewTaskModal';
 import { WorkspaceScopeControl } from '../WorkspaceScopeControl';
 import { Icon } from '../icons';
+import { SearchableSelect } from '../SearchableSelect';
 import { useThreadTitleResolver } from '../../lib/threadTitles';
 
 const ISSUE_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
@@ -309,20 +310,22 @@ export const TaskBoard = memo(function TaskBoard({
               onChange={(e) => setSearchQuery(e.target.value)}
               className="h-8 w-56 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden"
             />
-            <select
-              data-task-board-session-filter
-              aria-label={t('taskBoard.sessionFilter.all')}
+            <SearchableSelect
+              triggerData={{ 'data-task-board-session-filter': '' }}
+              ariaLabel={t('taskBoard.sessionFilter.all')}
               value={selectedSessionFilter}
-              onChange={(e) => setSelectedSessionFilter(e.target.value)}
-              className="h-8 w-52 max-w-full min-w-0 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink focus:border-accent focus:outline-hidden"
-            >
-              <option value="all">{t('taskBoard.sessionFilter.all')}</option>
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {sessionLabels[s.id]}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedSessionFilter}
+              align="end"
+              options={[
+                { value: 'all', label: t('taskBoard.sessionFilter.all') },
+                ...sessions.map((s) => ({
+                  value: s.id,
+                  label: sessionLabels[s.id] ?? s.id,
+                  keywords: s.id,
+                })),
+              ]}
+              buttonClassName="flex h-8 w-52 max-w-full min-w-0 items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-hidden transition-colors hover:border-hairline-strong focus:border-accent pointer-coarse:min-h-11"
+            />
           </div>
         </div>
       </header>

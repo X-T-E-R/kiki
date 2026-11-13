@@ -20,6 +20,7 @@ import { PERMISSION_MODES } from '../lib/permissionModes';
 import { composerInputOf as registeredComposerInputOf } from '../lib/composerInput';
 import { Composer } from './Composer';
 import { composerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
+import { LazyMediaLightbox } from './preview/PreviewLoadBoundary';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
@@ -150,9 +151,10 @@ const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
 
-beforeAll(() => {
+beforeAll(async () => {
   vi.stubGlobal('navigator', { language: 'en-US' });
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+  await LazyMediaLightbox.preload();
 });
 
 beforeEach(() => {
@@ -920,6 +922,7 @@ describe('Composer execution control', () => {
       model: 'fixture/kiki-pro',
     });
     const trigger = await waitForTrigger(container);
+    expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
     expect(label?.textContent).toContain('fixture/kiki-pro');
     expect(label?.className).toContain('@max-[16rem]/toolbar:sr-only');
@@ -2129,6 +2132,7 @@ describe('Composer model chip', () => {
     });
     for (let index = 0; index < 5; index += 1) await settle();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     expect(trigger.textContent).toContain('Kiki Pro');
     expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
     // The gauge draws the depth: high is the top of two levels, all bars lit.

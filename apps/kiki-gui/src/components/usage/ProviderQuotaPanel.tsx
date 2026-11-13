@@ -9,6 +9,7 @@ import { DisclosureChevron, Icon } from '../icons';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { OAuthDeviceCard } from '../OAuthDeviceCard';
+import { SearchableSelect } from '../SearchableSelect';
 import { useOAuthFlow } from '../useOAuthFlow';
 import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../settings/ExternalEnginesSection';
 import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '../settings/profileEditor/engines';
@@ -898,26 +899,26 @@ function EngineQuotaRow({
             </span>
           ) : null}
           {showSourceSelect ? (
-            <select
-              data-engine-quota-source={engineId}
-              aria-label={t(q('usage.quota.engines.sourceAria'), { engine: source.label })}
+            <SearchableSelect
+              triggerData={{ 'data-engine-quota-source': engineId }}
+              ariaLabel={t(q('usage.quota.engines.sourceAria'), { engine: source.label })}
               value={selectedSourceId}
               disabled={savingSource}
-              onChange={(event) => {
+              align="end"
+              onChange={(next) => {
                 setLocalFeedback(null);
                 onClearFeedback();
-                void onSelectQuotaSource(event.target.value);
+                void onSelectQuotaSource(next);
               }}
-              className={`${SMALL_INPUT} min-w-[132px] max-w-[220px] py-1 pr-6 pl-2.5 text-[11.5px]`}
-            >
-              <option value="">{t(q('usage.quota.engines.sourceNative'))}</option>
-              {selectedSourceId !== '' && !matchingPluginSources.some((entry) => entry.id === selectedSourceId) ? (
-                <option value={selectedSourceId}>{selectedPluginSnapshot?.label ?? selectedSourceId}</option>
-              ) : null}
-              {matchingPluginSources.map((entry) => (
-                <option key={entry.id} value={entry.id}>{entry.label}</option>
-              ))}
-            </select>
+              options={[
+                { value: '', label: t(q('usage.quota.engines.sourceNative')) },
+                ...(selectedSourceId !== '' && !matchingPluginSources.some((entry) => entry.id === selectedSourceId)
+                  ? [{ value: selectedSourceId, label: selectedPluginSnapshot?.label ?? selectedSourceId }]
+                  : []),
+                ...matchingPluginSources.map((entry) => ({ value: entry.id, label: entry.label })),
+              ]}
+              buttonClassName={`${SMALL_INPUT} flex min-w-[132px] max-w-[220px] items-center justify-between gap-1.5 py-1 pr-2 pl-2.5 text-[11.5px] pointer-coarse:min-h-11`}
+            />
           ) : null}
           {canRefreshPlugin ? (
             <button

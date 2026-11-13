@@ -6,6 +6,7 @@ import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Markdown } from '../Markdown';
 import { ThreadTitle } from '../ThreadTitle';
 import { RelativeTime } from '../RelativeTime';
+import { SearchableSelect } from '../SearchableSelect';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { segmentClass } from '../WorkspaceScopeControl';
 import { BoardAssociatedTodos } from './BoardAssociatedTodos';
@@ -34,7 +35,7 @@ const FIELD_LABEL = 'block text-[12px] font-medium text-ink-soft';
 const TEXT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
-  'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink focus:border-accent focus:outline-hidden';
+  'mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-hidden transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint pointer-coarse:min-h-11';
 const AREA_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] leading-relaxed text-ink focus:border-accent focus:outline-hidden';
 const SECTION_TITLE = 'text-[12px] font-medium text-ink-soft';
@@ -226,30 +227,34 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   <label htmlFor="task-detail-status" className={FIELD_LABEL}>
                     {t('taskBoard.detail.field.status')}
                   </label>
-                  <select
+                  <SearchableSelect
                     id="task-detail-status"
+                    ariaLabel={t('taskBoard.detail.field.status')}
                     value={status}
-                    onChange={(e) => setStatus(e.target.value as BoardTask['status'])}
-                    className={SELECT_INPUT}
-                  >
-                    {statusOptions.map((option) => <option key={option.status} value={option.status}>{statusLabel(option)}</option>)}
-                  </select>
+                    onChange={(next) => setStatus(next as BoardTask['status'])}
+                    options={statusOptions.map((option) => ({
+                      value: option.status,
+                      label: statusLabel(option),
+                    }))}
+                    buttonClassName={SELECT_INPUT}
+                  />
                 </div>
 
                 <div>
                   <label htmlFor="task-detail-priority" className={FIELD_LABEL}>
                     {t('taskBoard.detail.field.priority')}
                   </label>
-                  <select
+                  <SearchableSelect
                     id="task-detail-priority"
+                    ariaLabel={t('taskBoard.detail.field.priority')}
                     value={priority}
-                    onChange={(e) => setPriority(e.target.value as TaskPriority)}
-                    className={SELECT_INPUT}
-                  >
-                    {(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => (
-                      <option key={value} value={value}>{t(PRIORITY_LABEL_KEYS[value])}</option>
-                    ))}
-                  </select>
+                    onChange={(next) => setPriority(next as TaskPriority)}
+                    options={(Object.keys(PRIORITY_LABEL_KEYS) as TaskPriority[]).map((value) => ({
+                      value,
+                      label: t(PRIORITY_LABEL_KEYS[value]),
+                    }))}
+                    buttonClassName={SELECT_INPUT}
+                  />
                 </div>
               </div>
 

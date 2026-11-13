@@ -2,10 +2,15 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../../i18n';
-import { EffortPicker } from './fields';
+import { AliasChips, EffortPicker, ModelPicker } from './fields';
+
+vi.mock('../../../state/connection', () => ({
+  useConnection: () => ({ client: {} }),
+}));
 
 const mounted: Root[] = [];
 beforeAll(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); });
@@ -44,5 +49,33 @@ describe('EffortPicker display order', () => {
     const { container } = await render('Vendor-Pin', ['high', 'Vendor-ULTRA', 'low']);
     expect(values(container)).toEqual(['', 'low', 'Vendor-ULTRA', 'high', 'Vendor-Pin']);
     expect(container.querySelector('[role="option"][data-option-value="Vendor-Pin"]')?.getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('ProfileEditor shared ModelPicker fields', () => {
+  it('mounts the shared ModelPicker for both single model alias and menu AliasChips', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push(root);
+    const onModel = vi.fn();
+    const onMenu = vi.fn();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const models = [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 128000 }];
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <ModelPicker id="profile-model" value="fixture/kiki-pro" models={models} allowInherit onChange={onModel} />
+            <AliasChips id="profile-menu" values={[]} models={models} addLabel="Add model" onChange={onMenu} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    const singleTrigger = container.querySelector<HTMLButtonElement>('#profile-model')!;
+    const addTrigger = container.querySelector<HTMLButtonElement>('#profile-menu-add')!;
+    expect(singleTrigger.hasAttribute('data-model-picker')).toBe(true);
+    expect(singleTrigger.textContent).toContain('fixture/kiki-pro');
+    expect(addTrigger.hasAttribute('data-model-picker')).toBe(true);
   });
 });

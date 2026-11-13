@@ -16,6 +16,7 @@ import { FeedbackLine, Toggle, type Feedback } from '../../controls';
 import { SidePanel } from '../../SidePanel';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
+import { SettingsSelect } from '../SettingsPrimitives';
 import { connectionFailureText } from './parts';
 
 export function AddConnectionBySshDialog({ client, profiles, defaultHome, initialProfileId, onClose, onAdded }: {
@@ -77,11 +78,10 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
       <form id={formId} className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit(); }} data-remote-ssh-form>
         <SettingField label={t('st.ssh.remote.profileField')} htmlFor="remote-ssh-profile" layout="stack"
           help={t('st.ssh.remote.profileHint')}>
-          <select id="remote-ssh-profile" data-remote-ssh-profile
-            className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 text-[13px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-            value={profileId} onChange={(event) => { setProfileId(event.target.value); }}>
-            {profiles.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-          </select>
+          <SettingsSelect id="remote-ssh-profile" variant="row" className="min-h-9 w-full py-2"
+            ariaLabel={t('st.ssh.remote.profileField')} triggerData={{ 'data-remote-ssh-profile': '' }}
+            value={profileId} onChange={setProfileId}
+            choices={profiles.map((entry) => ({ value: entry.id, label: entry.name }))} />
         </SettingField>
 
         {profile !== undefined ? (

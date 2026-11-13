@@ -14,6 +14,7 @@ import {
   type SearchableSelectOption,
   type SearchableSingleSelectProps,
 } from './SearchableSelect';
+import { SettingsSelect } from './settings/SettingsPrimitives';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -595,5 +596,68 @@ describe('SearchableSelect panel side', () => {
     const style = await placeAt(top, height);
     expect(openedAbove(style)).toBe(false);
     expect(Number.parseFloat(style.maxHeight)).toBeLessThanOrEqual(roomBelow(top, height));
+  });
+});
+
+describe('SettingsSelect shared SearchableSelect wrapper', () => {
+  it('omits search below 8 choices, shows search at >= 8 choices, and opens a bottom sheet on phones', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <SettingsSelect id="short-settings-select" ariaLabel="Short" value="a" choices={SHORT_OPTIONS} onChange={onChange} />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#short-settings-select')!.click(); });
+    expect(openPanel().querySelector('input[role="combobox"]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#short-settings-select')!.click(); });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <SettingsSelect id="long-settings-select" ariaLabel="Long" value="a" choices={EIGHT_OPTIONS} onChange={onChange} />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('#long-settings-select')!.click(); });
+    expect(openPanel().querySelector('input[role="combobox"]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#long-settings-select')!.click(); });
+
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === PHONE_QUERY || query === '(pointer: coarse)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      const phoneContainer = document.createElement('div');
+      document.body.append(phoneContainer);
+      containers.push(phoneContainer);
+      const phoneRoot = createRoot(phoneContainer);
+      roots.push(phoneRoot);
+      await act(async () => {
+        phoneRoot.render(
+          <I18nProvider>
+            <SettingsSelect id="phone-settings-select" ariaLabel="Phone" value="a" choices={SHORT_OPTIONS} onChange={onChange} />
+          </I18nProvider>,
+        );
+      });
+      await act(async () => { phoneContainer.querySelector<HTMLButtonElement>('#phone-settings-select')!.click(); });
+      expect(document.querySelector('[data-select-sheet]')).not.toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
   });
 });

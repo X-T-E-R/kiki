@@ -35,8 +35,9 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectOptions';
+import { ModelPicker } from '../ModelPicker';
 import { hostLabel } from '../providerPresets';
-import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
+import type { SearchableSelectOption } from '../SearchableSelect';
 import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { FieldIssue, SettingsDraftFooter, TEXT_BUTTON } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
@@ -122,7 +123,7 @@ export function DecisionSourcePicker({ id, consumer, value, onChange, disabled, 
   }, [providers, models, consumer, t, groupLabel, value, modelsQuery.isPending]);
   const chatLabel = (modelId: string) => models.find((item) => item.id === modelId)?.display_name;
   return (
-    <SearchableSelect id={id} value={decisionSourceValue(value)} options={options} ariaLabel={ariaLabel}
+    <ModelPicker id={id} value={decisionSourceValue(value)} options={options} allowCustomValue={false} ariaLabel={ariaLabel}
       searchPlaceholder={t('st.decision.picker.search')} emptyText={t('st.decision.picker.none')}
       align="end" placement="auto" disabled={disabled} buttonClassName={PICKER}
       triggerLabel={value === undefined ? undefined

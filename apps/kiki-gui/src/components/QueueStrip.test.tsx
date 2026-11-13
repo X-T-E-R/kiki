@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { I18nProvider } from '../i18n';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 import { QueueHeaderSummary, QueueStrip, type QueueRuntimeControls } from './QueueStrip';
+import { pickValue, selectText } from './settings/testControls';
 
 const readSessionMediaPreviewBytes = vi.hoisted(() => vi.fn(async () => ({
   bytes: new Uint8Array([137, 80, 78, 71]),
@@ -22,6 +23,7 @@ vi.mock('../state/connection', () => ({
 }));
 
 const containers: HTMLDivElement[] = [];
+const roots: Root[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -31,7 +33,8 @@ beforeAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -54,6 +57,7 @@ async function renderStrip(
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   const api: MediaPreviewApi | undefined = preview === undefined ? undefined : {
     cwd: 'C:/work',
     sessionId: 'session-1',
@@ -115,14 +119,8 @@ async function click(element: Element): Promise<void> {
   });
 }
 
-/** Controlled-select change: the native setter bypasses React's value tracker. */
-async function changeSelect(select: HTMLSelectElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-  if (setter === undefined) throw new Error('no native select value setter');
-  await act(async () => {
-    setter.call(select, value);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+async function changeSelect(select: HTMLElement, value: string): Promise<void> {
+  await pickValue(select, 'data-option-value', value);
 }
 
 async function keydown(element: Element, key: string): Promise<void> {
@@ -367,7 +365,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     // held and it carries the same controls as the message beside it.
     expect(row.getAttribute('data-queue-held')).toBeNull();
     expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
-    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(row.querySelector('[data-timing-picker]')).not.toBeNull();
     const sendNow = row.querySelector<HTMLButtonElement>('button[aria-label="Send now"]')!;
     expect(sendNow.disabled).toBe(false);
     await click(sendNow);
@@ -383,7 +381,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     const row = rows(container)[0]!;
     expect(row.getAttribute('data-queue-held')).toBeNull();
     expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
-    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(row.querySelector('[data-timing-picker]')).not.toBeNull();
   });
 
   it.each(['idle', 'steer'] as const)('keeps a %s job readable and removable but out of the send order', async (mode) => {
@@ -403,7 +401,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     // a dead Send now beside a live one reads as a broken row, and a note
     // saying the row is read-only costs the preview the width it needs.
     expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
-    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('[data-timing-picker]')).toBeNull();
     expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
     expect(row.querySelector('[data-queue-read-only]')).toBeNull();
     // Remove stays: the record is real work, and withdrawing it is a real
@@ -429,7 +427,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     expect(row.getAttribute('data-queue-held')).toBe('idle');
     expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
     expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
-    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('[data-timing-picker]')).toBeNull();
     expect(row.querySelector('button[aria-label="Remove"]')).not.toBeNull();
   });
 
@@ -489,8 +487,8 @@ describe('QueueStrip scheduled delivery modes', () => {
     const [held, first, second] = rows(container);
     expect(first!.getAttribute('data-queue-held')).toBeNull();
     expect(second!.getAttribute('data-queue-held')).toBeNull();
-    expect(first!.querySelector('select[data-timing-picker]')).not.toBeNull();
-    expect(second!.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(first!.querySelector('[data-timing-picker]')).not.toBeNull();
+    expect(second!.querySelector('[data-timing-picker]')).not.toBeNull();
     expect(held!.getAttribute('data-queue-held')).toBe('idle');
   });
 
@@ -499,6 +497,7 @@ describe('QueueStrip scheduled delivery modes', () => {
     document.body.append(container);
     containers.push(container);
     const root = createRoot(container);
+    roots.push(root);
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -789,17 +788,18 @@ describe('QueueStrip timing picker', () => {
       ],
       onChangeTiming: () => {},
     });
-    const first = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
-    expect(first.tagName).toBe('SELECT');
-    expect(first.value).toBe('subagents_done');
-    expect(first.querySelector('[data-timing="subagents_done"]')?.textContent).toBe('after subagents');
+    const first = container.querySelector<HTMLButtonElement>('[data-timing-picker="p1"]')!;
+    expect(first.getAttribute('aria-haspopup')).toBe('listbox');
+    expect(selectText(first)).toBe('after subagents');
+    await click(first);
+    expect(document.querySelector('[data-select-panel] [data-timing="subagents_done"]')?.textContent).toContain('after subagents');
+    await click(first);
     // The dropdown lives in the hover/focus-revealed action set like the
     // edit / send-now / remove buttons.
     expect(first.closest('.dock-reveal[data-queue-row-actions]')).not.toBeNull();
     // Older servers omit the field; the display falls back to agent_idle.
-    const second = container.querySelector<HTMLSelectElement>('[data-timing-picker="p2"]')!;
-    expect(second.value).toBe('agent_idle');
-    expect(second.querySelector('[data-timing="agent_idle"]')?.textContent).toBe('after this turn');
+    const second = container.querySelector<HTMLButtonElement>('[data-timing-picker="p2"]')!;
+    expect(selectText(second)).toBe('after this turn');
   });
 
   it('calls onChangeTiming with the picked timing and ignores the current one', async () => {
@@ -808,7 +808,7 @@ describe('QueueStrip timing picker', () => {
       items: [{ promptId: 'p1', text: 'one', appendTiming: 'agent_idle' }],
       onChangeTiming,
     });
-    const picker = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
+    const picker = container.querySelector<HTMLButtonElement>('[data-timing-picker="p1"]')!;
     await changeSelect(picker, 'tasks_done');
     expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
     await changeSelect(picker, 'agent_idle');
@@ -827,7 +827,7 @@ describe('QueueStrip timing picker', () => {
       items: [{ promptId: 'p1', text: 'one' }],
       onChangeTiming,
     });
-    const picker = container.querySelector<HTMLSelectElement>('[data-timing-picker="p1"]')!;
+    const picker = container.querySelector<HTMLButtonElement>('[data-timing-picker="p1"]')!;
     await changeSelect(picker, 'tasks_done');
     expect(onChangeTiming).toHaveBeenCalledExactlyOnceWith('p1', 'tasks_done');
     expect(picker.disabled).toBe(true);

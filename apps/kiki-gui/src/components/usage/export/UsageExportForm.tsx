@@ -25,6 +25,7 @@ import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../../controls';
 import { useDirtyGuard, useDirtyReporter } from '../../dirtyGuard';
 import { Icon } from '../../icons';
+import { SearchableSelect } from '../../SearchableSelect';
 import { SidePanel } from '../../SidePanel';
 import { INPUT, INPUT_BOX, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { AxisGroup } from '../usageShared';
@@ -44,7 +45,7 @@ import {
 const FIELD_LABEL = 'block text-[12px] text-ink-soft';
 const ROW_WRAP = 'flex flex-wrap items-end gap-x-3 gap-y-2';
 const HINT = 'text-[11.5px] leading-relaxed text-ink-faint';
-const SELECT = 'h-8 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-selected-ink';
+const SELECT = 'flex h-8 min-w-36 items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-2.5 text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink pointer-coarse:min-h-11';
 const NUM_INPUT = `${INPUT_BOX} w-24 text-right font-mono tabular-nums`;
 
 const ADD = 'usage.export.form.addTitle';
@@ -530,19 +531,22 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
             <p className={`${HINT} max-w-[76ch]`}>{t('usage.export.form.endpointHint')}</p>
             {state.kind === 'webhook' ? (
               <div className={ROW_WRAP}>
-                <label className="block space-y-1">
-                  <span className={FIELD_LABEL}>{t('usage.export.form.auth')}</span>
-                  <select
-                    data-usage-export-form-auth
+                <div className="block space-y-1">
+                  <label htmlFor="usage-export-form-auth" className={FIELD_LABEL}>{t('usage.export.form.auth')}</label>
+                  <SearchableSelect
+                    id="usage-export-form-auth"
+                    triggerData={{ 'data-usage-export-form-auth': '' }}
+                    ariaLabel={t('usage.export.form.auth')}
                     value={state.authentication}
-                    onChange={(event) => { patch({ authentication: event.target.value as FormState['authentication'] }); }}
-                    className={SELECT}
-                  >
-                    <option value="none">{t('usage.export.form.auth.none')}</option>
-                    <option value="bearer">{t('usage.export.form.auth.bearer')}</option>
-                    <option value="hmac">{t('usage.export.form.auth.hmac')}</option>
-                  </select>
-                </label>
+                    onChange={(next) => { patch({ authentication: next as FormState['authentication'] }); }}
+                    options={[
+                      { value: 'none', label: t('usage.export.form.auth.none') },
+                      { value: 'bearer', label: t('usage.export.form.auth.bearer') },
+                      { value: 'hmac', label: t('usage.export.form.auth.hmac') },
+                    ]}
+                    buttonClassName={SELECT}
+                  />
+                </div>
                 <div className="pb-1">
                   <Toggle label={t('usage.export.form.gzip')} checked={state.gzip} onChange={(gzip) => { patch({ gzip }); }} />
                 </div>
@@ -580,18 +584,21 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
             </label>
             <p className={HINT}>{t(entry === undefined ? 'usage.export.form.secretNever' : 'usage.export.form.secretKeep')}</p>
             <div className={ROW_WRAP}>
-              <label className="block space-y-1">
-                <span className={FIELD_LABEL}>{t('usage.export.form.storage')}</span>
-                <select
-                  data-usage-export-form-storage
+              <div className="block space-y-1">
+                <label htmlFor="usage-export-form-storage" className={FIELD_LABEL}>{t('usage.export.form.storage')}</label>
+                <SearchableSelect
+                  id="usage-export-form-storage"
+                  triggerData={{ 'data-usage-export-form-storage': '' }}
+                  ariaLabel={t('usage.export.form.storage')}
                   value={state.storage}
-                  onChange={(event) => { patch({ storage: event.target.value as FormState['storage'] }); }}
-                  className={SELECT}
-                >
-                  <option value="keyring">{t('usage.export.form.storage.keyring')}</option>
-                  <option value="private-file">{t('usage.export.form.storage.file')}</option>
-                </select>
-              </label>
+                  onChange={(next) => { patch({ storage: next as FormState['storage'] }); }}
+                  options={[
+                    { value: 'keyring', label: t('usage.export.form.storage.keyring') },
+                    { value: 'private-file', label: t('usage.export.form.storage.file') },
+                  ]}
+                  buttonClassName={SELECT}
+                />
+              </div>
             </div>
             {state.storage === 'private-file' ? (
               <Toggle
@@ -622,13 +629,20 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
                     <span className={FIELD_LABEL}>{t('usage.export.form.privatePort')}</span>
                     <input inputMode="numeric" value={state.privatePort} aria-invalid={invalid === 'usage.export.form.invalidPrivatePort'} onChange={(event) => { patch({ privatePort: event.target.value }); }} className={NUM_INPUT} />
                   </label>
-                  <label className="block space-y-1">
-                    <span className={FIELD_LABEL}>{t('usage.export.form.privateProtocol')}</span>
-                    <select value={state.privateProtocol} onChange={(event) => { patch({ privateProtocol: event.target.value as 'http:' | 'https:' }); }} className={SELECT}>
-                      <option value="https:">https:</option>
-                      <option value="http:">http:</option>
-                    </select>
-                  </label>
+                  <div className="block space-y-1">
+                    <label htmlFor="usage-export-form-private-protocol" className={FIELD_LABEL}>{t('usage.export.form.privateProtocol')}</label>
+                    <SearchableSelect
+                      id="usage-export-form-private-protocol"
+                      ariaLabel={t('usage.export.form.privateProtocol')}
+                      value={state.privateProtocol}
+                      onChange={(next) => { patch({ privateProtocol: next as 'http:' | 'https:' }); }}
+                      options={[
+                        { value: 'https:', label: 'https:' },
+                        { value: 'http:', label: 'http:' },
+                      ]}
+                      buttonClassName={`${SELECT} min-w-24 font-mono`}
+                    />
+                  </div>
                 </div>
               ) : null}
               <p className={`${HINT} max-w-[76ch]`}>{t('usage.export.form.privateHint')}</p>
@@ -653,19 +667,21 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
                 className={`${INPUT_BOX} w-56 font-mono text-[12px]`}
               />
             </label>
-            <label className="block space-y-1">
-              <span className={FIELD_LABEL}>{t('usage.export.form.schedule')}</span>
-              <select
-                data-usage-export-form-schedule
+            <div className="block space-y-1">
+              <label htmlFor="usage-export-form-schedule" className={FIELD_LABEL}>{t('usage.export.form.schedule')}</label>
+              <SearchableSelect
+                id="usage-export-form-schedule"
+                triggerData={{ 'data-usage-export-form-schedule': '' }}
+                ariaLabel={t('usage.export.form.schedule')}
                 value={String(state.scheduleMinutes)}
-                onChange={(event) => { patch({ scheduleMinutes: Number(event.target.value) as FormState['scheduleMinutes'] }); }}
-                className={SELECT}
-              >
-                {EXPORT_SCHEDULES.map((minutes) => (
-                  <option key={minutes} value={String(minutes)}>{t(`usage.export.schedule.${minutes}`)}</option>
-                ))}
-              </select>
-            </label>
+                onChange={(next) => { patch({ scheduleMinutes: Number(next) as FormState['scheduleMinutes'] }); }}
+                options={EXPORT_SCHEDULES.map((minutes) => ({
+                  value: String(minutes),
+                  label: t(`usage.export.schedule.${minutes}`),
+                }))}
+                buttonClassName={SELECT}
+              />
+            </div>
           </div>
           <p data-usage-export-form-boundary className="font-mono text-[11.5px] text-ink-soft tabular-nums">{utcLabel(historyHalfHour)}</p>
           <p className={`${HINT} max-w-[76ch]`}>{t('usage.export.form.historyHint')}</p>

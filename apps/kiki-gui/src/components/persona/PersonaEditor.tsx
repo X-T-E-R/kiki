@@ -39,6 +39,7 @@ import { DEFAULT_AGENT_PROFILE } from '../Composer';
 import { FeedbackLine, Hint, Toggle } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
+import { ModelPicker } from '../ModelPicker';
 import { SearchableSelect, POPOVER_SURFACE_CLASS, type SearchableSelectOption } from '../SearchableSelect';
 import { AdvancedDetails, SettingField } from '../settings/fields';
 import { ScopeTag, SettingsPageScopeContext } from '../settings/SectionCard';
@@ -270,10 +271,6 @@ function PersonaForm({
       .map((item) => ({ value: item.name, label: item.name, description: item.description ?? undefined })),
   ], [profilesQuery.data, t]);
   const models = modelsQuery.data?.items ?? [];
-  const modelOptions: SearchableSelectOption[] = useMemo(() => [
-    { value: '', label: t('persona.modelFollow') },
-    ...models.map((item) => ({ value: item.id, label: item.display_name ?? item.id, hint: item.id, keywords: item.remote_id })),
-  ], [models, t]);
   const selectedModel = draft.modelAlias === '' ? undefined : resolveCatalogModel(models, draft.modelAlias);
   const effortOptions: SearchableSelectOption[] = [
     { value: '', label: t('persona.effortFollow') },
@@ -430,7 +427,7 @@ function PersonaForm({
           </div>
           <div className="min-w-0 space-y-1.5">
             <span className={FORM_LABEL} id={fieldId('model')}>{t('persona.model')}</span>
-            <SearchableSelect id={fieldId('model')} options={modelOptions} value={draft.modelAlias} onChange={(value) => { setDraft((current) => { touched.current = true; setSaveFailure(null); return { ...current, modelAlias: value, thinkingEffort: '' }; }); }} ariaLabel={t('persona.model')} buttonClassName={FORM_SELECT_TRIGGER} panelClassName={`anim-enter absolute right-0 z-40 mt-1 w-72 max-w-[calc(100vw-32px)] overflow-hidden ${POPOVER_SURFACE_CLASS}`} density="compact" />
+            <ModelPicker id={fieldId('model')} models={models} value={draft.modelAlias} unsetLabel={t('persona.modelFollow')} allowCustomValue={false} onChange={(value) => { setDraft((current) => { touched.current = true; setSaveFailure(null); return { ...current, modelAlias: value, thinkingEffort: '' }; }); }} ariaLabel={t('persona.model')} buttonClassName={FORM_SELECT_TRIGGER} density="compact" />
           </div>
           <div className="min-w-0 space-y-1.5">
             <span className={FORM_LABEL} id={fieldId('effort')}>{t('persona.effort')}</span>

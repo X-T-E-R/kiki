@@ -45,6 +45,7 @@ import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { HostSkillInstallCard } from './HostSkillInstallCard';
 import { ListEmpty } from './list';
 import { SectionCard } from './SectionCard';
+import { SettingsSelect } from './SettingsPrimitives';
 
 const CLIENTS_QUERY_KEY = ['external-clients'] as const;
 const AUTHORIZATIONS_QUERY_KEY = ['external-clients', 'authorizations'] as const;
@@ -322,11 +323,11 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
         <p className="text-[12px] leading-4 text-ink-faint">{t('st.xc.memoryHint')}</p>
       </Group>
       <Field label={t('st.xc.history')} hint={t('st.xc.historyHint')} htmlFor={`${idPrefix}-history`}>
-        <select id={`${idPrefix}-history`} data-xc-history className={`${INPUT} sm:w-auto sm:min-w-[16rem]`}
+        <SettingsSelect id={`${idPrefix}-history`} variant="form" className="sm:w-auto sm:min-w-[16rem]"
+          ariaLabel={t('st.xc.history')} triggerData={{ 'data-xc-history': '' }}
           value={draft.historyScope} disabled={disabled}
-          onChange={(event) => { onChange({ ...draft, historyScope: event.target.value as ExternalHistoryScope }); }}>
-          {HISTORY_SCOPES.map((scope) => <option key={scope} value={scope}>{t(`st.xc.history.${scope}`)}</option>)}
-        </select>
+          onChange={(next) => { onChange({ ...draft, historyScope: next }); }}
+          choices={HISTORY_SCOPES.map((scope) => ({ value: scope, label: t(`st.xc.history.${scope}`) }))} />
       </Field>
     </div>
   );

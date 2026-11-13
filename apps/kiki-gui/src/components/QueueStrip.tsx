@@ -56,6 +56,7 @@ import { AgentRefResolutionProvider, AgentRefText } from './AgentRefChip';
 import { ContentContinuation, ContinuationRow } from './ContentContinuation';
 import { QuoteChip } from './ContextChips';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
+import { SearchableSelect } from './SearchableSelect';
 import { ThreadRefText } from './ThreadRefChip';
 import { Icon } from './icons';
 import { useMediaPreview } from './mediaPreviewContext';
@@ -728,25 +729,26 @@ export function QueueStrip({
             className="dock-reveal ml-auto flex shrink-0 items-center gap-0.5"
           >
             {onChangeTiming !== undefined && !held ? (
-              <select
-                aria-label={t('queue.timingAria')}
-                data-timing-picker={item.promptId}
+              <SearchableSelect
+                ariaLabel={t('queue.timingAria')}
+                triggerData={{ 'data-timing-picker': item.promptId }}
                 disabled={pending}
                 title={t(TIMING_HINT_KEY[item.appendTiming ?? 'agent_idle'])}
                 value={item.appendTiming ?? 'agent_idle'}
-                onChange={(event) => {
-                  const timing = event.target.value as DeferredAppendTiming;
+                align="end"
+                placement="above"
+                options={QUEUE_TIMINGS.map((timing) => ({
+                  value: timing,
+                  label: t(TIMING_SHORT_KEY[timing]),
+                  dataAttrs: { 'data-timing': timing },
+                }))}
+                onChange={(next) => {
+                  const timing = next as DeferredAppendTiming;
                   if (timing === (item.appendTiming ?? 'agent_idle')) return;
                   run(item.promptId, (id) => onChangeTiming(id, timing));
                 }}
-                className="h-7 rounded-md border border-transparent bg-transparent px-1 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-              >
-                {QUEUE_TIMINGS.map((timing) => (
-                  <option key={timing} value={timing} data-timing={timing}>
-                    {t(TIMING_SHORT_KEY[timing])}
-                  </option>
-                ))}
-              </select>
+                buttonClassName="flex h-7 items-center gap-1 rounded-md border border-transparent bg-transparent px-1.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+              />
             ) : null}
             {onEdit !== undefined && !held && item.originKind !== 'cron_job' && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
               <button

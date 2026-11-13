@@ -1,7 +1,8 @@
 import type { ExecutionOverrides, ExecutorCatalogItem, ExecutorInstanceChoice } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
-import { INPUT } from '../ui';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
+import { FORM_SELECT_TRIGGER } from '../settings/SettingsPrimitives';
 
 type ScheduleCatalogItem = Pick<ExecutorCatalogItem, 'id' | 'label' | 'instance'>;
 
@@ -35,7 +36,7 @@ export function passthroughScheduleOverrides(
 }
 
 export function ExecutorScheduleControl({
-  id, executorId, catalog, value, disabled = false, className = INPUT, onChange,
+  id, executorId, catalog, value, disabled = false, className, onChange,
 }: {
   id?: string;
   executorId: string;
@@ -51,15 +52,24 @@ export function ExecutorScheduleControl({
   const current = scheduleChoiceValue(value);
   const known = current === '' || current === 'main' || current === 'auto'
     || instances.some((item) => item.id === current) || current.startsWith('account:');
+  const options: SearchableSelectOption[] = [
+    { value: '', label: t('st.engines.schedule.inherit') },
+    { value: 'main', label: t('st.engines.schedule.main') },
+    { value: 'auto', label: t('st.engines.schedule.auto') },
+    ...instances.map((item) => ({ value: item.id, label: item.instance?.label ?? item.label })),
+    ...(current.startsWith('account:') ? [{ value: current, label: t('st.engines.schedule.account', { account: current.slice('account:'.length) }) }] : []),
+    ...(!known && current !== '' ? [{ value: current, label: current }] : []),
+  ];
   return (
-    <select id={id} data-executor-schedule={family} className={className} value={current} disabled={disabled}
-      onChange={(event) => { onChange(scheduleChoiceFromDraft(event.target.value)); }}>
-      <option value="">{t('st.engines.schedule.inherit')}</option>
-      <option value="main">{t('st.engines.schedule.main')}</option>
-      <option value="auto">{t('st.engines.schedule.auto')}</option>
-      {instances.map((item) => <option key={item.id} value={item.id}>{item.instance?.label ?? item.label}</option>)}
-      {current.startsWith('account:') ? <option value={current}>{t('st.engines.schedule.account', { account: current.slice('account:'.length) })}</option> : null}
-      {!known && current !== '' ? <option value={current}>{current}</option> : null}
-    </select>
+    <SearchableSelect
+      id={id}
+      options={options}
+      value={current}
+      disabled={disabled}
+      ariaLabel={t('st.engines.schedule.label')}
+      triggerData={{ 'data-executor-schedule': family }}
+      buttonClassName={className !== undefined ? `${FORM_SELECT_TRIGGER} ${className}` : FORM_SELECT_TRIGGER}
+      onChange={(next) => { onChange(scheduleChoiceFromDraft(next)); }}
+    />
   );
 }

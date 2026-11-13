@@ -33,6 +33,7 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { SectionCard } from './SectionCard';
+import { SettingsSelect } from './SettingsPrimitives';
 import { RecipeAuthorWorkbench, RecipeForkChoice } from './RecipeAuthorWorkbench';
 import { RecipeDetailBody } from './RecipeDetailBody';
 import { RecipeImportForm } from './RecipeImportForm';
@@ -199,14 +200,15 @@ function RecipeLibraryRow({ summary, busy, onOpen, onSetMode, onUpdate }: {
             {t('st.recipe.update')}
           </button>
         ) : null}
-        <select aria-label={t('st.recipe.updateModeAria', { name: summary.name })}
-          className={`${SMALL_INPUT} w-auto`}
-          data-recipes-update-mode={summary.installation_id}
+        <SettingsSelect ariaLabel={t('st.recipe.updateModeAria', { name: summary.name })}
+          variant="form" className="w-auto px-2.5 py-1 text-[12px]"
+          triggerData={{ 'data-recipes-update-mode': summary.installation_id }}
           value={summary.update_mode} disabled={busy}
-          onChange={(event) => { onSetMode(event.target.value === 'follow' ? 'follow' : 'pinned'); }}>
-          <option value="follow">{t('st.recipe.modeFollow')}</option>
-          <option value="pinned">{t('st.recipe.modePinned')}</option>
-        </select>
+          onChange={(next) => { onSetMode(next === 'follow' ? 'follow' : 'pinned'); }}
+          choices={[
+            { value: 'follow', label: t('st.recipe.modeFollow') },
+            { value: 'pinned', label: t('st.recipe.modePinned') },
+          ]} />
       </div>
     </li>
   );
