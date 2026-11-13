@@ -403,10 +403,12 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       }
       this.syncGoalAdmission();
     }));
-    if (this.tasks.onDidChangeWork !== undefined) {
+    if (this.tasks?.onDidChangeWork !== undefined) {
       this._register(this.tasks.onDidChangeWork(() => this.syncGoalAdmission()));
     }
-    this._register(this.executionControl.onDidChange(() => this.syncGoalAdmission()));
+    if (this.executionControl?.onDidChange !== undefined) {
+      this._register(this.executionControl.onDidChange(() => this.syncGoalAdmission()));
+    }
     this._register(this.eventBus.subscribe(PromptCompleted, (event) => {
       if (event.reason === 'completed' || this.yieldedGoalId === undefined) return;
       const goalId = this.yieldedGoalId;

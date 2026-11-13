@@ -627,7 +627,7 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
       claimed.peerToken,
     );
     expect(unregisteredSessionSlotSearch.status).toBe(403);
-    expect(await unregisteredSessionSlotSearch.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+    expect(await unregisteredSessionSlotSearch.json()).toMatchObject({ code: 40101, msg: 'local_owner_required' });
 
     const registeredPeerCreate = await call(
       target,

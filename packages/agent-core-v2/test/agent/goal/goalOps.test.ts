@@ -23,13 +23,18 @@ import { IAgentSystemReminderService } from '#/agent/systemReminder/systemRemind
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
+import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
+import { IAgentTaskService } from '#/agent/task/task';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 import {
   registerTestAgentWire,
   registerTestEventDispatcher,
@@ -129,6 +134,13 @@ function buildHost(key: string): {
   ix.stub(ITelemetryService, createTelemetryStub());
   ix.stub(IAgentToolExecutorService, createToolExecutorStub());
   ix.stub(IConfigService, createConfigStub());
+  ix.set(IWorkAdmissionService, new SyncDescriptor(WorkAdmissionService));
+  ix.stub(ISessionExecutionControl, stubExecutionControl());
+  ix.stub(IAgentTaskService, {
+    _serviceBrand: undefined,
+    onDidChangeWork: Event.None,
+    list: () => [],
+  } as unknown as IAgentTaskService);
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IGoalDeadlineScheduler, new SyncDescriptor(GoalDeadlineSchedulerService));
   registerTestAgentWire(ix, testWireScope(SCOPE, key), {
