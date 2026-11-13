@@ -764,7 +764,7 @@ describe('PluginHostService extension port bridge', () => {
       await writeFile(join(source, 'entry.mjs'), `
         export function register() {}
         export const slots = {
-          'E5:prompt-context': async () => 'Active phone: Xiaomi 12S Ultra (1080x2400)',
+          'E5:prompt-context': async () => 'Active phone: Fixture Phone (1080x2400)',
           'E12:server-gui-slots': async (payload) => {
             if (payload?.kind === 'describe' || payload?.action === 'describe') {
               return {
@@ -863,7 +863,7 @@ describe('PluginHostService extension port bridge', () => {
         agentId: 'main',
       });
       expect(sections).toEqual({
-        text: 'Active phone: Xiaomi 12S Ultra (1080x2400)',
+        text: 'Active phone: Fixture Phone (1080x2400)',
         suppressRuntimeContext: false,
       });
 

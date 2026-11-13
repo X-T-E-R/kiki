@@ -9,6 +9,11 @@ REST sessionUpdate: PATCH /sessions/{sessionId}
 REST sessionArchive: POST /sessions/{sessionId}:archive
 REST sessionRestore: POST /sessions/{sessionId}:restore
 REST sessionFork: POST /sessions/{sessionId}:fork
+REST sessionBtw: POST /sessions/{sessionId}:btw
+REST sessionBranch: POST /sessions/{sessionId}:branch
+REST sessionFold: POST /sessions/{sessionId}:fold
+REST sessionDiscard: POST /sessions/{sessionId}:discard
+REST sessionToolsLock: POST /sessions/{sessionId}:tools-lock
 REST saveEphemeral: POST /sessions/{sessionId}/ephemeral/save
 REST endEphemeral: POST /sessions/{sessionId}/ephemeral/end
 REST compact: POST /sessions/{sessionId}:compact

@@ -562,7 +562,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
         if (envelope.data === null || typeof envelope.data !== 'object' || !sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
       }
-      if (record.purposes.includes('gui') && (link as Outbound).connectionGrantId !== undefined && record.pinnedFingerprint === undefined) {
+      if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
         const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
         await this.connections.provePeer(transport.endpoint, record.target, { grant, grantId }, lease.signal, record.pinnedFingerprint);
       }

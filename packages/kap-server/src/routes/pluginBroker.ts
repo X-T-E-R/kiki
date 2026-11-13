@@ -426,13 +426,26 @@ export function registerPluginBrokerRoutes(app: PluginBrokerRouteHost, core: Sco
             reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, 'target session does not exist or is inaccessible', req.id));
             return;
           }
+          if (requestedWorkspaceId !== undefined && requestedWorkspaceId !== sessionWorkspaceId) {
+            reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, 'workspace_id does not match target session workspace', req.id));
+            return;
+          }
           if (requestedSpaceId !== undefined && requestedSpaceId !== currentSpaceId) {
             reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, 'cross-space plugin route access is forbidden', req.id));
             return;
           }
           workspaceId = sessionWorkspaceId;
-        } else if (requestedSessionId !== undefined && workspaceId === undefined) {
-          workspaceId = await resolveSessionWorkspaceId(core, requestedSessionId);
+        } else if (requestedSessionId !== undefined && requestedSessionId.trim() !== '') {
+          const sessionWorkspaceId = await resolveSessionWorkspaceId(core, requestedSessionId);
+          if (sessionWorkspaceId === undefined) {
+            reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, 'target session does not exist or is inaccessible', req.id));
+            return;
+          }
+          if (requestedWorkspaceId !== undefined && requestedWorkspaceId !== sessionWorkspaceId) {
+            reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, 'workspace_id does not match target session workspace', req.id));
+            return;
+          }
+          workspaceId = sessionWorkspaceId;
         }
 
         const access = await isPluginActiveAndAllowed(core, pluginId, workspaceId, requestedSessionId);
@@ -467,6 +480,7 @@ export function registerPluginBrokerRoutes(app: PluginBrokerRouteHost, core: Sco
                 body: req.body,
                 spaceId: currentSpaceId,
                 sessionId: requestedSessionId,
+                workspaceId,
                 signal,
               };
               return port.invokeHttpRoute(handlerCtx);

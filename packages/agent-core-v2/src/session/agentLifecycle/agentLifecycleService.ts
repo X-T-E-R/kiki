@@ -609,6 +609,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (profilePermissionMode !== undefined && !hasRestoredPermissionMode) {
       permissionModeService.setMode(profilePermissionMode, 'ambient');
     }
+    const scopeCtx = handle.accessor.get(IAgentScopeContext);
+    if (scopeCtx.isBranch === true && scopeCtx.parentAgentId !== undefined) {
+      const parentHandle = this.get(scopeCtx.parentAgentId);
+      if (parentHandle !== undefined) {
+        const parentPerm = parentHandle.accessor.get(IAgentPermissionModeService);
+        const parentCap = parentPerm.modeCeiling === undefined
+          ? parentPerm.mode
+          : constrainPermissionMode(parentPerm.mode, parentPerm.modeCeiling);
+        permissionModeService.setModeCeiling(parentCap);
+      }
+    }
     return restoreFellBack;
   }
 
@@ -699,12 +710,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const sourceData = source.accessor.get(IAgentProfileService).data();
     const override = opts?.binding;
     const overrideBinding =
-      override?.profile !== undefined || override?.route !== undefined
+      override?.execution !== undefined || override?.profile !== undefined || override?.route !== undefined
         ? {
+            ...override,
             profile: override.profile,
             route: override.route,
-            model: override.model ?? sourceData.modelAlias,
-            thinking: override.thinking ?? sourceData.thinkingLevel,
+            model: override.model ?? (override.execution === undefined ? sourceData.modelAlias : undefined),
+            thinking: override.thinking ?? (override.execution === undefined ? sourceData.thinkingLevel : undefined),
           }
         : undefined;
     const child = await this.create({
@@ -782,7 +794,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   broadcastPermissionMode(mode: PermissionMode): void {
     for (const handle of this.liveHandles()) {
-      handle.accessor.get(IAgentPermissionModeService).setMode(mode, 'ambient');
+      const perm = handle.accessor.get(IAgentPermissionModeService);
+      if (handle.accessor.get(IAgentScopeContext).isBranch === true) {
+        perm.setModeCeiling(mode);
+      }
+      perm.setMode(mode, 'ambient');
     }
   }
 

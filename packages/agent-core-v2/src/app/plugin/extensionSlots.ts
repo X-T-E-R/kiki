@@ -280,6 +280,7 @@ export interface PluginHttpRouteHandlerContext {
   readonly body: unknown;
   readonly spaceId?: string;
   readonly sessionId?: string;
+  readonly workspaceId?: string;
   readonly signal: AbortSignal;
 }
 

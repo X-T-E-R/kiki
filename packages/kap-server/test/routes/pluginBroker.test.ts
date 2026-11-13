@@ -983,10 +983,11 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
               ],
               routes: [
                 { method: 'POST', subpath: '/device/tap', scopeAcl: 'session' },
+                { method: 'POST', subpath: '/device/space-ping', scopeAcl: 'space' },
               ],
             };
           }
-          if (payload?.kind === 'http-route' && payload.method === 'POST' && payload.subpath === '/device/tap') {
+          if (payload?.kind === 'http-route' && payload.method === 'POST' && (payload.subpath === '/device/tap' || payload.subpath === '/device/space-ping')) {
             return {
               status: 200,
               data: {
@@ -1066,6 +1067,30 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
     });
     expect(tapBlockedRes.json()).toMatchObject({
       code: ErrorCode.FS_PERMISSION_DENIED,
+    });
+
+    const mismatchWorkspaceRes = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/kiki-phone/routes/device/space-ping?workspace_id=ws-a&session_id=sess-b',
+      headers: authHeaders({ 'content-type': 'application/json' }),
+      payload: JSON.stringify({ ping: true }),
+    });
+    expect(mismatchWorkspaceRes.json()).toMatchObject({
+      code: ErrorCode.FS_PERMISSION_DENIED,
+    });
+
+    const spaceRouteWithWorkspaceOnlyRes = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/kiki-phone/routes/device/space-ping?workspace_id=ws-a',
+      headers: authHeaders({ 'content-type': 'application/json' }),
+      payload: JSON.stringify({ ping: true }),
+    });
+    expect(spaceRouteWithWorkspaceOnlyRes.json()).toMatchObject({
+      code: 0,
+      data: {
+        tapped: { ping: true },
+        workspaceId: 'ws-a',
+      },
     });
   });
 });

@@ -206,10 +206,16 @@ export class SessionBranchService extends Service implements ISessionBranchServi
 
     const overrideBinding = input.executor !== undefined
       ? {
-          profile: parentData.profileName ?? DEFAULT_AGENT_PROFILE_NAME,
-          model: input.model ?? parentData.modelAlias,
-          thinking: input.thinking === undefined ? parentData.thinkingLevel : input.thinking ?? undefined,
-          lockedExecutorId: input.executor,
+          execution: {
+            executor: input.executor,
+            profile: parentData.profileName,
+            overrides: {
+              model: input.model,
+              thinking: input.thinking,
+            },
+          },
+          model: input.model,
+          thinking: input.thinking === undefined ? undefined : input.thinking ?? undefined,
         }
       : {
           model: input.model,

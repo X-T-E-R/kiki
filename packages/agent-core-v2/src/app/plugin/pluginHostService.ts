@@ -282,9 +282,10 @@ export class PluginHostService extends Service implements IPluginHostService {
       void event.finished.then(() => {
         reloadedSubscription.dispose();
         if (reloaded || this.closing) return;
+        const affected = this.affectedPlugins(event.affected);
         void Promise.all([
-          this.reconcileExtensionPorts(event.affected),
-          this.reconcileResidents(event.affected),
+          this.reconcileExtensionPorts(affected),
+          this.reconcileResidents(affected),
         ]).catch((error: unknown) => {
           this.logger?.current?.warn('plugin resident restore failed', {
             error: error instanceof Error ? error.message : String(error),
@@ -326,15 +327,16 @@ export class PluginHostService extends Service implements IPluginHostService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        const affected = this.affectedPlugins(event.affected);
         try {
-          await this.reconcileExtensionPorts(event.affected);
+          await this.reconcileExtensionPorts(affected);
         } catch (error) {
           this.logger?.current?.warn('plugin extension port reconciliation failed after reload', {
             error: error instanceof Error ? error.message : String(error),
           });
         }
         try {
-          await this.reconcileResidents(event.affected);
+          await this.reconcileResidents(affected);
         } catch (error) {
           this.logger?.current?.warn('plugin resident activation failed after reload', {
             error: error instanceof Error ? error.message : String(error),
@@ -651,7 +653,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     pluginId: string,
     ctx: PluginHttpRouteHandlerContext,
   ): Promise<PluginHttpRouteResult> {
-    const workspaceId = await this.resolvePluginSessionWorkspaceId(ctx.sessionId);
+    const workspaceId = ctx.workspaceId ?? await this.resolvePluginSessionWorkspaceId(ctx.sessionId);
     let result: IsolatedPluginResult<unknown>;
     try {
       result = await this.invokeSlot({

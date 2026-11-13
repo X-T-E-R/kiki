@@ -102,7 +102,16 @@ export class PeerListeners {
     const http = createServer((req, res) => { this.peerRequests.add(req); this.app.server.emit('request', req, res); });
     http.requestTimeout = 0;
     http.on('upgrade', (req, socket, head) => { this.peerRequests.add(req); this.app.server.emit('upgrade', req, socket, head); });
-    const tls = createTlsServer(this.identity, (socket) => { http.emit('connection', socket); });
+    const guardHeaders = (socket: Socket): void => {
+      const drop = (): void => { socket.destroy(); };
+      const timer = setTimeout(drop, 15000);
+      timer.unref();
+      const clear = (): void => { clearTimeout(timer); };
+      socket.once('close', clear);
+      http.prependOnceListener('request', (req) => { if (req.socket === socket) clear(); });
+      http.prependOnceListener('upgrade', (req) => { if (req.socket === socket) clear(); });
+    };
+    const tls = createTlsServer(this.identity, (socket) => { guardHeaders(socket); http.emit('connection', socket); });
     const sockets = new Set<Socket>();
     const server = createNetServer({ pauseOnConnect: true }, (socket) => {
       sockets.add(socket);
@@ -115,7 +124,12 @@ export class PeerListeners {
         if (chunk === null) { socket.destroy(); return; }
         socket.setTimeout(0); socket.off('timeout', sniffTimeout);
         socket.unshift(chunk);
-        (chunk[0] === 0x16 ? tls : http).emit('connection', socket);
+        if (chunk[0] === 0x16) {
+          tls.emit('connection', socket);
+        } else {
+          guardHeaders(socket);
+          http.emit('connection', socket);
+        }
       });
     });
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(port, host, () => { server.off('error', reject); resolve(); }); });

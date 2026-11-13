@@ -1024,7 +1024,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: input.model ?? requested.overrides?.model ?? undefined,
       thinkingEffort: input.thinking ?? requested.overrides?.thinking ?? undefined,
     }, this.config, this.executors);
-    if (this.agentScope.agentId !== MAIN_AGENT_ID && (policyProfile === undefined || requested.profile !== undefined || requested.profile_file !== undefined)) {
+    if (this.agentScope.agentId !== MAIN_AGENT_ID && input.delegationPosition !== 'main' && (policyProfile === undefined || requested.profile !== undefined || requested.profile_file !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Child execution selection requires a native engine dispatch target');
     }
     if (requested.profile !== undefined && requested.profile_file !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'profile and profile_file are mutually exclusive');
