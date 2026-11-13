@@ -34,6 +34,14 @@ interface ShapedOutput {
   readonly hasMedia: boolean;
 }
 
+function needsLocalOutputHost(input: ToolResultTruncationInput): boolean {
+  return input.runtimeId?.startsWith('ssh:') === true ||
+    input.activeRuntimeId?.startsWith('ssh:') === true ||
+    (input.host !== undefined && input.host !== 'local') ||
+    input.path?.startsWith('ssh://') === true ||
+    input.cwd?.startsWith('ssh://') === true;
+}
+
 export class ToolResultTruncationService implements IAgentToolResultTruncationService {
   declare readonly _serviceBrand: undefined;
 
@@ -54,6 +62,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
   ): Promise<T> {
     const { result } = input;
     if (result.spillExempt === true) return result;
+    const useLocalOutputHost = needsLocalOutputHost(input);
 
     const rawText = persistableToolResultText(result.output);
     if (rawText.length <= DEFAULT_TOOL_RESULT_MAX_CHARS) return result;
@@ -89,7 +98,8 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
     if (customPreview !== undefined) {
       const preview = sliceUtf16(customPreview, 0, DEFAULT_TOOL_RESULT_MAX_CHARS);
       const pointer = renderAppendedSpillPointer(saved.outputPath, saved.preservedChars, totalChars, suffix,
-        Array.isArray(result.output) && result.output.some(part => part.type !== 'text' && part.type !== 'think'));
+        Array.isArray(result.output) && result.output.some(part => part.type !== 'text' && part.type !== 'think'),
+        useLocalOutputHost);
       return { ...rest, output: mergeSpillPointer(result.output, `${preview}\n${pointer}`), truncated: true } as T;
     }
 
@@ -121,6 +131,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
         DEFAULT_TOOL_RESULT_MAX_CHARS,
         failure,
         hasMedia,
+        useLocalOutputHost,
       );
       return { ...rest, output: mergeSpillPointer(result.output, pointer), isError: true, truncated: true } as T;
     }
@@ -137,6 +148,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
             totalChars,
             inlineSuffix,
             shaped.hasMedia,
+            useLocalOutputHost,
           ),
         ),
         truncated: true,
@@ -152,6 +164,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
       DEFAULT_TOOL_RESULT_MAX_CHARS,
       suffix,
       shaped.hasMedia,
+      useLocalOutputHost,
     );
     return {
       ...rest,
@@ -257,6 +270,7 @@ function renderAppendedSpillPointer(
   totalChars: number,
   suffix: string,
   hasMedia: boolean,
+  useLocalOutputHost: boolean,
 ): string {
   const firstLine =
     totalChars > preservedChars
@@ -267,7 +281,9 @@ function renderAppendedSpillPointer(
   const lines = [
     firstLine,
     `output_path: ${outputPath}`,
-    'next_step: Use Read with output_path to page through; use Grep to search.]',
+    useLocalOutputHost
+      ? 'next_step: Use Read with output_path and host="local" to page through; use Grep with host="local" to search.]'
+      : 'next_step: Use Read with output_path to page through; use Grep to search.]',
   ];
   if (suffix.length > 0) lines.push('', suffix);
   return lines.join('\n');
@@ -300,6 +316,7 @@ function renderPersistedToolResult(
   maxChars: number,
   suffix: string,
   hasMedia: boolean,
+  useLocalOutputHost: boolean,
 ): string {
   const partial = preservedChars < totalChars;
   const lines = [
@@ -319,7 +336,9 @@ function renderPersistedToolResult(
   }
   lines.push(
     `output_path: ${outputPath}`,
-    'next_step: Use Read with output_path to page through; use Grep to search.',
+    useLocalOutputHost
+      ? 'next_step: Use Read with output_path and host="local" to page through; use Grep with host="local" to search.'
+      : 'next_step: Use Read with output_path to page through; use Grep to search.',
   );
   appendPreviewLines(lines, previewText);
   if (suffix.length > 0) lines.push('', suffix);

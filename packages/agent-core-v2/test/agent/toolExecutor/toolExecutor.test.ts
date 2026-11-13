@@ -2022,6 +2022,20 @@ describe('truncation pipeline', () => {
     expect(readFileSync(renderedOutputPath(rendered), 'utf8')).toBe(fullOutput);
   });
 
+  it('uses local spill-reading guidance for an SSH runtime result', async () => {
+    registry.register(new TestTool('remote-noisy', {
+      result: { output: 'x'.repeat(50_001), runtimeId: 'ssh:dev' },
+    }));
+
+    const [result] = await execute([toolCall('remote-spill', 'remote-noisy', {})]);
+
+    expect(typeof result?.output).toBe('string');
+    if (typeof result?.output !== 'string') throw new Error('expected rendered tool output');
+    expect(result.output).toContain(
+      'next_step: Use Read with output_path and host="local" to page through; use Grep with host="local" to search.',
+    );
+  });
+
   it('returns a recoverable shaping error and continues the tool batch and next step', async () => {
     const full = 'shape failure output\n'.repeat(3_000);
     const error = new RangeError('Maximum call stack size exceeded');

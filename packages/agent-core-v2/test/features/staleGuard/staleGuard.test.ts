@@ -70,14 +70,20 @@ let activeFs: IHostFileSystem;
 let fireRuntimeChange: () => void = () => {};
 
 function stubRuntime(): IAgentRuntimeService {
+  const runtime = () => ({
+    identity: { runtimeId: 'local', generation: 'local-1' },
+    environment: { pathClass: process.platform === 'win32' ? 'win32' : 'posix' },
+    fs: activeFs,
+  });
   return {
     _serviceBrand: undefined,
     onDidChange: (listener: () => void) => {
       fireRuntimeChange = listener;
       return toDisposable(() => {});
     },
+    inspect: runtime,
     acquire: () => ({
-      runtime: { fs: activeFs },
+      runtime: runtime(),
       track: (resource: unknown) => resource,
       dispose: () => {},
     }),
@@ -205,7 +211,7 @@ describe('StaleGuardService', () => {
 
     expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBe(111);
     expect(records).toEqual([
-      { type: 'staleGuard.recorded', path: '/tmp/a.txt', mtimeMs: 111, time: expect.any(Number) },
+      { type: 'staleGuard.recorded', path: '/tmp/a.txt', mtimeMs: 111, size: 0, runtimeId: undefined, time: expect.any(Number) },
     ]);
   });
 

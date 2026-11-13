@@ -9,27 +9,44 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SshConnectionManager } from '@kiki/kaos/ssh-connection';
 import type { ISshHostService } from '#/app/ssh/sshService';
+import { EventBusService } from '#/app/event/eventBusService';
+import { IEventBus } from '#/app/event/eventBus';
 import { FileEditService } from '#/app/edit/fileEditService';
+import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { AgentStateService } from '#/agent/state/agentStateService';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import type { BeforeExecuteDecision, BeforeToolExecuteEvent, ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
+import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
-import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
-import { ReadTool } from '#/agent/tools/os/read/readTool';
-import { WriteTool } from '#/agent/tools/os/write/writeTool';
 import { EditTool } from '#/agent/tools/edit/editTool';
 import { GlobTool } from '#/agent/tools/os/glob/globTool';
 import { GrepTool } from '#/agent/tools/os/grep/grepTool';
-import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ReadTool } from '#/agent/tools/os/read/readTool';
+import { WriteTool } from '#/agent/tools/os/write/writeTool';
+import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
+import { IStaleGuardService } from '#/features/staleGuard/staleGuard';
+import { StaleGuardService } from '#/features/staleGuard/staleGuardService';
+import { SshHostFileSystem } from '#/os/backends/ssh/sshHostServices';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { EventDispatcherService } from '#/state/eventDispatcherService';
+import { IWireService } from '#/wire/wire';
+import type { ToolAccesses, ToolExecution, ExecutableToolContext, ExecutableToolResult } from '#/tool/toolContract';
+import type { ToolCall } from '#/kosong/contract/message';
 import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 import { SshRuntime } from '#/runtime/sshRuntime';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
-import { SshHostFileSystem } from '#/os/backends/ssh/sshHostServices';
-import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
-import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
-import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import type { ITelemetryService } from '#/app/telemetry/telemetry';
-import type { ToolExecution, ExecutableToolContext } from '#/tool/toolContract';
+import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { TestInstantiationService } from '#/_base/di/test';
 import { sshTestTools } from './stubs';
+import { stubWireJournal } from '../../../wire/stubs';
 
 const openTools: ReturnType<typeof sshTestTools>[] = [];
 
@@ -37,10 +54,109 @@ const openServers: NetServer[] = [];
 const openManagers: SshConnectionManager[] = [];
 const tempHomes: string[] = [];
 
+interface StaleGuardHooks {
+  readonly before: ((event: BeforeToolExecuteEvent) => unknown)[];
+  readonly did: ((ctx: ToolDidExecuteContext, next: () => Promise<void>) => Promise<void>)[];
+}
+
+const noBlob: IAgentBlobService = {
+  _serviceBrand: undefined,
+  offloadParts: async (parts) => parts,
+  loadParts: async (parts) => parts,
+  isBlobRef: () => false,
+};
+
+function createStaleGuardHooks(runtime: IAgentRuntimeService): {
+  readonly hooks: StaleGuardHooks;
+  readonly dispose: () => Promise<void>;
+} {
+  const hooks: StaleGuardHooks = { before: [], did: [] };
+  const executor = {
+    _serviceBrand: undefined,
+    onBeforeExecuteTool: (listener: (event: BeforeToolExecuteEvent) => unknown) => {
+      hooks.before.push(listener);
+      return toDisposable(() => {});
+    },
+    hooks: {
+      onDidExecuteTool: {
+        register: (_name: string, handler: (ctx: ToolDidExecuteContext, next: () => Promise<void>) => Promise<void>) => {
+          hooks.did.push(handler);
+          return toDisposable(() => {});
+        },
+      },
+    },
+  } as unknown as IAgentToolExecutorService;
+  const disposables = new DisposableStore();
+  const ix = disposables.add(new TestInstantiationService());
+  ix.set(IEventBus, new SyncDescriptor(EventBusService));
+  ix.set(IAgentBlobService, noBlob);
+  ix.set(IWireService, stubWireJournal([]));
+  ix.set(IAgentStateService, new SyncDescriptor(AgentStateService));
+  ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+  ix.set(IAgentToolExecutorService, executor);
+  ix.set(IAgentRuntimeService, runtime);
+  ix.set(IStaleGuardService, new SyncDescriptor(StaleGuardService));
+  ix.get(IStaleGuardService);
+  return { hooks, dispose: async () => { await disposables.dispose(); } };
+}
+
+function staleToolCall(id: string, name: string, args: unknown): ToolCall {
+  return { type: 'function', id, name, arguments: JSON.stringify(args) } as ToolCall;
+}
+
+async function runStaleGuardBefore(
+  hooks: StaleGuardHooks,
+  call: ToolCall,
+  args: unknown,
+  accesses: ToolAccesses | undefined,
+): Promise<ExecutableToolResult | undefined> {
+  const pending: (() => Promise<BeforeExecuteDecision | undefined>)[] = [];
+  let veto: ExecutableToolResult | undefined;
+  const event = {
+    turnId: 1,
+    signal: new AbortController().signal,
+    toolCall: call,
+    toolCalls: [call],
+    args,
+    execution: { accesses },
+    veto: (result: ExecutableToolResult) => { veto = result; },
+    allow: () => {},
+    pass: () => {},
+    waitUntil: (factory: () => Promise<BeforeExecuteDecision | undefined>) => { pending.push(factory); },
+  } as unknown as BeforeToolExecuteEvent;
+  for (const listener of hooks.before) await listener(event);
+  for (const factory of pending) {
+    const decision = await factory();
+    if (decision?.veto !== undefined) veto = decision.veto;
+  }
+  return veto;
+}
+
+async function runStaleGuardDid(
+  hooks: StaleGuardHooks,
+  call: ToolCall,
+  args: unknown,
+  accesses: ToolAccesses | undefined,
+  result: ExecutableToolResult,
+): Promise<ExecutableToolResult> {
+  const context = {
+    turnId: 1,
+    signal: new AbortController().signal,
+    toolCall: call,
+    toolCalls: [call],
+    args,
+    outcome: 'executed',
+    accesses,
+    result,
+  } as unknown as ToolDidExecuteContext;
+  for (const handler of hooks.did) await handler(context, async () => {});
+  return context.result;
+}
+
 const attrs = (mode: number, size = 0) => ({ mode, size, uid: 1000, gid: 1000, atime: 0, mtime: 1 });
 
 async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershell') {
-  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0, executePowerShell: false, suspendReads: false, lineCount: undefined as number | undefined, afterLineCount: undefined as (() => void) | undefined, onRead: undefined as (() => void) | undefined };
+  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0, executePowerShell: false, suspendReads: false, lineCount: undefined as number | undefined, afterLineCount: undefined as (() => void) | undefined, onRead: undefined as (() => void) | undefined, onExec: undefined as (() => void) | undefined };
   const io = { bytes: 0, handles: 0, closes: 0, maxReadSize: Number.POSITIVE_INFINITY };
   const failures = new Set<string>();
   const remoteHome = platform === 'win32' ? 'C:/Users/tester' : '/home/tester';
@@ -67,6 +183,10 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
         const scriptFile = /-File '([^']+)'/.exec(command);
         if (scriptFile) command = files.get(scriptFile[1]!)!.toString('utf8').replace(/^\uFEFF/, '');
         commands.push(command);
+        if (command.includes('external-append') && response.onExec !== undefined) {
+          response.onExec();
+          response.onExec = undefined;
+        }
         if (response.executePowerShell && !command.includes('KIKI_SSH_WINDOWS')) {
           const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')]);
           child.stdout.pipe(channel, { end: false });
@@ -234,10 +354,11 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
   const runtime = {
     inspect: () => local,
     acquire: () => lease(local),
+    onDidChange: () => ({ dispose: () => {} }),
     nativeSshEnabled: () => true,
     prepareFor: async (host?: string) => { const value = selected(host); if (value === remote) await remote.connect(); return value; },
     acquireFor: (host: string) => lease(selected(host)),
-  } as IAgentRuntimeService;
+  } as unknown as IAgentRuntimeService;
   const workspace = { _serviceBrand: undefined, workDir: home, additionalDirs: [], resolve: (path: string) => path, isWithin: () => true } as ISessionWorkspaceContext;
   const catalog = { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog;
   const toolPolicy = { isToolActive: () => false } as unknown as IAgentToolPolicyService;
@@ -263,6 +384,78 @@ afterEach(async () => {
 });
 
 describe('SSH tools over a real ssh2 transport', () => {
+  it('refuses a fresh-session Write over an unread existing SSH file while the primary runtime is local', async () => {
+    const f = await fixture();
+    const path = '/home/tester/unread.txt';
+    f.files.set(path, Buffer.from('remote original'));
+    const guard = createStaleGuardHooks(f.runtime);
+    const args = { host: 'dev', path, content: 'replacement' };
+    const call = staleToolCall('write-unread-ssh', 'Write', args);
+    try {
+      expect(f.runtime.inspect().identity.runtimeId).toBe('local');
+      const execution = await f.tools.write.resolveExecution(args);
+      if (!('execute' in execution)) throw new Error('expected a runnable Write');
+      const veto = await runStaleGuardBefore(guard.hooks, call, args, execution.accesses);
+
+      expect(veto?.isError).toBe(true);
+      expect(veto?.output).toContain('has not been read');
+      expect(f.files.get(path)?.toString()).toBe('remote original');
+    } finally {
+      await guard.dispose();
+      f.remote.dispose();
+    }
+  });
+
+  it('detects a same-second SSH append after Read and notes an exact Edit', async () => {
+    const f = await fixture();
+    const path = '/home/tester/same-second.txt';
+    f.files.set(path, Buffer.from('alpha'));
+    const guard = createStaleGuardHooks(f.runtime);
+    try {
+      const readArgs = { host: 'dev', path };
+      const readCall = staleToolCall('read-ssh-file', 'Read', readArgs);
+      const readExecution = await f.tools.read.resolveExecution(readArgs);
+      if (!('execute' in readExecution)) throw new Error('expected a runnable Read');
+      const readResult = await execute(readExecution);
+      if (readResult.isError === true) throw new Error('SSH Read failed');
+      await runStaleGuardDid(guard.hooks, readCall, readArgs, readExecution.accesses, readResult);
+      const beforeAppend = await f.remote.fs.stat(path);
+
+      f.response.onExec = () => {
+        const content = f.files.get(path);
+        if (content !== undefined) f.files.set(path, Buffer.concat([content, Buffer.from(' appended')]));
+      };
+      const bashArgs = { host: 'dev', command: 'external-append' };
+      const bashCall = staleToolCall('bash-external-append', 'Bash', bashArgs);
+      const bashExecution = await f.tools.bash.resolveExecution(bashArgs);
+      if (!('execute' in bashExecution)) throw new Error('expected a runnable Bash');
+      const bashResult = await execute(bashExecution);
+      if (bashResult.isError === true) throw new Error('SSH Bash failed');
+      await runStaleGuardDid(guard.hooks, bashCall, bashArgs, bashExecution.accesses, bashResult);
+      const afterAppend = await f.remote.fs.stat(path);
+      expect(afterAppend.mtimeMs).toBe(beforeAppend.mtimeMs);
+      expect(afterAppend.size).toBeGreaterThan(beforeAppend.size);
+
+      const editArgs = { host: 'dev', path, old_string: 'alpha', new_string: 'beta' };
+      const editCall = staleToolCall('edit-after-append', 'Edit', editArgs);
+      const editExecution = await f.tools.edit.resolveExecution(editArgs);
+      if (!('execute' in editExecution)) throw new Error('expected a runnable Edit');
+      const veto = await runStaleGuardBefore(guard.hooks, editCall, editArgs, editExecution.accesses);
+      expect(veto).toBeUndefined();
+      const editResult = await execute(editExecution);
+      if (editResult.isError === true) throw new Error('SSH Edit failed');
+      const noted = await runStaleGuardDid(guard.hooks, editCall, editArgs, editExecution.accesses, editResult);
+
+      expect(noted.note).toBe(
+        `Note: ${path} changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.`,
+      );
+      expect(f.files.get(path)?.toString()).toBe('beta appended');
+    } finally {
+      await guard.dispose();
+      f.remote.dispose();
+    }
+  });
+
   it('streams a small forward window without downloading a large file and closes on break', async () => {
     const f = await fixture();
     const path = '/home/tester/large.txt';

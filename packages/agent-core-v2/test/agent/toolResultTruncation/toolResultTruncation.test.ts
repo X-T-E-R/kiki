@@ -542,6 +542,21 @@ describe('ToolResultTruncationService', () => {
     expect(renderedShortLines).toContain('could not be saved to a file');
     expect(renderedShortLines.length).toBeLessThan(25_000);
   });
+
+  it('pins saved overflow reads to the local host for SSH host and ssh:// targets', async () => {
+    const localHostInstruction = 'next_step: Use Read with output_path and host="local" to page through; use Grep with host="local" to search.';
+    const byHost = await truncation.truncateForModel({
+      toolName: 'Bash', toolCallId: 'call_ssh_host', host: 'dev',
+      result: { output: 'x'.repeat(50_001) },
+    });
+    expect(byHost.output).toContain(localHostInstruction);
+
+    const byAddress = await truncation.truncateForModel({
+      toolName: 'Read', toolCallId: 'call_ssh_address', path: 'ssh://dev/home/tester/output.txt',
+      result: { output: `${'y'.repeat(30_000)}\n${'z'.repeat(30_000)}` },
+    });
+    expect(byAddress.output).toContain(localHostInstruction);
+  });
 });
 
 function renderedOutputPath(output: unknown): string {

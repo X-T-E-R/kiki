@@ -6,6 +6,11 @@ export interface ToolResultTruncationInput<
 > {
   readonly toolName: string;
   readonly toolCallId: string;
+  readonly host?: string;
+  readonly path?: string;
+  readonly cwd?: string;
+  readonly runtimeId?: string;
+  readonly activeRuntimeId?: string;
   readonly result: T;
 }
 

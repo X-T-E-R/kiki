@@ -1351,6 +1351,8 @@ interface StaleGuardRecordedPayload {
   _name: 'staleGuard.recorded';
   path: string;
   mtimeMs: number;
+  size?: number;
+  runtimeId?: string;
 }
 
 /**

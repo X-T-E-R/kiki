@@ -1,6 +1,7 @@
 import { Disposable } from '#/_base/di/lifecycle';
-import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget } from '#/agent/tools/os/sshToolTarget';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
@@ -9,11 +10,12 @@ import type {
 } from '#/agent/toolExecutor/toolHooks';
 import type { ToolCall } from '#/kosong/contract/message';
 import type { HostFileStat } from '#/os/interface/hostFileSystem';
+import type { Runtime } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { ExecutableToolResult, ToolAccesses, ToolFileAccessOperation } from '#/tool/toolContract';
 
 import { IStaleGuardService } from './staleGuard';
-import { StaleGuardCleared, StaleGuardRecorded, staleGuardKey } from './staleGuardOps';
+import { StaleGuardCleared, StaleGuardRecorded, staleGuardKey, staleGuardStateMapKey } from './staleGuardOps';
 
 const WRITE_OPERATIONS: readonly ToolFileAccessOperation[] = ['write', 'readwrite'];
 const READ_OPERATIONS: readonly ToolFileAccessOperation[] = ['read'];
@@ -23,7 +25,13 @@ type Knowledge = 'current' | 'unread' | 'changed';
 interface WriteCheck {
   readonly path: string;
   readonly displayPath: string;
+  readonly runtimeId: string;
   readonly knowledge: Knowledge;
+}
+
+interface ToolTarget {
+  readonly host?: string;
+  readonly path: string;
 }
 
 function accessedFilePath(
@@ -42,13 +50,43 @@ function stringArg(args: unknown, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function callPathArg(call: ToolCall): string | undefined {
+function targetFromArgs(args: unknown, fallbackPath: string): ToolTarget {
+  try {
+    const target = resolveSshToolTarget(stringArg(args, 'host'), stringArg(args, 'path') ?? fallbackPath);
+    return { host: target.host, path: target.path ?? fallbackPath };
+  } catch {
+    return { path: fallbackPath };
+  }
+}
+
+function targetFromCall(call: ToolCall): ToolTarget | undefined {
   if (typeof call.arguments !== 'string') return undefined;
   try {
-    return stringArg(JSON.parse(call.arguments), 'path');
+    const args: unknown = JSON.parse(call.arguments);
+    const path = stringArg(args, 'path');
+    return path === undefined ? undefined : targetFromArgs(args, path);
   } catch {
     return undefined;
   }
+}
+
+function samePath(left: string, right: string, runtime: Runtime | undefined): boolean {
+  const normalize = (path: string) => path.replaceAll('\\', '/');
+  const a = normalize(left);
+  const b = normalize(right);
+  return runtime?.environment.pathClass === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function recordedMtime(recorded: number | { readonly mtimeMs: number; readonly size?: number }): number {
+  return typeof recorded === 'number' ? recorded : recorded.mtimeMs;
+}
+
+function sameFileState(
+  recorded: number | { readonly mtimeMs: number; readonly size?: number },
+  stat: HostFileStat,
+): boolean {
+  if (recordedMtime(recorded) !== stat.mtimeMs) return false;
+  return typeof recorded === 'number' || recorded.size === undefined || stat.size === undefined || recorded.size === stat.size;
 }
 
 function overwriteVeto(knowledge: Knowledge, displayPath: string): string | undefined {
@@ -108,8 +146,20 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     );
   }
 
-  recordedMtimeMs(path: string): number | undefined {
-    return this.states.get(staleGuardKey).get(path);
+  recordedMtimeMs(path: string, runtimeId = 'local'): number | undefined {
+    const recorded = this.states.get(staleGuardKey).get(staleGuardStateMapKey(path, runtimeId));
+    return recorded === undefined ? undefined : recordedMtime(recorded);
+  }
+
+  private runtimeIdForHost(host: string | undefined, inspected?: Runtime): string {
+    if (inspected !== undefined) return inspected.identity.runtimeId;
+    if (host === 'local') return 'local';
+    if (host !== undefined) return `ssh:${host}`;
+    try {
+      return this.runtime.inspect().identity.runtimeId;
+    } catch {
+      return 'local';
+    }
   }
 
   private guardWrite(event: BeforeToolExecuteEvent): void {
@@ -118,25 +168,43 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     const path = accessedFilePath(event.execution.accesses, WRITE_OPERATIONS);
     if (path === undefined) return;
     const displayPath = stringArg(event.args, 'path') ?? path;
+    const target = targetFromArgs(event.args, path);
     const overwrite = name === 'Write' && stringArg(event.args, 'mode') !== 'append';
     event.waitUntil(async () => {
-      const knowledge = this.knowledgeFromBatch(event, displayPath, path) ?? await this.knowledgeOnDisk(path);
-      this.writeChecks.set(event.toolCall, { path, displayPath, knowledge });
+      let inspected: Runtime | undefined;
+      try {
+        inspected = await prepareToolRuntime(this.runtime, target.host);
+      } catch {
+        inspected = undefined;
+      }
+      const runtimeId = this.runtimeIdForHost(target.host, inspected);
+      const knowledge = this.knowledgeFromBatch(event, target, path, runtimeId, inspected) ??
+        await this.knowledgeOnDisk(path, target.host, inspected);
+      this.writeChecks.set(event.toolCall, { path, displayPath, runtimeId, knowledge });
       const veto = overwrite ? overwriteVeto(knowledge, displayPath) : undefined;
       return veto === undefined ? undefined : { veto: denyToolExecution(veto) };
     });
   }
 
-  private knowledgeFromBatch(event: BeforeToolExecuteEvent, displayPath: string, path: string): Knowledge | undefined {
+  private knowledgeFromBatch(
+    event: BeforeToolExecuteEvent,
+    target: ToolTarget,
+    path: string,
+    runtimeId: string,
+    inspected: Runtime | undefined,
+  ): Knowledge | undefined {
     let knowledge: Knowledge | undefined;
     for (const call of event.toolCalls) {
       if (call.id === event.toolCall.id) break;
-      if (call.name === 'Read' && callPathArg(call) === displayPath) {
+      const earlierTarget = targetFromCall(call);
+      if (call.name === 'Read' && earlierTarget !== undefined &&
+          this.runtimeIdForHost(earlierTarget.host) === runtimeId &&
+          samePath(earlierTarget.path, target.path, inspected)) {
         knowledge = 'current';
         continue;
       }
       const earlier = call.name === 'Edit' || call.name === 'Write' ? this.writeChecks.get(call) : undefined;
-      if (earlier?.path === path) knowledge = earlier.knowledge;
+      if (earlier?.runtimeId === runtimeId && samePath(earlier.path, path, inspected)) knowledge = earlier.knowledge;
     }
     return knowledge;
   }
@@ -146,7 +214,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     const name = ctx.toolCall.name;
     if (name === 'Read') {
       const path = accessedFilePath(ctx.accesses, READ_OPERATIONS);
-      if (path !== undefined) await this.recordCurrentMtime(path);
+      if (path !== undefined) await this.recordCurrentMtime(path, ctx.args);
       return;
     }
     if (name !== 'Edit' && name !== 'Write') return;
@@ -154,36 +222,48 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     if (path === undefined) return;
     const check = this.writeChecks.get(ctx.toolCall);
     if (check === undefined || check.knowledge === 'current') {
-      await this.recordCurrentMtime(path);
+      await this.recordCurrentMtime(path, ctx.args);
       return;
     }
     const note = name === 'Edit' ? editNote(check) : undefined;
     if (note !== undefined) ctx.result = withNote(ctx.result, note);
   }
 
-  private async knowledgeOnDisk(path: string): Promise<Knowledge> {
-    const stat = await this.statFile(path);
-    if (stat === undefined || stat.mtimeMs === undefined) return 'current';
-    const recorded = this.recordedMtimeMs(path);
+  private async knowledgeOnDisk(path: string, host?: string, inspected?: Runtime): Promise<Knowledge> {
+    const file = await this.statFile(path, host, inspected);
+    if (file === undefined || file.stat.mtimeMs === undefined) return 'current';
+    const recorded = this.states.get(staleGuardKey).get(staleGuardStateMapKey(path, file.runtimeId));
     if (recorded === undefined) return 'unread';
-    return recorded === stat.mtimeMs ? 'current' : 'changed';
+    return sameFileState(recorded, file.stat) ? 'current' : 'changed';
   }
 
-  private async recordCurrentMtime(path: string): Promise<void> {
-    const stat = await this.statFile(path);
-    if (stat?.mtimeMs === undefined || this.recordedMtimeMs(path) === stat.mtimeMs) return;
-    await this.dispatcher.dispatch(new StaleGuardRecorded({ path, mtimeMs: stat.mtimeMs }));
+  private async recordCurrentMtime(path: string, args: unknown): Promise<void> {
+    const target = targetFromArgs(args, path);
+    const file = await this.statFile(path, target.host);
+    if (file?.stat.mtimeMs === undefined) return;
+    const recorded = this.states.get(staleGuardKey).get(staleGuardStateMapKey(path, file.runtimeId));
+    if (recorded !== undefined && sameFileState(recorded, file.stat)) return;
+    await this.dispatcher.dispatch(new StaleGuardRecorded({
+      path,
+      mtimeMs: file.stat.mtimeMs,
+      size: file.stat.size,
+      runtimeId: file.runtimeId === 'local' ? undefined : file.runtimeId,
+    }));
   }
 
-  private async statFile(path: string): Promise<HostFileStat | undefined> {
-    const lease = this.runtime.acquire(['fs']);
+  private async statFile(path: string, host?: string, inspected?: Runtime): Promise<{ readonly stat: HostFileStat; readonly runtimeId: string } | undefined> {
+    let lease: ReturnType<typeof acquireToolRuntime> | undefined;
     try {
+      const prepared = inspected ?? await prepareToolRuntime(this.runtime, host);
+      lease = acquireToolRuntime(this.runtime, host, ['fs']);
+      if (lease.runtime.identity.runtimeId !== prepared.identity.runtimeId ||
+          lease.runtime.identity.generation !== prepared.identity.generation) return undefined;
       const stat = await lease.runtime.fs!.stat(path);
-      return stat.isFile ? stat : undefined;
+      return stat.isFile ? { stat, runtimeId: lease.runtime.identity.runtimeId } : undefined;
     } catch {
       return undefined;
     } finally {
-      lease.dispose();
+      lease?.dispose();
     }
   }
 }

@@ -1,6 +1,7 @@
 import { toDisposable } from '#/_base/di/lifecycle';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -71,6 +72,20 @@ const validators = new WeakMap<
   ExecutableTool,
   { schema: Record<string, unknown>; validator: ToolArgsValidator }
 >();
+
+function stringArgument(args: unknown, key: string): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const value = (args as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function activeRuntimeId(runtime?: LiveRef<IAgentRuntimeService>): string | undefined {
+  try {
+    return runtime?.current?.inspect().identity.runtimeId;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface ToolExecutionTask {
   readonly accesses: ToolAccesses;
@@ -189,6 +204,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     @ref(IAgentToolApprovalService) private readonly approval?: LiveRef<IAgentToolApprovalService>,
     @ref(ISessionContext) private readonly session?: LiveRef<ISessionContext>,
     @ref(IAgentScopeContext) private readonly agent?: LiveRef<IAgentScopeContext>,
+    @ref(IAgentRuntimeService) private readonly runtime?: LiveRef<IAgentRuntimeService>,
   ) {
     this.states.contributeState(toolExecutorToolCallDupTypesKey);
     this.states.contributeState(toolExecutorDupTypeTurnIdKey);
@@ -885,6 +901,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       truncatedResult = await this.resultTruncation.truncateForModel({
         toolName: call.toolName,
         toolCallId: call.toolCall.id,
+        host: stringArgument(call.args, 'host'),
+        path: stringArgument(call.args, 'path'),
+        cwd: stringArgument(call.args, 'cwd'),
+        runtimeId: finalResult.runtimeId,
+        activeRuntimeId: activeRuntimeId(this.runtime),
         result: call.kind === 'runnable' && call.ignoredArguments !== undefined
           ? withIgnoredArgumentsNote(finalResult, call.ignoredArguments)
           : finalResult,

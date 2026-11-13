@@ -3,7 +3,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 export interface IStaleGuardService {
   readonly _serviceBrand: undefined;
 
-  recordedMtimeMs(path: string): number | undefined;
+  recordedMtimeMs(path: string, runtimeId?: string): number | undefined;
 }
 
 export const IStaleGuardService: ServiceIdentifier<IStaleGuardService> =

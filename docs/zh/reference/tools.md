@@ -6,9 +6,9 @@
 
 调用中包含工具 schema 任何位置都未声明的参数时，Kiki 会去掉该参数，用其余参数执行调用，并在结果中加上 `Note: ignored unknown argument(s): <参数名>.`；审批提示、hook 和调用记录只显示其余参数。若该参数像是拼错了调用中未提供的已声明参数（例如把 `replace_all` 写成 `replace_al`），仍会拒绝并提示正确的参数名。允许额外属性的 schema 会原样收到这些参数。
 
-同一步内参数完全相同的只读调用只执行一次，其余副本返回该结果并带标注；可能产生改动的相同调用各自执行。超过 50,000 字符的工具输出会保存到文件，结果显示开头 6,000 和结尾 18,000 字符及文件路径。
+同一步内完全相同的只读调用（包括 `Bash`）只执行一次，其余副本返回该结果并带标注；可能产生改动的相同调用各自执行。超过 50,000 字符的工具输出会保存到文件，结果显示开头 6,000 和结尾 18,000 字符及文件路径。
 
-结果提示 `Tool output formatting failed after execution` 时，先用 `Read` 或 `Grep` 查看其中的 `output_path`，再决定是否重新执行工具。工具已经执行过，保存的文本和附带的媒体仍可读取。结果会说明保存的是完整文本，还是保留上限以内的开头部分。
+结果提示 `Tool output formatting failed after execution` 时，先用 `Read` 或 `Grep` 查看其中的 `output_path`，再决定是否重新执行工具。保存的 `output_path` 文件位于 Kiki 服务机本地；通过 SSH 工作时，传 `host: "local"` 调用 `Read` 或 `Grep` 翻页或搜索。工具已经执行过，保存的文本和附带的媒体仍可读取。结果会说明保存的是完整文本，还是保留上限以内的开头部分。
 
 历史、线程、房间、子 Agent、任务、记忆和工作笔记回执默认向模型展示紧凑视图：原文先于翻页信息，时间使用运行环境的本地时区并标明 UTC 偏移，部分覆盖和截断会附上续读指引。复制回执给出的调用即可读取下一页或下一段。`HistoryRead` 的字符范围按 UTF-16 代码单元计数，任务日志偏移按 UTF-8 字节计数。压缩交接中，重复来源共用一个带编号的 `HistoryRead` 调用；`t42.3` 表示第 42 轮、第 3 步。
 
@@ -58,11 +58,11 @@
 - `description`：后台任务在任务列表中的标签；省略时使用命令开头
 - `disable_timeout`：后台任务是否取消超时限制
 
-同一个模型步骤中的多个 `Bash` 调用按顺序逐个执行。只由带字面参数的简单只读命令组成的调用，例如 `ls`、`cat`、`rg`、`grep`、不带 `-exec` 或 `-delete` 的 `find`、`git log`、`git show`、`git rev-parse`，可以与其他读取操作并行。`git status` 和 `git diff` 可能改写 Git 索引，因此仍按顺序执行。
+同一步内不同的 `Bash` 调用通常按顺序执行。在 `bash` shell 中，如果不同调用只包含带字面参数的简单只读命令（例如 `ls`、`cat`、`rg`、`grep`、不带 `-exec` 或 `-delete` 的 `find`、`git log`、`git show` 或 `git rev-parse`），这些调用可以彼此并发，也可与其他读取操作并行。`git status` 和 `git diff` 可能改写 Git 索引，因此仍按顺序执行。
 
 命令只是在读文件、搜索文件或写文本文件时，`Bash` 可以在结果末尾附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。该提示默认关闭；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = true` 可开启，开启后每类提示在一个会话中最多出现三次，不改变执行与审批行为。
 
-前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。本地 Windows 命令默认使用 Git Bash。启用原生 SSH 后，传入 `host` 可在 SSH 主机上执行；Windows SSH 命令使用 PowerShell 语法和原生 Windows 路径，无需在远端安装 Git Bash。首次连接后，结果和已加入主机的公告会标明远端平台与 Shell。
+前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。本地 Windows 命令默认使用 Git Bash。启用原生 SSH 后，传入 `host` 可在 SSH 主机上执行 `Bash`。Windows SSH 主机上的 `Bash` 实际运行于 Windows PowerShell，命令按顺序执行；Windows PowerShell 5.1 用 `;` 而不是 `&&` 连接语句。远端使用原生 Windows 路径，无需安装 Git Bash。首次连接后，结果和已加入主机的公告会标明远端平台与 Shell。
 
 在 Windows 上，本地 `Bash` 命令结束后，它拉起的进程还可以继续跑。这些进程归启动它们的那个 Kiki 后端。你[关闭桌面窗口](../getting-started/desktop-app.md#窗口、托盘与打开文件)时它们继续运行；启用**最小化到托盘**时，关窗只会隐藏或最小化。该后端停止或异常退出时，会清掉这些命令各自的进程树，机器上的其他程序留在原地。
 

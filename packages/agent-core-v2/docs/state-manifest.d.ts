@@ -9330,7 +9330,10 @@ export interface AgentStateSnapshot {
   };
   // src/features/staleGuard/staleGuardOps.ts
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared
-  'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number>;
+  'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number | /* StaleGuardFileState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ {
+    readonly mtimeMs: number;
+    readonly size?: number;
+  }>;
   // src/session/agentCollaboration/messageReceiptState.ts
   // replayable · durable — folds: ContextAppendMessage, TurnPrompt, TurnSteer
   'agentCollaboration.materializedMessages.v2': Record<string, true>;
