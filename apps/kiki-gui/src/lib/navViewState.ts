@@ -133,6 +133,19 @@ export function readPreviewSnapshot(value: unknown): PreviewReadingSnapshot | un
       tab = { kind: 'panel', agentId: raw['agentId'], title: typeof raw['title'] === 'string' ? raw['title'] : undefined };
     } else if (raw['kind'] === 'skill' && typeof raw['name'] === 'string') {
       tab = { kind: 'skill', name: raw['name'] };
+    } else if (
+      raw['kind'] === 'plugin' &&
+      typeof raw['pluginId'] === 'string' &&
+      raw['pluginId'] !== '' &&
+      typeof raw['panelId'] === 'string' &&
+      raw['panelId'] !== ''
+    ) {
+      tab = {
+        kind: 'plugin',
+        pluginId: raw['pluginId'],
+        panelId: raw['panelId'],
+        title: typeof raw['title'] === 'string' && raw['title'] !== '' ? raw['title'] : undefined,
+      };
     }
     if (tab === undefined) continue;
     const key = previewTabKey(tab);

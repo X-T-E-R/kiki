@@ -42,6 +42,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
+import { registerSessionPluginPanelOpener } from '../lib/pluginPanelPreview';
 import { useLayerHistory } from '../lib/layerHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
@@ -131,6 +132,7 @@ export function MediaPreviewProvider({
   onCancelTask,
   onStopAgentTask,
   snapshotAgentId = 'main',
+  registerSessionOpener = true,
   children,
 }: {
   cwd?: string;
@@ -145,6 +147,8 @@ export function MediaPreviewProvider({
   onCancelTask?: (taskId: string, ownerAgentId?: string) => void;
   onStopAgentTask?: (ownerAgentId: string, taskId: string) => Promise<void>;
   snapshotAgentId?: string;
+  /** False on auxiliary surfaces (`/capabilities` media resolver) that pass a `sessionId` without owning a conversation preview workspace. */
+  registerSessionOpener?: boolean;
   children: ReactNode;
 }) {
   const { t } = useI18n();
@@ -307,6 +311,12 @@ export function MediaPreviewProvider({
     revealPreview();
   }, [cwd, revealPreview]);
 
+  const openPluginPanel = useCallback((pluginId: string, panelId: string, title?: string) => {
+    setNavigation(undefined);
+    setTabsState((state) => openPreviewTab(state, { kind: 'plugin', pluginId, panelId, title }, cwd));
+    revealPreview();
+  }, [cwd, revealPreview]);
+
   const togglePanel = useCallback(() => {
     if (cockpit) revealPreview();
     else setPanelOpen((value) => !value);
@@ -385,6 +395,50 @@ export function MediaPreviewProvider({
           (tab) => previewTabKey(tab, cwd) === tabsState.active && tab.kind === 'panel',
         ) as { agentId: string } | undefined)?.agentId
       : undefined;
+  const activePluginTab =
+    panelOpen && !cockpit && tabsState.active !== null
+      ? tabsState.tabs.find(
+          (tab): tab is Extract<PreviewTab, { kind: 'plugin' }> =>
+            previewTabKey(tab, cwd) === tabsState.active && tab.kind === 'plugin',
+        )
+      : undefined;
+  const activePluginPanelKey =
+    activePluginTab !== undefined
+      ? `${activePluginTab.pluginId}:${activePluginTab.panelId}`
+      : undefined;
+
+  const openPluginPanelRef = useRef(openPluginPanel);
+  openPluginPanelRef.current = openPluginPanel;
+  const activePluginPanelKeyRef = useRef(activePluginPanelKey);
+  activePluginPanelKeyRef.current = activePluginPanelKey;
+  const openerHandleRef = useRef<ReturnType<typeof registerSessionPluginPanelOpener> | null>(null);
+
+  useEffect(() => {
+    if (!registerSessionOpener || sessionId === undefined) return;
+    const handle = registerSessionPluginPanelOpener({
+      sessionId,
+      agentId: snapshotAgentId,
+      open: ({ pluginId, panelId, title }) => {
+        openPluginPanelRef.current(pluginId, panelId, title);
+      },
+      activePluginPanelKey: activePluginPanelKeyRef.current,
+    });
+    openerHandleRef.current = handle;
+    return () => {
+      openerHandleRef.current = null;
+      handle.unregister();
+    };
+  }, [registerSessionOpener, sessionId, snapshotAgentId]);
+
+  useEffect(() => {
+    openerHandleRef.current?.update({
+      open: ({ pluginId, panelId, title }) => {
+        openPluginPanelRef.current(pluginId, panelId, title);
+      },
+      activePluginPanelKey,
+    });
+  }, [openPluginPanel, activePluginPanelKey]);
+
   const api = useMemo<MediaPreviewApi>(
     () => ({
       cwd,
@@ -410,6 +464,7 @@ export function MediaPreviewProvider({
       },
       openAttachmentInWorkspace,
       openWeb,
+      openPluginPanel,
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
@@ -417,6 +472,7 @@ export function MediaPreviewProvider({
       previewPanelWidth: panelOpen ? width : undefined,
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
+      activePluginPanelKey,
     }),
     [
       cwd,
@@ -429,6 +485,7 @@ export function MediaPreviewProvider({
       openFile,
       openAttachmentInWorkspace,
       openWeb,
+      openPluginPanel,
       openAgentPanel,
       openBuiltinSkill,
       tabsState.tabs.length,
@@ -437,6 +494,7 @@ export function MediaPreviewProvider({
       width,
       togglePanel,
       activeAgentPanelId,
+      activePluginPanelKey,
     ],
   );
 

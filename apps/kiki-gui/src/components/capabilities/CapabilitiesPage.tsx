@@ -247,7 +247,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
     // a preview surface that knows which session it belongs to, and the media
     // sources view lists exactly those. Without it a thumbnail stays on
     // "Loading…" forever rather than admitting it cannot resolve.
-    <MediaPreviewProvider sessionId={sessionId}>
+    <MediaPreviewProvider sessionId={sessionId} registerSessionOpener={false}>
       <div className="flex h-full min-h-0 flex-col bg-paper" data-capabilities-page={tab}>
         <PageHeader title={t('cap.page.title')} onToggleSidebar={onToggleSidebar} width="split">
           {/* Adding is the page's one action; re-reading the lists is rare

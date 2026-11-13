@@ -34,6 +34,10 @@ import { HostProvider, browserHost, type HostAdapter } from '../host';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
+import {
+  registerSessionPluginPanelOpener,
+  resetSessionPluginPanelOpenersForTests,
+} from '../lib/pluginPanelPreview';
 import { nestSessionThreads, sessionRelationOf } from '../lib/sessionThreads';
 import { requestSessionSearch } from '../lib/sidebarSearch';
 import { configureSpaceStorage } from '../lib/spaceStorage';
@@ -3553,6 +3557,128 @@ describe('sidebar on a phone', () => {
       expect(slotRequests[0]).toContain('session_id=s-two');
       expect(container.querySelector('[data-plugin-sidebar-panel="notes:board"]')?.textContent).toContain('Notes board');
     } finally {
+      vi.stubGlobal('fetch', originalFetch);
+    }
+  });
+
+  it('renders smartphone SVG icon for kiki-phone sidebar panel, highlights when open in session, and opens inside session PreviewWorkspace instead of /capabilities', async () => {
+    connectionScope.brokerConfig = { url: 'http://127.0.0.1:9999', token: 'tok' };
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/plugins/gui-slots')) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: 'ok',
+            data: {
+              slots: [
+                {
+                  slot: 'sidebar-panel',
+                  pluginId: 'kiki-phone',
+                  id: 'phone-preview',
+                  title: { default: 'Phone Preview', zh: '手机预览' },
+                  panelId: 'preview',
+                  bridge: 'kiki.panel.v1',
+                  order: 1,
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ code: 40409, msg: 'not found', data: null }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    const openedRequests: Array<{ pluginId: string; panelId: string; title?: string }> = [];
+    const registration = registerSessionPluginPanelOpener({
+      sessionId: 's-phone',
+      open: (req) => {
+        openedRequests.push(req);
+      },
+      activePluginPanelKey: undefined,
+    });
+
+    try {
+      const sPhone = session('s-phone');
+      const group = { key: 'today', label: 'Today', items: [threadItem(sPhone)] };
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      const root = createRoot(container);
+      roots.push(root);
+
+      function RouteEcho() {
+        const loc = useLocation();
+        return <div data-sidebar-route={`${loc.pathname}${loc.search}`} />;
+      }
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <MemoryRouter initialEntries={['/s/s-phone']}>
+                  <RouteEcho />
+                  <Sidebar
+                    activeSessionId="s-phone"
+                    sessions={[sPhone]}
+                    sessionGroups={[group]}
+                    sessionsQuery={{
+                      isLoading: false,
+                      isError: false,
+                      error: null,
+                      hasNextPage: false,
+                      isFetchingNextPage: false,
+                      fetchNextPage: async () => {},
+                    }}
+                    workspaceOptions={[]}
+                    filters={DEFAULT_SESSION_LIST_FILTERS}
+                    onFiltersChange={() => {}}
+                    onNewSession={() => {}}
+                    groupBy="time"
+                    onGroupBy={() => {}}
+                    sortBy="updated-desc"
+                    onSortBy={() => {}}
+                  />
+                </MemoryRouter>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      for (let index = 0; index < 3; index += 1) await settle();
+
+      const row = container.querySelector<HTMLButtonElement>('[data-plugin-sidebar-panel="kiki-phone:preview"]');
+      expect(row).not.toBeNull();
+      expect(row?.querySelector('svg[data-icon="smartphone"]')).not.toBeNull();
+      expect(row?.getAttribute('aria-current')).toBeNull();
+
+      await act(async () => {
+        row!.click();
+      });
+      expect(openedRequests).toEqual([
+        { pluginId: 'kiki-phone', panelId: 'preview', title: row?.textContent?.trim() },
+      ]);
+      // Did not navigate away from /s/s-phone!
+      expect(container.querySelector('[data-sidebar-route]')?.getAttribute('data-sidebar-route')).toBe('/s/s-phone');
+
+      // When the session opener reports the panel active, Sidebar marks aria-current="page".
+      await act(async () => {
+        registration.update({
+          open: (req) => { openedRequests.push(req); },
+          activePluginPanelKey: 'kiki-phone:preview',
+        });
+      });
+      expect(row?.getAttribute('aria-current')).toBe('page');
+    } finally {
+      registration.unregister();
+      resetSessionPluginPanelOpenersForTests();
       vi.stubGlobal('fetch', originalFetch);
     }
   });

@@ -4,7 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { Icon, OutcomeMark, type OutcomeState } from './icons';
+import { Icon, OutcomeMark, resolvePluginSlotIconName, type OutcomeState } from './icons';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -50,6 +50,19 @@ describe('icon family', () => {
     expect(nav.querySelector('svg')?.getAttribute('class')).toContain('h-4 w-4');
     const custom = await render(<Icon name="menu" size={16} className="h-5 w-5" />);
     expect(custom.querySelector('svg')?.getAttribute('class')).not.toContain('h-4');
+  });
+
+  it('draws smartphone and plugin icons cleanly and maps plugin slot icon hints', async () => {
+    const phone = await render(<Icon name="smartphone" size={16} />);
+    expect(phone.querySelector('svg')?.getAttribute('data-icon')).toBe('smartphone');
+    const plugin = await render(<Icon name="plugin" size={16} />);
+    expect(plugin.querySelector('svg')?.getAttribute('data-icon')).toBe('plugin');
+
+    expect(resolvePluginSlotIconName({ icon: 'phone', pluginId: 'other' })).toBe('smartphone');
+    expect(resolvePluginSlotIconName({ icon: 'smartphone', pluginId: 'other' })).toBe('smartphone');
+    expect(resolvePluginSlotIconName({ pluginId: 'kiki-phone', panelId: 'preview' })).toBe('smartphone');
+    expect(resolvePluginSlotIconName({ icon: 'terminal', pluginId: 'cordis-sh' })).toBe('terminal');
+    expect(resolvePluginSlotIconName({ pluginId: 'cordis-notes', fallback: 'star' })).toBe('star');
   });
 });
 

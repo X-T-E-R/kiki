@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
@@ -10,10 +10,38 @@ import { describe, expect, it, vi } from 'vitest';
 import { Jimp } from 'jimp';
 import type { PluginImAdapterDefinition } from '@kiki/protocol';
 
+import { Event } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
+import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { PluginHost } from '#/app/plugin/host';
 import { parseManifest } from '#/app/plugin/manifest';
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { createServices } from '#/_base/di/test';
+import { createScopedTestHost, createServices, stubPair } from '#/_base/di/test';
+import { stubLog } from '../../_base/log/stubs';
+import { stubBootstrap } from '../bootstrap/stubs';
+import { stubProviderService } from '../provider/stubs';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { IEventService } from '#/app/event/event';
+import type { Event2 } from '#/app/event/event2';
+import { IFlagService } from '#/app/flag/flag';
+import { IOAuthService } from '#/app/auth/auth';
+import { IPluginExtensionPortRegistry } from '#/app/plugin/extensionSlots';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginHostService, PluginHostService } from '#/app/plugin/pluginHostService';
+import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
+import { PluginService } from '#/app/plugin/pluginService';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
+import { PluginExtensionPortRegistryService } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistryService';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
+import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
+import { LifecycleScope } from '#/app/scopes';
+import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IProviderService } from '#/kosong/provider/provider';
 import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
 import { parseDaemonFileUrl } from '#/agent/media/mediaRef';
 import { validateImageDataUrl } from '#/agent/media/image-compress';
@@ -487,4 +515,368 @@ it('runs an async Cordis slot in the existing process host and preserves the inv
     await host.stopAndWait();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+describe('PluginHostService extension port bridge', () => {
+  async function createExtensionBridgeHarness(options: { readonly usageEnabled?: boolean } = {}) {
+    _clearScopedRegistryForTests();
+    registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginUsageService, PluginUsageService, ScopeActivation.OnDemand, 'plugin');
+    const root = await mkdtemp(join(tmpdir(), 'plugin-ext-bridge-'));
+    const docs = new Map<string, unknown>();
+    const config: Record<string, unknown> = {};
+    const sessions = new Map<string, SessionSummary>();
+    const publishedEvents: Event2<unknown>[] = [];
+    const registry = new PluginExtensionPortRegistryService({} as never);
+    const eventService: IEventService = {
+      _serviceBrand: undefined,
+      onDidPublish: Event.None as IEventService['onDidPublish'],
+      publish: (event) => {
+        publishedEvents.push(event);
+      },
+      subscribe: () => ({ dispose: () => undefined }),
+    };
+    const sessionIndex = {
+      _serviceBrand: undefined,
+      get: async (sessionId: string) => sessions.get(sessionId),
+    } as unknown as ISessionIndex;
+    const host = createScopedTestHost([
+      stubPair(ILogService, stubLog()),
+      stubPair(IFlagService, {
+        enabled: (id: string) => (id === 'plugin_workspace_usage' ? (options.usageEnabled ?? true) : true),
+      } as unknown as IFlagService),
+      stubPair(IBootstrapService, { ...stubBootstrap(join(root, 'home')), osHomeDir: join(root, 'user') }),
+      stubPair(IProviderService, stubProviderService()),
+      stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
+      stubPair(IOAuthService, {} as IOAuthService),
+      stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
+      stubPair(ISessionManager, { list: () => [], get: () => undefined, onDidCreateSession: Event.None, onDidCloseSession: Event.None } as unknown as ISessionManager),
+      stubPair(IConfigService, {
+        ready: Promise.resolve(),
+        get: (key: string) => config[key] ?? {},
+        replace: async (key: string, value: unknown) => { config[key] = value; },
+        onDidSectionChange: Event.None,
+      } as unknown as IConfigService),
+      stubPair(IAtomicDocumentStore, {
+        get: async (scope: string, key: string) => docs.get(`${scope}/${key}`),
+        set: async (scope: string, key: string, value: unknown) => { docs.set(`${scope}/${key}`, value); },
+        update: async <T>(scope: string, key: string, updater: (current: T | undefined) => T) => {
+          const next = updater(docs.get(`${scope}/${key}`) as T | undefined);
+          docs.set(`${scope}/${key}`, next);
+          return next;
+        },
+      } as unknown as IAtomicDocumentStore),
+      stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
+      stubPair(IPluginExtensionPortRegistry, registry),
+      stubPair(IPluginExtensionPortRegistryReader, registry),
+      stubPair(ISessionIndex, sessionIndex),
+      stubPair(IEventService, eventService),
+    ]);
+    return {
+      root,
+      host,
+      docs,
+      registry,
+      sessions,
+      publishedEvents,
+      plugins: host.app.accessor.get(IPluginService),
+      hosts: host.app.accessor.get(IPluginHostService),
+      usage: host.app.accessor.get(IPluginUsageService),
+      dispose: async () => {
+        await host.app.accessor.get(IPluginHostService).stopAll();
+        registry.dispose();
+        await host.dispose();
+        await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 25 });
+      },
+    };
+  }
+
+  it('registers synthesized sidebar-panel slots without spawning a child on cold startup and bridges manifest routes + E5 prompt context', async () => {
+    const harness = await createExtensionBridgeHarness();
+    try {
+      await harness.hosts.ready;
+      const staticSource = join(harness.root, 'panel-only');
+      await mkdir(staticSource, { recursive: true });
+      await writeFile(join(staticSource, 'preview.html'), '<h1>Static Preview</h1>');
+      await writeFile(join(staticSource, 'entry.mjs'), 'export function register() {}');
+      await writeFile(join(staticSource, 'kimi.plugin.json'), JSON.stringify({
+        name: 'panel-only',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          permissions: { uiPanel: true },
+          panels: [{ schemaVersion: 1, id: 'preview', label: 'Panel Only', slot: 'sidebar', path: './preview.html' }],
+        },
+      }));
+      const staticPlan = await harness.plugins.previewPlugin({ source: staticSource });
+      await harness.plugins.installPlugin({ source: staticSource, fingerprint: staticPlan.fingerprint, consent: true });
+      expect(harness.hosts.running('panel-only')).toBe(false);
+      expect(harness.registry.listGuiSlots()).toEqual([
+        {
+          slot: 'sidebar-panel',
+          pluginId: 'panel-only',
+          id: 'panel:preview',
+          title: { default: 'Panel Only' },
+          panelId: 'preview',
+          bridge: 'kiki.panel.v1',
+          order: 100,
+        },
+      ]);
+
+      const activeSource = join(harness.root, 'manifest-bridge');
+      await mkdir(activeSource, { recursive: true });
+      await writeFile(join(activeSource, 'entry.mjs'), `
+        export const slots = {
+          'E5:prompt-context': async (payload) => ({
+            sections: [{ title: 'Connected Device', content: 'Pixel 9 ready in ' + payload.workspaceId }],
+          }),
+          'E12:server-gui-slots': async (payload) => {
+            if (payload.kind === 'http-route' && payload.method === 'POST' && payload.subpath === '/device/ping') {
+              return {
+                status: 200,
+                data: {
+                  pong: true,
+                  bodyEcho: payload.body,
+                  scope: payload.scope,
+                },
+              };
+            }
+            return { status: 404, errorMessage: 'unknown route' };
+          },
+        };
+      `);
+      await writeFile(join(activeSource, 'kimi.plugin.json'), JSON.stringify({
+        name: 'manifest-bridge',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          guiSlots: [
+            {
+              slot: 'status-capsule',
+              id: 'adb-capsule',
+              label: { default: 'Phone' },
+              valueText: 'Online',
+              dotTone: 'ok',
+            },
+          ],
+          routes: [
+            { method: 'POST', subpath: '/device/ping', scopeAcl: 'session' },
+          ],
+          promptContext: true,
+        },
+      }));
+      const activePlan = await harness.plugins.previewPlugin({ source: activeSource });
+      await harness.plugins.installPlugin({ source: activeSource, fingerprint: activePlan.fingerprint, consent: true });
+
+      expect(harness.registry.listGuiSlots().some((slot) => slot.pluginId === 'manifest-bridge' && slot.id === 'adb-capsule')).toBe(true);
+      expect(harness.registry.resolveHttpRoute('manifest-bridge', 'POST', '/device/ping')).toMatchObject({
+        pluginId: 'manifest-bridge',
+        method: 'POST',
+        subpath: '/device/ping',
+        scopeAcl: 'session',
+      });
+
+      harness.sessions.set('sess-alpha', {
+        id: 'sess-alpha',
+        workspaceId: 'ws-alpha',
+        createdAt: 1,
+        updatedAt: 2,
+        archived: false,
+      });
+      harness.sessions.set('sess-beta', {
+        id: 'sess-beta',
+        workspaceId: 'ws-beta',
+        createdAt: 1,
+        updatedAt: 2,
+        archived: false,
+      });
+
+      const deniedSections = await harness.registry.renderPromptSections({
+        sessionId: 'sess-alpha',
+        agentId: 'main',
+      });
+      expect(deniedSections).toEqual({ text: '', suppressRuntimeContext: false });
+
+      await harness.usage.set({ workspaceId: 'ws-alpha', pluginId: 'manifest-bridge', override: 'on' });
+      const allowedSections = await harness.registry.renderPromptSections({
+        sessionId: 'sess-alpha',
+        agentId: 'main',
+      });
+      expect(allowedSections).toEqual({
+        text: '### Connected Device\nPixel 9 ready in ws-alpha',
+        suppressRuntimeContext: false,
+      });
+
+      harness.docs.set('session-plugin-usage/sess-alpha', {
+        revision: 1,
+        overrides: { 'manifest-bridge': false },
+      });
+      const sessionBlockedSections = await harness.registry.renderPromptSections({
+        sessionId: 'sess-alpha',
+        agentId: 'main',
+      });
+      expect(sessionBlockedSections).toEqual({ text: '', suppressRuntimeContext: false });
+
+      const routeResult = await harness.registry.invokeHttpRoute({
+        pluginId: 'manifest-bridge',
+        method: 'POST',
+        subpath: '/device/ping',
+        query: { fast: '1' },
+        headers: {},
+        body: { x: 120, y: 340 },
+        spaceId: 'main',
+        sessionId: 'sess-beta',
+        signal: new AbortController().signal,
+      });
+      expect(routeResult).toEqual({
+        status: 200,
+        data: {
+          pong: true,
+          bodyEcho: { x: 120, y: 340 },
+          scope: {
+            spaceId: 'main',
+            sessionId: 'sess-beta',
+            workspaceId: 'ws-beta',
+          },
+        },
+        errorMessage: undefined,
+      });
+
+      await harness.plugins.setPluginEnabled({ id: 'manifest-bridge', enabled: false });
+      expect(harness.registry.listGuiSlots().some((slot) => slot.pluginId === 'manifest-bridge')).toBe(false);
+      expect(harness.registry.resolveHttpRoute('manifest-bridge', 'POST', '/device/ping')).toBeUndefined();
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('discovers dynamic E12 guiSlots + routes and E5 promptContext from 0.4.3-compatible x-kiki.slots manifests and withdraws on removal', async () => {
+    const harness = await createExtensionBridgeHarness({ usageEnabled: false });
+    try {
+      await harness.hosts.ready;
+      const source = join(harness.root, 'kiki-phone');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'preview.html'), '<h1>Phone Preview</h1>');
+      await writeFile(join(source, 'entry.mjs'), `
+        export function register() {}
+        export const slots = {
+          'E5:prompt-context': async () => 'Active phone: Xiaomi 12S Ultra (1080x2400)',
+          'E12:server-gui-slots': async (payload) => {
+            if (payload?.kind === 'describe' || payload?.action === 'describe') {
+              return {
+                guiSlots: [
+                  {
+                    slot: 'sidebar-panel',
+                    id: 'phone-live-preview',
+                    title: { default: 'Phone Live', zh: '手机投屏' },
+                    panelId: 'preview',
+                    order: 5,
+                  },
+                  {
+                    slot: 'composer-toolbar',
+                    id: 'phone-toggle',
+                    label: { default: 'Phone', zh: '手机' },
+                    tone: 'accent',
+                    action: { kind: 'open_plugin_panel', panelId: 'preview' },
+                  },
+                ],
+                routes: [
+                  { method: 'GET', subpath: '/preview/frame', scopeAcl: 'space' },
+                ],
+                wsTopics: [
+                  { topic: 'device.frame', scopeAcl: 'space' },
+                ],
+              };
+            }
+            if (payload?.kind === 'http-route' && payload.method === 'GET' && payload.subpath === '/preview/frame') {
+              return { frameSeq: 42, width: 1080, height: 2400 };
+            }
+            return { status: 404, errorMessage: 'not found' };
+          },
+        };
+      `);
+      await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+        name: 'kiki-phone',
+        version: '0.2.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          permissions: { uiPanel: true },
+          panels: [{ schemaVersion: 1, id: 'preview', label: 'Kiki Phone', slot: 'sidebar', path: './preview.html' }],
+          slots: ['E5:prompt-context', 'E12:server-gui-slots'],
+        },
+      }));
+
+      const plan = await harness.plugins.previewPlugin({ source });
+      await harness.plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+      await harness.plugins.setPluginEnabled({ id: 'kiki-phone', enabled: true, defaultEnabled: true });
+
+      await vi.waitFor(() => {
+        expect(harness.registry.resolveHttpRoute('kiki-phone', 'GET', '/preview/frame')).toBeDefined();
+      });
+
+      const guiSlots = harness.registry.listGuiSlots();
+      expect(guiSlots.filter((slot) => slot.slot === 'sidebar-panel')).toEqual([
+        {
+          slot: 'sidebar-panel',
+          pluginId: 'kiki-phone',
+          id: 'phone-live-preview',
+          title: { default: 'Phone Live', zh: '手机投屏' },
+          panelId: 'preview',
+          bridge: 'kiki.panel.v1',
+          order: 5,
+        },
+      ]);
+      expect(guiSlots.find((slot) => slot.slot === 'composer-toolbar')).toMatchObject({
+        slot: 'composer-toolbar',
+        pluginId: 'kiki-phone',
+        id: 'phone-toggle',
+      });
+      expect(harness.publishedEvents.some((event) => event.type === 'event.plugin.changed')).toBe(true);
+      expect(harness.registry.resolveWsTopic('kiki-phone', 'device.frame')).toEqual({
+        pluginId: 'kiki-phone',
+        topic: 'device.frame',
+        scopeAcl: 'space',
+      });
+
+      const frameResponse = await harness.registry.invokeHttpRoute({
+        pluginId: 'kiki-phone',
+        method: 'GET',
+        subpath: '/preview/frame',
+        query: {},
+        headers: {},
+        body: undefined,
+        spaceId: 'main',
+        signal: new AbortController().signal,
+      });
+      expect(frameResponse).toEqual({
+        status: 200,
+        data: { frameSeq: 42, width: 1080, height: 2400 },
+      });
+
+      const sections = await harness.registry.renderPromptSections({
+        sessionId: 'sess-1',
+        agentId: 'main',
+      });
+      expect(sections).toEqual({
+        text: 'Active phone: Xiaomi 12S Ultra (1080x2400)',
+        suppressRuntimeContext: false,
+      });
+
+      await harness.plugins.removePlugin({ id: 'kiki-phone' });
+      expect(harness.registry.listGuiSlots()).toEqual([]);
+      expect(harness.registry.resolveHttpRoute('kiki-phone', 'GET', '/preview/frame')).toBeUndefined();
+      expect(harness.registry.resolveWsTopic('kiki-phone', 'device.frame')).toBeUndefined();
+      expect(await harness.registry.renderPromptSections({ sessionId: 'sess-1', agentId: 'main' })).toEqual({
+        text: '',
+        suppressRuntimeContext: false,
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
 });

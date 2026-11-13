@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -8,15 +8,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   IBootstrapService,
   IAtomicDocumentStore,
+  IConfigService,
   IEventService,
+  IFlagService,
   IInstantiationService,
+  ILogService,
+  IModelCatalog,
+  IOAuthService,
   IPluginExtensionPortRegistry,
   IPluginHostService,
   IPluginService,
+  IPluginSettingsService,
   IPluginUsageService,
+  IProviderService,
   ISessionIndex,
   ISessionManager,
+  ISkillDiscovery,
   IWorkspaceService,
+  LifecycleScope,
   type IDisposable,
   type PluginHttpRouteHandlerContext,
   type PluginHttpRouteResult,
@@ -25,9 +34,16 @@ import {
   type Scope,
   type Workspace,
 } from '@kiki/agent-core-v2';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '@kiki/agent-core-v2/_base/di/scope';
+import { createScopedTestHost, stubPair } from '@kiki/agent-core-v2/_base/di/test';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/testInstantiationService';
+import { PluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
+import { PluginService } from '@kiki/agent-core-v2/app/plugin/pluginService';
+import { PluginSettingsService } from '@kiki/agent-core-v2/app/plugin/pluginSettingsService';
 import { PluginUsageService } from '@kiki/agent-core-v2/app/pluginUsage/pluginUsageService';
 import { PluginExtensionPortRegistryService } from '@kiki/agent-core-v2/app/pluginExtensionPorts/pluginExtensionPortRegistryService';
+import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import {
   ErrorCode,
   type ListPluginGuiSlotsResponse,
@@ -848,5 +864,208 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(receivedA.filter((e) => e.type === 'event.plugin.topic')).toHaveLength(1);
+  });
+
+  it('serves synthesized + dynamic E12 GUI slots and HTTP routes end-to-end from an installed plugin via PluginHostService', async () => {
+    _clearScopedRegistryForTests();
+    registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnDemand, 'plugin');
+    registerScopedService(LifecycleScope.App, IPluginUsageService, PluginUsageService, ScopeActivation.OnDemand, 'plugin');
+
+    const root = await mkdtemp(join(tmpdir(), 'kap-plugin-e2e-'));
+    const docs = new MemoryAtomicDocuments();
+    const config: Record<string, unknown> = {};
+    const port = new PluginExtensionPortRegistryService({} as never);
+    const eventService = new InMemoryEventService();
+    const workspaces = new Map<string, Workspace>([
+      ['ws-a', makeWorkspace('ws-a')],
+      ['ws-b', makeWorkspace('ws-b')],
+    ]);
+    const coldSessions = new Map<string, { readonly id: string; readonly workspaceId: string }>([
+      ['sess-a', { id: 'sess-a', workspaceId: 'ws-a' }],
+      ['sess-b', { id: 'sess-b', workspaceId: 'ws-b' }],
+    ]);
+
+    const scopedHost = createScopedTestHost([
+      stubPair(ILogService, {
+        _serviceBrand: undefined,
+        trace: () => undefined,
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+        child: function () { return this; },
+      } as unknown as ILogService),
+      stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
+      stubPair(IBootstrapService, {
+        _serviceBrand: undefined,
+        homeDir: join(root, 'home'),
+        osHomeDir: join(root, 'user'),
+        spaceId: 'main',
+        getEnv: () => undefined,
+      } as unknown as IBootstrapService),
+      stubPair(IProviderService, {} as IProviderService),
+      stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
+      stubPair(IOAuthService, {} as IOAuthService),
+      stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
+      stubPair(ISessionManager, {
+        list: () => [],
+        get: () => undefined,
+        onDidCreateSession: Event.None,
+        onDidCloseSession: Event.None,
+        onDidArchiveSession: Event.None,
+      } as unknown as ISessionManager),
+      stubPair(IConfigService, {
+        ready: Promise.resolve(),
+        get: (key: string) => config[key] ?? {},
+        replace: async (key: string, value: unknown) => { config[key] = value; },
+        onDidSectionChange: Event.None,
+      } as unknown as IConfigService),
+      stubPair(IAtomicDocumentStore, docs as unknown as IAtomicDocumentStore),
+      stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
+      stubPair(IPluginExtensionPortRegistry, port),
+      stubPair(ISessionIndex, { get: async (id: string) => coldSessions.get(id) } as unknown as ISessionIndex),
+      stubPair(IWorkspaceService, { get: async (id: string) => workspaces.get(id) } as unknown as IWorkspaceService),
+      stubPair(IEventService, eventService as unknown as IEventService),
+    ]);
+
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    app.addHook(
+      'onRequest',
+      createAuthHook({
+        isValid: async (candidate: string) => candidate === SERVER_TOKEN,
+      } as never),
+    );
+    await app.register(
+      async (api) => {
+        registerPluginsRoutes(api as never, scopedHost.app, {
+          marketplaceUrl: () => undefined,
+          serverToken: () => SERVER_TOKEN,
+        });
+        registerPluginBrokerRoutes(api as never, scopedHost.app);
+      },
+      { prefix: '/api' },
+    );
+    await app.ready();
+
+    cleanups.push(async () => {
+      await scopedHost.app.accessor.get(IPluginHostService).stopAll();
+      port.dispose();
+      await scopedHost.dispose();
+      await app.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    });
+
+    const pluginService = scopedHost.app.accessor.get(IPluginService);
+    const pluginHosts = scopedHost.app.accessor.get(IPluginHostService);
+    const usage = scopedHost.app.accessor.get(IPluginUsageService);
+    await pluginHosts.ready;
+
+    const source = join(root, 'kiki-phone');
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, 'preview.html'), '<h1>Phone Preview</h1>');
+    await writeFile(join(source, 'entry.mjs'), `
+      export function register() {}
+      export const slots = {
+        'E12:server-gui-slots': async (payload) => {
+          if (payload?.kind === 'describe') {
+            return {
+              guiSlots: [
+                {
+                  slot: 'composer-toolbar',
+                  id: 'phone-quick-open',
+                  label: { default: 'Phone', zh: '手机' },
+                  action: { kind: 'open_plugin_panel', panelId: 'preview' },
+                },
+              ],
+              routes: [
+                { method: 'POST', subpath: '/device/tap', scopeAcl: 'session' },
+              ],
+            };
+          }
+          if (payload?.kind === 'http-route' && payload.method === 'POST' && payload.subpath === '/device/tap') {
+            return {
+              status: 200,
+              data: {
+                tapped: payload.body,
+                workspaceId: payload.scope.workspaceId,
+                sessionId: payload.scope.sessionId,
+              },
+            };
+          }
+          return { status: 404, errorMessage: 'unknown route' };
+        },
+      };
+    `);
+    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+      name: 'kiki-phone',
+      version: '0.2.0',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        entry: './entry.mjs',
+        permissions: { uiPanel: true },
+        panels: [{ schemaVersion: 1, id: 'preview', label: 'Kiki Phone', slot: 'sidebar', path: './preview.html' }],
+        slots: ['E12:server-gui-slots'],
+      },
+    }));
+
+    const plan = await pluginService.previewPlugin({ source });
+    await pluginService.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+
+    const blockedSlotsRes = await app.inject({
+      method: 'GET',
+      url: '/api/plugins/gui-slots?workspace_id=ws-a',
+      headers: authHeaders(),
+    });
+    expect(blockedSlotsRes.json()).toMatchObject({
+      code: 0,
+      data: { slots: [] },
+    });
+
+    await usage.set({ workspaceId: 'ws-a', pluginId: 'kiki-phone', override: 'on' });
+
+    await vi.waitFor(() => {
+      expect(port.resolveHttpRoute('kiki-phone', 'POST', '/device/tap')).toBeDefined();
+    });
+
+    const allowedSlotsRes = await app.inject({
+      method: 'GET',
+      url: '/api/plugins/gui-slots?workspace_id=ws-a',
+      headers: authHeaders(),
+    });
+    const allowedSlotsBody = allowedSlotsRes.json() as { code: number; data: ListPluginGuiSlotsResponse };
+    expect(allowedSlotsBody.code).toBe(0);
+    expect(allowedSlotsBody.data.slots.map((slot) => `${slot.slot}:${slot.id}`).toSorted()).toEqual([
+      'composer-toolbar:phone-quick-open',
+      'sidebar-panel:panel:preview',
+    ]);
+
+    const tapAllowedRes = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/kiki-phone/routes/device/tap?session_id=sess-a',
+      headers: authHeaders({ 'content-type': 'application/json' }),
+      payload: JSON.stringify({ x: 540, y: 1200 }),
+    });
+    expect(tapAllowedRes.json()).toMatchObject({
+      code: 0,
+      data: {
+        tapped: { x: 540, y: 1200 },
+        workspaceId: 'ws-a',
+        sessionId: 'sess-a',
+      },
+    });
+
+    const tapBlockedRes = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/kiki-phone/routes/device/tap?session_id=sess-b',
+      headers: authHeaders({ 'content-type': 'application/json' }),
+      payload: JSON.stringify({ x: 100, y: 200 }),
+    });
+    expect(tapBlockedRes.json()).toMatchObject({
+      code: ErrorCode.FS_PERMISSION_DENIED,
+    });
   });
 });

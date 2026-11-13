@@ -215,6 +215,7 @@ for (const method of ['log', 'info', 'debug', 'warn']) console[method] = (...arg
 let started = false;
 let installPrerequisite;
 let handlePanelRequest;
+let handleRouteRequest;
 let activate;
 let deactivate;
 const lifetime = new AbortController();
@@ -298,7 +299,8 @@ for await (const line of input) {
     try {
       const plugin = await import(pathToFileURL(entry).href);
       cordisSlots = plugin.slots ?? plugin.default?.slots;
-      if (typeof plugin.register !== 'function' && (typeof cordisSlots !== 'object' || cordisSlots === null)) throw new Error('Plugin must export register(api) or a slots map');
+      handleRouteRequest = plugin.handleRouteRequest ?? plugin.default?.handleRouteRequest;
+      if (typeof plugin.register !== 'function' && (typeof cordisSlots !== 'object' || cordisSlots === null) && typeof handleRouteRequest !== 'function') throw new Error('Plugin must export register(api) or a slots map');
       installPrerequisite = plugin.installPrerequisite;
       handlePanelRequest = plugin.handlePanelRequest;
       activate = plugin.activate;
@@ -364,7 +366,12 @@ for await (const line of input) {
       if (typeof pluginId !== 'string' || !Number.isSafeInteger(generation) || generation < 1 ||
         (attemptId !== undefined && typeof attemptId !== 'string') ||
         (conversationRevision !== undefined && (!Number.isSafeInteger(conversationRevision) || conversationRevision < 0))) throw new Error('Invalid plugin invocation identity');
-      const handler = cordisSlots && Object.hasOwn(cordisSlots, context.slot) ? cordisSlots[context.slot] : undefined;
+      const slotHandler = cordisSlots && Object.hasOwn(cordisSlots, context.slot) ? cordisSlots[context.slot] : undefined;
+      const handler = typeof slotHandler === 'function'
+        ? slotHandler
+        : context.slot === 'E12:server-gui-slots' && typeof handleRouteRequest === 'function' && payload?.kind === 'http-route'
+          ? handleRouteRequest
+          : undefined;
       if (typeof handler !== 'function') throw new Error('Plugin did not register the requested slot');
       const value = await handler(payload, { ...context, pluginId, generation, attemptId, conversationRevision, settings });
       const result = { ...identity(), ok: true, value };
