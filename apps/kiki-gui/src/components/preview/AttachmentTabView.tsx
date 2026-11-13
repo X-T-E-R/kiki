@@ -477,8 +477,11 @@ export function PreviewAttachmentView({
   const canDownload = actionIds.has('download');
 
   const copyNoticeNode = !phoneForm && isCopy ? (
-    <span className="shrink-0 text-[11px] text-ink-faint" data-preview-copy-notice>
-      {t('preview.sentCopyNotice')}
+    <span className="flex min-w-0 items-center gap-1 text-[10.5px] text-ink-faint">
+      <span className="truncate" data-preview-copy-notice>{t('preview.sentCopyNotice')}</span>
+      {sizeBytes !== undefined ? (
+        <span className="shrink-0 font-mono">· {formatBytes(sizeBytes)}</span>
+      ) : null}
     </span>
   ) : null;
 
@@ -560,54 +563,56 @@ export function PreviewAttachmentView({
         />
       ) : (
         <>
-          <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={trustedPath ?? name}>
+          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline px-3 py-1.5">
+            <div className="min-w-[8rem] flex-1">
+              <span className="block truncate font-mono text-[11px] text-ink-faint" title={trustedPath ?? name}>
                 {name}
               </span>
               {copyNoticeNode}
             </div>
-            {!phoneForm && sizeBytes !== undefined ? (
-              <span className="shrink-0 font-mono text-[11px] text-ink-faint">
-                {formatBytes(sizeBytes)}
-              </span>
-            ) : null}
-            {openCurrentButton}
-            {!phoneForm && hasRenderedToggle && actionIds.has('rendered-source') ? (
-              <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-                {(['rendered', 'source'] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    data-preview-mode={option}
-                    data-md-mode={markdown ? option : undefined}
-                    data-html-mode={html ? option : undefined}
-                    aria-pressed={mode === option}
-                    onClick={() => { setMode(option); }}
-                    className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-                      mode === option
-                        ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                        : 'text-ink-faint hover:text-ink-soft'
-                    }`}
-                  >
-                    {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
-                  </button>
-                ))}
-              </span>
-            ) : null}
-            {canDownload ? (
-              <button
-                type="button"
-                title={t('media.download')}
-                aria-label={t('media.download')}
-                data-download-file
-                onClick={() => { void downloadAttachment(); }}
-                className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
-              >
-                <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
-              </button>
-            ) : null}
-            {moreButton}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              {!phoneForm && !isCopy && sizeBytes !== undefined ? (
+                <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+                  {formatBytes(sizeBytes)}
+                </span>
+              ) : null}
+              {openCurrentButton}
+              {!phoneForm && hasRenderedToggle && actionIds.has('rendered-source') ? (
+                <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+                  {(['rendered', 'source'] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      data-preview-mode={option}
+                      data-md-mode={markdown ? option : undefined}
+                      data-html-mode={html ? option : undefined}
+                      aria-pressed={mode === option}
+                      onClick={() => { setMode(option); }}
+                      className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+                        mode === option
+                          ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                          : 'text-ink-faint hover:text-ink-soft'
+                      }`}
+                    >
+                      {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
+                    </button>
+                  ))}
+                </span>
+              ) : null}
+              {canDownload ? (
+                <button
+                  type="button"
+                  title={t('media.download')}
+                  aria-label={t('media.download')}
+                  data-download-file
+                  onClick={() => { void downloadAttachment(); }}
+                  className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
+                >
+                  <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
+                </button>
+              ) : null}
+              {moreButton}
+            </div>
           </div>
           {transfer.status !== 'idle' ? (
             <div
