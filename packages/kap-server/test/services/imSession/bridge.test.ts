@@ -1,4 +1,4 @@
-import { createFeishuSessionAdapter, createTelegramSessionAdapter, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, createTelegramSessionAdapter, type SessionSpec } from '@nb-corp/nb-im';
 import type { UserMessageChannel } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { describe, expect, it, vi } from 'vitest';
 

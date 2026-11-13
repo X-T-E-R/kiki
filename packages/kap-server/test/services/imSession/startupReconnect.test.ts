@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { SessionRunState, SessionSink } from '@nb-im/core';
+import type { SessionRunState, SessionSink } from '@nb-corp/nb-im';
 import { imSessionSnapshotSchema } from '@kiki/protocol';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';

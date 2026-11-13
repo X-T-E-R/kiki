@@ -1,7 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { planHttpConnection, validateHttpEndpoint } from '@nb-im/core';
+import { planHttpConnection, validateHttpEndpoint } from '@nb-corp/nb-im';
 import type { UsageExportDestination } from '@kiki/protocol';
 import type { UsageExportHttpRequest, UsageExportHttpResponse } from './adapter';
 import type { UsageExportSecretStore } from './secrets';

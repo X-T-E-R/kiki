@@ -1,1 +1,1 @@
-export * from '@kiki-dsh/im-bridge-core/imSession';
+export * from '@nb-corp/im-bridge-core/imSession';

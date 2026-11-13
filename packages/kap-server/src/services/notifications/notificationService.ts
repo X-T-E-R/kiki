@@ -14,7 +14,7 @@ import type { NotificationChannel, NotificationCredentialSlot, NotificationDeliv
 import {
   Runtime, PROVIDERS, validateConfig, telegramProvider, wecomWebhookProvider, wecomHttps, createSafeHttpTransport,
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
-} from '@nb-im/core';
+} from '@nb-corp/nb-im';
 import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
 import { sendProvider } from './providerDelivery';
 import { joinDeliveries } from '../../lib/joinDeliveries';

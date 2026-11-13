@@ -234,7 +234,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-pjmmGwkE6NSFVPUjaAfyvAYASqrcP5hhesFoOTImJPQ=";
+              hash = "sha256-wRf3hTcYOpyKzfwUH6pXu5lE2U1+M62fjiGW4vPInCc=";
             };
 
             cargoRoot = "packages/auth-native";

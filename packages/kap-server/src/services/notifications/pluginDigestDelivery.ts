@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   PROVIDERS, type Category, type CredentialPurpose, type ProviderId, type Runtime, type SendResult,
-} from '@nb-im/core';
+} from '@nb-corp/nb-im';
 import type { NotificationsConfig } from '@kiki/agent-core-v2/app/notifications/configSection';
 import {
   parsePluginImRequest, pluginImCaller, pluginImReceipt,

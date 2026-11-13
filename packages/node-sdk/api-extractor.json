@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/api-extractor/v7/api-extractor.schema.json",
   "mainEntryPointFilePath": "<projectFolder>/.tmp-api-extractor/dts/node-sdk/src/index.d.ts",
-  "bundledPackages": ["@kiki/kaos", "@kiki/oauth", "@kiki-dsh/im-bridge-core"],
+  "bundledPackages": ["@kiki/kaos", "@kiki/oauth", "@nb-corp/im-bridge-core"],
   "compiler": {
     "tsconfigFilePath": "<projectFolder>/tsconfig.api-extractor.json",
     "skipLibCheck": true

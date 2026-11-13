@@ -18,7 +18,8 @@ Kiki 建立在很多人的工作之上。这一页列出 Kiki 复用了代码的
 - **[deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)**（MIT）。对话外壳的很多部分来自这里：首屏与停靠两种输入框形态、统一的内容宽度、思考行的摘要规则和扫光动画、失败优先的工具摘要、每轮的运行计时和结尾读数，以及用户消息里的 `@智能体` 标签。SQLite 搜索索引的 schema 校验改编自它的 session-query 包。
 - **[Mika](https://github.com/wangzan101/Mika)**（Apache-2.0）。Kiki 移动端运行时入口、宿主控制帧协议、系统凭据代理桥接与手机端工具默认策略，吸收了 Mika 在端侧 Node.js 宿主桥接、无障碍检查与受控终端沙箱上的设计。
 - **[LiteLLM](https://github.com/BerriAI/litellm)**（MIT）。Kiki 在 `packages/kap-server/vendor/litellm` 中附带 LiteLLM 的模型价格与上下文窗口表快照，并用 NOTICE 记录上游版本。
-- **[nb-search](https://github.com/NB-Corp/nb-search)**（MIT）。联网搜索和网页抓取基于 nb-search，以打过补丁的发布包形式内置在 `vendor/` 下，附带许可证和补丁来源记录。
+- **[nb-search](https://github.com/NB-Corp/nb-search)**（MIT）。联网搜索和网页抓取使用官方 npm 包 `@nb-corp/nb-search`。
+- **[nb-im](https://github.com/NB-Corp/nb-im)**（MIT）。IM 平台连接和通知使用官方 npm 包 `@nb-corp/nb-im`；包内的 `NOTICE` 和 `LICENSES/` 列明平台 SDK 与改编代码的来源。
 - **[tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)**（MIT）。Kiki 用纯 TypeScript 写的 bash 解析器（用来判断一条 shell 命令能否放行）复现了 tree-sitter-bash 的语法规则和节点类型，并以真实语法做对照测试。
 - **[Agent Client Protocol TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk)**（Apache-2.0）。`kiki acp` 和 Kiki 对外部 ACP 引擎的支持都建立在这个官方 SDK 上。
 - **[Streamdown](https://github.com/vercel/streamdown)**（Apache-2.0）。桌面应用和文件预览里的流式 Markdown、代码高亮、中日韩文本、数学公式和图表，都通过 Streamdown 及其插件渲染。

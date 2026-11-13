@@ -1,1 +1,1 @@
-export * from '@kiki-dsh/im-bridge-core/segment';
+export * from '@nb-corp/im-bridge-core/segment';

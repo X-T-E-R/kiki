@@ -1,6 +1,6 @@
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2';
-import { ImIdentityAlreadyBoundError, ImSessionBridge as CoreImSessionBridge } from '@kiki-dsh/im-bridge-core/bridge';
-import { MessageRoutingError } from '@kiki-dsh/im-bridge-core/userMessageRouting';
+import { ImIdentityAlreadyBoundError, ImSessionBridge as CoreImSessionBridge } from '@nb-corp/im-bridge-core/bridge';
+import { MessageRoutingError } from '@nb-corp/im-bridge-core/userMessageRouting';
 
 import type { ImSessionBridgeOptions } from './ports';
 

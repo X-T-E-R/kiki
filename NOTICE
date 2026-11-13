@@ -95,14 +95,6 @@ Vendored and adapted source
   Copyright (c) 2023 Berri AI; full license and revision/retrieval notice:
   packages/kap-server/vendor/litellm/LICENSE and NOTICE.
 
-* nb-search — MIT
-  https://github.com/NB-Corp/nb-search
-  Active runtime tarball: vendor/nb-corp-nb-search-0.5.0-next.7.tgz (agent-core-v2
-  and node-sdk; protocol retains vendor/nb-corp-nb-search-0.5.0-next.4.tgz).
-  Copyright (c) 2026 nb-search contributors.
-  Each archive carries LICENSE, THIRD_PARTY_NOTICES.md, and LICENSES/*; Kiki
-  patch lineage is recorded under vendor/nb-search-patches/canonical-target/.
-
 * Redis zskiplist provenance — unresolved revision/license
   packages/minidb/src/skiplist.ts names Redis zskiplist; DESIGN_NOTES.md
   describes the implementation as copied/ported from it. No donor revision
@@ -135,6 +127,9 @@ LICENSE/NOTICE for the original attribution and full terms.
     @anthropic-ai/sdk 0.95.2 (Anthropic)
     @modelcontextprotocol/sdk 1.29.0 (Anthropic, PBC)
     @jimp/core 1.6.1 (Andrew Lisowski)
+    @nb-corp/nb-search 0.5.0 (nb-search contributors)
+    @nb-corp/nb-im 0.3.1 (nb-im contributors)
+    @nb-corp/im-bridge-core 0.1.0 (shared IM session bridge)
     fastify 5.8.5 and pino 9.14.0 (Matteo Collina)
     node-pty 1.1.0 (Microsoft Corporation)
     react and react-dom 19.2.5; @tanstack/react-query 5.99.2
@@ -154,6 +149,12 @@ LICENSE/NOTICE for the original attribution and full terms.
     Tauri, @tauri-apps/api and the desktop integration plugins (see Cargo.lock
     and the desktop notices for the Rust and platform-specific graph).
 
+@nb-corp/nb-search is published at https://www.npmjs.com/package/@nb-corp/nb-search
+and retains its LICENSE, THIRD_PARTY_NOTICES.md, and LICENSES/.
+@nb-corp/nb-im is published at https://www.npmjs.com/package/@nb-corp/nb-im
+and retains its MIT LICENSE, NOTICE, and LICENSES/ for SDKs and adapted donors.
+@nb-corp/im-bridge-core retains its MIT LICENSE in the published package.
+
 Scope and remaining verification
 --------------------------------
 
@@ -164,13 +165,6 @@ with `pnpm install --offline --frozen-lockfile` followed by
 `pnpm licenses list --prod --json` (runtime dependencies). Recheck it when the
 lockfile changes, retain required license texts, and separately inventory the
 Rust crates and non-package assets actually shipped by a desktop release.
-
-@nb-im/core 0.3.0 is an installed runtime dependency from
-vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz (rebuilt from vendor/nb-im-core-0.3.0.tgz
-via vendor/nb-im-patches/telegram-metadata/rebuild.mjs). Its package metadata has
-no top-level license declaration; the archive retains NOTICE and LICENSES/* for
-its bundled SDKs and adapted donors. Obtain the applicable package-level terms
-from its owner before distribution clearance.
 
 The VS Code extension declares Apache-2.0 and retains apps/vscode/LICENSE;
 that package declaration is distinct from the root MIT license. First-party

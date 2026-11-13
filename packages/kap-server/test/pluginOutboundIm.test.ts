@@ -8,7 +8,7 @@ import type { PluginImSendRequest } from '@kiki/agent-core-v2';
 import { NotificationService } from '../src/services/notifications/notificationService';
 import { ensurePluginDigestReceipts } from '../src/services/notifications/pluginDigestDelivery';
 import { sendProvider } from '../src/services/notifications/providerDelivery';
-import type { ProviderContext } from '@nb-im/core';
+import type { ProviderContext } from '@nb-corp/nb-im';
 
 const transport = vi.hoisted(() => ({
   posts: [] as Array<{ body: string; authorization?: string }>,
@@ -21,8 +21,8 @@ const transport = vi.hoisted(() => ({
   marker: 'leak-marker',
 }));
 
-vi.mock('@nb-im/core', async (original) => {
-  const donor = await original<typeof import('@nb-im/core')>();
+vi.mock('@nb-corp/nb-im', async (original) => {
+  const donor = await original<typeof import('@nb-corp/nb-im')>();
   return {
     ...donor,
     webhookProvider: (id: Parameters<typeof donor.webhookProvider>[0]) => donor.webhookProvider(id, {

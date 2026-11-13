@@ -7,8 +7,8 @@ import {
   routeUserMessage as coreRouteUserMessage,
   supportsMessageMedia,
   validateUserMessageChannels as coreValidateUserMessageChannels,
-} from '@kiki-dsh/im-bridge-core/userMessageRouting';
-import type { MessageAttachmentReceipt, MessageSenderIdentity, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
+} from '@nb-corp/im-bridge-core/userMessageRouting';
+import type { MessageAttachmentReceipt, MessageSenderIdentity, SendMessageReceipt } from '@nb-corp/im-bridge-core/messageRouting';
 import type {
   MessageChannelBinding,
   MessageChannelReceipt,
@@ -16,9 +16,9 @@ import type {
   RouteUserMessageOptions,
   UserMessageChannel,
   UserMessageInput,
-} from '@kiki-dsh/im-bridge-core/userMessageRouting';
+} from '@nb-corp/im-bridge-core/userMessageRouting';
 
-export type { MessageAttachmentReceipt, MessageSenderIdentity, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
+export type { MessageAttachmentReceipt, MessageSenderIdentity, SendMessageReceipt } from '@nb-corp/im-bridge-core/messageRouting';
 export type {
   MessageChannelBinding,
   MessageChannelReceipt,
@@ -26,7 +26,7 @@ export type {
   RouteUserMessageOptions,
   UserMessageChannel,
   UserMessageInput,
-} from '@kiki-dsh/im-bridge-core/userMessageRouting';
+} from '@nb-corp/im-bridge-core/userMessageRouting';
 export { INTERNAL_MESSAGE_CAPABILITIES, internalMessageChannel, supportsMessageMedia };
 
 export interface IUserMessageRouter {

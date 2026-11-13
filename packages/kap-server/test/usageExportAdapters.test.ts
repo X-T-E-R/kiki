@@ -52,7 +52,7 @@ describe('pinned usage HTTPS connection errors', () => {
       TCP.prototype.connect = function () { connections++; return uv.UV_ENOBUFS; };
       registerHooks({
         resolve(specifier, context, next) {
-          if (specifier === '@nb-im/core') return { url: 'data:text/javascript,' + encodeURIComponent(
+          if (specifier === '@nb-corp/nb-im') return { url: 'data:text/javascript,' + encodeURIComponent(
             'export const validateHttpEndpoint = (url) => new URL(url);' +
             'export const planHttpConnection = async () => ({ url: new URL("https://example.test/ingest"), ip: "192.0.2.1", family: 4 });'
           ), shortCircuit: true };

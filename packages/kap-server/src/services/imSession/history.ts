@@ -1,1 +1,1 @@
-export * from '@kiki-dsh/im-bridge-core/history';
+export * from '@nb-corp/im-bridge-core/history';

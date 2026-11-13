@@ -1,4 +1,4 @@
-import { createFeishuSessionAdapter, createWechatSessionAdapter, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, createWechatSessionAdapter, type SessionSpec } from '@nb-corp/nb-im';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';

@@ -446,9 +446,6 @@ importers:
       '@jsquash/webp':
         specifier: ^1.5.0
         version: 1.5.0
-      '@kiki-dsh/im-bridge-core':
-        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
-        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/acp-client':
         specifier: workspace:^
         version: link:../acp-client
@@ -485,9 +482,12 @@ importers:
       '@napi-rs/keyring':
         specifier: 2.1.0
         version: 2.1.0
+      '@nb-corp/im-bridge-core':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-corp-nb-search-0.5.0-next.7.tgz
-        version: file:vendor/nb-corp-nb-search-0.5.0-next.7.tgz(playwright@1.60.0)
+        specifier: ^0.5.0
+        version: 0.5.0(playwright@1.60.0)
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -673,9 +673,6 @@ importers:
       '@fastify/swagger':
         specifier: ^9.7.0
         version: 9.7.0
-      '@kiki-dsh/im-bridge-core':
-        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
-        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/agent-core-v2':
         specifier: workspace:^
         version: link:../agent-core-v2
@@ -700,9 +697,12 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
         version: 1.32.0(zod@4.3.6)
-      '@nb-im/core':
-        specifier: file:../../vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz
-        version: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz
+      '@nb-corp/im-bridge-core':
+        specifier: ^0.1.0
+        version: 0.1.0
+      '@nb-corp/nb-im':
+        specifier: ^0.3.1
+        version: 0.3.1
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -710,8 +710,8 @@ importers:
         specifier: ^5.12.5
         version: 5.12.7
       own-work:
-        specifier: file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz
-        version: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz
+        specifier: ^0.1.2
+        version: 0.1.2
       pino:
         specifier: ^9.5.0
         version: 9.14.0
@@ -801,11 +801,11 @@ importers:
         specifier: workspace:^
         version: link:../transcript-live
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-corp-nb-search-0.5.0-next.7.tgz
-        version: file:vendor/nb-corp-nb-search-0.5.0-next.7.tgz(playwright@1.60.0)
+        specifier: ^0.5.0
+        version: 0.5.0(playwright@1.60.0)
       own-work:
-        specifier: file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz
-        version: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz
+        specifier: ^0.1.2
+        version: 0.1.2
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -888,18 +888,18 @@ importers:
 
   packages/protocol:
     dependencies:
-      '@kiki-dsh/im-bridge-core':
-        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
-        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       '@kiki/transcript':
         specifier: workspace:*
         version: link:../transcript
+      '@nb-corp/im-bridge-core':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@nb-corp/nb-search':
-        specifier: file:../../vendor/nb-corp-nb-search-0.5.0-next.4.tgz
-        version: file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz(playwright@1.60.0)
+        specifier: ^0.5.0
+        version: 0.5.0(playwright@1.60.0)
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
@@ -2235,10 +2235,6 @@ packages:
   '@jsquash/webp@1.5.0':
     resolution: {integrity: sha512-KggLoj2MnRSfIqTeKe1EmbljTX2vuV7mh79k89PCL1pyqiDULcPM1L47twxXt0hkb68F70bXiL31MxsuoZtKFw==}
 
-  '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
-    resolution: {integrity: sha512-Fx/MADda4GFD4g3kggGi+QRpQZWISuCMbuBmXrW7IygZ49u6MwbQOWbWbfwsEkudJULrRp11t2sT1ka4mG25Jg==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
-    version: 0.1.0
-
   '@larksuiteoapi/node-sdk@1.76.0':
     resolution: {integrity: sha512-v/bxQNCugwAmMPbZtBGJtSu8hdQLiB1/29Jr+GBIG18DyQ4LYyp7gxQ74pkhXVSuoUeH4v+/ZHAw/SW+KMrj2g==}
 
@@ -2579,9 +2575,15 @@ packages:
       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
 
-  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz':
-    resolution: {integrity: sha512-msKV8jROQkiJy5K+2Gcj+S6z+rEWJfMq9MPHpp75ttNm6eJn5XcUWCT6P5L+iQkpNoWQ1EG/11718035UWJcbw==, tarball: file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz}
-    version: 0.5.0-next.4
+  '@nb-corp/im-bridge-core@0.1.0':
+    resolution: {integrity: sha512-s0+mRydSdPl41oTemyw/2bZAgzsITVR83dSGI9sRN1PpG0qEYXKqJSGUOLMy9aWZ9SPyqtEcvqE0HKm7sinymA==}
+
+  '@nb-corp/nb-im@0.3.1':
+    resolution: {integrity: sha512-CuX+R0kllESmACNOq2UYSokaBZKNA+bFN+yG0LUksCDVVnWzYgosE0efNZ+XMRa1BpCNplcooX080zSuYSwCKA==}
+    engines: {node: '>=24.15.0'}
+
+  '@nb-corp/nb-search@0.5.0':
+    resolution: {integrity: sha512-hCfkfkOKvo/lXP/LrFUfjInv0vuDK1i5U3jhPJ1NkS0nNJcfXOMRW6uJUdOpcFI7OIXV67TeH2kqS53erW1nrg==}
     engines: {node: '>=24.15.0'}
     hasBin: true
     peerDependencies:
@@ -2589,22 +2591,6 @@ packages:
     peerDependenciesMeta:
       playwright:
         optional: true
-
-  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.7.tgz':
-    resolution: {integrity: sha512-BAfMMA2AxpNYl+FdbsrioChlbKW3tbthjFFvDOxDKsmvMTWpJF05xYrzDng8fuqXt+OxuZIdIRzWp7JzjH+u3Q==, tarball: file:vendor/nb-corp-nb-search-0.5.0-next.7.tgz}
-    version: 0.5.0-next.7
-    engines: {node: '>=24.15.0'}
-    hasBin: true
-    peerDependencies:
-      playwright: '>=1.50.0'
-    peerDependenciesMeta:
-      playwright:
-        optional: true
-
-  '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
-    resolution: {integrity: sha512-gRyiIcvWPvL/7D/pxz9fQxtFbavIZb5dQju3DdW7AapaAdSHDwlpv3legkiEvGKSnL+BO4SIhzheEMAPCoHdUg==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
-    version: 0.3.0
-    engines: {node: '>=24.15.0'}
 
   '@node-rs/crc32-android-arm-eabi@1.10.6':
     resolution: {integrity: sha512-vZAMuJXm3TpWPOkkhxdrofWDv+Q+I2oO7ucLRbXyAPmXFNDhHtBxbO1rk9Qzz+M3eep8ieS4/+jCL1Q0zacNMQ==}
@@ -6903,9 +6889,8 @@ packages:
     engines: {node: '>= 20'}
     hasBin: true
 
-  own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
-    resolution: {integrity: sha512-s0fM45JRfFASTBODKkUzA0ptzB7DrcA6K9k6ZTSH7K4ZO+no2XpUSAXNg/NP3wKiHxJswbusHu3iUJbPGWFYWA==, tarball: file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz}
-    version: 0.1.1
+  own-work@0.1.2:
+    resolution: {integrity: sha512-8ce26Iygn06s/YKR9aa8+PUHUnnTxrnen+VOWlguH5syAdILEMOx1PpILCClOJFaGRHFcF7MgTpKGTgptI1C8Q==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
@@ -10322,10 +10307,6 @@ snapshots:
     dependencies:
       wasm-feature-detect: 1.8.0
 
-  '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
-    dependencies:
-      zod: 4.4.3
-
   '@larksuiteoapi/node-sdk@1.76.0':
     dependencies:
       axios: 1.20.0
@@ -10706,23 +10687,26 @@ snapshots:
       '@tybys/wasm-util': 0.10.4
     optional: true
 
-  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.4.tgz(playwright@1.60.0)':
+  '@nb-corp/im-bridge-core@0.1.0':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.32.0(zod@4.3.6)
-      defuddle: 0.19.3
-      linkedom: 0.18.13
-      mathml-to-latex: 1.8.0
-      temml: 0.13.5
-      turndown: 7.2.4
-      zod: 4.3.6
-    optionalDependencies:
-      playwright: 1.60.0
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - canvas
-      - supports-color
+      zod: 4.4.3
 
-  '@nb-corp/nb-search@file:vendor/nb-corp-nb-search-0.5.0-next.7.tgz(playwright@1.60.0)':
+  '@nb-corp/nb-im@0.3.1':
+    dependencies:
+      '@larksuiteoapi/node-sdk': 1.76.0
+      '@slack/socket-mode': 3.1.0(undici@7.30.1)
+      '@slack/web-api': 8.2.0
+      discord.js: 14.27.0
+      matrix-js-sdk: 44.0.0
+      undici: 7.30.1
+      ws: 8.22.0
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - supports-color
+      - utf-8-validate
+
+  '@nb-corp/nb-search@0.5.0(playwright@1.60.0)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.32.0(zod@4.3.6)
       defuddle: 0.19.3
@@ -10739,21 +10723,6 @@ snapshots:
       - '@cfworker/json-schema'
       - canvas
       - supports-color
-
-  '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
-    dependencies:
-      '@larksuiteoapi/node-sdk': 1.76.0
-      '@slack/socket-mode': 3.1.0(undici@7.30.1)
-      '@slack/web-api': 8.2.0
-      discord.js: 14.27.0
-      matrix-js-sdk: 44.0.0
-      undici: 7.30.1
-      ws: 8.22.0
-    transitivePeerDependencies:
-      - bufferutil
-      - debug
-      - supports-color
-      - utf-8-validate
 
   '@node-rs/crc32-android-arm-eabi@1.10.6':
     optional: true
@@ -15392,7 +15361,7 @@ snapshots:
       - debug
       - supports-color
 
-  own-work@file:vendor/own-work-0.1.1-kiki-7a5fb754.tgz:
+  own-work@0.1.2:
     dependencies:
       '@commander-js/extra-typings': 12.1.0(commander@12.1.0)
       absorb-anything-core: 0.1.2

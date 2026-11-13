@@ -35,7 +35,7 @@ import { HostProcessService } from '#/os/backends/node-local/hostProcessService'
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { FakeImAdapter, fakeAdapterFactory, ImSessionBridge, type ImSessionPorts } from '@kiki-dsh/im-bridge-core';
+import { FakeImAdapter, fakeAdapterFactory, ImSessionBridge, type ImSessionPorts } from '@nb-corp/im-bridge-core';
 import type { MediaGenerateInput, MediaJob } from '@kiki/protocol';
 import { ChatProviderError, markProviderEventError } from '#/kosong/contract/errors';
 import type { HookDef } from '#/features/externalHooks/internal/types';

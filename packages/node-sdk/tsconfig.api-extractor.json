@@ -4,7 +4,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "paths": {
-      "@kiki-dsh/im-bridge-core/*": ["../protocol/node_modules/@kiki-dsh/im-bridge-core/dist/*"]
+      "@nb-corp/im-bridge-core/*": ["../protocol/node_modules/@nb-corp/im-bridge-core/dist/*"]
     }
   },
   "include": [".tmp-api-extractor/dts/**/*.d.ts"]

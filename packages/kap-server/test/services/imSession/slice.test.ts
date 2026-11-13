@@ -24,7 +24,7 @@ import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } 
 import { createScopedTestHost, stubPair } from '@kiki/agent-core-v2/_base/di/test';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { stubBootstrap } from '../../../../agent-core-v2/test/app/bootstrap/stubs';
-import { createFeishuSessionAdapter, FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NotificationService } from '../../../src/services/notifications/notificationService';

@@ -11,7 +11,7 @@ import type {
   ImVisibleMedia,
   ImVisibleReply,
   WechatQrLoginPort,
-} from '@kiki-dsh/im-bridge-core/ports';
+} from '@nb-corp/im-bridge-core/ports';
 
 export type {
   ImAnswerResult,

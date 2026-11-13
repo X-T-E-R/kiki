@@ -1,11 +1,11 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
-import { mimeAllowed as sharedMimeAllowed } from '@kiki-dsh/im-bridge-core/adapter';
+import { mimeAllowed as sharedMimeAllowed } from '@nb-corp/im-bridge-core/adapter';
 import { oneBotIdentityTransport, type OneBotIdentityLink } from '../../../src/services/imSession/oneBotIdentity';
 
 function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound[] } {

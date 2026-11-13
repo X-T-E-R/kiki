@@ -1,4 +1,4 @@
-import type { Provider, ProviderContext, SendResult } from '@nb-im/core';
+import type { Provider, ProviderContext, SendResult } from '@nb-corp/nb-im';
 
 const SEND_DEADLINE_MS = 60_000;
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createOneBotWsTransport } from '@nb-im/core';
+import { createOneBotWsTransport } from '@nb-corp/nb-im';
 
 type OneBotTransport = ReturnType<typeof createOneBotWsTransport>;
 export type OneBotIdentityLink = Awaited<ReturnType<OneBotTransport['connect']>>;

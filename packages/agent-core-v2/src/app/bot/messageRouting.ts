@@ -1,7 +1,7 @@
 import { createDecorator, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
-import type { MessageAttachmentReceipt, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
+import type { MessageAttachmentReceipt, SendMessageReceipt } from '@nb-corp/im-bridge-core/messageRouting';
 
-export type { MessageAttachmentReceipt, MessageSenderIdentity, MessageHandoffReceipt, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
+export type { MessageAttachmentReceipt, MessageSenderIdentity, MessageHandoffReceipt, SendMessageReceipt } from '@nb-corp/im-bridge-core/messageRouting';
 export * from './userMessageRouting';
 
 export interface RoomBotMessageInput {

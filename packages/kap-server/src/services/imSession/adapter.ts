@@ -1,1 +1,1 @@
-export * from '@kiki-dsh/im-bridge-core/adapter';
+export * from '@nb-corp/im-bridge-core/adapter';

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IBotService, IConfigService, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
-import type { SessionAdapter, SessionInbound, SessionOutbound, SessionPlatformId, SessionSink } from '@nb-im/core';
+import type { SessionAdapter, SessionInbound, SessionOutbound, SessionPlatformId, SessionSink } from '@nb-corp/nb-im';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ImProviderKind } from '@kiki/protocol';

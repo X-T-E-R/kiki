@@ -1,8 +1,8 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { PluginImHistoryPage } from '@kiki/protocol';
-import type { ImHistoryQuery, ImLocalHistoryPage } from '@kiki-dsh/im-bridge-core/imMessageHistory';
+import type { ImHistoryQuery, ImLocalHistoryPage } from '@nb-corp/im-bridge-core/imMessageHistory';
 
-export type { ImHistoryEntry, ImHistoryQuery, ImLocalHistoryPage } from '@kiki-dsh/im-bridge-core/imMessageHistory';
+export type { ImHistoryEntry, ImHistoryQuery, ImLocalHistoryPage } from '@nb-corp/im-bridge-core/imMessageHistory';
 
 export interface IImMessageHistoryReader {
   readonly _serviceBrand: undefined;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionAdapter, SessionOutbound, SessionSink } from '@nb-im/core';
+import type { SessionAdapter, SessionOutbound, SessionSink } from '@nb-corp/nb-im';
 
 import type { MessageAttachmentReceipt } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';

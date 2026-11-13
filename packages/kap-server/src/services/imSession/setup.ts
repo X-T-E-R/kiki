@@ -1,5 +1,5 @@
 import { imSetupCatalogSchema, type ImPasteResult, type ImSetupCatalog, type ImSetupProvider } from '@kiki/protocol';
-import { ImSessionSetup as CoreImSessionSetup, imSetupCatalog as coreImSetupCatalog, type ImSetupOperations } from '@kiki-dsh/im-bridge-core/setup';
+import { ImSessionSetup as CoreImSessionSetup, imSetupCatalog as coreImSetupCatalog, type ImSetupOperations } from '@nb-corp/im-bridge-core/setup';
 import {
   SESSION_CAPABILITIES,
   SESSION_SETUP,
@@ -11,7 +11,7 @@ import {
   matrixSsoUrl,
   slackManifestInstallUrl,
   slackOAuthUrl,
-} from '@nb-im/core';
+} from '@nb-corp/nb-im';
 
 const setupOperations: ImSetupOperations = {
   descriptors: {

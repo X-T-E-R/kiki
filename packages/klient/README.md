@@ -464,19 +464,10 @@ Board input bounds mirror the engine contract. Card references retain their
 original workspace, storage root, storage identity, and revision; changing the
 storage configuration does not rewrite these references.
 
-The KAP host bundles the pinned local Own Work candidate from
-`vendor/own-work-0.1.1-kiki-7a5fb754.tgz`; registry Own Work 0.1.1 does not provide
-the required API and is not an equivalent replacement. `taskBoardHost.ts`
-validates registered workspaces, holds real workspace leases around native
-operations, and requires workspace trust for writes. Current configured and
-derived roots are authorized independently of client card addresses. Successful
-operations retain a small atomic per-workspace root/canonical-path binding under
-`task-board-authorizations`, so original fixed-root card references remain usable
-after configuration changes and restart. Changed symlink targets are rejected.
-Previews do not initialize storage or persist authorization; an unsaved preview
-selection does not authorize creation. Hosts may override `ITaskBoardService`
-through `ServerStartOptions.seeds`. Native persistence is covered by the isolated
-real-HTTP taskBoardHost integration test, separately from mock transport tests.
+KAP does not register a task board by default. To expose these methods, supply
+an `ITaskBoardService` through `ServerStartOptions.seeds`. The Own Work adapters
+in KAP and the Node SDK use `own-work` 0.1.2 for native task storage and
+revision-checked task mutations.
 
 GUI owners can pass `klient.global.board` directly as `TaskBoardContainer.client`
 or use `read({action:'preview', workspaceId, configuration})` for settings.

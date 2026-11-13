@@ -1,5 +1,5 @@
 import { ErrorCodes, Error2 } from '#/errors';
-import { renderImSourceMetadata } from '@kiki-dsh/im-bridge-core/metadata';
+import { renderImSourceMetadata } from '@nb-corp/im-bridge-core/metadata';
 import { renderToolResultForModel } from '#/agent/contextMemory/toolResultRender';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';

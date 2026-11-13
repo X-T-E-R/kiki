@@ -32,8 +32,8 @@ import { AgentActivityUpdated, type AgentActivityState } from '@kiki/agent-core-
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 
-vi.mock('@nb-im/core', async (original) => {
-  const donor = await original<typeof import('@nb-im/core')>();
+vi.mock('@nb-corp/nb-im', async (original) => {
+  const donor = await original<typeof import('@nb-corp/nb-im')>();
   return { ...donor, webhookProvider: (id: Parameters<typeof donor.webhookProvider>[0]) => donor.webhookProvider(id, {
     post: async (_input, permit) => {
       const allowed = permit();

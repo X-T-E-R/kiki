@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { request } from 'node:https';
-import { planHttpConnection } from '@nb-im/core';
+import { planHttpConnection } from '@nb-corp/nb-im';
 import { z } from 'zod';
 import { VIBE_CAFE_ORIGIN, VIBE_CAFE_INGEST_ENDPOINT, usageExportVibeAuthInputSchema, usageExportVibeAuthSchema, type UsageExportDestination, type UsageExportSave, type UsageExportVibeAuth, type UsageExportVibeAuthInput } from '@kiki/protocol';
 

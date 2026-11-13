@@ -44,8 +44,8 @@ import {
 } from '@kiki/agent-core-v2';
 import { messageContentSchema, type AsrTranscribeInput, type ImProviderKind, type MessageContent } from '@kiki/protocol';
 import { SEND_MESSAGE_SECTION, type SendMessageConfig } from '@kiki/agent-core-v2/agent/tools/message/configSection';
-import type { ImPolicy } from '@kiki-dsh/im-bridge-core/imSession';
-import { createSafeHttpTransport } from '@nb-im/core';
+import type { ImPolicy } from '@nb-corp/im-bridge-core/imSession';
+import { createSafeHttpTransport } from '@nb-corp/nb-im';
 import type { PromptSubmission } from '../../protocol/rest-prompt';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';

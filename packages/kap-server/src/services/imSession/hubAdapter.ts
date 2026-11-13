@@ -21,7 +21,7 @@ import {
   type SessionReceipt,
   type SessionSpec,
   type SessionTarget,
-} from '@nb-im/core';
+} from '@nb-corp/nb-im';
 
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { ImSendError, mimeAllowed, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
