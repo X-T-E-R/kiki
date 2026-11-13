@@ -4929,10 +4929,10 @@ export function projectAgentTranscriptView(
     turnGaps: keepEqual(previous.turnGaps ?? {}, turnGaps),
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
-    // A running last turn has no tail yet; never carry the previous turn's.
+    // A running last turn has no tail yet; never carry another turn's.
     turnTail: lastTurn !== undefined && 'state' in lastTurn && lastTurn.state === 'running'
       ? undefined
-      : turnTail ?? previous.turnTail,
+      : turnTail ?? (lastTurn !== undefined && sameTurnId(previous.turnTail?.turnId, lastTurn.turnId) ? previous.turnTail : undefined),
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),

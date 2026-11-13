@@ -8336,6 +8336,32 @@ describe('a finished turn that left nothing to read', () => {
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, source: { kind: 'turn', id: 't24' } }] })?.work).toBe('unknown');
     expect(turnReplyGap({ ...ready, contentRefs: [{ ...text, path: ['output'] }] })?.work).toBe('unknown');
   });
+
+  it('drops previous turnTail when a reset replaces the tail with a different turn lacking endedAt', () => {
+    const withOldTail = { ...createViewState('session_test'), turnTail: tail('t14') };
+    const projected = projectAgentTranscriptView(withOldTail, 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't5',
+        ordinal: 5,
+        state: 'completed',
+        origin: { kind: 'other' },
+        stepsPartial: true,
+        steps: [{
+          kind: 'step',
+          stepId: 't5.s37',
+          turnId: 't5',
+          ordinal: 37,
+          state: 'completed',
+          startedAt: FIXED_AT,
+          endedAt: FIXED_AT_1,
+          frames: [{ kind: 'text', frameId: 't5.s37.f', role: 'assistant', text: 'Tail step.' }],
+        }],
+      }],
+    }));
+    expect(projected.turnTail).toBeUndefined();
+    expect(turnReplyGap(projected)).toBeUndefined();
+  });
 });
 
 describe('compaction summary, error details, and bounded content sources', () => {

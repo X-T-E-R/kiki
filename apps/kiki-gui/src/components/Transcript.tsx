@@ -4319,7 +4319,7 @@ function OlderLoadingStatus({ onCancel }: { onCancel?: () => void }) {
           type="button"
           data-older-load-cancel
           onClick={onCancel}
-          className="min-h-7 rounded-full border border-hairline px-2 font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          className="min-h-7 shrink-0 whitespace-nowrap rounded-full border border-hairline px-2.5 font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('common.cancel')}
         </button>
@@ -5908,6 +5908,11 @@ export const Transcript = memo(function Transcript({
       await nextFrame();
       if (cancelled()) return { status: 'no-timeline' };
       landAtEnd(virtualizer);
+      viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
+      await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
+      landAtEnd(virtualizer);
+      viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       locateTargetRef.current = { key: timelineTargetKey(target), anchor: { ...viewportAnchorRef.current } };
       return { status: 'found' };
     }
