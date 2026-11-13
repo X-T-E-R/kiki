@@ -107,21 +107,20 @@ async function settle(page) {
 
 /**
  * `/usage?panel=realtime`. Both halves of the claim have to be on screen at
- * once — the waiting row that names its rule, and the rule list that rule comes
- * from — so the frame waits for the rule rows rather than for the panel shell,
- * and scrolls the rules up under the live summary instead of capturing a view
- * where one of the two is below the fold.
+ * once — the waiting row that names its rule (`kimi-cap`), the live agent
+ * inventory below, and the concurrency-rules summary linking to Settings ->
+ * Models & behavior.
  */
 async function shootUsageLive({ page, link, shot }) {
   await open(page, link, '/usage?panel=realtime', '[data-request-governance]');
-  const rows = page.locator('[data-governance-rule]');
-  await rows.first().waitFor({ timeout: 30_000 });
+  await page.locator('[data-governance-rules-summary]').waitFor({ timeout: 30_000 });
+  await page.locator('[data-governance-live-agents]').waitFor({ timeout: 30_000 });
   // The waiting list is the point of the frame: an empty one would render the
   // same panel and support none of the prose.
   if (await page.locator('[data-governance-waiting] li').count() === 0) {
     throw new Error('live frame has no waiting request, so it cannot show which rule is holding one');
   }
-  await page.locator('[data-governance-rules]').scrollIntoViewIfNeeded();
+  await page.locator('[data-governance-rules-summary]').scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await settle(page);
   await shot();

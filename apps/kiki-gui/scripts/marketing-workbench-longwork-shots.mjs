@@ -186,7 +186,7 @@ export const WORKBENCH_LONGWORK_SHOTS = [
     name: 'wl-hero-workbench',
     scenario: 'wl-20261005-w1',
     viewport: { width: 1440, height: 900 },
-    themes: ['light'],
+    themes: ['light', 'dark'],
     run: async ({ page, link, shot }) => {
       await openGoal(page, link);
       await openQueue(page, link);
@@ -197,6 +197,28 @@ export const WORKBENCH_LONGWORK_SHOTS = [
       await settle(page);
       await scrollTranscriptToEnd(page);
       await shot({ skipSettle: true });
+    },
+  },
+  {
+    // Close-up of a subagent's own rail record: its status, model binding,
+    // todos, working notes, injected rules and session schedules.
+    name: 'wl-subagent-rail-detail',
+    scenario: 'wl-20261005-w3',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot, locale }) => {
+      const label = locale === 'zh' ? '探索者' : 'Explorer';
+      await openSubagent(page, link, 'agent-explorer', label);
+      await settle(page);
+      const railBox = await page.locator('[data-session-rail]').boundingBox();
+      await shot({
+        skipSettle: true,
+        clip: {
+          x: Math.max(0, Math.round(railBox.x - 40)),
+          y: 0,
+          width: Math.round(railBox.width + 40),
+          height: 590,
+        },
+      });
     },
   },
   {

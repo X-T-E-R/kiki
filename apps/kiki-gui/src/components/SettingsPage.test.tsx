@@ -119,7 +119,10 @@ const client = {
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
   listWorkspaceCatalog: vi.fn(async () => WORKSPACES),
-  klient: { rest: undefined as { connections: { list: () => Promise<unknown>; handshake: () => Promise<unknown> } } | undefined },
+  klient: {
+    rest: undefined as { connections: { list: () => Promise<unknown>; handshake: () => Promise<unknown> } } | undefined,
+    global: undefined as { imports: { sources: () => Promise<unknown>; jobs: () => Promise<unknown>; archives: () => Promise<unknown> } } | undefined,
+  },
   getWorkspaceDetails: vi.fn(() => new Promise(() => {})),
   getWorkspaceTrust: vi.fn(async () => ({ trusted: false })),
   getPluginUsage: vi.fn(async ({ workspace_id }: { workspace_id: string }) => ({
@@ -349,7 +352,7 @@ async function renderSettings(initialPath: string, handles?: { queryClient?: Que
         <I18nProvider>
           <MemoryRouter initialEntries={[initialPath]}>
             <Routes>
-              <Route path="/settings/:section?" element={handles?.guarded === true
+              <Route path="/settings/*" element={handles?.guarded === true
                 ? <GuardedSettingsFixture /> : <SettingsPage onToggleSidebar={() => {}} />} />
             </Routes>
           </MemoryRouter>
@@ -2339,6 +2342,26 @@ describe('SettingsPage object links survive an address hash', () => {
       expect(emptyWorktrees.querySelector('[data-worktrees-cleanup]')).toBeNull();
     } finally {
       client.klient.rest = undefined;
+    }
+  });
+
+  it('mounts the built-in SessionsImportPage on /settings/sessions/import without falling through or redirecting', async () => {
+    client.klient.global = {
+      imports: {
+        sources: async () => [{ schemaVersion: 1, id: 'claude-code', label: 'Claude Code', formatVersion: 'claude-code.history.v1', pluginId: 'kiki-history' }],
+        jobs: async () => ({ items: [], cursor: null }),
+        archives: async () => ({ items: [], cursor: null }),
+      },
+    };
+    try {
+      const container = await renderSettings('/settings/sessions/import', { guarded: true });
+      await flush();
+      expect(container.querySelector('[data-sessions-import-page="/settings/sessions/import"]')).not.toBeNull();
+      expect(container.querySelector('[data-settings-unknown]')).toBeNull();
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/sessions/import');
+      expect(container.querySelector('[data-settings-nav-leaf="sessions"]')?.getAttribute('aria-current')).toBe('page');
+    } finally {
+      client.klient.global = undefined;
     }
   });
 });

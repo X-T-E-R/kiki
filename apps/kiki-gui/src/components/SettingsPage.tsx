@@ -223,7 +223,9 @@ function SpaceBand() {
 }
 
 export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
-  const { section } = useParams<{ section?: string }>();
+  const params = useParams();
+  const rawSection = (params['*'] ?? params['section'])?.replace(/\/+$/, '');
+  const section = rawSection === '' ? undefined : rawSection;
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const rawNavigate = useNavigate();
@@ -251,8 +253,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const { hash, search, state, key } = useLocation();
 
   const resolution = resolveSettingsRoute(section, hash, search);
+  const isSessionsImport = section === 'sessions/import';
   const active: SectionId | null =
-    resolution.status === 'ok' ? (resolution.section as SectionId) : null;
+    isSessionsImport ? 'sessions'
+      : resolution.status === 'ok' ? (resolution.section as SectionId) : null;
   // Bare `/settings` (no section, no card to land on). Wide, it is the
   // General page beside the rail, as it always was; below lg it is the list of
   // sections itself, and a section is the page you tap into and back out of.
@@ -299,7 +303,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // legacy card hash (`#st-card-sidecar`) is rewritten to its canonical card
   // so the scroll + flash lands on the renamed target.
   useEffect(() => {
-    if (resolution.status !== 'ok') return;
+    if (isSessionsImport || resolution.status !== 'ok') return;
     const params = new URLSearchParams(search);
     const sectionMoved = resolution.section !== section
       && !(section === undefined && resolution.section === 'general');
@@ -484,7 +488,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           {remoteSpaceNotice}
         </p>
       )
-    : section === 'sessions/import' ? <SessionsImportPage />
+    : isSessionsImport ? <SessionsImportPage />
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
     : active === 'shortcuts' ? <ShortcutsSection />
@@ -541,7 +545,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
   // A plugin's own page is about that plugin; the page's flags stay on the list.
   const showExperimental = !inPairedSpace && !hiddenInRemoteSpace
-    && active !== null && active !== 'labs' && activePluginId === null
+    && !isSessionsImport && active !== null && active !== 'labs' && activePluginId === null
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
   // A workspace's own page names the workspace in the breadcrumb, the way an
@@ -639,7 +643,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">
                 <SpaceBand />
                 {hiddenInRemoteSpace ? null : (
-                  <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
+                  <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null || isSessionsImport} />
                 )}
                 <SettingsPageScopeContext.Provider value={pageScope}>
                   <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>

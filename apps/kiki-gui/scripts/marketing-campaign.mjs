@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { spaceDesktopMock } from './space-desktop-mock.mjs';
 import { WORKBENCH_LONGWORK_SHOTS } from './marketing-workbench-longwork-shots.mjs';
 import USAGE_SHOTS from './marketing-usage-shots.mjs';
 
@@ -300,10 +301,24 @@ function neutralInbound(locale) {
 /** Answer the remote-connection API from example records, for this run only. */
 async function serveRemote(page, locale) {
   const records = neutralRemoteRecords(locale);
+  const identity = neutralInbound(locale).identity;
+  await page.route('**/api/thread-bridges**', async (route) => {
+    await route.fulfill({
+      json: {
+        code: 0,
+        msg: 'success',
+        data: { identity, inboundEnabled: false, inbound: [], outbound: [] },
+      },
+    });
+  });
   await page.route('**/api/remote-connections**', async (route) => {
     const path = new URL(route.request().url()).pathname.replace(/^\/api\/remote-connections/, '');
     if (path.startsWith('/inbound')) {
       await route.fulfill({ json: { code: 0, msg: 'success', data: neutralInbound(locale) } });
+      return;
+    }
+    if (path.startsWith('/handshake')) {
+      await route.fulfill({ json: { code: 0, msg: 'success', data: { identity, serverId: 'srv-marketing-spaces', inboundEnabled: false } } });
       return;
     }
     if (path === '') {
@@ -315,6 +330,55 @@ async function serveRemote(page, locale) {
       ? { status: 404, json: { code: 40409, msg: 'not found', data: null } }
       : { json: { code: 0, msg: 'success', data: one } });
   });
+}
+
+async function until(page, predicate, timeout = 30_000) {
+  await page.waitForFunction(predicate, undefined, { timeout });
+}
+
+async function openPromptOverrides(page, link) {
+  await open(page, link, '/settings/agents#st-card-prompt-config', '[data-session-sidebar], [aria-label="Settings"], nav', 60_000);
+  const advanced = page.locator('details[data-agents-advanced]');
+  if ((await advanced.count()) > 0 && (await advanced.evaluate((node) => node.open)) === false) {
+    await advanced.locator('> summary').click();
+  }
+  const disclosure = page.locator('[data-prompt-config]').first();
+  await disclosure.waitFor({ timeout: 30_000 });
+  if ((await disclosure.evaluate((node) => node.open)) === false) {
+    await disclosure.locator('summary').first().click();
+  }
+  const rows = page.locator('[data-prompt-field-row]:visible');
+  await rows.first().waitFor({ timeout: 30_000 });
+  const preview = page.locator('[data-prompt-preview] > summary');
+  if ((await preview.count()) > 0 && (await preview.evaluate((node) => node.parentElement?.open ?? false)) === false) {
+    await preview.click();
+  }
+  await until(page, () => (document.querySelector('[data-prompt-preview]')?.textContent?.trim().length ?? 0) > 0);
+  await disclosure.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(500);
+}
+
+async function framePersonaExecution(page) {
+  const editor = '[data-persona-editor="xiao-you"]';
+  await page.locator(`${editor} [data-persona-field="description"]`).waitFor({ timeout: 20_000 });
+  await page.locator(`${editor} [data-persona-field="homeWorkspace"]`).waitFor({ timeout: 20_000 });
+  await page.waitForTimeout(600);
+  const placed = await page.evaluate((selector) => {
+    const form = document.querySelector(selector);
+    const work = [...form.querySelectorAll('div,section')]
+      .find((node) => node.querySelector('[data-persona-field="homeWorkspace"]') !== null);
+    if (work === undefined) return false;
+    let pane = work.parentElement;
+    while (pane !== null && !/auto|scroll/.test(getComputedStyle(pane).overflowY)) {
+      pane = pane.parentElement;
+    }
+    if (pane === null) return false;
+    const target = pane.getBoundingClientRect().top;
+    pane.scrollBy({ top: work.getBoundingClientRect().top - target });
+    return true;
+  }, editor);
+  if (!placed) throw new Error('persona work section not found');
+  await page.waitForTimeout(700);
 }
 
 /** Open a route and wait for one concrete selector — never networkidle. */
@@ -511,7 +575,8 @@ const SHOTS = [
     name: 'spaces-spaces-list',
     scenario: 'marketing-campaign-a20',
     viewport: { width: 1440, height: 900 },
-    run: async ({ page, link, shot }) => {
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
       await open(page, link, '/settings/spaces', '[data-space-row]', 60_000);
       await page.locator('[data-space-list]').scrollIntoViewIfNeeded();
       await settle(page);
@@ -538,8 +603,9 @@ const SHOTS = [
     name: 'spaces-web-access',
     scenario: 'marketing-campaign-web-access',
     viewport: { width: 1440, height: 900 },
-    run: async ({ page, link, shot }) => {
-      await open(page, link, '/settings/spaces', '[data-web-access]', 60_000);
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/connection-services?tab=web', '[data-web-access]', 60_000);
       await page.locator('[data-web-access]').scrollIntoViewIfNeeded();
       await page.waitForTimeout(400);
       await settle(page);
@@ -548,8 +614,7 @@ const SHOTS = [
   },
   {
     name: 'freedom-connections',
-    scenario: 'oauth-connections',
-    localeInName: false,
+    scenario: 'marketing-campaign-a05',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
       await open(page, link, '/settings/ai?tab=providers', '[data-connection-row]');
@@ -562,29 +627,7 @@ const SHOTS = [
     scenario: 'marketing-campaign-a02',
     viewport: { width: 1200, height: 900 },
     run: async ({ page, link, shot }) => {
-      // The field editor is folded inside [data-prompt-config], so the rows
-      // exist in the DOM but report a zero box until a person opens the
-      // disclosure. That click is part of the story: overriding one tool's
-      // description is a deliberate act, not a default view.
-      await open(page, link, '/settings/agents', '[data-prompt-config]', 60_000);
-      const disclosure = page.locator('[data-prompt-config]');
-      if ((await disclosure.evaluate((node) => node.open)) === false) {
-        // `.first()`: the card nests further disclosures (main agent,
-        // externally delegated, preview), and the one that gates the field
-        // rows is the card's own summary.
-        await disclosure.locator('summary').first().click();
-      }
-      const rows = page.locator('[data-prompt-field-row]:visible');
-      await rows.first().waitFor({ timeout: 30_000 });
-      await rows.first().scrollIntoViewIfNeeded();
-      // Open the preview: the point of the frame is the override and what the
-      // model receives, side by side.
-      const preview = page.locator('[data-prompt-preview] > summary');
-      if ((await preview.count()) > 0) {
-        const open = await preview.evaluate((node) => node.parentElement?.open ?? false);
-        if (!open) await preview.click();
-      }
-      await page.waitForTimeout(500);
+      await openPromptOverrides(page, link);
       await settle(page);
       await shot();
     },
@@ -634,15 +677,15 @@ const SHOTS = [
   {
     // A04's third frame, and the one the page most needs: the composer picker
     // that turns a profile into the session's main agent. It is a standalone
-    // toolbar control (`#composer-agent-profile-select`) and it only exists
+    // toolbar control (`#composer-profile-select`) and it only exists
     // once the profile catalog has landed, so the frame opens it and lists the
     // candidates — the reader has to see that main-ness is a CHOICE made here.
     name: 'agents-profile-picker',
     scenario: 'marketing-campaign-a04',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
-      await open(page, link, '/new', '#composer-agent-profile-select', 60_000);
-      const trigger = page.locator('#composer-agent-profile-select').first();
+      await open(page, link, '/new', '#composer-profile-select', 60_000);
+      const trigger = page.locator('#composer-profile-select').first();
       await trigger.waitFor({ timeout: 30_000 });
       await trigger.click();
       // The panel is a listbox; waiting for an option that names a seeded
@@ -676,25 +719,11 @@ const SHOTS = [
     scenario: 'marketing-campaign-a12',
     viewport: { width: 1440, height: 900 },
     run: async ({ page, link, shot }) => {
-      // The source home is a field the reader fills, and the preview card only
-      // exists once that field names a source the server knows. So the frame
-      // performs the real action: pick Claude Code, type its history path, and
-      // capture the preview that says what is kept and what is dropped.
-      await open(page, link, '/capabilities?view=import', '[data-plugin-import-source]', 60_000);
+      await open(page, link, '/settings/sessions/import', '[data-plugin-import-source]', 60_000);
       await page.locator('[data-plugin-import-source="kiki-history:claude-code"]').click();
       const home = page.locator('[data-plugin-import-home]');
       await home.waitFor({ timeout: 30_000 });
-      // The path must match the seeded home byte for byte: the fixture keys its
-      // homes by the exact string, and the UI only trims. Forward slashes here
-      // because that is what the seed uses — a Windows-looking path with
-      // backslashes silently finds nothing.
       await home.fill('C:/Users/you/.claude');
-      // The working directory is the OTHER half of the request. It starts
-      // empty, and a native read with no directory is not sent at all — so the
-      // preview would never be asked for, and the frame would sit on
-      // "Checking what would be kept…" forever. This is the order a person
-      // works in: name the home, name where the session should live, then pick
-      // the conversation.
       const workDir = page.locator('[data-plugin-import-workdir-input]');
       await workDir.waitFor({ timeout: 30_000 });
       await workDir.fill('C:/Projects/sample-app');
@@ -718,6 +747,221 @@ const SHOTS = [
       await shot();
     },
   },
+  // -------------------------------------------------------------------------
+  // People & Spaces companion frames (ps-20261005-* & detail crops)
+  // -------------------------------------------------------------------------
+  {
+    name: 'ps-people-execution-detail',
+    scenario: 'people-spaces-card',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/personas?persona=xiao-you&view=settings', '[data-persona-row]', 60_000);
+      await page.locator('[data-persona-row="xiao-you"]').click();
+      await page.locator('[data-persona-editor="xiao-you"]').waitFor({ timeout: 20_000 });
+      await framePersonaExecution(page);
+      await settle(page);
+      await shot({ skipSettle: true, clip: { x: 670, y: 0, width: 770, height: 900 } });
+    },
+  },
+  {
+    name: 'ps-spaces-list',
+    scenario: 'people-spaces-spaces-list',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/spaces', '[data-space-row]', 60_000);
+      await page.locator('[data-space-list]').scrollIntoViewIfNeeded();
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ps-spaces-remote',
+    scenario: 'people-spaces-spaces-list',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/spaces', '[data-remote-connection]', 60_000);
+      await page.locator('[data-remote-list]').scrollIntoViewIfNeeded();
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ps-spaces-inbound',
+    scenario: 'people-spaces-spaces-list',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/connection-services?tab=kiki', '[data-inbound-connections]', 60_000);
+      await page.locator('[data-inbound-gate]').waitFor({ timeout: 20_000 });
+      await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ps-spaces-credentials',
+    scenario: 'people-spaces-credentials',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/spaces', '[data-space-row]', 60_000);
+      await page.locator('[data-space-menu="h-campaign000000001"]').click();
+      await page.locator('[data-space-menu-item="credentials"]').waitFor({ timeout: 20_000 });
+      await page.locator('[data-space-menu-item="credentials"]').click();
+      await page.locator('[data-space-credentials="h-campaign000000001"]').waitFor({ timeout: 20_000 });
+      await page.locator('[data-space-copy-ssh-host]').first().waitFor({ timeout: 20_000 });
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ps-spaces-detail',
+    scenario: 'people-spaces-space-detail',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot, locale }) => {
+      await serveRemote(page, locale);
+      await open(page, link, '/settings/spaces?space=h-campaign000000001', '[data-space-group]', 60_000);
+      await page.locator('[data-space-group]').first().waitFor({ timeout: 20_000 });
+      await settle(page);
+      await shot();
+    },
+  },
+  // -------------------------------------------------------------------------
+  // Control / Extend / Ecosystem companion frames (ce-20261005-*)
+  // -------------------------------------------------------------------------
+  {
+    name: 'ce-freedom-oauth-reuse',
+    scenario: 'ce-freedom-oauth',
+    viewport: { width: 1440, height: 900 },
+    desktop: true,
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/ai?tab=providers#st-card-providers-add', '[data-first-run-lane="local"]', 60_000);
+      await page.locator('[data-first-run-lane="local"]').click();
+      await until(page, () => document.querySelector('[data-first-run-local="done"]') !== null);
+      await until(page, () => document.querySelector('[data-first-run-local-use="openai-codex"]') !== null);
+      await settle(page);
+      const panelBox = await page.locator('.kiki-side-panel').boundingBox();
+      const switchBox = await page.locator('[data-first-run-switch]').boundingBox();
+      await shot({
+        skipSettle: true,
+        clip: {
+          x: panelBox.x,
+          y: panelBox.y,
+          width: panelBox.width,
+          height: switchBox.y + switchBox.height - panelBox.y + 12,
+        },
+      });
+    },
+  },
+  {
+    name: 'ce-freedom-prompt-overrides',
+    scenario: 'ce-freedom-prompts',
+    viewport: { width: 1200, height: 1000 },
+    run: async ({ page, link, shot }) => {
+      await openPromptOverrides(page, link);
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-extend-plugins',
+    scenario: 'ce-extend-plugins',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/capabilities?plugin=kiki-office', '[data-plugin-detail="kiki-office"]', 60_000);
+      await until(page, () => document.querySelectorAll('[data-plugin-contribution]').length > 0);
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-extend-search-source',
+    scenario: 'ce-extend-search',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/search?tab=advanced', 'text=/Reuse server nb-search configuration|复用服务器本机 nb-search 配置/', 60_000);
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-extend-search-lanes',
+    scenario: 'ce-extend-search',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/search?tab=search#st-card-search-providers', '[data-nb-search-service-card]', 60_000);
+      await until(page, () => document.querySelectorAll('[data-nb-search-service-card]').length >= 2);
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-extend-fetch-chain',
+    scenario: 'ce-extend-search',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/search?tab=fetch#st-card-search-fetch', '#nb-search-panel-fetch [data-nb-search-service-card]', 60_000);
+      await until(page, () => document.querySelectorAll('#nb-search-panel-fetch [data-nb-search-service-card]').length >= 2);
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-ecosystem-engines',
+    scenario: 'ce-ecosystem-engines',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/settings/ai?tab=providers#st-card-engines', '[data-engine-row]', 60_000);
+      await page.locator('[data-engine-row="codex"] [data-engine-open]').click();
+      await page.locator('[data-engine-panel="codex"] [data-engine-check-button]').waitFor({ timeout: 30_000 });
+      await page.locator('[data-engine-panel="codex"] [data-engine-check-button]').click();
+      await until(page, () => document
+        .querySelector('[data-engine-panel="codex"] [data-engine-last-check]')
+        ?.getAttribute('data-engine-last-check') === 'warning');
+      await page.evaluate(() => {
+        const panel = document.querySelector('#st-card-engines');
+        if (panel === null) return;
+        const delta = panel.getBoundingClientRect().top - 72;
+        let node = panel.parentElement;
+        while (node !== null && node !== document.body) {
+          const overflow = getComputedStyle(node).overflowY;
+          if (overflow === 'auto' || overflow === 'scroll' || node.scrollHeight > node.clientHeight) {
+            node.scrollTop += delta;
+            return;
+          }
+          node = node.parentElement;
+        }
+        window.scrollBy({ top: delta });
+      });
+      await settle(page);
+      await shot();
+    },
+  },
+  {
+    name: 'ce-ecosystem-import-sources',
+    scenario: 'ce-ecosystem-import',
+    viewport: { width: 1440, height: 900 },
+    run: async ({ page, link, shot }) => {
+      await open(page, link, '/capabilities?view=import', '[data-plugin-import-source]', 60_000);
+      await page.locator('[data-plugin-import-source="kiki-history:claude-code"]').click();
+      const home = page.locator('[data-plugin-import-home]');
+      await home.waitFor({ timeout: 30_000 });
+      await home.fill('C:/Users/you/.claude');
+      await until(page, () => document.querySelectorAll('[data-plugin-import-file]').length >= 2);
+      await page.locator('h1').first().click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-plugin-import-file]').last().scrollIntoViewIfNeeded();
+      await settle(page);
+      await shot();
+    },
+  },
   // Slices that own their own scene seeds and walkers register here rather
   // than editing the table above. The spread is the whole integration point:
   // the module is standalone and carries its own `run` bodies.
@@ -734,8 +978,116 @@ async function captureOne(browser, { webUrl, shot: def }) {
   const scenario = def.localeInName === false ? def.scenario : `${def.scenario}-${def.locale}`;
   const file = `${def.name}.${def.locale}.${def.theme}.png`;
   const fixture = await startFixtureServer({ port: 0, scenario });
+  // Normalize legacy fixture seeds to current wire contracts without touching
+  // non-marketing scenario modules:
+  //   1. `filterRosterToLiveOrPresent` requires `status_source` on cold/completed
+  //      subagents so they stay visible in the dispatch tree.
+  //   2. `pluginSummarySchema` / `pluginInfoSchema` require `globalEnabled: boolean`.
+  //   3. `st.engines.permission.tool` was renamed to `turn_param`.
+  //   4. `ux-20261006-*` and `ce-ecosystem-import` predate neutral workspace/model
+  //      overrides; normalize sidebar workspace grouping (`sample-app`) and
+  //      replace `fixture/kiki-pro` on `/new` with `Kimi K3`.
+  for (const session of fixture.sessions.values()) {
+    for (const sub of session.subagents ?? []) {
+      sub.status_source ??= 'metadata';
+    }
+    if (scenario.startsWith('ux-20261006-') && session.record) {
+      session.record.workspace_id = 'wd_sample-app_000000000000';
+      session.record.metadata = { ...(session.record.metadata ?? {}), cwd: 'C:/Projects/sample-app' };
+    }
+  }
+  if (def.name === 'ce-ecosystem-import-sources') {
+    fixture.config.default_provider = 'kimi-code';
+    fixture.config.default_model = 'Kimi K3';
+    fixture.config.thinking = { enabled: true, effort: 'max' };
+    if (!fixture.providers.some((p) => p.id === 'kimi-code')) {
+      fixture.providers.unshift({
+        id: 'kimi-code',
+        type: 'openai',
+        has_api_key: true,
+        status: 'connected',
+        default_model: 'Kimi K3',
+        models: ['Kimi K3'],
+      });
+    }
+    if (!fixture.models.some((m) => m.id === 'Kimi K3')) {
+      fixture.models.unshift({
+        id: 'Kimi K3',
+        provider_id: 'kimi-code',
+        remote_id: 'Kimi K3',
+        display_name: 'Kimi K3',
+        max_context_size: 262_144,
+        support_efforts: ['low', 'medium', 'high', 'max'],
+        default_effort: 'max',
+        capabilities: ['reasoning', 'tools', 'vision'],
+      });
+    }
+  }
+  for (const plugin of fixture.plugins ?? []) {
+    plugin.globalEnabled ??= Boolean(plugin.enabled);
+  }
+  if (fixture.scenario?.data?.pluginInfos !== undefined) {
+    for (const info of Object.values(fixture.scenario.data.pluginInfos)) {
+      if (info && typeof info === 'object') info.globalEnabled ??= Boolean(info.enabled);
+    }
+  }
+  if (Array.isArray(fixture.scenario?.data?.executors)) {
+    for (const exec of fixture.scenario.data.executors) {
+      if (exec?.capabilities?.permission?.via === 'tool') {
+        exec.capabilities.permission.via = 'turn_param';
+      }
+    }
+  }
+  if (def.name === 'ux-usage-live' && fixture.liveAgentGovernance === null) {
+    const releaseId = 'sess_sample_prepare_release';
+    const a11yId = 'sess_sample_review_accessibility';
+    const started = (ms) => new Date(Date.now() - ms).toISOString();
+    const counts = (main, subagent, queuedSubagent = 0) => ({
+      active: main + subagent,
+      queued: queuedSubagent,
+      main,
+      subagent,
+      independent: 0,
+      queuedMain: 0,
+      queuedSubagent,
+      queuedIndependent: 0,
+    });
+    fixture.liveAgentGovernance = {
+      domainId: 'this-service',
+      runtimeEpoch: 'ep-ux-20261006',
+      seq: 12,
+      asOf: new Date().toISOString(),
+      coverage: 'this_process',
+      unit: 'agent_execution',
+      ...counts(1, 2, 1),
+      dimensions: [
+        { dimension: 'executor', id: 'native', ...counts(1, 2, 1) },
+        { dimension: 'profile', id: 'agent', ...counts(1, 0) },
+        { dimension: 'profile', id: 'implementer', ...counts(0, 1, 1) },
+        { dimension: 'profile', id: 'reviewer', ...counts(0, 1) },
+        { dimension: 'model', id: 'Kimi K3', ...counts(1, 1, 1) },
+        { dimension: 'model', id: 'claude-fable-5', ...counts(0, 1) },
+        { dimension: 'role', id: 'main', ...counts(1, 0) },
+        { dimension: 'role', id: 'subagent', ...counts(0, 2, 1) },
+        { dimension: 'session', id: releaseId, ...counts(1, 2, 1) },
+      ],
+      agents: [
+        { sessionId: releaseId, agentId: 'main', role: 'main', phase: 'running', startedAt: started(180_000), executorId: 'native', profileId: 'agent', modelId: 'Kimi K3' },
+        { sessionId: releaseId, agentId: 'agent-ux-impl', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: started(95_000), executorId: 'native', profileId: 'implementer', modelId: 'Kimi K3' },
+        { sessionId: a11yId, agentId: 'agent-ux-rev', parentAgentId: 'main', role: 'subagent', phase: 'running', startedAt: started(60_000), executorId: 'native', profileId: 'reviewer', modelId: 'claude-fable-5' },
+      ],
+      waiting: [
+        { attemptId: 'attempt-ux-0001', sessionId: releaseId, agentId: 'agent-ux-builder', role: 'subagent', waitedMs: 41_000, blockingRules: ['kimi-cap'], executorId: 'native', profileId: 'implementer', modelId: 'Kimi K3' },
+      ],
+      rules: [],
+    };
+  }
   const fixtureUrl = `http://127.0.0.1:${fixture.http.address().port}`;
-  const link = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
+  const link = (path) => {
+    const [beforeHash, hash = ''] = path.split('#', 2);
+    const joined = `${beforeHash}${beforeHash.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
+    return `${webUrl}${joined}${hash === '' ? '' : `#${hash}`}`;
+  };
   const context = await browser.newContext({
     viewport: def.viewport,
     deviceScaleFactor: DPR,
@@ -752,6 +1104,25 @@ async function captureOne(browser, { webUrl, shot: def }) {
       localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
     } catch { /* storage unavailable */ }
   }, { locale: def.locale, theme: def.theme });
+  if (def.desktop === true) {
+    const rawSpaces = fixture.scenario?.data?.spaces?.items ?? [];
+    const mockSpaces = rawSpaces.length > 0
+      ? rawSpaces.map((item) => ({
+        id: item.id,
+        name: item.name,
+        color: item.color,
+        path: item.path,
+        credentials: item.credentials_shared === false ? 'isolated' : 'shared',
+        hot: item.live === true || item.id === 'main',
+      }))
+      : [{ id: 'main', name: 'Main space', path: 'C:/Users/you/.kiki', credentials: 'shared', hot: true }];
+    await context.addInitScript(spaceDesktopMock, {
+      fixtureUrl,
+      token: FIXTURE_TOKEN,
+      spaces: mockSpaces,
+      windowMode: 'switch',
+    });
+  }
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -760,9 +1131,20 @@ async function captureOne(browser, { webUrl, shot: def }) {
     await page.waitForSelector(READY, { timeout: 60_000 });
     await page.waitForTimeout(700);
     const target = join(OUT, file);
-    const shot = async ({ skipSettle = false } = {}) => {
+    const shot = async ({ skipSettle = false, clip } = {}) => {
       if (!skipSettle) await settle(page);
-      await page.screenshot({ path: target });
+      const options = clip === undefined
+        ? { path: target }
+        : {
+          path: target,
+          clip: {
+            x: Math.max(0, Math.round(clip.x)),
+            y: Math.max(0, Math.round(clip.y)),
+            width: Math.round(clip.width),
+            height: Math.round(clip.height),
+          },
+        };
+      await page.screenshot(options);
       console.log(`[shot] ${file} (${Math.round(statSync(target).size / 1024)} KB)`);
     };
     await def.run({ page, link, shot, locale: def.locale, fixtureUrl, control: async (body) => {

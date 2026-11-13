@@ -164,6 +164,7 @@ function subagentRoster(locale, rows = DEFAULT_ROSTER) {
     started_at: ts(started),
     ...(completed === undefined ? {} : { completed_at: ts(completed) }),
     ...(status === 'completed' ? { output_preview: copy[role].summary } : {}),
+    status_source: 'metadata',
     tool_call_count: toolCalls,
     live: true,
   }));

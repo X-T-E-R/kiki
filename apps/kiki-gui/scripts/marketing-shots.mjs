@@ -181,7 +181,8 @@ async function shot(name) {
  * Boot a fresh page for one shot. Locale, theme, layout and onboarding are
  * seeded before any app code runs; the fixture scenario is switched and the
  * page reloaded so the app pulls the new state from scratch. Readiness is
- * locale-agnostic: the sidebar root + a seeded session row, not a UI string.
+ * locale-agnostic: the sidebar root + either a seeded session row (wide) or
+ * the collapsed-rail shell (< 1280px), not a UI string.
  */
 async function prepare(page_, shotDef) {
   page = page_;
@@ -191,11 +192,18 @@ async function prepare(page_, shotDef) {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-session-sidebar]', { timeout: 60_000 });
   await page.waitForFunction(
-    () => document.querySelectorAll('[data-session-list] [data-session-title]').length >= 1,
+    () => document.querySelectorAll('[data-session-list] [data-session-title]').length >= 1
+      || document.querySelector('[data-sidebar-collapsed="true"]') !== null,
     undefined,
     { timeout: 30_000 },
   );
   await page.waitForTimeout(700);
+}
+
+async function openComposerHeader(which) {
+  const tab = page.locator(`[data-composer-header] [data-header-toggle="${which}"]`);
+  await tab.waitFor({ timeout: 30_000 });
+  if ((await tab.getAttribute('aria-expanded')) !== 'true') await tab.click();
 }
 
 // --------------------------- per-shot walkers ------------------------------
@@ -208,7 +216,7 @@ async function shotH01() {
   await rail.waitFor({ timeout: 30_000 });
   // A real, settled transcript turn is the app-ready marker for the session page.
   await page.locator('[role="log"] [data-block-id^="user-"]').first().waitFor({ timeout: 30_000 });
-  await page.locator('[role="log"] [data-block-id^="group-"], [role="log"] [data-block-id^="tool-"]').first().waitFor({ timeout: 15_000 });
+  await page.locator('[role="log"] [data-history-fold], [role="log"] [data-block-id^="group-"], [role="log"] [data-block-id^="tool-"]').first().waitFor({ timeout: 15_000 });
   // The dispatch tree must carry all three children (ids are locale-independent).
   for (const agentId of ['agent-explorer', 'agent-builder', 'agent-reviewer']) {
     await rail.locator(`[data-agent-id="${agentId}"]`).first().waitFor({ timeout: 15_000 });
@@ -216,7 +224,9 @@ async function shotH01() {
   // The rail's background section carries the running build + its Stop control.
   await rail.locator('[data-tasks-scroll]').first().waitFor({ timeout: 15_000 });
   await rail.locator('[data-tasks-scroll] button').first().waitFor({ timeout: 10_000 });
+  await openComposerHeader('goal');
   await page.locator('[data-goal-card]').waitFor({ timeout: 15_000 });
+  await openComposerHeader('queue');
   await page.locator('[data-queue-strip]').waitFor({ timeout: 15_000 });
   await settle();
 }
@@ -225,12 +235,11 @@ const R02_SID = 'sess_sample_prepare_release';
 
 async function shotR02() {
   await page.goto(deepLink(`/s/${R02_SID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.locator('[role="log"] [data-block-id^="user-"]').first().waitFor({ timeout: 30_000 });
+  await openComposerHeader('goal');
   await page.locator('[data-goal-card]').waitFor({ timeout: 30_000 });
-  // Open the queue strip (it rests as one summary line) so both rows show.
-  const toggle = page.locator('[data-queue-strip] [aria-expanded]').first();
-  if (await toggle.count() > 0) {
-    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
-  }
+  await openComposerHeader('queue');
+  await page.locator('[data-queue-strip]').waitFor({ timeout: 30_000 });
   await page.waitForTimeout(400);
   // R02's whole point is the per-row timing/edit/send-now controls, which the
   // product reveals on row hover. Hover one queued row and KEEP the pointer
@@ -242,28 +251,24 @@ async function shotR02() {
 }
 
 async function shotR01() {
-  await page.goto(deepLink('/settings/subagents'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const row = page.locator('#st-card-subagent-profiles [data-agent-profile="reviewer"]');
-  await row.waitFor({ timeout: 30_000 });
-  // Expand the row's proof-source details so the .md source path is in frame.
-  await row.locator('[data-technical-details] summary').click();
-  await row.locator('[data-technical-details]').evaluate((node) => { node.open = true; });
-  const toggle = row.locator('[data-raw-file-collapse] button').first();
-  await toggle.waitFor({ timeout: 15_000 });
-  if ((await toggle.getAttribute('aria-expanded')) === 'true') await toggle.click();
-  await toggle.click();
-  // Wait for the fetched source file to land in the editor.
+  await page.goto(deepLink('/settings/agents'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  const trigger = page.locator('[data-team-row="reviewer"] [data-team-open="reviewer"]').first();
+  await trigger.waitFor({ timeout: 30_000 });
+  await trigger.click();
+  const editor = page.locator('[data-profile-editor][data-agent-detail="reviewer"]');
+  await editor.waitFor({ timeout: 30_000 });
+  const rawTab = editor.locator('[data-profile-tab="raw"]');
+  await rawTab.waitFor({ timeout: 15_000 });
+  await rawTab.click();
+  // Wait for the fetched source file to land in the raw editor.
   await page.waitForFunction(
     () => {
-      const area = document.querySelector('#st-card-subagent-profiles [data-agent-profile="reviewer"] [data-raw-file-collapse] textarea');
+      const area = document.querySelector('[data-profile-editor][data-agent-detail="reviewer"] [data-profile-raw] textarea');
       return area !== null && (area.value ?? '').includes('---');
     },
     undefined,
     { timeout: 20_000 },
   );
-  // Center the reviewer row so the page heading, the .md source path, the raw
-  // editor and the Save button all stay in one 1200×900 frame.
-  await row.evaluate((node) => { node.scrollIntoView({ block: 'center' }); });
   await page.waitForTimeout(300);
   await settle();
 }
@@ -300,22 +305,22 @@ async function checkH01() {
     if (await rail.locator(`[data-agent-id="${agentId}"]`).count() === 0) throw new Error(`dispatch tree missing ${agentId}`);
   }
   if (await rail.locator('[data-tasks-scroll] button').count() === 0) throw new Error('background task stop missing');
-  if (await page.locator('[data-goal-card]').count() === 0) throw new Error('goal card missing');
+  if (await page.locator('[data-header-toggle="goal"], [data-goal-title], [data-goal-card]').count() === 0) throw new Error('goal sheet missing');
   if (await page.locator('[data-queue-strip]').count() === 0) throw new Error('queue strip missing');
   if (await page.locator('[role="log"] [data-block-id^="user-"]').count() === 0) throw new Error('transcript turn missing');
 }
 
 async function checkR01() {
-  const row = page.locator('#st-card-subagent-profiles [data-agent-profile="reviewer"]');
-  if (await row.count() === 0) throw new Error('reviewer profile row missing');
-  const details = await row.locator('[data-technical-details]').innerText();
-  if (!details.includes('reviewer.md')) throw new Error('source file path not visible');
-  const value = await row.locator('[data-raw-file-collapse] textarea').inputValue();
+  const editor = page.locator('[data-profile-editor][data-agent-detail="reviewer"]');
+  if (await editor.count() === 0) throw new Error('reviewer profile editor missing');
+  const headerText = await editor.innerText();
+  if (!headerText.includes('reviewer.md')) throw new Error('source file path not visible');
+  const value = await editor.locator('[data-profile-raw] textarea').inputValue();
   if (!value.includes('---')) throw new Error('raw file editor not populated');
 }
 
 async function checkR02() {
-  if (await page.locator('[data-goal-card]').count() === 0) throw new Error('goal card missing');
+  if (await page.locator('[data-header-toggle="goal"], [data-goal-title], [data-goal-card]').count() === 0) throw new Error('goal sheet missing');
   if (await page.locator('[data-queue-strip]').count() === 0) throw new Error('queue strip missing');
   if (await page.locator('[data-queue-strip] [data-timing-picker]').count() === 0) throw new Error('queue timing control missing');
 }
@@ -330,8 +335,10 @@ async function checkR05() {
     if (await rail.locator(`[data-agent-id="${agentId}"]`).count() === 0) throw new Error(`dispatch tree missing ${agentId}`);
   }
   const text = await rail.innerText();
-  for (const model of ['Kimi K3', 'axon/gpt-6-astra', 'Claude Fable', 'DeepSeek V4 Flash', 'GLM 5.3 Flash']) {
-    if (!text.includes(model)) throw new Error(`rail is missing the ${model} binding`);
+  for (const model of ['Kimi K3', 'GPT-6 Astra', 'Claude Fable', 'DeepSeek V4 Flash', 'GLM 5.3 Flash']) {
+    if (!text.includes(model) && !(model === 'GPT-6 Astra' && text.includes('gpt-6-astra'))) {
+      throw new Error(`rail is missing the ${model} binding`);
+    }
   }
 }
 
@@ -387,7 +394,7 @@ async function main() {
   const fixture = await startFixtureServer({ port: FIXTURE_PORTS, scenario: 'marketing-h01-en' });
   const vite = spawn('pnpm --filter @kiki/gui dev', {
     cwd: REPO_ROOT,
-    env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT) },
+    env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT), KIKI_SERVER_URL: FIXTURE_URL },
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
   });

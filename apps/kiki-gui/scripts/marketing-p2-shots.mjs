@@ -168,8 +168,9 @@ async function control(action) {
 }
 
 function deepLink(path, fixtureUrl = FIXTURE_URL) {
-  const separator = path.includes('?') ? '&' : '?';
-  return `${WEB_URL}${path}${separator}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
+  const [beforeHash, hash = ''] = path.split('#', 2);
+  const separator = beforeHash.includes('?') ? '&' : '?';
+  return `${WEB_URL}${beforeHash}${separator}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}${hash === '' ? '' : `#${hash}`}`;
 }
 
 /** Park the pointer away from every hover target and settle paint. */
@@ -267,8 +268,10 @@ async function shotD01() {
   // header and the subagent composer, both rendered by AgentWorkspace.
   await panel.locator('[data-agent-effort]').first().waitFor({ timeout: 20_000 });
   await panel.locator('[data-composer-variant="subagent"]').waitFor({ timeout: 20_000 });
-  // Its own transcript: the explorer's four tool steps, each on its own row
-  // (read-run folding is opt-in and off by default)…
+  // Unfold the Explorer's settled history fold so all four tool steps show.
+  const panelFold = panel.locator('[data-history-fold] button[aria-expanded]').first();
+  await panelFold.waitFor({ timeout: 20_000 });
+  if ((await panelFold.getAttribute('aria-expanded')) !== 'true') await panelFold.click();
   await page.waitForFunction(
     () => document.querySelectorAll(
       '[data-preview-tabpanel="panel:agent-explorer"] :is([data-tool-id], [data-shell])',
@@ -279,9 +282,9 @@ async function shotD01() {
   // …and the result summary it returned, which is the point of the shot.
   const summary = locale === 'zh' ? '未发现版本漂移' : 'no version drift found';
   await panel.getByText(summary, { exact: false }).first().waitFor({ timeout: 20_000 });
-  // The main timeline folds completed runs; expand it so the Explorer's own
+  // The main timeline folds completed turns; expand it so the Explorer's own
   // card and summary sit next to the panel rather than behind one line.
-  const run = page.locator('[role="log"] [data-history-run]').first();
+  const run = page.locator('[role="log"] [data-history-fold], [role="log"] [data-history-run]').first();
   if (await run.count() > 0) {
     const toggle = run.locator('button[aria-expanded]').first();
     if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
@@ -293,11 +296,21 @@ async function shotD01() {
 
 /** D02 — the expanded prompt-fields card with its variable preview. */
 async function shotD02() {
-  await page.goto(deepLink('/settings/agents'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.goto(deepLink('/settings/agents#st-card-prompt-config'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  const advanced = page.locator('details[data-agents-advanced]');
+  if (await advanced.count() > 0 && await advanced.evaluate((node) => !node.open)) {
+    await advanced.locator('> summary').click();
+  }
   const card = page.locator('#st-card-prompt-config');
   await card.waitFor({ timeout: 30_000 });
-  await card.locator('details[data-prompt-config] > summary').first().click();
-  await card.locator('details[data-prompt-preview] > summary').first().click();
+  const fieldDetails = card.locator('details[data-prompt-config]');
+  if (await fieldDetails.evaluate((node) => !node.open)) {
+    await fieldDetails.locator('> summary').first().click();
+  }
+  const previewDetails = card.locator('details[data-prompt-preview]');
+  if (await previewDetails.evaluate((node) => !node.open)) {
+    await previewDetails.locator('> summary').first().click();
+  }
   // Substitution proof: the preview carries the variable's value and none of
   // the raw token.
   await page.waitForFunction(
@@ -347,8 +360,9 @@ async function shotD04() {
   await closeRail();
   const log = page.locator('[role="log"]');
   await log.waitFor({ timeout: 30_000 });
-  // The three tool calls stay in place as rows (folding is opt-in, and only
-  // runs of three or more pure reads would fold anyway).
+  const foldToggle = log.locator('[data-history-fold] button[aria-expanded]').first();
+  await foldToggle.waitFor({ timeout: 20_000 });
+  if ((await foldToggle.getAttribute('aria-expanded')) !== 'true') await foldToggle.click();
   await page.waitForFunction(
     () => document.querySelectorAll('[role="log"] :is([data-tool-id], [data-shell])').length >= 3,
     undefined,
@@ -382,19 +396,16 @@ async function shotD05() {
   await settle();
 }
 
-/** D06 — the search-lanes tab. */
+/** D06 — the search-services tab. */
 async function shotD06() {
   await page.goto(deepLink('/settings/search?tab=search'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const card = page.locator('#st-card-search-defaults');
+  const card = page.locator('#st-card-search-providers');
   await card.waitFor({ timeout: 30_000 });
   for (const lane of ['github.repositories', 'exa.search', 'duckduckgo.search', 'tavily.search']) {
-    await card.getByText(lane, { exact: true }).first().waitFor({ timeout: 20_000 });
+    await card.locator(`[data-nb-search-service-card="${lane}"]`).first().waitFor({ timeout: 20_000 });
   }
-  // The unconfigured lane must carry its reason, not only a badge.
-  const cardText = await card.innerText();
-  if (!cardText.includes('CREDENTIAL_NOT_CONFIGURED')) {
-    throw new Error('unconfigured lane reason missing from the lanes card');
-  }
+  await card.locator('[data-nb-search-service-card="github.repositories"] [data-nb-search-service-default]').waitFor({ timeout: 10_000 });
+  await card.locator('[data-nb-search-service-card="tavily.search"] [data-nb-search-service-state="needsKey"]').waitFor({ timeout: 10_000 });
   await page.evaluate(() => { document.querySelector('[data-settings-scroll]')?.scrollTo({ top: 0 }); });
   await page.waitForTimeout(300);
   await settle();
@@ -405,34 +416,18 @@ async function shotD07() {
   await page.goto(deepLink('/settings/search?tab=fetch'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
   const card = page.locator('#st-card-search-fetch');
   await card.waitFor({ timeout: 30_000 });
-  // A saved chain renders as editable selects, one per step: their values are
-  // the pipeline ids, so the order is read from the product's own control.
-  await card.locator('select').first().waitFor({ timeout: 20_000 });
-  const pipelines = await card.locator('select').evaluateAll((nodes) => nodes.map((node) => node.value));
+  await card.locator('[data-nb-search-fetch-chain] [data-nb-search-service-card]').first().waitFor({ timeout: 20_000 });
+  const pipelines = await card.locator('[data-nb-search-fetch-chain] [data-nb-search-service-card]').evaluateAll(
+    (nodes) => nodes.map((node) => node.getAttribute('data-nb-search-service-card')),
+  );
   const expected = ['tavily.extract', 'jina.reader', 'direct.fetch'];
   if (pipelines.join(' → ') !== expected.join(' → ')) {
     throw new Error(`fetch chain order wrong: ${pipelines.join(' → ')}`);
   }
-  const cardText = await card.innerText();
-  // Two fallback arrows between the three steps — one localized hint per gap.
-  const fallbackHint = locale === 'zh' ? '失败时回退到下一条' : 'falls back to the next pipeline';
-  const arrowCount = cardText.split(fallbackHint).length - 1;
-  if (arrowCount !== 2) {
-    throw new Error(`expected 2 fallback arrows between the chain steps, saw ${arrowCount}`);
-  }
-  // Per-step status, in chain order: the first pipeline is the unconfigured
-  // one, the two fallbacks are ready. A saved override renders the availability
-  // badge per step (it does not inline the issue list the way the inherited
-  // list does), so the badge is the status evidence here.
-  // Case-insensitive: the badges now render the catalog's sentence-case labels.
-  const unavailable = locale === 'zh' ? '不可用' : 'unavailable';
-  const ready = locale === 'zh' ? '就绪' : 'ready';
-  const pattern = new RegExp([
-    expected[0], unavailable, expected[1], ready, expected[2], ready,
-  ].join('[\\s\\S]*?'), 'i');
-  if (!pattern.test(cardText)) {
-    throw new Error('per-step readiness badges missing from the fetch chain');
-  }
+  await card.locator('[data-nb-search-service-card="tavily.extract"] [data-nb-search-service-state="needsKey"]').waitFor({ timeout: 10_000 });
+  await card.locator('[data-nb-search-service-card="jina.reader"] [data-nb-search-service-state="ready"]').waitFor({ timeout: 10_000 });
+  await card.locator('[data-nb-search-service-card="direct.fetch"] [data-nb-search-service-state="ready"]').waitFor({ timeout: 10_000 });
+  await card.locator('[data-nb-search-fetch-restore]').waitFor({ timeout: 10_000 });
   await page.evaluate(() => { document.querySelector('[data-settings-scroll]')?.scrollTo({ top: 0 }); });
   await page.waitForTimeout(300);
   await settle();
@@ -519,7 +514,7 @@ async function main() {
   const fixture = await startFixtureServer({ port: FIXTURE_PORTS, scenario: 'marketing-d01-en' });
   const vite = spawn('pnpm --filter @kiki/gui dev', {
     cwd: REPO_ROOT,
-    env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT) },
+    env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT), KIKI_SERVER_URL: FIXTURE_URL },
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
   });

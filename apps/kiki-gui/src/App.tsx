@@ -963,7 +963,7 @@ function NormalApp() {
             />
           </Route>
           <Route
-            path="/settings/:section?"
+            path="/settings/*"
             element={<SettingsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route
