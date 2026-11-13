@@ -461,4 +461,173 @@ describe('plugin extension compatibility and consent', () => {
     expect(plan.contributions).toContain('request-projection');
     expect(plan.contributions).toContain('settings');
   });
+
+  it('synthesizes sidebar-panel GUI slots from sidebar panels without duplicating explicit panel slots', async () => {
+    const root = await temp();
+    await writeFile(path.join(root, 'preview.html'), '<h1>Phone Preview</h1>');
+    await writeFile(path.join(root, 'settings.html'), '<h1>Settings</h1>');
+    const data = {
+      name: 'kiki-phone',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        permissions: { uiPanel: true },
+        panels: [
+          { schemaVersion: 1, id: 'preview', label: 'Phone Preview', slot: 'sidebar', path: './preview.html' },
+          { schemaVersion: 1, id: 'settings', label: 'Phone Settings', slot: 'settings', path: './settings.html' },
+        ],
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.guiSlots).toEqual([
+      {
+        slot: 'sidebar-panel',
+        pluginId: 'kiki-phone',
+        id: 'panel:preview',
+        title: { default: 'Phone Preview' },
+        panelId: 'preview',
+        bridge: 'kiki.panel.v1',
+        order: 100,
+      },
+    ]);
+    const manager = new PluginManager({ kimiHomeDir: await temp() });
+    const plan = await manager.preview(root);
+    expect(plan.contributions).toEqual(['panel:preview', 'panel:settings']);
+
+    const explicitData = {
+      name: 'kiki-phone',
+      'x-kiki': {
+        ...data['x-kiki'],
+        guiSlots: [
+          {
+            slot: 'sidebar-panel',
+            id: 'phone-sidebar',
+            title: { default: 'Custom Phone', zh: '手机预览' },
+            panelId: 'preview',
+            order: 10,
+          },
+        ],
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(explicitData));
+    const explicitParsed = await parseManifest(root);
+    expect(explicitParsed.diagnostics).toEqual([]);
+    expect(explicitParsed.manifest?.kiki?.guiSlots).toEqual([
+      {
+        slot: 'sidebar-panel',
+        pluginId: 'kiki-phone',
+        id: 'phone-sidebar',
+        title: { default: 'Custom Phone', zh: '手机预览' },
+        panelId: 'preview',
+        bridge: 'kiki.panel.v1',
+        order: 10,
+      },
+    ]);
+    const explicitPlan = await manager.preview(root);
+    expect(explicitPlan.contributions).toContain('gui-slot:sidebar-panel:phone-sidebar');
+  });
+
+  it('validates manifest guiSlots, routes, and promptContext declarations and rejects invalid subpaths or missing entry', async () => {
+    const root = await temp();
+    await writeFile(path.join(root, 'entry.mjs'), 'export const slots = {};');
+    await writeFile(path.join(root, 'preview.html'), '<h1>Preview</h1>');
+    const validManifest = {
+      name: 'phone-bridge',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        entry: './entry.mjs',
+        permissions: { uiPanel: true },
+        panels: [{ schemaVersion: 1, id: 'preview', label: 'Preview', slot: 'sidebar', path: './preview.html' }],
+        guiSlots: [
+          {
+            slot: 'composer-toolbar',
+            id: 'open-phone',
+            label: { default: 'Phone', zh: '手机' },
+            tone: 'accent',
+            action: { kind: 'open_plugin_panel', panelId: 'preview' },
+          },
+          {
+            slot: 'status-capsule',
+            id: 'device-status',
+            label: { default: 'ADB' },
+            dotTone: 'ok',
+          },
+        ],
+        routes: [
+          { method: 'GET', subpath: '/device/status', scopeAcl: 'space' },
+          { method: 'POST', subpath: '/device/tap' },
+        ],
+        promptContext: true,
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(validManifest));
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.slots).toEqual(['E12:server-gui-slots', 'E5:prompt-context']);
+    expect(parsed.manifest?.kiki?.guiSlots?.map((slot) => `${slot.slot}:${slot.id}`)).toEqual([
+      'composer-toolbar:open-phone',
+      'status-capsule:device-status',
+      'sidebar-panel:panel:preview',
+    ]);
+    expect(parsed.manifest?.kiki?.routes).toEqual([
+      {
+        pluginId: 'phone-bridge',
+        method: 'GET',
+        subpath: '/device/status',
+        scopeAcl: 'space',
+        maxBodyBytes: 262_144,
+      },
+      {
+        pluginId: 'phone-bridge',
+        method: 'POST',
+        subpath: '/device/tap',
+        scopeAcl: 'session',
+        maxBodyBytes: 262_144,
+      },
+    ]);
+    const manager = new PluginManager({ kimiHomeDir: await temp() });
+    const plan = await manager.preview(root);
+    expect(plan.contributions).toEqual([
+      'panel:preview',
+      'gui-slot:composer-toolbar:open-phone',
+      'gui-slot:status-capsule:device-status',
+      'route:GET:/device/status',
+      'route:POST:/device/tap',
+      'prompt-context',
+    ]);
+
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify({
+      name: 'phone-bridge',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        routes: [{ method: 'GET', subpath: '/device/status' }],
+      },
+    }));
+    expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain('x-kiki.entry is required');
+
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify({
+      name: 'phone-bridge',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        entry: './entry.mjs',
+        routes: [{ method: 'GET', subpath: '/settings/secret' }],
+      },
+    }));
+    expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain('invalid or reserved subpath');
+
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify({
+      name: 'phone-bridge',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        guiSlots: [{
+          slot: 'sidebar-panel',
+          id: 'missing-panel',
+          title: { default: 'Missing' },
+          panelId: 'nonexistent',
+        }],
+      },
+    }));
+    expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain('unknown panel');
+  });
 });

@@ -45,6 +45,8 @@ export interface MediaPreviewApi {
   readonly openAttachmentInWorkspace?: (item: MediaRef) => void;
   /** Open a web URL inside the resident preview workspace. */
   readonly openWeb?: (url: string, title?: string) => void;
+  /** Open a sandboxed plugin panel tab inside the resident preview workspace. */
+  readonly openPluginPanel?: (pluginId: string, panelId: string, title?: string) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */
   readonly previewTabCount: number;
   /** Whether the preview workspace panel is currently expanded. */
@@ -60,6 +62,11 @@ export interface MediaPreviewApi {
    * to the main session.
    */
   readonly activeAgentPanelId: string | undefined;
+  /**
+   * `<pluginId>:<panelId>` of the plugin panel tab the user is looking at right
+   * now (active tab in an expanded workspace); `undefined` otherwise.
+   */
+  readonly activePluginPanelKey?: string;
 }
 
 export const MediaPreviewContext = createContext<MediaPreviewApi | null>(null);

@@ -37,6 +37,7 @@ export const pluginComposerToolbarSlotSchema = z.object({
   slot: z.literal('composer-toolbar'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   label: pluginLocalizedTextSchema,
   tooltip: pluginLocalizedTextSchema.optional(),
   tone: z.enum(['neutral', 'accent', 'warning']).default('neutral'),
@@ -50,6 +51,7 @@ export const pluginStatusCapsuleSlotSchema = z.object({
   slot: z.literal('status-capsule'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   label: pluginLocalizedTextSchema,
   valueText: z.string().max(32).optional(),
   dotTone: z.enum(['idle', 'active', 'ok', 'warn', 'error']).default('idle'),
@@ -62,6 +64,7 @@ export const pluginMessageActionSlotSchema = z.object({
   slot: z.literal('message-action'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   label: pluginLocalizedTextSchema,
   appliesToRoles: z.array(z.enum(['user', 'assistant'])).min(1),
   order: z.number().int().min(-1000).max(1000).default(0),
@@ -73,6 +76,7 @@ export const pluginSlashCommandSlotSchema = z.object({
   slot: z.literal('slash-command'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   command: z.string().regex(/^[a-z0-9][a-z0-9:-]{0,63}$/),
   description: pluginLocalizedTextSchema,
   argumentHint: pluginLocalizedTextSchema.optional(),
@@ -85,6 +89,7 @@ export const pluginSettingsSectionSlotSchema = z.object({
   slot: z.literal('settings-section'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   title: pluginLocalizedTextSchema,
   subtitle: pluginLocalizedTextSchema.optional(),
   order: z.number().int().min(-1000).max(1000).default(0),
@@ -102,6 +107,7 @@ export const pluginToolCardRendererSlotSchema = z.object({
   slot: z.literal('tool-card-renderer'),
   pluginId: z.string().min(1),
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   toolNames: z.array(z.string().min(1).max(128)).min(1).max(64),
   actionVerb: pluginLocalizedTextSchema,
   targetFieldPath: z.string().max(120).optional(),
@@ -113,7 +119,8 @@ export const pluginToolCardRendererSlotSchema = z.object({
 export const pluginSandboxedPanelSlotSchema = z.object({
   slot: z.enum(['sidebar-panel', 'inspector-tab']),
   pluginId: z.string().min(1),
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  id: z.string().regex(/^[a-z0-9][a-z0-9:-]{0,63}$/),
+  icon: z.string().min(1).max(64).optional(),
   title: pluginLocalizedTextSchema,
   panelId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
   bridge: z.literal('kiki.panel.v1').default('kiki.panel.v1'),
@@ -132,6 +139,18 @@ export const pluginGuiSlotContributionSchema = z.discriminatedUnion('slot', [
 ]);
 export type PluginGuiSlotContribution = z.infer<typeof pluginGuiSlotContributionSchema>;
 
+/** Manifest/runtime GUI slot declaration allowing `pluginId` to be omitted and stamped by the host. */
+export const pluginGuiSlotDeclarationSchema = z.discriminatedUnion('slot', [
+  pluginComposerToolbarSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginStatusCapsuleSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginMessageActionSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginSlashCommandSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginSettingsSectionSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginToolCardRendererSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+  pluginSandboxedPanelSlotSchema.extend({ pluginId: z.string().min(1).optional() }).strict(),
+]);
+export type PluginGuiSlotDeclaration = z.infer<typeof pluginGuiSlotDeclarationSchema>;
+
 /** Descriptor for an authenticated `/api/plugins/:pluginId/*` HTTP route (E12). */
 export const pluginHttpRouteDescriptorSchema = z.object({
   pluginId: z.string().min(1),
@@ -142,6 +161,12 @@ export const pluginHttpRouteDescriptorSchema = z.object({
 }).strict();
 export type PluginHttpRouteDescriptor = z.infer<typeof pluginHttpRouteDescriptorSchema>;
 
+/** Manifest/runtime HTTP route declaration allowing `pluginId` to be omitted and stamped by the host. */
+export const pluginHttpRouteDeclarationSchema = pluginHttpRouteDescriptorSchema
+  .extend({ pluginId: z.string().min(1).optional() })
+  .strict();
+export type PluginHttpRouteDeclaration = z.infer<typeof pluginHttpRouteDeclarationSchema>;
+
 /** Descriptor for an authenticated WebSocket topic broadcast under `event.plugin.topic` (E12). */
 export const pluginWsTopicDescriptorSchema = z.object({
   pluginId: z.string().min(1),
@@ -149,6 +174,12 @@ export const pluginWsTopicDescriptorSchema = z.object({
   scopeAcl: z.enum(['global', 'space', 'session']).default('session'),
 }).strict();
 export type PluginWsTopicDescriptor = z.infer<typeof pluginWsTopicDescriptorSchema>;
+
+/** Runtime WebSocket topic declaration allowing `pluginId` to be omitted and stamped by the host. */
+export const pluginWsTopicDeclarationSchema = pluginWsTopicDescriptorSchema
+  .extend({ pluginId: z.string().min(1).optional() })
+  .strict();
+export type PluginWsTopicDeclaration = z.infer<typeof pluginWsTopicDeclarationSchema>;
 
 /** Wire event pushed over `/api/ws` for subscribed plugin topics. */
 export const pluginWsTopicEventSchema = z.object({

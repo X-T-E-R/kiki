@@ -71,6 +71,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  readLastSessionId,
   shownPinnedNavItems,
   writeLayoutPreferences,
   type SessionArchivedFilter,
@@ -108,7 +109,7 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
-import { DisclosureChevron, Icon, Spinner } from './icons';
+import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
@@ -120,6 +121,11 @@ import { ThreadTitle } from './ThreadTitle';
 import { RequestGovernanceBadge } from './RequestGovernanceView';
 import { resolvePluginLocalizedText, selectSidebarPanelSlots } from '@kiki/session-core';
 import { buildPluginPanelHref, usePluginGuiSlots } from './plugins/PluginComposerSlots';
+import {
+  queueSessionPluginPanelOpen,
+  requestSessionPluginPanelOpen,
+  useSessionPluginPanelSnapshot,
+} from '../lib/pluginPanelPreview';
 
 // Re-exported for callers and tests that paged the old in-component search.
 export { mergeSearchPages, searchNextPageParam } from '../lib/sessionSearch';
@@ -302,23 +308,75 @@ function scopedRoute(route: string, workspaceId: string | undefined): string {
   return `${route}?workspace=${encodeURIComponent(workspaceId)}`;
 }
 
+function openSidebarPluginPanel(options: {
+  readonly pluginId: string;
+  readonly panelId: string;
+  readonly title: string;
+  readonly activeSessionId?: string;
+  readonly reachableSessionId?: string;
+  readonly activeWorkspaceId?: string;
+  readonly currentPathname: string;
+  readonly navigate: (to: string) => unknown;
+  readonly onCloseSidebar?: () => void;
+}): void {
+  const {
+    pluginId,
+    panelId,
+    title,
+    activeSessionId,
+    reachableSessionId,
+    activeWorkspaceId,
+    currentPathname,
+    navigate,
+    onCloseSidebar,
+  } = options;
+  onCloseSidebar?.();
+  if (requestSessionPluginPanelOpen({ pluginId, panelId, title }, activeSessionId)) {
+    return;
+  }
+  const targetSessionId = activeSessionId ?? reachableSessionId;
+  if (targetSessionId !== undefined && targetSessionId !== '') {
+    const targetRoute = `/s/${encodeURIComponent(targetSessionId)}`;
+    const alreadyAtTargetSession =
+      currentPathname === targetRoute || currentPathname.startsWith(`${targetRoute}/`);
+    if (!alreadyAtTargetSession) {
+      queueSessionPluginPanelOpen({ pluginId, panelId, title }, targetSessionId);
+      void navigate(targetRoute);
+      return;
+    }
+  }
+  void navigate(
+    buildPluginPanelHref({
+      pluginId,
+      panelId,
+      sessionId: activeSessionId ?? reachableSessionId,
+      workspaceId: activeWorkspaceId,
+    }),
+  );
+}
+
 function PrimaryNav({
   activeSessionId,
+  reachableSessionId,
   activeWorkspaceId,
   badges,
   offscreen = false,
+  onCloseSidebar,
 }: {
   activeSessionId?: string;
+  reachableSessionId?: string;
   activeWorkspaceId: string | undefined;
   badges?: Partial<Record<NavKey, { count: number; label: string }>>;
   /** The drawer is closed: nothing here is on screen. */
   offscreen?: boolean;
+  onCloseSidebar?: () => void;
 }) {
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const layoutPrefs = useLayoutPreferences();
   const pinnedNavItems = shownPinnedNavItems(layoutPrefs, usePhoneMode());
+  const sessionPluginPanel = useSessionPluginPanelSnapshot();
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
     workspaceId: activeWorkspaceId,
@@ -332,6 +390,11 @@ function PrimaryNav({
     () => (location.pathname.startsWith('/capabilities') ? new URLSearchParams(location.search).get('panel') : null),
     [location.pathname, location.search],
   );
+  const activeInSessionPanelKey =
+    sessionPluginPanel.activePluginPanelKey !== undefined &&
+    (activeSessionId === undefined || sessionPluginPanel.sessionId === activeSessionId)
+      ? sessionPluginPanel.activePluginPanelKey
+      : undefined;
 
   const pinnedSet = useMemo(() => new Set<SidebarNavKey>(pinnedNavItems), [pinnedNavItems]);
   const primaryItems = useMemo(() => NAV_ITEMS.filter((item) => pinnedSet.has(item.key)), [pinnedSet]);
@@ -445,13 +508,13 @@ function PrimaryNav({
         <ul data-plugin-sidebar-panels className="space-y-px pt-1">
           {pluginSidebarPanels.map((panel) => {
             const panelKey = `${panel.pluginId}:${panel.panelId}`;
-            const current = activePanelParam === panelKey;
+            const current = activeInSessionPanelKey === panelKey || activePanelParam === panelKey;
             const title = resolvePluginLocalizedText(panel.title, locale);
-            const href = buildPluginPanelHref({
+            const iconName = resolvePluginSlotIconName({
+              icon: (panel as { readonly icon?: string }).icon,
               pluginId: panel.pluginId,
               panelId: panel.panelId,
-              sessionId: activeSessionId,
-              workspaceId: activeWorkspaceId,
+              fallback: 'star',
             });
             return (
               <li key={panelKey}>
@@ -459,13 +522,25 @@ function PrimaryNav({
                   type="button"
                   data-plugin-sidebar-panel={panelKey}
                   aria-current={current ? 'page' : undefined}
-                  onClick={() => { void navigate(href); }}
+                  onClick={() => {
+                    openSidebarPluginPanel({
+                      pluginId: panel.pluginId,
+                      panelId: panel.panelId,
+                      title,
+                      activeSessionId,
+                      reachableSessionId,
+                      activeWorkspaceId,
+                      currentPathname: location.pathname,
+                      navigate,
+                      onCloseSidebar,
+                    });
+                  }}
                   className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
                     current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
                   }`}
                 >
                   <span className={current ? 'text-ink' : 'text-ink-faint'}>
-                    <Icon name="star" size={16} />
+                    <Icon name={iconName} size={16} />
                   </span>
                   <span className="min-w-0 flex-1 truncate">{title}</span>
                 </button>
@@ -484,11 +559,13 @@ function PrimaryNav({
  * expanded footer's collapse toggle; both write the same persisted override. */
 function CollapsedSidebarRail({
   activeSessionId,
+  reachableSessionId,
   activeWorkspaceId,
   onNewSession,
   offscreen = false,
 }: {
   activeSessionId?: string;
+  reachableSessionId?: string;
   activeWorkspaceId: string | undefined;
   onNewSession: () => void;
   offscreen?: boolean;
@@ -496,6 +573,7 @@ function CollapsedSidebarRail({
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
+  const sessionPluginPanel = useSessionPluginPanelSnapshot();
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
     workspaceId: activeWorkspaceId,
@@ -509,6 +587,11 @@ function CollapsedSidebarRail({
     () => (location.pathname.startsWith('/capabilities') ? new URLSearchParams(location.search).get('panel') : null),
     [location.pathname, location.search],
   );
+  const activeInSessionPanelKey =
+    sessionPluginPanel.activePluginPanelKey !== undefined &&
+    (activeSessionId === undefined || sessionPluginPanel.sessionId === activeSessionId)
+      ? sessionPluginPanel.activePluginPanelKey
+      : undefined;
   return (
     <>
       <nav aria-label={t('nav.aria')} data-sidebar-rail className="flex flex-col items-center gap-1 px-2 pt-3">
@@ -544,13 +627,13 @@ function CollapsedSidebarRail({
         })}
         {pluginSidebarPanels.map((panel) => {
           const panelKey = `${panel.pluginId}:${panel.panelId}`;
-          const current = activePanelParam === panelKey;
+          const current = activeInSessionPanelKey === panelKey || activePanelParam === panelKey;
           const title = resolvePluginLocalizedText(panel.title, locale);
-          const href = buildPluginPanelHref({
+          const iconName = resolvePluginSlotIconName({
+            icon: (panel as { readonly icon?: string }).icon,
             pluginId: panel.pluginId,
             panelId: panel.panelId,
-            sessionId: activeSessionId,
-            workspaceId: activeWorkspaceId,
+            fallback: 'star',
           });
           return (
             <button
@@ -560,10 +643,21 @@ function CollapsedSidebarRail({
               aria-current={current ? 'page' : undefined}
               aria-label={title}
               title={title}
-              onClick={() => { void navigate(href); }}
+              onClick={() => {
+                openSidebarPluginPanel({
+                  pluginId: panel.pluginId,
+                  panelId: panel.panelId,
+                  title,
+                  activeSessionId,
+                  reachableSessionId,
+                  activeWorkspaceId,
+                  currentPathname: location.pathname,
+                  navigate,
+                });
+              }}
               className={RAIL_ICON}
             >
-              <Icon name="star" size={16} />
+              <Icon name={iconName} size={16} />
             </button>
           );
         })}
@@ -794,6 +888,18 @@ export function Sidebar({
       ? tp('sidebar.activityCount', inbox.total)
       : tp('activity.badgeCount', inbox.total);
   const activeWorkspaceId = sessions.find((session) => session.id === activeSessionId)?.workspace_id;
+  const reachableSessionId = useMemo(() => {
+    if (activeSessionId !== undefined && activeSessionId !== '') return activeSessionId;
+    const lastId = readLastSessionId();
+    if (
+      lastId !== undefined &&
+      lastId !== '' &&
+      sessions.some((session) => session.id === lastId && session.archived !== true)
+    ) {
+      return lastId;
+    }
+    return sessions.find((session) => session.archived !== true)?.id;
+  }, [activeSessionId, sessions]);
 
   // Local panel-layout prefs: the sidebar owns its own width. Local live
   // width drives the inline CSS var during a drag; the persisted pref is
@@ -1338,7 +1444,13 @@ export function Sidebar({
         data-sidebar-collapsed="true"
         aria-label={t('sidebar.navAria')}
       >
-        <CollapsedSidebarRail activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} onNewSession={onNewSession} offscreen={inert === true} />
+        <CollapsedSidebarRail
+          activeSessionId={activeSessionId}
+          reachableSessionId={reachableSessionId}
+          activeWorkspaceId={activeWorkspaceId}
+          onNewSession={onNewSession}
+          offscreen={inert === true}
+        />
       </aside>
     );
   }
@@ -1484,7 +1596,14 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <PrimaryNav activeSessionId={activeSessionId} activeWorkspaceId={activeWorkspaceId} badges={navBadges} offscreen={inert === true} />
+      <PrimaryNav
+        activeSessionId={activeSessionId}
+        reachableSessionId={reachableSessionId}
+        activeWorkspaceId={activeWorkspaceId}
+        badges={navBadges}
+        offscreen={inert === true}
+        onCloseSidebar={onClose}
+      />
       <SidebarPersonaSection sessions={sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">

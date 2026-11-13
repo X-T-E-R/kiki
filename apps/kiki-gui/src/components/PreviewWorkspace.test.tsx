@@ -13,11 +13,18 @@ import { act, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes, useLocation, useNavigationType } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
+import {
+  queueSessionPluginPanelOpen,
+  requestSessionPluginPanelOpen,
+  resetSessionPluginPanelOpenersForTests,
+  useSessionPluginPanelSnapshot,
+} from '../lib/pluginPanelPreview';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HTML_PREVIEW_SANDBOX } from '@kiki/protocol';
+import { HTML_PREVIEW_SANDBOX, type PluginGuiSlotContribution } from '@kiki/protocol';
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import {
   createViewState,
@@ -26,6 +33,8 @@ import {
 } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
+import { MAX_REQUESTS_PER_WINDOW } from './capabilities/PluginPanelHost';
+import { PluginComposerSlots } from './plugins/PluginComposerSlots';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
@@ -92,17 +101,22 @@ vi.mock('../state/connection', async (importOriginal) => {
     baseUrl: 'http://127.0.0.1:5177',
     openHtmlPreview: htmlPreviewMock.open,
     closeHtmlPreview: htmlPreviewMock.close,
+    getPluginPanelDocument: vi.fn((pluginId: string, panelId: string) =>
+      Promise.resolve({ html: `<!doctype html><html><body><div data-mock-panel="${pluginId}:${panelId}">Live Phone</div></body></html>` }),
+    ),
   };
   connectionMock.activeClient = fakeClient;
   connectionMock.defaultClient = fakeClient;
+  const readConnection = () => ({
+    client: connectionMock.activeClient,
+    scopeId: connectionMock.scopeId,
+    connectionSource: connectionMock.connectionSource,
+    config: connectionMock.config,
+  });
   return {
     ...original,
-    useOptionalConnection: () => ({
-      client: connectionMock.activeClient,
-      scopeId: connectionMock.scopeId,
-      connectionSource: connectionMock.connectionSource,
-      config: connectionMock.config,
-    }),
+    useConnection: readConnection,
+    useOptionalConnection: readConnection,
   };
 });
 
@@ -3410,5 +3424,260 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
       delete FILES['/work/d.ts'];
       delete FILES['/work/notes.md'];
     }
+  });
+});
+
+describe('PreviewWorkspace plugin panel tabs & session bridge', () => {
+  beforeAll(async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    FILES['/work/src/server.ts'] = "import { boot } from './boot';\nboot(5801);\n";
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
+    resetSessionPluginPanelOpenersForTests();
+  });
+  afterEach(() => {
+    resetSessionPluginPanelOpenersForTests();
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+  });
+
+  async function flushMicrotasks(rounds = 8): Promise<void> {
+    for (let index = 0; index < rounds; index += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  function PluginOpenProbe() {
+    const preview = useMediaPreview();
+    return (
+      <div>
+        <button
+          type="button"
+          data-open-phone-panel
+          onClick={() => preview?.openPluginPanel?.('kiki-phone', 'preview', 'Phone Preview')}
+        >
+          open phone
+        </button>
+        <OpenButton path="/work/src/server.ts" />
+        <PreviewToggleButton />
+      </div>
+    );
+  }
+
+  function SidebarSnapshotEcho() {
+    const snapshot = useSessionPluginPanelSnapshot();
+    return (
+      <div
+        data-snapshot-session={snapshot.sessionId ?? ''}
+        data-snapshot-panel={snapshot.activePluginPanelKey ?? ''}
+      />
+    );
+  }
+
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-location-probe={`${location.pathname}${location.search}`} />;
+  }
+
+  it('sets PluginPanelHost rate limit to 150 requests per 10s window for live device streams', () => {
+    expect(MAX_REQUESTS_PER_WINDOW).toBe(150);
+  });
+
+  it('opens a kind: "plugin" tab in workspace mode, keeps the iframe mounted across tab switches and collapse, and remounts on reload', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/s/sess-phone']}>
+          <SidebarSnapshotEcho />
+          <Routes>
+            <Route element={<ConversationShell />}>
+              <Route
+                path="/s/:id"
+                element={
+                  <MediaPreviewProvider sessionId="sess-phone" cwd="/work">
+                    <PluginOpenProbe />
+                  </MediaPreviewProvider>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-open-phone-panel]')!.click();
+    });
+    await flushMicrotasks();
+
+    const pluginTab = workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]');
+    expect(pluginTab).not.toBeNull();
+    expect(pluginTab?.textContent).toContain('Phone Preview');
+    expect(pluginTab?.querySelector('svg[data-icon="smartphone"]')).not.toBeNull();
+
+    const initialIframe = workspace().querySelector<HTMLIFrameElement>('iframe[data-plugin-panel="kiki-phone:preview"]');
+    expect(initialIframe).not.toBeNull();
+    expect(initialIframe?.getAttribute('data-plugin-panel-variant')).toBe('workspace');
+
+    // Active plugin panel snapshot updates so Sidebar highlights the entry.
+    expect(probe.container.querySelector('[data-snapshot-panel]')?.getAttribute('data-snapshot-panel')).toBe(
+      'kiki-phone:preview',
+    );
+
+    // Switch to a file tab: the plugin iframe stays mounted in the DOM (tabpanel hidden).
+    await openFile(probe.container, '/work/src/server.ts');
+    await flushMicrotasks();
+    const panelWrapper = workspace().querySelector<HTMLElement>('[data-preview-tabpanel="plugin:kiki-phone:preview"]')!;
+    expect(panelWrapper.hidden).toBe(true);
+    expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+    expect(probe.container.querySelector('[data-snapshot-panel]')?.getAttribute('data-snapshot-panel')).toBe('');
+
+    // Switch back to the plugin tab and collapse the preview workspace: iframe still stays mounted.
+    await act(async () => {
+      (pluginTab as HTMLElement).click();
+    });
+    await flushMicrotasks();
+    expect(panelWrapper.hidden).toBe(false);
+    expect(probe.container.querySelector('[data-snapshot-panel]')?.getAttribute('data-snapshot-panel')).toBe(
+      'kiki-phone:preview',
+    );
+
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-preview-toggle]')!.click();
+    });
+    await flushMicrotasks();
+    expect(workspace().hidden).toBe(true);
+    expect(workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]')).toBe(initialIframe);
+    expect(probe.container.querySelector('[data-snapshot-panel]')?.getAttribute('data-snapshot-panel')).toBe('');
+
+    // Expand again and click Reload: remounts a fresh iframe instance.
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-preview-toggle]')!.click();
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      workspace().querySelector<HTMLButtonElement>('[data-plugin-panel-reload]')!.click();
+    });
+    await flushMicrotasks();
+    const reloadedIframe = workspace().querySelector('iframe[data-plugin-panel="kiki-phone:preview"]');
+    expect(reloadedIframe).not.toBeNull();
+    expect(reloadedIframe).not.toBe(initialIframe);
+  });
+
+  it('opens plugin panels inside the session PreviewWorkspace from PluginComposerSlots and external Sidebar opener without navigating to /capabilities', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const slots: readonly PluginGuiSlotContribution[] = [
+      {
+        slot: 'composer-toolbar',
+        pluginId: 'kiki-phone',
+        id: 'open-phone',
+        label: { default: 'Phone Preview', zh: '手机预览' },
+        tone: 'accent',
+        order: 10,
+        action: {
+          kind: 'open_plugin_panel',
+          panelId: 'preview',
+        },
+      },
+    ];
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/s/sess-1']}>
+          <LocationProbe />
+          <Routes>
+            <Route element={<ConversationShell />}>
+              <Route
+                path="/s/:id"
+                element={
+                  <MediaPreviewProvider sessionId="sess-1" cwd="/work">
+                    <PluginComposerSlots slots={slots} sessionId="sess-1" workspaceId="ws-1" />
+                  </MediaPreviewProvider>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const chip = probe.container.querySelector<HTMLButtonElement>('[data-plugin-composer-slot="kiki-phone:open-phone"]')!;
+    expect(chip).not.toBeNull();
+    expect(chip.querySelector('svg[data-icon="smartphone"]')).not.toBeNull();
+
+    await act(async () => {
+      chip.click();
+    });
+    await flushMicrotasks();
+
+    // Stayed on /s/sess-1 and opened inside PreviewWorkspace!
+    expect(probe.container.querySelector('[data-location-probe]')?.getAttribute('data-location-probe')).toBe('/s/sess-1');
+    expect(workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')).not.toBeNull();
+
+    // Close the tab, then trigger via the cross-surface session opener (as Sidebar does outside MediaPreviewProvider).
+    await act(async () => {
+      workspace().querySelector<HTMLButtonElement>('[data-plugin-panel-close]')!.click();
+    });
+    await flushMicrotasks();
+    expect(document.querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')).toBeNull();
+
+    let handled = false;
+    await act(async () => {
+      handled = requestSessionPluginPanelOpen(
+        { pluginId: 'kiki-phone', panelId: 'preview', title: '手机预览' },
+        'sess-1',
+      );
+    });
+    await flushMicrotasks();
+    expect(handled).toBe(true);
+    expect(workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')?.textContent).toContain('手机预览');
+  });
+
+  it('drains a queued plugin panel request when navigating from /new into /s/:id', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queueSessionPluginPanelOpen(
+      { pluginId: 'kiki-phone', panelId: 'preview', title: 'Phone Preview' },
+      'sess-queued',
+    );
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/s/sess-queued']}>
+          <Routes>
+            <Route element={<ConversationShell />}>
+              <Route
+                path="/s/:id"
+                element={
+                  <MediaPreviewProvider sessionId="sess-queued" cwd="/work">
+                    <div data-queued-session />
+                  </MediaPreviewProvider>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await flushMicrotasks();
+
+    expect(workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')?.textContent).toContain(
+      'Phone Preview',
+    );
   });
 });

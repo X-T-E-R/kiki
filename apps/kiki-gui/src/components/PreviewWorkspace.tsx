@@ -49,6 +49,7 @@ import {
   useFileOpeners,
   usePreviewReadingScroll,
 } from './preview/shared';
+import { PreviewPluginView } from './preview/PluginTabView';
 import { PreviewSkillView } from './preview/SkillTabView';
 import { PreviewTabStrip } from './preview/TabStrip';
 import { isHtmlPreviewPath, TextTabView } from './preview/TextTabView';
@@ -394,6 +395,25 @@ export function PreviewWorkspace({
               url={tab.url}
               title={tab.title}
               visible={isTabActive && !hidden}
+              externalReloadNonce={reloadNonces[key]}
+            />
+          );
+        }
+        if (tab.kind === 'plugin') {
+          if (!seenTabs.has(key)) return null;
+          return (
+            <PreviewPluginView
+              key={key}
+              tabKey={key}
+              pluginId={tab.pluginId}
+              panelId={tab.panelId}
+              title={tab.title}
+              sessionId={sessionId}
+              visible={isTabActive && !hidden}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={() => { setIsFullscreen(!isFullscreen); }}
+              onCollapse={onCollapse}
+              onCloseTab={() => { onClose(key); }}
               externalReloadNonce={reloadNonces[key]}
             />
           );

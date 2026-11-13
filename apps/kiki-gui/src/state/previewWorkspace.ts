@@ -1,10 +1,10 @@
 /**
  * Preview workspace tab state — the pure reducer behind the resident preview
  * panel. Tab kinds are `resource` (host files and session copies), `web`
- * (external URLs), `panel` (agent workspaces), and `skill` (built-in skills);
- * ordering is user-controlled via drag reorder. Kept framework-free so tab
- * semantics (activate-on-reopen, neighbor activation on close, bounded reorder)
- * are unit-testable without a DOM.
+ * (external URLs), `panel` (agent workspaces), `skill` (built-in skills), and
+ * `plugin` (sandboxed plugin panels); ordering is user-controlled via drag
+ * reorder. Kept framework-free so tab semantics (activate-on-reopen, neighbor
+ * activation on close, bounded reorder) are unit-testable without a DOM.
  */
 
 import { basenameOf, resolveHostPath, type MediaRef } from '@kiki/session-core/composer/media';
@@ -40,7 +40,14 @@ export interface SkillTab {
   readonly name: string;
 }
 
-export type PreviewTab = ResourceTab | WebTab | PanelTab | SkillTab;
+export interface PluginTab {
+  readonly kind: 'plugin';
+  readonly pluginId: string;
+  readonly panelId: string;
+  readonly title?: string;
+}
+
+export type PreviewTab = ResourceTab | WebTab | PanelTab | SkillTab | PluginTab;
 
 export interface PreviewTabsState {
   /** Open tabs, in strip order. */
@@ -125,7 +132,8 @@ export function previewTabKey(tab: PreviewTab | string, cwd?: string): string {
       tab.startsWith('url:') ||
       tab.startsWith('web:') ||
       tab.startsWith('panel:') ||
-      tab.startsWith('skill:')
+      tab.startsWith('skill:') ||
+      tab.startsWith('plugin:')
     ) {
       return tab;
     }
@@ -133,6 +141,7 @@ export function previewTabKey(tab: PreviewTab | string, cwd?: string): string {
   }
   if (tab.kind === 'resource') return previewResourceKey(tab.resource, cwd);
   if (tab.kind === 'web') return `web:${tab.url}`;
+  if (tab.kind === 'plugin') return `plugin:${tab.pluginId}:${tab.panelId}`;
   return tab.kind === 'panel' ? `panel:${tab.agentId}` : `skill:builtin:${tab.name}`;
 }
 
@@ -161,7 +170,7 @@ export function normalizeTabInput(input: string | PreviewTab, cwd?: string): Pre
   return input;
 }
 
-/** Open a resource, web URL, skill, or panel: an existing tab activates; a new one appends + activates. */
+/** Open a resource, web URL, skill, plugin panel, or agent panel: an existing tab activates; a new one appends + activates. */
 export function openPreviewTab(
   state: PreviewTabsState,
   input: string | PreviewTab,
@@ -175,6 +184,7 @@ export function openPreviewTab(
     if (
       (tab.kind === 'panel' && tab.title && existing?.kind === 'panel') ||
       (tab.kind === 'web' && tab.title && existing?.kind === 'web') ||
+      (tab.kind === 'plugin' && tab.title !== undefined && tab.title.trim() !== '' && existing?.kind === 'plugin') ||
       (tab.kind === 'resource' &&
         existing?.kind === 'resource' &&
         tab.resource.source.kind === 'session-copy' &&

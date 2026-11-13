@@ -88,6 +88,11 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.kiki?.harnessAccountSources ?? []).map((source) => `harness-account-source:${source.id}`),
     ...Object.entries(manifest.kiki?.dependencies ?? {}).map(([id, range]) => `dependency:${id}@${range}`),
     ...(manifest.kiki?.panels ?? []).map((panel) => `panel:${panel.id}`),
+    ...(manifest.kiki?.guiSlots ?? [])
+      .filter((slot) => !(slot.slot === 'sidebar-panel' && slot.id === `panel:${slot.panelId}`))
+      .map((slot) => `gui-slot:${slot.slot}:${slot.id}`),
+    ...(manifest.kiki?.routes ?? []).map((route) => `route:${route.method}:${route.subpath}`),
+    ...(manifest.kiki?.promptContext === true ? ['prompt-context'] : []),
     ...(manifest.kiki?.commands ?? []).map((command) => `command:${command.name}`),
     ...(manifest.kiki?.settings === undefined ? [] : ['settings']),
     ...(manifest.kiki?.requestProjection === undefined ? [] : ['request-projection']),
@@ -121,6 +126,15 @@ export function buildInstallPlan(
   }
   if (previous !== undefined && JSON.stringify(manifest.kiki?.panels ?? []) !== JSON.stringify(previous.kiki?.panels ?? [])) {
     changes.push('panels changed');
+  }
+  if (previous !== undefined && JSON.stringify(manifest.kiki?.guiSlots ?? []) !== JSON.stringify(previous.kiki?.guiSlots ?? [])) {
+    changes.push('GUI slots changed');
+  }
+  if (previous !== undefined && JSON.stringify(manifest.kiki?.routes ?? []) !== JSON.stringify(previous.kiki?.routes ?? [])) {
+    changes.push('HTTP routes changed');
+  }
+  if (previous !== undefined && (manifest.kiki?.promptContext === true) !== (previous.kiki?.promptContext === true)) {
+    changes.push('prompt context changed');
   }
   if (previous !== undefined && JSON.stringify(manifest.kiki?.commands ?? []) !== JSON.stringify(previous.kiki?.commands ?? [])) {
     changes.push('commands changed');

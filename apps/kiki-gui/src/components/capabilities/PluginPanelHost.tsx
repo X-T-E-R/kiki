@@ -22,28 +22,35 @@ import { bridgeBody, isPanelRequest, panelWebUrl, PANEL_CHANNEL as CHANNEL } fro
 export { bridgeBody } from './pluginPanelBridge';
 
 import { useI18n } from '../../i18n';
-import { useConnection } from '../../state/connection';
+import * as connectionState from '../../state/connection';
 import { InlineError } from '../controls';
 import { Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { scopeKey } from './pluginUsage';
 
-const MAX_REQUESTS_PER_WINDOW = 20;
+export const MAX_REQUESTS_PER_WINDOW = 150;
 const RATE_WINDOW_MS = 10_000;
 
 export function PluginPanelHost({
   pluginId,
   panelId,
   label,
+  title,
   sessionId,
+  workspaceId,
   target,
-  className = 'h-full min-h-[420px] w-full',
+  variant = 'card',
+  className,
 }: {
   readonly pluginId: string;
   readonly panelId: string;
-  readonly label: string;
+  readonly label?: string;
+  /** Alias for `label` used by workspace tab hosts. */
+  readonly title?: string;
   /** The session the panel acts on; absent → the panel runs without one. */
   readonly sessionId?: string;
+  /** Optional workspace id shortcut when `target` is not explicitly provided. */
+  readonly workspaceId?: string;
   /**
    * The scope the document is served for. A workspace panel is served only for
    * the target that asked for it, so the key carries it and switching scope
@@ -51,18 +58,37 @@ export function PluginPanelHost({
    * panel behind after it is closed.
    */
   readonly target?: PluginUsageTarget;
+  /** `'card'` preserves `/capabilities` drawer sizing; `'workspace'` fills 100% inside `PreviewWorkspace`. */
+  readonly variant?: 'card' | 'workspace';
   readonly className?: string;
 }) {
-  const { client } = useConnection();
+  const connection =
+    'useOptionalConnection' in connectionState && typeof connectionState.useOptionalConnection === 'function'
+      ? connectionState.useOptionalConnection()
+      : connectionState.useConnection();
+  const client = connection?.client ?? connectionState.useConnection().client;
   const host = useHost();
   const { t, locale } = useI18n();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const recent = useRef<number[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const targetKey = scopeKey(target);
+  const effectiveLabel = label ?? title ?? panelId;
+  const effectiveTarget: PluginUsageTarget | undefined =
+    target ??
+    (workspaceId !== undefined && workspaceId !== ''
+      ? { workspace_id: workspaceId }
+      : sessionId !== undefined && sessionId !== ''
+        ? { session_id: sessionId }
+        : undefined);
+  const targetKey = scopeKey(effectiveTarget);
+  const resolvedClassName =
+    className ??
+    (variant === 'workspace'
+      ? 'h-full min-h-0 min-w-0 w-full flex-1'
+      : 'h-full min-h-[420px] w-full');
   const documentQuery = useQuery({
     queryKey: ['plugin-panel-document', pluginId, panelId, targetKey],
-    queryFn: () => client.getPluginPanelDocument(pluginId, panelId, target),
+    queryFn: () => client.getPluginPanelDocument(pluginId, panelId, effectiveTarget),
     staleTime: 60_000,
     retry: false,
   });
@@ -127,14 +153,16 @@ export function PluginPanelHost({
 
   if (documentQuery.isPending) {
     return (
-      <p className="flex items-center gap-2 p-4 text-[13px] text-ink-faint" role="status">
-        <Spinner label={t('cap.loading')} />{t('cap.panel.loading')}
-      </p>
+      <div className={variant === 'workspace' ? 'flex min-h-0 flex-1 items-start p-4' : 'p-4'}>
+        <p className="flex items-center gap-2 text-[13px] text-ink-faint" role="status">
+          <Spinner label={t('cap.loading')} />{t('cap.panel.loading')}
+        </p>
+      </div>
     );
   }
   if (documentQuery.isError) {
     return (
-      <div className="space-y-2 p-4" data-plugin-panel-error>
+      <div className={`space-y-2 p-4 ${variant === 'workspace' ? 'min-h-0 flex-1' : ''}`} data-plugin-panel-error>
         <InlineError error={documentQuery.error} />
         <button type="button" className={SECONDARY_BUTTON} onClick={() => { void documentQuery.refetch(); }}>{t('common.retry')}</button>
       </div>
@@ -143,13 +171,14 @@ export function PluginPanelHost({
   return (
     <iframe
       ref={frameRef}
-      title={label}
+      title={effectiveLabel}
       srcDoc={documentQuery.data.html}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       onLoad={() => { setLoaded(true); }}
       data-plugin-panel={`${pluginId}:${panelId}`}
-      className={`${className} block border-0 bg-paper`}
+      data-plugin-panel-variant={variant}
+      className={`${resolvedClassName} block border-0 bg-paper`}
     />
   );
 }

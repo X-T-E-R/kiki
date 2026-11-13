@@ -2,8 +2,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
-  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
+  asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginGuiSlotDeclarationSchema, pluginHttpRouteDeclarationSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
+  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginGuiSlotDeclaration, type PluginHttpRouteDeclaration, type PluginHttpRouteDescriptor, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
 } from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';
@@ -193,6 +193,28 @@ export type PluginSettings = z.infer<typeof settingsContributionSchema>;
 export const mediaSourceGroupSchema = z.object({ id: slug, label: z.string().min(1), providerIds: z.array(slug).min(1), settingsPrefix: z.string().regex(/^[a-z0-9]+__$/), legacyPluginId: z.string().optional(), required: z.array(z.string()).default([]) }).strict();
 export type PluginMediaSourceGroup = z.infer<typeof mediaSourceGroupSchema>;
 
+const RESERVED_ROUTE_SEGMENTS: ReadonlySet<string> = new Set([
+  'settings',
+  'panels',
+  'commands',
+  'navigation',
+  'marketplace',
+  'models',
+  'usage',
+  'gui-slots',
+  'routes',
+]);
+
+export function normalizePluginRouteSubpath(subpath: string): string | undefined {
+  if (subpath.includes('\\') || subpath.includes('\0') || /%(?:2f|5c|00)/i.test(subpath)) return undefined;
+  const trimmed = subpath.replace(/^\/+/, '');
+  if (trimmed.length === 0) return undefined;
+  const segments = trimmed.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return undefined;
+  if (RESERVED_ROUTE_SEGMENTS.has(segments[0]!.toLowerCase())) return undefined;
+  return `/${segments.join('/')}`;
+}
+
 export interface PluginExtension {
   readonly engines?: { readonly kiki: string };
   readonly tier?: PluginExecutionTier;
@@ -211,6 +233,9 @@ export interface PluginExtension {
   readonly mediaSources?: readonly PluginMediaSourceGroup[];
   readonly mediaScriptProvider?: string;
   readonly panels?: readonly PluginPanel[];
+  readonly guiSlots?: readonly PluginGuiSlotContribution[];
+  readonly routes?: readonly PluginHttpRouteDescriptor[];
+  readonly promptContext?: boolean;
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
   readonly activation?: 'app';
@@ -229,6 +254,7 @@ export async function parsePluginExtension(
   raw: unknown,
   diagnostics: PluginDiagnostic[],
   signal?: AbortSignal,
+  pluginId?: string,
 ): Promise<PluginExtension | undefined> {
   checkAborted(signal);
   if (raw === undefined) return undefined;
@@ -250,6 +276,9 @@ export async function parsePluginExtension(
     mediaSources: z.array(mediaSourceGroupSchema).max(1000).optional(),
     mediaScriptProvider: slug.optional(),
     panels: z.array(panelContributionSchema).optional(),
+    guiSlots: z.array(pluginGuiSlotDeclarationSchema).max(64).optional(),
+    routes: z.array(pluginHttpRouteDeclarationSchema).max(64).optional(),
+    promptContext: z.boolean().optional(),
     commands: z.array(commandContributionSchema).optional(),
     entry: z.string().startsWith('./').optional(),
     activation: z.literal('app').optional(),
@@ -264,7 +293,7 @@ export async function parsePluginExtension(
   }
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
-    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
+    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.guiSlots !== undefined || value.routes !== undefined || value.promptContext !== undefined || value.commands !== undefined ||
     value.slots !== undefined || value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
@@ -273,7 +302,9 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined) && value.entry === undefined) {
+  const hasManifestRoutes = (value.routes?.length ?? 0) > 0;
+  const hasPromptContext = value.promptContext === true;
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined || hasManifestRoutes || hasPromptContext) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
   for (const definitions of [value.sessionSources, value.mediaProviders, value.asrProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters]) {
@@ -369,11 +400,75 @@ export async function parsePluginExtension(
     checkAborted(signal);
     panels.push({ ...panel, file, assetFiles });
   }
+  const ownerId = pluginId?.trim() || path.basename(root).toLowerCase();
+  const guiSlots: PluginGuiSlotContribution[] = [];
+  const seenGuiSlotKeys = new Set<string>();
+  for (const rawSlot of value.guiSlots ?? []) {
+    if (rawSlot.pluginId !== undefined && rawSlot.pluginId !== ownerId) {
+      diagnostics.push({ severity: 'error', message: `GUI slot ${rawSlot.id} pluginId must match ${ownerId}` });
+      continue;
+    }
+    const slotKey = `${rawSlot.slot}:${rawSlot.id}`;
+    if (seenGuiSlotKeys.has(slotKey)) {
+      diagnostics.push({ severity: 'error', message: `Duplicate GUI slot ${slotKey}` });
+      continue;
+    }
+    if ((rawSlot.slot === 'sidebar-panel' || rawSlot.slot === 'inspector-tab') && !panels.some((panel) => panel.id === rawSlot.panelId)) {
+      diagnostics.push({ severity: 'error', message: `GUI slot ${rawSlot.id} references unknown panel ${rawSlot.panelId}` });
+      continue;
+    }
+    seenGuiSlotKeys.add(slotKey);
+    guiSlots.push({ ...rawSlot, pluginId: ownerId } as PluginGuiSlotContribution);
+  }
+  for (const panel of panels) {
+    if (panel.slot !== 'sidebar') continue;
+    if (guiSlots.some((slot) => slot.slot === 'sidebar-panel' && slot.panelId === panel.id)) continue;
+    const synthesizedId = `panel:${panel.id}`;
+    const slotKey = `sidebar-panel:${synthesizedId}`;
+    if (seenGuiSlotKeys.has(slotKey)) continue;
+    seenGuiSlotKeys.add(slotKey);
+    guiSlots.push({
+      slot: 'sidebar-panel',
+      pluginId: ownerId,
+      id: synthesizedId,
+      title: { default: panel.label },
+      panelId: panel.id,
+      bridge: 'kiki.panel.v1',
+      order: 100,
+    });
+  }
+  const routes: PluginHttpRouteDescriptor[] = [];
+  const seenRoutes = new Set<string>();
+  for (const rawRoute of value.routes ?? []) {
+    if (rawRoute.pluginId !== undefined && rawRoute.pluginId !== ownerId) {
+      diagnostics.push({ severity: 'error', message: `Route ${rawRoute.method} ${rawRoute.subpath} pluginId must match ${ownerId}` });
+      continue;
+    }
+    const normalizedSubpath = normalizePluginRouteSubpath(rawRoute.subpath);
+    if (normalizedSubpath === undefined) {
+      diagnostics.push({ severity: 'error', message: `Route ${rawRoute.method} ${rawRoute.subpath} has an invalid or reserved subpath` });
+      continue;
+    }
+    const routeKey = `${rawRoute.method} ${normalizedSubpath}`;
+    if (seenRoutes.has(routeKey)) {
+      diagnostics.push({ severity: 'error', message: `Duplicate plugin route ${routeKey}` });
+      continue;
+    }
+    seenRoutes.add(routeKey);
+    routes.push({ ...rawRoute, pluginId: ownerId, subpath: normalizedSubpath });
+  }
+  let normalizedSlots = value.slots === undefined ? undefined : [...value.slots];
+  if (hasManifestRoutes || hasPromptContext) {
+    const slotSet = new Set<ExtensionSlotId>(normalizedSlots ?? []);
+    if (hasManifestRoutes) slotSet.add('E12:server-gui-slots');
+    if (hasPromptContext) slotSet.add('E5:prompt-context');
+    normalizedSlots = [...slotSet];
+  }
   checkAborted(signal);
   return {
     engines: value.engines,
     tier: value.tier,
-    slots: value.slots,
+    slots: normalizedSlots,
     permissions: value.permissions,
     themes,
     providerPresets: value.providerPresets,
@@ -388,6 +483,9 @@ export async function parsePluginExtension(
     mediaSources: value.mediaSources,
     mediaScriptProvider: value.mediaScriptProvider,
     panels,
+    guiSlots: guiSlots.length > 0 ? guiSlots : value.guiSlots !== undefined ? [] : undefined,
+    routes: routes.length > 0 ? routes : value.routes !== undefined ? [] : undefined,
+    promptContext: value.promptContext,
     commands: value.commands,
     entry: resolvedEntry,
     activation: value.activation,

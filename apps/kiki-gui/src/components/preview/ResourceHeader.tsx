@@ -205,6 +205,13 @@ export function TabContextMenu({
       entries.push({ key: 'open-agent-route', label: t('preview.openAgentFullscreen', { name: tab.title ?? tab.agentId }), run: () => { workspaceNavigation.openAgentRoute(tab.agentId); } });
     }
     entries.push({ key: 'copy-agent-id', label: t('preview.copyAgentId'), run: () => copyTextToClipboard(tab.agentId) });
+  } else if (tab.kind === 'plugin') {
+    if (onReloadTab !== undefined) {
+      entries.push(
+        { separator: true },
+        { key: 'reload', label: t('preview.reloadFile'), run: () => { onReloadTab(previewTabKey(tab, cwd)); } },
+      );
+    }
   }
   return (
     <MiniContextMenu

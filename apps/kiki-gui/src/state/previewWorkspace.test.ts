@@ -16,27 +16,52 @@ import {
 } from './previewWorkspace';
 
 describe('previewWorkspace tab reducer (#33)', () => {
-  it('opens a new host-file resource tab appended and activated, and has exactly four tab kinds', () => {
+  it('opens a new host-file resource tab appended and activated, and has all five tab kinds', () => {
     const state = openPreviewTab(EMPTY_PREVIEW_TABS, '/a.ts');
     expect(state.tabs).toEqual([{ kind: 'resource', resource: hostFileResource('/a.ts') }]);
     expect(state.active).toBe('file:/a.ts');
 
-    const fourKinds: PreviewTab['kind'][] = ['resource', 'web', 'panel', 'skill'];
-    expect(new Set(fourKinds).size).toBe(4);
+    const fiveKinds: PreviewTab['kind'][] = ['resource', 'web', 'panel', 'skill', 'plugin'];
+    expect(new Set(fiveKinds).size).toBe(5);
   });
 
-  it('supports panel, web, and skill tabs alongside resource tabs', () => {
+  it('supports panel, web, skill, and plugin tabs alongside resource tabs', () => {
     let state = openPreviewTab(EMPTY_PREVIEW_TABS, '/a.ts');
     state = openPreviewTab(state, { kind: 'panel', agentId: 'agent-1', title: 'Worker 1' });
     state = openPreviewTab(state, { kind: 'web', url: 'https://example.com', title: 'Example' });
     state = openPreviewTab(state, { kind: 'skill', name: 'kiki-ops' });
+    state = openPreviewTab(state, {
+      kind: 'plugin',
+      pluginId: 'kiki-phone',
+      panelId: 'preview',
+      title: 'Phone Preview',
+    });
     expect(state.tabs).toEqual([
       { kind: 'resource', resource: hostFileResource('/a.ts') },
       { kind: 'panel', agentId: 'agent-1', title: 'Worker 1' },
       { kind: 'web', url: 'https://example.com', title: 'Example' },
       { kind: 'skill', name: 'kiki-ops' },
+      { kind: 'plugin', pluginId: 'kiki-phone', panelId: 'preview', title: 'Phone Preview' },
     ]);
-    expect(state.active).toBe('skill:builtin:kiki-ops');
+    expect(state.active).toBe('plugin:kiki-phone:preview');
+
+    // Reopening an existing plugin tab updates a non-empty title without duplicating.
+    state = openPreviewTab(state, '/a.ts');
+    expect(state.active).toBe('file:/a.ts');
+    state = openPreviewTab(state, {
+      kind: 'plugin',
+      pluginId: 'kiki-phone',
+      panelId: 'preview',
+      title: '手机预览',
+    });
+    expect(state.tabs).toHaveLength(5);
+    expect(state.active).toBe('plugin:kiki-phone:preview');
+    expect(state.tabs[4]).toEqual({
+      kind: 'plugin',
+      pluginId: 'kiki-phone',
+      panelId: 'preview',
+      title: '手机预览',
+    });
   });
 
   it('keeps a built-in skill distinct from resource and panel tabs and reopens the same tab', () => {
@@ -214,16 +239,17 @@ describe('previewWorkspace tab reducer (#33)', () => {
     expect(state.tabs[1]?.kind === 'resource' ? state.tabs[1].resource.origin : undefined).toEqual(origin);
   });
 
-  it('reads legacy { kind: "file", path } snapshots into resource tabs while preserving panel, skill, active, and scroll positions (#33)', () => {
+  it('reads legacy { kind: "file", path } snapshots into resource tabs while preserving panel, skill, plugin, active, and scroll positions (#33)', () => {
     const legacySnapshot = {
       tabsState: {
         tabs: [
           { kind: 'file', path: '/work/docs/design.md' },
           { kind: 'panel', agentId: 'sub-1', title: 'Worker' },
           { kind: 'skill', name: 'kiki-ops' },
+          { kind: 'plugin', pluginId: 'kiki-phone', panelId: 'preview', title: 'Phone Preview' },
           { kind: 'unknown-future-kind', foo: 'bar' },
         ],
-        active: '/work/docs/design.md',
+        active: 'plugin:kiki-phone:preview',
       },
       panelOpen: true,
       positions: {
@@ -238,8 +264,9 @@ describe('previewWorkspace tab reducer (#33)', () => {
       { kind: 'resource', resource: hostFileResource('/work/docs/design.md') },
       { kind: 'panel', agentId: 'sub-1', title: 'Worker' },
       { kind: 'skill', name: 'kiki-ops' },
+      { kind: 'plugin', pluginId: 'kiki-phone', panelId: 'preview', title: 'Phone Preview' },
     ]);
-    expect(restored!.tabsState.active).toBe('file:/work/docs/design.md');
+    expect(restored!.tabsState.active).toBe('plugin:kiki-phone:preview');
     expect(restored!.positions).toEqual({
       'file:/work/docs/design.md': { top: 240, left: 8 },
       'skill:builtin:kiki-ops': { top: 64 },

@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
-  asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountListInputSchema, harnessAccountPrepareInputSchema,
+  asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountListInputSchema, harnessAccountPrepareInputSchema, pluginGuiSlotDeclarationSchema, pluginHttpRouteDeclarationSchema, pluginWsTopicDeclarationSchema,
   type AsrProviderDefinition, type AsrProviderRegistration, type AsrTranscribeInput, type AsrTranscribeResult,
   type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput,
-  type MediaConnection, type MediaProviderDefinition, type PluginMediaApi, type PluginMessagesApi,
+  type MediaConnection, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginHttpRouteDescriptor, type PluginMediaApi, type PluginMessagesApi, type PluginWsTopicDescriptor,
 } from '@kiki/protocol';
 import { satisfies, valid } from 'semver';
 import type { PluginImAdapterRegistration, PluginImAdapterSink } from './imAdapter';
@@ -22,7 +22,7 @@ import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCa
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { ICordisRuntimeService, IPluginIsolationPoolService, type IsolatedPluginInvocation, type IsolatedPluginResult } from '#/app/cordisRuntime/cordisRuntime';
-import type { ExtensionSlotId } from './extensionSlots';
+import { IPluginExtensionPortRegistry, type ExtensionSlotId, type PluginHttpRouteHandlerContext, type PluginHttpRouteResult } from './extensionSlots';
 import { pluginAppLifecycleFlag } from './flag';
 import { REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { defaultOAuthRequestIdentity, type RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -33,10 +33,13 @@ import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { abortable } from '#/_base/utils/abort';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { toDisposable } from '#/_base/di/lifecycle';
+import { DisposableStore, type IDisposable, toDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
+import { IEventService } from '#/app/event/event';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Error2, PluginErrors } from '#/errors';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -47,8 +50,9 @@ import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { observePluginActivity } from './pluginActivity';
 import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinHistory';
 import { IPluginService } from './plugin';
+import { PluginChanged } from './pluginEvents';
 import { IPluginSettingsService } from './pluginSettingsService';
-import type { PluginTool } from './contributions';
+import { normalizePluginRouteSubpath, type PluginTool } from './contributions';
 import type { PluginInfo } from './types';
 import { sourceSchema, sourceValues, sourceActive, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, type MediaSettingValues } from './mediaSourceSettings';
 import type { PluginImBridge } from './pluginImBridge';
@@ -160,6 +164,9 @@ export class PluginHostService extends Service implements IPluginHostService {
   private outboundIm: PluginImBridge | undefined;
   private imAdaptersSink?: PluginImAdapterSink;
   private readonly knownDependencies = new Map<string, readonly string[]>();
+  private readonly extensionRegistrations = new Map<string, DisposableStore>();
+  private readonly extensionGenerations = new Map<string, number>();
+  private readonly extensionDiscoveries = new Set<Promise<void>>();
 
   attachOutboundIm(bridge: PluginImBridge | undefined): void {
     this.outboundIm = bridge;
@@ -227,17 +234,20 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IConfigService private readonly configService?: IConfigService,
     @IFlagService private readonly flags?: IFlagService,
     @ISessionManager private readonly sessions?: ISessionManager,
-    @IPluginUsageService usage?: IPluginUsageService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ref(ILogService) private readonly logger?: LiveRef<ILogService>,
     @ref(IPluginIsolationPoolService) private readonly isolates?: LiveRef<IPluginIsolationPoolService>,
     @ref(ICordisRuntimeService) private readonly cordis?: LiveRef<ICordisRuntimeService>,
     @ref(IProtocolAdapterRegistry) private readonly protocolAdapters?: LiveRef<IProtocolAdapterRegistry>,
+    @ref(IPluginExtensionPortRegistry) private readonly extensionPorts?: LiveRef<IPluginExtensionPortRegistry>,
+    @ref(ISessionIndex) private readonly sessionIndex?: LiveRef<ISessionIndex>,
+    @ref(IEventService) private readonly eventService?: LiveRef<IEventService>,
   ) {
     super();
-    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+    if (this.usage !== undefined) this._register(this.usage.onDidChange((event) => {
       event.waitUntil((async () => {
         try {
-          if (!await usage.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
+          if (!await this.usage!.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
           const info = await this.plugins.getPluginInfo({ id: event.pluginId });
           if (info.manifest?.kiki?.activation !== 'app') return;
           await this.runRequest(event.pluginId, async () => undefined);
@@ -250,6 +260,20 @@ export class PluginHostService extends Service implements IPluginHostService {
         }
       })());
     }));
+    if (this.extensionPorts !== undefined) {
+      this._register(this.extensionPorts.onDidChange((registry) => {
+        if (registry === undefined) {
+          this.withdrawExtensionPorts();
+          return;
+        }
+        if (this.closing) return;
+        void this.reconcileExtensionPorts().catch((error: unknown) => {
+          this.logger?.current?.warn('plugin extension port reconciliation failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }));
+    }
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
@@ -258,7 +282,10 @@ export class PluginHostService extends Service implements IPluginHostService {
       void event.finished.then(() => {
         reloadedSubscription.dispose();
         if (reloaded || this.closing) return;
-        void this.reconcileResidents(event.affected).catch((error: unknown) => {
+        void Promise.all([
+          this.reconcileExtensionPorts(event.affected),
+          this.reconcileResidents(event.affected),
+        ]).catch((error: unknown) => {
           this.logger?.current?.warn('plugin resident restore failed', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -268,6 +295,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         await Promise.allSettled(this.residentLifecycle);
         const affected = this.affectedPlugins(event.affected);
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
+        this.withdrawExtensionPorts(affected);
         const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys()])];
         await Promise.allSettled(ids.map(id => this.withdrawSlot(id)));
         await Promise.all(ids.map((id) => Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>())));
@@ -299,6 +327,13 @@ export class PluginHostService extends Service implements IPluginHostService {
           });
         }
         try {
+          await this.reconcileExtensionPorts(event.affected);
+        } catch (error) {
+          this.logger?.current?.warn('plugin extension port reconciliation failed after reload', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
           await this.reconcileResidents(event.affected);
         } catch (error) {
           this.logger?.current?.warn('plugin resident activation failed after reload', {
@@ -320,13 +355,20 @@ export class PluginHostService extends Service implements IPluginHostService {
       const previous = event.previousValue as Record<string, unknown> | undefined;
       const ids = [...new Set([...Object.keys(current ?? {}), ...Object.keys(previous ?? {})])]
         .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
-      void this.reconcileResidents(ids, true).then(() => this.reconcileImAdapters()).catch((error: unknown) => {
+      if (ids.length === 0) return;
+      void Promise.all([
+        this.reconcileExtensionPorts(ids),
+        this.reconcileResidents(ids, true),
+      ]).then(() => this.reconcileImAdapters()).catch((error: unknown) => {
         this.logger?.current?.warn('plugin resident settings reconciliation failed', {
           error: error instanceof Error ? error.message : String(error),
         });
       });
     }));
-    this.ready = Promise.resolve().then(() => this.reconcileResidents());
+    this.ready = Promise.resolve().then(() => Promise.all([
+      this.reconcileExtensionPorts(),
+      this.reconcileResidents(),
+    ]).then(() => undefined));
     void this.ready.catch((error: unknown) => {
       this.logger?.current?.warn('plugin initial resident activation failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -341,14 +383,357 @@ export class PluginHostService extends Service implements IPluginHostService {
   }
 
   private async shutdownHosts(): Promise<void> {
+    this.withdrawExtensionPorts();
     await Promise.allSettled([...this.slotRegistrations.keys()].map(id => this.withdrawSlot(id)));
     await this.imAdaptersSink?.withdraw();
     await Promise.allSettled(this.residentWork);
+    await Promise.allSettled(this.extensionDiscoveries);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
     this.hostSignatures.clear();
     await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
+  }
+
+  private withdrawExtensionPorts(affected?: readonly string[]): void {
+    const ids = affected === undefined
+      ? [...new Set([...this.extensionRegistrations.keys(), ...this.extensionGenerations.keys()])]
+      : affected.map((id) => id.toLowerCase());
+    for (const id of ids) {
+      this.extensionGenerations.set(id, (this.extensionGenerations.get(id) ?? 0) + 1);
+      const store = this.extensionRegistrations.get(id);
+      this.extensionRegistrations.delete(id);
+      store?.dispose();
+    }
+  }
+
+  private async reconcileExtensionPorts(affected?: readonly string[]): Promise<void> {
+    const registry = this.extensionPorts?.current;
+    if (registry === undefined || this.closing) return;
+    await this.configService?.ready;
+    if (this.extensionPorts?.current !== registry || this.closing) return;
+    const installed = await this.plugins.listPlugins();
+    if (this.extensionPorts?.current !== registry || this.closing) return;
+    const targetFilter = affected === undefined ? undefined : new Set(affected.map((id) => id.toLowerCase()));
+    const installedById = new Map(installed.map((item) => [item.id.toLowerCase(), item]));
+    const candidateIds = targetFilter !== undefined
+      ? [...targetFilter]
+      : [...new Set([...installedById.keys(), ...this.extensionRegistrations.keys()])];
+    const infos = await Promise.all(candidateIds.map(async (id) => {
+      const summary = installedById.get(id);
+      if (summary === undefined || !summary.enabled || summary.state !== 'ok') return { id, info: undefined };
+      const info = await this.plugins.getPluginInfo({ id: summary.id }).catch(() => undefined);
+      if (info === undefined || !info.enabled || info.state !== 'ok') return { id, info: undefined };
+      try {
+        await this.checkDependencies(info);
+        return { id, info };
+      } catch {
+        return { id, info: undefined };
+      }
+    }));
+    if (this.extensionPorts?.current !== registry || this.closing) return;
+    for (const { id, info } of infos) {
+      const generation = (this.extensionGenerations.get(id) ?? 0) + 1;
+      this.extensionGenerations.set(id, generation);
+      const previous = this.extensionRegistrations.get(id);
+      this.extensionRegistrations.delete(id);
+      previous?.dispose();
+      if (info === undefined) continue;
+      const kiki = info.manifest?.kiki;
+      if (kiki === undefined || kiki.tier === 'in-process') continue;
+      const hasGuiSlots = (kiki.guiSlots?.length ?? 0) > 0;
+      const hasManifestRoutes = (kiki.routes?.length ?? 0) > 0;
+      const hasE12Slot = kiki.slots?.includes('E12:server-gui-slots') === true && kiki.entry !== undefined;
+      const hasE5Slot = (kiki.promptContext === true || kiki.slots?.includes('E5:prompt-context') === true) && kiki.entry !== undefined;
+      if (!hasGuiSlots && !hasManifestRoutes && !hasE12Slot && !hasE5Slot) continue;
+
+      const store = new DisposableStore();
+      const guiSlotDisposables = new Map<string, IDisposable>();
+      const synthesizedPanelSlotKeys = new Map<string, string>();
+      const routeDisposables = new Map<string, IDisposable>();
+      const wsTopicDisposables = new Map<string, IDisposable>();
+
+      for (const slot of kiki.guiSlots ?? []) {
+        const key = `${slot.slot}:${slot.id}`;
+        const disposable = registry.registerGuiSlot(slot);
+        store.add(disposable);
+        guiSlotDisposables.set(key, disposable);
+        if (slot.slot === 'sidebar-panel' && slot.id === `panel:${slot.panelId}`) {
+          synthesizedPanelSlotKeys.set(slot.panelId, key);
+        }
+      }
+
+      for (const route of kiki.routes ?? []) {
+        const key = `${route.method} ${route.subpath}`;
+        const disposable = registry.registerHttpRoute(route, (ctx) => this.invokePluginHttpRoute(info.id, ctx));
+        store.add(disposable);
+        routeDisposables.set(key, disposable);
+      }
+
+      if (hasE5Slot) {
+        store.add(registry.registerPromptSection({
+          pluginId: info.id,
+          sectionId: 'dynamic-context',
+          order: 100,
+          render: (context) => this.renderPluginPromptSection(info.id, context),
+        }));
+      }
+
+      this.extensionRegistrations.set(id, store);
+
+      if (hasE12Slot) {
+        const discovery = this.discoverDynamicE12Contributions({
+          info,
+          generation,
+          registry,
+          store,
+          guiSlotDisposables,
+          synthesizedPanelSlotKeys,
+          routeDisposables,
+          wsTopicDisposables,
+        });
+        this.extensionDiscoveries.add(discovery);
+        void discovery.finally(() => {
+          this.extensionDiscoveries.delete(discovery);
+        });
+      }
+    }
+  }
+
+  private async discoverDynamicE12Contributions(input: {
+    readonly info: PluginInfo;
+    readonly generation: number;
+    readonly registry: IPluginExtensionPortRegistry;
+    readonly store: DisposableStore;
+    readonly guiSlotDisposables: Map<string, IDisposable>;
+    readonly synthesizedPanelSlotKeys: Map<string, string>;
+    readonly routeDisposables: Map<string, IDisposable>;
+    readonly wsTopicDisposables: Map<string, IDisposable>;
+  }): Promise<void> {
+    const { info, generation, registry, store, guiSlotDisposables, synthesizedPanelSlotKeys, routeDisposables, wsTopicDisposables } = input;
+    const id = info.id.toLowerCase();
+    let result: IsolatedPluginResult<unknown>;
+    try {
+      result = await this.invokeSlot({
+        pluginId: info.id,
+        slot: 'E12:server-gui-slots',
+        payload: { kind: 'describe', action: 'describe' },
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('Plugin did not register the requested slot')) {
+        this.logger?.current?.warn('plugin E12 slot discovery failed', {
+          pluginId: info.id,
+          error: message,
+        });
+      }
+      return;
+    }
+    if (this.closing || this.extensionPorts?.current !== registry || this.extensionGenerations.get(id) !== generation || this.extensionRegistrations.get(id) !== store) {
+      return;
+    }
+    if (typeof result.value !== 'object' || result.value === null || Array.isArray(result.value)) return;
+    const payload = result.value as Record<string, unknown>;
+    const declaredPanels = info.manifest?.kiki?.panels ?? [];
+    let changed = false;
+
+    if (Array.isArray(payload['guiSlots'])) {
+      for (const rawItem of payload['guiSlots']) {
+        const parsed = pluginGuiSlotDeclarationSchema.safeParse(rawItem);
+        if (!parsed.success) {
+          this.logger?.current?.warn('plugin E12 dynamic GUI slot failed validation', {
+            pluginId: info.id,
+            error: parsed.error.message,
+          });
+          continue;
+        }
+        const slotDecl = parsed.data;
+        if (slotDecl.pluginId !== undefined && slotDecl.pluginId.toLowerCase() !== id) continue;
+        if ((slotDecl.slot === 'sidebar-panel' || slotDecl.slot === 'inspector-tab') && !declaredPanels.some((panel) => panel.id === slotDecl.panelId)) {
+          this.logger?.current?.warn('plugin E12 dynamic panel slot references undeclared panel', {
+            pluginId: info.id,
+            panelId: slotDecl.panelId,
+          });
+          continue;
+        }
+        const contribution = { ...slotDecl, pluginId: info.id } as PluginGuiSlotContribution;
+        if (contribution.slot === 'sidebar-panel') {
+          const synthesizedKey = synthesizedPanelSlotKeys.get(contribution.panelId);
+          if (synthesizedKey !== undefined) {
+            synthesizedPanelSlotKeys.delete(contribution.panelId);
+            const synthesizedDisposable = guiSlotDisposables.get(synthesizedKey);
+            guiSlotDisposables.delete(synthesizedKey);
+            synthesizedDisposable?.dispose();
+          }
+        }
+        const key = `${contribution.slot}:${contribution.id}`;
+        const existing = guiSlotDisposables.get(key);
+        existing?.dispose();
+        const disposable = registry.registerGuiSlot(contribution);
+        store.add(disposable);
+        guiSlotDisposables.set(key, disposable);
+        changed = true;
+      }
+    }
+
+    if (Array.isArray(payload['routes'])) {
+      for (const rawRoute of payload['routes']) {
+        const parsed = pluginHttpRouteDeclarationSchema.safeParse(rawRoute);
+        if (!parsed.success) {
+          this.logger?.current?.warn('plugin E12 dynamic HTTP route failed validation', {
+            pluginId: info.id,
+            error: parsed.error.message,
+          });
+          continue;
+        }
+        const routeDecl = parsed.data;
+        if (routeDecl.pluginId !== undefined && routeDecl.pluginId.toLowerCase() !== id) continue;
+        const normalizedSubpath = normalizePluginRouteSubpath(routeDecl.subpath);
+        if (normalizedSubpath === undefined) {
+          this.logger?.current?.warn('plugin E12 dynamic HTTP route uses invalid or reserved subpath', {
+            pluginId: info.id,
+            subpath: routeDecl.subpath,
+          });
+          continue;
+        }
+        const descriptor: PluginHttpRouteDescriptor = {
+          ...routeDecl,
+          pluginId: info.id,
+          subpath: normalizedSubpath,
+        };
+        const key = `${descriptor.method} ${descriptor.subpath}`;
+        const existing = routeDisposables.get(key);
+        existing?.dispose();
+        const disposable = registry.registerHttpRoute(descriptor, (ctx) => this.invokePluginHttpRoute(info.id, ctx));
+        store.add(disposable);
+        routeDisposables.set(key, disposable);
+        changed = true;
+      }
+    }
+
+    if (Array.isArray(payload['wsTopics'])) {
+      for (const rawTopic of payload['wsTopics']) {
+        const parsed = pluginWsTopicDeclarationSchema.safeParse(rawTopic);
+        if (!parsed.success) continue;
+        const topicDecl = parsed.data;
+        if (topicDecl.pluginId !== undefined && topicDecl.pluginId.toLowerCase() !== id) continue;
+        const descriptor: PluginWsTopicDescriptor = { ...topicDecl, pluginId: info.id };
+        const existing = wsTopicDisposables.get(descriptor.topic);
+        existing?.dispose();
+        const disposable = registry.registerWsTopic(descriptor);
+        store.add(disposable);
+        wsTopicDisposables.set(descriptor.topic, disposable);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.eventService?.current?.publish(new PluginChanged({ payload: {} }));
+    }
+  }
+
+  private async resolvePluginSessionWorkspaceId(sessionId: string | undefined): Promise<string | undefined> {
+    if (sessionId === undefined) return undefined;
+    const live = this.sessions?.get(sessionId);
+    if (live !== undefined) {
+      try {
+        const context = live.accessor.get(ISessionContext);
+        if (context?.workspaceId !== undefined) return context.workspaceId;
+      } catch {
+      }
+    }
+    const indexed = await this.sessionIndex?.current?.get(sessionId).catch(() => undefined);
+    return indexed?.workspaceId;
+  }
+
+  private async invokePluginHttpRoute(
+    pluginId: string,
+    ctx: PluginHttpRouteHandlerContext,
+  ): Promise<PluginHttpRouteResult> {
+    const workspaceId = await this.resolvePluginSessionWorkspaceId(ctx.sessionId);
+    let result: IsolatedPluginResult<unknown>;
+    try {
+      result = await this.invokeSlot({
+        pluginId,
+        slot: 'E12:server-gui-slots',
+        payload: {
+          kind: 'http-route',
+          action: 'http-route',
+          method: ctx.method,
+          subpath: ctx.subpath,
+          query: ctx.query,
+          headers: ctx.headers,
+          body: ctx.body,
+          scope: {
+            spaceId: ctx.spaceId,
+            sessionId: ctx.sessionId,
+            workspaceId,
+          },
+        },
+        timeoutMs: 15_000,
+        signal: ctx.signal,
+      });
+    } catch (error) {
+      return {
+        status: 500,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return normalizePluginHttpRouteResponse(result.value);
+  }
+
+  private async renderPluginPromptSection(
+    pluginId: string,
+    context: {
+      readonly sessionId: string;
+      readonly agentId: string;
+      readonly profileName?: string;
+      readonly modelAlias?: string;
+      readonly workspaceRoot?: string;
+    },
+  ): Promise<string | undefined> {
+    const workspaceId = await this.resolvePluginSessionWorkspaceId(context.sessionId);
+    if (this.usage !== undefined) {
+      const allowed = await this.usage.allows(workspaceId, pluginId, context.sessionId);
+      if (!allowed) return undefined;
+    }
+    const runtime = this.cordis?.current;
+    const gate = runtime === undefined
+      ? undefined
+      : runtime.admissionGateForAgent(context.sessionId, context.agentId)
+        ?? runtime.admissionGateForSession(context.sessionId);
+    if (gate?.revoked === true) return undefined;
+
+    let result: IsolatedPluginResult<unknown>;
+    try {
+      result = await this.invokeSlot({
+        pluginId,
+        slot: 'E5:prompt-context',
+        sessionId: gate !== undefined ? context.sessionId : undefined,
+        agentId: gate !== undefined && runtime?.admissionGateForAgent(context.sessionId, context.agentId) !== undefined
+          ? context.agentId
+          : undefined,
+        payload: {
+          kind: 'prompt-context',
+          action: 'provide',
+          sessionId: context.sessionId,
+          agentId: context.agentId,
+          workspaceId,
+          workspaceRoot: context.workspaceRoot,
+          profileName: context.profileName,
+          modelAlias: context.modelAlias,
+        },
+        timeoutMs: 3_000,
+      });
+    } catch (error) {
+      this.logger?.current?.warn('plugin E5 prompt context invocation failed', {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+    return formatPluginPromptContextValue(result.value);
   }
 
   private async reconcilePreservedHosts(): Promise<void> {
@@ -892,6 +1277,86 @@ function credentialStatus(view: import('./pluginSettingsService').SettingsView, 
 
 function harnessAccountSourceError(source: string, error: unknown): Error2 {
   return new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, `Harness account source ${source}: ${error instanceof Error ? error.message : String(error)}`, { cause: error, details: { source } });
+}
+
+const VALID_PLUGIN_ROUTE_STATUSES: ReadonlySet<number> = new Set([200, 201, 400, 403, 404, 409, 429, 500]);
+
+function normalizePluginHttpRouteResponse(raw: unknown): PluginHttpRouteResult {
+  if (raw === undefined || raw === null) {
+    return { status: 200, data: null };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { status: 200, data: raw };
+  }
+  const obj = raw as Record<string, unknown>;
+  const rawStatus = obj['status'];
+  const hasEnvelopeShape =
+    typeof rawStatus === 'number' ||
+    Object.hasOwn(obj, 'data') ||
+    typeof obj['errorMessage'] === 'string' ||
+    typeof obj['error'] === 'string';
+  if (!hasEnvelopeShape) {
+    return { status: 200, data: raw };
+  }
+  const status = typeof rawStatus === 'number' && VALID_PLUGIN_ROUTE_STATUSES.has(rawStatus)
+    ? (rawStatus as NonNullable<PluginHttpRouteResult['status']>)
+    : undefined;
+  const errorMessage = typeof obj['errorMessage'] === 'string'
+    ? obj['errorMessage']
+    : typeof obj['error'] === 'string'
+      ? obj['error']
+      : undefined;
+  const data = Object.hasOwn(obj, 'data')
+    ? obj['data']
+    : status === undefined || status === 200 || status === 201
+      ? raw
+      : undefined;
+  return { status, data, errorMessage };
+}
+
+function formatPluginPromptContextEntry(item: unknown): string | undefined {
+  if (typeof item === 'string') {
+    const trimmed = item.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return undefined;
+  const record = item as Record<string, unknown>;
+  const bodyCandidate = typeof record['content'] === 'string'
+    ? record['content']
+    : typeof record['text'] === 'string'
+      ? record['text']
+      : typeof record['markdown'] === 'string'
+        ? record['markdown']
+        : undefined;
+  const body = bodyCandidate?.trim();
+  if (body === undefined || body.length === 0) return undefined;
+  const title = typeof record['title'] === 'string' ? record['title'].trim() : '';
+  return title.length > 0 ? `### ${title}\n${body}` : body;
+}
+
+function formatPluginPromptContextValue(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (Array.isArray(raw)) {
+    const parts = raw
+      .map(formatPluginPromptContextEntry)
+      .filter((entry): entry is string => entry !== undefined);
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
+  }
+  if (typeof raw === 'object') {
+    const record = raw as Record<string, unknown>;
+    if (Array.isArray(record['sections'])) {
+      const parts = record['sections']
+        .map(formatPluginPromptContextEntry)
+        .filter((entry): entry is string => entry !== undefined);
+      return parts.length > 0 ? parts.join('\n\n') : undefined;
+    }
+    return formatPluginPromptContextEntry(record);
+  }
+  return undefined;
 }
 
 registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnScopeCreated, 'plugin');

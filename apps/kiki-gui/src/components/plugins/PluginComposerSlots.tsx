@@ -11,7 +11,7 @@
 
 import { useCallback, useContext, useState } from 'react';
 import { QueryClient, QueryClientContext, useQuery } from '@tanstack/react-query';
-import { UNSAFE_NavigationContext, useNavigate } from 'react-router-dom';
+import { UNSAFE_LocationContext, UNSAFE_NavigationContext } from 'react-router-dom';
 
 import {
   listPluginGuiSlotsResponseSchema,
@@ -30,10 +30,15 @@ import { readLastSessionId } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { API_CODES, ApiError } from '../../lib/client';
+import {
+  queueSessionPluginPanelOpen,
+  requestSessionPluginPanelOpen,
+} from '../../lib/pluginPanelPreview';
 import { pushToast } from '../../lib/toasts';
 import * as connectionState from '../../state/connection';
 import type { ConnectionValue } from '../../state/connection';
-import { Spinner } from '../icons';
+import { Icon, resolvePluginSlotIconName, Spinner } from '../icons';
+import { useMediaPreview } from '../mediaPreviewContext';
 
 const EMPTY_GUI_SLOTS: readonly PluginGuiSlotContribution[] = [];
 const FALLBACK_QUERY_CLIENT = new QueryClient({
@@ -129,8 +134,39 @@ export async function fetchPluginGuiSlots(
   ) {
     return EMPTY_GUI_SLOTS;
   }
-  const parsed = listPluginGuiSlotsResponseSchema.safeParse((envelope as { data: unknown }).data);
-  return parsed.success ? parsed.data.slots : EMPTY_GUI_SLOTS;
+  const rawData = (envelope as { data: unknown }).data;
+  const rawSlots =
+    rawData !== null &&
+    typeof rawData === 'object' &&
+    'slots' in rawData &&
+    Array.isArray((rawData as { slots: unknown }).slots)
+      ? ((rawData as { slots: readonly unknown[] }).slots)
+      : null;
+  const normalizedData =
+    rawSlots === null
+      ? rawData
+      : {
+          ...(rawData as Record<string, unknown>),
+          slots: rawSlots.map((entry) => {
+            if (entry === null || typeof entry !== 'object' || !('icon' in entry)) return entry;
+            const { icon: _icon, ...rest } = entry as Record<string, unknown>;
+            return rest;
+          }),
+        };
+  const parsed = listPluginGuiSlotsResponseSchema.safeParse(normalizedData);
+  if (!parsed.success) return EMPTY_GUI_SLOTS;
+  if (rawSlots === null) return parsed.data.slots;
+  return parsed.data.slots.map((slot, index) => {
+    const rawEntry = rawSlots[index];
+    const rawIcon =
+      rawEntry !== null &&
+      typeof rawEntry === 'object' &&
+      'icon' in rawEntry &&
+      typeof (rawEntry as { icon?: unknown }).icon === 'string'
+        ? (rawEntry as { icon: string }).icon
+        : undefined;
+    return rawIcon === undefined ? slot : ({ ...slot, icon: rawIcon } as PluginGuiSlotContribution);
+  });
 }
 
 export async function invokePluginBrokerRoute(
@@ -262,7 +298,10 @@ export interface ExecutePluginActionOptions {
 export function useExecutePluginSlotAction() {
   const connection = useSafeOptionalConnection();
   const queryClient = useContext(QueryClientContext);
+  const mediaPreview = useMediaPreview();
   const navigationContext = useContext(UNSAFE_NavigationContext);
+  const locationContext = useContext(UNSAFE_LocationContext);
+  const currentPathname = locationContext?.location.pathname;
   const navigateTo = useCallback(
     async (to: string) => {
       if (navigationContext !== null && navigationContext.navigator !== undefined) {
@@ -298,6 +337,33 @@ export function useExecutePluginSlotAction() {
         if (onOpenPanel !== undefined) {
           onOpenPanel(pluginId, action.panelId);
           return true;
+        }
+        if (mediaPreview?.openPluginPanel !== undefined) {
+          mediaPreview.openPluginPanel(pluginId, action.panelId, label);
+          return true;
+        }
+        if (
+          requestSessionPluginPanelOpen(
+            { pluginId, panelId: action.panelId, title: label },
+            sessionId,
+          )
+        ) {
+          return true;
+        }
+        const targetSessionId = sessionId ?? readLastSessionId();
+        if (targetSessionId !== undefined && targetSessionId !== '') {
+          const targetRoute = `/s/${encodeURIComponent(targetSessionId)}`;
+          const alreadyAtTargetSession =
+            currentPathname === targetRoute ||
+            (currentPathname !== undefined && currentPathname.startsWith(`${targetRoute}/`));
+          if (!alreadyAtTargetSession) {
+            queueSessionPluginPanelOpen(
+              { pluginId, panelId: action.panelId, title: label },
+              targetSessionId,
+            );
+            await navigateTo(targetRoute);
+            return true;
+          }
         }
         await navigateTo(
           buildPluginPanelHref({
@@ -356,7 +422,7 @@ export function useExecutePluginSlotAction() {
         setBusyKey((prev) => (prev === currentKey ? null : prev));
       }
     },
-    [connection, locale, navigateTo, queryClient, t],
+    [connection, currentPathname, locale, mediaPreview, navigateTo, queryClient, t],
   );
 
   return { execute, busyKey };
@@ -404,6 +470,19 @@ export function PluginComposerSlots({
         const label = resolvePluginLocalizedText(slot.label, locale);
         const tooltip = slot.tooltip === undefined ? label : resolvePluginLocalizedText(slot.tooltip, locale);
         const isBusy = busyKey === key;
+        const explicitIcon = (slot as { readonly icon?: string }).icon;
+        const panelIdHint = slot.action.kind === 'open_plugin_panel' ? slot.action.panelId : undefined;
+        const slotIconName =
+          explicitIcon !== undefined && explicitIcon.trim() !== ''
+            ? resolvePluginSlotIconName({
+                icon: explicitIcon,
+                pluginId: slot.pluginId,
+                panelId: panelIdHint,
+                fallback: 'plugin',
+              })
+            : /(?:phone|mobile|android|ios)/u.test(slot.pluginId.toLowerCase())
+              ? 'smartphone'
+              : null;
         return (
           <button
             key={key}
@@ -428,7 +507,11 @@ export function PluginComposerSlots({
             }}
             className={`inline-flex h-6 max-w-48 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] leading-4 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-8 ${TONE_CLASSES[slot.tone]}`}
           >
-            {isBusy ? <Spinner label={label} /> : null}
+            {isBusy ? (
+              <Spinner label={label} />
+            ) : slotIconName !== null ? (
+              <Icon name={slotIconName} size={12} className="shrink-0 text-ink-faint" />
+            ) : null}
             <span className="truncate font-medium">{label}</span>
             {slot.badgeText !== undefined && slot.badgeText !== '' ? (
               <span

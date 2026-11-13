@@ -7,6 +7,7 @@ import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-sc
 import { parsePluginExtension } from './contributions';
 import { importClaudePlugin } from './claudeImport';
 import { pluginPrerequisitesSchema } from './prerequisites';
+import { resolveInstalledPluginId } from './renamedPlugins';
 import {
   PLUGIN_NAME_REGEX,
   type PluginCommandEntry,
@@ -166,7 +167,7 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
     }
   }
 
-  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics, signal);
+  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics, signal, resolveInstalledPluginId(name));
   checkAborted(signal);
   recordUnsupportedRuntimeFields(raw, diagnostics);
 

@@ -16,7 +16,7 @@ import {
   type PreviewResource,
 } from '#/state/previewResource';
 import { previewTabKey, type PreviewTab as PreviewTabModel } from '#/state/previewWorkspace';
-import { Icon, type IconName } from '../icons';
+import { Icon, resolvePluginSlotIconName, type IconName } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
 import { mentionTokenFor, webUrlDisplayLabel } from './shared';
 
@@ -52,6 +52,21 @@ function tabDisplayInfo(
   }
   if (tab.kind === 'skill') {
     return { label: `${tab.name} / SKILL.md`, icon: 'skill', isCopy: false };
+  }
+  if (tab.kind === 'plugin') {
+    const label =
+      tab.title !== undefined && tab.title.trim() !== ''
+        ? tab.title.trim()
+        : `${tab.pluginId} · ${tab.panelId}`;
+    return {
+      label,
+      icon: resolvePluginSlotIconName({
+        pluginId: tab.pluginId,
+        panelId: tab.panelId,
+        fallback: 'plugin',
+      }),
+      isCopy: false,
+    };
   }
   const node = agentForest?.byId[tab.agentId];
   return {
@@ -330,6 +345,22 @@ export function PreviewTabStrip({
                 key={key}
                 tabKey={key}
                 name={tab.name}
+                active={isTabActive}
+                onActivate={() => { onActivate(key); }}
+                onClose={() => { onClose(key); }}
+                onContextMenu={(x, y) => { onOpenContextMenu(tab, x, y); }}
+                onDragStart={() => { dragKeyRef.current = key; }}
+                onDrop={() => {
+                  const dragged = dragKeyRef.current;
+                  dragKeyRef.current = null;
+                  if (dragged !== null && dragged !== key) onMove(dragged, index);
+                }}
+              />
+            ) : tab.kind === 'plugin' ? (
+              <PreviewPluginTab
+                key={key}
+                tabKey={key}
+                tab={tab}
                 active={isTabActive}
                 onActivate={() => { onActivate(key); }}
                 onClose={() => { onClose(key); }}
@@ -771,6 +802,92 @@ function PreviewPanelTab({
       <button
         type="button"
         aria-label={`${t('common.close')} ${name}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-[11px] leading-none transition-colors hover:text-danger lg:h-auto lg:w-auto lg:px-0.5 ${
+          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        }`}
+      >
+        <Icon name="close" size={12} />
+      </button>
+    </div>
+  );
+}
+
+function PreviewPluginTab({
+  tabKey,
+  tab,
+  active,
+  onActivate,
+  onClose,
+  onContextMenu,
+  onDragStart,
+  onDrop,
+}: {
+  readonly tabKey: string;
+  readonly tab: Extract<PreviewTabModel, { kind: 'plugin' }>;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onClose: () => void;
+  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onDragStart: () => void;
+  readonly onDrop: () => void;
+}) {
+  const { t } = useI18n();
+  const label = tab.title !== undefined && tab.title.trim() !== '' ? tab.title.trim() : `${tab.pluginId} · ${tab.panelId}`;
+  const iconName = resolvePluginSlotIconName({
+    pluginId: tab.pluginId,
+    panelId: tab.panelId,
+    fallback: 'plugin',
+  });
+
+  return (
+    <div
+      role="tab"
+      tabIndex={0}
+      aria-selected={active}
+      title={`${label} (${tab.pluginId}:${tab.panelId})`}
+      draggable
+      data-preview-tab={tabKey}
+      data-preview-tab-key={tabKey}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', tabKey);
+        onDragStart();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop();
+      }}
+      onClick={onActivate}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 ${
+        active
+          ? 'border-hairline bg-paper font-medium text-ink'
+          : 'border-transparent text-ink-faint hover:text-ink-soft'
+      }`}
+    >
+      <Icon name={iconName} size={12} className="shrink-0 text-ink-faint" />
+      <span className="min-w-0 truncate">{label}</span>
+      <button
+        type="button"
+        aria-label={`${t('common.close')} ${label}`}
         onClick={(event) => {
           event.stopPropagation();
           onClose();

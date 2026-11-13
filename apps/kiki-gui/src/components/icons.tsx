@@ -86,7 +86,9 @@ export type IconName =
   | 'branch'
   | 'room'
   | 'thread'
-  | 'compass';
+  | 'compass'
+  | 'smartphone'
+  | 'plugin';
 
 export type IconSize = 12 | 14 | 16;
 
@@ -329,6 +331,17 @@ const PATHS: Record<IconName, ReactNode> = {
       <polygon points="10.8,5.2 6.8,7.2 5.2,10.8 9.2,8.8" />
     </>
   ),
+  // A handheld screen with speaker bar and home indicator: a connected phone.
+  smartphone: (
+    <>
+      <rect x="4.2" y="2.2" width="7.6" height="11.6" rx="1.6" />
+      <path d="M6.8 4h2.4M7.2 12h1.6" />
+    </>
+  ),
+  // A puzzle piece: an installed plugin panel or extension surface.
+  plugin: (
+    <path d="M6.2 3.2h-2a.9.9 0 0 0-.9.9v2.3c.9-.4 2 .1 2 1.3S4.2 9.5 3.3 9.1v2.8c0 .5.4.9.9.9h2.8c-.4-.9.1-2 1.3-2s1.7 1.1 1.3 2h2.3c.5 0 .9-.4.9-.9v-2c.9.3 1.9-.2 1.9-1.4s-1-1.7-1.9-1.4v-3c0-.5-.4-.9-.9-.9h-3c.3-.9-.2-1.9-1.4-1.9s-1.7 1-1.4 1.9z" />
+  ),
 };
 
 interface IconProps {
@@ -439,4 +452,60 @@ export function OutcomeMark({
     case 'done':
       return <span className="sr-only">{labels.done}</span>;
   }
+}
+
+const PLUGIN_SLOT_ICON_MAP: Readonly<Record<string, IconName>> = {
+  smartphone: 'smartphone',
+  phone: 'smartphone',
+  mobile: 'smartphone',
+  device: 'smartphone',
+  plugin: 'plugin',
+  plug: 'plugin',
+  puzzle: 'plugin',
+  terminal: 'terminal',
+  board: 'board',
+  grid: 'board',
+  web: 'web',
+  globe: 'web',
+  browser: 'compass',
+  compass: 'compass',
+  file: 'file',
+  read: 'read',
+  notes: 'notes',
+  search: 'search',
+  edit: 'edit',
+  clock: 'clock',
+  usage: 'usage',
+  settings: 'settings',
+  sliders: 'sliders',
+  tool: 'tool',
+  panel: 'panel',
+  folder: 'folder',
+  branch: 'branch',
+  star: 'star',
+};
+
+/**
+ * Resolve a declarative plugin slot or panel icon hint to one of Kiki's drawn
+ * SVG icons — zero emoji, crisp 16px geometry.
+ */
+export function resolvePluginSlotIconName(options: {
+  readonly icon?: string;
+  readonly pluginId?: string;
+  readonly panelId?: string;
+  readonly fallback?: IconName;
+}): IconName {
+  const { icon, pluginId, panelId, fallback = 'star' } = options;
+  if (typeof icon === 'string') {
+    const normalized = icon.trim().toLowerCase();
+    if (normalized !== '') {
+      const mapped = PLUGIN_SLOT_ICON_MAP[normalized];
+      if (mapped !== undefined) return mapped;
+    }
+  }
+  const combinedId = `${pluginId ?? ''}:${panelId ?? ''}`.toLowerCase();
+  if (combinedId.includes('phone') || combinedId.includes('mobile') || combinedId.includes('android') || combinedId.includes('ios')) {
+    return 'smartphone';
+  }
+  return fallback;
 }
