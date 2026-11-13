@@ -17,7 +17,7 @@ import { relativeTime } from '@kiki/session-core/util/time';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import {
-  browsableRemote, connectionAddress, connectionsApi, hasGuiPurpose,
+  browsableRemote, connectionAddress, connectionsApi, fingerprint, hasGuiPurpose,
   remoteConnectionKeys, remoteSummaryView, useRemoteConnections,
 } from '../../lib/remoteConnections';
 import {
@@ -241,7 +241,9 @@ export function RemoteConnectionsSection() {
             refresh();
             pushToast({
               tone: 'success',
-              text: t('st.remote.added', { name: record.label }),
+              text: record.fingerprintToVerify === undefined
+                ? t('st.remote.added', { name: record.label })
+                : t('st.remote.addedWithFingerprint', { name: record.label, fingerprint: fingerprint(record.fingerprintToVerify, 16, 8) }),
               durationMs: UNDO_TOAST_MS,
               action: browsableRemote(record)
                 ? { label: t('st.remote.enter'), run: () => { void enterRemoteSpace(record.id, record.label); } }
@@ -352,6 +354,18 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
           {connectionAddress(record.endpoint)}
           {record.lastConnectedAt !== undefined ? ` · ${relativeTime(new Date(record.lastConnectedAt).toISOString(), locale)}` : ''}
         </p>
+        {record.fingerprintToVerify !== undefined ? (
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-ink-faint" data-remote-fingerprint-to-verify title={record.fingerprintToVerify}>
+            <span className="shrink-0">{t('st.remote.fingerprintToVerify')}:</span>
+            <span className="whitespace-nowrap font-mono text-ink-soft">{fingerprint(record.fingerprintToVerify, 16, 8)}</span>
+          </p>
+        ) : null}
+        {record.pinnedFingerprint !== undefined ? (
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-ink-faint" data-remote-pinned-fingerprint title={record.pinnedFingerprint}>
+            <span className="shrink-0">{t('st.remote.pinnedFingerprint')}:</span>
+            <span className="whitespace-nowrap font-mono text-ink-soft">{fingerprint(record.pinnedFingerprint, 16, 8)}</span>
+          </p>
+        ) : null}
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-ink-faint" data-remote-facts>
           <span data-remote-openable={canOpen ? 'yes' : 'no'}>
             {t(canOpen ? 'st.remote.canOpen' : 'st.remote.cantOpen')}

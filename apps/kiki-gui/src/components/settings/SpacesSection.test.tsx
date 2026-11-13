@@ -843,6 +843,8 @@ describe('Spaces & Access IA (#16)', () => {
         backgroundSummary: true,
         state: 'online',
         activeLeases: 1,
+        pinnedFingerprint: 'fedcba9876543210'.repeat(4),
+        fingerprintToVerify: '0123456789abcdef'.repeat(4),
       },
     ]);
     hostConnection.listSshProfiles.mockResolvedValue([
@@ -857,7 +859,11 @@ describe('Spaces & Access IA (#16)', () => {
     ]);
     await render(<SpacesSection />);
     expect(document.querySelector('[data-space-row="main"]')).not.toBeNull();
-    expect(document.querySelector('[data-remote-connection="pair-b"]')?.textContent).toContain('Workstation B');
+    const remoteRow = document.querySelector('[data-remote-connection="pair-b"]')!;
+    expect(remoteRow.textContent).toContain('Workstation B');
+    expect(remoteRow.querySelector('[data-remote-fingerprint-to-verify]')?.textContent).toContain('0123456789abcdef…89abcdef');
+    expect(remoteRow.querySelector('[data-remote-fingerprint-to-verify]')?.getAttribute('title')).toBe('0123456789abcdef'.repeat(4));
+    expect(remoteRow.querySelector('[data-remote-pinned-fingerprint]')?.textContent).toContain('fedcba9876543210…76543210');
     expect(document.querySelector('#st-card-remote-connections')?.textContent).toContain('Spaces on other computers · openable from “Main space”');
     const sshRow = document.querySelector('[data-ssh-profile-row="ssh-build"]')!;
     expect(sshRow).not.toBeNull();
@@ -1157,6 +1163,27 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
   });
 
+  it('shows and embeds the issued TLS fingerprint in the inbound pairing URI', async () => {
+    const tlsFingerprint = '0123456789abcdef'.repeat(4);
+    connections.createPairCode.mockResolvedValue({
+      code: 'K9F2-7X4M',
+      expiresAt: Date.now() + 600_000,
+      target: localIdentity,
+      suggestedEndpoints: ['http://192.168.1.20:58627'],
+      tlsFingerprint,
+    });
+
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+    await click('[data-inbound-invite]');
+    await click('[data-inbound-generate-code]');
+
+    const fingerprint = document.querySelector<HTMLElement>('[data-inbound-tls-fingerprint]')!;
+    expect(fingerprint.textContent).toContain('TLS fingerprint: 0123456789abcdef…89abcdef');
+    expect(fingerprint.querySelector('[title]')?.getAttribute('title')).toBe(tlsFingerprint);
+    const qr = document.querySelector<HTMLImageElement>('[data-inbound-qr]')!;
+    expect(new URL(qr.dataset['inboundQrUri']!).searchParams.get('fp')).toBe(tlsFingerprint);
+  });
+
   it('shows "Generate code" without gate warning when gate is already on, and sends wake when thread messages is checked', async () => {
     connections.inbound.mockResolvedValue({
       enabled: true,
@@ -1255,6 +1282,7 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
         code: 'K9F2-7X4M',
         backgroundSummary: true,
         requestBridge: false,
+        fingerprint: undefined,
       });
       // Sheet closed, window did NOT auto-switch, and toast offers Switch!
       expect(document.querySelector('[data-pair-sheet="outbound"]')).toBeNull();
@@ -1265,5 +1293,38 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     } finally {
       unregister();
     }
+  });
+
+  it('passes a pairing URI fingerprint through to the pairing request and success toast', async () => {
+    const tlsFingerprint = '0123456789abcdef'.repeat(4);
+    connections.pair.mockResolvedValue({
+      id: '99999999-9999-4999-8999-999999999999',
+      label: 'Studio Mac',
+      endpoint: 'http://192.168.1.40:58627',
+      target: peerSource,
+      credentialRef: 'pair-studio',
+      purposes: ['gui'],
+      enabled: true,
+      backgroundSummary: true,
+      state: 'online',
+      activeLeases: 0,
+      fingerprintToVerify: tlsFingerprint,
+    });
+
+    await render(<SpacesSection />);
+    await click('[data-remote-add]');
+    const pairingUri = `kiki://pair?endpoint=${encodeURIComponent('http://192.168.1.40:58627')}&code=K9F2-7X4M&fp=${tlsFingerprint}`;
+    await type('[data-remote-endpoint]', pairingUri);
+    expect(document.querySelector<HTMLInputElement>('[data-remote-code]')?.value).toBe('K9F2-7X4M');
+    await click('[data-remote-add-submit]');
+
+    expect(connections.pair).toHaveBeenCalledWith({
+      endpoint: 'http://192.168.1.40:58627',
+      code: 'K9F2-7X4M',
+      backgroundSummary: true,
+      requestBridge: false,
+      fingerprint: tlsFingerprint,
+    });
+    expect(getToasts().at(-1)?.text).toBe('Paired Studio Mac. Verify its TLS fingerprint: 0123456789abcdef…89abcdef.');
   });
 });

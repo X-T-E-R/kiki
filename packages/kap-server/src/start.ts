@@ -118,6 +118,7 @@ import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
+import { loadPeerTlsIdentity } from './services/connections/tlsIdentity';
 import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
 import { registerHostMediaPreviewRoutes } from './routes/hostMediaPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
@@ -1251,20 +1252,24 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     });
     registerHostMediaPreviewRoutes(app, core, transcriptService);
   }
+  const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web);
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
+  remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));
   pairingHooks.current = {
     workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
     issueBridges: (input) => pairedBridge.issuePairingBridges(input),
-    installBridge: async (connectionId, grant, credential) => { await pairedBridge.install({ connectionId, grant, credential }); },
+    installBridge: async (connectionId, grant, credential, connectionGrantId) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),
+    revokedBridges: (source) => pairedBridge.revokedPairingBridges(source),
+    retireBridges: (id, ids) => pairedBridge.retireConfirmedBridges(id, ids),
     enableThreads: () => pairedBridge.enableThreads(),
     endpoints: async () => {
       const urls = [...await (peerListeners?.ensure() ?? Promise.resolve([]))];
       const status = web.status();
-      if (status.enabled && status.url !== null) urls.push(status.url);
+      if (urls.length === 0 && status.enabled && status.url !== null) urls.push(status.url);
       return urls;
     },
   };
@@ -1450,13 +1455,13 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
-  peerListeners = new PeerListeners(app, boundPort, peerRequests, exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true);
+  if (peerTls !== undefined) peerListeners = new PeerListeners(app, boundPort, peerRequests, true, peerTls);
   peerAdmissionHook = admission.onDidChange((change) => change.enabled ? peerListeners?.ensure().then(() => undefined) : undefined);
 
   await preparing(registration.update({ port: boundPort }));
   try {
     await preparing(web.ready());
-    if (admission.status().enabled) await preparing(peerListeners.ensure());
+    if (admission.status().enabled && peerListeners !== undefined) await preparing(peerListeners.ensure());
     continuation?.signal.throwIfAborted();
   }
   catch (error) { if (startup === undefined) await close(); throw error; }

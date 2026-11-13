@@ -156,6 +156,10 @@ describe('field checks', () => {
     const uri = formatPairingUri({ endpoint: 'http://192.168.1.40:5523', code: 'k9f27x4m' });
     expect(uri).toBe('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5523&code=K9F2-7X4M');
     expect(parsePairingUri(uri)).toEqual({ endpoint: 'http://192.168.1.40:5523', code: 'K9F2-7X4M' });
+    const tlsFingerprint = '0123456789abcdef'.repeat(4);
+    const fingerprintUri = formatPairingUri({ endpoint: 'http://192.168.1.40:5523', code: 'k9f27x4m', fingerprint: tlsFingerprint });
+    expect(parsePairingUri(fingerprintUri)).toEqual({ endpoint: 'http://192.168.1.40:5523', code: 'K9F2-7X4M', fingerprint: tlsFingerprint });
+    expect(parsePairingUri(`${uri}&fp=not-a-fingerprint`)).toBeUndefined();
     expect(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F192.168.1.40%3A5523&code=bad')).toBeUndefined();
     expect(parsePairingUri('https://b.example.test')).toBeUndefined();
   });

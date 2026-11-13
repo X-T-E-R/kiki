@@ -14,6 +14,11 @@ async function inputJson(path: string): Promise<unknown> {
   }
   return JSON.parse(text) as unknown;
 }
+
+function compactFingerprint(value: string): string {
+  return `${value.slice(0, 16)}…${value.slice(-8)}`;
+}
+
 export function registerConnectionsCommand(program: Command): void {
   const group = program.command('connections').description('Manage directed connections for this local Kiki home.').option('--home <dir>', 'Local source/provider home.');
   const run = async (command: Command, action: (connections: NonNullable<ReturnType<typeof createKlient>['rest']>['connections']) => Promise<unknown>) => {
@@ -49,15 +54,20 @@ export function registerConnectionsCommand(program: Command): void {
         const created = await connections.createPairCode({});
         const minutes = Math.max(1, Math.round((created.expiresAt - Date.now()) / 60_000));
         const addresses = created.suggestedEndpoints.length > 0 ? created.suggestedEndpoints.join('\n') : '(no direct address found)';
-        process.stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n`);
+        const fingerprintLine = created.tlsFingerprint === undefined ? '' : `TLS fingerprint: ${compactFingerprint(created.tlsFingerprint)}\n`;
+        process.stdout.write(`Pairing code: ${created.code} (valid for ${minutes} minutes)\nAddress:\n${addresses}\n${fingerprintLine}`);
         return;
       }
       const parsedUri = endpoint !== undefined && code === undefined ? parsePairingUri(endpoint) : undefined;
       const targetEndpoint = parsedUri?.endpoint ?? endpoint;
       const targetCode = parsedUri?.code ?? code;
       if (targetEndpoint === undefined || targetCode === undefined) throw new Error('Usage: kiki pair <endpoint> <code>');
-      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint: targetEndpoint, code: targetCode, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true }));
-      process.stdout.write(`Connected to ${record.label} at ${record.endpoint}.\n`);
+      const record = await connections.pair(connectionPairInputSchema.parse({ endpoint: targetEndpoint, code: targetCode, ...options.label === undefined ? {} : { label: options.label }, backgroundSummary: true, fingerprint: parsedUri?.fingerprint }));
+      const tlsFingerprint = record.fingerprintToVerify ?? record.pinnedFingerprint;
+      const fingerprintLine = tlsFingerprint === undefined
+        ? ''
+        : `\n${record.fingerprintToVerify === undefined ? 'Pinned TLS fingerprint' : 'TLS fingerprint to verify'}: ${compactFingerprint(tlsFingerprint)}`;
+      process.stdout.write(`Connected to ${record.label} at ${record.endpoint}.${fingerprintLine}\n`);
     } finally { await client.close(); }
   });
 }

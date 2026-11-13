@@ -103,11 +103,13 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
 
     const peer = await connect(source, target);
     const peerClient = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: peer.record.id });
+    await expect(peerClient.rest!.filesystem.openHtmlPreview({ path, root })).rejects.toThrow('html_preview_target_owner_grant_required');
+    await peerClient.close();
     const owner = await connect(source, target, target.localOwnerToken);
+    expect(owner.record.id).toBe(peer.record.id);
     const ownerClient = createConnectionKlient({ endpoint: endpoint(source), token: source.localOwnerToken, connectionId: owner.record.id });
     const forward = vi.spyOn(source.remoteConnections, 'forward');
     try {
-      await expect(peerClient.rest!.filesystem.openHtmlPreview({ path, root })).rejects.toThrow('html_preview_target_owner_grant_required');
       await expect(ownerClient.rest!.filesystem.openHtmlPreview({ path, workspace_root: workspace })).rejects.toThrow('preview_path_outside_root');
       const opened = await ownerClient.rest!.filesystem.openHtmlPreview({ path, root });
       try {
@@ -292,6 +294,17 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
       await cancelReader.cancel(); cancelReader.releaseLock();
       await vi.waitFor(() => { expect(returned).toBe(true); expect(a.remoteConnections.list()[0]?.activeLeases).toBe(1); });
       phase('cancel-complete');
+      returned = false;
+      const rotating = await call(a, `/api/remote-connections/${record.id}/download`, { operation: 'file', params: { fileId: envelope.data.id } });
+      const oldReader = rotating.body!.getReader();
+      const start = await oldReader.read(); expect(start.done).toBe(false);
+      const replacement = await connect(a, b);
+      expect(replacement.record.id).toBe(record.id);
+      await expect((async () => { while (!(await oldReader.read()).done) {} })()).rejects.toThrow();
+      oldReader.releaseLock();
+      await vi.waitFor(() => expect(returned).toBe(true));
+      expect(b.admission.status().grants.filter((grant) => grant.status === 'approved')).toHaveLength(1);
+      phase('rotation-closed-old-stream');
     } finally { reading.mockRestore(); }
     await a.remoteConnections.enable(record.id, false);
     expect(a.remoteConnections.list()[0]?.activeLeases).toBe(0);
