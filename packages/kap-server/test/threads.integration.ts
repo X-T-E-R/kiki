@@ -60,6 +60,7 @@ function makeService(): IThreadCommunicationService {
     hostId: 'host-a',
     listMessages: vi.fn(async () => ({ items: [] })),
     listThreads: vi.fn(async () => ({ threads: [] })),
+    createThread: vi.fn(),
     readThread: vi.fn(async (input) => ({ thread: input.thread, turns: [] })),
     sendMessage: vi.fn(async () => ({
       messageId: 'message-a',

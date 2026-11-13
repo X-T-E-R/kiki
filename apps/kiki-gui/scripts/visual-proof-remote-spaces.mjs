@@ -42,6 +42,7 @@ const ID_HOME = '3a17c0de-6f45-4b90-8e21-0c9d7a5e4b02';
 const ID_BRIDGE = 'c4e2f872-51aa-4d3b-8f60-2b7e19c3d503';
 const ID_OFF = '7b1f5a36-9d24-4e58-b1c7-6f30a2e8b604';
 const ID_APPROVAL = 'e8d3b204-7c69-4f11-a3d8-5e71b0c9f205';
+const ID_STALE_GRANT = 'f9421b0d-6c88-4e5e-a372-0ac4d5ed8917';
 
 const MINUTE = 60_000;
 /** Text assertions follow the locale the runner asked for; ids and counts do not. */
@@ -50,7 +51,8 @@ const REMOVE_BODY = { en: 'does not shut that space down', zh: '不会关掉对�
 const GATE_BODY = { en: 'Each space still needs its own row', zh: '还需在下方单独允许' };
 const ONCE = { en: 'Valid once', zh: '有效一次' };
 const NOT_SAVED = { en: 'not saved', zh: '不会保存' };
-const REVOKE_BODY = { en: 'Other spaces are unaffected', zh: '不影响其他空间' };
+const REVOKE_BODY = { en: 'Other pairings are unaffected', zh: '不影响其他配对' };
+const UNUSED_GRANT = { en: 'Unused 30d+', zh: '超 30 天未连接' };
 
 /** The locale the runner asked this job for, read from the document. */
 async function locale(page) {
@@ -104,6 +106,11 @@ function inboundFixture() {
         id: 'ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601', source: identity(HOME_B, 'gpu-box'),
         target: identity('77aa11bb-22cc-4dd3-8ee4-99ff00aa11bb', 'this-machine'), purpose: 'gui', revision: 1,
         status: 'approved', label: 'Workstation B', createdAt: now - 3 * 3600_000, lastConnectedAt: now - 20_000, activeLeases: 1,
+      },
+      {
+        id: ID_STALE_GRANT, source: identity('7aaf0c35-d082-4389-9e14-27ccad21f061', 'unused-laptop'),
+        target: identity('77aa11bb-22cc-4dd3-8ee4-99ff00aa11bb', 'this-machine'), purpose: 'gui', revision: 1,
+        status: 'approved', label: 'Unused laptop', createdAt: now - 45 * 24 * 3600_000, activeLeases: 0,
       },
       {
         id: 'be20c3d4-e5f6-4a7b-9c8d-e5f6a7b8c902', source: identity('d2f7a0c5-8e41-4b73-a9c2-71e5d0b3f807', 'peer-laptop'),
@@ -214,7 +221,12 @@ function deepLink(webUrl, fixtureUrl, path) {
   return `${webUrl}${path}${joiner}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
 }
 
-async function boot({ page, webUrl, fixtureUrl }, state) {
+async function boot({ page, view, webUrl, fixtureUrl }, state) {
+  await page.evaluate((theme) => {
+    const raw = localStorage.getItem('kiki.settings');
+    const settings = raw === null ? {} : JSON.parse(raw);
+    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme }));
+  }, view.theme);
   await page.context().addInitScript(spaceDesktopMock, { fixtureUrl, token: FIXTURE_TOKEN, spaces: SPACES, windowMode: 'switch' });
   await serveConnections(page, state);
   await page.goto(deepLink(webUrl, fixtureUrl, '/new'), { waitUntil: 'domcontentloaded' });
@@ -227,10 +239,29 @@ async function openSpaces({ page, webUrl, fixtureUrl }, selector) {
   await page.waitForTimeout(300);
 }
 
-async function openAccessOtherSpaces({ page, webUrl, fixtureUrl }, selector) {
+async function applyProofTheme(page, theme) {
+  await page.evaluate(async (requestedTheme) => {
+    const root = document.documentElement;
+    root.dataset.theme = requestedTheme;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let index = root.style.length - 1; index >= 0; index -= 1) {
+      const property = root.style.item(index);
+      if (property.startsWith('--color-')) root.style.removeProperty(property);
+    }
+  }, theme);
+  const actual = await page.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    paper: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim().toLowerCase(),
+  }));
+  const expectedPaper = theme === 'dark' ? '#1b2226' : '#fbfaf6';
+  expect(actual.theme === theme && actual.paper === expectedPaper, `visual proof theme is ${actual.theme} with paper ${actual.paper}, expected ${theme} / ${expectedPaper}`);
+}
+
+async function openAccessOtherSpaces({ page, view, webUrl, fixtureUrl }, selector) {
   await page.goto(deepLink(webUrl, fixtureUrl, '/settings/connection-services?tab=kiki'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(selector, { timeout: 30_000 });
   await page.waitForTimeout(300);
+  await applyProofTheme(page, view.theme);
 }
 
 async function openSidebar(page, width) {
@@ -357,21 +388,31 @@ async function outbound(context) {
 
 /** Settings → Access → Other spaces: the inbound gate, the allow list and one pairing code. */
 async function inbound(context) {
-  const { page, shot, state, errors } = context;
+  const { page, view, shot, state, errors } = context;
   await boot(context, state);
   await openAccessOtherSpaces(context, '[data-inbound-connections]');
   await page.waitForSelector('[data-inbound-list]');
   expect(await page.isChecked('#inbound-connections-enabled') === false, 'the inbound gate starts off');
   expect(await page.isDisabled('[data-inbound-invite]') === false, 'a pairing code can be created while the gate is off');
-  expect(await page.locator('[data-inbound-grant]').count() === 3, 'the allow list reads back all lines');
+  expect(await page.locator('[data-inbound-grant]').count() === 4, 'the allow list reads back all lines');
   expect(await page.getAttribute('[data-inbound-grant="be20c3d4-e5f6-4a7b-9c8d-e5f6a7b8c902"]', 'data-inbound-status') === 'invited', 'an invited line reads invited');
+  const lang = await locale(page);
+  expect(await page.locator(`[data-inbound-grant="${ID_STALE_GRANT}"] [data-inbound-stale="true"]`).count() === 1, 'an approved idle grant older than 30 days is marked stale');
+  expect((await page.textContent(`[data-inbound-grant="${ID_STALE_GRANT}"]`))?.includes(UNUSED_GRANT[lang]) === true, 'the stale label follows the UI locale');
+  expect(await page.locator(`[data-inbound-quick-revoke="${ID_STALE_GRANT}"]`).count() === 1, 'the stale grant has a quick revoke action');
+  expect(await page.locator('[data-inbound-grant="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"] [data-inbound-stale]').count() === 0, 'an active grant is not marked stale');
+  expect(await page.locator('[data-inbound-grant="cf31d4e5-f6a7-4b8c-9d0e-f6a7b8c9d013"] [data-inbound-quick-revoke]').count() === 0, 'a revoked grant does not show quick revoke');
   expect(await page.locator('[data-inbound-status-chip="revoked"]').count() === 1, 'a revoked line stays visible as revoked');
   expect(await page.locator('[data-inbound-advanced-fold] [data-remote-self-identity] [data-copy-field]').count() === 1, 'this space’s identity is offered under Advanced');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
+  await applyProofTheme(page, view.theme);
   await shot('remote-inbound-off');
 
-  expect((await page.textContent('[data-inbound-connections]'))?.includes(GATE_BODY[await locale(page)]) === true, 'the gate says what it does and does not do');
+  expect((await page.textContent('[data-inbound-connections]'))?.includes(GATE_BODY[lang]) === true, 'the gate says what it does and does not do');
   await page.click('[data-inbound-invite]');
+  await page.waitForSelector('[data-inbound-consent]');
+  expect(await page.locator('[data-inbound-code]').count() === 0, 'the code stays hidden before consent');
+  await page.click('[data-inbound-generate-code]');
   await page.waitForSelector('[data-inbound-code]');
   expect(await page.textContent('[data-inbound-code]') === 'K9F2-7X4M', 'the code is the one the server issued');
   expect(await page.locator('[data-inbound-code-address]').count() === 1, 'a direct address is shown with the code');
@@ -379,13 +420,22 @@ async function inbound(context) {
   const hint = await page.textContent('[data-copy-field="inbound-pair-code"]');
   expect(hint?.includes(ONCE[await locale(page)]) === true, `the code says it is single use: ${hint}`);
   expect(hint?.includes(NOT_SAVED[await locale(page)]) === true, `and that it is not saved: ${hint}`);
-  const body = await page.textContent('[data-inbound-invite-body]');
+  const body = await page.locator('[data-inbound-pair-code] header p').textContent();
   expect(body?.includes(ONCE[await locale(page)]) === false, `the body does not repeat the once-only line: ${body}`);
+  await applyProofTheme(page, view.theme);
   await shot('remote-inbound-invitation');
   await page.click('[data-inbound-invite-done]');
   await page.waitForSelector('[data-inbound-pair-code]', { state: 'detached' });
   expect(await page.isChecked('#inbound-connections-enabled') === true, 'showing a code opens the inbound gate');
-  expect(await page.locator('[data-inbound-grant]').count() === 3, 'a code does not add an allow-list line by itself');
+  expect(await page.locator('[data-inbound-grant]').count() === 4, 'a code does not add an allow-list line by itself');
+
+  await page.click(`[data-inbound-quick-revoke="${ID_STALE_GRANT}"]`);
+  await page.waitForSelector('[data-confirm-action="confirm"]');
+  const quickRevokeText = await page.textContent('[role="alertdialog"]');
+  expect(quickRevokeText?.includes(REVOKE_BODY[lang]) === true, `quick revoke uses the existing confirmation: ${quickRevokeText}`);
+  await page.getByRole('button', { name: lang === 'zh' ? '取消' : 'Cancel' }).click();
+  await page.waitForSelector('[data-confirm-action="confirm"]', { state: 'detached' });
+  expect(state.calls.some((call) => call.path === `/inbound/grants/${ID_STALE_GRANT}/revoke`) === false, 'cancelling quick revoke leaves the grant alone');
 
   // Revoking is in the row menu, then confirmed, and reads back as revoked.
   await page.click('[data-inbound-grant-menu="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"]');
@@ -397,6 +447,7 @@ async function inbound(context) {
   await page.click('[data-confirm-action="confirm"]');
   await page.waitForSelector('[data-inbound-grant="ad10a1b2-c3d4-4e5f-8a91-b2c3d4e5f601"][data-inbound-status="revoked"]');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
+  await applyProofTheme(page, view.theme);
   await shot('remote-inbound-revoked');
   expect(state.calls.some((call) => call.path === '/inbound/pair-code' && call.method === 'POST'), 'showing a code asks this Kiki to issue one');
   expect(errors.length === 0, `page errors: ${errors.join(' | ')}`);
@@ -411,7 +462,7 @@ async function devRuntime(context) {
   await page.waitForSelector('[data-inbound-dev-runtime]');
   expect(await page.isChecked('#inbound-connections-enabled') === false, 'a saved-on setting must not read as open');
   expect(await page.isDisabled('#inbound-connections-enabled') === true, 'this runtime cannot be switched on');
-  expect(await page.locator('[data-inbound-grant]').count() === 3, 'the allow list is kept as it is');
+  expect(await page.locator('[data-inbound-grant]').count() === 4, 'the allow list is kept as it is');
   expect(await page.locator('[data-inbound-invite]').isDisabled() === true, 'no invitation while the runtime cannot accept peers');
   await page.locator('[data-inbound-connections]').scrollIntoViewIfNeeded();
   await shot('remote-inbound-dev-runtime');
@@ -455,7 +506,7 @@ const scenarios = [
     run: (context) => outbound({ ...context, state: { records: recordsFixture(), inbound: inboundFixture(), calls: [] } }),
   },
   {
-    name: 'remote-inbound', fixture: 'spaces', matrix: ['width'],
+    name: 'remote-inbound', fixture: 'spaces', matrix: ['theme', 'width'],
     run: (context) => inbound({ ...context, state: { records: recordsFixture(), inbound: inboundFixture(), calls: [] } }),
   },
   {

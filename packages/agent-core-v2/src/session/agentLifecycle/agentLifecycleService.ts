@@ -610,14 +610,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       permissionModeService.setMode(profilePermissionMode, 'ambient');
     }
     const scopeCtx = handle.accessor.get(IAgentScopeContext);
-    if (scopeCtx.isBranch === true && scopeCtx.parentAgentId !== undefined) {
+    if (scopeCtx.parentAgentId !== undefined) {
       const parentHandle = this.get(scopeCtx.parentAgentId);
       if (parentHandle !== undefined) {
         const parentPerm = parentHandle.accessor.get(IAgentPermissionModeService);
-        const parentCap = parentPerm.modeCeiling === undefined
-          ? parentPerm.mode
-          : constrainPermissionMode(parentPerm.mode, parentPerm.modeCeiling);
-        permissionModeService.setModeCeiling(parentCap);
+        const parentCap = scopeCtx.isBranch === true
+          ? constrainPermissionMode(parentPerm.mode, parentPerm.modeCeiling ?? 'yolo')
+          : parentPerm.modeCeiling;
+        if (parentCap !== undefined) permissionModeService.setModeCeiling(constrainPermissionMode(parentCap, permissionModeService.modeCeiling ?? 'yolo'));
       }
     }
     return restoreFellBack;

@@ -1059,7 +1059,8 @@ export class SessionExternalDelegationService
     );
     if (active !== undefined) throw invalid('The target already has an active dispatch.');
     if (target.taskName !== undefined) {
-      target.agent.accessor.get(IAgentPermissionModeService).setModeCeiling(this.permissionCeiling);
+      const permission = target.agent.accessor.get(IAgentPermissionModeService);
+      permission.setModeCeiling(constrainPermissionMode(this.permissionCeiling, permission.modeCeiling ?? 'yolo'));
     }
     const controller = new AbortController();
     const dispatchId = `dispatch_${ulid()}`;
@@ -1440,10 +1441,8 @@ export class SessionExternalDelegationService
       if (!lineage?.has(requesterAgentId)) continue;
       lineage.add(agentId);
       if (dispatch.target === 'named') {
-        this.agents
-          .get(agentId)
-          ?.accessor.get(IAgentPermissionModeService)
-          .setModeCeiling(this.permissionCeiling);
+        const permission = this.agents.get(agentId)?.accessor.get(IAgentPermissionModeService);
+        if (permission !== undefined) permission.setModeCeiling(constrainPermissionMode(this.permissionCeiling, permission.modeCeiling ?? 'yolo'));
       }
     }
   }

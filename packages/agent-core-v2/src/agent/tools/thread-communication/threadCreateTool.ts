@@ -13,6 +13,7 @@ import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfi
 import { promptPermissionModeSchema } from '#/app/sessionLegacy/sessionProtocol';
 import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
@@ -37,6 +38,10 @@ export const ThreadCreateToolInputSchema = z.object({
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
   prompt: z.string().min(1).max(100_000).optional(),
+  bridge_id: z.string().uuid().optional(),
+  connection_id: z.string().uuid().optional(),
+  workspace_id: z.string().min(1).max(512).optional(),
+  idempotency_key: z.string().min(1).max(256).optional(),
 }).strict();
 
 type ThreadCreateToolInput = z.infer<typeof ThreadCreateToolInputSchema>;
@@ -59,9 +64,17 @@ export class ThreadCreateTool implements IThreadCreateTool {
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
     @IAgentPermissionModeService private readonly callerPermission: IAgentPermissionModeService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @IThreadCommunicationService private readonly threadCommunication: IThreadCommunicationService,
   ) {}
 
   resolveExecution(input: ThreadCreateToolInput): ToolExecution {
+    const bridged = input.bridge_id !== undefined || input.connection_id !== undefined || input.workspace_id !== undefined;
+    if (bridged && input.cwd !== undefined) {
+      return { output: 'cwd cannot be specified when creating a thread in another space; the target bridge workspace is used.', isError: true };
+    }
+    if (bridged && input.from_subagent !== undefined) {
+      return { output: 'from_subagent only promotes a local subagent and cannot be used across spaces.', isError: true };
+    }
     if (input.cwd !== undefined && !isAbsolute(input.cwd)) {
       return { output: 'cwd must be an absolute path to an existing directory.', isError: true };
     }
@@ -76,12 +89,31 @@ export class ThreadCreateTool implements IThreadCreateTool {
     }
     return {
       approvalRule: this.name,
-      description: input.from_subagent === undefined ? 'Creating a new thread' : `Opening subagent ${input.from_subagent} as a thread`,
-      execute: async () => {
+      description: bridged ? 'Creating a thread in another space' : input.from_subagent === undefined ? 'Creating a new thread' : `Opening subagent ${input.from_subagent} as a thread`,
+      execute: async ({ signal, toolCallId }) => {
         const callerMode = this.callerPermission.mode;
-        const requestedMode = input.permission_mode ?? callerMode;
+        const requestedMode = input.permission_mode ?? (bridged ? constrainPermissionMode(callerMode, 'auto') : callerMode);
+        if (bridged && constrainPermissionMode(requestedMode, 'auto') !== requestedMode) {
+          return { output: `permission_mode ${requestedMode} exceeds the cross-space auto ceiling.`, isError: true };
+        }
         if (constrainPermissionMode(requestedMode, callerMode) !== requestedMode) {
           return { output: `permission_mode ${requestedMode} exceeds the caller's effective ${callerMode} mode. Ask the user to change the caller's mode first.`, isError: true };
+        }
+        if (bridged) {
+          const created = await this.threadCommunication.createThread({
+            caller: { workspaceId: this.session.workspaceId, sessionId: this.session.sessionId },
+            bridgeId: input.bridge_id, connectionId: input.connection_id, workspaceId: input.workspace_id,
+            idempotencyKey: input.idempotency_key ?? toolCallId, signal,
+            title: input.title, profile: input.profile, persona: input.persona, modelAlias: input.model_alias,
+            effort: input.effort, permissionMode: requestedMode, planMode: input.plan_mode, prompt: input.prompt,
+          });
+          const ref = created.ref;
+          return { output: JSON.stringify({
+            id: ref.sessionId,
+            thread: { host_id: ref.hostId, workspace_id: ref.workspaceId, session_id: ref.sessionId, bridge_id: ref.bridgeId, connection_id: ref.connectionId },
+            title: created.title, profile: created.profile, prompt_started: created.promptStarted,
+            message: 'Pass thread directly to ThreadSend, ThreadRead, or ThreadWait when the bridge permits the operation.',
+          }, null, 2) };
         }
         const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');

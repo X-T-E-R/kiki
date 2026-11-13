@@ -4,7 +4,7 @@ import { SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-bo
 import { peerBridgeAttachPayloadSchema, peerBridgeResponsePayloadSchema } from '@kiki/protocol';
 import { AdmissionError } from '../../services/connections/admission';
 
-export type PeerBridgeOperation = 'list' | 'read' | 'send' | 'wait';
+export type PeerBridgeOperation = 'list' | 'read' | 'send' | 'wait' | 'create';
 
 export interface PeerBridgeReply {
   readonly status: number;
@@ -16,7 +16,7 @@ interface PendingForward {
   readonly settle: (outcome: { readonly reply?: PeerBridgeReply; readonly error?: unknown }) => void;
 }
 
-const DEFAULT_PEER_BRIDGE_OPERATIONS: readonly PeerBridgeOperation[] = ['list', 'read', 'send', 'wait'];
+const DEFAULT_PEER_BRIDGE_OPERATIONS: readonly PeerBridgeOperation[] = ['list', 'read', 'send', 'wait', 'create'];
 
 function maxResponseBytes(operation: PeerBridgeOperation): number {
   if (operation === 'read') return SESSION_READ_BODY_BYTES;

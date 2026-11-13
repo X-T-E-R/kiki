@@ -5,6 +5,7 @@ import { generateServerToken } from '../auth/persistentToken';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
 const DEFAULT_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait'];
+const LAST_CONNECTED_AT_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
 interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string; allowBridge?: boolean }
 interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean; bridgeOperations?: BridgeOperation[]; failures: number; consumed: boolean; label: string }
 interface State { enabled: boolean; grants: StoredGrant[]; pairingCodes: PairingCode[] }
@@ -29,7 +30,9 @@ export function sameIdentity(a: ConnectionIdentity, b: ConnectionIdentity): bool
 export class ConnectionAdmission {
   private state: State = { enabled: false, grants: [], pairingCodes: [] };
   private readonly leases = new Map<string, Set<() => void>>();
+  private readonly persistedConnectedAt = new Map<string, number>();
   private tail: Promise<unknown> = Promise.resolve();
+  private connectionWriteScheduled = false;
   private readonly path: string;
   private readonly changeListeners = new Set<(change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>>();
   onDidChange(listener: (change: { kind: 'enabled' | 'revoked'; enabled: boolean; grantId?: string; source?: ConnectionIdentity }) => void | Promise<void>): { dispose(): void } {
@@ -58,7 +61,16 @@ export class ConnectionAdmission {
       if (new Set(grants.map((entry) => entry.id)).size !== grants.length) throw new Error('Duplicate admission grant');
       const pairingCodes = readPairingCodes((state as { pairingCodes?: unknown }).pairingCodes);
       this.state = { enabled: state.enabled, grants, pairingCodes };
+      this.persistedConnectedAt.clear();
+      for (const grant of grants) if (grant.lastConnectedAt !== undefined) this.persistedConnectedAt.set(grant.id, grant.lastConnectedAt);
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  async close(): Promise<void> {
+    while (true) {
+      await this.tail;
+      if (!this.hasUnsavedConnectedAt()) return;
+      await this.queueStateWrite(true);
+    }
   }
   status(): InboundStatus {
     return { enabled: this.state.enabled && this.unavailableReason === undefined, configuredEnabled: this.state.enabled, unavailableReason: this.unavailableReason, identity: this.identity, grants: this.state.grants.map(({ digest: _digest, allowBridge: _allowBridge, ...entry }) => ({ ...entry, activeLeases: this.leases.get(entry.id)?.size ?? 0 })) };
@@ -108,7 +120,7 @@ export class ConnectionAdmission {
     const entry = secret === undefined ? undefined : this.find(secret);
     if (entry === undefined || entry.status !== 'approved') throw new AdmissionError(401, 'connection_not_approved');
     if (!sameIdentity(entry.target, this.identity)) throw new AdmissionError(403, 'identity_changed');
-    entry.lastConnectedAt = Date.now();
+    this.markConnected(entry);
     return entry;
   }
   matchBearer(secret: string): AdmittedPeer | undefined {
@@ -118,7 +130,7 @@ export class ConnectionAdmission {
     if (!this.state.enabled) throw new AdmissionError(403, 'inbound_disabled');
     if (entry.status !== 'approved') throw new AdmissionError(401, 'connection_not_approved');
     if (!sameIdentity(entry.target, this.identity)) throw new AdmissionError(403, 'identity_changed');
-    entry.lastConnectedAt = Date.now();
+    this.markConnected(entry);
     return { id: entry.id, revision: entry.revision, source: entry.source, allowBridge: entry.allowBridge !== false };
   }
   inspectHandshakeProof(input: { grantId?: string; nonce?: string; proof?: string }): HandshakeProofInspection | undefined {
@@ -266,8 +278,54 @@ export class ConnectionAdmission {
       if (entry.failures >= 5) entry.consumed = true;
     }
   }
+  private markConnected(entry: StoredGrant): void {
+    const now = Date.now();
+    entry.lastConnectedAt = Math.max(entry.lastConnectedAt ?? now, now);
+    const persistedAt = this.persistedConnectedAt.get(entry.id);
+    if (persistedAt === undefined || entry.lastConnectedAt - persistedAt >= LAST_CONNECTED_AT_PERSIST_INTERVAL_MS) this.scheduleConnectionWrite();
+  }
+  private hasDueConnectedAt(): boolean {
+    return this.state.grants.some((entry) => {
+      if (entry.lastConnectedAt === undefined) return false;
+      const persistedAt = this.persistedConnectedAt.get(entry.id);
+      return persistedAt === undefined || entry.lastConnectedAt - persistedAt >= LAST_CONNECTED_AT_PERSIST_INTERVAL_MS;
+    });
+  }
+  private hasUnsavedConnectedAt(): boolean {
+    return this.state.grants.some((entry) => {
+      const persistedAt = this.persistedConnectedAt.get(entry.id);
+      return entry.lastConnectedAt !== persistedAt;
+    });
+  }
+  private scheduleConnectionWrite(): void {
+    if (this.connectionWriteScheduled) return;
+    this.connectionWriteScheduled = true;
+    const pending = this.queueStateWrite(false);
+    void pending.then(
+      () => {
+        this.connectionWriteScheduled = false;
+        if (this.hasDueConnectedAt()) this.scheduleConnectionWrite();
+      },
+      () => { this.connectionWriteScheduled = false; },
+    );
+  }
+  private queueStateWrite(force: boolean): Promise<void> {
+    const result = this.tail.then(async () => {
+      if (!force && !this.hasDueConnectedAt()) return;
+      await this.persistState();
+    });
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
   private change<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(async () => { const value = await fn(); await writePrivateFile(this.path, JSON.stringify(this.state)); return value; });
+    const result = this.tail.then(async () => { const value = await fn(); await this.persistState(); return value; });
     this.tail = result.catch(() => undefined); return result;
+  }
+  private async persistState(): Promise<void> {
+    const snapshot = JSON.stringify(this.state);
+    const watermarks = this.state.grants.map(({ id, lastConnectedAt }) => ({ id, lastConnectedAt }));
+    await writePrivateFile(this.path, snapshot);
+    this.persistedConnectedAt.clear();
+    for (const watermark of watermarks) if (watermark.lastConnectedAt !== undefined) this.persistedConnectedAt.set(watermark.id, watermark.lastConnectedAt);
   }
 }

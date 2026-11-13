@@ -790,6 +790,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   registerWebAccessRoutes(app, web);
   const storageController = new StorageMigrationController(createMailboxMigrationService(homeDir), 'normal');
   registerStorageMigrationRoutes(app, storageController);
+  app.addHook('onClose', () => admission.close());
   app.addHook('onClose', () => storageController.close());
   const shutdownController = new AbortController();
   const unrequestedSockets = new Set<Socket>();

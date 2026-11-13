@@ -7,10 +7,11 @@ import {
   Error2, ErrorCodes, isError2, ThreadMailboxBacklogError, type Scope, type ThreadRef, type AcceptedThreadMessage,
   type SpaceThreadConnector, type SendPeerThreadMessageInput, type SendThreadMessageResult,
   type ListThreadsInput, type ListThreadsResult, type ReadThreadInput, type ReadThreadResult,
-  type WaitThreadsInput, type WaitThreadsResult,
+  type WaitThreadsInput, type WaitThreadsResult, type CreateBridgedThreadInput, type CreateBridgedThreadResult,
+  constrainPermissionMode,
 } from '@kiki/agent-core-v2';
 import {
-  bridgePolicySchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, peerBridgeInstallSchema,
+  bridgePolicySchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, bridgeCreateSchema, type BridgeCreate, peerBridgeInstallSchema,
   type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation, type ConnectionIdentity, type PeerBridgeInstall,
 } from '@kiki/protocol';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
@@ -27,15 +28,17 @@ import { ContentChangedError } from '../../transport/klient/boundedContent';
 import { bridgeTargetInputSchema, localBridgePolicySchema } from '@kiki/protocol';
 import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import { provisionLocalBridge } from './localProvision';
+import { createBridgedThread } from './createThread';
 
 interface Inbound { grant: BridgeGrant; digest: string; connectionGrantId?: string; peerConnectionId?: string }
 interface Outbound extends BridgeLink { connectionGrantId?: string }
 interface Outbox { receipt: BridgeReceipt; request?: BridgeSend; fingerprint: string; attempts?: number; nextAttemptAt?: number; finishedAt?: number }
-interface State { inbound: Inbound[]; outbound: Outbound[]; outbox: Outbox[]; nextSeq: number; targets?: ThreadRef[]; inboundKeys?: { key: string; grantId: string; at: number }[] }
+interface InboundCreate { key: string; grantId: string; at: number; fingerprint: string; sessionId: string; result?: CreateBridgedThreadResult }
+interface State { inbound: Inbound[]; outbound: Outbound[]; outbox: Outbox[]; nextSeq: number; targets?: ThreadRef[]; inboundKeys?: { key: string; grantId: string; at: number }[]; inboundCreates?: InboundCreate[] }
 interface RemoteEnvelope<T> { code: number; msg: string; data: { identity: ConnectionAdmission['identity']; result: T } }
 const RECEIPT_RETENTION_MS = 7 * 24 * 3600000;
 const isPending = (entry: Outbox) => entry.receipt.delivery === 'pending' || entry.receipt.delivery === 'accepted';
-const DATA_PATHS = new Set(['/api/thread-bridge/list', '/api/thread-bridge/read', '/api/thread-bridge/send', '/api/thread-bridge/wait']);
+const DATA_PATHS = new Set(['/api/thread-bridge/list', '/api/thread-bridge/read', '/api/thread-bridge/send', '/api/thread-bridge/wait', '/api/thread-bridge/create']);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const plainRef = (ref: ThreadRef): ThreadRef => ({ hostId: ref.hostId, workspaceId: ref.workspaceId, sessionId: ref.sessionId });
 const inScope = (scope: BridgeGrant['sourceScope'], ref: ThreadRef) => scope.workspaceId === ref.workspaceId && (scope.sessionId === undefined || scope.sessionId === ref.sessionId);
@@ -349,6 +352,45 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     if (summary.archived) throw new AdmissionError(410, 'thread_archived');
     if (!(await this.threads.isWorkspaceEnabled(target.workspaceId, target))) denied('workspace_disabled');
   }
+  async inboundCreate(grant: BridgeGrant, input: BridgeCreate): Promise<CreateBridgedThreadResult> {
+    this.checkInbound(grant, input, 'create');
+    if (grant.targetScope.sessionId !== undefined || input.workspaceId !== undefined && input.workspaceId !== grant.targetScope.workspaceId) denied('bridge_target_scope');
+    if (input.permissionMode !== undefined && constrainPermissionMode(input.permissionMode, 'auto') !== input.permissionMode) denied('bridge_permission_ceiling');
+    if (input.prompt !== undefined && input.prompt.trim() === '') throw new AdmissionError(400, 'invalid_bridge_request');
+    const key = hash(JSON.stringify(['create', grant.id, input.source, input.idempotencyKey]));
+    const fingerprint = hash(JSON.stringify({ workspaceId: grant.targetScope.workspaceId, title: input.title, profile: input.profile,
+      persona: input.persona, modelAlias: input.modelAlias, effort: input.effort, permissionMode: input.permissionMode, planMode: input.planMode, prompt: input.prompt }));
+    return this.change(async () => {
+      this.checkInbound(grant, input, 'create');
+      if (!(await this.threads.isWorkspaceEnabled(grant.targetScope.workspaceId))) denied('workspace_disabled');
+      const workspace = await this.core.accessor.get(IWorkspaceService).get(grant.targetScope.workspaceId);
+      if (workspace === undefined) throw new AdmissionError(404, 'workspace_not_found');
+      const now = Date.now();
+      this.pruneInboundReceipts(now);
+      const creates = this.state.inboundCreates ??= [];
+      const previous = creates.find((entry) => entry.key === key);
+      if (previous !== undefined && previous.fingerprint !== fingerprint) throw new AdmissionError(409, 'bridge_idempotency_conflict');
+      if (previous?.result !== undefined) return previous.result;
+      const entry: InboundCreate = previous ?? { key, grantId: grant.id, at: now, fingerprint, sessionId: randomUUID() };
+      if (previous === undefined) {
+        this.requireInboundRate(grant, now);
+        creates.push(entry);
+      }
+      await writePrivateFile(this.path, JSON.stringify(this.state));
+      this.checkInbound(grant, input, 'create');
+      const result = await createBridgedThread(this.core, workspace, this.admission.identity.hostId, input, entry.sessionId, key);
+      entry.result = result;
+      return result;
+    });
+  }
+  private pruneInboundReceipts(now: number): void {
+    this.state.inboundKeys = (this.state.inboundKeys ?? []).filter((entry) => entry.at > now - RECEIPT_RETENTION_MS);
+    this.state.inboundCreates = (this.state.inboundCreates ?? []).filter((entry) => entry.at > now - RECEIPT_RETENTION_MS);
+  }
+  private requireInboundRate(grant: BridgeGrant, now: number): void {
+    const recent = (entry: { grantId: string; at: number }) => entry.grantId === grant.id && entry.at > now - 60000;
+    if ((this.state.inboundKeys ?? []).filter(recent).length + (this.state.inboundCreates ?? []).filter(recent).length >= grant.messagesPerMinute) throw new AdmissionError(429, 'bridge_rate_limit');
+  }
   async inboundList(grant: BridgeGrant, input: ReturnType<typeof bridgeListSchema.parse>): Promise<ListThreadsResult> {
     this.checkInbound(grant, input, 'read');
     if (input.workspaceId !== undefined && input.workspaceId !== grant.targetScope.workspaceId) denied('bridge_target_scope');
@@ -380,9 +422,10 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     const key = hash(JSON.stringify([grant.id, input.source, input.target, input.idempotencyKey]));
     await this.change(() => {
       const now = Date.now();
-      const keys = this.state.inboundKeys = (this.state.inboundKeys ?? []).filter((entry) => entry.at > now - RECEIPT_RETENTION_MS);
+      this.pruneInboundReceipts(now);
+      const keys = this.state.inboundKeys!;
       const duplicate = keys.some((entry) => entry.key === key);
-      if (!duplicate && keys.filter((entry) => entry.grantId === grant.id && entry.at > now - 60000).length >= grant.messagesPerMinute) throw new AdmissionError(429, 'bridge_rate_limit');
+      if (!duplicate) this.requireInboundRate(grant, now);
       if (!duplicate) keys.push({ key, grantId: grant.id, at: now });
     });
     const record = await this.change(async () => {
@@ -407,17 +450,33 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     }
   }
   private link(id: string): BridgeLink { const link = this.state.outbound.find((entry) => entry.grant.id === id); if (link === undefined) throw new AdmissionError(404, 'bridge_not_found'); return link; }
-  private choose(ref: { bridgeId?: string; connectionId?: string }, source?: { workspaceId: string; sessionId: string }, target?: ThreadRef, operation: BridgeOperation = 'read'): BridgeLink {
+  private choose(ref: { bridgeId?: string; connectionId?: string; workspaceId?: string }, source?: { workspaceId: string; sessionId: string }, target?: ThreadRef, operation: BridgeOperation = 'read'): BridgeLink {
     const links = this.state.outbound.filter((entry) => (ref.bridgeId === undefined ? !entry.grant.revoked : entry.grant.id === ref.bridgeId) && (ref.connectionId === undefined || entry.connectionId === ref.connectionId) &&
-      source !== undefined && inScope(entry.grant.sourceScope, { ...source, hostId: this.admission.identity.hostId }) && (target === undefined || target.hostId === entry.grant.target.hostId && inScope(entry.grant.targetScope, target)));
-    if (links.length !== 1) denied(links.length === 0 ? 'bridge_not_authorized' : 'bridge_ambiguous');
-    const link = links[0]!;
-    if (!link.enabled || link.grant.revoked || !link.grant.enabled || link.grant.expiresAt <= Date.now() || !link.grant.operations.includes(operation)) denied('bridge_operation_denied');
+      source !== undefined && inScope(entry.grant.sourceScope, { ...source, hostId: this.admission.identity.hostId }) &&
+      (operation !== 'create' || entry.grant.targetScope.sessionId === undefined && (ref.workspaceId === undefined || ref.workspaceId === entry.grant.targetScope.workspaceId)) &&
+      (target === undefined || target.hostId === entry.grant.target.hostId && inScope(entry.grant.targetScope, target)));
+    if (links.length === 0) denied('bridge_not_authorized');
+    const permitted = (entry: BridgeLink) => entry.enabled && !entry.grant.revoked && entry.grant.enabled && entry.grant.expiresAt > Date.now() && entry.grant.operations.includes(operation);
+    const candidates = operation === 'create' ? links.filter(permitted) : links;
+    if (candidates.length === 0) denied('bridge_operation_denied');
+    if (candidates.length !== 1) denied('bridge_ambiguous');
+    const link = candidates[0]!;
+    if (!permitted(link)) denied('bridge_operation_denied');
     const descriptor = this.connections.resolveTransport(link.connectionId);
     if (!sameIdentity(link.grant.source, this.admission.identity) || !sameIdentity(link.grant.target, descriptor.target)) denied('bridge_identity_mismatch');
     return link;
   }
   private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return plainRef({ hostId: this.admission.identity.hostId, ...source }); }
+  async create(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
+    const link = this.choose(input, input.caller, undefined, 'create');
+    const result = await this.remote<CreateBridgedThreadResult>(link, 'create', {
+      bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller),
+      workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey,
+      title: input.title, profile: input.profile, persona: input.persona, modelAlias: input.modelAlias,
+      effort: input.effort, permissionMode: input.permissionMode, planMode: input.planMode, prompt: input.prompt,
+    }, input.signal);
+    return { ...result, ref: { ...result.ref, bridgeId: link.grant.id, connectionId: link.connectionId } };
+  }
   async list(input: ListThreadsInput): Promise<ListThreadsResult> {
     const link = this.choose(input, input.caller);
     const result = await this.remote<ListThreadsResult>(link, 'list', { bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller), workspaceId: input.workspaceId, cursor: input.cursor, limit: input.limit }, input.signal);
@@ -540,7 +599,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     });
     if (shouldRetry) void this.retry().catch(() => {});
   }
-  private async remote<T>(link: BridgeLink, operation: 'list' | 'read' | 'send' | 'wait', body: unknown, parent?: AbortSignal): Promise<T> {
+  private async remote<T>(link: BridgeLink, operation: 'list' | 'read' | 'send' | 'wait' | 'create', body: unknown, parent?: AbortSignal): Promise<T> {
     const record = this.connections.get(link.connectionId);
     const descriptor = this.connections.resolveTransport(link.connectionId);
     if (!sameIdentity(descriptor.target, link.grant.target)) denied('bridge_identity_mismatch');
@@ -635,7 +694,7 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
   app.post('/api/thread-bridges/:direction/:id/revoke', async (req, reply) => respond(req, reply, async () => { const { direction, id } = req.params as { direction: 'inbound' | 'outbound'; id: string };
     if (!['inbound', 'outbound'].includes(direction)) throw new AdmissionError(400, 'invalid_bridge_direction'); await bridge.revoke(id, direction); return bridge.status(); }));
   app.post('/api/thread-bridges/retry', async (req, reply) => respond(req, reply, async () => { await bridge.retry(); return bridge.receipts(); }));
-  for (const operation of ['list', 'read', 'send', 'wait'] as const) app.post(`/api/thread-bridge/${operation}`, { bodyLimit: operation === 'send' ? 1024 * 1024 : 16384 }, async (req, reply) => respond(req, reply, async () => {
+  for (const operation of ['list', 'read', 'send', 'wait', 'create'] as const) app.post(`/api/thread-bridge/${operation}`, { bodyLimit: operation === 'send' || operation === 'create' ? 1024 * 1024 : 16384 }, async (req, reply) => respond(req, reply, async () => {
     const grant = authenticatedBridgeRequests.get(req);
     if (grant === undefined) throw new AdmissionError(401, 'invalid_bridge_credential');
     const controller = new AbortController(); const stop = () => controller.abort(); req.raw.once('aborted', stop); reply.raw.once('close', stop);
@@ -644,6 +703,7 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
       const result = operation === 'list' ? await bridge.inboundList(grant, bridgeListSchema.parse(req.body))
         : operation === 'read' ? await bridge.inboundRead(grant, bridgeReadSchema.parse(req.body), signal)
         : operation === 'send' ? await bridge.inboundSend(grant, bridgeSendSchema.parse(req.body))
+        : operation === 'create' ? await bridge.inboundCreate(grant, bridgeCreateSchema.parse(req.body))
         : await bridge.inboundWait(grant, bridgeWaitSchema.parse(req.body), signal);
       signal.throwIfAborted(); return { identity: admission.identity, result };
     } finally { detach(); req.raw.off('aborted', stop); reply.raw.off('close', stop); }

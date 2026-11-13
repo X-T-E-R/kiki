@@ -6,6 +6,8 @@ import { createKlient } from '@kiki/klient/http';
 import {
   ISessionManager, ISessionContext, ensureMainAgent, IThreadCommunicationService, IThreadMailboxStore, IAgentContextMemoryService,
   IAgentLoopService, IAgentPromptService, ISendMessageToThreadTool, IListThreadsTool, IReadThreadTool, IWaitThreadsTool,
+  IThreadCreateTool, ISessionMetadata, IAgentPermissionModeService, ISessionIndex, CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
+  SEND_PEER_THREAD_MESSAGE as importedPeerSend,
   type AgentTool, type ThreadRef, type ReadThreadResult, type SendThreadMessageResult, type WaitThreadsResult,
 } from '@kiki/agent-core-v2';
 import type { BridgeLink, BridgePolicy, BridgeReceipt } from '@kiki/protocol';
@@ -65,14 +67,14 @@ async function fixture() {
   const main = await ensureMainAgent(sourceSession);
   return { root, aHome, bHome, a, b, source, target, main, boot, modelRequests: () => modelRequests };
 }
-async function linkFor(f: Awaited<ReturnType<typeof fixture>>, location: 'local' | 'network', wake = true, pendingLimit = 20): Promise<BridgeLink> {
+async function linkFor(f: Awaited<ReturnType<typeof fixture>>, location: 'local' | 'network', wake = true, pendingLimit = 20, overrides?: Partial<BridgePolicy>): Promise<BridgeLink> {
   const aClient = owner(f.a); const bClient = owner(f.b);
   try {
     await bClient.rest!.connections.setInbound(true);
     const policy: BridgePolicy = { source: f.a.admission.identity, target: f.b.admission.identity,
       sourceScope: { workspaceId: f.source.workspaceId, sessionId: f.source.sessionId }, targetScope: { workspaceId: f.target.workspaceId, sessionId: f.target.sessionId },
       operations: wake ? ['read', 'send', 'wait', 'wake'] : ['read', 'send', 'wait'], expiresAt: Date.now() + 3600000,
-      pendingLimit, messagesPerMinute: 100, location, label: 'Fixture bridge' };
+      pendingLimit, messagesPerMinute: 100, location, label: 'Fixture bridge', ...overrides };
     if (location === 'local') { const { source: _source, target: _target, location: _location, ...local } = policy; return await aClient.rest!.threadBridges.provisionLocal({ ...local, spaceId: 'h-bridge-fixture' }); }
     const descriptor = await aClient.rest!.threadBridges.registerTarget({ label: policy.label, endpoint: endpoint(f.b), target: policy.target });
     const approved = await bClient.rest!.threadBridges.approve(policy);
@@ -80,6 +82,150 @@ async function linkFor(f: Awaited<ReturnType<typeof fixture>>, location: 'local'
   } finally { await aClient.close(); await bClient.close(); }
 }
 const toolRef = (ref: ThreadRef, link: BridgeLink) => ({ host_id: ref.hostId, workspace_id: ref.workspaceId, session_id: ref.sessionId, bridge_id: link.grant.id, connection_id: link.connectionId });
+
+it('creates workspace-pinned threads over HTTP and shares the send rate budget', async () => {
+  const f = await fixture();
+  const workspace = { workspaceId: f.target.workspaceId };
+  const operations: BridgePolicy['operations'] = ['read', 'send', 'wait', 'wake', 'create'];
+  const link = await linkFor(f, 'network', true, 20, { targetScope: workspace, operations, messagesPerMinute: 3 });
+  const sessionOnly = await linkFor(f, 'network', true, 20, { operations });
+  const readOnly = await linkFor(f, 'network', true, 20, { targetScope: workspace, operations: ['read'] });
+  const create = async (grant: BridgeLink, body: Record<string, unknown>) => {
+    const secret = await f.a.remoteConnections.secrets.read<{ credential: string }>({ connectionId: grant.grant.id, purpose: 'bridge' });
+    return call(f.b, '/api/thread-bridge/create', { bridgeId: grant.grant.id, revision: grant.grant.revision, source: f.source, idempotencyKey: 'boundary', ...body }, secret.credential);
+  };
+  for (const [grant, body, msg] of [
+    [readOnly, {}, 'bridge_operation_denied'], [sessionOnly, {}, 'bridge_target_scope'],
+    [link, { workspaceId: 'other' }, 'bridge_target_scope'], [link, { permissionMode: 'yolo' }, 'bridge_permission_ceiling'],
+  ] as const) expect(await create(grant, body)).toMatchObject({ status: 403, envelope: { msg } });
+  expect(await create(link, { cwd: '/other' })).toMatchObject({ status: 400, envelope: { msg: 'invalid_bridge_request' } });
+  expect(await create(link, { fromSubagent: 'child' })).toMatchObject({ status: 400, envelope: { msg: 'invalid_bridge_request' } });
+
+  const tool = f.main.accessor.get(IThreadCreateTool);
+  const input = { bridge_id: link.grant.id, workspace_id: f.target.workspaceId, idempotency_key: 'initial', prompt: 'Initial bridge prompt.\nSecond line.' };
+  type Created = { id: string; title: string; profile: string; prompt_started: boolean; thread: ReturnType<typeof toolRef> };
+  const [created, replay] = await Promise.all([execute<Created>(tool, input), execute<Created>(tool, input)]);
+  expect(replay).toEqual(created);
+  expect(created).toMatchObject({ title: 'Initial bridge prompt.', profile: 'agent', prompt_started: true,
+    thread: toolRef({ ...f.target, sessionId: created.id }, link) });
+  await expect(execute(tool, { ...input, title: 'Changed' })).rejects.toThrow('bridge_idempotency_conflict');
+  const createdSession = f.b.core.accessor.get(ISessionManager).get(created.id)!;
+  const createdMain = await ensureMainAgent(createdSession);
+  expect(createdSession.accessor.get(ISessionContext)).toMatchObject({ cwd: join(f.root, 'workspace'), workspaceId: f.target.workspaceId });
+  expect(createdMain.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('auto');
+  expect((await createdSession.accessor.get(ISessionMetadata).read()).custom).toMatchObject({
+    [CREATED_BY_SESSION_ID_KEY]: `${f.source.hostId}:${f.source.sessionId}`, [CREATED_BY_AGENT_ID_KEY]: 'bridged_peer',
+  });
+  await createdMain.accessor.get(IAgentLoopService).settled();
+  expect(f.modelRequests()).toBe(1);
+  const read = await execute<ReadThreadResult>(f.main.accessor.get(IReadThreadTool), { thread: created.thread });
+  expect(JSON.stringify(read.view)).toContain('Initial bridge prompt.');
+  const empty = await execute<Created>(tool, { bridge_id: link.grant.id, idempotency_key: 'empty', title: 'Empty bridge thread', permission_mode: 'manual' });
+  expect(empty).toMatchObject({ title: 'Empty bridge thread', prompt_started: false });
+  await f.b.core.accessor.get(ISessionManager).close(empty.id);
+  const restored = await f.b.core.accessor.get(ISessionManager).resume(empty.id);
+  const restoredMain = await ensureMainAgent(restored!);
+  expect(restoredMain.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('auto');
+  expect(restoredMain.accessor.get(IAgentPermissionModeService).mode).toBe('manual');
+  expect(restoredMain.accessor.get(IAgentPermissionModeService).externalOverride).toBe('manual');
+  const saved = JSON.parse(await readFile(join(f.bHome, 'server', 'thread-bridges.json'), 'utf8')) as { inboundCreates: Array<{ result: { ref: ThreadRef } }> };
+  expect(saved.inboundCreates.map((entry) => entry.result.ref.sessionId)).toEqual([created.id, empty.id]);
+  const wait = f.main.accessor.get(IWaitThreadsTool);
+  const baseline = await execute<WaitThreadsResult>(wait, { threads: [{ thread: empty.thread }], timeout_ms: 0 });
+  const send = { thread: empty.thread, content: 'Start from the returned reference.', idempotency_key: 'followup' };
+  await vi.waitFor(async () => expect(await execute(f.main.accessor.get(ISendMessageToThreadTool), send)).toMatchObject({ delivery: 'delivered' }), { timeout: 15000, interval: 100 });
+  const activity = await execute<WaitThreadsResult>(wait, { threads: [{ thread: empty.thread, cursor: baseline.threads[0]!.cursor }], timeout_ms: 10000 });
+  expect(activity.threads[0]!.activities.some((entry) => entry.kind === 'terminal')).toBe(true);
+  await expect(execute(tool, { bridge_id: link.grant.id, idempotency_key: 'over-limit' })).rejects.toThrow('bridge_rate_limit');
+  expect(await execute(tool, input)).toEqual(created);
+  expect(await f.b.core.accessor.get(ISessionIndex).get(created.id)).toMatchObject(workspace);
+}, 60000);
+
+it('reuses the reserved session and prompt after a lost create acknowledgement and server reload', async () => {
+  const f = await fixture();
+  const link = await linkFor(f, 'network', true, 20, { targetScope: { workspaceId: f.target.workspaceId }, operations: ['read', 'send', 'wait', 'create'] });
+  const manager = f.b.core.accessor.get(ISessionManager);
+  const create = manager.create.bind(manager);
+  let createdId: string | undefined;
+  const creating = vi.spyOn(manager, 'create').mockImplementationOnce(async (input) => {
+    const handle = await create(input);
+    createdId = handle.id;
+    const main = await ensureMainAgent(handle);
+    const prompts = main.accessor.get(IAgentPromptService);
+    const enqueue = prompts.enqueue.bind(prompts);
+    vi.spyOn(prompts, 'enqueue').mockImplementationOnce(async (prompt) => {
+      await enqueue(prompt);
+      throw new Error('lost create acknowledgement');
+    });
+    return handle;
+  });
+  const threads = f.a.core.accessor.get(IThreadCommunicationService);
+  const input = { caller: f.source, bridgeId: link.grant.id, idempotencyKey: 'lost-create-ack', prompt: 'Exactly one initial task.' };
+  try {
+    await expect(threads.createThread(input)).rejects.toThrow('lost create acknowledgement');
+    expect(manager.get(createdId!)).toBeDefined();
+    await expect(threads.createThread({ ...input, title: 'Changed payload' })).rejects.toThrow('bridge_idempotency_conflict');
+    const recovered = await threads.createThread(input);
+    expect(recovered.ref.sessionId).toBe(createdId);
+    expect(creating).toHaveBeenCalledTimes(1);
+    const main = await ensureMainAgent(manager.get(createdId!)!);
+    await main.accessor.get(IAgentLoopService).settled();
+    expect(f.modelRequests()).toBe(1);
+    await f.b.close(); servers.splice(servers.indexOf(f.b), 1);
+    await f.boot(f.bHome, f.b.port);
+    expect(await threads.createThread(input)).toEqual(recovered);
+    expect(f.modelRequests()).toBe(1);
+  } finally { creating.mockRestore(); }
+}, 60000);
+
+describe.each(['tls', 'peer_socket'] as const)('paired cross-space create (%s)', (transport) => {
+  it('creates with and without a prompt and immediately reads, sends and waits using its reference', async () => {
+    const f = await fixture();
+    const aClient = owner(f.a); const bClient = owner(f.b);
+    try {
+      const issued = await bClient.rest!.connections.createPairCode({ bridgeOperations: ['read', 'send', 'wait', 'wake', 'create'] });
+      const record = await aClient.rest!.connections.pair({ endpoint: issued.suggestedEndpoints[0]!, code: issued.code, fingerprint: issued.tlsFingerprint, backgroundSummary: false });
+      expect(record.pinnedFingerprint).toBe(issued.tlsFingerprint);
+      let source = f.a; let destination = f.b; let caller = f.source;
+      let link = (await aClient.rest!.threadBridges.status()).outbound.find((entry) => entry.connectionId === record.id)!;
+      if (transport === 'peer_socket') {
+        source = f.b; destination = f.a; caller = f.target;
+        await aClient.rest!.connections.setInbound(true);
+        const approved = await aClient.rest!.threadBridges.approve({ source: f.b.admission.identity, target: f.a.admission.identity,
+          sourceScope: { workspaceId: f.target.workspaceId }, targetScope: { workspaceId: f.source.workspaceId },
+          operations: ['read', 'send', 'wait', 'wake', 'create'], expiresAt: Date.now() + 3600000,
+          pendingLimit: 20, messagesPerMinute: 60, location: 'network', label: 'Explicit reverse create' });
+        const secret = await f.a.remoteConnections.secrets.read<{ grant: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
+        const installed = await call(f.b, '/api/thread-bridges/peer/outbound', approved, secret.grant);
+        expect(installed.status).toBe(200);
+        link = installed.envelope.data as BridgeLink;
+        expect(source.remoteConnections.get(link.connectionId).transport?.kind).toBe('peer_socket');
+      }
+      const threads = source.core.accessor.get(IThreadCommunicationService);
+      await vi.waitFor(async () => expect((await threads.listThreads({ caller, bridgeId: link.grant.id })).threads).not.toHaveLength(0), { timeout: 15000, interval: 100 });
+      const input = { caller, bridgeId: link.grant.id, idempotencyKey: 'paired-initial', prompt: `Start here.\n${'文'.repeat(99980)}` };
+      const created = await threads.createThread(input);
+      expect(created).toMatchObject({ title: 'Start here.', promptStarted: true, ref: { hostId: destination.admission.identity.hostId, bridgeId: link.grant.id, connectionId: link.connectionId } });
+      expect(await threads.createThread(input)).toEqual(created);
+      await expect(threads.createThread({ ...input, prompt: 'Changed' })).rejects.toThrow('bridge_idempotency_conflict');
+      await expect(threads.createThread({ ...input, idempotencyKey: 'yolo', permissionMode: 'yolo' })).rejects.toThrow('bridge_permission_ceiling');
+      const createdSession = destination.core.accessor.get(ISessionManager).get(created.ref.sessionId)!;
+      const main = await ensureMainAgent(createdSession);
+      await main.accessor.get(IAgentLoopService).settled();
+      expect(main.accessor.get(IAgentPermissionModeService).mode).toBe('auto');
+      expect(main.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('auto');
+      expect(JSON.stringify((await threads.readThread({ caller, thread: created.ref })).view)).toContain('Start here.');
+      const empty = await threads.createThread({ caller, connectionId: link.connectionId, idempotencyKey: 'paired-empty', title: 'No initial prompt' });
+      expect(empty.promptStarted).toBe(false);
+      const baseline = await threads.waitThreads({ caller, threads: [{ thread: empty.ref }], timeoutMs: 0 });
+      const peerSend = threads as IThreadCommunicationService & import('@kiki/agent-core-v2').IThreadPeerSendCapability;
+      const sendInput = { source: caller, target: empty.ref, content: 'Follow up on the created thread.', idempotencyKey: 'paired-followup' };
+      await vi.waitFor(async () => expect(await peerSend[importedPeerSend](sendInput)).toMatchObject({ delivery: 'delivered' }), { timeout: 15000, interval: 100 });
+      const waited = await threads.waitThreads({ caller, threads: [{ thread: empty.ref, cursor: baseline.threads[0]!.cursor }], timeoutMs: 10000 });
+      expect(waited.threads[0]!.activities.some((entry) => entry.kind === 'terminal')).toBe(true);
+    } finally { await aClient.close(); await bClient.close(); }
+  }, 90000);
+});
 
 describe.each(['local', 'network'] as const)('directed space thread bridge (%s, real KAP)', (location) => {
   it('runs real thread tools through persistent outbox, independent target auth, cold mailbox/prompt and bounded reply reads', async () => {

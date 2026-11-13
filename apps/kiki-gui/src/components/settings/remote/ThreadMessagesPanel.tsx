@@ -39,9 +39,10 @@ const OPERATION_KEYS: Readonly<Record<BridgeOperation, I18nKey>> = {
   send: 'st.remote.threadMessages.op.send',
   wait: 'st.remote.threadMessages.op.wait',
   wake: 'st.remote.threadMessages.op.wake',
+  create: 'st.remote.threadMessages.op.create',
 };
 
-const OPERATION_ORDER: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake'];
+const OPERATION_ORDER: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
 
 function formatExpiryDate(expiresAt: number, locale: string): string {
   try {
@@ -193,7 +194,8 @@ export function ThreadMessagesPanel({
                 const remoteThreadScope = entry.remoteScope.sessionId !== undefined
                   ? t('st.remote.threadMessages.scopeOneThread')
                   : t('st.remote.threadMessages.scopeAllThreads');
-                const orderedOps = OPERATION_ORDER.filter((op) => entry.operations.includes(op));
+                const providedOperations = new Set<string>(entry.operations);
+                const orderedOps = OPERATION_ORDER.filter((op) => providedOperations.has(op));
                 const hasWake = entry.operations.includes('wake');
                 const statusChip = entry.expired
                   ? { label: t('st.remote.threadMessages.stateExpired'), dot: 'bg-attention', text: 'text-amber-ink' }

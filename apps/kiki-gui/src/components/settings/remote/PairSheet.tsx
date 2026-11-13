@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import { formatPairingUri, type PairCodeCreateOutput, type RemoteConnection, type SshHost } from '@kiki/protocol';
+import { formatPairingUri, type BridgeOperation, type PairCodeCreateOutput, type RemoteConnection, type SshHost } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
@@ -63,6 +63,8 @@ export function classifyOutboundPairFailure(error: unknown): I18nKey | null {
   }
   return connectionFailureText(message);
 }
+
+const BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
 
 function remainingLabel(expiresAt: number, now: number): string {
   const remaining = Math.max(0, expiresAt - now);
@@ -438,7 +440,7 @@ function InboundPairSheet({
     try {
       const created = await connectionsApi(client).createPairCode(
         allowBridge
-          ? { allowBridge: true, bridgeOperations: ['read', 'send', 'wait', 'wake'] }
+          ? { allowBridge: true, bridgeOperations: [...BRIDGE_OPERATIONS] }
           : { allowBridge: false },
       );
       setBaselineGrantIds(knownGrants);

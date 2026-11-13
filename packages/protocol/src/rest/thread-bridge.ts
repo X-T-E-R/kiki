@@ -29,7 +29,26 @@ export type BridgeGrant = z.infer<typeof bridgeGrantSchema>;
 export type BridgeInstall = z.infer<typeof bridgeInstallSchema>;
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeSend = z.infer<typeof bridgeSendSchema>;
-export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake';
+export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake' | 'create';
+export const bridgeCreateSchema = bridgeRequestSchema.extend({
+  workspaceId: z.string().min(1).max(512).optional(),
+  idempotencyKey: z.string().min(1).max(256),
+  title: z.string().min(1).max(256).optional(),
+  profile: z.string().min(1).max(128).optional(),
+  persona: z.string().min(1).max(128).optional(),
+  modelAlias: z.string().min(1).max(256).optional(),
+  effort: z.string().min(1).max(64).optional(),
+  permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
+  planMode: z.boolean().optional(),
+  prompt: z.string().min(1).max(100000).optional(),
+}).strict();
+export type BridgeCreate = z.infer<typeof bridgeCreateSchema>;
+export interface BridgeCreateResult {
+  ref: z.infer<typeof bridgeThreadRefSchema>;
+  title: string;
+  profile: string;
+  promptStarted: boolean;
+}
 export interface BridgeLink { connectionId: string; grant: BridgeGrant; enabled: boolean }
 export interface BridgeReceipt { id: string; bridgeId: string; connectionId: string; source: z.infer<typeof bridgeThreadRefSchema>; target: z.infer<typeof bridgeThreadRefSchema>; sourceSeq: number; createdAt: number; expiresAt: number; delivery: 'accepted' | 'delivered' | 'pending' | 'rejected' | 'undeliverable'; messageId?: string; targetSeq?: number; acceptedAt?: number; reason?: string }
 export interface BridgeStatus { identity: z.infer<typeof connectionIdentitySchema>; inboundEnabled: boolean; inbound: BridgeGrant[]; outbound: BridgeLink[] }
@@ -47,7 +66,7 @@ export const peerBridgeInstallSchema = z.object({
 }).strict();
 export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
 export const peerBridgeAttachPayloadSchema = z.object({
-  operations: z.array(z.enum(['list', 'read', 'send', 'wait'])).min(1).max(4).optional(),
+  operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create'])).min(1).max(5).optional(),
 }).strict();
 export type PeerBridgeAttachPayload = z.infer<typeof peerBridgeAttachPayloadSchema>;
 export const peerBridgeResponsePayloadSchema = z.object({

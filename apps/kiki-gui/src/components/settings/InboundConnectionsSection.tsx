@@ -48,6 +48,14 @@ const GRANT_STATUS_TONE: Readonly<Record<ConnectionGrant['status'], { dot: strin
   revoked: { dot: 'bg-hairline-strong', text: 'text-ink-faint' },
 };
 
+const INBOUND_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+function inboundGrantIsStale(grant: ConnectionGrant, now: number): boolean {
+  return grant.status === 'approved'
+    && grant.activeLeases === 0
+    && now - (grant.lastConnectedAt ?? grant.createdAt) >= INBOUND_STALE_AFTER_MS;
+}
+
 /** One peer space: a row whose ⋯ holds Thread messages… and Revoke…. */
 function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onOpenThreadMessages, onRevoke }: {
   readonly grant: ConnectionGrant;
@@ -62,6 +70,7 @@ function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onO
   const anchorRef = useRef<HTMLButtonElement>(null);
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
   const tone = GRANT_STATUS_TONE[grant.status];
+  const stale = inboundGrantIsStale(grant, Date.now());
   const canOpenHere = gateEnabled && grant.status === 'approved' && grant.purpose === 'gui';
   const items: SpaceMenuItem[] = [
     {
@@ -94,6 +103,9 @@ function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onO
         <span className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${tone.text}`} data-inbound-status-chip={grant.status}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
           {t(`st.inbound.status.${grant.status}` as I18nKey)}
+          {stale ? (
+            <span className="ml-1 shrink-0 rounded-full bg-amber-rule/10 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-ink" data-inbound-stale="true">{t('st.inbound.stale')}</span>
+          ) : null}
         </span>
       )}
       subtitle={(
@@ -123,6 +135,16 @@ function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onO
       )}
       control={(
         <>
+          {stale ? (
+            <button
+              type="button"
+              data-inbound-quick-revoke={grant.id}
+              onClick={onRevoke}
+              className="h-7 shrink-0 rounded-md px-2 text-[11.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/10 hover:text-ink"
+            >
+              {t('st.inbound.revokeConfirm')}
+            </button>
+          ) : null}
           <button
             ref={anchorRef}
             type="button"

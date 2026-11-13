@@ -327,6 +327,36 @@ describe('thread communication tools', () => {
     } finally { await ix.dispose(); }
   });
 
+  it('delegates cross-space creation and returns a reusable thread reference', async () => {
+    const { tool, create, createThread } = createThreadFixture();
+    const bridgeId = '33333333-3333-4333-8333-333333333333';
+    const result = await executeThreadCreate(tool, ThreadCreateToolInputSchema.parse({
+      bridge_id: bridgeId, workspace_id: 'remote-workspace', prompt: 'Start',
+    }));
+    expect(create).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      caller: { workspaceId: 'ambient-workspace', sessionId: 'ambient-a' },
+      bridgeId, workspaceId: 'remote-workspace', idempotencyKey: 'fixture-tool-call', permissionMode: 'auto', prompt: 'Start',
+    }));
+    expect(JSON.parse(result.output as string)).toMatchObject({
+      id: 'remote-session', title: 'Start', profile: 'agent', prompt_started: true,
+      thread: { host_id: 'remote', workspace_id: 'remote-workspace', session_id: 'remote-session', bridge_id: bridgeId, connection_id: 'remote-connection' },
+    });
+  });
+
+  it.each([
+    [{ cwd: 'relative' }, 'cwd cannot be specified'],
+    [{ from_subagent: 'child-1' }, 'only promotes a local subagent'],
+    [{ permission_mode: 'yolo' }, 'exceeds the cross-space auto ceiling'],
+    [{ permission_mode: 'auto' }, 'exceeds the caller'],
+  ] as const)('rejects invalid cross-space controls: %o', async (options, reason) => {
+    const { tool, create, createThread } = createThreadFixture({ callerMode: 'manual' });
+    const result = await executeThreadCreate(tool, { workspace_id: 'remote-workspace', ...options });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining(reason) });
+    expect(create).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+  });
+
   it('creates a top-level session in an existing directory outside the current workspace', async () => {
     const external = await mkdtemp(join(tmpdir(), 'thread-create-external-'));
     try {
@@ -641,6 +671,7 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ unsupported: true }).success).toBe(false);
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
       'title', 'cwd', 'from_subagent', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
+      'bridge_id', 'connection_id', 'workspace_id', 'idempotency_key',
     ]);
     expect(tool.description).toContain('only when the user explicitly asks');
     expect(tool.description).toContain('the new thread is user-owned, does not report its work back');
@@ -762,7 +793,12 @@ function createThreadFixture(options: {
   });
   const remove = vi.fn<ISessionManager['delete']>(async () => {});
   ix.stub(ISessionManager, { create, delete: remove, promoteAgent: options.promoteAvailable === false ? undefined : promoteAgent });
-  ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a' });
+  const createThread = vi.fn<IThreadCommunicationService['createThread']>(async (input) => ({
+    ref: { hostId: 'remote', workspaceId: 'remote-workspace', sessionId: 'remote-session', bridgeId: input.bridgeId, connectionId: 'remote-connection' },
+    title: 'Start', profile: 'agent', promptStarted: true,
+  }));
+  ix.stub(IThreadCommunicationService, { createThread });
+  ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a', workspaceId: 'ambient-workspace' });
   ix.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
   ix.stub(IAgentPermissionModeService, { mode: options.callerMode ?? 'review' });
   ix.stub(ISessionMetadata, { read: async () => ({
@@ -772,12 +808,12 @@ function createThreadFixture(options: {
     },
   }) });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
-  return { tool: ix.get(IThreadCreateTool), create, promoteAgent, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
+  return { tool: ix.get(IThreadCreateTool), create, createThread, promoteAgent, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
 }
 
 async function executeThreadCreate(tool: IThreadCreateTool, input: Parameters<IThreadCreateTool['resolveExecution']>[0]) {
   const execution = await tool.resolveExecution(input);
-  return 'execute' in execution ? execution.execute({} as never) : execution;
+  return 'execute' in execution ? execution.execute({ toolCallId: 'fixture-tool-call', signal: new AbortController().signal } as never) : execution;
 }
 
 function accessorFor(agentId: string): ServicesAccessor {

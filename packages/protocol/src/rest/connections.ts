@@ -14,8 +14,8 @@ export const sshRemoteProfileSchema = z.object({
   remoteShell: z.enum(['posix', 'powershell']).default('posix'),
 }).strict();
 export type SshRemoteProfile = z.infer<typeof sshRemoteProfileSchema>;
-export const bridgeOperationSchema = z.enum(['read', 'send', 'wait', 'wake']);
-export const bridgeOperationsSchema = z.array(bridgeOperationSchema).min(1).max(4);
+export const bridgeOperationSchema = z.enum(['read', 'send', 'wait', 'wake', 'create']);
+export const bridgeOperationsSchema = z.array(bridgeOperationSchema).min(1).max(5);
 export const sshRemoteTransportSchema = z.object({ kind: z.literal('ssh'), profile: sshRemoteProfileSchema }).strict();
 export type SshRemoteTransport = z.infer<typeof sshRemoteTransportSchema>;
 export const localSpaceTransportSchema = z.object({ kind: z.literal('local_space'), localSpaceId: z.string().min(1).max(128) }).strict();

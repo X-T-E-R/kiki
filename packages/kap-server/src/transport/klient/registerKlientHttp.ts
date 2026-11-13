@@ -313,7 +313,10 @@ class KlientHttpConnection {
     if (this.closed || this.socket.readyState !== this.socket.OPEN) return false;
     try {
       const encoded = encodeJsonFrame(frame);
-      if (this.peer && this.socket.bufferedAmount + Buffer.byteLength(encoded) > BROKER_WS_BUFFER_BYTES) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
+      const size = Buffer.byteLength(encoded);
+      const bridgeCreate = frame.type === 'bridge_request' && (frame.data as { operation: string }).operation === 'create';
+      const bufferLimit = bridgeCreate ? Math.max(BROKER_WS_BUFFER_BYTES, size) : BROKER_WS_BUFFER_BYTES;
+      if (this.peer && this.socket.bufferedAmount + size > bufferLimit) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
       this.socket.send(encoded);
       return true;
     } catch {
