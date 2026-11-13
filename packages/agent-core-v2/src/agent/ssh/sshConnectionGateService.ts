@@ -4,7 +4,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
-import { ISshHostService } from '#/app/ssh/sshService';
+import { ISshHostService, type SshHostStatus } from '#/app/ssh/sshService';
 import type { SshHostRecord } from '#/app/ssh/sshHosts';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -30,6 +30,7 @@ export const ISshConnectionGateService = createDecorator<SshConnectionGateServic
 export class SshConnectionGateService extends Disposable {
   private readonly pending = new Map<string, Promise<string | undefined>>();
   private readonly approved = new Map<string, string>();
+  private readonly observedHostStates = new Map<string, { state: SshHostStatus['state']; generation: number; asOf: string }>();
   private membershipQueue: Promise<void> = Promise.resolve();
   readonly ready: Promise<void>;
 
@@ -74,7 +75,15 @@ export class SshConnectionGateService extends Disposable {
             }
           } catch {
           }
-          lines[record.id] = `host: ${JSON.stringify(record.id)} — ${record.name} — ${target.user}@${target.hostname}:${target.port}${environment}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
+          let connectionState = 'unknown';
+          let connectionAsOf = '';
+          try {
+            const observed = this.observeHostState(record.id, workspaceId);
+            connectionState = observed.description;
+            connectionAsOf = `, as_of: ${observed.asOf}`;
+          } catch {
+          }
+          lines[record.id] = `host: ${JSON.stringify(record.id)} — ${record.name} — ${target.user}@${target.hostname}:${target.port}${environment}, connection state: ${connectionState}${connectionAsOf}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
         } catch {
           continue;
         }
@@ -84,7 +93,10 @@ export class SshConnectionGateService extends Disposable {
         await this.setSessionHosts((latest) => Object.fromEntries(Object.entries(latest)
           .filter(([id, fingerprint]) => !stale.includes(id) || fingerprint !== joined[id])));
       }
-      const disclosure = Object.fromEntries(Object.entries(current).map(([id, fingerprint]) => [id, `${lines[id]}\n${fingerprint}`]));
+      const disclosure = Object.fromEntries(Object.entries(current).map(([id, fingerprint]) => [
+        id,
+        `${lines[id]!.replace(/, as_of: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/, '')}\n${fingerprint}`,
+      ]));
       const previous = lastDisclosure ?? {};
       const removed = Object.keys(previous).filter((id) => disclosure[id] !== previous[id]);
       const added = Object.keys(disclosure).filter((id) => disclosure[id] !== previous[id]);
@@ -95,6 +107,20 @@ export class SshConnectionGateService extends Disposable {
       ].filter(Boolean).join('\n');
       return { content, disclosure };
     }));
+  }
+
+  private observeHostState(hostId: string, workspaceId: string): { description: string; asOf: string } {
+    const status = this.hosts.status(hostId, workspaceId);
+    const key = JSON.stringify([workspaceId, hostId]);
+    const previous = this.observedHostStates.get(key);
+    const asOf = previous?.state === status.state && previous.generation === status.generation
+      ? previous.asOf : new Date().toISOString();
+    this.observedHostStates.set(key, { state: status.state, generation: status.generation, asOf });
+    const description = status.state === 'ready' ? 'connected'
+      : status.state === 'connecting' ? 'connecting'
+      : status.state === 'idle' && status.generation === 0 ? 'not connected (not yet probed)'
+      : 'disconnected';
+    return { description, asOf };
   }
 
   setSessionHosts(update: (current: Readonly<Record<string, string>>) => Readonly<Record<string, string>>): Promise<void> {

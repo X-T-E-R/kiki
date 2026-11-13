@@ -287,6 +287,39 @@ describe('SSH connection gate before tool resolution', () => {
     await f.dispose();
   });
 
+  it.each([
+    { name: 'unconfigured', host: 'unknown', reason: 'not available' },
+    { name: 'hidden', host: 'hidden', reason: 'not available' },
+    { name: 'denied', host: 'dev', reason: 'not approved' },
+  ])('does not select local runtime when an explicit $name host is refused', async ({ host, reason }) => {
+    const f = await fixture({ decision: 'rejected' });
+    const localAcquire = vi.fn(() => { throw new Error('local runtime fallback'); });
+    const hostAcquire = vi.fn(() => { throw new Error('SSH runtime unexpectedly acquired'); });
+    f.runtime.acquire = localAcquire;
+    f.runtime.acquireFor = hostAcquire;
+
+    expect(await f.call(host)).toContain(reason);
+    expect(localAcquire).not.toHaveBeenCalled();
+    expect(hostAcquire).not.toHaveBeenCalled();
+    await f.dispose();
+  });
+
+  it('does not select local runtime when an explicit disconnected host is refused', async () => {
+    const f = await fixture();
+    expect(await f.call('dev')).toBeUndefined();
+    vi.mocked(f.hosts.status).mockReturnValue({ hostId: 'dev', state: 'disconnected', generation: 2 });
+    vi.mocked(f.approvals.request).mockResolvedValueOnce({ decision: 'rejected' });
+    const localAcquire = vi.fn(() => { throw new Error('local runtime fallback'); });
+    const hostAcquire = vi.fn(() => { throw new Error('SSH runtime unexpectedly acquired'); });
+    f.runtime.acquire = localAcquire;
+    f.runtime.acquireFor = hostAcquire;
+
+    expect(await f.call('dev')).toContain('not approved');
+    expect(localAcquire).not.toHaveBeenCalled();
+    expect(hostAcquire).not.toHaveBeenCalled();
+    await f.dispose();
+  });
+
   it('approves a known host once per session, but never admits unknown or hidden hosts', async () => {
     const f = await fixture();
     expect(await f.call('dev')).toBeUndefined();
@@ -456,13 +489,37 @@ describe('SSH connection gate before tool resolution', () => {
     expect(await f.call('dev')).toBeUndefined();
     expect(await f.announce(undefined, false)).toBeUndefined();
     const added = await f.announce() as { content: string; disclosure: Readonly<Record<string, string>> };
-    expect(added.content).toBe('<ssh_hosts_added>\nhost: "dev" — Development — tester@dev.example.test:22, platform: not yet probed, shell: not yet probed\n</ssh_hosts_added>');
+    expect(added.content).toContain('host: "dev" — Development — tester@dev.example.test:22, platform: not yet probed, shell: not yet probed, connection state: connected, as_of:');
+    expect(added.content).toMatch(/as_of: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(added.content).not.toContain('Hidden');
     expect(await f.announce(added.disclosure)).toBeUndefined();
     await f.service.setSessionHosts(() => ({}));
     const removed = await f.announce(added.disclosure) as { content: string; disclosure: Readonly<Record<string, string>> };
     expect(removed.content).toBe('<ssh_hosts_removed>\ndev\n</ssh_hosts_removed>');
     expect(removed.disclosure).toEqual({});
+    await f.dispose();
+  });
+
+  it('reports a never-probed host without inferring reachability', async () => {
+    const f = await fixture();
+    expect(await f.call('dev')).toBeUndefined();
+    vi.mocked(f.hosts.status).mockReturnValue({ hostId: 'dev', state: 'idle', generation: 0 });
+    const added = await f.announce() as { content: string; disclosure: Readonly<Record<string, string>> };
+    expect(added.content).toContain('connection state: not connected (not yet probed), as_of:');
+    expect(added.content).toMatch(/as_of: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+    await f.dispose();
+  });
+
+  it('re-discloses a joined host when observed connection state changes', async () => {
+    const f = await fixture();
+    expect(await f.call('dev')).toBeUndefined();
+    const connected = await f.announce() as { content: string; disclosure: Readonly<Record<string, string>> };
+    expect(connected.content).toContain('connection state: connected, as_of:');
+    vi.mocked(f.hosts.status).mockReturnValue({ hostId: 'dev', state: 'disconnected', generation: 2 });
+    const disconnected = await f.announce(connected.disclosure) as { content: string; disclosure: Readonly<Record<string, string>> };
+    expect(disconnected.content).toContain('<ssh_hosts_removed>\ndev\n</ssh_hosts_removed>');
+    expect(disconnected.content).toContain('connection state: disconnected, as_of:');
+    expect(disconnected.content).toMatch(/as_of: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     await f.dispose();
   });
 });
@@ -476,7 +533,9 @@ describe('persistent SSH membership and context consumers', () => {
     expect(await f.call('ssh-host-42')).toBeUndefined();
     await f.step();
     expect(textOf(sshInjections(f.context)[0]!)).toContain(
-      'host: "ssh-host-42" — Development — builder@build.example.test:2202, platform: not yet probed, shell: not yet probed, roots: /srv/project · Build workspace');
+      'host: "ssh-host-42" — Development — builder@build.example.test:2202, platform: not yet probed, shell: not yet probed, connection state: connected, as_of:');
+    expect(textOf(sshInjections(f.context)[0]!)).toContain(', roots: /srv/project · Build workspace');
+    expect(textOf(sshInjections(f.context)[0]!)).toMatch(/as_of: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(f.runtime.approveSshTarget).toHaveBeenCalledWith('ssh-host-42', f.state.get(sessionSshHostsKey)['ssh-host-42'],
       expect.any(Function), undefined, expect.any(Function));
   });

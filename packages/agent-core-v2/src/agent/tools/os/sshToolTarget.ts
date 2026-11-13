@@ -5,7 +5,7 @@ import { literalRulePattern } from '#/tool/rule-match';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { z } from 'zod';
 
-const HOST_DESCRIPTION = 'SSH host name. Omit for the session workspace; use "local" for this machine when the workspace is remote. Paths are on the selected host.';
+const HOST_DESCRIPTION = 'SSH host name. Omit for the session workspace; use "local" for this machine when the workspace is remote. An explicit host selects only that host; if it cannot be used because it is unconfigured, hidden, disconnected, or denied, the tool fails and never falls back to local or another host. Paths are on the selected host.';
 
 const hostToolParameterCache = new WeakMap<z.ZodType, { local?: Record<string, unknown>; ssh?: Record<string, unknown> }>();
 

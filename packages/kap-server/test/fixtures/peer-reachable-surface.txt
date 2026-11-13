@@ -1,0 +1,330 @@
+REST meta: GET /meta
+REST spaceSummary: GET /space-summary
+REST sessions: GET /sessions
+REST sessionQuery: GET /sessions/query
+REST ephemeralSessions: GET /sessions/ephemeral
+REST sessionCreate: POST /sessions
+REST session: GET /sessions/{sessionId}
+REST sessionUpdate: PATCH /sessions/{sessionId}
+REST sessionArchive: POST /sessions/{sessionId}:archive
+REST sessionRestore: POST /sessions/{sessionId}:restore
+REST sessionFork: POST /sessions/{sessionId}:fork
+REST saveEphemeral: POST /sessions/{sessionId}/ephemeral/save
+REST endEphemeral: POST /sessions/{sessionId}/ephemeral/end
+REST compact: POST /sessions/{sessionId}:compact
+REST undo: POST /sessions/{sessionId}:undo
+REST autoCompact: GET /sessions/{sessionId}/agents/{agentId}/auto-compact
+REST autoCompactUpdate: PATCH /sessions/{sessionId}/agents/{agentId}/auto-compact
+REST agentHooks: GET /sessions/{sessionId}/agents/{agentId}/hooks
+REST sessionProfile: POST /sessions/{sessionId}/profile
+REST personaSettings: GET /sessions/{sessionId}/persona-settings
+REST personaSettingsApply: POST /sessions/{sessionId}/persona-settings
+REST goal: GET /sessions/{sessionId}/goal
+REST messages: GET /sessions/{sessionId}/messages
+REST snapshot: GET /klient/session-view/{sessionId}/snapshot
+REST transcript: GET /klient/session-view/{sessionId}/transcript
+REST content: POST /klient/session-view/{sessionId}/transcript/content
+REST catchUp: GET /klient/session-view/{sessionId}/transcript/catch-up
+REST transcriptPage: GET /sessions/{sessionId}/transcript
+REST transcriptDetail: GET /sessions/{sessionId}/transcript/detail
+REST transcriptDetails: GET /sessions/{sessionId}/transcript/details
+REST transcriptOps: GET /sessions/{sessionId}/transcript/ops
+REST transcriptPlan: GET /sessions/{sessionId}/transcript/plan
+REST procedure: POST /klient/call
+REST prompts: GET /sessions/{sessionId}/prompts
+REST prompt: POST /sessions/{sessionId}/prompts
+REST promptRead: GET /sessions/{sessionId}/prompts/{promptId}
+REST promptResume: POST /sessions/{sessionId}/prompts/{promptId}:resume
+REST promptAbort: POST /sessions/{sessionId}/prompts/{promptId}:abort
+REST steer: POST /sessions/{sessionId}/prompts/steer
+REST abort: POST /sessions/{sessionId}/abort
+REST approvals: GET /sessions/{sessionId}/approvals
+REST approval: POST /sessions/{sessionId}/approvals/{interactionId}
+REST questions: GET /sessions/{sessionId}/questions
+REST question: POST /sessions/{sessionId}/questions/{interactionId}
+REST taskList: GET /sessions/{sessionId}/tasks
+REST task: GET /sessions/{sessionId}/tasks/{taskId}
+REST agentTaskList: GET /sessions/{sessionId}/agent-tasks
+REST userMessages: GET /sessions/{sessionId}/user-messages
+REST skills: GET /sessions/{sessionId}/skills
+REST skillActivate: POST /sessions/{sessionId}/skills/{skillName}:activate
+REST context: GET /sessions/{sessionId}/context
+REST metrics: GET /sessions/{sessionId}/metrics
+REST media: GET /sessions/{sessionId}/media/{fileId}
+REST mediaPreview: GET /sessions/{sessionId}/media/{fileId}/preview
+REST fileUpload: POST /files
+REST file: GET /files/{fileId}
+REST tools: GET /tools
+REST models: GET /models
+REST providers: GET /providers
+REST auth: GET /auth
+REST configRead: GET /config
+REST usage: GET /usage
+REST requestGovernance: GET /usage/realtime
+REST agentActivity: GET /usage/realtime/agents
+REST usagePricing: GET /usage/pricing
+REST usageRescanStatus: GET /usage/rescan
+REST providerQuotaRead: GET /usage/provider-quotas
+REST workspaces: GET /workspaces
+REST workspace: GET /workspaces/{workspaceId}
+REST workspaceSkills: GET /workspaces/{workspaceId}/skills
+REST worktrees: GET /worktrees
+REST worktree: GET /worktrees/{worktreeId}
+REST worktreeInspect: POST /worktrees/{worktreeId}:inspect
+REST fsSearch: POST /sessions/{sessionId}/fs:search
+REST fsRead: POST /sessions/{sessionId}/fs:read
+REST draftFsSearch: POST /workspace/fs:search
+REST htmlPreviewOpen: POST /fs:html-preview
+REST htmlPreviewClose: DELETE /fs:html-preview/{previewId}
+REST htmlPreviewResource: GET /html-preview/{previewId}/resource
+REST commands: GET /sessions/{sessionId}/commands
+REST agentCapabilities: GET /agents/capabilities
+REST agentConfig: GET /sessions/{sessionId}/agent-config
+REST agentConfigUpdate: PATCH /sessions/{sessionId}/agent-config
+REST profiles: GET /agents
+REST shippedProfiles: GET /agents/shipped
+REST previewModelMenu: POST /agents/{profileId}/model-menu:preview
+REST previewExecutorPrompt: POST /agents/{profileId}/executor-prompt:preview
+REST plugins: GET /plugins
+REST plugin: GET /plugins/{pluginId}
+REST pluginSettings: GET /plugins/{pluginId}/settings
+REST pluginCommands: GET /plugins/commands
+REST pluginPanels: GET /plugins/panels
+REST pluginPanelDocument: GET /plugins/{pluginId}/panels/{panelId}/document
+REST pluginPanelBridge: POST /plugins/{pluginId}/panels/{panelId}/bridge
+REST pluginMarketplace: GET /plugins/marketplace
+REST pluginRecommendations: POST /plugins/recommendations/match
+REST skins: GET /skins
+REST skin: GET /skins/{skinId}
+REST appearancePacks: GET /appearance/packs
+REST appearancePack: GET /appearance/packs/{packId}
+REST appearanceAsset: GET /appearance/packs/{packId}/files/{fileName}
+REST spacePreferences: GET /homes/{spaceId}/settings
+REST personas: GET /personas
+REST persona: GET /personas/{personaId}
+REST personaAvatar: GET /personas/{personaId}/avatar
+REST personaHome: POST /personas/{personaId}/home
+REST personaState: PATCH /personas/{personaId}/state
+REST bots: GET /bots
+REST botHome: POST /bots/{botId}/home
+REST rooms: GET /rooms
+REST roomItems: GET /rooms/items
+REST roomThreads: GET /rooms/threads
+REST room: GET /rooms/{roomId}
+REST roomLog: GET /rooms/{roomId}/log
+REST roomUsage: GET /rooms/{roomId}/usage
+REST roomMessage: POST /rooms/{roomId}/messages
+REST roomPause: POST /rooms/{roomId}/pause
+REST roomContinue: POST /rooms/{roomId}/continue
+REST roomStop: POST /rooms/{roomId}/stop
+REST cron: GET /cron
+REST threadMessages: GET /threads/messages
+REST search: POST /search
+REST searchStatus: GET /search/status
+REST mcpRuntime: GET /mcp/runtime/servers
+REST executors: GET /executors
+REST catalogProviders: GET /catalog/providers
+REST catalogProvider: GET /catalog/providers/{providerId}
+REST oauthUsage: GET /oauth/usage
+REST nbSearchCapabilities: GET /nb-search/capabilities
+REST requestIdentity: GET /request-identity
+REST notificationsSettings: GET /notifications/settings
+REST notificationsProviders: GET /notifications/providers
+REST notificationsDeliveries: GET /notifications/deliveries
+REST memorySources: GET /memory/sources
+REST memoryEntries: GET /memory/{scope}
+REST memoryEntry: GET /memory/{scope}/{entryId}
+REST memoryJournal: GET /memory/{scope}/journal
+REST memoryInbox: GET /memory/{scope}/inbox
+FRAME bridge_attach
+FRAME bridge_detach
+FRAME bridge_response
+FRAME ping
+FRAME pong
+FRAME stream; requires an allowed service.method procedure
+FRAME stream_cancel
+FRAME subscribe
+FRAME unsubscribe
+FRAME view_attach
+FRAME view_detach
+PROCEDURE agentActivityView.state
+PROCEDURE agentCollaborationMessagingService.sendUserMessage
+PROCEDURE agentCollaborationMessagingService.sendUserMessageReceipt
+PROCEDURE agentCommandService.list
+PROCEDURE agentContextInjectorService.reconcileWhenIdle
+PROCEDURE agentContextMutationService.appendImported
+PROCEDURE agentContextRebuildService.control
+PROCEDURE agentContextRebuildService.rebuild
+PROCEDURE agentContextRebuildService.setEnabled
+PROCEDURE agentConversationUndoService.undo
+PROCEDURE agentFullCompactionService.begin
+PROCEDURE agentFullCompactionService.cancel
+PROCEDURE agentFullCompactionService.getAutoCompact
+PROCEDURE agentFullCompactionService.getContextStrategy
+PROCEDURE agentFullCompactionService.getDefaultAutoCompact
+PROCEDURE agentFullCompactionService.isCompacting
+PROCEDURE agentFullCompactionService.setAutoCompactOverride
+PROCEDURE agentFullCompactionService.setContextStrategyOverride
+PROCEDURE agentGoalService.cancelGoal
+PROCEDURE agentGoalService.createGoal
+PROCEDURE agentGoalService.getGoal
+PROCEDURE agentGoalService.pauseGoal
+PROCEDURE agentGoalService.resumeGoal
+PROCEDURE agentGoalService.updateGoal
+PROCEDURE agentLifecycleService.countPendingBackgroundTasks
+PROCEDURE agentLifecycleService.drainBackgroundTasks
+PROCEDURE agentLoopService.cancelFromUser
+PROCEDURE agentLoopService.status
+PROCEDURE agentMcpService.connect
+PROCEDURE agentMcpService.initialLoadDurationMs
+PROCEDURE agentMcpService.list
+PROCEDURE agentMcpService.reconnect
+PROCEDURE agentMcpService.waitForInitialLoad
+PROCEDURE agentPanelService.read
+PROCEDURE agentPermissionModeService.mode
+PROCEDURE agentPermissionModeService.setMode
+PROCEDURE agentPermissionModeService.setModeAndBroadcast
+PROCEDURE agentPlanService.cancel
+PROCEDURE agentPlanService.clear
+PROCEDURE agentPlanService.enter
+PROCEDURE agentPlanService.exit
+PROCEDURE agentPlanService.status
+PROCEDURE agentPluginCommandService.activate
+PROCEDURE agentPluginMediaService.cancel
+PROCEDURE agentPluginMediaService.resume
+PROCEDURE agentPluginService.refreshSessionStart
+PROCEDURE agentProfileService.getAgentsMdWarning
+PROCEDURE agentProfileService.getEffectiveThinkingLevel
+PROCEDURE agentProfileService.getModel
+PROCEDURE agentProfileService.getModelCapabilities
+PROCEDURE agentProfileService.setEffort
+PROCEDURE agentProfileService.setModel
+PROCEDURE agentProfileService.setThinking
+PROCEDURE agentPromptService.cancelModelSwitch
+PROCEDURE agentPromptService.getModelSwitch
+PROCEDURE agentPromptService.listModelSwitches
+PROCEDURE agentPromptService.recoverModelSwitch
+PROCEDURE agentPromptService.resumeRecoveredQueue
+PROCEDURE agentPromptService.submit
+PROCEDURE agentPromptService.submitAndWait
+PROCEDURE agentPromptService.submitSteer
+PROCEDURE agentPromptService.switchModel
+PROCEDURE agentPromptService.updateModelSwitch
+PROCEDURE agentRuntimeBindingService.get
+PROCEDURE agentRuntimeBindingService.switch
+PROCEDURE agentSkillService.activate
+PROCEDURE agentSkillService.promptWithSkills
+PROCEDURE agentTaskService.detach
+PROCEDURE agentTaskService.list
+PROCEDURE agentTaskService.readOutput
+PROCEDURE agentTaskService.stop
+PROCEDURE agentTaskService.stopByUser
+PROCEDURE agentTokenCountingService.statusSize
+PROCEDURE agentUsageService.status
+PROCEDURE authSummaryService.ensureReady
+PROCEDURE authSummaryService.summarize
+PROCEDURE botService.ensureHomeSession
+PROCEDURE botService.list
+PROCEDURE capabilityService.getCapability
+PROCEDURE capabilityService.listCapabilities
+PROCEDURE fileService.get
+PROCEDURE modelCatalogMutation.readModel
+PROCEDURE modelCatalogMutation.readProvider
+PROCEDURE modelResolver.getProvider
+PROCEDURE modelResolver.listModels
+PROCEDURE modelResolver.listProviders
+PROCEDURE modelResolver.setDefaultModel
+PROCEDURE oauthService.getFlow
+PROCEDURE oauthService.listMethods
+PROCEDURE oauthService.status
+PROCEDURE personaStore.get
+PROCEDURE personaStore.list
+PROCEDURE pluginImportService.archives
+PROCEDURE pluginImportService.job
+PROCEDURE pluginImportService.jobs
+PROCEDURE pluginImportService.read
+PROCEDURE pluginImportService.sources
+PROCEDURE pluginMediaService.capabilities
+PROCEDURE pluginMediaService.catalog
+PROCEDURE pluginMediaService.job
+PROCEDURE pluginMediaService.jobs
+PROCEDURE pluginMediaService.providers
+PROCEDURE pluginMediaService.sources
+PROCEDURE pluginMediaService.voices
+PROCEDURE pluginService.checkUpdates
+PROCEDURE pluginService.getPluginInfo
+PROCEDURE pluginService.listPluginCommands
+PROCEDURE pluginService.listPlugins
+PROCEDURE pluginService.onDidReload
+PROCEDURE roomService.get
+PROCEDURE roomService.list
+PROCEDURE roomService.listItems
+PROCEDURE roomService.log
+PROCEDURE roomService.searchThreads
+PROCEDURE roomService.usage
+PROCEDURE sessionActivityView.state
+PROCEDURE sessionApprovalService.decide
+PROCEDURE sessionApprovalService.listPending
+PROCEDURE sessionBtwService.start
+PROCEDURE sessionCronService.getNextFireForTask
+PROCEDURE sessionCronService.getNextFireTime
+PROCEDURE sessionCronService.list
+PROCEDURE sessionIndex.count
+PROCEDURE sessionIndex.get
+PROCEDURE sessionIndex.listRecent
+PROCEDURE sessionInitService.cancelInit
+PROCEDURE sessionInitService.generateAgentsMd
+PROCEDURE sessionInteractionService.acquireConsumer
+PROCEDURE sessionInteractionService.hasConsumer
+PROCEDURE sessionInteractionService.isRecentlyResolved
+PROCEDURE sessionInteractionService.listPending
+PROCEDURE sessionInteractionService.releaseConsumer
+PROCEDURE sessionInteractionService.respond
+PROCEDURE sessionManager.archive
+PROCEDURE sessionManager.close
+PROCEDURE sessionManager.createChild
+PROCEDURE sessionManager.fork
+PROCEDURE sessionManager.restore
+PROCEDURE sessionManager.resume
+PROCEDURE sessionMetadata.getAgentExecutor
+PROCEDURE sessionMetadata.read
+PROCEDURE sessionMetadata.registerAgent
+PROCEDURE sessionMetadata.setArchived
+PROCEDURE sessionMetadata.setTitle
+PROCEDURE sessionMetadata.update
+PROCEDURE sessionQuestionService.answer
+PROCEDURE sessionQuestionService.dismiss
+PROCEDURE sessionQuestionService.listPending
+PROCEDURE sessionSkillCatalog.list
+PROCEDURE sessionTitleService.generateTitle
+PROCEDURE sessionTodoService.getTodos
+PROCEDURE taskBoardService.overview
+PROCEDURE taskBoardService.read
+PROCEDURE threadCommunicationService.getWorkspaceOverride
+PROCEDURE threadCommunicationService.hostId
+PROCEDURE threadCommunicationService.isWorkspaceEnabled
+PROCEDURE threadCommunicationService.listMessages
+PROCEDURE threadCommunicationService.listThreads
+PROCEDURE threadCommunicationService.readThread
+PROCEDURE workspaceService.get
+PROCEDURE workspaceService.list
+SUBSCRIBE service=configService event=any; scope and ids unconstrained
+SUBSCRIBE service=modelService event=onDidChangeModels scope=core; workspaceId/sessionId/agentId absent
+SUBSCRIBE service=none event in session,agent,workspace,config,sessions,workspaces; scope and ids unconstrained
+SUBSCRIBE service=none event=events scope=agent; workspaceId absent; sessionId/agentId nonempty
+SUBSCRIBE service=none event=events scope=core; workspaceId/sessionId/agentId absent
+SUBSCRIBE service=pluginService event=onDidReload scope=core; workspaceId/sessionId/agentId absent
+SUBSCRIBE service=providerService event=onDidChangeProviders scope=core; workspaceId/sessionId/agentId absent
+SUBSCRIBE service=roomService event=any; scope and ids unconstrained
+SUBSCRIBE service=sessionExecutionControl event=onDidChange scope=session; workspaceId/agentId absent; sessionId nonempty
+SUBSCRIBE service=sessionMetadata event=any; scope and ids unconstrained
+SUBSCRIBE service=sessionSkillCatalog event=any; scope and ids unconstrained
+WEB PATH /api/remote-connections*: GET /api/remote-connections or ^\/api\/remote-connections\/[0-9a-f-]{36}\/(?:call|download|upload|events|html-preview)$
+WEB PATH /api/runtime-switch: GET only
+WEB PATH /api/web-access*: only /api/web-access/session,/api/web-access/logout,/api/web-access/exchange
+WEB PATH all other paths: allowed
+WEB PATH denied exact: /mcp
+WEB PATH denied pattern: ^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)
+WEB PROCEDURE all other services: allowed
+WEB PROCEDURE bootstrapService: only platform,arch,cwd,osHomeDir,homeDir,configPath,clientVersion,clientIdentity,sessionsDir,blobsDir,storeDir,cacheDir,logsDir
+WEB PROCEDURE denied services: authTokenService,externalDelegationService,externalDelegationSeatService

@@ -573,6 +573,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const audience = new ConnectionAudience(admission, localOwnerToken, validateCredential, () => core.accessor.get(IBootstrapService).spaceId ?? 'main');
   let threadBridge: SpaceThreadBridge | undefined;
   let outboundPeerBridge: OutboundPeerBridgeClient | undefined;
+  let closePeerBridgeSockets: () => Promise<void> = async () => {};
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
   let locator: HistoryNavigation | undefined;
   const navigation = (): HistoryNavigation => locator ??= new HistoryNavigation(
@@ -853,6 +854,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => externalClientListener.close() },
       { run: () => externalClients.close() },
       { run: () => leaseRegistry.dispose() },
+      { run: () => closePeerBridgeSockets() },
       { run: () => app.close() },
       { run: async () => {
         if (imSessionTimer !== undefined) clearInterval(imSessionTimer);
@@ -1240,6 +1242,23 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessionViewTranscriptService: transcriptService,
     peerBridgeRegistry,
   });
+  closePeerBridgeSockets = async () => {
+    const sockets = [...wssKlient.peerServer.clients].filter((socket) => socket.readyState === socket.OPEN);
+    if (sockets.length === 0) return;
+    const closed = Promise.all(sockets.map((socket) => new Promise<void>((resolve) => {
+      socket.once('close', () => resolve());
+    })));
+    for (const socket of sockets) socket.close(1012, 'Service Restart');
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([closed, new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, 1_000);
+        timeout.unref();
+      })]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  };
   if (opts.disableAuth !== true) {
     const { baseHomeDir } = core.accessor.get(IBootstrapService);
     registerHtmlPreviewRoutes(app, core, remoteConnections, {

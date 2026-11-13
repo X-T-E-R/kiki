@@ -73,30 +73,64 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['pluginMediaService', new Set(['sources', 'catalog', 'providers', 'capabilities', 'voices', 'jobs', 'job'])],
   ['agentPluginMediaService', new Set(['cancel', 'resume'])],
 ]);
-const peerEventServices = new Set([
-  'roomService',
-  'configService',
-  'sessionMetadata',
-  'sessionSkillCatalog',
-]);
-const peerCoreServiceEvents: ReadonlyMap<string, string> = new Map([
-  ['providerService', 'onDidChangeProviders'],
-  ['modelService', 'onDidChangeModels'],
-  ['pluginService', 'onDidReload'],
-]);
+const PEER_FRAME_TYPES = ['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'unsubscribe', 'stream_cancel'] as const;
+const PEER_EVENT_SERVICES = ['roomService', 'configService', 'sessionMetadata', 'sessionSkillCatalog'] as const;
+const peerEventServices = new Set<string>(PEER_EVENT_SERVICES);
+const PEER_NO_SERVICE_SUBSCRIBE_EVENTS = ['session', 'agent', 'workspace', 'config', 'sessions', 'workspaces'] as const;
+const PEER_BUS_SUBSCRIPTION_EVENT = 'events';
+type PeerIdConstraint = 'absent' | 'nonempty';
+interface PeerSubscriptionScopeRule {
+  readonly scope: 'core' | 'agent' | 'session';
+  readonly workspaceId: PeerIdConstraint;
+  readonly sessionId: PeerIdConstraint;
+  readonly agentId: PeerIdConstraint;
+}
+const PEER_BUS_SUBSCRIPTION_SCOPES: readonly PeerSubscriptionScopeRule[] = [
+  { scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
+  { scope: 'agent', workspaceId: 'absent', sessionId: 'nonempty', agentId: 'nonempty' },
+];
+const PEER_SCOPED_EMITTER_RULES: readonly (PeerSubscriptionScopeRule & { service: string; event: string })[] = [
+  { service: 'providerService', event: 'onDidChangeProviders', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
+  { service: 'modelService', event: 'onDidChangeModels', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
+  { service: 'pluginService', event: 'onDidReload', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
+  { service: 'sessionExecutionControl', event: 'onDidChange', scope: 'session', workspaceId: 'absent', sessionId: 'nonempty', agentId: 'absent' },
+];
+const WEB_RUNTIME_SWITCH_PATH = '/api/runtime-switch';
+const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)/;
+const WEB_DENIED_EXACT_PATH = '/mcp';
+const WEB_ACCESS_PATH_PREFIX = '/api/web-access';
+const WEB_ACCESS_ALLOWED_PATHS = ['/api/web-access/session', '/api/web-access/logout', '/api/web-access/exchange'] as const;
+const WEB_REMOTE_CONNECTIONS_PATH = '/api/remote-connections';
+const WEB_REMOTE_CONNECTIONS_PREFIX = '/api/remote-connections';
+const WEB_REMOTE_CONNECTION_ACTION_PATTERN = /^\/api\/remote-connections\/[0-9a-f-]{36}\/(?:call|download|upload|events|html-preview)$/;
+const WEB_BOOTSTRAP_METHODS = ['platform', 'arch', 'cwd', 'osHomeDir', 'homeDir', 'configPath', 'clientVersion', 'clientIdentity', 'sessionsDir', 'blobsDir', 'storeDir', 'cacheDir', 'logsDir'] as const;
+const WEB_DENIED_PROCEDURE_SERVICES = ['authTokenService', 'externalDelegationService', 'externalDelegationSeatService'] as const;
+function matchesPeerIdConstraint(value: string | undefined, constraint: PeerIdConstraint): boolean {
+  return constraint === 'absent' ? value === undefined : typeof value === 'string' && value !== '';
+}
+
+function matchesPeerScope(frame: KlientFrame, rule: PeerSubscriptionScopeRule): boolean {
+  return frame.scope === rule.scope && matchesPeerIdConstraint(frame.workspaceId, rule.workspaceId) &&
+    matchesPeerIdConstraint(frame.sessionId, rule.sessionId) && matchesPeerIdConstraint(frame.agentId, rule.agentId);
+}
+
+function peerScopeSummary(rule: PeerSubscriptionScopeRule): string {
+  const ids = [
+    ['workspaceId', rule.workspaceId],
+    ['sessionId', rule.sessionId],
+    ['agentId', rule.agentId],
+  ] as const;
+  const summary: string[] = [];
+  const absent = ids.filter(([, constraint]) => constraint === 'absent').map(([id]) => id);
+  const nonempty = ids.filter(([, constraint]) => constraint === 'nonempty').map(([id]) => id);
+  if (absent.length > 0) summary.push(`${absent.join('/')} absent`);
+  if (nonempty.length > 0) summary.push(`${nonempty.join('/')} nonempty`);
+  return summary.join('; ');
+}
+
 function isPeerScopedEmitterAllowed(frame: KlientFrame): boolean {
   if (typeof frame.service !== 'string' || typeof frame.event !== 'string') return false;
-  const coreEvent = peerCoreServiceEvents.get(frame.service);
-  if (coreEvent !== undefined) {
-    return frame.event === coreEvent && frame.scope === 'core' &&
-      frame.workspaceId === undefined && frame.sessionId === undefined && frame.agentId === undefined;
-  }
-  if (frame.service === 'sessionExecutionControl') {
-    return frame.event === 'onDidChange' && frame.scope === 'session' &&
-      frame.workspaceId === undefined && typeof frame.sessionId === 'string' && frame.sessionId !== '' &&
-      frame.agentId === undefined;
-  }
-  return false;
+  return PEER_SCOPED_EMITTER_RULES.some((rule) => frame.service === rule.service && frame.event === rule.event && matchesPeerScope(frame, rule));
 }
 /**
  * Whether an approved GUI peer may invoke this engine procedure.
@@ -130,15 +164,13 @@ export function isPeerProcedureAllowed(procedure: Pick<KlientProcedure, 'service
  * than to the call grants above; a `subscribe` frame is not a procedure.
  */
 export function isPeerFrameAllowed(frame: KlientFrame): boolean {
-  if (['ping', 'pong', 'view_attach', 'view_detach', 'bridge_attach', 'bridge_detach', 'bridge_response', 'unsubscribe', 'stream_cancel'].includes(frame.type)) return true;
+  if ((PEER_FRAME_TYPES as readonly string[]).includes(frame.type)) return true;
   if (frame.type === 'subscribe') {
-    if (frame.service === undefined && frame.event === 'events') return frame.workspaceId === undefined && (
-      (frame.scope === 'core' && frame.sessionId === undefined && frame.agentId === undefined) ||
-      (frame.scope === 'agent' && typeof frame.sessionId === 'string' && frame.sessionId !== '' &&
-        typeof frame.agentId === 'string' && frame.agentId !== '')
-    );
+    if (frame.service === undefined && frame.event === PEER_BUS_SUBSCRIPTION_EVENT) {
+      return PEER_BUS_SUBSCRIPTION_SCOPES.some((rule) => matchesPeerScope(frame, rule));
+    }
     return frame.event !== undefined && (frame.service === undefined
-      ? ['session', 'agent', 'workspace', 'config', 'sessions', 'workspaces'].includes(frame.event)
+      ? (PEER_NO_SERVICE_SUBSCRIBE_EVENTS as readonly string[]).includes(frame.event)
       : peerEventServices.has(frame.service) || isPeerScopedEmitterAllowed(frame));
   }
   return frame.type === 'stream' && typeof frame.service === 'string' && typeof frame.method === 'string' && isPeerProcedureAllowed({ service: frame.service, method: frame.method });
@@ -169,15 +201,42 @@ export function projectPeerBusEvent(scope: KlientFrame['scope'], event: unknown)
 }
 
 export function isWebPathAllowed(method: string, path: string): boolean {
-  if (path === '/api/runtime-switch' && method !== 'GET') return false;
-  if (/^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown)(?:\/|$)/.test(path) || path === '/mcp') return false;
-  if (path.startsWith('/api/web-access')) return ['/api/web-access/session', '/api/web-access/logout', '/api/web-access/exchange'].includes(path);
-  if (path.startsWith('/api/remote-connections')) return (method === 'GET' && path === '/api/remote-connections') || /^\/api\/remote-connections\/[0-9a-f-]{36}\/(?:call|download|upload|events|html-preview)$/.test(path);
+  if (path === WEB_RUNTIME_SWITCH_PATH && method !== 'GET') return false;
+  if (WEB_DENIED_PATH_PATTERN.test(path) || path === WEB_DENIED_EXACT_PATH) return false;
+  if (path.startsWith(WEB_ACCESS_PATH_PREFIX)) return (WEB_ACCESS_ALLOWED_PATHS as readonly string[]).includes(path);
+  if (path.startsWith(WEB_REMOTE_CONNECTIONS_PREFIX)) return (method === 'GET' && path === WEB_REMOTE_CONNECTIONS_PATH) || WEB_REMOTE_CONNECTION_ACTION_PATTERN.test(path);
   return true;
 }
 export function isWebProcedureAllowed(procedure: Pick<KlientProcedure, 'service' | 'method'>): boolean {
-  if (procedure.service === 'bootstrapService') return ['platform', 'arch', 'cwd', 'osHomeDir', 'homeDir', 'configPath', 'clientVersion', 'clientIdentity', 'sessionsDir', 'blobsDir', 'storeDir', 'cacheDir', 'logsDir'].includes(procedure.method);
-  return !['authTokenService', 'externalDelegationService', 'externalDelegationSeatService'].includes(procedure.service);
+  if (procedure.service === 'bootstrapService') return (WEB_BOOTSTRAP_METHODS as readonly string[]).includes(procedure.method);
+  return !(WEB_DENIED_PROCEDURE_SERVICES as readonly string[]).includes(procedure.service);
+}
+export function listPeerReachableSurface(): readonly string[] {
+  const surface: string[] = [];
+  for (const [service, methods] of peerProcedureMethods) {
+    for (const method of methods) surface.push(`PROCEDURE ${service}.${method}`);
+  }
+  for (const type of PEER_FRAME_TYPES) surface.push(`FRAME ${type}`);
+  surface.push('FRAME stream; requires an allowed service.method procedure');
+  surface.push('FRAME subscribe');
+  for (const rule of PEER_BUS_SUBSCRIPTION_SCOPES) {
+    surface.push(`SUBSCRIBE service=none event=${PEER_BUS_SUBSCRIPTION_EVENT} scope=${rule.scope}; ${peerScopeSummary(rule)}`);
+  }
+  surface.push(`SUBSCRIBE service=none event in ${PEER_NO_SERVICE_SUBSCRIBE_EVENTS.join(',')}; scope and ids unconstrained`);
+  for (const service of PEER_EVENT_SERVICES) surface.push(`SUBSCRIBE service=${service} event=any; scope and ids unconstrained`);
+  for (const rule of PEER_SCOPED_EMITTER_RULES) {
+    surface.push(`SUBSCRIBE service=${rule.service} event=${rule.event} scope=${rule.scope}; ${peerScopeSummary(rule)}`);
+  }
+  surface.push(`WEB PATH ${WEB_RUNTIME_SWITCH_PATH}: GET only`);
+  surface.push(`WEB PATH denied pattern: ${WEB_DENIED_PATH_PATTERN.source}`);
+  surface.push(`WEB PATH denied exact: ${WEB_DENIED_EXACT_PATH}`);
+  surface.push(`WEB PATH ${WEB_ACCESS_PATH_PREFIX}*: only ${WEB_ACCESS_ALLOWED_PATHS.join(',')}`);
+  surface.push(`WEB PATH ${WEB_REMOTE_CONNECTIONS_PREFIX}*: GET ${WEB_REMOTE_CONNECTIONS_PATH} or ${WEB_REMOTE_CONNECTION_ACTION_PATTERN.source}`);
+  surface.push('WEB PATH all other paths: allowed');
+  surface.push(`WEB PROCEDURE bootstrapService: only ${WEB_BOOTSTRAP_METHODS.join(',')}`);
+  surface.push(`WEB PROCEDURE denied services: ${WEB_DENIED_PROCEDURE_SERVICES.join(',')}`);
+  surface.push('WEB PROCEDURE all other services: allowed');
+  return surface.toSorted();
 }
 export class ConnectionAudience {
   constructor(readonly admission: ConnectionAdmission, readonly localOwnerToken: string, private readonly validateOwner: CredentialValidator, private readonly currentSpaceId: () => string) {}
