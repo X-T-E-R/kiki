@@ -1004,7 +1004,7 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
       target: localIdentity,
       sourceScope: { workspaceId: 'wd_remote-research_0123456789ab' },
       targetScope: { workspaceId: 'wd_localapp_abcdef012345' },
-      operations: ['read', 'send', 'wait', 'wake'] as const,
+      operations: ['read', 'send', 'wait', 'wake', 'create'] as const,
       expiresAt: futureExpiry,
       pendingLimit: 20,
       messagesPerMinute: 60,
@@ -1060,6 +1060,8 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
     expect(panel.querySelector('[data-thread-message-entry="11111111-1111-4111-8111-111111111111"] [data-thread-message-no-wake]')).not.toBeNull();
     // Inbound entry has wake -> no pending note on that card.
     expect(panel.querySelector('[data-thread-message-entry="22222222-2222-4222-8222-222222222222"] [data-thread-message-no-wake]')).toBeNull();
+    expect(panel.querySelector('[data-thread-message-entry="22222222-2222-4222-8222-222222222222"] [data-thread-message-operations]')?.textContent)
+      .toBe('Read · Send · Wait · Wake (starts a turn) · Create sessions');
 
     // Revoke outbound permission alone -> calls revoke('outbound', id), updates row to incoming only, keeps pairing openable.
     const nextStatus = {
@@ -1247,8 +1249,59 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     await click('[data-inbound-generate-code]');
     expect(connections.createPairCode).toHaveBeenCalledExactlyOnceWith({
       allowBridge: true,
-      bridgeOperations: ['read', 'send', 'wait', 'wake'],
+      bridgeOperations: ['read', 'send', 'wait', 'wake', 'create'],
     });
+  });
+
+  it('marks only idle approved grants unused for 30 days and opens the existing revoke confirmation', async () => {
+    const old = Date.now() - 45 * 24 * 60 * 60 * 1000;
+    connections.inbound.mockResolvedValue({
+      enabled: true,
+      configuredEnabled: true,
+      identity: localIdentity,
+      grants: [
+        {
+          id: 'stale-grant', source: peerSource, target: localIdentity, purpose: 'gui', revision: 1,
+          status: 'approved', label: 'Unused laptop', createdAt: old, activeLeases: 0,
+        },
+        {
+          id: 'recent-grant', source: peerSource, target: localIdentity, purpose: 'gui', revision: 1,
+          status: 'approved', label: 'Recently used laptop', createdAt: old, lastConnectedAt: Date.now() - 29 * 24 * 60 * 60 * 1000, activeLeases: 0,
+        },
+        {
+          id: 'active-grant', source: peerSource, target: localIdentity, purpose: 'gui', revision: 1,
+          status: 'approved', label: 'Connected laptop', createdAt: old, lastConnectedAt: old, activeLeases: 1,
+        },
+        {
+          id: 'invited-grant', source: peerSource, target: localIdentity, purpose: 'gui', revision: 1,
+          status: 'invited', label: 'Pending laptop', createdAt: old, activeLeases: 0,
+        },
+        {
+          id: 'revoked-grant', source: peerSource, target: localIdentity, purpose: 'gui', revision: 1,
+          status: 'revoked', label: 'Revoked laptop', createdAt: old, activeLeases: 0,
+        },
+      ],
+    });
+    connections.revoke.mockResolvedValue(undefined);
+
+    await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
+
+    expect(document.querySelector('[data-inbound-stale="true"]')?.getAttribute('data-inbound-stale')).toBe('true');
+    expect(document.querySelector('[data-inbound-grant="stale-grant"]')?.textContent).toContain('Unused 30d+');
+    expect(document.querySelector<HTMLButtonElement>('[data-inbound-quick-revoke="stale-grant"]')?.textContent).toBe('Revoke');
+    for (const id of ['recent-grant', 'active-grant', 'invited-grant', 'revoked-grant']) {
+      expect(document.querySelector(`[data-inbound-grant="${id}"] [data-inbound-stale]`)).toBeNull();
+      expect(document.querySelector(`[data-inbound-quick-revoke="${id}"]`)).toBeNull();
+    }
+
+    await click('[data-inbound-quick-revoke="stale-grant"]');
+    const confirm = document.querySelector('[role="alertdialog"]')!;
+    expect(confirm.textContent).toContain('Revoke access for Unused laptop?');
+    expect(confirm.textContent).toContain('Active connections from Unused laptop stop');
+    expect(connections.revoke).not.toHaveBeenCalled();
+
+    await click('[data-confirm-action="confirm"]');
+    expect(connections.revoke).toHaveBeenCalledExactlyOnceWith('stale-grant');
   });
 
   it('keeps the window in its current space after pairing from Spaces and pushes a toast offering "Switch"', async () => {

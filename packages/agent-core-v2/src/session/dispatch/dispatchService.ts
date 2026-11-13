@@ -26,7 +26,7 @@ import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '
 import { Error2, ErrorCodes, isCodedError } from '#/errors';
 import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { assertNativeToolOverride } from '#/agent/profile/toolBinding';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
@@ -351,11 +351,13 @@ export class SessionDispatchService implements ISessionDispatchService {
       });
       reservation.bind(child.id);
       const permissionMode = child.accessor.get(IAgentPermissionModeService);
-      if (input.permissionModeCeiling !== undefined) {
-        permissionMode.setModeCeiling(input.permissionModeCeiling);
-      }
+      const requesterPermission = requester.accessor.get(IAgentPermissionModeService);
+      const inheritedCeiling = requesterPermission.modeCeiling;
+      const ceiling = inheritedCeiling === undefined ? input.permissionModeCeiling
+        : constrainPermissionMode(input.permissionModeCeiling ?? inheritedCeiling, inheritedCeiling);
+      if (ceiling !== undefined) permissionMode.setModeCeiling(constrainPermissionMode(ceiling, permissionMode.modeCeiling ?? 'yolo'));
       permissionMode.setMode(
-        input.permissionMode ?? requester.accessor.get(IAgentPermissionModeService).mode,
+        input.permissionMode ?? requesterPermission.mode,
         input.permissionMode === undefined || input.permissionModeSource === 'ambient' ? 'ambient' : 'runtime',
       );
       if (!researchReadonly) {
@@ -489,6 +491,9 @@ export class SessionDispatchService implements ISessionDispatchService {
     resolveResumeContextMode(options.bindingOverride);
     if (options.requesterAgentId !== undefined) {
       const caller = this.requireHandle(options.requesterAgentId, 'Requester agent');
+      const inheritedCeiling = caller.accessor.get(IAgentPermissionModeService).modeCeiling;
+      const permission = child.agent.accessor.get(IAgentPermissionModeService);
+      if (inheritedCeiling !== undefined) permission.setModeCeiling(constrainPermissionMode(inheritedCeiling, permission.modeCeiling ?? 'yolo'));
       const binding = child.agent.accessor.get(IAgentProfileService).data();
       const selectionKind = binding.dispatchDecision?.selectionKind;
       const referencesNamedTarget = selectionKind !== 'profile_file' && selectionKind !== 'route'

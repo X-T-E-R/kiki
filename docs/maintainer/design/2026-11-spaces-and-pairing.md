@@ -34,7 +34,7 @@ These are the pieces the model is built from. The pairing-security work adds a p
 | Outbound pairing record | This home's pointer to another home: label, endpoint, target identity, optional `pinnedFingerprint`, `purposes ⊆ {gui, bridge}`, transport, state, background summary (`packages/protocol/src/rest/connections.ts`); a manual first-use TLS connection may also expose `fingerprintToVerify` | The current home's `server/outbound-connections.json` and connection secrets |
 | Space on another computer | An enabled outbound record with `gui`, entered as scope `remote:<connectionId>`; every read and write goes through the current home's broker, limited to `CONNECTION_OPERATIONS` (`packages/protocol/src/rest/connection-operations.ts`) | As above |
 | Inbound gate, grants and pairing codes | Who may connect to the current home; the gate is off by default; a code is 8 characters, ten minutes by default, single use | The current home's server |
-| Thread bridge | A one-way thread-message permission between two homes: source and target scopes, `operations ⊆ {read, send, wait, wake}`, expiry (`packages/protocol/src/rest/thread-bridge.ts`) | The current home's `server/thread-bridges.json` |
+| Thread bridge | A one-way thread-message permission between two homes: source and target scopes, `operations ⊆ {read, send, wait, wake, create}`, expiry (`packages/protocol/src/rest/thread-bridge.ts`) | The current home's `server/thread-bridges.json` |
 | Web access | A one-time link exchanged for a browser cookie, plus the list of outbound spaces such a browser may switch to | The current home's `server/web-access.json` |
 | Owner (SSH) profile | A desktop-saved SSH alias; connecting tunnels to the other server and asks for its owner token (scope `ssh:<id>`) | Per device; the token is not saved |
 | Navigation scope | A window's internal "where am I": `local`, `direct:<url>`, `ssh:<profile>`, `remote:<connection>` (`apps/kiki-gui/src/lib/navScopeConnection.ts`) | Per window |
@@ -50,7 +50,7 @@ The interface uses four words, and only these, to say where a person is, where t
 | 空间 | Space | A place for work: conversations, memory, workspaces, settings, credentials. One home. It has a name and a colour. | It belongs to its computer; its settings are its own |
 | 电脑 | Computer | The machine a space lives on. Only a name and a grouping; it has no management page of its own. In the desktop app, for the machine running the server, the name is 「这台电脑」 / "This computer"; otherwise the machine's name. | — |
 | 设备 | Device | What a person looks at a space with: this desktop window, a browser, a phone. | The one in hand |
-| 配对 | Pairing (verb: pair) | Permission one space gives another space or a device. There are two permissions: **open** (browse and chat) and **thread messages** (read, send, wait, and wake when granted). | Stored in the space that gives it |
+| 配对 | Pairing (verb: pair) | Permission one space gives another space or a device. There are two permissions: **open** (browse and chat) and **thread messages** (`read`, `send`, `wait`, `wake`, and `create` when granted). | Stored in the space that gives it |
 
 "Kiki" is not a countable noun in UI copy ("remote Kiki", "other Kiki", "this Kiki" go away), and home, host, owner, inbound, outbound, invitation, identity string, bridge and scope do not appear in regular UI. 「主空间」 / "Main space" stays as the name of each computer's default space and is shown like any other name.
 
@@ -180,7 +180,7 @@ The group 「连接与远程」 / "Connection & remote" becomes 「空间与设�
 
 **Spaces.** Two sections, 「这台电脑上的空间」 and 「其他电脑上的空间 · 从「{空间名}」可以打开」. The verb is 「切换」 / "Switch" everywhere. A paired row has three lines: name; computer, address, state and last contact; and the facts read from the record and its thread-message permission, 「可打开 / 不可打开」 / "Can be opened / Can't be opened" and 「线程消息：双向 / 仅发出 / 仅接收 / 无」 / "Thread messages: both ways / outgoing only / incoming only / none". When the thread-message permission cannot be read, the row says 「线程消息：读不到」 / "Thread messages: can't read", never "none". Its menu holds Retry, Turn off / Turn on, 「线程消息…」 / "Thread messages…" (scope, operations in words, expiry, and turning off or revoking that one permission without removing the pairing) and "Remove pairing…". Owner (SSH) profiles appear in the same section labelled 「所有者（SSH）」 / "Owner (SSH)" with 「连接…」 / "Connect…", which still asks for the token. In a browser or on a phone, spaces on this computer are listed read-only, with no "New space" and no "Add existing space…", and only the other spaces the owner allows this browser to open are shown. Opened while the window is in a space on another computer, the page starts with 「这里显示的是 {本机空间名} 的空间与配对。」 / "These are the spaces and pairings of {space}." and reads only this device's own space.
 
-**Access.** Devices holds web access, the signed-in browsers and 「允许这些设备打开的其他空间」 (today's browser-switchable list, renamed). Other spaces holds the master switch 「允许其他空间连接」 / "Allow other spaces to connect", the "Pairing code" button, and the list of grants (name, computer, 「已允许 / 等对方使用配对码 / 已撤销」, the same open and thread-message facts, last connection, a menu with "Thread messages…" and "Revoke…"), followed by 「要打开的其他空间在“空间”页管理。」 with a link. This space's identity is one copyable row under 「高级 → 手动交换身份」 / "Advanced → Manual identity exchange", never raw JSON.
+**Access.** Devices holds web access, the signed-in browsers and 「允许这些设备打开的其他空间」 (today's browser-switchable list, renamed). Other spaces holds the master switch 「允许其他空间连接」 / "Allow other spaces to connect", the "Pairing code" button, and the list of grants (name, computer, 「已允许 / 等对方使用配对码 / 已撤销」, the same open and thread-message facts, last authenticated connection, and a menu with "Thread messages…" and "Revoke…"). An approved grant with no active leases and no authenticated use for 30 days shows an idle badge and asks for confirmation before revocation; this is not an automatic expiry. Failed credentials and handshake-only checks do not update the activity timestamp. The section is followed by 「要打开的其他空间在“空间”页管理。」 with a link. This space's identity is one copyable row under 「高级 → 手动交换身份」 / "Advanced → Manual identity exchange", never raw JSON.
 
 **This device's connection** lists one segment per hop, so it is always clear which link is described:
 
@@ -205,12 +205,12 @@ Way        [Pairing code] [SSH]       (SSH only in the desktop app with saved SS
 Address    http://192.168.1.20:58627
 Code       XXXX-XXXX
 Name       (optional; empty uses the other computer's name)
-☐ Also ask for thread messages      Let this space's agents message that space's threads and wait for replies.
+☐ Also ask for thread messages      Grant `read`, `send`, `wait`, `wake`, and `create` for this space's threads.
 ☑ Show its working and waiting counts in the switch panel      Reads two numbers only, never its threads.
                                                          [Cancel] [Pair]
 ```
 
-The fixed zh copy is 「配对另一台电脑上的空间」, 「在对方的电脑上打开：设置 → 接入 → 其他空间 → 配对码。」, 「名称（可选，留空用对方电脑的名字）」, 「同时请求线程消息 — 让这个空间的智能体给对方的线程发消息并等待回复。」 and 「在切换面板里显示它的进行中与待处理数量 — 只取两个数字，不加载对方的任何线程。」. The thread-message box is shown only for the pairing-code way, because the SSH way cannot decline today and a box that cannot take effect is not shown. A successful pairing closes the sheet, adds the row and shows 「已配对 {名称}。［切换］」 / "Paired {name}. [Switch]"; **the window stays in its current space**. Failures read 「配对码不对，或已经过期。」, 「连不上这个地址。」, 「对方没有打开“允许其他空间连接”。」 and, when someone claims their own code, 「这个地址就是当前这个空间。」.
+The fixed zh copy is 「配对另一台电脑上的空间」, 「在对方的电脑上打开：设置 → 接入 → 其他空间 → 配对码。」, 「名称（可选，留空用对方电脑的名字）」, 「同时请求线程消息 — 让这个空间的智能体读取线程、发送消息、等待回复、启动模型运行并新建会话。」 and 「在切换面板里显示它的进行中与待处理数量 — 只取两个数字，不加载对方的任何线程。」. The thread-message box is shown only for the pairing-code way, because the SSH way cannot decline today and a box that cannot take effect is not shown. A successful pairing closes the sheet, adds the row and shows 「已配对 {名称}。［切换］」 / "Paired {name}. [Switch]"; **the window stays in its current space**. Failures read 「配对码不对，或已经过期。」, 「连不上这个地址。」, 「对方没有打开“允许其他空间连接”。」 and, when someone claims their own code, 「这个地址就是当前这个空间。」.
 
 The other direction starts with a screen that says what will be allowed and what generating the code switches on, before any request is sent:
 
@@ -218,14 +218,14 @@ The other direction starts with a screen that says what will be allowed and what
 Pairing code
 After pairing with this code, the other side can:
 ☑ Open this space (browse and chat)
-☐ Message this space's threads, and start a model run here
+☐ Message threads, start model runs, and create sessions here
 
 Generating a code turns on “Allow other spaces to connect” and lets this computer
 accept pairing on the local network and Tailscale until you turn that switch off.
                                         [Cancel] [Turn on and generate code]
 ```
 
-The zh copy is 「对方用配对码配对后可以：」, 「打开这个空间（浏览与对话）」, 「给这个空间的线程发消息，并在这里发起一轮模型运行」, 「生成配对码会打开“允许其他空间连接”，并让这台电脑在局域网和 Tailscale 上接受配对，直到你关掉这个开关。」 and 「［取消］［打开并生成配对码］」. "Open this space" is checked and cannot be unchecked, because every pairing grants it. When the gate is already on, the paragraph is absent and the button reads 「生成配对码」 / "Generate code". After generating, the sheet shows today's code, QR code, countdown, addresses and "New code"; when the code is used it says 「{名称} 已配对。」, and when it expires 「这个配对码已过期。［换一个码］」.
+The zh copy is 「对方用配对码配对后可以：」, 「打开这个空间（浏览与对话）」, 「在此空间发送线程消息、启动模型运行和新建会话」, 「生成配对码会打开“允许其他空间连接”，并让这台电脑在局域网和 Tailscale 上接受配对，直到你关掉这个开关。」 and 「［取消］［打开并生成配对码］」. The thread-message choice grants all five operations: `read`, `send`, `wait`, `wake`, and `create`. "Open this space" is checked and cannot be unchecked, because every pairing grants it. When the gate is already on, the paragraph is absent and the button reads 「生成配对码」 / "Generate code". After generating, the sheet shows today's code, QR code, countdown, addresses and "New code"; when the code is used it says 「{名称} 已配对。」, and when it expires 「这个配对码已过期。［换一个码］」.
 
 Removing and revoking say exactly what changes: 「移除后，这个空间不能再打开 {名称}，保存的凭据会被删除。不会关掉对方，也不改对方的设置。」 and 「{名称} 正在进行的连接会中断，以后也不能再打开这里。不影响其他配对。」. Pairing codes stay the one regular way to pair.
 
@@ -274,12 +274,12 @@ Every phase leaves a usable product and can ship alone. No `localStorage` key ch
 | --- | --- | --- | --- |
 | 1 · Say the truth | No internal ids in the settings band, pairing source line or grant details; per-reason failures for paired spaces with no token field; the launcher's directions; the phone browser's connect screen; the main space's name on the switcher; the corrected thread-message note | Unchanged | Unchanged |
 | 2 · One place | Position bar and switch panel; failures in the row; Spaces & devices settings; settings limited to what works in a space on another computer; no "New space" in browsers and on phones | Unchanged | Unchanged |
-| 3 · One pairing flow | The pairing sheet; the gate explanation; opt-in thread messages; thread-message facts and per-permission revoke on rows; direct peer TLS and safe re-pairing | A per-home `server/peer-tls.json`; optional `pinnedFingerprint` on outbound records, with existing unpinned records retained | The outbound pairing request (`POST /api/remote-connections/pair`) gains an optional `requestBridge`, forwarded to the other side's existing `pair/claim` field; absent means requested, as before. The pairing URI gains an optional `fp`; the handshake uses the bounded `capabilities` array described above, reports the TLS fingerprint, and proves the peer grant before bearer credentials are sent. Generating a code already accepts `allowBridge` and `bridgeOperations` |
+| 3 · One pairing flow | The pairing sheet; the gate explanation; opt-in thread messages with all five operations; thread-message facts and per-permission revoke on rows; direct peer TLS and safe re-pairing | A per-home `server/peer-tls.json`; optional `pinnedFingerprint` on outbound records, with existing unpinned records retained | The outbound pairing request (`POST /api/remote-connections/pair`) gains an optional `requestBridge`, forwarded to the other side's existing `pair/claim` field; absent means requested, as before. The pairing URI gains an optional `fp`; the handshake uses the bounded `capabilities` array described above, reports the TLS fingerprint, and proves the peer grant before bearer credentials are sent. Generating a code already accepts `allowBridge` and `bridgeOperations` |
 | 4 · Data changes | Paired phones as devices; renaming a pairing | Optional `kind` on incoming grants; a persisted label change | Both additive; records without `kind` show as spaces |
 
-Two points correct the premise the plan was first written on. A pairing's default thread-message operations are `read`, `send` and `wait`, without `wake` (`DEFAULT_PAIR_BRIDGE_OPERATIONS` in `packages/kap-server/src/services/connections/admission.ts`); without `wake`, a bridged message stays pending instead of starting a turn (`packages/kap-server/src/services/threadBridge/bridge.ts`). The feature docs now make that distinction: only explicitly granting `wake` starts a model run. The desktop app calls the machine running the server 「这台电脑」, never 「本机」, as required by `apps/kiki-gui/docs/i18n-glossary.md`.
+Two points correct the premise the plan was first written on. The implicit pairing and automatically created reverse-peer thread-message operations are `read`, `send` and `wait`, without `wake` or `create` (`DEFAULT_PAIR_BRIDGE_OPERATIONS` in `packages/kap-server/src/services/connections/admission.ts`; `ensureReversePeerBridge` in `packages/kap-server/src/services/threadBridge/bridge.ts`). Without `wake`, a bridged message stays pending instead of starting a turn (`packages/kap-server/src/services/threadBridge/bridge.ts`); `create` is likewise opt-in. The GUI choice grants all five operations, while explicit bridge policies can choose a narrower set. The feature docs now make that distinction clear. The desktop app calls the machine running the server 「这台电脑」, never 「本机」, as required by `apps/kiki-gui/docs/i18n-glossary.md`.
 
-The GUI asks for thread messages only when selected. `kiki pair` keeps its existing default of requesting and allowing them; its command reference must keep that difference clear.
+The GUI asks for thread messages only when selected, and that choice grants all five operations: `read`, `send`, `wait`, `wake`, and `create`. `kiki pair` and automatically created reverse-peer permissions keep their existing default of `read`, `send`, and `wait`; their command reference must keep that difference clear.
 
 ## What is built
 
@@ -287,12 +287,14 @@ Phase 1 items shipped in the November GUI interaction & mobile pass live on the 
 
 - Paired-space failures map the broker's reason strings to their own reasons (`apps/kiki-gui/src/lib/navScopeConnection.ts`; `ScopeRestoreFailure` in `apps/kiki-gui/src/lib/navScope.ts`), and the recovery page shows each with its own title and action and no token field (`apps/kiki-gui/src/components/NavScopeRecovery.tsx`, copy under `nav.scope.failed.remote-*`).
 - The settings band names a paired space from its record and otherwise says 「当前：另一个空间」 (`SpaceBand` in `apps/kiki-gui/src/components/SettingsPage.tsx`); the switcher falls back to `远端 Kiki` / `Remote Kiki` (`sidebar.space.remoteKiki` in `apps/kiki-gui/src/components/SpaceSwitcher.tsx`) instead of an internal key.
-- The Access page's note now says that pairing with a code also allows thread messages (read, send, wait) when both sides have a workspace, and that the list does not show them yet (`st.inbound.bridgeNote`).
+- The Access page and pairing rows expose thread-message permissions. The GUI choice is `Message threads, start model runs, and create sessions here` / 「在此空间发送线程消息、启动模型运行和新建会话」 and grants all five operations; implicit pairing and reverse-peer permissions remain `read`, `send`, `wait`.
 - The launcher's directions name the path that exists today, "Settings → Access from elsewhere → Other Kiki → Pairing code" (`apps/kiki-gui/mobile/launcher/launcher.js`, `index.html`).
 - In a browser, the connect screen offers to find a local Kiki only when the page was served from this device, and it shows errors in plain words with the raw text under "Details" (`apps/kiki-gui/src/components/ConnectScreen.tsx`).
 - The glossary rule for 「这台电脑」 / 「运行 Kiki 的电脑」 is in `apps/kiki-gui/docs/i18n-glossary.md`.
 
 - Direct space pairing uses pinned TLS, a zero-token handshake and grant rotation. Real isolated KAP servers exercise the LAN listener, broker HTTP and WebSocket traffic, and bidirectional peer bridges in `packages/kap-server/test/remotePairing.integration.ts`.
+- Thread bridges now expose five operations: `read`, `send`, `wait`, `wake`, and `create`. Cross-space `ThreadCreate` creates a top-level session at the target workspace's canonical root, accepts `bridge_id`, `connection_id`, `workspace_id`, and an optional `idempotency_key` (defaulting to the tool call id), rejects `cwd` and `from_subagent`, requires an enabled main-agent profile, caps permission at `auto`, rejects explicit `review` and `yolo`, and returns a reference usable by `ThreadSend`, `ThreadRead`, and `ThreadWait`.
+- Authenticated grant activity is marked only by successful `authorize` or `matchBearer` traffic. `lastConnectedAt` is persisted on a five-minute throttle and flushed on shutdown; Settings shows an idle badge and Revoke confirmation for approved grants with no active leases and at least 30 days without use, while grants have no automatic TTL.
 
 Not built from phase 1: the main space still shows no name on the switcher (`shownName` is `null` in the main space); that moves into the position bar work.
 
@@ -305,7 +307,7 @@ Each remaining follow-up item is tracked by an issue with the title given (#3–
 - **"Turn the space menu into a switch panel that reports failures in the row"**: the panel, the bottom sheet, in-row failures, and dropping "New space…" in browsers.
 - **"Merge the connection settings into a "Spaces & devices" group"**: the group is still "Connection & remote" (`st.group.connection`), outbound rows still sit under Access from elsewhere, the owner (SSH) form is still on Settings › Workspaces, and the Spaces page still requests a `remote:` space's settings.
 - **"Show which space each settings page acts on when in another computer's space"**: the segmented connection page, the visibility rule and the band with the computer name.
-- **"Update the phone launcher to the new settings names"**: its directions still use "Access from elsewhere → Other Kiki" (`apps/kiki-gui/mobile/launcher/launcher.js`, `index.html`). The feature docs now use "Spaces & devices" and no longer imply that `wake` is granted by default.
+- **"Update the phone launcher to the new settings names"**: its directions still use "Access from elsewhere → Other Kiki" (`apps/kiki-gui/mobile/launcher/launcher.js`, `index.html`). The feature docs now use "Spaces & devices" and state that implicit and reverse-peer permissions default to `read`, `send`, and `wait`; the GUI choice grants all five operations, including `wake` and `create`.
 - **"List paired phones as devices and allow renaming a pairing"**, which waits for the rulings below.
 
 ## What was never verified
@@ -316,15 +318,13 @@ Each remaining follow-up item is tracked by an issue with the title given (#3–
 - That switching to another local space changes the list of other computers is inferred from where records are stored; that phones appear in the inbound list is inferred from the shells calling the same `pair/claim` that writes grants.
 - That "Restart server" inside a space on another computer restarts this device's server, and that "Add" on Models fails there, were read from the code, not pressed.
 - The English interface was only read in the dictionaries, not seen.
-- The GUI has never rendered real thread-bridge status data; look at a real pairing's scope fields before fixing how the other side's workspace is worded.
+- No manual end-to-end GUI walkthrough with a live thread bridge was run; check a real pairing's scope fields before changing how the other side's workspace is worded.
 
 ## Open questions
 
-- **Wake on the pairing sheet.** The sheet's checkbox says the other side can "start a model run here", but the pairing default grants `read`, `send` and `wait` without `wake`. Either ticking the box grants `wake`, or the clause leaves the copy. This must be answered before the pairing sheet merges.
 - **The SSH way and thread messages.** Should SSH pairing also be able to decline thread messages? It would need `requestBridge` on the SSH connect input, which today always asks (`packages/kap-server/src/services/connections/manager.ts`).
 - **Paired phones as devices** (not ruled on). The recommendation is an optional `kind: 'space' | 'device'` on `pair/claim` and on grants, with phones sending `device` only to servers that advertise support through the handshake, so Access › Devices can list "Paired phones".
 - **Renaming a pairing** (not ruled on). The recommendation is `PUT /api/remote-connections/:connectionId/label`, mirroring the enable route, since today a name can only be set while pairing.
 - **Retiring owner (SSH) profiles** (not ruled on). They move into the Spaces page and stay. The recommendation is to retire them only once SSH pairing is shown to cover the owner case, and then to give each saved profile a "Use pairing (SSH) instead…" action the person runs one by one, never a silent conversion: the two hold different credentials with different rights.
 - **Reconnect threshold.** How many failed attempts turn the banner into "Still can’t reach {space}" is not fixed; the socket's retry diagnostic exposes the attempt count.
 - **One name per pairing record.** A record stores one `label`, so a space on another computer cannot show both a space name and a machine name. Keeping the machine name (`targetLabel`, already returned by `pair/claim`) would need a stored field.
-- **Approved-grant lifetime (not implemented).** Approved peer grants remain approved until revoked and do not expire automatically; `lastConnectedAt` is updated in memory but not persisted. Recommendation: choose between permanent-by-default grants with debounced persisted last activity and a stale-at-30-days badge/revoke action, or a sliding 30/90-day TTL with a hard cap or configurable policy. Do not claim a hard TTL before it is implemented.

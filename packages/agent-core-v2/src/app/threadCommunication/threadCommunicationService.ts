@@ -37,6 +37,8 @@ import {
   type ListThreadMessagesResult,
   type ThreadCommunicationMessage,
   type ThreadMessageEndpoint,
+  type CreateBridgedThreadInput,
+  type CreateBridgedThreadResult,
   type ListThreadsInput,
   type ListThreadsResult,
   type ReadThreadInput,
@@ -340,6 +342,12 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return { items, incomplete, history, nextCursor: hasMore && before !== undefined ? Buffer.from(JSON.stringify({
       v: 2, kind: 'messages', conditions, before, generation,
     })).toString('base64url') : undefined };
+  }
+
+  async createThread(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
+    input.signal?.throwIfAborted();
+    await this.requireBridgeCaller(input.caller);
+    return this.requireConnector().create(input);
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {

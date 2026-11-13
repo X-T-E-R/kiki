@@ -11,6 +11,7 @@ export const SPACE_THREAD_ROUTER: unique symbol = Symbol('spaceThreadRouter');
 export const ACCEPT_BRIDGED_THREAD_MESSAGE: unique symbol = Symbol('acceptBridgedThreadMessage');
 
 export interface SpaceThreadConnector {
+  create(input: import('./threadCommunication').CreateBridgedThreadInput): Promise<import('./threadCommunication').CreateBridgedThreadResult>;
   list(input: ListThreadsInput): Promise<ListThreadsResult>;
   read(input: ReadThreadInput): Promise<ReadThreadResult>;
   send(input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult>;

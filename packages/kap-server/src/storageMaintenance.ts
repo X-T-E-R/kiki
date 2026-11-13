@@ -127,6 +127,7 @@ export async function startStorageMaintenance(input: StorageMaintenanceInput): P
     if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
     registerWebAccessRoutes(app, web);
     registerStorageMigrationRoutes(app, controller);
+    app.addHook('onClose', () => input.admission.close());
     app.get('/api/healthz', async () => ({ ok: true }));
     app.get('/api/meta', async (request, reply) => reply.send(okEnvelope({
       server_version: input.serverVersion, build_id: options.buildId ?? process.env['KIKI_BUILD_ID'], build_channel: options.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'],

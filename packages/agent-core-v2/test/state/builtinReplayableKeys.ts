@@ -18,6 +18,7 @@ import {
   permissionModeConfiguredKey,
   permissionModeExternalOverrideKey,
   permissionModeKey,
+  permissionModeCeilingKey,
 } from '#/agent/permissionMode/permissionModeOps';
 import { permissionRulesKey } from '#/agent/permissionRules/permissionRulesOps';
 import { pluginSessionStartSnapshotKey } from '#/agent/plugin/agentPluginOps';
@@ -42,6 +43,7 @@ import { continuityClockKey } from '#/session/todo/continuityState';
 import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
 import { pluginConversationStateKey, pluginWorldStateKey } from '#/agent/pluginState/pluginStateKeys';
 import { hookStateKey } from '#/features/externalHooks/agent/hookState';
+import { branchSealedKey, branchToolLockKey } from '#/features/btw/branchOps';
 
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
   contextMemoryKey,
@@ -63,6 +65,9 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   permissionModeKey,
   permissionModeConfiguredKey,
   permissionModeExternalOverrideKey,
+  permissionModeCeilingKey,
+  branchSealedKey,
+  branchToolLockKey,
   permissionRulesKey,
   pluginSessionStartSnapshotKey,
   promptAdmissionKey,

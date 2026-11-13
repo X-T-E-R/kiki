@@ -663,6 +663,9 @@ function createLane(
             get mode() {
               return permissionModeByAgent.get(agentId)!;
             },
+            get modeCeiling() {
+              return permissionCeilingByAgent.get(agentId);
+            },
             setMode: (mode: PermissionMode, source?: 'runtime' | 'ambient') => {
               probe.permissionSources.push(source);
               const ceiling = permissionCeilingByAgent.get(agentId);
@@ -2384,6 +2387,22 @@ describe('AgentRun and dispatch parity golden', () => {
       acceptedStatus: ['running', 'queued'],
       continuationField: ['resume_hint', 'continue_hint'],
     });
+  });
+
+  it('inherits a bridged main auto ceiling through native and external delegation', async () => {
+    const internal = createLane(disposables, 'internal');
+    const external = createLane(disposables, 'external');
+    for (const lane of [internal, external]) {
+      lane.handles.get('main')!.accessor.get(IAgentPermissionModeService).setModeCeiling('auto');
+    }
+    await spawnPair(internal, external);
+    for (const lane of [internal, external]) {
+      const child = [...lane.handles.values()].find((handle) => handle.id !== 'main')!;
+      const permission = child.accessor.get(IAgentPermissionModeService);
+      expect(permission.modeCeiling).toBe('auto');
+      permission.setMode('yolo');
+      expect(permission.mode).toBe('auto');
+    }
   });
 
   it('P1 launches the same native profile binding, permission mode, name, labels, and run', async () => {

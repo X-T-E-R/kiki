@@ -4,6 +4,7 @@ import { isError2, ThreadMailboxBacklogError } from '@kiki/agent-core-v2';
 import { decodeJsonFrame, encodeJsonFrame, type KlientFrame } from '@kiki/klient/host';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import {
+  bridgeCreateSchema,
   bridgeListSchema,
   bridgeReadSchema,
   bridgeSendSchema,
@@ -12,7 +13,7 @@ import {
 } from '@kiki/protocol';
 import { okEnvelope, errEnvelope } from '../../envelope';
 import { AdmissionError } from '../connections/admission';
-import { BROKER_WS_MESSAGE_BYTES, type ConnectionLease, type RemoteConnectionManager } from '../connections/manager';
+import type { ConnectionLease, RemoteConnectionManager } from '../connections/manager';
 import { peerFetch, pinnedAgent, requirePinnedTls } from '../connections/peerTls';
 import { machineLabel } from '../connections/pairing';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
@@ -269,7 +270,7 @@ export class OutboundPeerBridgeClient {
       const operation = data['operation'];
       const authorization = typeof data['authorization'] === 'string' ? data['authorization'] : '';
       const body = data['body'];
-      if (operation !== 'list' && operation !== 'read' && operation !== 'send' && operation !== 'wait') {
+      if (operation !== 'list' && operation !== 'read' && operation !== 'send' && operation !== 'wait' && operation !== 'create') {
         sendFrame(ws, {
           type: 'bridge_response',
           id,
@@ -289,6 +290,7 @@ export class OutboundPeerBridgeClient {
         const result = operation === 'list' ? await this.bridge.inboundList(grant, bridgeListSchema.parse(body))
           : operation === 'read' ? await this.bridge.inboundRead(grant, bridgeReadSchema.parse(body), signal)
           : operation === 'send' ? await this.bridge.inboundSend(grant, bridgeSendSchema.parse(body))
+          : operation === 'create' ? await this.bridge.inboundCreate(grant, bridgeCreateSchema.parse(body))
           : await this.bridge.inboundWait(grant, bridgeWaitSchema.parse(body), signal);
         signal.throwIfAborted();
         sendFrame(ws, {
@@ -432,7 +434,7 @@ export class OutboundPeerBridgeClient {
         const ws = new WebSocket(wsUrl, [`${WS_BEARER_PROTOCOL_PREFIX}${credential.ownerToken}`], {
           agent: record.pinnedFingerprint === undefined ? undefined : pinnedAgent(record.pinnedFingerprint, undefined, lease.signal),
           headers: { 'x-kiki-connection-grant': credential.grant },
-          maxPayload: BROKER_WS_MESSAGE_BYTES,
+          maxPayload: 1024 * 1024,
           perMessageDeflate: false,
           followRedirects: false,
           handshakeTimeout: 15_000,
@@ -452,7 +454,7 @@ export class OutboundPeerBridgeClient {
           sendFrame(ws, {
             type: 'bridge_attach',
             id: randomUUID(),
-            data: { operations: ['list', 'read', 'send', 'wait'] },
+            data: {},
           });
           heartbeatTimer = setInterval(() => {
             if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;

@@ -34,6 +34,30 @@ export interface ListThreadsInput {
   readonly limit?: number;
 }
 
+export interface CreateBridgedThreadInput {
+  readonly bridgeId?: string;
+  readonly connectionId?: string;
+  readonly caller: ThreadCaller;
+  readonly signal?: AbortSignal;
+  readonly workspaceId?: string;
+  readonly idempotencyKey: string;
+  readonly title?: string;
+  readonly profile?: string;
+  readonly persona?: string;
+  readonly modelAlias?: string;
+  readonly effort?: string;
+  readonly permissionMode?: import('#/agent/permissionPolicy/types').PermissionMode;
+  readonly planMode?: boolean;
+  readonly prompt?: string;
+}
+
+export interface CreateBridgedThreadResult {
+  readonly ref: ThreadRef;
+  readonly title: string;
+  readonly profile: string;
+  readonly promptStarted: boolean;
+}
+
 export interface ListThreadsResult {
   readonly threads: readonly ThreadSummary[];
   readonly nextCursor?: string;
@@ -162,6 +186,7 @@ export interface IThreadCommunicationService {
 
   listMessages(input?: ListThreadMessagesInput): Promise<ListThreadMessagesResult>;
   listThreads(input?: ListThreadsInput): Promise<ListThreadsResult>;
+  createThread(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult>;
   readThread(input: ReadThreadInput): Promise<ReadThreadResult>;
   sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
   sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult>;

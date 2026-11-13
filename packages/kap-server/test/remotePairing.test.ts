@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer as createHttpsServer } from 'node:https';
@@ -13,12 +13,20 @@ import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connection
 import { pairOutbound } from '../src/services/connections/pairing';
 import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
 import { ConnectionAdmission } from '../src/services/connections/admission';
+import { ConnectionAudience } from '../src/services/connections/audience';
 import { RemoteConnectionManager, validateEndpoint } from '../src/services/connections/manager';
 import { directEndpoints, PairingRateLimit } from '../src/services/connections/pairing';
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true }); });
 const identity = (hostId: string) => ({ homeId: randomUUID(), hostId, protocol: 1 as const });
+const savedConnectedAt = async (home: string, grantId: string): Promise<number | undefined> => {
+  const state = JSON.parse(await readFile(join(home, 'server', 'inbound-connections.json'), 'utf8')) as { grants: Array<{ id: string; lastConnectedAt?: number }> };
+  return state.grants.find((grant) => grant.id === grantId)?.lastConnectedAt;
+};
+const settleAdmissionWrites = async (admission: ConnectionAdmission): Promise<void> => {
+  await (admission as unknown as { tail: Promise<unknown> }).tail;
+};
 
 describe('direct endpoints', () => {
   it('accepts LAN and Tailscale http and still requires https on the public internet', () => {
@@ -77,6 +85,76 @@ describe('pairing codes', () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-pair-danger-')); homes.push(home);
     const target = new ConnectionAdmission(home, identity('target'), 'dangerous_auth_bypass');
     await expect(target.createPairCode()).rejects.toMatchObject({ status: 403, reason: 'dangerous_auth_bypass' });
+  });
+});
+
+describe('inbound connection activity', () => {
+  it('persists authenticated activity at five-minute intervals and flushes recent activity on close', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-admission-activity-')); homes.push(home);
+    let now = 1_700_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const targetIdentity = identity('target');
+    const admission = new ConnectionAdmission(home, targetIdentity);
+    let restored: ConnectionAdmission | undefined;
+    let restarted: ConnectionAdmission | undefined;
+    try {
+      await admission.ready();
+      const approval = await admission.approvePeer(identity('source'), 'Source');
+      const nonce = 'a'.repeat(32);
+      const key = createHash('sha256').update(approval.peerToken).digest('hex');
+      const proof = createHmac('sha256', key).update(`kiki-handshake-req-v1:${nonce}`).digest('hex');
+      expect(admission.inspectHandshakeProof({ grantId: approval.grantId, nonce, proof })).toMatchObject({ status: 'approved' });
+      expect(await savedConnectedAt(home, approval.grantId)).toBeUndefined();
+
+      const audience = new ConnectionAudience(admission, 'owner-token', async () => false, () => 'space');
+      await audience.authorizeSocket(approval.peerToken, { url: '/api/klient/events', headers: {} } as IncomingMessage);
+      await settleAdmissionWrites(admission);
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(now);
+
+      const firstSavedAt = now;
+      now += 2 * 60 * 1000;
+      expect(admission.matchBearer('not-a-bearer')).toBeUndefined();
+      expect(() => admission.authorize('not-a-bearer')).toThrow('connection_not_approved');
+      expect(admission.status().grants.find((grant) => grant.id === approval.grantId)?.lastConnectedAt).toBe(firstSavedAt);
+      now += 2 * 60 * 1000;
+      expect(admission.matchBearer(approval.peerToken)).toMatchObject({ id: approval.grantId });
+      await settleAdmissionWrites(admission);
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(firstSavedAt);
+
+      now += 60 * 1000;
+      expect(admission.authorize(approval.peerToken)).toMatchObject({ id: approval.grantId });
+      await settleAdmissionWrites(admission);
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(now);
+      await admission.close();
+
+      now += 60 * 1000;
+      restored = new ConnectionAdmission(home, targetIdentity);
+      await restored.ready();
+      expect(restored.authorize(approval.peerToken)).toMatchObject({ id: approval.grantId, lastConnectedAt: now });
+      await settleAdmissionWrites(restored);
+      const lastThrottledSave = now - 60 * 1000;
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(lastThrottledSave);
+      await restored.close();
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(now);
+
+      const lastCloseSave = now;
+      now += 60 * 1000;
+      restarted = new ConnectionAdmission(home, targetIdentity);
+      await restarted.ready();
+      expect(restarted.matchBearer(approval.peerToken)).toMatchObject({ id: approval.grantId });
+      await settleAdmissionWrites(restarted);
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(lastCloseSave);
+      now += 4 * 60 * 1000;
+      expect(restarted.matchBearer(approval.peerToken)).toMatchObject({ id: approval.grantId });
+      await settleAdmissionWrites(restarted);
+      expect(await savedConnectedAt(home, approval.grantId)).toBe(now);
+      await restarted.close();
+    } finally {
+      clock.mockRestore();
+      await admission.close();
+      await restored?.close();
+      await restarted?.close();
+    }
   });
 });
 
