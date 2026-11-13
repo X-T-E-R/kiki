@@ -43,6 +43,8 @@ import type { IWorkspaceDirs } from '@kiki/agent-core-v2/workspace/workspaceDirs
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { AdmissionError } from '../services/connections/admission';
+import { peerAudience } from '../services/connections/audience';
 import {
   launchDetached,
   openFileCommandFor,
@@ -238,11 +240,12 @@ async function resolveWorkspaceFs(
   ref: string,
   runtimeId: string,
   required: readonly RuntimeCapability[],
+  allowUnregisteredLocal = true,
 ): Promise<RuntimeFsScope | undefined> {
   const workspaces = core.accessor.get(IWorkspaceService);
-  const ws = await workspaces.get(ref);
+  const ws = (await workspaces.get(ref)) ?? (isAbsolute(ref) ? await workspaces.findRegisteredByRoot(ref) : undefined);
   if (ws === undefined) {
-    if (!isAbsolute(ref) || runtimeId !== 'local') return undefined;
+    if (!allowUnregisteredLocal || !isAbsolute(ref) || runtimeId !== 'local') return undefined;
     const lease = await core.accessor.get(ITemporaryLocalRuntimeResolver).acquire(ref, required);
     try {
       let directory = false;
@@ -326,12 +329,16 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         if (fsAction === 'search' || fsAction === 'grep' || fsAction === 'git_status' || fsAction === 'diff') {
           required.push('process');
         }
+        const allowUnregisteredLocal = peerAudience(req) === undefined;
         runtimeFs = operation.handle === undefined && fsAction === 'search'
-          ? await resolveWorkspaceFs(core, session_id, runtimeId, required)
+          ? await resolveWorkspaceFs(core, session_id, runtimeId, required, allowUnregisteredLocal)
           : operation.handle === undefined
             ? undefined
             : acquireSessionFs(core, operation.handle, runtimeId, required);
         if (runtimeFs === undefined) {
+          if (!allowUnregisteredLocal && fsAction === 'search' && isAbsolute(session_id)) {
+            throw new AdmissionError(403, 'peer_workspace_not_registered');
+          }
           reply.send(
             errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id),
           );
@@ -415,8 +422,12 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       const { workspace, runtime_id, ...searchRequest } = req.body;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
-        runtimeFs = await resolveWorkspaceFs(core, workspace, runtime_id ?? 'local', ['fs', 'process']);
+        const allowUnregisteredLocal = peerAudience(req) === undefined;
+        runtimeFs = await resolveWorkspaceFs(core, workspace, runtime_id ?? 'local', ['fs', 'process'], allowUnregisteredLocal);
         if (runtimeFs === undefined) {
+          if (!allowUnregisteredLocal && isAbsolute(workspace)) {
+            throw new AdmissionError(403, 'peer_workspace_not_registered');
+          }
           reply.send(
             errEnvelope(
               ErrorCode.WORKSPACE_NOT_FOUND,
@@ -460,8 +471,12 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       const { workspace, runtime_id, ...suggestRequest } = req.body;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
-        runtimeFs = await resolveWorkspaceFs(core, workspace, runtime_id ?? 'local', ['fs']);
+        const allowUnregisteredLocal = peerAudience(req) === undefined;
+        runtimeFs = await resolveWorkspaceFs(core, workspace, runtime_id ?? 'local', ['fs'], allowUnregisteredLocal);
         if (runtimeFs === undefined) {
+          if (!allowUnregisteredLocal && isAbsolute(workspace)) {
+            throw new AdmissionError(403, 'peer_workspace_not_registered');
+          }
           reply.send(
             errEnvelope(
               ErrorCode.WORKSPACE_NOT_FOUND,
@@ -630,7 +645,7 @@ function createRuntimeReadStream(
 }
 
 type Req = { id: string; body: unknown };
-type Reply = { send(payload: unknown): unknown };
+type Reply = { code?(status: number): { send(payload: unknown): unknown }; send(payload: unknown): unknown };
 
 async function handleList(fs: IWorkspaceFsService, req: Req, reply: Reply): Promise<void> {
   const parsed = fsListRequestSchema.safeParse(req.body ?? {});
@@ -788,6 +803,12 @@ async function handleOpenIn(fs: IWorkspaceFsService, sessionId: string, req: Req
 
 function sendMappedError(reply: Reply, req: { id: string }, err: unknown): void {
   const requestId = req.id;
+  if (err instanceof AdmissionError) {
+    const payload = errEnvelope(40301, err.reason, requestId);
+    if (reply.code !== undefined) reply.code(err.status).send(payload);
+    else reply.send(payload);
+    return;
+  }
   const log = requestLog(req);
   if (isError2(err)) {
     switch (err.code) {

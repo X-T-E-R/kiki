@@ -72,30 +72,30 @@ export class PersistedGoalReader {
   }
 
   private async checkpoint(scope: string, source: Awaited<ReturnType<PersistedGoalReader['source']>>) {
-    const checkpoint = await this.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
-    if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
-    const digest = async (start: number, end: number): Promise<string | undefined> => {
-      if (end < start || end > source.size) return undefined;
-      const hash = createHash('sha256');
-      let bytes = 0;
-      if (end > start) {
-        for await (const chunk of readLogicalBytes(this.storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: end - 1 })) {
-          bytes += chunk.byteLength;
-          hash.update(chunk);
-        }
-      }
-      return bytes === end - start ? hash.digest('hex') : undefined;
-    };
-    const verified = await verifyReplayCheckpointWire(checkpoint.wire, {
-      size: source.size,
-      mtimeMs: source.mtimeMs,
-      headHash: async () => (await digest(0, Math.min(source.size, JOURNAL_HEAD_HASH_BYTES)))?.slice(0, 32),
-      storeGeneration: () => Promise.resolve(source.generation),
-      boundarySha256: (end) => digest(Math.max(0, end - JOURNAL_BOUNDARY_HASH_BYTES), end),
-      prefixSha256: (end) => digest(0, end),
-    });
-    if (verified === undefined) return undefined;
     try {
+      const checkpoint = await this.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
+      if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
+      const digest = async (start: number, end: number): Promise<string | undefined> => {
+        if (end < start || end > source.size) return undefined;
+        const hash = createHash('sha256');
+        let bytes = 0;
+        if (end > start) {
+          for await (const chunk of readLogicalBytes(this.storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: end - 1 })) {
+            bytes += chunk.byteLength;
+            hash.update(chunk);
+          }
+        }
+        return bytes === end - start ? hash.digest('hex') : undefined;
+      };
+      const verified = await verifyReplayCheckpointWire(checkpoint.wire, {
+        size: source.size,
+        mtimeMs: source.mtimeMs,
+        headHash: async () => (await digest(0, Math.min(source.size, JOURNAL_HEAD_HASH_BYTES)))?.slice(0, 32),
+        storeGeneration: () => Promise.resolve(source.generation),
+        boundarySha256: (end) => digest(Math.max(0, end - JOURNAL_BOUNDARY_HASH_BYTES), end),
+        prefixSha256: (end) => digest(0, end),
+      });
+      if (verified === undefined) return undefined;
       const states = decodeReplayCheckpointStates(checkpoint.graph, new Set([goalKey.name]));
       if (!states.has(goalKey.name)) return undefined;
       return { offset: verified.offset, goal: goalKey.replayable.schema.parse(states.get(goalKey.name)) };

@@ -90,12 +90,12 @@ export function useRemoteConnections(client: KikiClient | null) {
 
 export function useInboundStatus(client: KikiClient | null) {
   return useQuery({
-    queryKey: remoteConnectionKeys.inbound(),
+    queryKey: [...remoteConnectionKeys.inbound(), client?.baseUrl ?? null],
     queryFn: async () => {
       if (client === null) throw new Error('The local control connection is not ready.');
       return connectionsApi(client).inbound();
     },
-    enabled: client !== null,
+    enabled: client !== null && client.klient?.rest?.connections !== undefined,
     refetchInterval: 8_000,
     staleTime: 4_000,
   });

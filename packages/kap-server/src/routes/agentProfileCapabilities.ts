@@ -53,27 +53,41 @@ import { checkPromptFiles } from '@kiki/agent-core-v2/agent/profile/promptFileCh
 import { PROMPT_SECTION, type PromptConfig } from '@kiki/agent-core-v2/app/prompt/configSection';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 
-export async function acquireDraftProfileCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
+export async function acquireDraftProfileCatalog(
+  core: Scope,
+  query: { workspace_id?: string; cwd?: string },
+  allowUnregisteredLocal = true,
+) {
   if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
-  const preview = await acquireDirectoryProfileCatalog(core, query.cwd!, true);
+  const preview = await acquireDirectoryProfileCatalog(core, query.cwd!, true, allowUnregisteredLocal);
   return preview === undefined ? undefined : {
     workspaceId: preview.workspaceId, registry: preview.registry, catalog: preview.catalog,
     skills: preview.skills!.catalog, dispose: preview.dispose,
   };
 }
 
-export async function acquireDraftProfileListCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
+export async function acquireDraftProfileListCatalog(
+  core: Scope,
+  query: { workspace_id?: string; cwd?: string },
+  allowUnregisteredLocal = true,
+) {
   if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
-  return acquireDirectoryProfileCatalog(core, query.cwd!, false);
+  return acquireDirectoryProfileCatalog(core, query.cwd!, false, allowUnregisteredLocal);
 }
 
-async function acquireDirectoryProfileCatalog(core: Scope, cwd: string, includeSkills: boolean) {
+async function acquireDirectoryProfileCatalog(
+  core: Scope,
+  cwd: string,
+  includeSkills: boolean,
+  allowUnregisteredLocal = true,
+) {
+  const workspaceId = (await core.accessor.get(IWorkspaceService).findRegisteredByRoot(cwd))?.id;
+  if (workspaceId === undefined && !allowUnregisteredLocal) return undefined;
   try {
     if (!(await core.accessor.get(IHostFileSystem).stat(cwd)).isDirectory) return undefined;
   } catch {
     return undefined;
   }
-  const workspaceId = (await core.accessor.get(IWorkspaceService).findRegisteredByRoot(cwd))?.id;
   const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd, workspaceId, includeSkills);
   try {
     await Promise.all([preview.catalog.ready, preview.skills?.ready]);
@@ -239,8 +253,9 @@ export async function agentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
   signal?: AbortSignal,
+  allowUnregisteredLocal = true,
 ): Promise<AgentCapabilitiesProducerResponse | 'workspace-not-found' | 'profile-not-found'> {
-  const result = await readAgentCapabilities(core, query, signal);
+  const result = await readAgentCapabilities(core, query, signal, allowUnregisteredLocal);
   if (typeof result === 'string' || !('session_id' in query) || query.metrics_only === true) return result;
   return { ...result, executor_auth: await readExecutorAuth(core, query.session_id, query.agent_id) };
 }
@@ -249,6 +264,7 @@ async function readAgentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
   signal?: AbortSignal,
+  allowUnregisteredLocal = true,
 ): Promise<AgentCapabilitiesProducerResponse | 'workspace-not-found' | 'profile-not-found'> {
   if ('session_id' in query) {
     const session = core.accessor.get(ISessionManager).get(query.session_id);
@@ -416,7 +432,7 @@ async function readAgentCapabilities(
       prompt: await agent.accessor.get(IAgentProfileService).getPromptDiagnostics({ checkAllPromptFiles: query.check_all_prompt_files }),
     };
   }
-  const workspace = await acquireDraftProfileCatalog(core, query);
+  const workspace = await acquireDraftProfileCatalog(core, query, allowUnregisteredLocal);
   if (workspace === undefined) return 'workspace-not-found';
   try {
     const snapshot = workspace.catalog.snapshot();

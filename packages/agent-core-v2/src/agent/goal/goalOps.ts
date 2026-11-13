@@ -120,8 +120,24 @@ export class GoalUpdated extends Event2<GoalUpdatedPayload> {
 }
 export interface GoalUpdated extends GoalUpdatedPayload {}
 
+const GoalStateSchema: z.ZodType<GoalState> = z.object({
+  goalId: z.string(),
+  objective: z.string(),
+  completionCriterion: z.string().optional(),
+  status: GoalStatusSchema,
+  statusActor: GoalActorSchema.optional(),
+  followUpTiming: GoalFollowUpTimingSchema,
+  controlRevision: z.number().int().nonnegative(),
+  turnsUsed: z.number().finite().nonnegative(),
+  tokensUsed: z.number().finite().nonnegative(),
+  wallClockMs: z.number().finite().nonnegative(),
+  wallClockResumedAt: z.number().finite().nonnegative().optional(),
+  budgetLimits: GoalBudgetLimitsSchema,
+  terminalReason: z.string().optional(),
+});
+
 export const goalKey = defineState('goal', (): GoalModelState => null).replayable({
-  schema: z.custom<GoalModelState>(),
+  schema: GoalStateSchema.nullable(),
 })
   .on(GoalCreate, (_s, e) => ({
     goalId: e.goalId,

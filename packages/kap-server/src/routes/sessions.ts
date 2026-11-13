@@ -133,6 +133,7 @@ import {
   SessionCreateReceiptStore,
   sessionCreateConnectionScope,
 } from '../services/sessionCreateReceipt';
+import { AdmissionError } from '../services/connections/admission';
 import { peerAudience } from '../services/connections/audience';
 import { webPrincipal } from '../services/webAccess';
 
@@ -408,6 +409,12 @@ export function registerSessionsRoutes(
             );
           }
           workDir = workspace.root;
+        } else if (callerCwd !== undefined && peerAudience(req) !== undefined) {
+          const registered = await registry.findRegisteredByRoot(callerCwd);
+          if (registered === undefined) {
+            throw new AdmissionError(403, 'peer_workspace_not_registered');
+          }
+          workDir = registered.root;
         }
 
         let autoRoot: string | undefined;
@@ -627,7 +634,7 @@ export function registerSessionsRoutes(
         if (!cancelled && session !== undefined) reply.send(okEnvelope(session, req.id));
       } catch (error) {
         if (cancelled) return;
-        reply.send(mapSessionError(req, error));
+        sendMappedError(reply as Parameters<typeof sendMappedError>[0], req, error);
       }
     },
   );
@@ -2098,6 +2105,9 @@ interface SessionErrorEnvelope {
 
 function mapSessionError(req: { id: string }, err: unknown): SessionErrorEnvelope {
   const requestId = req.id;
+  if (err instanceof AdmissionError) {
+    return errEnvelope(40301, err.reason, requestId);
+  }
   if (err instanceof SessionCreateReceiptError) {
     return { ...errEnvelope(err.code, err.message, requestId), details: err.details };
   }
@@ -2187,11 +2197,22 @@ function mapSessionError(req: { id: string }, err: unknown): SessionErrorEnvelop
 }
 
 function sendMappedError(
-  reply: { send(payload: unknown): unknown },
+  reply: { code?(status: number): { send(payload: unknown): unknown }; send(payload: unknown): unknown },
   req: { id: string },
   err: unknown,
 ): void {
-  reply.send(mapSessionError(req, err));
+  if (err instanceof AdmissionError) {
+    const payload = errEnvelope(40301, err.reason, req.id);
+    if (reply.code !== undefined) reply.code(err.status).send(payload);
+    else reply.send(payload);
+    return;
+  }
+  const mapped = mapSessionError(req, err);
+  if (mapped.code === 40301 && reply.code !== undefined) {
+    reply.code(403).send(mapped);
+    return;
+  }
+  reply.send(mapped);
 }
 
 /** Projects a freshly created or promoted live session onto the wire, including its current event cursor. */

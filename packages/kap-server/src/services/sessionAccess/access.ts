@@ -10,8 +10,10 @@ const requests = new WeakMap<object, { token: SessionAccessToken; signal: AbortS
 export function sessionAccessToken(request: object): SessionAccessToken | undefined { return requests.get(request)?.token; }
 export function sessionAccessSignal(request: object): AbortSignal | undefined { return requests.get(request)?.signal; }
 export function isSessionAccessLoopback(request: IncomingMessage, web: WeakSet<IncomingMessage>, peers: WeakSet<IncomingMessage>): boolean {
+  const fetchSite = request.headers['sec-fetch-site'];
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? '') &&
-    !web.has(request) && !peers.has(request) && request.headers.origin === undefined;
+    !web.has(request) && !peers.has(request) && peerGrant(request.headers) === undefined &&
+    request.headers.origin === undefined && fetchSite === undefined;
 }
 
 const sessionReadRoutes = new Set([

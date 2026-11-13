@@ -9955,7 +9955,7 @@ export const zh = {
   'st.inbound.active': '当前 {count} 条连接',
   'st.inbound.revoke': '撤销…',
   'st.inbound.revokeConfirm': '撤销',
-  'st.inbound.revokeTitle': 'Revoke access for {name}?',
+  'st.inbound.revokeTitle': '撤销 {name} 的访问权限？',
   'st.inbound.revokeBody': '{name} 正在进行的连接会中断，以后也不能再打开这里。不影响其他配对。',
   'st.inbound.revoked': '已撤销 {name} 的访问权限。',
   'st.inbound.canOpen': '可打开这里',

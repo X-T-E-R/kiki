@@ -592,5 +592,76 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     expect(forbiddenHostContent.status).toBe(403);
     const forbiddenBody = (await forbiddenHostContent.json()) as { code: number; msg: string };
     expect(forbiddenBody.msg).toBe('local_owner_required');
+
+    const unregisteredCreate = await call(
+      target,
+      '/api/sessions',
+      { metadata: { cwd: outside } },
+      claimed.peerToken,
+    );
+    expect(unregisteredCreate.status).toBe(403);
+    expect(await unregisteredCreate.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+
+    const unregisteredReceiptCreate = await call(
+      target,
+      '/api/sessions',
+      { creation_id: randomUUID(), metadata: { cwd: outside } },
+      claimed.peerToken,
+    );
+    expect(unregisteredReceiptCreate.status).toBe(403);
+    expect(await unregisteredReceiptCreate.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+
+    const unregisteredDraftSearch = await call(
+      target,
+      '/api/workspace/fs:search',
+      { workspace: outside, query: 'secret' },
+      claimed.peerToken,
+    );
+    expect(unregisteredDraftSearch.status).toBe(403);
+    expect(await unregisteredDraftSearch.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+
+    const unregisteredSessionSlotSearch = await call(
+      target,
+      `/api/sessions/${encodeURIComponent(outside)}/fs:search`,
+      { query: 'secret' },
+      claimed.peerToken,
+    );
+    expect(unregisteredSessionSlotSearch.status).toBe(403);
+    expect(await unregisteredSessionSlotSearch.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+
+    const registeredPeerCreate = await call(
+      target,
+      '/api/sessions',
+      { metadata: { cwd: workspace } },
+      claimed.peerToken,
+    );
+    expect(registeredPeerCreate.status).toBe(200);
+    expect((await registeredPeerCreate.json() as { code: number }).code).toBe(0);
+
+    const source = await boot();
+    const { record } = await connect(source, target);
+    const brokerDenied = await call(
+      source,
+      `/api/remote-connections/${encodeURIComponent(record.id)}/call`,
+      { operation: 'sessionCreate', body: { metadata: { cwd: outside } } },
+    );
+    expect(brokerDenied.status).toBe(403);
+    expect(await brokerDenied.json()).toMatchObject({ code: 40301, msg: 'peer_workspace_not_registered' });
+    expect(source.remoteConnections.get(record.id).state).toBe('online');
+
+    const binaryBytes = new Uint8Array(5 * 1024 * 1024);
+    binaryBytes.fill(0xab);
+    await writeFile(join(workspace, 'large.bin'), binaryBytes);
+    const brokerLargeRead = await call(
+      source,
+      `/api/remote-connections/${encodeURIComponent(record.id)}/call`,
+      { operation: 'fsRead', params: { sessionId: session.id }, body: { path: 'large.bin', encoding: 'base64', length: binaryBytes.byteLength } },
+    );
+    expect(brokerLargeRead.status).toBe(200);
+    const brokerLargeBody = await brokerLargeRead.json() as { code: number; data: { encoding: string; content: string; truncated: boolean } };
+    expect(brokerLargeBody.code).toBe(0);
+    expect(brokerLargeBody.data.encoding).toBe('base64');
+    expect(brokerLargeBody.data.truncated).toBe(false);
+    expect(Buffer.from(brokerLargeBody.data.content, 'base64').byteLength).toBe(binaryBytes.byteLength);
   }, 30_000);
 });

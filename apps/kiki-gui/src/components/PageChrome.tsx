@@ -35,7 +35,7 @@ export type PageWidth = keyof typeof PAGE_WIDTH;
 export function PhoneRemoteSpaceLine({ className = '' }: { readonly className?: string }) {
   const phoneMode = usePhoneMode();
   const { t } = useI18n();
-  const { inRemoteScope, spaceName } = useSpaceLocation();
+  const { inRemoteScope, spaceName } = useSpaceLocation({ enabled: phoneMode });
   if (!phoneMode || !inRemoteScope) return null;
   const text = t('sidebar.space.inSpace', { space: spaceName });
   return (

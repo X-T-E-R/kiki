@@ -296,7 +296,7 @@ export function SpaceSwitcher() {
 
   const title = pending > 0 ? `${t('sidebar.space.switcherAria')} · ${tp('sidebar.space.otherPending', pending)}` : t('sidebar.space.switcherAria');
   const enteringName = entering === null ? null : label(items.find((item) => item.id === entering) ?? { id: entering, name: entering } as SpaceListItem);
-  const location = useSpaceLocation({ openingSpaceName: enteringName });
+  const location = useSpaceLocation({ openingSpaceName: enteringName, includeLocalMachine: open && !desktop });
   const barSpaceName = location.spaceName;
   const barSubtitle = location.subtitle;
   const switchComputerUrl = appShellConnectUrl();

@@ -63,7 +63,13 @@ function resolveLocalSpace(
   return { name: resolvedName, color: here.color ?? matched?.color };
 }
 
-export function useSpaceLocation(options?: { readonly openingSpaceName?: string | null }): SpaceLocation {
+export function useSpaceLocation(options?: {
+  readonly openingSpaceName?: string | null;
+  readonly enabled?: boolean;
+  readonly includeLocalMachine?: boolean;
+}): SpaceLocation {
+  const enabled = options?.enabled !== false;
+  const includeLocalMachine = options?.includeLocalMachine === true;
   const host = useHost();
   const { t } = useI18n();
   const conn = useOptionalConnection();
@@ -82,10 +88,14 @@ export function useSpaceLocation(options?: { readonly openingSpaceName?: string 
   const cleanSshLabel = sanitizeHumanLabel(sshLabel);
   const inRemoteScope = resolvedConnectionId !== null || (typeof sshLabel === 'string' && sshLabel.trim().length > 0);
 
-  const controlClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
-  const spaces = useSpaces(host.kind === 'tauri' ? controlClient : null);
-  const remoteConnections = useRemoteConnections(controlClient);
-  const handshake = useServerHandshake(controlClient);
+  const controlClient = enabled
+    ? (host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client)))
+    : null;
+  const spaces = useSpaces(enabled && host.kind === 'tauri' ? controlClient : null);
+  const remoteConnections = useRemoteConnections(enabled && resolvedConnectionId !== null ? controlClient : null);
+  const handshake = useServerHandshake(
+    enabled && (includeLocalMachine || (!inRemoteScope && host.kind !== 'tauri')) ? controlClient : null,
+  );
 
   const here = currentSpace();
   const items = spaces.data ?? [];

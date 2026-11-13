@@ -643,4 +643,33 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     expect(read).toHaveBeenCalledOnce();
     expect(read.mock.calls[0]?.[2]).toMatchObject({ startOffset: checkpointSize });
   });
+
+  it('falls back to canonical wire replay when the engine-v1 goal checkpoint graph is corrupted', async () => {
+    const { logs, docs, storage } = installGoalPersistence(ix);
+    const scope = 'sessions/corrupt-checkpoint-session/agents/main';
+    await seedPersistedGoal(logs, scope);
+    const prefix = await storage.read(scope, AGENT_WIRE_RECORD_KEY);
+    if (prefix === undefined) throw new Error('goal wire was not stored');
+    const mtimeMs = await storage.mtime(scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+    const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+    const prefixSha256 = createHash('sha256').update(prefix).digest('hex');
+    await docs.set(`${scope}/replay-checkpoints`, 'engine-v1', {
+      format: 1,
+      replayAbi: REPLAY_ABI_VERSION,
+      wire: { size: prefix.byteLength, mtimeMs, prefixSha256, storeGeneration: generation },
+      stateNames: [goalKey.name],
+      pluginInterpretation: [],
+      graph: 'not-a-valid-encoded-graph',
+    });
+
+    const reader = new PersistedGoalReader(logs, docs, storage);
+    const goal = await reader.read(scope);
+
+    expect(goal).toMatchObject({
+      goalId: 'goal-persisted',
+      controlRevision: 9,
+      tokensUsed: 125,
+      turnsUsed: 2,
+    });
+  });
 });

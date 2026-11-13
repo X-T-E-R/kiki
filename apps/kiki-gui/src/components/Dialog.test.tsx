@@ -323,3 +323,33 @@ it('leaves an Escape that ends an IME composition to the field', async () => {
   await escape();
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it('lets a portaled picker inside a SidePanel or plain Dialog peel on Escape before the modal and paint above z-50', async () => {
+  function SidePanelWithPicker() {
+    const [open, setOpen] = useState(true);
+    return <I18nProvider>
+      {open ? (
+        <SidePanel title="New task" overlayId="side-panel-picker-test" onClose={() => setOpen(false)}>
+          <input defaultValue="unsaved draft" aria-label="Draft title" />
+          <SearchableSelect id="panel-priority" value="a" options={SHORT_PICKER_OPTIONS}
+            ariaLabel="Priority" onChange={() => {}} />
+        </SidePanel>
+      ) : null}
+    </I18nProvider>;
+  }
+  await act(async () => root.render(<SidePanelWithPicker />));
+  const trigger = document.querySelector<HTMLButtonElement>('#panel-priority')!;
+  await act(async () => { trigger.click(); });
+  const selectPanel = document.querySelector<HTMLElement>('[data-select-panel]')!;
+  expect(selectPanel.getAttribute('data-modal-escape')).toBe('side-panel-picker-test');
+  expect(Number(selectPanel.style.zIndex)).toBeGreaterThan(50);
+  // First Escape closes only the dropdown, keeping the SidePanel and its draft intact.
+  await escape();
+  expect(document.querySelector('[data-select-panel]')).toBeNull();
+  expect(document.querySelector('[aria-label="New task"]')).not.toBeNull();
+  expect(document.querySelector<HTMLInputElement>('[aria-label="Draft title"]')!.value).toBe('unsaved draft');
+  // Second Escape closes the SidePanel itself.
+  await escape();
+  expect(document.querySelector('[aria-label="New task"]')).toBeNull();
+});
+

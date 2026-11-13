@@ -230,11 +230,11 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const dirty = useDirtyGuard()?.dirty === true;
   const remoteAddress = useRemoteServerAddress();
   const { client, meta, connectionId, spaceKey } = useConnection();
-  const spaceLocation = useSpaceLocation();
   const inPairedSpace =
     (typeof connectionId === 'string' && connectionId !== '') ||
     connectionIdOfSpaceKey(currentSpace()?.homeId ?? '') !== null ||
     (typeof spaceKey === 'string' && connectionIdOfSpaceKey(spaceKey) !== null);
+  const spaceLocation = useSpaceLocation({ enabled: inPairedSpace });
   const inSpace = spaceSettingsTargetIsSpace(spaceSettingsTargetOf(client, meta));
   const navTree = inPairedSpace ? REMOTE_SPACE_NAV_TREE : SETTINGS_NAV_TREE;
   const remoteSpaceNotice = inPairedSpace

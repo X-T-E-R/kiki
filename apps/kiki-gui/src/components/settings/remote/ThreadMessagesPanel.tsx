@@ -286,6 +286,7 @@ export function ThreadMessagesPanel({
       {confirmRevoke !== null ? (
         <ConfirmDialog
           open
+          stacked
           overlayId="thread-message-revoke"
           tone="danger"
           title={t('st.remote.threadMessages.revokeTitle')}

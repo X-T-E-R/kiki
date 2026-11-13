@@ -34,11 +34,12 @@ export function AppConnectionBanner({
 }) {
   const { t } = useI18n();
   const [details, setDetails] = useState(false);
-  const location = useSpaceLocation();
+  const bannerVisible = !((wsStatus === 'open' || (wsStatus === 'connecting' && suppressInitialConnecting === true)) && recovery === undefined);
+  const location = useSpaceLocation({ enabled: bannerVisible });
   const conn = useOptionalConnection();
   const log = useSyncExternalStore(subscribeConnectionLog, connectionLog, connectionLog);
 
-  if ((wsStatus === 'open' || (wsStatus === 'connecting' && suppressInitialConnecting === true)) && recovery === undefined) return null;
+  if (!bannerVisible) return null;
   const blocked = recovery?.status === 'blocked';
   const retrying = recovery?.status === 'retrying' || (!blocked && wsStatus === 'connecting');
   const canReconnect = !blocked && recovery === undefined;

@@ -281,6 +281,10 @@ describe('server-v2 session access REST integration', () => {
     const withOrigin = await request('GET', `/api/sessions/${sessionId}/snapshot`, token.token, undefined, { origin: 'http://example.test' });
     expect(withOrigin.status).toBe(401);
     expect(withOrigin.body.code).toBe(40101);
+
+    const withFetchSite = await request('GET', `/api/sessions/${sessionId}/snapshot`, token.token, undefined, { 'sec-fetch-site': 'cross-site' });
+    expect(withFetchSite.status).toBe(401);
+    expect(withFetchSite.body.code).toBe(40101);
   });
 
   it('rejects unsafe raw paths and HEAD before route matching', async () => {

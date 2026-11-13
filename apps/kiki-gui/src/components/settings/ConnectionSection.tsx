@@ -68,7 +68,7 @@ function CurrentConnectionContent() {
   const { config, meta, wsStatus, socket, scopeId, sshLabel, connectionId, spaceKey, localClient, connectionSource, activateLocal, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const spaceLocation = useSpaceLocation();
+  const spaceLocation = useSpaceLocation({ includeLocalMachine: true });
   const isDesktop = host.kind === 'tauri';
   const isSsh = scopeId.startsWith('ssh:');
   const activeConnectionId =

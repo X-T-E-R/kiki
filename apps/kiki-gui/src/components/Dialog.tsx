@@ -138,6 +138,7 @@ export function Dialog({
   // App-level confirmations have no React modal parent but must cover the live stack.
   const [rootDepth] = useState(nextModalDepth);
   const depth = (stacked ?? parentDepth !== undefined) ? (parentDepth === undefined ? rootDepth : parentDepth + 1) : undefined;
+  const modalDepth = depth ?? 0;
   const panelRef = useRef<HTMLDivElement>(null);
   const ownership = useRef<ReturnType<typeof registerModal> | null>(null);
   const closeRef = useRef(onClose);
@@ -152,7 +153,7 @@ export function Dialog({
   // Stack registration is stable across form edits and busy-state changes.
   useEffect(() => {
     const unregister = registerOverlay(overlayId);
-    const modal = depth !== undefined && panelRef.current ? registerModal(overlayId, depth, panelRef.current) : null;
+    const modal = panelRef.current ? registerModal(overlayId, modalDepth, panelRef.current) : null;
     ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
       // An Escape that ends an IME composition belongs to the field, not the dialog.

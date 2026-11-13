@@ -85,6 +85,7 @@ import { IBuiltinAgentProfileLoader } from '@kiki/agent-core-v2/app/agentProfile
 import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { peerAudience } from '../services/connections/audience';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
@@ -192,7 +193,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     await withReplyCloseSignal(
       reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
       async (signal) => {
-        const result = await agentCapabilities(core, req.query, signal);
+        const result = await agentCapabilities(core, req.query, signal, peerAudience(req) === undefined);
         if (result === 'workspace-not-found') {
           reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
         } else if (result === 'profile-not-found') {
@@ -567,7 +568,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         return;
       }
 
-      const workspaceCatalog = await acquireDraftProfileListCatalog(core, req.query);
+      const workspaceCatalog = await acquireDraftProfileListCatalog(core, req.query, peerAudience(req) === undefined);
       if (workspaceCatalog === undefined) {
         reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
         return;

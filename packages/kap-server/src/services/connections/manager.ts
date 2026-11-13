@@ -25,6 +25,7 @@ export interface ConnectionSshConnector {
 }
 export interface ConnectionLease { signal: AbortSignal; release(): void }
 export const BROKER_BODY_BYTES = 4 * 1024 * 1024;
+export const BROKER_FS_READ_BODY_BYTES = 16 * 1024 * 1024;
 export const BROKER_WS_MESSAGE_BYTES = 128 * 1024;
 export const BROKER_WS_BUFFER_BYTES = 256 * 1024;
 export class RemoteConnectionManager {
@@ -290,7 +291,10 @@ export class RemoteConnectionManager {
       const response = await fetch(url, { method, headers, body: rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)), redirect: 'error', signal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit);
       if (response.status === 401 || response.status === 403) {
         const refusal = await readConnectionRefusal(response, signal);
-        if (refusal?.code === 40301 && typeof refusal.msg === 'string' && ['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg)) return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        if (refusal?.code === 40301 && typeof refusal.msg === 'string' && (
+          (['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg))
+          || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
+        )) return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
         void response.body?.cancel().catch(() => {});
         throw new AdmissionError(response.status, refusal?.code === 40301 && refusal.msg === 'inbound_disabled' ? 'inbound_disabled' : 'connection_not_approved');
       }
