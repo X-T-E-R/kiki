@@ -74,6 +74,18 @@ export function historyDirectorySeed(
       if (navigation !== undefined && request.kind === 'turns') return navigation.list(request);
       return listFromTranscript(getTranscript() as unknown as TranscriptDirectorySource, request);
     },
+    resolveAgentId: async (sessionId, selector) => {
+      const trimmed = selector.trim();
+      if (trimmed.length === 0) return undefined;
+      if (trimmed === 'main') return 'main';
+      const read = await readRoster(getTranscript() as unknown as TranscriptDirectorySource, sessionId);
+      if (read === undefined) return undefined;
+      const direct = read.roster.find((item) => item.agentId === trimmed);
+      if (direct !== undefined) return direct.agentId;
+      const lower = trimmed.toLowerCase();
+      const byLabel = read.roster.find((item) => item.label?.toLowerCase() === lower);
+      return byLabel?.agentId;
+    },
   };
   return [[IHistoryDirectory, directory]];
 }
@@ -301,12 +313,16 @@ function agentsFromRoster(roster: readonly AgentDescriptor[]): HistoryDirectoryA
       agentId: descriptor.agentId,
       name: descriptor.label,
       parentAgentId: descriptor.parentAgentId,
+      kind: descriptor.agentId === 'main' ? 'main' : descriptor.isBranch ? 'branch' : 'subagent',
+      branchTitle: descriptor.isBranch ? descriptor.label : undefined,
+      branchSeed: descriptor.branchSeed,
+      sealed: descriptor.branchSealed,
       firstTime: descriptor.createdAt,
       lastTime: descriptor.disposedAt ?? descriptor.createdAt,
       indexed: false,
     });
   }
-  if (!seen.has('main')) entries.unshift({ agentId: 'main', indexed: false });
+  if (!seen.has('main')) entries.unshift({ agentId: 'main', kind: 'main', indexed: false });
   return entries;
 }
 

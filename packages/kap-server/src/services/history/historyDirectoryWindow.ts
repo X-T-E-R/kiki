@@ -44,7 +44,7 @@ export async function discoverHistoryDirectoryTail(path: string, limit: number, 
       if (line.length === 0) continue;
       const record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
       records++;
-      if (record['type'] === 'context.undo' || record['type'] === 'context.clear' || record['type'] === 'turn_begin') return undefined;
+      if (record['type'] === 'context.undo' || record['type'] === 'context.clear' || record['type'] === 'branch.base' || record['type'] === 'turn_begin') return undefined;
       if (record['type'] !== 'turn.prompt') continue;
       const id = record['turnId'];
       if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0 || turns.length > 0 && id >= turns.at(-1)!) return undefined;
@@ -74,7 +74,7 @@ export async function validateHistoryDirectoryWindow(path: string, window: Histo
       signal?.throwIfAborted();
       if (!line) continue;
       const record = JSON.parse(line) as Record<string, unknown>;
-      if (record['type'] === 'context.undo' || record['type'] === 'context.clear') return false;
+      if (record['type'] === 'context.undo' || record['type'] === 'context.clear' || record['type'] === 'branch.base') return false;
     }
     return true;
   } finally { opened.close(); }
@@ -92,7 +92,7 @@ export function historyDirectoryWindowGuard(): (record: Record<string, unknown>)
   const unsupported = (): never => { throw new Error('history_directory_window_unsupported'); };
   return (record) => {
     const type = record['type'];
-    if (type === 'context.undo' || type === 'context.clear' || type === 'turn_begin' ||
+    if (type === 'context.undo' || type === 'context.clear' || type === 'branch.base' || type === 'turn_begin' ||
         type === 'external.activity' || type === 'external.text') unsupported();
     if (type === 'turn.prompt') {
       const id = record['turnId'];
@@ -121,7 +121,7 @@ export function historyDirectoryWindowGuard(): (record: Record<string, unknown>)
         const turnId = delivery?.turnId;
         if (turnId !== undefined && ((typeof turnId !== 'number' && typeof turnId !== 'string') || !turns.has(String(turnId)))) unsupported();
         if (delivery === undefined && id !== currentPrompt && !steered.has(String(id)) &&
-            !['injection', 'agent_message', 'task'].includes(kind)) {
+            !['injection', 'agent_message', 'task', 'branch_fold'].includes(kind)) {
           const count = credits.get(kind) ?? 0;
           if (count === 0) unsupported();
           credits.set(kind, count - 1);

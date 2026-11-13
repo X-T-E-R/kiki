@@ -29,7 +29,7 @@ import { executorInstancesPatchSchema, executorInstancesResponseSchema } from '@
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema, sendMessageConfigPatchSchema, sendMessageConfigResponseSchema } from '@kiki/protocol';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema, branchConfigPatchSchema, branchConfigResponseSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema, sendMessageConfigPatchSchema, sendMessageConfigResponseSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -118,6 +118,7 @@ const identityConfigRequestSchema = z.object({
 
 const replaceableConfigDomainSchema = z.enum([
   'experimental',
+  'branch',
   'thread_communication',
   'token_counting',
   'workspace_instance',
@@ -184,6 +185,7 @@ export const configResponseSchema = z.object({
   interaction: interactionConfigResponseSchema.optional(),
   browser_control: browserControlSettingsSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
+  branch: branchConfigResponseSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
@@ -241,6 +243,7 @@ export const patchConfigRequestSchema = z.object({
   interaction: interactionConfigPatchSchema.optional(),
   browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
+  branch: branchConfigPatchSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),

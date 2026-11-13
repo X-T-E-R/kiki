@@ -9,6 +9,7 @@ export const OPTIONAL_CAPABILITY_FACTORY_DEFAULTS = {
   computer: false,
   memory: true,
   thread: true,
+  branch: true,
   web: true,
   send_message: false,
 } as const;
@@ -18,6 +19,7 @@ export const OptionalCapabilityDefaultsSchema = z.object({
   computer: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer),
   memory: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory),
   thread: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.thread),
+  branch: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.branch),
   web: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.web),
   send_message: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.send_message),
 }).strict();

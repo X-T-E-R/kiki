@@ -5,6 +5,7 @@ export interface IAgentScopeContext {
 
   readonly agentId: string;
   readonly parentAgentId?: string;
+  readonly isBranch?: boolean;
   scope(subKey?: string): string;
 }
 
@@ -15,12 +16,14 @@ export function makeAgentScopeContext(input: {
   readonly agentId: string;
   readonly agentScope: string;
   readonly parentAgentId?: string;
+  readonly isBranch?: boolean;
 }): IAgentScopeContext {
   const { agentScope } = input;
   return {
     _serviceBrand: undefined,
     agentId: input.agentId,
     parentAgentId: input.parentAgentId,
+    isBranch: input.isBranch,
     scope: (subKey?: string): string => {
       if (subKey === undefined || subKey === '') return agentScope;
       if (agentScope === '') return subKey;

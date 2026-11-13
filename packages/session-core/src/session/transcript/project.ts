@@ -224,6 +224,17 @@ function classifiedTextToBlocks(input: {
                   senderName: classified.origin.source?.name,
                   messageId: classified.origin.messageId }
               : undefined,
+          branchFold:
+            classified.origin?.kind === 'branch_fold' && typeof classified.origin.branchId === 'string'
+              ? {
+                  foldId: classified.origin.foldId,
+                  branchId: classified.origin.branchId,
+                  branchTitle: classified.origin.branchTitle,
+                  asks: classified.origin.asks,
+                  throughTurnId: classified.origin.throughTurnId,
+                  done: classified.origin.done,
+                }
+              : undefined,
         });
       }
       break;
@@ -306,7 +317,7 @@ function isUserVisibleOrigin(origin: PromptOriginLike | undefined): boolean {
   const unwrapped = unwrapOrigin(origin);
   const kind = unwrapped?.kind;
   if (kind === 'merged') return (unwrapped?.origins ?? []).some(isUserVisibleOrigin);
-  return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'external_thread' || kind === 'unknown' || (kind === 'system_trigger' && unwrapped?.name === 'thread_create');
+  return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'branch_fold' || kind === 'external_thread' || kind === 'unknown' || (kind === 'system_trigger' && unwrapped?.name === 'thread_create');
 }
 
 function identityFromTurnOrigin(origin: PromptOriginLike | undefined): {
@@ -642,6 +653,7 @@ const MARKER_SUMMARY_KEYS = {
   'plan.exit': 'transcript.marker.plan',
   interruption: 'transcript.marker.interruption',
   'model.switch': 'transcript.marker.modelSwitch',
+  'branch.base': 'transcript.marker.branchBase',
 } as const satisfies Record<string, I18nKey>;
 
 /**
@@ -826,6 +838,23 @@ function markerToBlock(item: {
     }
     if (payloadRecord?.['type'] === 'goal.update' &&
       !['objective', 'completionCriterion', 'status', 'budgetLimits', 'followUpTiming'].some((key) => key in payloadRecord)) return undefined;
+  }
+
+  if (item.marker === 'branch.base') {
+    const seedMode = payloadRecord?.['seedMode'];
+    const sourceAgentId = typeof payloadRecord?.['sourceAgentId'] === 'string' ? payloadRecord['sourceAgentId'] : 'main';
+    const inheritedMessages = typeof payloadRecord?.['inheritedMessages'] === 'number' ? payloadRecord['inheritedMessages'] : 0;
+    const baseTurnId = typeof payloadRecord?.['baseTurnId'] === 'number' ? payloadRecord['baseTurnId'] : undefined;
+    const mode = seedMode === 'fresh' || seedMode === 'compact' || seedMode === 'verbatim' ? seedMode : 'fresh';
+    const key: I18nKey = mode === 'verbatim' ? 'transcript.marker.branchBase.verbatim'
+      : mode === 'compact' ? 'transcript.marker.branchBase.compact'
+      : 'transcript.marker.branchBase.fresh';
+    return {
+      ...base,
+      text: item.marker,
+      branchBase: { seedMode: mode, sourceAgentId, inheritedMessages, baseTurnId },
+      i18n: { key, params: { source: sourceAgentId } },
+    };
   }
 
   if (item.marker === 'model.switch') {

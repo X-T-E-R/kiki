@@ -3,6 +3,7 @@ import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { type Event, type IWaitUntil } from '#/_base/event';
 import type { BindAgentInput } from '#/agent/profile/profile';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
+import type { SessionSeedCarry, SessionSeedMode } from '#/features/btw/seedBuilder';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 export type SessionCreateSource = 'startup' | 'resume' | 'fork';
@@ -40,6 +41,8 @@ export interface ForkSessionOptions {
   readonly turnIndex?: number;
   readonly throughUserMessage?: boolean;
   readonly externalMaterialOnly?: boolean;
+  readonly seed?: SessionSeedMode;
+  readonly carry?: SessionSeedCarry;
 }
 
 export interface ResumeSessionOptions {

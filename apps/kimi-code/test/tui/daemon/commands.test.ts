@@ -24,6 +24,7 @@ describe('daemon command registry', () => {
     ['disconnect', 'logout'],
     ['experimental', 'experiments'],
     ['export', 'export-view'],
+    ['fold', 'merge'],
   ])('normalizes supported alias /%s to /%s', (alias, canonical) => {
     const resolved = resolveDaemonCommand(alias, '');
 
@@ -178,6 +179,9 @@ describe('daemon command registry', () => {
       'settings',
       'undo',
       'persona',
+      'btw',
+      'branch',
+      'merge',
     ]) {
       expect(statuses.get(name), name).toBe('supported');
     }

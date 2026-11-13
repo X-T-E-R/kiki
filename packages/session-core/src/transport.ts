@@ -3,8 +3,14 @@ import type {
   ApprovalResolveResult,
   CancelTaskQuery,
   ConfigResponse,
+  CreateSessionBranchRequest,
+  CreateSessionBranchResponse,
   CronDeliveryMode,
   DeferredAppendTiming,
+  DiscardSessionBranchRequest,
+  DiscardSessionBranchResponse,
+  FoldSessionBranchRequest,
+  FoldSessionBranchResponse,
   MessageContent,
   PageResponse,
   PatchConfigRequest,
@@ -31,6 +37,10 @@ import type {
   QuestionResolveResult,
   RequestIdentityPolicyWire,
   Session,
+  SessionSeedCarry,
+  SessionSeedMode,
+  SetSessionBranchToolsLockRequest,
+  SetSessionBranchToolsLockResponse,
 } from '@kiki/protocol';
 import { GRADE_RANK, gradeFor, type AgentRunSource, type GoalMeta, type TranscriptGrade, type TranscriptGradeSpec } from '@kiki/transcript';
 
@@ -198,6 +208,8 @@ export interface RegenerateMessageRequest extends MessageRunOverrides {
 export interface KikiForkSessionRequest {
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly seed?: SessionSeedMode;
+  readonly carry?: SessionSeedCarry;
   readonly through_message_id?: string;
   readonly expected_cursor?: SessionCursor;
 }
@@ -450,6 +462,11 @@ export interface AgentTranscriptAgent {
     | { readonly kind: 'agent'; readonly agentId: string }
     | { readonly kind: 'external'; readonly delegationId: string };
   readonly label?: string;
+  readonly isBranch?: boolean;
+  readonly branchSeed?: 'fresh' | 'compact' | 'verbatim';
+  readonly branchInitiator?: 'user' | 'agent';
+  readonly toolsLocked?: boolean;
+  readonly branchSealed?: boolean;
   readonly createdAt?: string;
   readonly disposedAt?: string;
 }
@@ -595,6 +612,10 @@ export interface SessionTransport {
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
+  createBranch?(sessionId: string, body?: CreateSessionBranchRequest): Promise<CreateSessionBranchResponse>;
+  foldBranch?(sessionId: string, body: FoldSessionBranchRequest): Promise<FoldSessionBranchResponse>;
+  discardBranch?(sessionId: string, body: DiscardSessionBranchRequest): Promise<DiscardSessionBranchResponse>;
+  setBranchToolsLock?(sessionId: string, body: SetSessionBranchToolsLockRequest): Promise<SetSessionBranchToolsLockResponse>;
   /** `POST /sessions/{id}/agents/{agent_id}:promote` — open a subagent as its own thread; optional for older transports. */
   promoteAgent?(sessionId: string, agentId: string, body?: PromoteAgentRequest): Promise<Session>;
   abortPrompt(sessionId: string, promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;

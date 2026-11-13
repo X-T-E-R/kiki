@@ -533,12 +533,16 @@ const UserMessage = memo(function UserMessage({
       if (automaticTextRead) retryTextRead(); else continuation.request(serverRef);
     }
   }, [clipped, toggle, serverRemaining, serverRef, continuation, automaticTextRead, retryTextRead]);
-  const senderAgentId = block.agentMessage?.senderAgentId;
+  const branchFold = block.branchFold;
+  const senderAgentId = block.agentMessage?.senderAgentId ?? branchFold?.branchId;
   const senderIdentity = senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
-  const senderLabel = block.agentMessage === undefined ? undefined
+  const branchLabelName = branchFold === undefined ? undefined : (senderIdentity?.title ?? branchFold.branchTitle ?? branchFold.branchId);
+  const senderLabel = branchFold !== undefined
+    ? `${t(branchFold.done !== false ? 'transcript.branch.mergedFrom' : 'transcript.branch.foldedFrom')} · ${branchLabelName}`
+    : block.agentMessage === undefined ? undefined
     : senderAgentId === 'main' ? t('agentMessage.fromMain')
     : t('agentMessage.fromAgent', { name: senderIdentity?.title ?? block.agentMessage.senderTaskName ?? senderAgentId ?? t('agentMessage.agent') });
-  const senderMeta = [
+  const senderMeta = branchFold !== undefined ? '' : [
     senderIdentity?.profile === undefined
       ? undefined
       : t('agentMessage.senderProfile', { profile: senderIdentity.profile }),
@@ -557,23 +561,15 @@ const UserMessage = memo(function UserMessage({
           agentId: senderAgentId,
           profile: senderIdentity?.profile ?? unknownDetail,
           model: senderIdentity?.model ?? unknownDetail,
-          task: block.agentMessage?.senderTaskName ?? unknownDetail,
+          task: block.agentMessage?.senderTaskName ?? branchFold?.branchTitle ?? unknownDetail,
         })].filter((part) => part !== undefined).join('\n');
-  // The sender's name is the line's one control: it opens the sender's own
-  // timeline through the same entry the subagent rows use, so a message
-  // another agent injected leads straight to that agent. It carries the
-  // sender's real agent id — never the task name, which is only a label. A
-  // peer thread is a session rather than an agent of this timeline and a
-  // plain user message has no sender at all, so neither routes through this
-  // door; with no opener the name stays the plain label it always was.
   const senderOpen = senderAgentId === undefined || onOpenAgent === undefined
     ? undefined
     : () => { onOpenAgent(senderAgentId); };
-  // Both forms of the name carry the same hooks, so a reader (or a proof)
-  // finds the line by them whether or not this surface can open the sender.
   const senderAttrs = {
     'data-agent-message-sender': block.agentMessage?.senderAgentId,
     'data-peer-thread': block.peerThread?.sessionId,
+    'data-branch-fold-sender': branchFold?.branchId,
   };
   // The bubble reads the body only: a message from another agent or thread
   // states its source in the meta line above, while the durable text keeps
@@ -715,6 +711,7 @@ const UserMessage = memo(function UserMessage({
     <div
       ref={tapActions.rowRef}
       data-actions-open={tapActions.open ? 'true' : undefined}
+      data-branch-fold={branchFold?.branchId}
       className="anim-enter group/msg relative flex flex-col items-end"
       title={time.absoluteTime(block.createdAt)}
       onClick={tapActions.onClick}
@@ -757,6 +754,16 @@ const UserMessage = memo(function UserMessage({
             {senderMeta}
           </span>
         )}
+        {branchFold !== undefined && senderOpen !== undefined ? (
+          <button
+            type="button"
+            data-branch-fold-open={branchFold.branchId}
+            onClick={senderOpen}
+            className="cursor-pointer rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          >
+            {t('transcript.branch.openBranch')}
+          </button>
+        ) : null}
         <span
           data-user-time
           className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${

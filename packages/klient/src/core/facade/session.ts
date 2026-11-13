@@ -10,7 +10,8 @@
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import type { ISessionExecutionControl } from '@kiki/agent-core-v2/session/executionControl/executionControl';
 import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
-import type { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
+import type { ISessionBranchService, ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
+import type { SessionSeedCarry, SessionSeedMode } from '@kiki/agent-core-v2/features/btw/seedBuilder';
 import type { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import type { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
 import type { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
@@ -100,6 +101,13 @@ export interface SessionBtwFacade {
   start(): ReturnType<ISessionBtwService['start']>;
 }
 
+export interface SessionBranchesFacade {
+  create(input?: Parameters<ISessionBranchService['createBranch']>[0]): ReturnType<ISessionBranchService['createBranch']>;
+  fold(input: Parameters<ISessionBranchService['foldBranch']>[0]): ReturnType<ISessionBranchService['foldBranch']>;
+  discard(input: Parameters<ISessionBranchService['discardBranch']>[0]): ReturnType<ISessionBranchService['discardBranch']>;
+  setToolsLocked(input: Parameters<ISessionBranchService['setToolsLocked']>[0]): ReturnType<ISessionBranchService['setToolsLocked']>;
+}
+
 export interface SessionCronFacade {
   list(): Promise<ReturnType<ISessionCronService['list']>>;
   nextFireAt(taskId: string): Promise<ReturnType<ISessionCronService['getNextFireForTask']>>;
@@ -145,11 +153,19 @@ export interface SessionFacade {
   readonly todos: SessionTodosFacade;
   readonly init: SessionInitFacade;
   readonly btw: SessionBtwFacade;
+  readonly branches: SessionBranchesFacade;
   readonly cron: SessionCronFacade;
   readonly optionalCapabilities: SessionOptionalCapabilitiesFacade;
   /** Permanently delete the session and its persisted data; throws when missing. */
   delete(): Promise<void>;
-  fork(input?: { newSessionId?: string; title?: string; metadata?: Record<string, unknown>; turnIndex?: number }): Promise<SessionMeta>;
+  fork(input?: {
+    newSessionId?: string;
+    title?: string;
+    metadata?: Record<string, unknown>;
+    turnIndex?: number;
+    seed?: SessionSeedMode;
+    carry?: SessionSeedCarry;
+  }): Promise<SessionMeta>;
   createChild(input?: { newSessionId?: string; title?: string; metadata?: Record<string, unknown> }): Promise<SessionMeta>;
   readonly approvals: SessionApprovalsFacade;
   readonly questions: SessionQuestionsFacade;
@@ -227,6 +243,16 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
     },
     btw: {
       start: () => call(scope, 'sessionBtwService', 'start', []) as ReturnType<ISessionBtwService['start']>,
+    },
+    branches: {
+      create: (input) =>
+        call(scope, 'sessionBranchService', 'createBranch', input === undefined ? [] : [input]) as ReturnType<ISessionBranchService['createBranch']>,
+      fold: (input) =>
+        call(scope, 'sessionBranchService', 'foldBranch', [input]) as ReturnType<ISessionBranchService['foldBranch']>,
+      discard: (input) =>
+        call(scope, 'sessionBranchService', 'discardBranch', [input]) as ReturnType<ISessionBranchService['discardBranch']>,
+      setToolsLocked: (input) =>
+        call(scope, 'sessionBranchService', 'setToolsLocked', [input]) as ReturnType<ISessionBranchService['setToolsLocked']>,
     },
     cron: {
       list: () =>

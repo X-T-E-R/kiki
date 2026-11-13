@@ -70,7 +70,7 @@ import { sessionOptionalCapabilityContract } from './session/optionalCapabilitie
 import { sessionQuestionContract } from './session/question.js';
 import { sessionSkillCatalogContract } from './session/skills.js';
 import { sessionTitleContract } from './session/title.js';
-import { sessionBtwContract } from './session/btw.js';
+import { sessionBranchContract, sessionBtwContract } from './session/btw.js';
 import { sessionCronContract } from './session/cron.js';
 import { sessionInitContract } from './session/init.js';
 import { sessionTodoContract } from './session/todo.js';
@@ -79,6 +79,7 @@ export const globalContract: KlientContract = {
   agentGoalService: agentGoalContract,
   agentLifecycleService: agentLifecycleContract,
   sessionCronService: sessionCronContract,
+  sessionBranchService: sessionBranchContract,
   sessionBtwService: sessionBtwContract,
   sessionInitService: sessionInitContract,
   sessionTodoService: sessionTodoContract,

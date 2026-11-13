@@ -29,7 +29,7 @@ export interface PendingMcpChoice {
   readonly name: string;
 }
 
-export type PendingOptionalCapabilityId = 'browser' | 'computer' | 'memory' | 'thread' | 'web';
+export type PendingOptionalCapabilityId = 'browser' | 'branch' | 'computer' | 'memory' | 'thread' | 'web';
 
 export interface PendingOptionalChoice {
   readonly id: PendingOptionalCapabilityId;

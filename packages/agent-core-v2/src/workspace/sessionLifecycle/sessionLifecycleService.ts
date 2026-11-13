@@ -112,7 +112,15 @@ import {
 } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { BranchBase, ContextClear } from '#/agent/contextMemory/contextEvents';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { buildBranchSeedMessages } from '#/features/btw/seedBuilder';
+import { readTodoState, todoKey } from '#/session/todo/todoOps';
 import { externalAcpForkRecords } from './internal/externalFork';
 import { externalMaterialForkRecords } from './internal/externalMaterialFork';
 import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalog';
@@ -1391,6 +1399,51 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           labels: labelsFromAgentMeta(sourceAgent),
           delegator: sourceAgent.delegator,
         });
+      }
+
+      if (opts.seed === 'fresh' || opts.seed === 'compact') {
+        const mainHandle = target.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+        if (mainHandle !== undefined) {
+          const mainContext = mainHandle.accessor.get(IAgentContextMemoryService);
+          const mainStates = mainHandle.accessor.get(IAgentStateService);
+          const mainTodos = readTodoState(mainStates.get(todoKey));
+          const mainEpoch = mainStates.get(contextWindowEpochKey);
+          const tokenCounting = mainHandle.accessor.get(IAgentTokenCountingService);
+          const built = await buildBranchSeedMessages({
+            mode: opts.seed,
+            carry: opts.carry,
+            sourceHistory: mainContext.get(),
+            sourceAgentId: MAIN_AGENT_ID,
+            sessionId: sourceId,
+            epoch: mainEpoch,
+            notes: mainTodos.notes,
+            meta: mainTodos.notesMeta,
+            todos: mainTodos.items,
+            estimateText: (text) => tokenCounting.estimateText(text),
+            summarize: opts.seed === 'compact'
+              ? async (settled, compactCount) => {
+                  const compactor = mainHandle.accessor.get(IAgentFullCompactionService);
+                  return compactor.prepareModelSwitchSummary(
+                    settled.slice(0, compactCount),
+                    new AbortController().signal,
+                  );
+                }
+              : undefined,
+          });
+          const mainDispatcher = mainHandle.accessor.get(IEventDispatcher);
+          await mainDispatcher.dispatch(new ContextClear({}));
+          if (built.messages.length > 0) {
+            mainContext.append(...built.messages);
+          }
+          await mainDispatcher.dispatch(new BranchBase({
+            version: 1,
+            parentAgentId: MAIN_AGENT_ID,
+            seed: opts.seed,
+            inheritedCount: built.inheritedCount,
+            baseAnchor: built.baseAnchor,
+          }));
+          await mainDispatcher.flush();
+        }
       }
 
       let forkedCustom = forkCustomMetadata(sourceMeta?.custom, opts.metadata);

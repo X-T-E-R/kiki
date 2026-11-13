@@ -3,7 +3,10 @@ import type { CallOptions } from '../../core/channel.js';
 import {
   approvalResolveRequestSchema, approvalResolveResultSchema,
   cancelTaskQuerySchema, cancelTaskResultSchema, taskAlreadyFinishedDataSchema,
+  createSessionBranchRequestSchema, createSessionBranchResponseSchema,
+  discardSessionBranchRequestSchema, discardSessionBranchResponseSchema,
   editMessageRequestSchema, regenerateMessageRequestSchema, messageActionResponseSchema,
+  foldSessionBranchRequestSchema, foldSessionBranchResponseSchema,
   forkSessionRequestSchema, promoteAgentRequestSchema, sessionSchema,
   promptSubmissionSchema, promptSubmitResultSchema, promptAbortResponseSchema, turnAbortResponseSchema,
   promptMoveRequestSchema, promptMoveResultSchema, promptReplaceRequestSchema,
@@ -11,6 +14,8 @@ import {
   promptTimingRequestSchema, promptTimingResultSchema,
   promptHoldRequestSchema, promptHoldResultSchema,
   questionResolveRequestSchema, questionResolveResultSchema, questionDismissResultSchema,
+  setSessionBranchToolsLockRequestSchema, setSessionBranchToolsLockResponseSchema,
+  startBtwSessionResponseSchema,
 } from '@kiki/protocol';
 
 const target = z.string().min(1);
@@ -26,6 +31,11 @@ export const sessionCommandContract = {
   edit: { method: 'POST', suffix: '/messages/{target}:edit', input: targetBodyInput(editMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
   regenerate: { method: 'POST', suffix: '/messages/{target}:regenerate', input: targetBodyInput(regenerateMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
   fork: { method: 'POST', suffix: ':fork', input: bodyInput(forkSessionRequestSchema), output: sessionSchema, okCodes: [0] },
+  btw: { method: 'POST', suffix: ':btw', input: z.object({}), output: startBtwSessionResponseSchema, okCodes: [0] },
+  branch: { method: 'POST', suffix: ':branch', input: bodyInput(createSessionBranchRequestSchema), output: createSessionBranchResponseSchema, okCodes: [0] },
+  foldBranch: { method: 'POST', suffix: ':fold', input: bodyInput(foldSessionBranchRequestSchema), output: foldSessionBranchResponseSchema, okCodes: [0] },
+  discardBranch: { method: 'POST', suffix: ':discard', input: bodyInput(discardSessionBranchRequestSchema), output: discardSessionBranchResponseSchema, okCodes: [0] },
+  setBranchToolsLock: { method: 'POST', suffix: ':tools-lock', input: bodyInput(setSessionBranchToolsLockRequestSchema), output: setSessionBranchToolsLockResponseSchema, okCodes: [0] },
   promoteAgent: { method: 'POST', suffix: '/agents/{target}:promote', input: targetBodyInput(promoteAgentRequestSchema), output: sessionSchema, okCodes: [0] },
   abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: z.object({ target, query: z.object({ agent_id: z.string().min(1).optional(), queued_only: z.literal('true').optional() }).optional() }), output: promptAbortResponseSchema, okCodes: [0, 40903] },
   abortTurn: { method: 'POST', suffix: '/turns/{target}:abort', input: targetInput, output: turnAbortResponseSchema, okCodes: [0] },

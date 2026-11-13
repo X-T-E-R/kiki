@@ -11,7 +11,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
+import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction, SessionSeedMode } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 
 import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, useModelSwitchFlow, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
@@ -58,6 +58,7 @@ import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './me
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
 import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
+import { SettingsSegmented } from './settings/SettingsPrimitives';
 import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
 import { PromotedFromMark } from './PromotedFromMark';
@@ -407,6 +408,7 @@ function Header({
   onSessionAction,
   freshContextAvailable = false,
   onSideQuestion,
+  onOpenBranch,
   view,
   onView,
   onDelivery,
@@ -428,6 +430,7 @@ function Header({
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   freshContextAvailable?: boolean;
   onSideQuestion?: () => void;
+  onOpenBranch?: () => void;
   view: TimelineView;
   onView: (view: TimelineView) => void;
   onDelivery: (delivery: 'reply' | 'message') => void;
@@ -562,6 +565,7 @@ function Header({
             freshContextAvailable={freshContextAvailable}
             canFork={!harnessDenies(harness, 'fork')}
             onSideQuestion={harnessDenies(harness, 'fork') ? undefined : onSideQuestion}
+            onOpenBranch={harnessDenies(harness, 'fork') ? undefined : onOpenBranch}
             leading={personaId !== undefined || deliveryCapable ? (close) => (
               <>
                 {/* This person's other surfaces: the conversations this
@@ -848,6 +852,7 @@ export function SessionActionsMenu({
   onBeginRename,
   onAction,
   onSideQuestion,
+  onOpenBranch,
   onPromptDetails,
   onOpenOverview,
   freshContextAvailable = false,
@@ -873,6 +878,8 @@ export function SessionActionsMenu({
   freshContextAvailable?: boolean;
   /** Opens a `/btw` side question beside the conversation; the row is hidden without it. */
   onSideQuestion?: () => void;
+  /** Opens an in-session branch; the row is hidden without it. */
+  onOpenBranch?: () => void;
   onPromptDetails?: () => void;
   /** Session-mode rows (view, delivery) above the actions; `close` dismisses the menu. */
   leading?: (close: () => void) => ReactNode;
@@ -970,6 +977,20 @@ export function SessionActionsMenu({
               onClick={() => { setOpen(false); onOpenOverview(); }}
             >
               {t('inspector.overview')}
+            </button>
+          ) : null}
+          {onOpenBranch !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-open-branch
+              className={sheetItemClass}
+              onClick={() => {
+                setOpen(false);
+                onOpenBranch();
+              }}
+            >
+              {t('menu.branch')}
             </button>
           ) : null}
           {onSideQuestion !== undefined ? (
@@ -1108,6 +1129,21 @@ export function SessionActionsMenu({
             </button>
           ) : null}
           <div className="my-1 h-px bg-hairline" />
+          {onOpenBranch !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-open-branch
+              className={`${itemClass} flex items-center justify-between gap-3`}
+              onClick={() => {
+                setOpen(false);
+                onOpenBranch();
+              }}
+            >
+              <span>{t('menu.branch')}</span>
+              <span className="font-mono text-[12px] text-ink-faint">/branch</span>
+            </button>
+          ) : null}
           {onSideQuestion !== undefined ? (
             <button
               type="button"
@@ -3975,6 +4011,12 @@ boundExecution,
   const { progress: compactionProgress, seed: seedCompactionProgress } = useCompactionProgress(client, sessionId);
   const compactionHintShownRef = useRef(false);
 
+  const [seedDialog, setSeedDialog] = useState<{
+    readonly kind: 'branch' | 'fork';
+    readonly seed: SessionSeedMode;
+    readonly busy: boolean;
+  } | null>(null);
+
   const runSessionAction = useCallback(
     (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
       const record = state.session;
@@ -3990,12 +4032,7 @@ boundExecution,
         return;
       }
       if (action === 'fork') {
-        void forkSession(actionContext, record).catch((error: unknown) => {
-          pushToast({
-            tone: 'error',
-            text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
-          });
-        });
+        setSeedDialog({ kind: 'fork', seed: 'verbatim', busy: false });
       } else if (action === 'export') {
         void exportSessionArchive(actionContext, record)
           .then((saved) => {
@@ -4281,6 +4318,64 @@ boundExecution,
       }
     })();
   }, [client, locale, navigate, sessionId, sideQuestionPending, t]);
+
+  const [branchPending, setBranchPending] = useState(false);
+  const startBranch = useCallback((task?: string, seed: SessionSeedMode = 'fresh') => {
+    if (branchPending) return;
+    if (task === undefined && seedDialog === null) {
+      setSeedDialog({ kind: 'branch', seed: 'fresh', busy: false });
+      return;
+    }
+    setBranchPending(true);
+    void (async () => {
+      try {
+        const cleanTask = task?.trim() ?? '';
+        const created = await client.createBranch(sessionId, {
+          seed,
+          tools_locked: false,
+          task: cleanTask === '' ? undefined : cleanTask,
+          title: cleanTask === '' ? undefined : cleanTask.slice(0, 64),
+        });
+        await controller?.resync();
+        const title = cleanTask === '' ? t('branch.tabTitle') : cleanTask.slice(0, 48);
+        if (previewRef.current !== null) {
+          previewRef.current.openAgentPanel(created.agent_id, title);
+          focusAgentTabWhenMounted(created.agent_id);
+        } else {
+          void navigate(agentDetailPath(sessionId, created.agent_id));
+        }
+      } catch (error) {
+        pushToast({ tone: 'error', text: t('branch.failed', { detail: sessionActionErrorText(locale, error) }) });
+      } finally {
+        setBranchPending(false);
+        setSeedDialog(null);
+      }
+    })();
+  }, [branchPending, client, controller, locale, navigate, seedDialog, sessionId, t]);
+
+  const confirmSeedDialog = useCallback(() => {
+    if (seedDialog === null || seedDialog.busy) return;
+    if (seedDialog.kind === 'branch') {
+      setSeedDialog((current) => current === null ? null : { ...current, busy: true });
+      startBranch('', seedDialog.seed);
+      return;
+    }
+    const record = state.session;
+    if (record === undefined) {
+      setSeedDialog(null);
+      return;
+    }
+    setSeedDialog((current) => current === null ? null : { ...current, busy: true });
+    void forkSession(actionContext, record, { seed: seedDialog.seed })
+      .then(() => { setSeedDialog(null); })
+      .catch((error: unknown) => {
+        setSeedDialog(null);
+        pushToast({
+          tone: 'error',
+          text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+  }, [actionContext, locale, seedDialog, startBranch, state.session, t]);
   // Route-shell seams for the agent workspace: back-to-session and the
   // route-level agent open (the spawn jump-back and the preview tab's "open in
   // page" — the source visit keeps its preview snapshot, so the return arrow
@@ -5173,6 +5268,7 @@ boundExecution,
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onSideQuestion={composerEngine?.fork === false ? undefined : startSideQuestion}
+            onOpenBranch={composerEngine?.fork === false ? undefined : (task) => { startBranch(task); }}
             onCompactContext={handleCompactContext}
             onChangeModel={handleModelChange}
             onChangeAgentProfile={handleAgentProfileChange}
@@ -5401,6 +5497,7 @@ boundExecution,
             onSessionAction={runSessionAction}
             freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}
+            onOpenBranch={() => { startBranch(); }}
             view={timelineView} onView={setTimelineView}
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
             harness={harness}
@@ -5537,6 +5634,34 @@ boundExecution,
         onConfirm={confirmUndoRun}
         onCancel={() => { setConfirmUndo(false); }}
       />
+      <ConfirmDialog
+        open={seedDialog !== null}
+        overlayId="confirm-seed-mode"
+        tone="default"
+        busy={seedDialog?.busy === true}
+        title={t(seedDialog?.kind === 'branch' ? 'menu.branch' : 'menu.fork')}
+        confirmLabel={t(seedDialog?.kind === 'branch' ? 'menu.branch' : 'menu.fork')}
+        confirmData={{ 'data-seed-confirm': seedDialog?.kind ?? '' }}
+        onConfirm={confirmSeedDialog}
+        onCancel={() => { setSeedDialog(null); }}
+      >
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="text-[13px] text-ink-soft">{t('transcript.branch.seedLabel')}</span>
+          <SettingsSegmented
+            ariaLabel={t('transcript.branch.seedLabel')}
+            dataAttr="data-seed-choice"
+            value={seedDialog?.seed ?? 'fresh'}
+            disabled={seedDialog?.busy === true}
+            choices={(['fresh', 'compact', 'verbatim'] as const).map((mode) => ({
+              value: mode,
+              label: t(`transcript.branch.seed.${mode}`),
+            }))}
+            onChange={(next) => {
+              setSeedDialog((current) => current === null ? null : { ...current, seed: next });
+            }}
+          />
+        </div>
+      </ConfirmDialog>
       <ConfirmDialog
         open={batchConfirm !== undefined}
         overlayId="confirm-batch-approvals"

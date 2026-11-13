@@ -573,8 +573,8 @@ export class HistoryLocatorEngine {
         const before = scanner.adapter.checkpoint();
         const projected = scanner.adapter.add(record);
         const recordDigest = hashHistoryRecord(raw!);
-        if (record.type === 'context.clear') stateDb?.clearUnlocatedCanonicalCalls(input.key);
-        if (stateDb !== undefined && record.type !== 'context.undo' && record.type !== 'context.clear') {
+        if (record.type === 'context.clear' || record.type === 'branch.base') stateDb?.clearUnlocatedCanonicalCalls(input.key);
+        if (stateDb !== undefined && record.type !== 'context.undo' && record.type !== 'context.clear' && record.type !== 'branch.base') {
           const event = record['event'] as Record<string, unknown> | undefined;
           const scalar = stateDb.scalarState(input.key);
           const rootCallId = record['toolCallId'] ?? record['parentToolCallId'];

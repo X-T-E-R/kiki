@@ -14,6 +14,7 @@ import {
   type ContextCompactionShapeInput,
 } from './compactionHandoff';
 import {
+  BranchBase,
   ContextAppendLoopEvent,
   ContextAppendMessage,
   ContextApplyCompaction,
@@ -134,7 +135,8 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
     );
     return resetFold([...result.messages]) as ContextMessage[];
   })
-  .on(AgentModelSwitch, (_s, e) => e.context === undefined ? undefined : resetFold([...e.context]) as ContextMessage[]);
+  .on(AgentModelSwitch, (_s, e) => e.context === undefined ? undefined : resetFold([...e.context]) as ContextMessage[])
+  .on(BranchBase, (s) => s.length === 0 ? undefined : resetFold(s.map((message) => message.inheritedSeed === true ? message : { ...message, inheritedSeed: true })) as ContextMessage[]);
 
 export const contextRevisionKey = defineState('contextMemory.revision', () => 0)
   .replayable({ schema: z.number().int().nonnegative() })
@@ -144,7 +146,8 @@ export const contextRevisionKey = defineState('contextMemory.revision', () => 0)
   .on(ContextClear, (revision) => revision + 1)
   .on(ContextApplyCompaction, (revision) => revision + 1)
   .on(ContextUndo, (revision) => revision + 1)
-  .on(AgentModelSwitch, (revision, e) => e.context === undefined ? revision : revision + 1);
+  .on(AgentModelSwitch, (revision, e) => e.context === undefined ? revision : revision + 1)
+  .on(BranchBase, (revision) => revision + 1);
 
 interface UnknownRecord {
   readonly [key: string]: unknown;
@@ -292,7 +295,7 @@ export function computeUndoCut(state: readonly ContextMessage[], count: number):
   for (let i = state.length - 1; i >= 0 && remaining > 0; i--) {
     const message = state[i];
     if (message === undefined || message.origin?.kind === 'injection') continue;
-    if (message.origin?.kind === 'compaction_summary') {
+    if (message.origin?.kind === 'compaction_summary' || message.inheritedSeed === true) {
       stoppedAtCompaction = true;
       break;
     }

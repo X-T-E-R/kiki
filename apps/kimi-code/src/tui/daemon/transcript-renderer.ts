@@ -559,6 +559,10 @@ function formatUserPromptStatus(block: UserBlock, expanded = false): string | un
   if (block.steerStatus === 'waiting') return currentTheme.dim('Waiting for delivery');
   if (block.steerStatus === 'unconfirmed') return currentTheme.fg('warning', 'Delivery unconfirmed · check the queue before retrying');
   if (block.steerStatus === 'held') return currentTheme.fg('warning', 'Prompt held · check the saved prompt before retrying');
+  if (block.branchFold !== undefined) {
+    const label = block.branchFold.done !== false ? 'Merged from branch' : 'Folded from branch';
+    return currentTheme.dim(`${label} ${block.branchFold.branchTitle ?? block.branchFold.branchId}`);
+  }
   return undefined;
 }
 

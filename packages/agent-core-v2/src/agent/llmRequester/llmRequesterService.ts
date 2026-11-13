@@ -5,7 +5,10 @@ import { LifecycleScope } from '#/app/scopes';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
-import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import {
+  IAgentContextMemoryService,
+} from '#/agent/contextMemory/contextMemory';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IAgentPluginStateService } from '#/agent/pluginState/pluginState';
@@ -196,6 +199,7 @@ interface RequestIdentityAttemptContext {
   readonly policy: ResolvedRequestIdentityPolicy;
   readonly parentAgentId?: string;
   readonly subagentKind?: string;
+  readonly isBranch?: boolean;
   readonly parentTurnKey?: string;
   readonly rootAgentId?: string;
   readonly rootTurnKey?: string;
@@ -1094,7 +1098,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       identity.policy,
       identity.isKimiProvider,
       identity.hostRequestHeaders,
+      identity.isBranch === true,
     );
+    const epoch = this.states.get(contextWindowEpochKey);
+    const summaryCount = messages.filter(
+      (message) =>
+        (message as Message & { readonly origin?: { readonly kind?: string } }).origin
+          ?.kind === 'compaction_summary',
+    ).length;
+    const compactionWindow = Math.max(epoch, summaryCount);
     const snapshot = hasRequestIdentityDimensions(dimensions)
       ? await this.requestIdentities.snapshot({
           agentId: this.agentContext.agentId,
@@ -1103,11 +1115,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           parentTurnKey: identity.parentTurnKey,
           rootAgentId: identity.rootAgentId,
           rootTurnKey: identity.rootTurnKey,
-          compactionWindow: messages.filter(
-            (message) =>
-              (message as Message & { readonly origin?: { readonly kind?: string } }).origin
-                ?.kind === 'compaction_summary',
-          ).length,
+          compactionWindow,
           logicalIdKind:
             identity.policy.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
           dimensions,
@@ -1121,6 +1129,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       rawAgentId: this.agentContext.agentId,
       parentAgentId: identity.parentAgentId,
       subagentKind: identity.subagentKind,
+      isBranch: identity.isBranch,
+      compactionWindow,
       isKimiProvider: identity.isKimiProvider,
       snapshot,
       runtimeVersion: this.bootstrap.clientIdentity.version,
@@ -1200,10 +1210,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const messages = overrides.messages ?? this.context.get();
     const isKimiProvider = isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
     const hostIdentity = this.identity.current();
+    const isBranch = this.agentContext.isBranch === true || agentMeta?.labels?.['branch'] === 'true' ? true : undefined;
     const identity: RequestIdentityAttemptContext = {
       policy: requestIdentity,
       parentAgentId: subagentParentAgentId(agentMeta),
-      subagentKind: isSubagentMeta(agentMeta) ? 'agent' : undefined,
+      subagentKind: isBranch === true ? undefined : isSubagentMeta(agentMeta) ? 'agent' : undefined,
+      isBranch,
       ...requestIdentitySpawnContext(agentMeta),
       isKimiProvider,
       hostRequestHeaders: isKimiProvider
@@ -1622,6 +1634,7 @@ function resolveRequestIdentityDimensions(
   policy: ResolvedRequestIdentityPolicy,
   isKimiProvider: boolean,
   hostHeaders: Readonly<Record<string, string>>,
+  isBranch = false,
 ): RequestIdentityDimensions {
   const format = policy.lineage.format;
   const hostHasDeviceIdentity = Object.entries(hostHeaders).some(([name, value]) => {
@@ -1638,7 +1651,9 @@ function resolveRequestIdentityDimensions(
         (format === 'kimi_code' && isKimiProvider && !hostHasDeviceIdentity)),
     sharedSessionIdentity:
       policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code',
-    agentSessionIdentity: policy.lineage.sessionScope === 'agent_session',
+    agentSessionIdentity:
+      policy.lineage.sessionScope === 'agent_session' ||
+      (isBranch && policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code'),
     threadIdentity:
       policy.lineage.threadIdentity === 'agent' ||
       policy.lineage.parentThread === 'immediate_agent',

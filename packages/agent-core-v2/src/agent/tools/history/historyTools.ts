@@ -6,11 +6,14 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution, type ExecutableToolErrorResult, type ExecutableToolResult } from '#/tool/toolContract';
 
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
+const AgentSelectorSchema = z.string().trim().min(1).max(128).refine((id) => id !== '.' && id !== '..');
 
 export const HistorySearchInputSchema = z.object({
   raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
@@ -19,7 +22,7 @@ export const HistorySearchInputSchema = z.object({
   scope: z.enum(['session', 'this_session', 'workspace', 'peer']).optional().describe('Defaults to session (this session, this agent). workspace searches other sessions; peer searches only cross-thread messages in this workspace, optionally narrowed by session_id, newest-first. this_session is the locked-current-session legacy alias.'),
   session_id: z.string().min(1).max(256).optional().describe('Choose a known session when scope=session. Omit workspace_id to use its indexed workspace. Another session defaults to agent main.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Workspace for the session or search. Omit with session_id to use the indexed workspace. Another workspace requires access approval.'),
-  agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent in the current session, or main in another session/workspace.'),
+  agent_id: AgentSelectorSchema.optional().describe('Agent or branch ID (or branch name/title alias); defaults to this agent in the current session, or main in another session/workspace. Pass agent_id="<branchId>" to search an active or merged side-branch transcript.'),
   include_subagents: z.boolean().optional().describe('Search all readable agents in the selected scope; mutually exclusive with agent_id.'),
   include_tool_output: z.boolean().optional().describe('Include tool-result text; omitted or false searches conversation user and assistant text only. Thinking, tool names, and tool parameters are never searched.'),
   role: z.enum(['user', 'assistant', 'tool', 'record']).optional().describe('Optional exact source role. role=tool explicitly searches tool-result text. record means explicitly saved external material, not a synchronized user or assistant turn. Omit to search conversation text and saved records unless include_tool_output is true.'),
@@ -37,7 +40,7 @@ export const HistoryReadInputSchema = z.object({
   raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
   session_id: z.string().min(1).max(256).optional().describe('Session to read; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor or ref supplies its original session.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Workspace for the session or ref. Omit to use the indexed workspace. Another workspace requires explicit access approval.'),
-  agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent here or main in another session.'),
+  agent_id: AgentSelectorSchema.optional().describe('Agent or branch ID (or branch name/title alias); defaults to this agent here or main in another session. Pass agent_id="<branchId>" to read an active or merged side-branch transcript on demand.'),
   turn: z.number().int().nonnegative().optional().describe('0-based transcript turn; omit when step_id or cursor identifies it.'),
   step_id: z.string().regex(/^t\d+\.\d+$/).optional().describe('Step ID such as t42.3; sufficient without turn.'),
   ref: z.string().min(1).max(2048).optional().describe('Durable source ref; a List turn ref reads the whole turn as blocks, while a Search hit ref reads one focused text block.'),
@@ -143,6 +146,22 @@ export interface IHistoryArchive {
   directoryRef?(workspace: string, session: string, agent: string, turn: number, step?: string): Promise<string | undefined>;
   readDirectory?(ref: string, maxChars: number, cursor?: { readonly position: number;
     readonly offset: number; readonly watermark: number; readonly asOfBytes: number }, signal?: AbortSignal): Promise<HistoryReadBlocksPage>;
+  resolveAgentId?(sessionId: string, selector: string): Promise<string | undefined>;
+}
+
+export function resolveAgentSelectorFromMeta(
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+  selector: string,
+): string | undefined {
+  if (agents === undefined) return undefined;
+  if (Object.hasOwn(agents, selector)) return selector;
+  const byTaskName = Object.entries(agents)
+    .filter(([, meta]) => meta.labels?.[COLLABORATION_TASK_NAME_LABEL] === selector);
+  if (byTaskName.length === 1) return byTaskName[0]![0];
+  if (byTaskName.length > 1) return undefined;
+  const byLabel = Object.entries(agents)
+    .filter(([, meta]) => meta.userLabel === selector || meta.displayName === selector);
+  return byLabel.length === 1 ? byLabel[0]![0] : undefined;
 }
 
 export const IHistoryArchive = createDecorator<IHistoryArchive>('historyArchive');
@@ -310,6 +329,7 @@ abstract class HistoryToolBase {
     protected readonly archive: IHistoryArchive,
     protected readonly session: ISessionContext,
     protected readonly workspaces: IWorkspaceService,
+    protected readonly metadata?: ISessionMetadata,
   ) {}
 
   protected async target(workspaceId?: string): Promise<{ id: string; externalRoot?: string } | undefined> {
@@ -318,6 +338,19 @@ abstract class HistoryToolBase {
     const workspace = await this.workspaces.get(id);
     if (workspace === undefined) return undefined;
     return { id, externalRoot: workspace.root };
+  }
+
+  protected async resolveAgentSelector(sessionId: string | undefined, selector: string | undefined): Promise<string | undefined> {
+    if (selector === undefined || sessionId === undefined) return selector;
+    if (sessionId === this.session.sessionId && this.metadata !== undefined) {
+      const fromLive = resolveAgentSelectorFromMeta((await this.metadata.read()).agents, selector);
+      if (fromLive !== undefined) return fromLive;
+    }
+    if (this.archive.resolveAgentId !== undefined) {
+      const resolved = await this.archive.resolveAgentId(sessionId, selector);
+      if (resolved !== undefined) return resolved;
+    }
+    return selector;
   }
 }
 
@@ -343,7 +376,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
-  readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words. A known session_id can omit workspace_id; the indexed workspace is used and another workspace still requires access approval. An explicit mismatch returns a recovery call for that indexed target and does not read it. An unknown session is not replaced with this session.';
+  readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Pass agent_id="<branchId>" (or a branch name/alias) to search an active or merged side-branch transcript on demand; include_subagents explicitly expands to all readable agents in the selected scope. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words. A known session_id can omit workspace_id; the indexed workspace is used and another workspace still requires access approval. An explicit mismatch returns a recovery call for that indexed target and does not read it. An unknown session is not replaced with this session.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
   });
@@ -354,7 +387,8 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
     @IWorkspaceService workspaces: IWorkspaceService,
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
     @ISessionIndex private readonly sessions: ISessionIndex,
-  ) { super(archive, session, workspaces); }
+    @ISessionMetadata metadata?: ISessionMetadata,
+  ) { super(archive, session, workspaces, metadata); }
 
   async resolveExecution(input: SearchInput): Promise<ToolExecution> {
     const cursor = input.cursor === undefined ? undefined : input.query === undefined
@@ -380,8 +414,9 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
       throw new Error('peer searches main-thread communication, newest-first; subagents and source=transcript are not supported.');
     }
     const sessionId = scope === 'workspace' ? undefined : scope === 'peer' ? request.session_id : request.session_id ?? this.session.sessionId;
-    const agentId = scope === 'peer' ? 'main' : request.include_subagents ? undefined : request.agent_id ??
+    const rawAgentId = scope === 'peer' ? 'main' : request.include_subagents ? undefined : request.agent_id ??
       (sessionId === this.session.sessionId && scope !== 'workspace' ? this.caller.agentId : 'main');
+    const agentId = await this.resolveAgentSelector(sessionId, rawAgentId);
     const classified = sessionId === undefined ? undefined : await classifyHistorySession(
       this.sessions, { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, request.workspace_id);
     const discovered = request.query !== undefined
@@ -489,7 +524,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
-  readonly description = 'Read original history as bounded source blocks. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match and stays bound to its workspace, session, and agent. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source. An unknown session is not read as this session\'s turn.';
+  readonly description = 'Read original history as bounded source blocks. Pass agent_id="<branchId>" (or a branch name/alias) to inspect an active or merged side-branch transcript on demand. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match and stays bound to its workspace, session, and agent. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source. An unknown session is not read as this session\'s turn.';
   readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['ref'] }, { required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
   });
@@ -500,7 +535,8 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     @IWorkspaceService workspaces: IWorkspaceService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
-  ) { super(archive, session, workspaces); }
+    @ISessionMetadata metadata?: ISessionMetadata,
+  ) { super(archive, session, workspaces, metadata); }
 
   private renderRefPreparation(cursor: PreparingRefCursor,
     progress: Extract<HistoryDirectoryLookup, { status: 'navigation_building' }>): ExecutableToolResult {
@@ -561,9 +597,10 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
   }): Promise<{ readonly ok: true; readonly target: { id: string; externalRoot?: string } } |
     { readonly ok: false; readonly error: ExecutableToolErrorResult }> {
     const summary = await this.sessions.get(source.session);
+    const resolvedInputAgent = input.agent_id === undefined ? undefined : await this.resolveAgentSelector(source.session, input.agent_id);
     const conflicts = input.workspace_id !== undefined && input.workspace_id !== source.workspace ||
       input.session_id !== undefined && input.session_id !== source.session ||
-      input.agent_id !== undefined && input.agent_id !== source.agent;
+      resolvedInputAgent !== undefined && resolvedInputAgent !== source.agent;
     if (summary !== undefined && summary.workspaceId !== source.workspace) {
       return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref session is indexed in a different workspace. List that session there; this call does not read the ref.', retryable: true,
         scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryList', arguments: {
@@ -736,8 +773,9 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
       return historyTargetError({ code: 'workspace_not_found', message: 'The requested workspace is unavailable; use a real workspace_id and restart the selector.', retryable: false,
         scope: 'selector', targetKind: 'workspace', nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } });
     }
-    const agentId = input.agent_id ?? selector?.agent ??
+    const rawAgentId = input.agent_id ?? selector?.agent ??
       (sessionId === this.session.sessionId ? this.caller.agentId : 'main');
+    const agentId = (await this.resolveAgentSelector(sessionId, rawAgentId))!;
     const stepId = input.step_id ?? selector?.step;
     const maxChars = input.max_chars ?? preparing?.maxChars ?? 6000;
     const cursorMismatch = selector !== undefined && (selector.session !== sessionId || selector.agent !== agentId ||

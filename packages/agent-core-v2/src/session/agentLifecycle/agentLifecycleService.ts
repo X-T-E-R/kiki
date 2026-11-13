@@ -39,8 +39,9 @@ import { WarningIssued } from '#/agent/profile/profileOps';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { abortError } from '#/_base/utils/abort';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { trimToSettledContextMessages } from '#/agent/contextMemory/settledTrim';
 import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { IAgentRuntimeService, IAgentWorkspaceRootsSeed } from '#/agent/runtimeBinding/agentRuntime';
 import '#/agent/runtimeBinding/runtimeBindingService';
@@ -374,13 +375,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       workDir: this.sessionWorkspace.workDir,
       additionalDirs: this.sessionWorkspace.additionalDirs,
     };
+    const isBranch = opts.labels?.['branch'] === 'true' ? true : undefined;
     const handle = createScopedChildHandle(
       this.instantiation,
       LifecycleScope.Agent,
       agentId,
       {
         seeds: [
-          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, parentAgentId })],
+          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, parentAgentId, isBranch })],
           [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
           [IAgentRuntimeBindingSeed, {
             _serviceBrand: undefined,
@@ -431,7 +433,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
         await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
       }
-      const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
+      const delegationPosition = resolveDelegationPosition(agentId, opts.delegator, opts.labels);
       this.assertCreateStillCurrent(agentId, slot, generation);
       const requestedLabels = withSubagentProfile(
         opts.workspaceRoots === undefined ? opts.labels : { ...opts.labels, ...workspaceRootsLabels(workspaceRoots) },
@@ -542,10 +544,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   ): Promise<boolean> {
     const profile = handle.accessor.get(IAgentProfileService);
     let restoreFellBack = false;
+    const delegationPosition = resolveDelegationPosition(handle.id, opts.delegator, opts.labels);
     if (opts.binding !== undefined) {
       await profile.bind({
         ...opts.binding,
-        delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+        delegationPosition,
       });
     } else if (
       opts.restoreBinding !== undefined &&
@@ -562,7 +565,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           route: opts.restoreBinding.routeId,
           model: opts.restoreBinding.modelAlias,
           thinking: restoreThinking,
-          delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+          delegationPosition,
           unavailableTools: 'restore',
           lockedExecutorId: opts.restoreBinding.executorId,
         });
@@ -580,7 +583,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           profile: DEFAULT_AGENT_PROFILE_NAME,
           model: opts.restoreBinding.modelAlias,
           thinking: restoreThinking,
-          delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+          delegationPosition,
         });
         await handle.accessor.get(IEventDispatcher).dispatch(new WarningIssued({
           code: 'restore-profile-missing',
@@ -707,27 +710,61 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const child = await this.create({
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
-      workspaceRoots: source.accessor.get(IAgentRuntimeService).workspaceRoots?.(),
+      workspaceRoots: opts?.workspaceRoots ?? source.accessor.get(IAgentRuntimeService).workspaceRoots?.(),
       forkedFrom: source.id,
       binding: overrideBinding,
+      delegator: { kind: 'agent', agentId: source.id },
+      userLabel: opts?.userLabel,
+      deferCreateEvent: opts?.deferCreateEvent,
       labels:
         overrideBinding === undefined
-          ? withSubagentProfile(undefined, sourceData.profileName)
-          : undefined,
+          ? withSubagentProfile(opts?.labels, opts?.labels?.['branch'] === 'true' ? undefined : sourceData.profileName)
+          : opts?.labels,
     });
     const childProfile = child.accessor.get(IAgentProfileService);
-    if (overrideBinding === undefined) {
+    if (overrideBinding === undefined && sourceData.profileName !== undefined) {
       childProfile.applyBindingSnapshot(sourceData);
       const dynamicPrompt = source.accessor.get(IAgentStateService).get(dynamicPromptKey);
       if (dynamicPrompt !== undefined) await child.accessor.get(IEventDispatcher).dispatch(new ProfileDynamicSnapshot(dynamicPrompt));
       if (override?.model !== undefined) await childProfile.setModel(override.model);
       if (typeof override?.thinking === 'string') childProfile.setThinking(override.thinking);
       else if (override?.thinking === null) childProfile.restoreDefaultThinking();
+      if ((childProfile.data().executorId ?? 'native') === 'native') {
+        child.accessor.get(IAgentMediaToolsRegistrar).refresh();
+        await child.accessor.get(IAgentToolActivationService).activate();
+        await child.accessor.get(IAgentPluginToolService).ready();
+      }
+      const bound = childProfile.data();
+      await this.sessionMetadata.updateAgent(child.id, (current) => ({
+        ...current,
+        displayName: current.displayName ?? bound.routeId ?? bound.profileName,
+        execution: bound.execution,
+        personaId: bound.personaId,
+        model: bound.modelAlias,
+        thinkingEffort: bound.effectiveThinkingLevel ?? bound.thinkingLevel,
+        thinkingEffortExplicit: bound.thinkingEffortExplicit,
+        executor: bound.executorId ?? 'native',
+        executorProtocol: bound.executorProtocol,
+        allowKikiSubagents: bound.allowKikiSubagents,
+      }));
     }
 
-    const sourceMessages = source.accessor.get(IAgentContextMemoryService)?.get();
-    if (sourceMessages !== undefined && sourceMessages.length > 0) {
-      child.accessor.get(IAgentContextMemoryService)?.append(...sourceMessages);
+    const sourcePermission = source.accessor.get(IAgentPermissionModeService);
+    const effectivePermission = sourcePermission.modeCeiling === undefined
+      ? sourcePermission.mode
+      : constrainPermissionMode(sourcePermission.mode, sourcePermission.modeCeiling);
+    const childPermission = child.accessor.get(IAgentPermissionModeService);
+    childPermission.setModeCeiling(effectivePermission);
+    childPermission.setMode(effectivePermission, 'binding');
+
+    if (opts?.skipMessageSeed !== true) {
+      const sourceMessages = source.accessor.get(IAgentContextMemoryService)?.get();
+      if (sourceMessages !== undefined && sourceMessages.length > 0) {
+        const settled = trimToSettledContextMessages(sourceMessages);
+        if (settled.length > 0) {
+          child.accessor.get(IAgentContextMemoryService)?.append(...settled);
+        }
+      }
     }
     return child;
   }

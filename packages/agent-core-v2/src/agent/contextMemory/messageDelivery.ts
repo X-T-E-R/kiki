@@ -33,6 +33,7 @@ export function deliveryOriginOf(origin: PromptOrigin | undefined): MessageDeliv
     case 'injection':
       return 'injection';
     case 'agent_message':
+    case 'branch_fold':
     case 'peer_thread':
     case 'bridged_peer':
     case 'room_message':

@@ -196,6 +196,23 @@ function driver(
   };
   const controllerListeners = new Set<() => void>();
   const queuedPromptContents = new Map<string, readonly MessageContent[]>();
+  const agentStates = new Map<string, typeof controllerState>();
+  const agentListeners = new Map<string, Set<() => void>>();
+  const ensureAgentState = (agentId: string) => {
+    let entry = agentStates.get(agentId);
+    if (entry === undefined) {
+      entry = {
+        ...controllerState,
+        blocks: [],
+        durableIngress: [],
+        todos: [],
+        queuedPromptIds: [],
+        tasks: [],
+      };
+      agentStates.set(agentId, entry);
+    }
+    return entry;
+  };
   const controller = {
     sessionId: 'session-1' as string,
     sendPrompt: vi.fn(async () => ({
@@ -224,6 +241,17 @@ function driver(
     handleSessionRecord: vi.fn(),
     getForest: vi.fn(() => undefined),
     getState: vi.fn(() => controllerState),
+    getAgentState: vi.fn((agentId: string) => ensureAgentState(agentId)),
+    setFocusedAgent: vi.fn(),
+    subscribeAgent: vi.fn((agentId: string, listener: () => void) => {
+      let set = agentListeners.get(agentId);
+      if (set === undefined) {
+        set = new Set();
+        agentListeners.set(agentId, set);
+      }
+      set.add(listener);
+      return () => set!.delete(listener);
+    }),
     resync: vi.fn(),
     subscribe: vi.fn((listener: () => void) => {
       controllerListeners.add(listener);
@@ -248,6 +276,11 @@ function driver(
       listModels: ReturnType<typeof vi.fn>;
       listSessions: ReturnType<typeof vi.fn>;
       createSession: ReturnType<typeof vi.fn>;
+      createBranch: ReturnType<typeof vi.fn>;
+      foldBranch: ReturnType<typeof vi.fn>;
+      discardBranch: ReturnType<typeof vi.fn>;
+      setBranchToolsLock: ReturnType<typeof vi.fn>;
+      submitPrompt: ReturnType<typeof vi.fn>;
       listPersonas: ReturnType<typeof vi.fn>;
       getGoal: ReturnType<typeof vi.fn>;
       undoSession: ReturnType<typeof vi.fn>;
@@ -434,6 +467,29 @@ function driver(
   internal.client.resolveApproval = vi.fn();
   internal.client.resolveQuestion = vi.fn();
   internal.client.dismissQuestion = vi.fn();
+  internal.client.createBranch = vi.fn(async (_sessionId, options) => ({
+    agent_id: 'branch-1',
+    parent_agent_id: options?.parent_agent_id ?? 'main',
+    seed: options?.seed ?? 'verbatim',
+    tools_locked: options?.tools_locked ?? false,
+    branch_sealed: false,
+    title: options?.title,
+  }));
+  internal.client.foldBranch = vi.fn(async (_sessionId, options) => ({
+    status: options?.summary === undefined ? 'prompted' : 'merged',
+    branch_id: options?.branch_id ?? 'branch-1',
+    target_agent_id: 'main',
+    sealed: options?.summary !== undefined && options?.done !== false,
+  }));
+  internal.client.discardBranch = vi.fn(async (_sessionId, branchId) => ({
+    branch_id: branchId,
+    sealed: true,
+  }));
+  internal.client.setBranchToolsLock = vi.fn(async (_sessionId, branchId, locked) => ({
+    branch_id: branchId,
+    tools_locked: locked,
+  }));
+  internal.client.submitPrompt = vi.fn(async () => ({ status: 'accepted', turn_id: 7 }));
   internal.showStatus = vi.fn();
   return {
     tui,
@@ -1432,19 +1488,55 @@ describe('DaemonTUI commands', () => {
     ]);
   });
 
-  it.each([undefined, null])('closes a side session when /btw returns %s', async (result) => {
-    const { internal, agentFacade } = driver();
+  it.each([undefined, null])('reports an error when /btw branch prompt returns %s without forking a top-level session', async (result) => {
+    const { internal, agentFacade, sessionFacade } = driver();
     agentFacade.prompt.mockResolvedValue(result as never);
-    const open = vi.spyOn(SessionController.prototype, 'open').mockResolvedValue(undefined);
 
-    try {
-      await internal.handleSlash('/btw check this');
-    } finally {
-      open.mockRestore();
-    }
+    await internal.handleSlash('/btw check this');
 
-    expect(internal.showStatus).toHaveBeenCalledWith('Side session fork-1 did not start.', 'error');
+    expect(internal.client.createBranch).toHaveBeenCalledWith('session-1', {
+      parent_agent_id: 'main',
+      seed: 'verbatim',
+      tools_locked: true,
+      title: 'btw · check this',
+    });
+    expect(sessionFacade.fork).not.toHaveBeenCalled();
+    expect(internal.showStatus).toHaveBeenCalledWith('Side branch branch-1 did not start.', 'error');
     expect(internal.sideControllers).toHaveLength(0);
+  });
+
+  it('opens an interactive /branch, routes editor input to that branch, and folds back via /merge', async () => {
+    const { internal, controller } = driver();
+
+    await internal.handleSlash('/branch inspect build');
+
+    expect(internal.client.createBranch).toHaveBeenCalledWith('session-1', {
+      parent_agent_id: 'main',
+      seed: 'fresh',
+      tools_locked: false,
+      title: 'inspect build',
+      task: 'inspect build',
+    });
+    expect(controller.setFocusedAgent).toHaveBeenCalledWith('branch-1');
+
+    await internal.handleInput('follow-up on branch');
+    expect(internal.client.submitPrompt).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        agent_id: 'branch-1',
+        content: [{ type: 'text', text: 'follow-up on branch' }],
+      }),
+    );
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+
+    await internal.handleSlash('/merge concise takeaway');
+    expect(internal.client.foldBranch).toHaveBeenCalledWith('session-1', {
+      branch_id: 'branch-1',
+      summary: 'concise takeaway',
+      done: true,
+    });
+    expect(controller.setFocusedAgent).toHaveBeenLastCalledWith('main');
+    expect(internal.showStatus).toHaveBeenLastCalledWith('Merged branch-1 into main.');
   });
 
   it('steers ordinary input into an active goal', async () => {

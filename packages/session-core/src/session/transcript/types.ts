@@ -79,6 +79,14 @@ export interface UserBlock {
     readonly senderName?: string;
     readonly messageId?: string;
   };
+  readonly branchFold?: {
+    readonly foldId?: string;
+    readonly branchId: string;
+    readonly branchTitle?: string;
+    readonly asks?: readonly string[];
+    readonly throughTurnId?: number;
+    readonly done?: boolean;
+  };
 }
 
 export interface PromptOutcome {
@@ -525,6 +533,12 @@ export interface NoticeBlock {
     readonly summaryGenerated?: boolean;
     readonly windowEpoch?: number;
     readonly error?: { readonly code: string; readonly message: string };
+  };
+  readonly branchBase?: {
+    readonly seedMode: 'fresh' | 'compact' | 'verbatim';
+    readonly sourceAgentId: string;
+    readonly inheritedMessages: number;
+    readonly baseTurnId?: number;
   };
   readonly kind: 'notice';
   readonly id: string;

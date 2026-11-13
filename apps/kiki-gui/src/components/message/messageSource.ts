@@ -28,32 +28,36 @@ import { parseSelectionCarryovers } from '@kiki/session-core/composer';
 import type { UserBlock } from '@kiki/session-core/session';
 import { shiftTextPresentation, type TextPresentation } from '@kiki/transcript';
 
-/** The trusted source a user block carries: mailbox agent, peer thread, or a bridged home. */
-export type UserMessageSource = 'agent' | 'thread' | 'bridged';
+/** The trusted source a user block carries: mailbox agent, peer thread, bridged home, or folded session branch. */
+export type UserMessageSource = 'agent' | 'thread' | 'bridged' | 'branch';
 
 const AGENT_ENVELOPE = /^Message from (?:external )?agent "[^"\r\n]*" \([^\r\n()]*\):\r?\n\r?\n/;
 const THREAD_ENVELOPE = /^Message from thread (?:"[^"\r\n]*" \([^\r\n()]*\)|[^\r\n():]*):\r?\n\r?\n/;
 const BRIDGED_ENVELOPE = /^Verified message from space \S+ · thread \S+ \((?:local|network)\):\r?\n\r?\n/;
+const BRANCH_ENVELOPE = /^(?:Merged branch|Interim update from branch) [^\r\n:]+:\r?\n\r?\n/;
+const BRANCH_FOOTER = /\r?\n\r?\nBranch history: HistoryList\([^\r\n]+\)(?: · HistoryRead\([^\r\n]+\))?\s*$/;
 
 const ENVELOPES: Readonly<Record<UserMessageSource, RegExp>> = {
   agent: AGENT_ENVELOPE,
   thread: THREAD_ENVELOPE,
   bridged: BRIDGED_ENVELOPE,
+  branch: BRANCH_ENVELOPE,
 };
 
 /** The source the origin metadata proves, or undefined for the user's own voice. */
 export function userMessageSource(
-  block: Pick<UserBlock, 'agentMessage' | 'peerThread' | 'bridgedPeer'>,
+  block: Pick<UserBlock, 'agentMessage' | 'peerThread' | 'bridgedPeer' | 'branchFold'>,
 ): UserMessageSource | undefined {
   if (block.agentMessage !== undefined) return 'agent';
   if (block.peerThread !== undefined) return 'thread';
   if (block.bridgedPeer !== undefined) return 'bridged';
+  if (block.branchFold !== undefined) return 'branch';
   return undefined;
 }
 
 /** The envelope this block's own text opens with, once metadata and text shape agree on it. */
 function envelopeOf(
-  block: Pick<UserBlock, 'text' | 'agentMessage' | 'peerThread' | 'bridgedPeer'>,
+  block: Pick<UserBlock, 'text' | 'agentMessage' | 'peerThread' | 'bridgedPeer' | 'branchFold'>,
 ): string | undefined {
   const source = userMessageSource(block);
   return source === undefined ? undefined : ENVELOPES[source].exec(block.text)?.[0];
@@ -66,12 +70,27 @@ function envelopeOf(
  * by the removed prefix; a span the envelope fully covered is gone.
  */
 export function displayUserMessageText(
-  block: Pick<UserBlock, 'text' | 'presentation' | 'agentMessage' | 'peerThread' | 'bridgedPeer'>,
+  block: Pick<UserBlock, 'text' | 'presentation' | 'agentMessage' | 'peerThread' | 'bridgedPeer' | 'branchFold'>,
 ): { readonly text: string; readonly presentation?: TextPresentation } {
   const envelope = envelopeOf(block);
   if (envelope === undefined) return { text: block.text, presentation: block.presentation };
   const cut = envelope.length;
-  return { text: block.text.slice(cut), presentation: shiftPastEnvelope(block.presentation, cut) };
+  let body = block.text.slice(cut);
+  let presentation = shiftPastEnvelope(block.presentation, cut);
+  if (block.branchFold !== undefined) {
+    const footer = BRANCH_FOOTER.exec(body)?.[0];
+    if (footer !== undefined) {
+      body = body.slice(0, body.length - footer.length);
+      if (presentation !== undefined) {
+        const nextSpans = presentation.spans
+          .filter((span) => span.start < body.length)
+          .map((span) => ({ ...span, end: Math.min(span.end, body.length) }))
+          .filter((span) => span.end > span.start);
+        presentation = nextSpans.length > 0 ? { spans: nextSpans } : undefined;
+      }
+    }
+  }
+  return { text: body, presentation };
 }
 
 /**
@@ -82,7 +101,7 @@ export function displayUserMessageText(
  * ordinary carry projection, so user-authored text keeps its own rules.
  */
 export function editableUserMessageText(
-  block: Pick<UserBlock, 'text' | 'presentation' | 'agentMessage' | 'peerThread' | 'bridgedPeer'>,
+  block: Pick<UserBlock, 'text' | 'presentation' | 'agentMessage' | 'peerThread' | 'bridgedPeer' | 'branchFold'>,
 ): string {
   const envelope = envelopeOf(block);
   if (envelope === undefined) return parseSelectionCarryovers(block.text, block.presentation).body;

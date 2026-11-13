@@ -5,10 +5,13 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  getLiveSessionById, resumeSessionById, IAgentLifecycleService,
+  getLiveSessionById, resumeSessionById, IAgentLifecycleService, IAgentPromptService,
 } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
+import { IMergeTool } from '@kiki/agent-core-v2/features/btw/tools/mergeTool';
+import { IHistoryListTool } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
+import { IHistoryReadTool, IHistorySearchTool } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import { IWireService } from '@kiki/agent-core-v2/wire/wire';
 
@@ -48,6 +51,7 @@ describe('relay-v1 REST and cold wire contract', () => {
   let base: string;
   let provider: Server;
   let modelCalls: number;
+  let scriptedReplyText: string | undefined;
 
   const start = async () => {
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0,
@@ -58,8 +62,14 @@ describe('relay-v1 REST and cold wire contract', () => {
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-context-relay-'));
     modelCalls = 0;
+    scriptedReplyText = undefined;
     provider = createServer((_request, response) => {
       modelCalls++;
+      if (scriptedReplyText !== undefined) {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'fixture-branch-resp', choices: [{ index: 0, delta: { content: scriptedReplyText }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
       response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Unexpected model call in relay fixture' } }));
     });
     await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
@@ -221,4 +231,115 @@ describe('relay-v1 REST and cold wire contract', () => {
       dispose();
     }
   }, 30_000);
+
+  it('merges model-authored branch summary with agent_id pointer and reads live + cold branch transcripts via HistoryList, HistoryRead, and HistorySearch', async () => {
+    scriptedReplyText = 'Branch investigated retry-jitter-token-771 and verified exponential cap.';
+    const sessionRes = await request<{ id: string }>('/api/sessions', 'POST', {
+      metadata: { cwd: home },
+      agent_config: { profile: 'agent', model: 'test' },
+    });
+    expect(sessionRes.code, sessionRes.msg).toBe(0);
+    const sessionId = sessionRes.data.id;
+
+    const branchRes = await request<{
+      agent_id: string;
+      parent_agent_id: string;
+      seed: string;
+      tools_locked: boolean;
+      title?: string;
+    }>(`/api/sessions/${sessionId}:branch`, 'POST', {
+      seed: 'fresh',
+      title: 'Retry Jitter Audit',
+    });
+    expect(branchRes.code, branchRes.msg).toBe(0);
+    const branchId = branchRes.data.agent_id;
+    expect(branchId).toBeTruthy();
+
+    const live = getLiveSessionById(server!.core.accessor, sessionId)!;
+    const branchHandle = live.accessor.get(IAgentLifecycleService).get(branchId)!;
+    const submitted = await branchHandle.accessor.get(IAgentPromptService).enqueue({
+      id: 'branch-turn-0-prompt',
+      message: {
+        id: 'branch-turn-0-prompt',
+        role: 'user',
+        origin: { kind: 'user' },
+        toolCalls: [],
+        content: [{ type: 'text', text: 'Audit retry-jitter-token-771 behavior in detail.' }],
+      },
+    });
+    await submitted.completion;
+
+    const mergeTool = branchHandle.accessor.get(IMergeTool);
+    const mergeExec = await mergeTool.resolveExecution({
+      summary: 'Retry jitter cap is 60s; no retry storm found.',
+      asks: ['Keep 5m persistence backoff separate'],
+      done: true,
+    });
+    if (!('execute' in mergeExec)) throw new Error('Expected executable Merge tool');
+    const mergeResult = await mergeExec.execute({
+      signal: new AbortController().signal,
+      turnId: 0,
+      toolCallId: 'call-merge-1',
+    });
+    expect(mergeResult.isError).toBeUndefined();
+
+    const mainHandle = live.accessor.get(IAgentLifecycleService).get('main')!;
+    const mainMessages = mainHandle.accessor.get(IAgentContextMemoryService).get();
+    const foldMsg = mainMessages.find((m) => m.origin?.kind === 'branch_fold');
+    expect(foldMsg).toBeDefined();
+    const foldText = (foldMsg!.content[0] as { type: 'text'; text: string }).text;
+    expect(foldText).toContain(`Merged branch ${branchId} (Retry Jitter Audit):`);
+    expect(foldText).toContain('Retry jitter cap is 60s; no retry storm found.');
+    expect(foldText).toContain(`HistoryList({ agent_id: "${branchId}" })`);
+    expect(foldText).toContain(`HistoryRead({ agent_id: "${branchId}", turn: 0 })`);
+    expect(foldText).not.toContain('Edited files:');
+    expect(foldText).not.toContain('Commands run:');
+
+    const runTool = async (agent: typeof mainHandle, token: never, input: Record<string, unknown>) => {
+      const tool = agent.accessor.get(token) as { resolveExecution(arg: unknown): Promise<{ execute(ctx: unknown): Promise<{ isError?: boolean; output: string }> }> | { execute(ctx: unknown): Promise<{ isError?: boolean; output: string }> } };
+      const exec = await tool.resolveExecution(input);
+      const res = await exec.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'hist-call' });
+      expect(res.isError, res.output).not.toBe(true);
+      return JSON.parse(res.output) as Record<string, unknown>;
+    };
+
+    const liveAgents = await runTool(mainHandle, IHistoryListTool as never, { kind: 'agents', raw: true });
+    const listedAgents = liveAgents['agents'] as Array<Record<string, unknown>>;
+    expect(listedAgents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: branchId, kind: 'branch', branch_title: 'Retry Jitter Audit', sealed: true }),
+    ]));
+
+    const liveTurns = await runTool(mainHandle, IHistoryListTool as never, { agent_id: branchId, kind: 'turns' });
+    expect((liveTurns['turns'] as Array<Record<string, unknown>>).length).toBeGreaterThanOrEqual(1);
+
+    const liveReadById = await runTool(mainHandle, IHistoryReadTool as never, { agent_id: branchId, turn: 0 });
+    expect(JSON.stringify(liveReadById)).toContain('Audit retry-jitter-token-771 behavior in detail.');
+    expect(JSON.stringify(liveReadById)).toContain('Branch investigated retry-jitter-token-771 and verified exponential cap.');
+
+    const liveReadByTitle = await runTool(mainHandle, IHistoryReadTool as never, { agent_id: 'Retry Jitter Audit', turn: 0 });
+    expect(JSON.stringify(liveReadByTitle)).toContain('retry-jitter-token-771');
+
+    const liveSearch = await runTool(mainHandle, IHistorySearchTool as never, {
+      agent_id: branchId,
+      query: 'retry-jitter-token-771',
+      source: 'transcript',
+    });
+    expect(JSON.stringify(liveSearch)).toContain('retry-jitter-token-771');
+
+    await branchHandle.accessor.get(IWireService).flush();
+    await mainHandle.accessor.get(IWireService).flush();
+    await server!.close();
+    server = undefined;
+    await start();
+
+    const restored = await resumeSessionById(server!.core.accessor, sessionId);
+    const coldMain = restored!.accessor.get(IAgentLifecycleService).get('main')!;
+    const coldAgents = await runTool(coldMain, IHistoryListTool as never, { kind: 'agents', raw: true });
+    expect(coldAgents['agents'] as Array<Record<string, unknown>>).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: branchId, kind: 'branch' }),
+    ]));
+    const coldRead = await runTool(coldMain, IHistoryReadTool as never, { agent_id: branchId, turn: 0 });
+    expect(JSON.stringify(coldRead)).toContain('Audit retry-jitter-token-771 behavior in detail.');
+    expect(JSON.stringify(coldRead)).toContain('Branch investigated retry-jitter-token-771 and verified exponential cap.');
+  }, 40_000);
 });

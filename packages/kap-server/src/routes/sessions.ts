@@ -30,6 +30,7 @@ import {
   ISessionActivityView,
   ISessionAgentProfileCatalog,
   SessionAgentProfileCatalogService,
+  ISessionBranchService,
   ISessionBtwService,
   ISessionContext,
   ISessionHistoryMutationService,
@@ -78,14 +79,22 @@ import {
   archiveSessionResponseSchema,
   compactSessionRequestSchema,
   compactSessionResponseSchema,
+  createSessionBranchRequestSchema,
+  createSessionBranchResponseSchema,
   createSessionChildRequestSchema,
   createSessionRequestSchema,
+  discardSessionBranchRequestSchema,
+  discardSessionBranchResponseSchema,
+  foldSessionBranchRequestSchema,
+  foldSessionBranchResponseSchema,
   forkSessionRequestSchema,
   getSessionGoalResponseSchema,
   listSessionChildrenResponseSchema,
   sessionAbortResponseSchema,
   sessionStatusResponseSchema,
   sessionWarningsResponseSchema,
+  setSessionBranchToolsLockRequestSchema,
+  setSessionBranchToolsLockResponseSchema,
   startBtwSessionResponseSchema,
   undoSessionRequestSchema,
   undoSessionResponseSchema,
@@ -231,6 +240,11 @@ const sessionActionRequestSchema = z.preprocess(
   z.object({
     title: z.string().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    seed: z.enum(['fresh', 'compact', 'verbatim']).optional(),
+    carry: z.union([
+      z.object({ last: z.number().int().nonnegative() }).strict(),
+      z.object({ fromMessageId: z.string().min(1) }).strict(),
+    ]).optional(),
     include_attached: z.boolean().optional(),
     exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
     instruction: z.string().optional(),
@@ -242,6 +256,20 @@ const sessionActionRequestSchema = z.preprocess(
       seq: z.number().int().nonnegative(),
       epoch: z.string().min(1),
     }).optional(),
+    parent_agent_id: z.string().min(1).optional(),
+    task: z.string().optional(),
+    prompt: z.string().optional(),
+    model: z.string().min(1).optional(),
+    thinking: z.string().min(1).optional(),
+    executor: z.string().min(1).optional(),
+    cwd: z.string().min(1).optional(),
+    tools_locked: z.boolean().optional(),
+    branch_id: z.string().min(1).optional(),
+    summary: z.string().optional(),
+    context: z.string().optional(),
+    asks: z.array(z.string().min(1)).optional(),
+    done: z.boolean().optional(),
+    locked: z.boolean().optional(),
   }),
 );
 
@@ -1121,6 +1149,10 @@ export function registerSessionsRoutes(
           undoSessionResponseSchema,
           sessionAbortResponseSchema,
           startBtwSessionResponseSchema,
+          createSessionBranchResponseSchema,
+          foldSessionBranchResponseSchema,
+          discardSessionBranchResponseSchema,
+          setSessionBranchToolsLockResponseSchema,
           archiveSessionResponseSchema,
           deleteArchivedSessionsResponseSchema,
         ]),
@@ -1144,7 +1176,7 @@ export function registerSessionsRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore', 'delete-archived'] as const,
+          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'branch', 'fold', 'discard', 'tools-lock', 'archive', 'restore', 'delete-archived'] as const,
           resourceLabel: 'session',
         });
         if (parsed.kind !== 'action') {
@@ -1170,12 +1202,15 @@ export function registerSessionsRoutes(
               `session ${parsed.id} does not exist`,
             );
           }
+          const carry = body.carry;
           let handle: ISessionScopeHandle;
           if (body.through_message_id === undefined) {
             handle = await core.accessor.get(ISessionManager).fork({
               sourceSessionId: parsed.id,
               title: body.title,
               metadata: body.metadata,
+              seed: body.seed,
+              carry,
             });
           } else {
             if (broadcaster === undefined || body.expected_cursor === undefined) {
@@ -1196,6 +1231,8 @@ export function registerSessionsRoutes(
                   sourceSessionId: parsed.id,
                   title: body.title,
                   metadata: body.metadata,
+                  seed: body.seed,
+                  carry,
                   turnIndex: boundary.turnIndex,
                   throughUserMessage: boundary.throughUserMessage,
                 });
@@ -1270,6 +1307,97 @@ export function registerSessionsRoutes(
             await core.accessor.get(IAuthSummaryService).ensureReady(main.accessor.get(IAgentProfileService).getModel());
             const agentId = await session.accessor.get(ISessionBtwService).start();
             reply.send(okEnvelope({ agent_id: agentId }, req.id));
+          });
+          return;
+        }
+
+        if (parsed.action === 'branch') {
+          const body = createSessionBranchRequestSchema.parse(req.body);
+          await withSessionOperation(core, parsed.id, async (session) => {
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            const main = await ensureMainAgent(session);
+            const targetModel = body.model ?? main.accessor.get(IAgentProfileService).getModel();
+            if (targetModel !== undefined) {
+              await core.accessor.get(IAuthSummaryService).ensureReady(targetModel);
+            }
+            const created = await session.accessor.get(ISessionBranchService).createBranch({
+              parentAgentId: body.parent_agent_id,
+              initiator: 'user',
+              task: body.task,
+              prompt: body.prompt,
+              seed: body.seed,
+              carry: body.carry,
+              title: body.title,
+              model: body.model,
+              thinking: body.thinking,
+              executor: body.executor,
+              cwd: body.cwd,
+              toolsLocked: body.tools_locked,
+            });
+            reply.send(okEnvelope({
+              agent_id: created.branchId,
+              parent_agent_id: created.parentAgentId,
+              seed: created.seed,
+              tools_locked: created.toolsLocked,
+              title: created.title,
+              started: created.started,
+            }, req.id));
+          });
+          return;
+        }
+
+        if (parsed.action === 'fold') {
+          const body = foldSessionBranchRequestSchema.parse(req.body);
+          await withSessionOperation(core, parsed.id, async (session) => {
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            await ensureMainAgent(session);
+            const folded = await session.accessor.get(ISessionBranchService).foldBranch({
+              branchId: body.branch_id,
+              summary: body.summary,
+              context: body.context,
+              asks: body.asks,
+              done: body.done,
+            });
+            reply.send(okEnvelope({
+              branch_id: folded.branchId,
+              fold_id: folded.foldId,
+              status: folded.status,
+              done: folded.done,
+              sealed: folded.sealed,
+              handed_back_prompts: folded.handedBackCount,
+              through_turn_id: folded.throughTurnId,
+            }, req.id));
+          });
+          return;
+        }
+
+        if (parsed.action === 'discard') {
+          const body = discardSessionBranchRequestSchema.parse(req.body);
+          await withSessionOperation(core, parsed.id, async (session) => {
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            const discarded = await session.accessor.get(ISessionBranchService).discardBranch({
+              branchId: body.branch_id,
+            });
+            reply.send(okEnvelope({
+              branch_id: discarded.branchId,
+              discarded: discarded.discarded,
+            }, req.id));
+          });
+          return;
+        }
+
+        if (parsed.action === 'tools-lock') {
+          const body = setSessionBranchToolsLockRequestSchema.parse(req.body);
+          await withSessionOperation(core, parsed.id, async (session) => {
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            const updated = await session.accessor.get(ISessionBranchService).setToolsLocked({
+              branchId: body.branch_id,
+              locked: body.locked,
+            });
+            reply.send(okEnvelope({
+              branch_id: updated.branchId,
+              tools_locked: updated.toolsLocked,
+            }, req.id));
           });
           return;
         }

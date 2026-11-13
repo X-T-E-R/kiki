@@ -84,6 +84,15 @@ export function sessionAgentRoster(
           ? new Date(outcomeAt ?? activityTerminalAt!).toISOString()
           : row?.completed_at,
       parent_agent_id: subagentParentAgentId(registration) ?? row?.parent_agent_id,
+      is_branch: registration?.labels?.['branch'] === 'true' ? true : row?.is_branch,
+      branch_seed: (registration?.labels?.['branchSeed'] as SnapshotSubagent['branch_seed']) ?? row?.branch_seed,
+      branch_initiator: (registration?.labels?.['branchInitiator'] as SnapshotSubagent['branch_initiator']) ?? row?.branch_initiator,
+      tools_locked: registration?.labels?.['branch'] === 'true'
+        ? registration.labels['toolsLocked'] === 'true'
+        : row?.tools_locked,
+      branch_sealed: registration?.labels?.['branch'] === 'true'
+        ? registration.labels['branchSealed'] === 'true'
+        : row?.branch_sealed,
       model: (current ? activity.model : undefined) ?? registration?.model ?? row?.model,
       thinking_effort: registration?.thinkingEffort ?? row?.thinking_effort,
       thinking_effort_explicit: registration?.thinkingEffort !== undefined ? registration.thinkingEffortExplicit : row?.thinking_effort_explicit,

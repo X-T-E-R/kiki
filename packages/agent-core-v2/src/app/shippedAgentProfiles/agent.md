@@ -38,6 +38,8 @@ tools:
   - AgentRun
   - AgentList
   - AgentSend
+  - Branch
+  - Merge
   - FetchURL
   - AskUserQuestion
   - EnterPlanMode

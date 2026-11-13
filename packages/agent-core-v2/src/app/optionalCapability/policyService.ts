@@ -5,6 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { type ConfigOrigin, IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
+import { BRANCH_CONFIG_SECTION, type BranchConfig } from '#/app/branch/configSection';
 import { COMPUTER_CONFIG_SECTION, type ComputerConfig } from '#/app/computer/configSection';
 import { IFlagService } from '#/app/flag/flag';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
@@ -49,6 +50,7 @@ const APPLIES: Record<OptionalCapabilityId, CapabilityApplies> = {
   computer: 'next-model-request',
   memory: 'next-step',
   thread: 'next-step',
+  branch: 'next-step',
   web: 'next-model-request',
   send_message: 'next-step',
 };
@@ -318,6 +320,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (id === 'browser') return this.browserState();
     if (id === 'web') return this.webState();
     if (id === 'thread') return this.threadState();
+    if (id === 'branch') return this.branchState();
     if (id === 'send_message') return this.sendMessageState();
     if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer, !this.isMobileHost());
     return this.booleanState(MEMORY_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory);
@@ -363,6 +366,15 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     return { allowed: enabled, hostLocked: origin === 'env', defaultOn: enabled, origin, unresolved: false };
   }
 
+  private branchState(): OptionalCapabilityGlobalState {
+    const origin = this.originOf(BRANCH_CONFIG_SECTION, 'enabled');
+    if (origin === 'unreadable') return this.unresolved();
+    if (origin === 'default') return { allowed: true, hostLocked: false, defaultOn: OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.branch, origin, unresolved: false };
+    const enabled = this.boolAt(BRANCH_CONFIG_SECTION, 'enabled') === true;
+    if (!enabled && !USER_OFF.has(origin)) return this.unresolved();
+    return { allowed: enabled, hostLocked: origin === 'env', defaultOn: enabled, origin, unresolved: false };
+  }
+
   private booleanState(domain: string, key: string, legacyWhenDefault: boolean, allowedWhenDefault = true): OptionalCapabilityGlobalState {
     const origin = this.originOf(domain, key);
     if (origin === 'unreadable') return this.unresolved();
@@ -401,9 +413,11 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
         ? this.settings.get<OptionalCapabilitiesConfig>(domain)
         : domain === THREAD_COMMUNICATION_SECTION
           ? this.settings.get<ThreadCommunicationConfig>(domain)
-          : domain === COMPUTER_CONFIG_SECTION
-            ? this.settings.get<ComputerConfig>(domain)
-            : this.settings.get<MemoryConfig>(domain);
+          : domain === BRANCH_CONFIG_SECTION
+            ? this.settings.get<BranchConfig>(domain)
+            : domain === COMPUTER_CONFIG_SECTION
+              ? this.settings.get<ComputerConfig>(domain)
+              : this.settings.get<MemoryConfig>(domain);
       for (const part of key.split('.')) {
         if (current === undefined || current === null || typeof current !== 'object') return undefined;
         current = (current as Record<string, unknown>)[part];

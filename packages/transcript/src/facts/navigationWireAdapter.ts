@@ -215,6 +215,10 @@ export class NavigationWireAdapter {
       return [];
     }
     if (record.type === 'context.clear') return this.reset(0);
+    if (record.type === 'branch.base') {
+      this.legacyTurn = 0;
+      return this.reset(0);
+    }
     if (record.type === 'context.undo') {
       const count = numberOf(record['count']) ?? 1;
       if (count <= 0) return [];
@@ -368,7 +372,7 @@ export class NavigationWireAdapter {
         return [];
       }
     }
-    if (canonical !== undefined || origin?.['kind'] === 'agent_message' || origin?.['kind'] === 'injection' ||
+    if (canonical !== undefined || origin?.['kind'] === 'agent_message' || origin?.['kind'] === 'branch_fold' || origin?.['kind'] === 'injection' ||
         this.canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin)) {
       const turnId = turnOf(canonical?.['turnId']) ?? this.currentTurn;
       this.deliveries.set(messageId, { ordinal, turnId, messageId });

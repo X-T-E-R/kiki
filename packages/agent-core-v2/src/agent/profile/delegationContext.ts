@@ -22,8 +22,9 @@ export const DEFAULT_INDEPENDENT_DELEGATION_NOTICE = DEFAULT_INDEPENDENT_NOTICE;
 export function resolveDelegationPosition(
   agentId: string,
   delegator: DelegatorRef | undefined,
+  labels?: Readonly<Record<string, string>>,
 ): DelegationPosition {
-  if (agentId === MAIN_AGENT_ID) return 'main';
+  if (agentId === MAIN_AGENT_ID || labels?.['branch'] === 'true') return 'main';
   if (delegator?.kind === 'external') return 'independent';
   return 'sub';
 }

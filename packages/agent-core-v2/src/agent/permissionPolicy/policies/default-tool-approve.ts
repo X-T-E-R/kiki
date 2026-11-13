@@ -24,6 +24,8 @@ const DEFAULT_APPROVE_TOOLS = new Set([
   'AgentList',
   'AgentSend',
   'AgentNotify',
+  'Branch',
+  'Merge',
   'AskUserQuestion',
   'Skill',
   'EnterPlanMode',

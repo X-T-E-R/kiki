@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 123 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 126 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -72,6 +72,8 @@
 //     agentsMdReminder.known                          src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.seeded                         src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     autoCompactOverride                             src/agent/fullCompaction/autoCompactOps.ts
+//     branch.sealed                                   src/features/btw/branchOps.ts
+//     branch.toolsLocked                              src/features/btw/branchOps.ts
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
 //     contextMemory.revision                          src/agent/contextMemory/contextOps.ts
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
@@ -123,6 +125,7 @@
 //     modelSwitch.completions                         src/agent/modelSwitch/modelSwitchOps.ts
 //     modelSwitch.continuity                          src/agent/modelSwitch/modelSwitchOps.ts
 //     permissionMode                                  src/agent/permissionMode/permissionModeOps.ts
+//     permissionMode.ceiling                          src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.configured                       src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.externalOverride                 src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.lastMode                         src/agent/permissionMode/injection/permissionModeInjection.ts
@@ -1438,6 +1441,14 @@ export interface AgentStateSnapshot {
         readonly messageId: string;
         readonly senderAgentId: string;
         readonly senderTaskName: string;
+      } | /* BranchFoldOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'branch_fold';
+        readonly foldId: string;
+        readonly branchId: string;
+        readonly branchTitle?: string;
+        readonly asks?: readonly string[];
+        readonly throughTurnId: number;
+        readonly done?: boolean;
       } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'persona_greeting';
         readonly personaId: string;
@@ -1823,6 +1834,14 @@ export interface AgentStateSnapshot {
       readonly messageId: string;
       readonly senderAgentId: string;
       readonly senderTaskName: string;
+    } | /* BranchFoldOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'branch_fold';
+      readonly foldId: string;
+      readonly branchId: string;
+      readonly branchTitle?: string;
+      readonly asks?: readonly string[];
+      readonly throughTurnId: number;
+      readonly done?: boolean;
     } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'persona_greeting';
       readonly personaId: string;
@@ -2136,6 +2155,14 @@ export interface AgentStateSnapshot {
         readonly messageId: string;
         readonly senderAgentId: string;
         readonly senderTaskName: string;
+      } | /* BranchFoldOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'branch_fold';
+        readonly foldId: string;
+        readonly branchId: string;
+        readonly branchTitle?: string;
+        readonly asks?: readonly string[];
+        readonly throughTurnId: number;
+        readonly done?: boolean;
       } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'persona_greeting';
         readonly personaId: string;
@@ -2177,7 +2204,7 @@ export interface AgentStateSnapshot {
   'agentsMdReminder.known': Set<string>;
   'agentsMdReminder.seeded': boolean;
   // src/agent/contextMemory/contextOps.ts
-  // replayable · durable · undoable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch
+  // replayable · durable · undoable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch, BranchBase
   'contextMemory': (/* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     readonly role: /* Role — packages/agent-core-v2/src/kosong/contract/message.ts */ 'user' | 'assistant' | 'system' | 'tool';
     readonly name?: string;
@@ -2573,6 +2600,14 @@ export interface AgentStateSnapshot {
       readonly messageId: string;
       readonly senderAgentId: string;
       readonly senderTaskName: string;
+    } | /* BranchFoldOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'branch_fold';
+      readonly foldId: string;
+      readonly branchId: string;
+      readonly branchTitle?: string;
+      readonly asks?: readonly string[];
+      readonly throughTurnId: number;
+      readonly done?: boolean;
     } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'persona_greeting';
       readonly personaId: string;
@@ -2583,6 +2618,7 @@ export interface AgentStateSnapshot {
       readonly targeted: boolean;
       readonly generation?: number;
     };
+    readonly inheritedSeed?: boolean;
     readonly isError?: boolean;
     readonly note?: string;
     readonly runtimeId?: string;
@@ -2646,7 +2682,7 @@ export interface AgentStateSnapshot {
       readonly toolCallId?: string;
     }>>;
   })[];
-  // replayable · durable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch
+  // replayable · durable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch, BranchBase
   'contextMemory.revision': number;
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
@@ -4156,6 +4192,8 @@ export interface AgentStateSnapshot {
   // src/agent/permissionMode/permissionModeOps.ts
   // replayable · durable — folds: PermissionSetMode
   'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'manual' | 'auto' | 'review' | 'yolo';
+  // replayable · durable — folds: PermissionSetModeCeiling
+  'permissionMode.ceiling': 'manual' | 'auto' | 'review' | 'yolo' | null;
   // replayable · durable — folds: PermissionSetMode
   'permissionMode.configured': boolean;
   // replayable · durable — folds: PermissionSetMode
@@ -8697,6 +8735,14 @@ export interface AgentStateSnapshot {
           readonly messageId: string;
           readonly senderAgentId: string;
           readonly senderTaskName: string;
+        } | /* BranchFoldOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'branch_fold';
+          readonly foldId: string;
+          readonly branchId: string;
+          readonly branchTitle?: string;
+          readonly asks?: readonly string[];
+          readonly throughTurnId: number;
+          readonly done?: boolean;
         } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'persona_greeting';
           readonly personaId: string;
@@ -8707,6 +8753,7 @@ export interface AgentStateSnapshot {
           readonly targeted: boolean;
           readonly generation?: number;
         };
+        readonly inheritedSeed?: boolean;
         readonly isError?: boolean;
         readonly note?: string;
         readonly runtimeId?: string;
@@ -9280,6 +9327,11 @@ export interface AgentStateSnapshot {
     readonly parameters: Record<string, unknown>;
     readonly disclosure?: 'deferred' | 'inline';
   }>;
+  // src/features/btw/branchOps.ts
+  // replayable · durable — folds: AgentBranchSealed
+  'branch.sealed': boolean;
+  // replayable · durable — folds: AgentToolLockChanged
+  'branch.toolsLocked': boolean;
   // src/features/dateChange/dateChangeService.ts
   'dateChange.seed': /* DateDisclosure — packages/agent-core-v2/src/features/dateChange/dateChangeService.ts */ {
     readonly localDate: string;
@@ -9514,7 +9566,7 @@ export interface AgentStateSnapshot {
   'todo': /* TodoState — packages/agent-core-v2/src/session/todo/todoOps.ts */ {
     readonly items: readonly /* TodoItem — packages/agent-core-v2/src/session/todo/todoItem.ts */ {
       readonly title: string;
-      readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'done' | 'in_progress';
+      readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'done' | 'pending' | 'in_progress';
     }[];
     readonly notes?: Partial<Record<'goal' | 'files' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'next' | 'open', string>>;
     readonly notesMeta?: /* NotesMeta — packages/agent-core-v2/src/session/todo/todoNotes.ts */ {

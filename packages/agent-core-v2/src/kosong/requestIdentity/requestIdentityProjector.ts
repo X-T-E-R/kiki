@@ -27,6 +27,8 @@ export function projectRequestIdentity(input: {
   readonly rawAgentId: string;
   readonly parentAgentId?: string;
   readonly subagentKind?: string;
+  readonly isBranch?: boolean;
+  readonly compactionWindow?: number;
   readonly isKimiProvider: boolean;
   readonly snapshot: RequestIdentitySnapshot;
   readonly runtimeVersion: string;
@@ -300,12 +302,37 @@ function isTrueNone(policy: ResolvedRequestIdentityPolicy): boolean {
 }
 
 function requestSessionIdentity(input: Parameters<typeof projectRequestIdentity>[0]): string {
+  const compactionWindow = input.compactionWindow ?? 0;
   if (input.policy.lineage.sessionScope === 'agent_session') {
-    const id = requiredSnapshot(input.snapshot.agentSessionId, 'agent-session identity');
-    return input.policy.lineage.format === 'kimi_code' ? `session_${id}` : id;
+    const base = requiredSnapshot(input.snapshot.agentSessionId, 'agent-session identity');
+    const rotated = compactionWindow > 0 ? deriveWindowUuid(base, compactionWindow) : base;
+    return input.policy.lineage.format === 'kimi_code' ? `session_${rotated}` : rotated;
   }
-  if (input.policy.preset === 'kimi_code') return input.rawSessionId;
-  return requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity');
+  if (input.policy.preset === 'kimi_code') {
+    const base = input.isBranch === true
+      ? `${input.rawSessionId}_branch_${input.rawAgentId}`
+      : input.rawSessionId;
+    return compactionWindow > 0 ? `${base}_w${String(compactionWindow)}` : base;
+  }
+  const base = input.isBranch === true
+    ? (input.snapshot.agentSessionId ?? deriveBranchUuid(requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity'), input.rawAgentId))
+    : requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity');
+  return compactionWindow > 0 ? deriveWindowUuid(base, compactionWindow) : base;
+}
+
+function deriveBranchUuid(baseId: string, agentId: string): string {
+  return deriveUuid(baseId, 'branch', agentId);
+}
+
+function deriveWindowUuid(baseId: string, compactionWindow: number): string {
+  return deriveUuid(baseId, 'window', String(compactionWindow));
+}
+
+function deriveUuid(...parts: readonly string[]): string {
+  const bytes = createHash('sha256').update(parts.join('\u0000')).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  return bytes.toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/u, '$1-$2-$3-$4-$5');
 }
 
 function kimiCodeDeviceHeaders(

@@ -427,6 +427,7 @@ function AgentWorkspaceHeader({
   onLocateSpawn,
   promote,
   showHistoryBack,
+  branchSeamLabel,
 }: {
   target: AgentWorkspaceTarget;
   name: string;
@@ -452,6 +453,7 @@ function AgentWorkspaceHeader({
   /** Opens this child as its own top-level thread; undefined where the transport cannot. */
   promote?: PromoteAgentAction;
   showHistoryBack: boolean;
+  branchSeamLabel?: string;
 }) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -492,8 +494,12 @@ function AgentWorkspaceHeader({
           <h1 className="truncate font-display text-[15px] leading-tight font-semibold tracking-tight text-ink">
             {name}
           </h1>
-          {model !== undefined || effort !== undefined ? (
+          {branchSeamLabel !== undefined || model !== undefined || effort !== undefined ? (
             <p className="flex min-w-0 items-center gap-1.5 truncate text-[12px] text-ink-faint">
+              {branchSeamLabel !== undefined ? (
+                <span data-branch-seam-header className="shrink-0 text-ink-soft">{branchSeamLabel}</span>
+              ) : null}
+              {branchSeamLabel !== undefined && (model !== undefined || effort !== undefined) ? <span aria-hidden>·</span> : null}
               {model !== undefined ? <span className="truncate">{model}</span> : null}
               {model !== undefined && effort !== undefined ? <span aria-hidden>·</span> : null}
               {effort !== undefined ? (
@@ -862,7 +868,63 @@ function ChildAgentWorkspace({
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
-  const composerDisabled = !agentKnown || executorId === undefined;
+  const isBranch = selectedNode?.isBranch === true;
+  const branchSealed = selectedNode?.branchSealed === true;
+  const branchToolsLocked = selectedNode?.toolsLocked === true;
+  const branchSeed = selectedNode?.branchSeed;
+  const [branchFolding, setBranchFolding] = useState(false);
+  const [branchUnlocking, setBranchUnlocking] = useState(false);
+  const branchSeamLabel = useMemo(() => {
+    if (!isBranch) return undefined;
+    const parentLabel = selectedNode?.parentAgentId !== undefined && selectedNode.parentAgentId !== MAIN_AGENT_ID
+      ? (forest.byId[selectedNode.parentAgentId]?.label ?? selectedNode.parentAgentId)
+      : MAIN_AGENT_ID;
+    const parts = [t('transcript.branch.seamHeader', { parent: parentLabel })];
+    if (branchSeed === 'fresh' || branchSeed === 'compact' || branchSeed === 'verbatim') {
+      parts.push(t(`transcript.branch.seed.${branchSeed}` as I18nKey));
+    }
+    if (branchSealed) parts.push(t('transcript.branch.sealed'));
+    else if (branchToolsLocked) parts.push(t('transcript.branch.toolsLocked'));
+    return parts.join(' · ');
+  }, [isBranch, selectedNode?.parentAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
+
+  const handleUnlockBranchTools = useCallback(() => {
+    if (branchUnlocking || typeof client.setBranchToolsLock !== 'function') return;
+    setBranchUnlocking(true);
+    void client.setBranchToolsLock(sessionId, { branch_id: agentId, locked: false })
+      .then(() => controller?.resync())
+      .catch((error: unknown) => {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => { setBranchUnlocking(false); });
+  }, [agentId, branchUnlocking, client, controller, sessionId]);
+
+  const handleFoldBranch = useCallback(() => {
+    if (branchFolding || typeof client.foldBranch !== 'function') return;
+    setBranchFolding(true);
+    const note = draftRef.current.trim();
+    void client.foldBranch(sessionId, {
+      branch_id: agentId,
+      summary: note === '' ? undefined : note,
+      done: true,
+    })
+      .then(async (res) => {
+        if (note !== '') {
+          draftRef.current = '';
+          setDraft('');
+        }
+        await controller?.resync();
+        if (res.sealed) {
+          navigation.openSession();
+        }
+      })
+      .catch((error: unknown) => {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => { setBranchFolding(false); });
+  }, [agentId, branchFolding, client, controller, navigation, sessionId, setDraft]);
+
+  const composerDisabled = !agentKnown || executorId === undefined || branchSealed;
   const revealOwnSend = useCallback((joinsNow: boolean) => {
     if (!joinsNow && headerBusy) return;
     timelineActions.revealLatest();
@@ -1371,6 +1433,7 @@ function ChildAgentWorkspace({
         onFreshContext={openFreshContextPanel}
         onLocateSpawn={locateSpawnInMenu ? timelineActions.jumpToSpawn : undefined}
         promote={promoteAction}
+        branchSeamLabel={branchSeamLabel}
       />}
       timeline={{
         state: timelineState,
@@ -1387,6 +1450,38 @@ function ChildAgentWorkspace({
           error={sessionState.resyncError}
           onRetry={controller === null ? undefined : () => { void controller.resync(); }}
         />
+        {isBranch && !branchSealed ? (
+          <div
+            data-branch-fold-bar={agentId}
+            className="flex flex-wrap items-center justify-between gap-2 px-6 text-[12px] text-ink-soft"
+          >
+            <span className="truncate">
+              {branchToolsLocked ? t('transcript.branch.toolsLocked') : branchSeamLabel}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              {branchToolsLocked ? (
+                <button
+                  type="button"
+                  data-branch-unlock-tools
+                  disabled={branchUnlocking}
+                  onClick={handleUnlockBranchTools}
+                  className="h-7 cursor-pointer rounded-md border border-hairline bg-paper px-2.5 text-[12px] text-ink transition-colors hover:border-hairline-strong disabled:cursor-not-allowed disabled:text-ink-faint"
+                >
+                  {t('transcript.branch.unlockTools')}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                data-branch-fold-action
+                disabled={branchFolding}
+                onClick={handleFoldBranch}
+                className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
+              >
+                {t(branchFolding ? 'transcript.branch.folding' : 'transcript.branch.foldAction')}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {sendNotice?.scope === sendScope ? (
           <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
             {sendNotice.text}

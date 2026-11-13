@@ -31,7 +31,7 @@ type OriginMap = Record<string, ConfigOrigin>;
 
 const disposables = new DisposableStore();
 const cleanPath = 'C:/kiki/agents/builtin/agent.md';
-const tools = ['MemoryRead', 'WebSearch', 'ThreadSend', 'BrowserConnections', 'mcp__desktop__screenshot'];
+const tools = ['MemoryRead', 'WebSearch', 'ThreadSend', 'Branch', 'BrowserConnections', 'mcp__desktop__screenshot'];
 
 afterEach(() => disposables.clear());
 
@@ -99,20 +99,22 @@ function cleanDefault() {
 
 describe('factory capability matrix', () => {
   it('publishes the factory defaults from the config schema', () => {
-    expect(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS).toEqual({ browser: false, computer: false, memory: true, thread: true, web: true, send_message: false });
+    expect(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS).toEqual({ browser: false, branch: true, computer: false, memory: true, thread: true, web: true, send_message: false });
     expect(OptionalCapabilitiesConfigSchema.parse({}).defaults).toEqual({ ...OPTIONAL_CAPABILITY_FACTORY_DEFAULTS });
   });
 
-  it('admits memory, web, and thread for a new clean default session and keeps browser and computer closed', async () => {
+  it('admits memory, web, thread, and branch for a new clean default session and keeps browser and computer closed', async () => {
     const { policy, capabilities } = setup(cleanDefault(), tools);
     expect(policy.isToolActive('MemoryRead')).toBe(true);
     expect(policy.isToolActive('WebSearch')).toBe(true);
     expect(policy.isToolActive('ThreadSend')).toBe(true);
+    expect(policy.isToolActive('Branch')).toBe(true);
     expect(policy.isToolActive('BrowserConnections')).toBe(false);
     expect(policy.isToolActive('mcp__desktop__screenshot')).toBe(false);
     expect(policy.isToolActive('SendMessage')).toBe(false);
     const view = await capabilities.readSession('session-factory', 'workspace-factory');
     expect(view.rows.find((row) => row.id === 'thread')).toMatchObject({ choice: 'inherit', effective: true, reason: 'admitted' });
+    expect(view.rows.find((row) => row.id === 'branch')).toMatchObject({ choice: 'inherit', effective: true, reason: 'admitted' });
     expect(view.rows.find((row) => row.id === 'browser')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off' });
     expect(view.rows.find((row) => row.id === 'computer')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off' });
     expect(view.rows.find((row) => row.id === 'send_message')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off', defaultOn: false });

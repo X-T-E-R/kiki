@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_PROFILE_NAME } from '@kiki/agent-profiles/agentProfile';
 import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
 import { qualifyMcpToolName, sanitizeMcpNamePart } from '#/mcpCore/tool-naming';
 
-export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'web', 'send_message'] as const;
+export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'branch', 'web', 'send_message'] as const;
 export type OptionalCapabilityId = typeof OPTIONAL_CAPABILITY_IDS[number];
 export type CapabilityChoice = 'on' | 'off' | 'inherit';
 export type ProfileToolsSource = 'declared' | 'inherited-default' | 'builtin-default';
@@ -16,6 +16,7 @@ export function optionalCapabilityDocumentKey(hostId: string, sessionId: string)
 
 const MEMORY_TOOLS = new Set(['MemoryRead', 'MemorySearch', 'MemoryWrite']);
 const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'RoomRead', 'RoomAdd']);
+const BRANCH_TOOLS = new Set(['Branch']);
 const WEB_TOOLS = new Set(['WebSearch', 'FetchURL']);
 const SEND_MESSAGE_TOOLS = new Set(['SendMessage', 'SendUserMessage']);
 const GLOB_MAGIC = /[*?[\]{}]/;
@@ -89,6 +90,7 @@ export function optionalCapabilityForTool(name: string, computerServers: readonl
   if (namesComputer(name, computerServers)) return 'computer';
   if (MEMORY_TOOLS.has(name)) return 'memory';
   if (THREAD_TOOLS.has(name)) return 'thread';
+  if (BRANCH_TOOLS.has(name)) return 'branch';
   if (WEB_TOOLS.has(name)) return 'web';
   return undefined;
 }
@@ -150,6 +152,7 @@ function namesPattern(id: OptionalCapabilityId, pattern: string, computerServers
   if (id === 'computer') return namesComputer(pattern, computerServers);
   if (id === 'memory') return MEMORY_TOOLS.has(pattern);
   if (id === 'thread') return THREAD_TOOLS.has(pattern);
+  if (id === 'branch') return BRANCH_TOOLS.has(pattern);
   if (id === 'web') return WEB_TOOLS.has(pattern);
   return SEND_MESSAGE_TOOLS.has(pattern);
 }

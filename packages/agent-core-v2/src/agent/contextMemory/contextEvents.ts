@@ -122,6 +122,27 @@ export class ContextUndo extends Event2<z.infer<typeof contextUndoSchema>> {
 }
 export interface ContextUndo extends z.infer<typeof contextUndoSchema> {}
 
+const branchBaseAnchorSchema = z.object({
+  turnId: z.number().int().nonnegative().optional(),
+  messageId: z.string().min(1).optional(),
+}).strict();
+
+const branchBaseSchema = z.object({
+  version: z.literal(1),
+  parentAgentId: z.string().min(1),
+  seed: z.enum(['fresh', 'compact', 'verbatim']),
+  inheritedCount: z.number().int().nonnegative(),
+  baseAnchor: branchBaseAnchorSchema.optional(),
+}).strict();
+
+export class BranchBase extends Event2<z.infer<typeof branchBaseSchema>> {
+  static override readonly type = 'branch.base';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = branchBaseSchema;
+}
+export interface BranchBase extends z.infer<typeof branchBaseSchema> {}
+
 export interface ContextSplicedPayload {
   start: number;
   deleteCount: number;

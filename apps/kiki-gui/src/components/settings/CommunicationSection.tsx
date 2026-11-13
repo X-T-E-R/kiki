@@ -1,9 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import type { BranchUsagePreference } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   agentNotifyParentPatch,
+  branchAllowPatch,
+  branchUsagePreference,
+  branchUsagePreferencePatch,
+  isBranchEnabled,
   runtimeConfigDraftFromConfig,
   subscribeSettings,
   settingsSnapshot,
@@ -100,14 +105,30 @@ function useServerChoice<T>(
  * flips. The handoff notices that used to sit under them are engine wording a
  * person never sees, so they moved to Engine parameters (`HandoffNoticesCard`).
  */
+const BRANCH_PREFERENCES: readonly BranchUsagePreference[] = ['conservative', 'balanced', 'proactive'];
+
+const BRANCH_PREFERENCE_LABEL_KEY: Record<BranchUsagePreference, I18nKey> = {
+  conservative: 'st.sessions.branchPreference.conservative',
+  balanced: 'st.sessions.branchPreference.balanced',
+  proactive: 'st.sessions.branchPreference.proactive',
+};
+
 export function AgentMessagingCard() {
   const { t } = useI18n();
   const thread = useServerChoice((_draft, config) => optionalCapabilityState(config, 'thread')?.allowed ?? config.thread_communication?.enabled ?? false,
     (allowed) => threadAllowPatch(allowed ? null : false));
   const threadDefault = useServerChoice((_draft, config) => optionalCapabilityState(config, 'thread')?.default_on === true,
     (on) => ({ optional_capabilities: { defaults: { thread: on } } }));
+  const branch = useServerChoice((_draft, config) => optionalCapabilityState(config, 'branch')?.allowed ?? isBranchEnabled(config),
+    (allowed) => branchAllowPatch(allowed ? null : false));
+  const branchDefault = useServerChoice((_draft, config) => optionalCapabilityState(config, 'branch')?.default_on !== false,
+    (on) => ({ optional_capabilities: { defaults: { branch: on } } }));
+  const branchPref = useServerChoice((_draft, config) => branchUsagePreference(config),
+    (pref) => branchUsagePreferencePatch(pref));
   const notify = useServerChoice((draft) => draft.agentsNotifyParent, agentNotifyParentPatch);
-  const loading = thread.value === null || notify.value === null;
+  const loading = thread.value === null || branch.value === null || branchPref.value === null || notify.value === null;
+  const branchCapState = optionalCapabilityState(branch.configQuery.data, 'branch');
+  const branchHostLocked = branchCapState?.host_locked === true;
 
   return (
     <SectionCard id="st-card-agent-messaging" title={t('st.sessions.messagingTitle')}>
@@ -129,6 +150,32 @@ export function AgentMessagingCard() {
               />
               <FeedbackLine feedback={thread.error} />
             </div>
+            <div data-agent-messaging="branch" className="space-y-2.5">
+              <SettingField label={t('st.sessions.branchLabel')} help={t('st.sessions.branchHint')}>
+                <Toggle layout="bare" label={t('st.sessions.branchLabel')} checked={branch.value === true}
+                  disabled={branch.saving || branchHostLocked} onChange={(checked) => { void branch.apply(checked); }} />
+              </SettingField>
+              <DefaultOnSwitch
+                id="branch"
+                state={branchCapState}
+                disabled={branchDefault.saving}
+                onChange={(next) => { void branchDefault.apply(next); }}
+              />
+              <SettingField label={t('st.sessions.branchPreference')}>
+                <SettingsSegmented
+                  ariaLabel={t('st.sessions.branchPreference')}
+                  dataAttr="data-branch-preference"
+                  value={branchPref.value ?? 'balanced'}
+                  disabled={branch.value !== true || branchPref.saving || branchHostLocked}
+                  choices={BRANCH_PREFERENCES.map((pref) => ({
+                    value: pref,
+                    label: t(BRANCH_PREFERENCE_LABEL_KEY[pref]),
+                  }))}
+                  onChange={(next) => { void branchPref.apply(next); }}
+                />
+              </SettingField>
+              <FeedbackLine feedback={branch.error ?? branchPref.error} />
+            </div>
             <div data-agent-messaging="notify">
               <SettingField label={t('st.communication.notifyParent')} help={t('st.sessions.notifyHint')}>
                 <Toggle layout="bare" label={t('st.communication.notifyParent')} checked={notify.value === true}
@@ -137,7 +184,7 @@ export function AgentMessagingCard() {
               <FeedbackLine feedback={notify.error} />
             </div>
           </SettingsBox>
-          <SavedTick show={thread.saved || notify.saved} />
+          <SavedTick show={thread.saved || threadDefault.saved || branch.saved || branchDefault.saved || branchPref.saved || notify.saved} />
         </>
       )}
     </SectionCard>

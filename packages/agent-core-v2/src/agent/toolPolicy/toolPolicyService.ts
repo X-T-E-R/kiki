@@ -21,6 +21,7 @@ import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolS
 import type { ToolSource } from '#/tool/toolContract';
 import type { MobilePlatform } from '#/_base/node/resourceDefaults';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { SUBAGENT_SECTION, type SubagentConfig } from '#/session/subagent/configSection';
 import type { SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
@@ -84,10 +85,18 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   isToolActive(name: string, source: ToolSource = 'builtin'): boolean {
+    if (source === 'builtin') {
+      if (name === 'Merge' && this.scope.isBranch !== true) return false;
+      if (name === 'Branch' && (this.scope.isBranch === true || this.scope.agentId !== MAIN_AGENT_ID)) return false;
+    }
     const profile = this.profileData();
+    const isMainOrBranch = this.scope.parentAgentId === undefined || this.scope.isBranch === true;
+    const baseTools = name === 'Merge' && this.scope.isBranch === true && profile.activeToolNames !== undefined && !profile.activeToolNames.includes('Merge') && !profile.activeToolNames.includes('*')
+      ? [...profile.activeToolNames, 'Merge']
+      : profile.activeToolNames;
     return this.evaluate(
       {
-        tools: profile.activeToolNames,
+        tools: baseTools,
         toolAllowPolicies: profile.toolAllowPolicies,
         disallowedTools: profile.disallowedTools,
         disabledToolGroups: profile.disabledToolGroups,
@@ -95,7 +104,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       },
       name,
       source,
-      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
+      isMainOrBranch ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
       profile,
     );
   }
@@ -103,6 +112,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   isToolActiveForDisclosure(name: string, source: ToolSource = 'builtin'): boolean {
     if (name !== SELECT_TOOLS_TOOL_NAME && name !== CALL_TOOL_NAME) return this.isToolActive(name, source);
     const profile = this.profileData();
+    const isMainOrBranch = this.scope.parentAgentId === undefined || this.scope.isBranch === true;
     return this.evaluate(
       {
         disallowedTools: profile.disallowedTools,
@@ -111,7 +121,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       },
       name,
       source,
-      this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
+      isMainOrBranch ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
       profile,
     );
   }
@@ -121,6 +131,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     name: string,
     source: ToolSource = 'builtin',
   ): boolean {
+    if (source === 'builtin' && (name === 'Branch' || name === 'Merge')) return false;
     const data = this.profileData();
     return this.evaluate(
       {
@@ -258,7 +269,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
     policy.retain(sessionId, this.scope.agentId, {
       workspaceId,
-      agentKind: this.scope.parentAgentId === undefined ? 'main' : 'child',
+      agentKind: this.scope.parentAgentId === undefined || this.scope.isBranch === true ? 'main' : 'child',
       toolsSource: source,
       declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
       taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],

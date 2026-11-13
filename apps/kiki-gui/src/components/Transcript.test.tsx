@@ -2698,6 +2698,26 @@ describe('live and event chrome', () => {
       const literal = 'Message from thread sess-1:\n\nmy own words';
       expect(displayUserMessageText({ text: literal }).text).toBe(literal);
     });
+
+    it('strips the branch merge envelope and history pointer footer when branchFold metadata is present', () => {
+      const raw = [
+        'Merged branch branch-1 (Retry audit):',
+        '',
+        'Retry cap verified at 60s.',
+        '',
+        'Branch history: HistoryList({ agent_id: "branch-1" }) · HistoryRead({ agent_id: "branch-1", turn: 2 })',
+      ].join('\n');
+      const branchFold = {
+        foldId: 'fold_1',
+        branchId: 'branch-1',
+        branchTitle: 'Retry audit',
+        throughTurnId: 2,
+        done: true,
+      };
+      expect(displayUserMessageText({ text: raw, branchFold }).text).toBe('Retry cap verified at 60s.');
+      expect(displayUserMessageText({ text: raw }).text).toBe(raw);
+      expect(editableUserMessageText({ text: raw, branchFold })).toBe(raw);
+    });
   });
 
   describe('editableUserMessageText', () => {

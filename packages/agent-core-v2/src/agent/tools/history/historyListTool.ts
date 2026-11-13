@@ -5,18 +5,20 @@ import { IWorkspaceService } from '#/app/workspace/workspace';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
-import { classifyHistorySession, historyTargetError } from './historyTools';
+import { classifyHistorySession, historyTargetError, resolveAgentSelectorFromMeta } from './historyTools';
 
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
+const AgentSelectorSchema = z.string().trim().min(1).max(128).refine((id) => id !== '.' && id !== '..');
 
 export const HistoryListInputSchema = z.object({
   raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
-  kind: z.enum(['turns', 'agents']).optional().describe('Directory to browse; defaults to transcript turns. Use agents to discover archived agents in one session.'),
+  kind: z.enum(['turns', 'agents']).optional().describe('Directory to browse; defaults to transcript turns. Use agents to discover session branches and archived agents in one session.'),
   session_id: z.string().min(1).max(256).optional().describe('Session to browse; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor supplies its original session.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Workspace containing the session. Omit to use the indexed workspace. Another workspace requires access approval.'),
-  agent_id: AgentIdSchema.optional().describe('Exact agent for turns; defaults to this agent in the current session or main in another session. Not valid for agents.'),
+  agent_id: AgentSelectorSchema.optional().describe('Agent or branch ID (or branch name/title alias) for turns; defaults to this agent in the current session or main in another session. Pass agent_id="<branchId>" to browse an active or merged side-branch transcript. Not valid for agents.'),
   before_turn: z.number().int().nonnegative().optional().describe('List turns strictly before this 0-based turn number.'),
   after_turn: z.number().int().nonnegative().optional().describe('List turns strictly after this 0-based turn number.'),
   at: z.iso.datetime({ offset: true }).optional().describe('Start near the turn closest to this RFC3339 timestamp with timezone; mutually exclusive with before_turn and after_turn.'),
@@ -85,6 +87,10 @@ export interface HistoryDirectoryTurn {
 export interface HistoryDirectoryAgent {
   readonly agentId: string;
   readonly name?: string;
+  readonly kind?: 'main' | 'branch' | 'subagent';
+  readonly branchTitle?: string;
+  readonly branchSeed?: 'fresh' | 'compact' | 'verbatim';
+  readonly sealed?: boolean;
   readonly parentAgentId?: string;
   readonly firstTime?: string;
   readonly lastTime?: string;
@@ -105,6 +111,7 @@ export interface HistoryDirectoryPage {
 export interface IHistoryDirectory {
   readonly _serviceBrand: undefined;
   list(request: HistoryDirectoryRequest): Promise<HistoryDirectoryPage>;
+  resolveAgentId?(sessionId: string, selector: string): Promise<string | undefined>;
 }
 
 export const IHistoryDirectory = createDecorator<IHistoryDirectory>('historyDirectory');
@@ -199,7 +206,7 @@ function cursorInputMismatch(input: HistoryListInput, cursor: HistoryDirectoryCu
 export class HistoryListTool implements IHistoryListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryList' as const;
-  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Use before_turn or after_turn for a known range, at for a timestamp, and kind=agents to discover archived agents. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. A known session_id can omit workspace_id. An unknown session is omitted from the recovery call. For currently owned child executions, use AgentList.';
+  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Pass agent_id="<branchId>" (or a branch name/alias) to inspect an active or merged side-branch transcript, or use kind=agents to discover session branches and archived agents. Use before_turn or after_turn for a known range and at for a timestamp. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. A known session_id can omit workspace_id. An unknown session is omitted from the recovery call. For currently owned child executions, use AgentList.';
   readonly parameters = toInputJsonSchema(HistoryListInputSchema, (schema) => {
     schema['allOf'] = [
       {
@@ -233,20 +240,38 @@ export class HistoryListTool implements IHistoryListTool {
     @IWorkspaceService private readonly workspaces: IWorkspaceService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
+    @ISessionMetadata private readonly metadata?: ISessionMetadata,
   ) {}
+
+  private async resolveAgentSelector(sessionId: string, selector: string): Promise<string> {
+    if (sessionId === this.session.sessionId && this.metadata !== undefined) {
+      const fromLive = resolveAgentSelectorFromMeta((await this.metadata.read()).agents, selector);
+      if (fromLive !== undefined) return fromLive;
+    }
+    if (this.directory.resolveAgentId !== undefined) {
+      const resolved = await this.directory.resolveAgentId(sessionId, selector);
+      if (resolved !== undefined) return resolved;
+    }
+    return selector;
+  }
 
   async resolveExecution(input: HistoryListInput): Promise<ToolExecution> {
     const cursor = input.cursor === undefined ? undefined : decodeHistoryDirectoryCursor(input.cursor);
-    if (cursor !== undefined && cursorInputMismatch(input, cursor)) {
-      throw new Error('HistoryList cursor conflicts with the supplied filters. Pass only cursor to continue.');
+    if (cursor !== undefined) {
+      const sessionForCursor = input.session_id ?? cursor.request.sessionId;
+      const resolvedInputAgent = input.agent_id === undefined ? undefined : await this.resolveAgentSelector(sessionForCursor, input.agent_id);
+      if (cursorInputMismatch({ ...input, agent_id: resolvedInputAgent }, cursor)) {
+        throw new Error('HistoryList cursor conflicts with the supplied filters. Pass only cursor to continue.');
+      }
     }
     const source = cursor?.request;
     const kind = source?.kind ?? input.kind ?? 'turns';
     const sessionId = source?.sessionId ?? input.session_id ?? this.session.sessionId;
     const explicitWorkspace = source !== undefined ? source.workspaceId : input.workspace_id;
-    const agentId = kind === 'turns'
+    const rawAgentId = kind === 'turns'
       ? source?.agentId ?? input.agent_id ?? (sessionId === this.session.sessionId ? this.caller.agentId : 'main')
       : undefined;
+    const agentId = rawAgentId === undefined ? undefined : await this.resolveAgentSelector(sessionId, rawAgentId);
     if (kind === 'agents' && input.agent_id !== undefined) throw new Error('agent_id is only valid with kind=turns.');
     const beforeTurn = source?.beforeTurn ?? input.before_turn;
     const afterTurn = source?.afterTurn ?? input.after_turn;
@@ -328,6 +353,10 @@ export class HistoryListTool implements IHistoryListTool {
             agents: page.agents?.map((agent) => ({
               agent_id: agent.agentId,
               name: agent.name,
+              kind: agent.kind,
+              branch_title: agent.branchTitle,
+              branch_seed: agent.branchSeed,
+              sealed: agent.sealed,
               parent_agent_id: agent.parentAgentId,
               first_time: agent.firstTime,
               last_time: agent.lastTime,

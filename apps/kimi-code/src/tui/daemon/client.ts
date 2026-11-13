@@ -3,6 +3,12 @@ import { createKlient } from '@kiki/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
+  CreateSessionBranchRequest,
+  CreateSessionBranchResponse,
+  DiscardSessionBranchRequest,
+  DiscardSessionBranchResponse,
+  FoldSessionBranchRequest,
+  FoldSessionBranchResponse,
   GoalSnapshot,
   ListModelsResponse,
   ListNamedAgentProfilesResponse,
@@ -23,6 +29,8 @@ import type {
   QuestionResolveResult,
   PersonaSummary,
   Session,
+  SetSessionBranchToolsLockRequest,
+  SetSessionBranchToolsLockResponse,
   UpdateSessionProfileRequest,
 } from '@kiki/protocol';
 
@@ -309,12 +317,28 @@ export class DaemonClient implements SessionTransport {
     return this.sessions.forkSession(sessionId, body);
   }
 
+  createBranch(sessionId: string, body: CreateSessionBranchRequest = {}): Promise<CreateSessionBranchResponse> {
+    return this.sessions.createBranch!(sessionId, body);
+  }
+
+  foldBranch(sessionId: string, body: FoldSessionBranchRequest): Promise<FoldSessionBranchResponse> {
+    return this.sessions.foldBranch!(sessionId, body);
+  }
+
+  discardBranch(sessionId: string, body: DiscardSessionBranchRequest): Promise<DiscardSessionBranchResponse> {
+    return this.sessions.discardBranch!(sessionId, body);
+  }
+
+  setBranchToolsLock(sessionId: string, body: SetSessionBranchToolsLockRequest): Promise<SetSessionBranchToolsLockResponse> {
+    return this.sessions.setBranchToolsLock!(sessionId, body);
+  }
+
   undoSession(sessionId: string): Promise<unknown> {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:undo`, { count: 1 });
   }
 
-  abortPrompt(sessionId: string, promptId: string): Promise<PromptAbortResponse> {
-    return this.sessions.abortPrompt(sessionId, promptId);
+  abortPrompt(sessionId: string, promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse> {
+    return this.sessions.abortPrompt(sessionId, promptId, agentId, queuedOnly);
   }
 
   abortTurn(sessionId: string, turnId: number): Promise<TurnAbortResponse> {

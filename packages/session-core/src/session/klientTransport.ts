@@ -1,4 +1,13 @@
-import { editMessageRequestSchema, regenerateMessageRequestSchema, forkSessionRequestSchema, promoteAgentRequestSchema } from '@kiki/protocol';
+import {
+  createSessionBranchRequestSchema,
+  discardSessionBranchRequestSchema,
+  editMessageRequestSchema,
+  foldSessionBranchRequestSchema,
+  forkSessionRequestSchema,
+  promoteAgentRequestSchema,
+  regenerateMessageRequestSchema,
+  setSessionBranchToolsLockRequestSchema,
+} from '@kiki/protocol';
 import { RPCError, type SessionCommandsFacade } from '@kiki/klient/session-view';
 import { ApiError, type SessionTransport } from '../transport';
 
@@ -47,6 +56,10 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     editMessage: (id, target, body) => active(id, () => commands(id).edit(target, editMessageRequestSchema.parse(body))),
     regenerateMessage: (id, target, body) => active(id, () => commands(id).regenerate(target, regenerateMessageRequestSchema.parse(body))),
     forkSession: (id, body) => run(() => commands(id).fork(forkSessionRequestSchema.parse(body))),
+    createBranch: (id, body) => run(() => commands(id).branch(createSessionBranchRequestSchema.parse(body))),
+    foldBranch: (id, body) => run(() => commands(id).foldBranch(foldSessionBranchRequestSchema.parse(body))),
+    discardBranch: (id, body) => run(() => commands(id).discardBranch(discardSessionBranchRequestSchema.parse(body))),
+    setBranchToolsLock: (id, body) => run(() => commands(id).setBranchToolsLock(setSessionBranchToolsLockRequestSchema.parse(body))),
     promoteAgent: (id, agentId, body = {}) => run(() => commands(id).promoteAgent(agentId, promoteAgentRequestSchema.parse(body))),
     abortPrompt: (id, target, agentId, queuedOnly) => run(() => commands(id).abort(target, agentId, queuedOnly)),
     abortTurn: (id, target) => run(() => commands(id).abortTurn(target)),

@@ -28,6 +28,24 @@ export const permissionModeConfiguredKey = defineState(
   .replayable({ schema: z.custom<boolean>() })
   .on(PermissionSetMode, () => true);
 
+const permissionSetModeCeilingSchema = z.object({
+  ceiling: z.custom<PermissionMode>(),
+});
+
+export class PermissionSetModeCeiling extends Event2<z.infer<typeof permissionSetModeCeilingSchema>> {
+  static override readonly type = 'permission.set_ceiling';
+  static override readonly durable = true;
+  static override readonly schema = permissionSetModeCeilingSchema;
+}
+export interface PermissionSetModeCeiling extends z.infer<typeof permissionSetModeCeilingSchema> {}
+
+export const permissionModeCeilingKey = defineState(
+  'permissionMode.ceiling',
+  (): PermissionMode | null => null,
+)
+  .replayable({ schema: z.custom<PermissionMode | null>() })
+  .on(PermissionSetModeCeiling, (_s, e) => e.ceiling);
+
 export const permissionModeExternalOverrideKey = defineState(
   'permissionMode.externalOverride',
   (): PermissionMode | null => null,
