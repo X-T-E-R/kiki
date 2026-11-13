@@ -39,6 +39,7 @@ import { TourLine } from './firstRun/TourLine';
 import { lazyPage } from './LazyPage';
 import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
+import { PhoneRemoteSpaceLine } from './PageChrome';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
@@ -433,9 +434,12 @@ function NewSessionPageContent({
               >
                 <Icon name="menu" size={16} />
               </button>
-              <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-                {t('new.title')}
-              </h1>
+              <div className="min-w-0 flex-1">
+                <h1 className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+                  {t('new.title')}
+                </h1>
+                <PhoneRemoteSpaceLine />
+              </div>
             </header>,
             slots.header,
           )
