@@ -44,7 +44,7 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
     const id = currentPluginId(pluginId);
     const extension = id === builtinHistory.id ? { settings: builtinHistory.settings } : (await this.plugins.getPluginInfo({ id })).manifest?.kiki;
     if (extension?.settings === undefined) return extension;
-    if (extension.mediaSources === undefined && extension.mediaProviders === undefined && extension.mediaScriptProvider === undefined) {
+    if (extension.mediaSources === undefined && extension.mediaProviders === undefined && extension.asrProviders === undefined && extension.mediaScriptProvider === undefined) {
       return extension;
     }
     const properties = enrichMediaProperties(extension, extension.settings.schema.properties);
@@ -292,6 +292,14 @@ function projectLegacyMediaProperties(extension: PluginExtension, properties: Re
   for (const definition of extension.mediaProviders ?? []) {
     const group = mediaSourceGroupForDefinition(extension, definition);
     const connectionKey = mediaConnectionSettingKey(definition.connectionSetting, group?.settingsPrefix);
+    if (connectionKey === undefined) continue;
+    const property = properties[connectionKey];
+    if (property?.type === 'string' && property.secret !== true && property.format === undefined) {
+      properties[connectionKey] = { ...property, format: 'kiki-connection' };
+    }
+  }
+  for (const definition of extension.asrProviders ?? []) {
+    const connectionKey = definition.connectionSetting;
     if (connectionKey === undefined) continue;
     const property = properties[connectionKey];
     if (property?.type === 'string' && property.secret !== true && property.format === undefined) {

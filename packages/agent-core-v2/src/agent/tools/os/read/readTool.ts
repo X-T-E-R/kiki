@@ -7,6 +7,7 @@ import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeW
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -285,6 +286,7 @@ export class ReadTool implements IReadTool {
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
+    @ISessionContext private readonly session?: ISessionContext,
   ) {}
 
   private workspaceConfig(view: RuntimeWorkspaceView): WorkspaceConfig {
@@ -299,8 +301,13 @@ export class ReadTool implements IReadTool {
     const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog.catalog.getSkillRoots();
-    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir,
-      inspected.identity.runtimeId === 'local' ? kikiDefinitionReadRoots(this.bootstrap) : []);
+    const workspace = withDefinitionReadRoots({
+      ...this.workspaceConfig(view),
+      sessionAttachmentsReadRoot: inspected.identity.runtimeId === 'local' && this.session !== undefined
+        ? join(this.session.sessionDir, 'attachments')
+        : undefined,
+    }, roots, env.homeDir,
+    inspected.identity.runtimeId === 'local' ? kikiDefinitionReadRoots(this.bootstrap) : []);
     const pathOptions = { env, workspace, operation: 'read' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;

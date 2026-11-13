@@ -1,10 +1,29 @@
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { IAgentContextMemoryService, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IAgentPromptService, IBootstrapService, IBotService, IConfigService, IEventService, IFileService, ISessionContext, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionMediaStore, ISessionMetadata, ISessionQuestionService, ITelemetryService, promptAdmission, type Scope } from '@kiki/agent-core-v2';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { HostProcessService, IAgentContextMemoryService, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IAgentPromptService, IBootstrapService, IBotService, IConfigService, IEventService, IFileService, IHostProcessService, ISessionContext, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionMediaStore, ISessionMetadata, ISessionQuestionService, IWorkAdmissionService, ITelemetryService, promptAdmission, type Scope } from '@kiki/agent-core-v2';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
-import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
+import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { IPluginService } from '@kiki/agent-core-v2/app/plugin/plugin';
+import { PluginService } from '@kiki/agent-core-v2/app/plugin/pluginService';
+import { IPluginHostService, PluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
+import { IPluginSettingsService, PluginSettingsService } from '@kiki/agent-core-v2/app/plugin/pluginSettingsService';
+import { IPluginUsageService } from '@kiki/agent-core-v2/app/pluginUsage/pluginUsage';
+import { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
+import { IProviderService, type ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
+import { IOAuthService } from '@kiki/agent-core-v2/app/auth/auth';
+import { IRequestIdentityCatalog, RequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
+import { ISkillDiscovery } from '@kiki/agent-core-v2/app/skillCatalog/skillDiscovery';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { LifecycleScope } from '@kiki/agent-core-v2/app/scopes';
+import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '@kiki/agent-core-v2/_base/di/scope';
+import { createScopedTestHost, stubPair } from '@kiki/agent-core-v2/_base/di/test';
+import { Event } from '@kiki/agent-core-v2/_base/event';
+import { stubBootstrap } from '../../../../agent-core-v2/test/app/bootstrap/stubs';
 import { createFeishuSessionAdapter, FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,11 +44,16 @@ const NOTICE = 'This platform rejected the message as too long and cannot take a
 const identity: ImInboundIdentity = { chatId: 'c1', senderId: 'u1', topicId: '0', senderName: 'Ada' };
 
 const homes: string[] = [];
+const pluginHosts: Array<{ dispose(): Promise<void> }> = [];
+const hostProcesses: HostProcessService[] = [];
 let service: NotificationService | undefined;
 
 afterEach(async () => {
   await service?.close();
   service = undefined;
+  await Promise.all(pluginHosts.splice(0).map((host) => host.dispose()));
+  await Promise.all(hostProcesses.splice(0).map((host) => host.dispose()));
+  _clearScopedRegistryForTests();
   await Promise.all(homes.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -37,6 +61,114 @@ async function tempHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'kiki-im-slice-'));
   homes.push(home);
   return home;
+}
+
+function pcmWav(sampleRate: number, channels: number, durationMs: number): Buffer {
+  const bitsPerSample = 16;
+  const frames = Math.round(sampleRate * durationMs / 1000);
+  const dataBytes = frames * channels * bitsPerSample / 8;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write('RIFF', 0, 'ascii');
+  wav.writeUInt32LE(wav.byteLength - 8, 4);
+  wav.write('WAVE', 8, 'ascii');
+  wav.write('fmt ', 12, 'ascii');
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(channels, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28);
+  wav.writeUInt16LE(channels * bitsPerSample / 8, 32);
+  wav.writeUInt16LE(bitsPerSample, 34);
+  wav.write('data', 36, 'ascii');
+  wav.writeUInt32LE(dataBytes, 40);
+  for (let frame = 0; frame < frames; frame++) {
+    const sample = Math.round(Math.sin(2 * Math.PI * 440 * frame / sampleRate) * 12_000);
+    for (let channel = 0; channel < channels; channel++) wav.writeInt16LE(sample, 44 + (frame * channels + channel) * 2);
+  }
+  return wav;
+}
+
+async function createAsrPluginHost(home: string): Promise<IPluginHostService> {
+  _clearScopedRegistryForTests();
+  registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
+  registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
+  registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnDemand, 'plugin');
+  registerScopedService(LifecycleScope.App, IAtomicDocumentStore, JsonAtomicDocumentStore, ScopeActivation.OnDemand, 'storage');
+  registerScopedService(LifecycleScope.App, IRequestIdentityCatalog, RequestIdentityCatalog, ScopeActivation.OnDemand, 'requestIdentity');
+  const storage = new FileStorageService(home);
+  const configSections = new Map<string, unknown>();
+  const config = {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidSectionChange: Event.None,
+    get: (key: string) => configSections.get(key) ?? {},
+    set: async (key: string, value: unknown) => { configSections.set(key, value); },
+    replace: async (key: string, value: unknown) => { configSections.set(key, value); },
+    replaceSections: async (sections: Record<string, unknown>) => { for (const [key, value] of Object.entries(sections)) configSections.set(key, value); },
+  } as unknown as IConfigService;
+  const providers = {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChangeProviders: Event.None,
+    onDidChangeDefaultProvider: Event.None,
+    onDidChangeTransportDefaults: Event.None,
+    get: () => undefined,
+    list: () => ({} as Record<string, ProviderConfig>),
+    getDefaultProvider: () => undefined,
+    set: async () => undefined,
+    delete: async () => undefined,
+    loadAll: () => undefined,
+    replaceAll: async () => undefined,
+    setDefaultProvider: async () => undefined,
+    transportDefaults: () => ({}),
+    setTransportDefaults: () => undefined,
+  } as unknown as IProviderService;
+  const usage = {
+    _serviceBrand: undefined,
+    enabled: () => false,
+    allows: async () => true,
+    registerPluginStateReader: () => ({ dispose: () => undefined }),
+    onDidChange: Event.None,
+    onDidApply: Event.None,
+  } as unknown as IPluginUsageService;
+  const target = createScopedTestHost([
+    stubPair(IBootstrapService, stubBootstrap(home)),
+    stubPair(IConfigService, config),
+    stubPair(IFlagService, { enabled: (id: string) => id !== 'plugin_app_lifecycle' } as unknown as IFlagService),
+    stubPair(IPluginUsageService, usage),
+    stubPair(ISessionIndex, { get: async () => undefined } as unknown as ISessionIndex),
+    stubPair(ISessionManager, {} as ISessionManager),
+    stubPair(IProviderService, providers),
+    stubPair(IModelCatalog, { _serviceBrand: undefined, listModels: async () => [], listProviders: async () => [] } as unknown as IModelCatalog),
+    stubPair(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: async () => 'fixture-token' }) } as unknown as IOAuthService),
+    stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
+    stubPair(IFileSystemStorageService, storage),
+  ]);
+  try {
+    const source = fileURLToPath(new URL('../../../../agent-core-v2/test/fixtures/plugin-asr/', import.meta.url));
+    const plugins = target.app.accessor.get(IPluginService);
+    const plan = await plugins.previewPlugin({ source });
+    await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+    await plugins.setPluginEnabled({ id: 'fixture-asr', enabled: true });
+    const pluginHost = target.app.accessor.get(IPluginHostService);
+    expect(await pluginHost.listAsrProviders()).toMatchObject([
+      { pluginId: 'fixture-asr', definition: { id: 'speech' } },
+      { pluginId: 'fixture-asr', definition: { id: 'alternate' } },
+    ]);
+    pluginHosts.push({
+      dispose: async () => {
+        await target.dispose();
+        await storage.close();
+        _clearScopedRegistryForTests();
+      },
+    });
+    return pluginHost;
+  } catch (error) {
+    await target.dispose();
+    await storage.close();
+    _clearScopedRegistryForTests();
+    throw error;
+  }
 }
 
 function requestText(body: RequestInit['body']): string {
@@ -598,9 +730,14 @@ describe('long replies', () => {
 
   it('routes a Feishu post rich-text message through createImSessionHost saveMedia and submit into IAgentPromptService', async () => {
     const home = await tempHome();
-    let storedConfig: unknown;
+    const pluginHost = await createAsrPluginHost(home);
+    const listAsrProviders = vi.spyOn(pluginHost, 'listAsrProviders');
+    const processService = new HostProcessService();
+    hostProcesses.push(processService);
+    const audioBytes = pcmWav(44_100, 2, 200);
+    const configSections = new Map<string, unknown>();
     const docs = new Map<string, unknown>();
-    const savedFiles = new Map<string, { id: string; name: string; media_type: string; size: number; bytes: Buffer }>();
+    const savedFiles = new Map<string, { id: string; name: string; media_type: string; size: number; bytes: Buffer; path: string }>();
     const submittedPrompts: unknown[] = [];
     let fileSeq = 0;
 
@@ -633,16 +770,30 @@ describe('long replies', () => {
       },
     };
     const sessionMediaStore = {
-      materialize: async () => undefined,
+      materialize: async (input: { fileId: string; size: number; name: string; mimeType: string; stream: () => AsyncIterable<Uint8Array> }) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.stream()) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        const path = join(home, 'media', input.fileId);
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, bytes);
+        savedFiles.set(input.fileId, { id: input.fileId, name: input.name, media_type: input.mimeType, size: input.size, bytes, path });
+        return path;
+      },
       retain: async () => undefined,
       open: async (id: string) => {
         const entry = savedFiles.get(id);
-        return entry === undefined ? undefined : { size: entry.size, mediaType: entry.media_type };
+        return entry === undefined ? undefined : {
+          path: entry.path, name: entry.name, size: entry.size, mediaType: entry.media_type,
+          stream: async function* () { yield entry.bytes; },
+        };
       },
+      resolveDisplayPath: async (id: string) => savedFiles.get(id)?.path,
       read: async (id: string) => {
         const entry = savedFiles.get(id);
         return entry === undefined ? undefined : { name: entry.name, data: entry.bytes };
       },
+      pathFor: () => undefined,
     };
     const sessionHandle = {
       accessor: {
@@ -663,7 +814,7 @@ describe('long replies', () => {
         const bytes = Buffer.concat(chunks);
         const id = `file_${++fileSeq}`;
         const meta = { id, name, media_type: options?.mimeType ?? 'image/png', size: bytes.byteLength };
-        savedFiles.set(id, { ...meta, bytes });
+        savedFiles.set(id, { ...meta, bytes, path: join(home, `${id}-${name}`) });
         return meta;
       },
       get: async (id: string) => {
@@ -679,8 +830,10 @@ describe('long replies', () => {
           if (key === IConfigService) {
             return {
               ready: Promise.resolve(),
-              get: () => storedConfig,
-              replaceSections: async (sections: Record<string, unknown>) => { storedConfig = sections['notifications']; },
+              get: (section: string) => configSections.get(section),
+              replace: async (section: string, value: unknown) => { configSections.set(section, value); },
+              set: async (section: string, value: unknown) => { configSections.set(section, value); },
+              replaceSections: async (sections: Record<string, unknown>) => { for (const [section, value] of Object.entries(sections)) configSections.set(section, value); },
             };
           }
           if (key === IBootstrapService) return { cacheDir: home, scope: () => 'store' };
@@ -696,7 +849,9 @@ describe('long replies', () => {
           if (key === ISessionIndex) return { get: async (id: string) => id === 'home' ? { id, title: 'Home' } : undefined, listRecent: async () => ({ items: [{ id: 'home', title: 'Home' }] }) };
           if (key === ISessionManager) return { list: () => [], get: () => sessionHandle, acquire: async () => ({ handle: sessionHandle, dispose: async () => undefined }) };
           if (key === IBotService) return { list: async () => [{ personaId: 'ada', name: 'Ada', homeSessionId: 'home' }], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };
-          if (key === IPluginHostService) return { attachImAdapters: async () => undefined };
+          if (key === IPluginHostService) return pluginHost;
+          if (key === IHostProcessService) return processService;
+          if (key === IWorkAdmissionService) return { run: (_category: string, work: () => Promise<unknown>) => work() };
           if (key === IFileService) return fileService;
           if (key === ITelemetryService) return { withContext: () => ({ track() {}, track2() {} }) };
           if (key === IEventService) return { publish() {} };
@@ -726,6 +881,7 @@ describe('long replies', () => {
           if (request.op === 'download') {
             if (request.resource_key === 'img_fail') return { ok: false, http_status: 500 };
             if (request.resource_key === 'img_big') return { ok: false, too_large: true };
+            if (request.resource_key === 'aud_ok' || request.resource_key === 'aud_explicit' || request.resource_key === 'aud_off') return { ok: true, bytes: Uint8Array.from(audioBytes) };
             return { ok: true, bytes: new Uint8Array(pngBytes) };
           }
           return { ok: true, message_id: 'om_sent' };
@@ -734,11 +890,12 @@ describe('long replies', () => {
       retry_ms: 0,
     }, { async load() { return undefined; }, async save() {} });
 
+    const asrWarnings = vi.fn();
     const bridge = await createImSessionHost({
       core,
       homeDir: home,
       notifications: service,
-      logger: { info() {} },
+      logger: { info() {}, warn: asrWarnings },
       factories: [{ providerKind: 'feishu_app', create: () => new HubSessionAdapter(feishuRaw, home) }],
       wechatFetch: () => Promise.reject(new Error('wechat_fetch_blocked')),
     });
@@ -793,8 +950,47 @@ describe('long replies', () => {
           content: JSON.stringify({ image_key: 'img_big', caption: 'Single oversized image with caption' }),
         },
       });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-audio',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_audio',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'audio',
+          content: JSON.stringify({ file_key: 'aud_ok', caption: 'Listen to this voice note' }),
+        },
+      });
+      expect(listAsrProviders).toHaveBeenCalledTimes(1);
+      await bridge.setPolicy({ ...bridge.policy(), asr_mode: 'auto', asr_provider: 'fixture-asr' });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-audio-explicit',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_audio_explicit',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'audio',
+          content: JSON.stringify({ file_key: 'aud_explicit', caption: 'Use explicit speech recognizer' }),
+        },
+      });
+      await bridge.setPolicy({ ...bridge.policy(), asr_mode: 'off', asr_provider: null });
+      await feishuHandlers?.onMessage({
+        event_id: 'ev-slice-audio-off',
+        app_id: 'cli_0011223344556692',
+        sender: { sender_id: { open_id: 'ou_user_1' } },
+        message: {
+          message_id: 'om_slice_audio_off',
+          chat_id: 'oc_slice_p2p',
+          chat_type: 'p2p',
+          message_type: 'audio',
+          content: JSON.stringify({ file_key: 'aud_off', caption: 'Listen without transcription' }),
+        },
+      });
 
-      expect(submittedPrompts).toHaveLength(2);
+      expect(submittedPrompts).toHaveLength(5);
       const submitted = submittedPrompts[0] as {
         role: string;
         providerMessageId?: string;
@@ -802,13 +998,14 @@ describe('long replies', () => {
       };
       expect(submitted.role).toBe('user');
       expect(submitted.providerMessageId).toBe('om_slice_post');
-      expect(submitted.content.map((part) => part.type)).toEqual(['text', 'image_url', 'text', 'text', 'text', 'text']);
+      expect(submitted.content.map((part) => part.type)).toEqual(['text', 'text', 'image_url', 'text', 'text', 'text', 'text']);
       expect(submitted.content[0]?.text).toBe('Rich Post Title\nFirst paragraph before image');
-      expect(submitted.content[1]?.imageUrl?.url).toBe('kimi-file://file_1');
-      expect(submitted.content[2]?.text).toBe('Middle paragraph before failed and oversized images');
-      expect(submitted.content[3]?.text).toBe('[Unavailable external image: download_failed]');
-      expect(submitted.content[4]?.text).toBe('[Unavailable external image: too_large]');
-      expect(submitted.content[5]?.text).toBe('Closing paragraph');
+      expect(submitted.content[1]?.text).toMatch(/^Attached file "image" \(image\/jpeg, 70 bytes\): .*f_[a-f0-9]{32}-image — open it with the Read tool$/u);
+      expect(submitted.content[2]?.imageUrl?.url).toMatch(/^kimi-file:\/\/f_[a-f0-9]{32}$/u);
+      expect(submitted.content[3]?.text).toBe('Middle paragraph before failed and oversized images');
+      expect(submitted.content[4]?.text).toBe('[Unavailable external image: download_failed]');
+      expect(submitted.content[5]?.text).toBe('[Unavailable external image: too_large]');
+      expect(submitted.content[6]?.text).toBe('Closing paragraph');
 
       const submittedSingleBig = submittedPrompts[1] as {
         role: string;
@@ -820,6 +1017,61 @@ describe('long replies', () => {
         { type: 'text', text: 'Single oversized image with caption', presentation: undefined },
         { type: 'text', text: '[Unavailable external image: too_large]', presentation: undefined },
       ]);
+      const submittedAudio = submittedPrompts[2] as {
+        providerMessageId?: string;
+        content: { type: string; text?: string; audioUrl?: { url: string; name?: string } }[];
+      };
+      expect(submittedAudio.providerMessageId).toBe('om_slice_audio');
+      expect(submittedAudio.content.map((part) => part.type)).toEqual(['text', 'text', 'text', 'audio_url', 'text']);
+      expect(submittedAudio.content[0]?.text).toBe('Listen to this voice note');
+      expect(submittedAudio.content[1]?.text).toMatch(/^Attached audio "voice\.opus" \(audio\/opus, 35324 bytes\): .*f_[a-f0-9]{32}-voice\.opus — listen with an audio-capable tool or use this path$/u);
+      expect(submittedAudio.content[2]?.text).toMatch(/^Attached audio "voice\.wav" \(16 kHz mono 16-bit PCM WAV, \d+ bytes\): .*f_[a-f0-9]{32}\.wav — listen with an audio-capable tool or use this path$/u);
+      expect(submittedAudio.content[3]?.audioUrl?.url).toMatch(/^kimi-file:\/\/f_[a-f0-9]{32}$/u);
+      const wavPath = submittedAudio.content[2]?.text?.match(/: (.+f_[a-f0-9]{32}\.wav) —/u)?.[1];
+      expect(wavPath).toBeDefined();
+      const fileId = wavPath!.match(/f_[a-f0-9]{32}\.wav$/u)?.[0].slice(0, -4);
+      expect(fileId).toMatch(/^f_[a-f0-9]{32}$/u);
+      const exactFileId = fileId!;
+      expect(wavPath).toBe(join(home, 'attachments', `${exactFileId}.wav`));
+      const originalPath = join(home, 'attachments', `${exactFileId}-voice.opus`);
+      expect(submittedAudio.content[1]?.text).toContain(originalPath);
+      expect(await readFile(originalPath)).toEqual(audioBytes);
+      const wav = await readFile(wavPath!);
+      expect(wav.subarray(0, 4).toString()).toBe('RIFF');
+      expect(wav.subarray(8, 12).toString()).toBe('WAVE');
+      expect(wav.readUInt16LE(20)).toBe(1);
+      expect(wav.readUInt16LE(22)).toBe(1);
+      expect(wav.readUInt32LE(24)).toBe(16_000);
+      expect(wav.readUInt16LE(34)).toBe(16);
+      expect(wav.byteLength).toBeGreaterThan(44);
+      expect(wav.byteLength).toBeLessThan(audioBytes.byteLength);
+      expect(submittedAudio.content[4]?.text).toBe(`Audio transcription: audio/wav:auto:${wavPath}:${join(home, 'media', exactFileId)}::none`);
+
+      const submittedAudioExplicit = submittedPrompts[3] as {
+        providerMessageId?: string;
+        content: { type: string; text?: string; audioUrl?: { url: string; name?: string } }[];
+      };
+      expect(submittedAudioExplicit.providerMessageId).toBe('om_slice_audio_explicit');
+      expect(submittedAudioExplicit.content.map((part) => part.type)).toEqual(['text', 'text', 'text', 'audio_url', 'text']);
+      expect(submittedAudioExplicit.content[0]?.text).toBe('Use explicit speech recognizer');
+      expect(submittedAudioExplicit.content[4]?.text).toMatch(/^Audio transcription: audio\/wav:auto:/u);
+      expect(listAsrProviders).toHaveBeenCalledTimes(1);
+
+      const submittedAudioOff = submittedPrompts[4] as {
+        providerMessageId?: string;
+        content: { type: string; text?: string; audioUrl?: { url: string; name?: string } }[];
+      };
+      expect(submittedAudioOff.providerMessageId).toBe('om_slice_audio_off');
+      expect(submittedAudioOff.content.map((part) => part.type)).toEqual(['text', 'text', 'text', 'audio_url']);
+      expect(submittedAudioOff.content[0]?.text).toBe('Listen without transcription');
+      expect(submittedAudioOff.content[2]?.text).toMatch(/16 kHz mono 16-bit PCM WAV/u);
+      expect(submittedAudioOff.content[2]?.text).toMatch(/f_[a-f0-9]{32}\.wav/u);
+      const offWavPath = submittedAudioOff.content[2]?.text?.match(/: (.+f_[a-f0-9]{32}\.wav) —/u)?.[1];
+      expect(offWavPath).toBeDefined();
+      const offWav = await readFile(offWavPath!);
+      expect(offWav.byteLength).toBeGreaterThan(44);
+      expect(offWav.readUInt32LE(24)).toBe(16_000);
+      expect(asrWarnings).toHaveBeenCalledWith({ asr: 'off' }, 'IM audio transcription unavailable');
     } finally {
       await bridge.close();
     }

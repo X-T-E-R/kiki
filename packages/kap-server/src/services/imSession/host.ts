@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 import {
   ErrorCodes,
@@ -14,9 +15,11 @@ import {
   IAgentPromptService,
   IBootstrapService,
   IAgentContextMemoryService,
+  IConfigService,
   IBotService,
   IEventService,
   IFileService,
+  IHostProcessService,
   ISessionActivityView,
   ISessionApprovalService,
   ISessionContext,
@@ -39,8 +42,11 @@ import {
   type Scope,
   type SessionApprovalRequest,
 } from '@kiki/agent-core-v2';
-import { messageContentSchema, type ImProviderKind, type MessageContent } from '@kiki/protocol';
+import { messageContentSchema, type AsrTranscribeInput, type ImProviderKind, type MessageContent } from '@kiki/protocol';
+import { SEND_MESSAGE_SECTION, type SendMessageConfig } from '@kiki/agent-core-v2/agent/tools/message/configSection';
+import type { ImPolicy } from '@kiki-dsh/im-bridge-core/imSession';
 import { createSafeHttpTransport } from '@nb-im/core';
+import type { PromptSubmission } from '../../protocol/rest-prompt';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { IImMessageHistoryReader } from '@kiki/agent-core-v2/app/bot/imMessageHistory';
@@ -50,7 +56,8 @@ import { PluginImAdapterBridge } from './pluginAdapter';
 import { parseMediaBlobRef } from '@kiki/transcript';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
-import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
+import { audioWavAttachmentPath, convertAudioToWav } from '../../lib/ffmpegAudio';
+import { contentToCoreParts, resolvePromptMediaFiles, sanitizeAttachmentName } from '../../lib/promptMedia';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
 import { StorageStartupCleanupError } from '../../storageStartupCleanup';
 import type { NotificationService } from '../notifications/notificationService';
@@ -66,7 +73,10 @@ const SESSION_KINDS = new Set<ImProviderKind>(['feishu_app', 'onebot_v11', 'wech
 
 interface HostLogger {
   info(fields: Record<string, string | number | boolean>, message: string): void;
+  warn?(fields: Record<string, string | number | boolean>, message: string): void;
 }
+
+type ImReplaceContent = Parameters<NonNullable<ImSessionPorts['sessions']['replace']>>[2];
 
 export async function createImSessionHost(input: {
   readonly core: Scope;
@@ -81,10 +91,12 @@ export async function createImSessionHost(input: {
   input.signal?.throwIfAborted();
   const factories = [...(input.factories ?? loadSessionFactories(input.homeDir))];
   const plugins = new PluginImAdapterBridge(factories);
-  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins);
+  let activeBridge: ImSessionBridge | undefined;
+  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins, () => activeBridge?.policy() ?? { allowed: true, default_enabled: true });
   const fetchImpl = input.wechatFetch ?? ((url, init) => globalThis.fetch(url, init));
   const wechatLogin = new WechatQrLogin(fetchImpl, () => ports.wechatTokens(), async (credential) => ports.credentials.create!({ providerKind: 'wechat_bridge', credential }));
   const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir), wechatLogin });
+  activeBridge = bridge;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (closing === undefined) {
@@ -161,6 +173,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     private readonly notificationService: NotificationService,
     readonly logger: HostLogger,
     private readonly plugins: PluginImAdapterBridge,
+    private readonly readPolicy: () => ImPolicy,
   ) {}
 
   readonly history = {
@@ -266,6 +279,8 @@ class NotificationSessionPorts implements ImSessionPorts {
       return aborted;
     }),
     saveMedia: (input) => this.saveMedia(input),
+    replace: (sessionId, promptId, content) => this.replaceQueuedPrompt(sessionId, promptId, content),
+    retract: (sessionId, promptId) => this.retractQueuedPrompt(sessionId, promptId),
     historyMedia: (sessionId, content) => this.inSession(sessionId, async (session) => {
       const store = session.accessor.get(ISessionMediaStore);
       const available: MessageContent[] = [];
@@ -478,17 +493,139 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
-  private async saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]> {
+  private async saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string; voice?: boolean; signal?: AbortSignal }): Promise<readonly MessageContent[]> {
     return this.inSession(input.sessionId, async (session) => {
-      const dir = join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
-      await mkdir(dir, { recursive: true });
-      const safe = input.name.replace(/[^\w.-]+/gu, '_').replace(/^\.+/u, '').slice(0, 80) || 'file';
-      await writeFile(join(dir, `${randomUUID()}-${safe}`), input.bytes);
-      const text = input.text === undefined ? [] : [{ type: 'text' as const, text: input.text }];
-      const saved = await this.core.accessor.get(IFileService).save(Readable.from(Buffer.from(input.bytes)), safe, { mimeType: input.mediaType });
-      await session.accessor.get(ISessionMediaStore).materialize({ fileId: saved.id, size: saved.size, name: saved.name, mimeType: input.mediaType, stream: () => Readable.from(Buffer.from(input.bytes)) });
-      if (input.kind === 'file') return [...text, { type: 'file', file_id: saved.id, name: saved.name, media_type: saved.media_type, size: saved.size }];
-      return [...text, { type: input.kind, name: safe, source: { kind: 'session_media', file_id: saved.id } }];
+      input.signal?.throwIfAborted();
+      const sessionDir = session.accessor.get(ISessionContext).sessionDir;
+      const attachmentsDir = join(sessionDir, 'attachments');
+      const safe = sanitizeAttachmentName(input.name);
+      const fileId = `f_${randomUUID().replaceAll('-', '')}`;
+      const bytes = Buffer.from(input.bytes);
+      const media = session.accessor.get(ISessionMediaStore);
+      const originalPath = await media.materialize({
+        fileId,
+        size: bytes.byteLength,
+        name: safe,
+        mimeType: input.mediaType,
+        stream: () => Readable.from(bytes),
+        signal: input.signal,
+      });
+      await mkdir(attachmentsDir, { recursive: true });
+      await atomicWrite(join(attachmentsDir, `${fileId}-${safe}`), bytes, undefined, undefined, input.signal);
+      input.signal?.throwIfAborted();
+      const content: MessageContent[] = input.text === undefined || input.text.length === 0 ? [] : [{ type: 'text', text: input.text }];
+      const voice = input.voice === true && input.mediaType.toLowerCase().startsWith('audio/');
+      if (input.kind === 'file' && !voice) {
+        content.push({ type: 'file', file_id: fileId, name: safe, media_type: input.mediaType, size: bytes.byteLength });
+        return content;
+      }
+      if (input.kind === 'audio' || voice) {
+        const transcript = await this.transcribeInboundAudio({ fileId, mediaType: input.mediaType, signal: input.signal, originalPath, attachmentsDir });
+        content.push({ type: 'audio', name: safe, source: { kind: 'session_media', file_id: fileId } });
+        if (transcript !== undefined) content.push({ type: 'text', text: `Audio transcription: ${transcript}` });
+        return content;
+      }
+      if (input.kind === 'image' || input.kind === 'video') {
+        content.push({ type: input.kind, name: safe, source: { kind: 'session_media', file_id: fileId } });
+      }
+      return content;
+    }, input.signal);
+  }
+
+  private async transcribeInboundAudio(input: {
+    fileId: string;
+    mediaType: string;
+    signal?: AbortSignal;
+    originalPath: string | undefined;
+    attachmentsDir: string;
+  }): Promise<string | undefined> {
+    const policy = this.readPolicy();
+    if (input.originalPath === undefined) {
+      this.warnAsr('audio_path_missing');
+      return undefined;
+    }
+    const timeout = AbortSignal.timeout(45_000);
+    const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout]);
+    try {
+      const sendMessageConfig = this.core.accessor.get(IConfigService).get<SendMessageConfig | undefined>(SEND_MESSAGE_SECTION);
+      const configuredFfmpeg = sendMessageConfig?.ffmpegPath?.trim();
+      const wavPath = audioWavAttachmentPath(input.attachmentsDir, input.fileId);
+      const convertedPath = await convertAudioToWav(input.originalPath, wavPath, signal, this.core.accessor.get(IHostProcessService), configuredFfmpeg || 'ffmpeg');
+      signal.throwIfAborted();
+      if (policy.asr_mode === 'off') {
+        this.warnAsr('off');
+        return undefined;
+      }
+      const plugins = this.core.accessor.get(IPluginHostService);
+      const requested = policy.asr_provider?.trim();
+      let providerRef = requested;
+      if (providerRef === undefined || providerRef.length === 0) {
+        const registrations = await abortable(plugins.listAsrProviders(), signal);
+        signal.throwIfAborted();
+        const registration = registrations[0];
+        if (registration === undefined) {
+          this.warnAsr('provider_missing');
+          return undefined;
+        }
+        providerRef = `${registration.pluginId}/${registration.definition.id}`;
+      }
+      const request: AsrTranscribeInput = { wavPath: convertedPath, originalPath: input.originalPath, mediaType: 'audio/wav' };
+      const result = await plugins.transcribeAudio(providerRef, request, signal);
+      signal.throwIfAborted();
+      const text = result.text.trim();
+      if (text.length === 0) {
+        this.warnAsr('empty_transcription');
+        return undefined;
+      }
+      return text;
+    } catch (error) {
+      if (input.signal?.aborted) input.signal.throwIfAborted();
+      this.warnAsr(timeout.aborted ? 'timeout' : 'failed');
+      return undefined;
+    }
+  }
+
+  private warnAsr(outcome: string): void {
+    const fields = { asr: outcome };
+    if (this.logger.warn !== undefined) this.logger.warn(fields, 'IM audio transcription unavailable');
+    else this.logger.info(fields, 'IM audio transcription unavailable');
+  }
+
+  private replaceQueuedPrompt(sessionId: string, promptId: string, content: ImReplaceContent): Promise<boolean> {
+    return this.inSession(sessionId, async (session) => {
+      const agent = session.accessor.get(IAgentLifecycleService).get('main');
+      if (agent === undefined) return false;
+      const prompt = agent.accessor.get(IAgentPromptService);
+      if (!prompt.list().pending.some((item) => item.id === promptId)) return false;
+      const profile = agent.accessor.get(IAgentProfileService);
+      const sessionMedia = session.accessor.get(ISessionMediaStore);
+      const sessionDir = session.accessor.get(ISessionContext).sessionDir;
+      const validatedContent = content.map((part) => messageContentSchema.parse(part) as PromptSubmission['content'][number]);
+      const prepared = await resolvePromptMediaFiles(validatedContent, this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
+        telemetry: this.core.accessor.get(ITelemetryService).withContext({ sessionId }),
+        sessionMedia,
+        providerType: profile.getModelProviderType(),
+        resolveOriginalsDir: async () => sessionMediaOriginalsDir(sessionDir),
+        resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
+      });
+      try {
+        if (!prompt.list().pending.some((item) => item.id === promptId)) return false;
+        prompt.replace(promptId, contentToCoreParts(prepared.content), true);
+        return true;
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND) return false;
+        throw error;
+      } finally {
+        await prepared.discard();
+      }
+    });
+  }
+
+  private retractQueuedPrompt(sessionId: string, promptId: string): Promise<boolean> {
+    return this.inSession(sessionId, async (session) => {
+      const agent = session.accessor.get(IAgentLifecycleService).get('main');
+      if (agent === undefined) return false;
+      return agent.accessor.get(IAgentPromptService).abortQueued(promptId);
     });
   }
 

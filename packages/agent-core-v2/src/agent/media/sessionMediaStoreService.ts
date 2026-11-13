@@ -69,7 +69,18 @@ export class ScopedMediaStore implements ISessionMediaStore {
     return data === undefined ? undefined : { data, name: key };
   }
 
-  async open(fileId: string): Promise<SessionMediaFile | undefined> {
+  async open(fileId: string, variant?: 'wav'): Promise<SessionMediaFile | undefined> {
+    if (variant === 'wav') {
+      if (!isFileId(fileId) || this.sessionScope === undefined) return undefined;
+      const scope = `${this.sessionScope}/attachments`;
+      const key = `${fileId}.wav`;
+      const size = await this.storage.size(scope, key);
+      if (size === undefined) return undefined;
+      return {
+        path: this.storage.pathFor(scope, key), name: key, mediaType: 'audio/wav', size,
+        stream: (range) => this.storage.readStream(scope, key, range),
+      };
+    }
     const blob = await this.openAgentBlob(fileId);
     if (blob !== undefined) return blob;
     if (parseAgentBlobRef(fileId) !== undefined) return undefined;

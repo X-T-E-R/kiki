@@ -36,9 +36,35 @@
 }
 ```
 
-`name` 同时是 plugin id，必须匹配 `[a-z0-9][a-z0-9_-]{0,63}`。声明任何 Kiki 贡献都要写 `engines.kiki`；当前插件引擎版本是 `0.4.2`，超出 semver range 会被拒。
+`name` 同时是 plugin id，必须匹配 `[a-z0-9][a-z0-9_-]{0,63}`。声明任何 Kiki 贡献都要写 `engines.kiki`；当前插件引擎版本是 `0.4.3`，超出 semver range 会被拒。
 
-`tools`、`sessionSources`、`mediaProviders`、`imAdapters` 和 `harnessAccountSources` 还要求 `entry` 存在。所有 `./` 路径解析符号链接后必须仍留在 plugin 根目录内。为外部 harness 提供账号时，声明 `x-kiki.harnessAccountSources`，通过 `api.registerHarnessAccountSource` 注册；完整合同见 `customization/plugins.md` 的「外部 harness 账号来源」。
+`tools`、`sessionSources`、`mediaProviders`、`asrProviders`、`imAdapters` 和 `harnessAccountSources` 还要求 `entry` 存在。所有 `./` 路径解析符号链接后必须仍留在 plugin 根目录内。为外部 harness 提供账号时，声明 `x-kiki.harnessAccountSources`，通过 `api.registerHarnessAccountSource` 注册；完整合同见 `customization/plugins.md` 的「外部 harness 账号来源」。
+
+## ASR provider
+
+Manifest declaration:
+
+```json
+{
+  "id": "speech",
+  "label": "Speech recognition",
+  "description": "Transcribes audio files",
+  "connectionSetting": "connectionId"
+}
+```
+
+A `connectionSetting` names a declared string setting. From `register(api)`, register each manifest definition exactly or use its ID as a string; every manifest ASR ID must register. An inline definition may add a provider not listed in the manifest, but a string ID cannot refer to one:
+
+```js
+api.registerAsrProvider({ id: 'inline-speech', label: 'Inline speech' }, {
+  async transcribe(input, context) {
+    context.signal.throwIfAborted();
+    return { text: 'recognized words', language: input.language };
+  },
+});
+```
+
+`input` is `{ wavPath, originalPath?, mediaType?, language? }`; result is `{ text, language? }`. The context carries `signal`, declared plugin `settings`, and a resolver for the selected Kiki connection. Public TypeScript types and zod schemas are exported from `@kiki/plugin-sdk/asr` and `@kiki/protocol`.
 
 ## 工具定义放在一份源里
 

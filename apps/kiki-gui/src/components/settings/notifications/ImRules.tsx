@@ -9,8 +9,10 @@ import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Toggle } from '../../controls';
 import { DisclosureChevron } from '../../icons';
 import { INPUT_BOX } from '../../ui';
+import { useInstalledPlugins } from '../../capabilities/usePlugins';
 import { SettingField } from '../fields';
 import { SettingsSegmented, type SettingsChoice } from '../SettingsPrimitives';
+import { CoalesceWindowControl } from './CoalesceWindowControl';
 import { useImAction } from './useImSessions';
 
 function formatOptionsText(options: Readonly<Record<string, unknown>> | undefined): string {
@@ -19,10 +21,9 @@ function formatOptionsText(options: Readonly<Record<string, unknown>> | undefine
 }
 
 /**
- * The account-wide conversation policy, folded under the list: the two-way
- * master switch, whether new bindings start on, whether a thread may send to
- * a channel bound elsewhere, the default for the send-message tool, and its
- * default native voice (TTS) synthesis mode and parameters.
+ * The account-wide conversation policy, folded under the list: two-way access,
+ * new-binding defaults, media handling, and the default native voice (TTS)
+ * synthesis settings for SendMessage.
  */
 export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
   const { t } = useI18n();
@@ -33,9 +34,20 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const config = useQuery({ queryKey: ['config', scopeId], queryFn: () => client.getConfig(), staleTime: 30_000 });
   const managedSources = useMediaManagedSources(client);
-  const setPolicy = (next: ImSessionSnapshot['policy']) => { void action.run(() => client.imSessions.setPolicy(next)); };
+  const setPolicy = (patch: Parameters<typeof client.imSessions.patchPolicy>[0]) => { void action.run(() => client.imSessions.patchPolicy(patch)); };
+  const installedPlugins = useInstalledPlugins();
+  const installedAsrProviders = (installedPlugins.data?.plugins ?? []).flatMap((plugin) =>
+    (plugin.asrProviders ?? []).map((provider) => ({
+      id: `${plugin.id}/${provider.id}`,
+      label: provider.label,
+      description: provider.description,
+      connectionSetting: provider.connectionSetting,
+    })),
+  );
   const sendMessageConfig = config.data?.send_message;
   const voiceMode: SendMessageVoiceMode = sendMessageConfig?.voiceMode ?? 'none';
+  const asrMode = policy.asr_mode ?? 'auto';
+  const asrProvider = policy.asr_provider ?? '';
   const ttsProvider = sendMessageConfig?.ttsProvider ?? '';
   const ttsVoice = sendMessageConfig?.ttsVoice ?? '';
   const ttsModel = sendMessageConfig?.ttsModel ?? '';
@@ -87,15 +99,15 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
       <div className="mt-2 space-y-1 rounded-lg border border-hairline bg-panel px-4 py-3">
         <SettingField label={t('st.im.allowed')} htmlFor="im-allowed">
           <Toggle id="im-allowed" layout="bare" label={t('st.im.allowed')} checked={policy.allowed} disabled={action.saving}
-            onChange={(allowed) => { setPolicy({ ...policy, allowed }); }} />
+            onChange={(allowed) => { setPolicy({ allowed }); }} />
         </SettingField>
         <SettingField label={t('st.im.default')} htmlFor="im-default">
           <Toggle id="im-default" layout="bare" label={t('st.im.default')} checked={policy.default_enabled} disabled={action.saving}
-            onChange={(default_enabled) => { setPolicy({ ...policy, default_enabled }); }} />
+            onChange={(default_enabled) => { setPolicy({ default_enabled }); }} />
         </SettingField>
         <SettingField label={t('st.im.allowBorrowing')} htmlFor="im-allow-borrowing">
           <Toggle id="im-allow-borrowing" layout="bare" label={t('st.im.allowBorrowing')} checked={policy.allow_channel_borrowing ?? false}
-            disabled={action.saving} onChange={(allow_channel_borrowing) => { setPolicy({ ...policy, allow_channel_borrowing }); }} />
+            disabled={action.saving} onChange={(allow_channel_borrowing) => { setPolicy({ allow_channel_borrowing }); }} />
         </SettingField>
         <SettingField label={t('st.im.defaultSendMessage')} htmlFor="im-default-send-message">
           <Toggle id="im-default-send-message" layout="bare" label={t('st.im.defaultSendMessage')}
@@ -109,6 +121,97 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
               });
             }} />
         </SettingField>
+        <div className="space-y-2 border-t border-hairline pt-2" data-im-media-rules>
+          <SettingField label={t('st.im.coalesce.window')} labelId="im-coalesce-window-label" help={t('st.im.coalesce.globalHint')}>
+            <CoalesceWindowControl ariaLabel={t('st.im.coalesce.window')} value={policy.coalesce_window_ms} allowDefault={false}
+              disabled={action.saving} dataAttr="data-im-coalesce-global"
+              onChange={(coalesce_window_ms) => { setPolicy({ coalesce_window_ms: coalesce_window_ms ?? 0 }); }} />
+          </SettingField>
+          <SettingField label={t('st.im.asr.mode')} labelId="im-asr-mode-label" help={t('st.im.asr.modeHint')}>
+            <SettingsSegmented ariaLabel={t('st.im.asr.mode')} value={asrMode} disabled={action.saving} dataAttr="data-im-asr-mode"
+              choices={[{ value: 'auto', label: t('st.im.asr.mode.auto') }, { value: 'off', label: t('st.im.asr.mode.wavOnly') }]}
+              onChange={(asr_mode) => { setPolicy({ asr_mode }); }} />
+          </SettingField>
+          <SettingField label={t('st.im.asr.provider')} htmlFor="im-asr-provider">
+            <div className="flex w-full flex-col items-start gap-1.5 sm:w-auto sm:items-end">
+              <input
+                id="im-asr-provider"
+                key={`asr-provider:${asrProvider}`}
+                type="text"
+                list={installedAsrProviders.length > 0 ? 'im-asr-provider-options' : undefined}
+                defaultValue={asrProvider}
+                placeholder={t('st.im.asr.providerPlaceholder')}
+                disabled={action.saving}
+                data-im-asr-provider
+                className={`w-full sm:w-64 ${INPUT_BOX}`}
+                onBlur={(event) => {
+                  const next = event.currentTarget.value.trim();
+                  if (next !== asrProvider) setPolicy({ asr_provider: next === '' ? null : next });
+                }}
+                onKeyDown={(event) => {
+                  if (isImeKeyEvent(event)) return;
+                  if (event.key === 'Enter') event.currentTarget.blur();
+                }}
+              />
+              {installedAsrProviders.length > 0 ? (
+                <>
+                  <datalist id="im-asr-provider-options">
+                    {installedAsrProviders.map((item) => (
+                      <option key={item.id} value={item.id}>{item.label}</option>
+                    ))}
+                  </datalist>
+                  <div className="flex flex-wrap justify-start gap-1 sm:justify-end" data-im-asr-provider-suggestions>
+                    <button
+                      type="button"
+                      disabled={action.saving}
+                      data-im-asr-provider-option=""
+                      aria-pressed={asrProvider === ''}
+                      onClick={() => {
+                        if (asrProvider !== '') setPolicy({ asr_provider: null });
+                      }}
+                      className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
+                        asrProvider === ''
+                          ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                          : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                      }`}
+                    >
+                      {t('st.im.asr.providerDefault')}
+                    </button>
+                    {installedAsrProviders.map((item) => {
+                      const active = asrProvider === item.id;
+                      const connectionHint = item.connectionSetting === undefined
+                        ? undefined
+                        : t('st.im.asr.connectionSetting', { setting: item.connectionSetting });
+                      const title = item.description === undefined
+                        ? connectionHint
+                        : connectionHint === undefined ? item.description : `${item.description}\n${connectionHint}`;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          disabled={action.saving}
+                          data-im-asr-provider-option={item.id}
+                          aria-pressed={active}
+                          title={title}
+                          className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+                            active
+                              ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                              : 'border-hairline bg-surface text-ink-soft hover:bg-hover hover:text-ink'
+                          }`}
+                          onClick={() => {
+                            if (!active) setPolicy({ asr_provider: item.id });
+                          }}
+                        >
+                          {item.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </SettingField>
+        </div>
         <div className="space-y-1 border-t border-hairline pt-2" data-im-tts-rules>
           <SettingField label={t('st.im.tts.mode')} labelId="im-tts-mode-label" help={t('st.im.tts.modeHint')}>
             <SettingsSegmented

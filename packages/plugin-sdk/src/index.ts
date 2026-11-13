@@ -2,6 +2,7 @@ import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './ha
 import type { HarnessQuotaSourceDefinition, HarnessQuotaAdapter, PluginHarnessQuotaApi } from './harness-quota.js';
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
+import type { AsrProviderDefinition, AsrProviderAdapter } from './asr.js';
 import type { PluginMessagesApi } from './messages.js';
 import type { PluginModelsApi, PluginCredentialsApi } from './models.js';
 export * from './models.js';
@@ -12,6 +13,7 @@ export * from './harness-account.js';
 export * from './harness-quota.js';
 export * from './im.js';
 export * from './media.js';
+export * from './asr.js';
 export * from './messages.js';
 export * from './session-import.js';
 
@@ -80,15 +82,18 @@ export interface PluginRegistrationApi {
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
+  registerAsrProvider(definition: AsrProviderDefinition | string, adapter: AsrProviderAdapter): void;
   registerHarnessAccountSource(definition: HarnessAccountSourceDefinition, adapter: HarnessAccountAdapter): void;
   registerHarnessQuotaSource(definition: HarnessQuotaSourceDefinition, adapter: HarnessQuotaAdapter): void;
   registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
 }
 
+export type PluginEntryApi = PluginRegistrationApi;
+
 export function definePlugin(tools: readonly PluginTool[]) {
   return {
     tools,
-    register(api: PluginRegistrationApi): void {
+    register(api: PluginEntryApi): void {
       for (const tool of tools) api.registerTool(tool.definition, tool.execute);
     },
   };

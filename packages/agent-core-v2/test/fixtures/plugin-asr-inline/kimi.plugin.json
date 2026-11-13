@@ -1,0 +1,16 @@
+{
+  "name": "fixture-asr-inline",
+  "x-kiki": {
+    "engines": { "kiki": "^0.4.0" },
+    "entry": "./entry.mjs",
+    "settings": {
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "connectionId": { "type": "string", "title": "Kiki connection (optional)", "format": "kiki-connection" }
+        }
+      }
+    }
+  }
+}

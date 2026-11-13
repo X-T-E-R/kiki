@@ -348,6 +348,51 @@ describe('plugin extension compatibility and consent', () => {
     expect((await parseManifest(root)).diagnostics.some((item) => item.severity === 'error')).toBe(true);
   });
 
+  it('validates ASR provider declarations and selected connection settings', async () => {
+    const root = await temp();
+    const definition = { id: 'speech', label: 'Speech', description: 'Fixture speech recognition', connectionSetting: 'connectionId' };
+    const settings = { schemaVersion: 1, schema: { type: 'object', properties: { connectionId: { type: 'string' } } } };
+    const data = { name: 'asr', 'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs', asrProviders: [definition], settings } };
+    await makeSource(root, data);
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.asrProviders).toEqual([definition]);
+
+    for (const [extension, expected] of [
+      [{ ...data['x-kiki'], entry: undefined }, 'x-kiki.entry is required'],
+      [{ ...data['x-kiki'], settings: undefined }, 'connectionSetting must name a declared string setting'],
+      [{ ...data['x-kiki'], asrProviders: [definition, definition] }, 'Duplicate executable contribution id'],
+      [{ ...data['x-kiki'], asrProviders: [{ ...definition, unexpected: true }] }, 'Invalid x-kiki extension'],
+    ] as const) {
+      await makeSource(root, { name: 'asr', 'x-kiki': extension });
+      expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain(expected);
+    }
+  });
+
+  it('discovers inline ASR registrations from a real child and still requires manifest providers', async () => {
+    const root = await temp();
+    const entry = path.join(root, 'entry.mjs');
+    const inline = { id: 'inline-speech', label: 'Inline speech', connectionSetting: 'connectionId' };
+    await writeFile(entry, `export function register(api) { api.registerAsrProvider(${JSON.stringify(inline)}, { transcribe: async (input) => ({ text: input.wavPath }) }); }`);
+    const host = new PluginHost('example', entry, [], [], [], undefined, root, [], [], undefined, [], undefined, undefined, [], ['connectionId']);
+    try {
+      await expect(host.listAsrProviders()).resolves.toEqual([inline]);
+    } finally { await host.stopAndWait(); }
+
+    const invalid = { id: 'invalid-speech', label: 'Invalid speech', connectionSetting: 'missingSetting' };
+    await writeFile(entry, `export function register(api) { api.registerAsrProvider(${JSON.stringify(invalid)}, { transcribe: async () => ({ text: 'invalid' }) }); }`);
+    const invalidHost = new PluginHost('example', entry, [], [], [], undefined, root, [], [], undefined, [], undefined, undefined, [], ['connectionId']);
+    try {
+      await expect(invalidHost.listAsrProviders()).rejects.toThrow('Plugin ASR provider definition mismatch');
+    } finally { await invalidHost.stopAndWait(); }
+
+    await writeFile(entry, 'export function register() {}');
+    const missing = new PluginHost('example', entry, [], [], [], undefined, root, [], [], undefined, [], undefined, undefined, [inline], ['connectionId']);
+    try {
+      await expect(missing.listAsrProviders()).rejects.toThrow('Plugin registered incomplete contributions');
+    } finally { await missing.stopAndWait(); }
+  });
+
   it('parses the sibling Kiki Media package when that checkout is present', async () => {
     const root = 'C:/Programs/AI/EasyAgent/systems/kiki-plugins/plugins/official/kiki-media';
     if (!existsSync(root)) return;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pluginInstallPlanSchema, pluginInstallRequestSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
+import { asrProviderDefinitionSchema, pluginInstallPlanSchema, pluginInstallRequestSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
 
 export { pluginInstallPlanSchema, pluginPreviewRequestSchema };
 
@@ -22,6 +22,7 @@ export const pluginSummarySchema = z.object({
   enabled: z.boolean(),
   globalEnabled: z.boolean(),
   defaultEnabled: z.boolean().optional(),
+  asrProviders: z.array(asrProviderDefinitionSchema).optional(),
   state: z.enum(['ok', 'error']),
   skillCount: z.number(),
   mcpServerCount: z.number(),

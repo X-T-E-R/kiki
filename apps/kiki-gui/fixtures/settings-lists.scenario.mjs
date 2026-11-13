@@ -155,6 +155,7 @@ const plugins = Array.from({ length: 14 }, (_, i) => ({
   id: `plugin-${['calendar', 'ledger', 'radar', 'atlas', 'forge', 'harbor', 'beacon', 'cipher'][i % 8]}-${i}`,
   displayName: `${['Calendar', 'Ledger', 'Radar', 'Atlas', 'Forge', 'Harbor', 'Beacon', 'Cipher'][i % 8]} ${i}`,
   enabled: i % 4 !== 3,
+  globalEnabled: i % 4 !== 3,
   state: i === 2 || i === 11 ? 'error' : 'ok',
   hasErrors: i === 2 || i === 11,
   version: `0.${i + 1}.0`,
@@ -165,6 +166,7 @@ const plugins = Array.from({ length: 14 }, (_, i) => ({
   commandCount: i % 2,
   source: i % 5 === 0 ? 'github' : i % 3 === 0 ? 'local-path' : 'zip-url',
   originalSource: i % 5 === 0 ? `https://github.com/example/plugin-${i}` : i % 3 === 0 ? `C:/fixture/plugins/p${i}` : `https://example.test/plugins/p${i}.zip`,
+  ...(i === 0 ? { asrProviders: [{ id: 'whisper-cpu', label: 'Whisper (local)', description: 'Local speech recognition', connectionSetting: 'model_path' }] } : {}),
 }));
 
 // ---- MCP servers: twelve configured, most with a live runtime row ----
@@ -247,6 +249,18 @@ const priceOverrides = {
 export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: settings lists' })],
   snapshots: { [SID]: { messages: [], has_more: false } },
+  im: {
+    snapshot: {
+      policy: { allowed: true, default_enabled: true, coalesce_window_ms: 3_000, asr_mode: 'auto', asr_provider: 'plugin-calendar-0/whisper-cpu' },
+      instances: [{ id: 'account-im', provider_kind: 'telegram', label: 'Message channels', account_id: 'fixture-bot', configured: true, listening: true, adapter: 'running' }],
+      discoveries: [{ id: 'discovery-asr', provider_instance_id: 'account-im', provider_kind: 'telegram', account_id: 'fixture-bot', identity: { chat_id: 'research-chat', chat_title: 'Research notes', sender_id: 'reader-2', sender_name: 'Reader two', topic_id: '0', chat_kind: 'private' }, preview: 'The next voice note is ready.', at: '2026-11-13T00:00:00.000Z' }],
+      bindings: [{ id: 'binding-im-voice', provider_instance_id: 'account-im', provider_kind: 'telegram', account_id: 'fixture-bot', identity: { chat_id: 'research-chat', chat_title: 'Research notes', sender_id: 'reader-1', sender_name: 'Reader one', topic_id: '0', chat_kind: 'private' }, session_id: SID, enabled: true, session_enabled: true, coalesce_window_ms: 5_000, busy: 'queue', reply: 'final', mobile_interactions: true }],
+      strangers: [],
+      voice_fallbacks: 0,
+    },
+    catalog: { personas: [], sessions: [{ id: SID, title: 'Fixture: settings lists' }] },
+    setupCatalog: { platforms: [] },
+  },
   workspaces,
   models,
   providers,

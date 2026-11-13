@@ -224,6 +224,16 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
       return { enabled };
     },
     setPolicy: async (policy: ImSessionSnapshot['policy']) => { calls.push({ operation: 'policy', body: policy }); state.policy = policy; return clone(); },
+    patchPolicy: async (patch: Partial<Omit<ImSessionSnapshot['policy'], 'coalesce_window_ms'>> & { coalesce_window_ms?: number | null }) => {
+      calls.push({ operation: 'patchPolicy', body: structuredClone(patch) });
+      const next = { ...state.policy };
+      const { coalesce_window_ms, ...fields } = patch;
+      Object.assign(next, fields);
+      if (coalesce_window_ms === null) delete next.coalesce_window_ms;
+      else if (coalesce_window_ms !== undefined) next.coalesce_window_ms = coalesce_window_ms;
+      state.policy = next;
+      return clone();
+    },
     check: async (id: string) => { calls.push({ operation: 'check', id }); return { ok: true, account_id: id }; },
     listen: async (id: string, listening: boolean) => {
       calls.push({ operation: 'listen', id, body: listening });
@@ -257,6 +267,7 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
         mobile_interactions: body.mobile_interactions ?? existing?.mobile_interactions ?? true,
         binding_scope: body.binding_scope ?? existing?.binding_scope ?? 'sender',
         group_policy: body.group_policy ?? existing?.group_policy,
+        coalesce_window_ms: body.coalesce_window_ms,
       };
       if (existing === undefined) state.bindings.push({ ...discovery, ...resolve(body.target), ...options, id: `bound-${id}`, enabled: true });
       else Object.assign(existing, resolve(body.target), options);

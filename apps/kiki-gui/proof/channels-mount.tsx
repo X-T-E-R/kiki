@@ -130,7 +130,9 @@ function createMockClient() {
         }
         return structuredClone(currentSnapshot);
       },
-      setPolicy: async (policy: any) => {
+      patchPolicy: async (patch: Partial<Omit<ImSessionSnapshot['policy'], 'coalesce_window_ms'>> & { coalesce_window_ms?: number | null }) => {
+        const policy = { ...currentSnapshot.policy, ...patch };
+        if (patch.coalesce_window_ms === null) delete policy.coalesce_window_ms;
         currentSnapshot.policy = policy;
         return structuredClone(currentSnapshot);
       },

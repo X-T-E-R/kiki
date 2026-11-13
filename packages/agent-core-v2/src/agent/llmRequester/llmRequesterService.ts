@@ -600,6 +600,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         : this.isRecoveryTurn(this.mediaDegradedTurns, request.source)
           ? { media: 'degraded' }
           : undefined;
+    if (request.model.capabilities.audio_in !== true) policy = { ...policy, audio: 'omit_unsupported' };
     const captureMediaStripPolicy = (): { readonly strip: MediaStripSnapshot } => {
       const snapshot = this.projector.captureMediaStripSnapshot(shaped);
       this.markMediaStrippedRecoveryTurn(snapshot, request.source);

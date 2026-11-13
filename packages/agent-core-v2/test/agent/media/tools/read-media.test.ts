@@ -40,8 +40,9 @@ import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { IAgentProfileService } from '#/agent/profile/profile';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
+import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import type { WorkspaceConfig } from '#/tool/path-access';
+import { isSensitiveFile, type WorkspaceConfig } from '#/tool/path-access';
 import { sniffImageDimensions } from '#/agent/media/file-type';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
@@ -172,9 +173,13 @@ function createTestEnv(): IHostEnvironment {
   };
 }
 
-function runtimeFor(fs: IHostFileSystem, env: IHostEnvironment = createTestEnv()): IAgentRuntimeService {
+function runtimeFor(
+  fs: IHostFileSystem,
+  env: IHostEnvironment = createTestEnv(),
+  runtimeId = 'local',
+): IAgentRuntimeService {
   const runtime = {
-    identity: { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
+    identity: { workspaceId: 'workspace', runtimeId, generation: 'test' },
     capabilities: new Set(['fs'] as const),
     environment: env,
     path: posixPath,
@@ -194,6 +199,12 @@ function runtimeFor(fs: IHostFileSystem, env: IHostEnvironment = createTestEnv()
       track: (resource) => resource,
       dispose: () => {},
     }),
+    prepareFor: async () => runtime,
+    acquireFor: () => ({
+      runtime,
+      track: (resource) => resource,
+      dispose: () => {},
+    }),
   };
 }
 
@@ -203,10 +214,12 @@ function makeTool(
   videoUploader?: VideoUploader,
   telemetry?: ITelemetryService,
   inlineVideoSupported?: boolean,
+  workspace: WorkspaceConfig = WORKSPACE,
+  runtimeId = 'local',
 ): ReadMediaFileTool {
   return new ReadMediaFileTool(
-    runtimeFor(createTestFs(files)),
-    WORKSPACE,
+    runtimeFor(createTestFs(files), createTestEnv(), runtimeId),
+    workspace,
     caps,
     videoUploader,
     telemetry,
@@ -280,6 +293,31 @@ describe('ReadMediaFileTool', () => {
     if (execution.isError === true) throw new Error('Expected runnable media tool');
     expect(execution.accesses).toEqual(ToolAccesses.readFile('/workspace/sample.png'));
     expect(execution.approvalRule).toBe('ReadMediaFile(/workspace/sample.png)');
+  });
+
+  it('reads only the current local session attachments root and keeps sensitive and remote checks', async () => {
+    const attachmentPath = '/session/current/attachments/image.png';
+    const sensitivePath = '/session/current/attachments/.env';
+    const workspace = { ...WORKSPACE, sessionAttachmentsReadRoot: '/session/current/attachments' };
+    const files = {
+      [attachmentPath]: { data: pngBuffer() },
+      [sensitivePath]: { data: pngBuffer() },
+    };
+    const localTool = makeTool(files, capabilities(), undefined, undefined, undefined, workspace);
+    const localExecution = await localTool.resolveExecution({ path: attachmentPath });
+    if (localExecution.isError === true) throw new Error('Expected local session attachment read');
+    expect(localExecution.accesses).toEqual(ToolAccesses.readFile(attachmentPath));
+    expect((await execute(localTool, { path: attachmentPath })).isError).toBe(false);
+
+    const sensitiveExecution = await localTool.resolveExecution({ path: sensitivePath });
+    if (sensitiveExecution.isError === true) throw new Error('Expected sensitive attachment access to remain policy-visible');
+    expect(sensitiveExecution.accesses).toEqual(ToolAccesses.readFile(sensitivePath));
+    expect(isSensitiveFile(sensitivePath)).toBe(true);
+
+    const remoteTool = makeTool(files, capabilities(), undefined, undefined, undefined, workspace, 'ssh:dev');
+    const remoteExecution = await remoteTool.resolveExecution({ path: attachmentPath });
+    if (remoteExecution.isError === true) throw new Error('Expected remote path classification');
+    expect(remoteExecution.accesses).toEqual(ToolAccesses.readFile(attachmentPath, true));
   });
 
   it('reflects model capabilities in its description', () => {
@@ -387,6 +425,7 @@ describe('ReadMediaFileTool', () => {
 
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         'Image is too large to send safely after compression (262168 bytes; limit 262144 bytes and 2000px on the longest edge). ' +
         'The original image was not sent to the model. Do not retry the same file unchanged. ' +
@@ -403,6 +442,7 @@ describe('ReadMediaFileTool', () => {
 
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         'Image is too large to send safely after compression (24 bytes; limit 262144 bytes and 2000px on the longest edge). ' +
         'The original image was not sent to the model. Do not retry the same file unchanged. ' +
@@ -421,6 +461,7 @@ describe('ReadMediaFileTool', () => {
 
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         'Image is too large to send safely after compression (67108865 bytes; limit 262144 bytes and 2000px on the longest edge). ' +
         'The original image was not sent to the model. Do not retry the same file unchanged. ' +
@@ -458,6 +499,7 @@ describe('ReadMediaFileTool', () => {
 
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         'Image is too large to process safely for region or full_resolution (67108865 bytes; safe decode limit 67108864 bytes). ' +
         'The original image was not sent to the model. Do not retry the same file unchanged. ' +
@@ -543,6 +585,7 @@ describe('ReadMediaFileTool', () => {
     });
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         '"/workspace/huge.png" is 4194328 bytes (4.0 MB), over the 3932160-byte (3.8 MB) ' +
         'per-image limit, so full_resolution cannot be honored. ' +
@@ -565,6 +608,7 @@ describe('ReadMediaFileTool', () => {
 
     expect(result).toEqual({
       isError: true,
+      runtimeId: 'local',
       output:
         'Image is too large to process safely for region or full_resolution (67108865 bytes; safe decode limit 67108864 bytes). ' +
         'The original image was not sent to the model. Do not retry the same file unchanged. ' +
@@ -867,7 +911,7 @@ describe('AgentMediaToolsRegistrar', () => {
     providerType?: string;
   }
 
-  function createRegistrarHarness() {
+  function createRegistrarHarness(session?: ISessionContext) {
     const registry = new AgentToolRegistryService();
     const eventBus = new EventBusService();
     const state: ProfileState = {
@@ -918,6 +962,9 @@ describe('AgentMediaToolsRegistrar', () => {
       recordingTelemetry([]),
       { enabled: () => true } as never,
       new AgentStateService(),
+      undefined,
+      undefined,
+      session,
     );
     const bindModel = (alias: string, caps: ModelCapability): void => {
       state.alias = alias;
@@ -950,6 +997,17 @@ describe('AgentMediaToolsRegistrar', () => {
     const tool = registry.resolve('ReadMediaFile');
     expect(tool).toBeInstanceOf(ReadMediaFileTool);
     expect((tool as ReadMediaFileTool).description).toContain('Video files are not supported');
+  });
+
+  it('passes the current session attachments root to the local media tool', async () => {
+    const session = { _serviceBrand: undefined, sessionDir: '/session/current' } as ISessionContext;
+    const { registry, bindModel } = createRegistrarHarness(session);
+    bindModel('vision-model', capabilities({ image_in: true, video_in: false }));
+    const tool = registry.resolve('ReadMediaFile') as ReadMediaFileTool;
+    const path = '/session/current/attachments/image.png';
+    const execution = await tool.resolveExecution({ path });
+    if (execution.isError === true) throw new Error('Expected session attachment media access');
+    expect(execution.accesses).toEqual(ToolAccesses.readFile(path));
   });
 
   it('drops the tool when the model loses media input', () => {

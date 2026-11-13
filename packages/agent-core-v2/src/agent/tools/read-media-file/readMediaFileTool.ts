@@ -238,7 +238,13 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     }));
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.workspace.definitionReadRoots ?? [];
     const workspace = withDefinitionReadRoots(
-      { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
+      {
+        workspaceDir: view.workDir,
+        additionalDirs: view.additionalDirs,
+        sessionAttachmentsReadRoot: inspected.identity.runtimeId === 'local'
+          ? this.workspace.sessionAttachmentsReadRoot
+          : undefined,
+      },
       roots, env.homeDir,
     );
     const pathOptions = { env, workspace, operation: 'read' as const, shellPathBridge: runtimeShellPathBridge(inspected) };

@@ -1038,7 +1038,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/im-sessions/policy",
+    ],
+    [
+      "PATCH",
       "/api/im/sessions/bindings/{id}",
+    ],
+    [
+      "PATCH",
+      "/api/im/sessions/policy",
     ],
     [
       "PATCH",

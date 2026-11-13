@@ -617,7 +617,7 @@ describe('im session bridge', () => {
     } finally { releaseRead(); await harness.bridge.close(); }
   });
 
-  it('counts a voice file fallback and rejects an oversized file before save', async () => {
+  it('keeps inbound audio, counts outbound voice fallback, and rejects oversized files', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     adapter.voice = false;
     const harness = bridgeFor(adapter, ports({
@@ -628,8 +628,9 @@ describe('im session bridge', () => {
     await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
     await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' } });
     await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'audio', media: { name: 'in.wav', mediaType: 'audio/wav', bytes: new Uint8Array([1]) }, text: '' });
-    expect(harness.saved).toEqual(['file']);
+    expect(harness.saved).toEqual(['audio']);
     await adapter.emit({ eventId: '3', cursor: 3, identity, kind: 'file', tooLarge: true, text: '' });
+    expect(harness.saved).toEqual(['audio']);
     expect(adapter.sent.some((item) => item.code === 'rejected')).toBe(true);
     await harness.bridge.close();
     expect(adapter.files.some((item) => item.deliveredAs === 'file')).toBe(true);

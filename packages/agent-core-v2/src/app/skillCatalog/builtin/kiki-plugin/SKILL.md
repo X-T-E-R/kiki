@@ -1,7 +1,7 @@
 ---
 name: kiki-plugin
-description: 'Create, fix, or extend a local Kiki plugin: its manifest, an entry.mjs that registers tools, and the skills it carries. Use when the user wants a tool, skill, panel, or hook packaged as a plugin, or when an installed one fails.'
-when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin directory - adding a native tool, packaging a skill, fixing a manifest diagnostic, making a tool return an image, or reinstalling an edited plugin so the change takes effect. Not for installing, enabling, or browsing plugins as a user, and not for an agent profile or a standalone skill outside a plugin.
+description: 'Create, fix, or extend a local Kiki plugin: its manifest, executable contributions such as tools or ASR providers, and carried skills. Use when a plugin capability needs packaging or an installed plugin fails.'
+when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin directory - adding a native tool or ASR provider, packaging a skill, fixing a manifest diagnostic, making a tool return an image, or reinstalling an edited plugin so the change takes effect. Not for installing, enabling, or browsing plugins as a user, and not for an agent profile or a standalone skill outside a plugin.
 ---
 
 # 制作 Kiki 插件
@@ -32,9 +32,10 @@ when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin direc
 
 ## 3. 写 manifest
 
-`kimi.plugin.json`（或 `.kimi-plugin/plugin.json`）常用字段：`name`（plugin id，匹配 `[a-z0-9][a-z0-9_-]{0,63}`）、`version`、`description`、`icon`（`./` 路径的 svg/png，≤64 KB）、`skills`、`interface`。Kiki 专属贡献写在 `x-kiki` 里：`engines.kiki`、`entry`、`tools`、`permissions`、`settings`、`panels`、`commands`。字段全集、每项限制和 diagnostics 读法写在服务器主机当前 Space 的 `<home>/docs/{en,zh}/customization/plugins.md` 里；先读 Space 段给出的已解析 Product docs 路径再定字段，不要凭印象写。若该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。
+`kimi.plugin.json`（或 `.kimi-plugin/plugin.json`）常用字段：`name`（plugin id，匹配 `[a-z0-9][a-z0-9_-]{0,63}`）、`version`、`description`、`icon`（`./` 路径的 svg/png，≤64 KB）、`skills`、`interface`。Kiki 专属贡献写在 `x-kiki` 里：`engines.kiki`、`entry`、`tools`、`permissions`、`settings`、`asrProviders`、`panels`、`commands`。字段全集、每项限制和 diagnostics 读法写在服务器主机当前 Space 的 `<home>/docs/{en,zh}/customization/plugins.md` 里；先读 Space 段给出的已解析 Product docs 路径再定字段，不要凭印象写。若该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。
 
-- 声明 Kiki 贡献时写 `engines.kiki`；声明 `tools`、`sessionSources`、`mediaProviders`、`imAdapters` 或 `harnessAccountSources` 还必须有 `entry`。
+- 声明 Kiki 贡献时写 `engines.kiki`；声明 `tools`、`sessionSources`、`mediaProviders`、`asrProviders`、`imAdapters` 或 `harnessAccountSources` 还必须有 `entry`。
+- ASR 提供方写在 `x-kiki.asrProviders`，每项为 `{ id, label, description?, connectionSetting? }`；`connectionSetting` 必须指向已声明的字符串 setting。
 - 为外部 harness 提供账号时，用 `x-kiki.harnessAccountSources` 和 `registerHarnessAccountSource`；不要用面板 RPC 返回连接凭据。合同见 `customization/plugins.md` 的「外部 harness 账号来源」。
 - 所有 `./` 路径（`skills`、`agents`、`commands`、`icon`、`systemPromptPath`、panel、entry）解析符号链接后仍须留在 plugin 根目录内。
 - `tools` 里写的工具定义必须和 entry 里 `registerTool` 的定义逐字段一致；不一致时宿主会拒绝注册，报「registered a changed tool definition」。用一份定义源（`lib/definitions.mjs` 之类）同时喂给两处。
@@ -42,6 +43,8 @@ when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin direc
 ## 4. 写 entry
 
 entry 是一个 ES 模块，导出 `register(api)`；需要前置安装再导出 `installPrerequisite`，需要面板后端再导出 `handlePanelRequest`。运行时上下文提供 `signal`（用户取消时中止，长任务要听它）、`settings`、`workspaceRoot`、`approvedPaths`、`imageIn`、`progress`。返回 `output` 是一个字符串或 part 数组：`{ type: 'text', text }` 与 `{ type: 'image_url', imageUrl: { url } }`。图片只接受 `data:image/png|jpeg|webp;base64,` dataURL，远程 URL 会被判为非法结果。大文本和图像由宿主自动保存为会话原件：文本返回预览和可读路径，图像返回会话附件引用，不需要插件另写分块协议。类型来自公开的 `@kiki/plugin-sdk`。
+
+ASR entry 用 `api.registerAsrProvider(definition, adapter)` 注册提供方：可以注册与 manifest `x-kiki.asrProviders` 一致的声明，也可以用 inline definition 新增未在 manifest 声明的 provider；manifest 中每项仍必须注册且与声明一致。`api.registerAsrProvider(providerId, adapter)` 字符串简写只引用 manifest 中的 ID。两种 definition 的 `connectionSetting` 都必须指向已声明的字符串 setting。`adapter.transcribe({ wavPath, originalPath?, mediaType?, language? }, context)` 接收输入，context 提供 `signal`、插件 `settings` 与 `connection()`；返回 `{ text, language? }`。类型与 zod schemas 来自 `@kiki/plugin-sdk/asr`，经 `@kiki/protocol` 转出。宿主 `transcribeAudio(providerRef, input, signal)` 可接收 `pluginId/providerId`，或只给 `pluginId` 使用其首个已注册且启用的提供方；`listAsrProviders()` 返回可用注册项。
 
 写之前用 Read 阅读 `references/authoring.md`；内置调用时，这份参考已附在下方。里面有可直接复制的最小 manifest、entry、image part 示例和一份真能跑的 `kiki-tile` 例子（一张确定性小图 + 数字，一次 tool output 同时回传文字和图片）。
 

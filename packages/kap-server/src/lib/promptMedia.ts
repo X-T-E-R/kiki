@@ -15,6 +15,7 @@ import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/teleme
 import { Error2 } from '@kiki/agent-core-v2/errors';
 import type { PromptSubmission } from '../protocol/rest-prompt';
 import type { PublishedMediaReader } from '../services/publishedMedia';
+import { audioWavAttachmentPath, inspectWav, type WavAudioFormat } from './ffmpegAudio';
 
 type WireContent = PromptSubmission['content'];
 
@@ -224,6 +225,25 @@ export async function resolvePromptMediaFiles(
   options: ResolvePromptMediaOptions = {},
 ): Promise<PromptMediaPreparation> {
   const files = options.sessionMedia === undefined ? store : sessionPromptFiles(store, options.sessionMedia);
+  const resolvedFiles = new Map<string, Promise<GetResult>>();
+  const attachmentPaths = new Map<string, Promise<string>>();
+  const attachmentNotes = new Set<string>();
+  const getFile = (fileId: string): Promise<GetResult> => {
+    let pending = resolvedFiles.get(fileId);
+    if (pending === undefined) {
+      pending = files.get(fileId);
+      resolvedFiles.set(fileId, pending);
+    }
+    return pending;
+  };
+  const materialize = (file: GetResult, dir: string): Promise<string> => {
+    let pending = attachmentPaths.get(file.meta.id);
+    if (pending === undefined) {
+      pending = materializeAttachmentToDir(file, dir);
+      attachmentPaths.set(file.meta.id, pending);
+    }
+    return pending;
+  };
   const ownedFileIds = new Set<string>();
   let discarded = false;
   const discard = async (): Promise<void> => {
@@ -255,6 +275,18 @@ export async function resolvePromptMediaFiles(
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   const content: WireContent = [];
+  const addAttachmentNote = (input: { readonly path: string; readonly name: string; readonly mediaType: string; readonly size: number; readonly kind: 'audio' | 'file'; readonly audioFormat?: string }): void => {
+    if (attachmentNotes.has(input.path)) return;
+    attachmentNotes.add(input.path);
+    const name = sanitizeAttachmentName(input.name);
+    const text = input.kind === 'audio'
+      ? buildAttachedAudioNotice(name, input.audioFormat ?? input.mediaType, input.size, input.path)
+      : buildAttachedFileNotice(name, input.mediaType, input.size, input.path);
+    content.push({
+      type: 'text', text,
+      presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment', attachment: { path: input.path, name, mime: input.mediaType, size: input.size } }] },
+    });
+  };
   const sourceStarts: number[] = [];
   try {
     for (const part of input) {
@@ -329,26 +361,59 @@ export async function resolvePromptMediaFiles(
         continue;
       }
 
-      if (part.type === 'file') {
-        const file = await files.get(part.file_id);
-        const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
-        const text = buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath);
-        content.push({
-          type: 'text', text,
-          presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment',
-            attachment: { path: attachedPath, name: file.meta.name, mime: file.meta.media_type, size: file.meta.size } }] },
-        });
+      if ((part.type === 'image' || part.type === 'video') && part.source.kind === 'session_media') {
+        const file = await getFile(part.source.file_id);
+        assertMediaFile(file, part.type);
+        const attachedPath = await materialize(file, await resolveAttachmentsDir());
+        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+        content.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name) });
         changed = true;
         continue;
       }
 
-      if ((part.type !== 'image' && part.type !== 'video') || part.source.kind !== 'file') {
+      if (part.type === 'audio' && (part.source.kind === 'file' || part.source.kind === 'session_media')) {
+        const fileId = part.source.file_id;
+        const file = await getFile(fileId);
+        if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+        const dir = await resolveAttachmentsDir();
+        const wavPath = audioWavAttachmentPath(dir, file.meta.id);
+        const wavFormat = await inspectWav(wavPath);
+        const wav = wavFormat !== undefined;
+        if (part.source.kind === 'file') assertAudioFile(file, false);
+        else if (!wav) assertAudioFile(file, true);
+        const originalPath = await materialize(file, dir);
+        addAttachmentNote({ path: originalPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'audio' });
+        const wavName = `${file.meta.name.replace(/\.[^./\\]*$/u, '')}.wav`;
+        const name = sanitizeAttachmentName(wav ? wavName : file.meta.name);
+        const mediaType = wav ? 'audio/wav' : file.meta.media_type;
+        const attachedPath = wav ? wavPath : originalPath;
+        const size = wav ? (await stat(wavPath)).size : file.meta.size;
+        const audioFormat = wavFormat === undefined ? undefined : describeWavFormat(wavFormat);
+        if (wav) addAttachmentNote({ path: attachedPath, name, mediaType, size, kind: 'audio', audioFormat });
+        content.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name),
+          source: part.source.kind === 'file' && options.sessionMedia !== undefined ? { kind: 'session_media', file_id: fileId } : part.source });
+        changed = true;
+        continue;
+      }
+
+      if (part.type === 'file') {
+        const file = await getFile(part.file_id);
+        const attachedPath = await materialize(file, await resolveAttachmentsDir());
+        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+        changed = true;
+        continue;
+      }
+
+      if ((part.type !== 'image' && part.type !== 'video') || (part.source.kind !== 'file' && part.source.kind !== 'session_media')) {
         content.push(part);
         continue;
       }
 
-      const file = await files.get(part.source.file_id);
+      const file = await getFile(part.source.file_id);
       assertMediaFile(file, part.type);
+      if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+      const attachedPath = await materialize(file, await resolveAttachmentsDir());
+      addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
       if (part.type === 'image') {
         const data = await readFileOrStream(file);
         let mediaType = file.meta.media_type;
@@ -395,7 +460,7 @@ export async function resolvePromptMediaFiles(
         content.push({
           type: 'image',
           source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
-          name: part.name ?? file.meta.name,
+          name: sanitizeAttachmentName(part.name ?? file.meta.name),
         });
         changed = true;
         continue;
@@ -426,13 +491,15 @@ function compressedUploadName(originalName: string, mimeType: string): string {
 
 const ATTACHMENT_NAME_MAX = 100;
 
-function sanitizeAttachmentName(name: string): string {
-  const cleaned = name
-    .replaceAll(/[\\/]/g, '_')
+export function sanitizeAttachmentName(name: string): string {
+  let cleaned = name
+    .replaceAll(/[\\/:*?"<>|]/g, '_')
     .replaceAll(/[\u0000-\u001F\u007F]/g, '')
     .replace(/^\.+/, '')
     .trim()
+    .replace(/[ .]+$/u, '')
     .slice(0, ATTACHMENT_NAME_MAX);
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(cleaned)) cleaned = `_${cleaned}`;
   return cleaned.length > 0 ? cleaned : 'attachment';
 }
 
@@ -456,6 +523,19 @@ function buildAttachedFileNotice(name: string, mediaType: string, size: number, 
   return `Attached file "${name}" (${mediaType}, ${size} bytes): ${path} — open it with the Read tool`;
 }
 
+function describeWavFormat(format: WavAudioFormat): string {
+  if (format.audioFormat === 1 && format.channels === 1 && format.sampleRate === 16_000 && format.bitsPerSample === 16) {
+    return '16 kHz mono 16-bit PCM WAV';
+  }
+  const channels = `${format.channels} channel${format.channels === 1 ? '' : 's'}`;
+  const codec = format.audioFormat === 1 ? 'PCM' : `format ${format.audioFormat}`;
+  return `unconverted WAV source (${format.sampleRate} Hz, ${channels}, ${format.bitsPerSample}-bit ${codec}; not normalized for ASR)`;
+}
+
+function buildAttachedAudioNotice(name: string, mediaType: string, size: number, path: string): string {
+  return `Attached audio "${name}" (${mediaType}, ${size} bytes): ${path} — listen with an audio-capable tool or use this path`;
+}
+
 async function readFileOrStream(file: GetResult): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of file.stream()) {
@@ -471,4 +551,10 @@ function assertMediaFile(file: GetResult, expected: 'image' | 'video'): void {
     'validation.failed',
     `file ${file.meta.id} is ${file.meta.media_type}, not ${expected === 'video' ? 'a video' : 'an image'}`,
   );
+}
+
+function assertAudioFile(file: GetResult, canonical: boolean): void {
+  const mediaType = file.meta.media_type.toLowerCase();
+  if (mediaType.startsWith('audio/') || canonical && mediaType === 'application/octet-stream') return;
+  throw new Error2('validation.failed', `file ${file.meta.id} is ${file.meta.media_type}, not audio`);
 }

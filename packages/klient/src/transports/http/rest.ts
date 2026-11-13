@@ -622,6 +622,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       setupCatalog: () => transport.json('/im/sessions/setup'),
       setup: (body) => transport.json('/im/sessions/setup', { method: 'POST', body }),
       setPolicy: (policy) => transport.json('/im/sessions/policy', { method: 'PUT', body: policy }),
+      patchPolicy: (policy) => transport.json('/im/sessions/policy', { method: 'PATCH', body: policy }),
       paste: (text, instanceId) => transport.json('/im/sessions/paste', { method: 'POST', body: { text, ...(instanceId === undefined ? {} : { instance_id: instanceId }) } }),
       check: (instanceId) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/check`, { method: 'POST', body: {} }),
       listen: (instanceId, listening) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/listen`, { method: 'POST', body: { listening } }),

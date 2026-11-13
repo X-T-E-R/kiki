@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { IPluginHostService, PluginImAdapterRegistration, PluginImConnection, PluginImAdapterSink } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import type { PluginImDeliveryReceipt, ImProviderKind } from '@kiki/protocol';
-import { ImSendError, type ImAdapterFactory, type ImSessionAdapter, type ImOutboundText } from './adapter';
+import { ImSendError, mimeAllowed, type ImAdapterFactory, type ImSessionAdapter, type ImOutboundText } from './adapter';
 import { segmentText } from './segment';
 
 export class PluginImAdapterBridge implements PluginImAdapterSink {
@@ -88,7 +88,7 @@ function createAdapter(entry: PluginImAdapterRegistration): ImSessionAdapter {
     inboundDiagnostics: () => connection?.inboundDiagnostics?.() ?? [],
     describeConflict: async () => 'none', connectionPhase: () => stopped ? 'stopped' : connection === undefined ? 'starting' : 'running',
     splitText: (text) => definition.textLimit === undefined ? [text] : segmentText(text, definition.textLimit),
-    acceptsVoice: (mime) => definition.mediaCapabilities.some((item) => (item.kind === 'voice' || item.kind === 'audio') && (item.mimeTypes === undefined || item.mimeTypes.some((type) => type === mime || type === 'audio/*'))),
+    acceptsVoice: (mime) => definition.mediaCapabilities.some((item) => (item.kind === 'voice' || item.kind === 'audio') && mimeAllowed(item, mime)),
     async start(listener, options) {
       stopped = false;
       lifetime = new AbortController();
@@ -126,7 +126,7 @@ function createAdapter(entry: PluginImAdapterRegistration): ImSessionAdapter {
       return { messageId: sent.messageId, edited: true };
     },
     async sendMedia(message) {
-      if (!definition.mediaCapabilities.some((item) => item.kind === message.kind && (item.maxBytes === undefined || message.bytes.byteLength <= item.maxBytes) && (item.mimeTypes === undefined || item.mimeTypes.some((mime) => mime === message.mediaType || mime.endsWith('/*') && message.mediaType.startsWith(mime.slice(0, -1)))))) return { status: 'unsupported', unsupported: [message.kind] };
+      if (!definition.mediaCapabilities.some((item) => item.kind === message.kind && (item.maxBytes === undefined || message.bytes.byteLength <= item.maxBytes) && mimeAllowed(item, message.mediaType))) return { status: 'unsupported', unsupported: [message.kind] };
       const { signal, bytes, ...wire } = message;
       return await request('sendMedia', { ...wire, base64: Buffer.from(bytes).toString('base64') }, signal) ?? { status: 'unknown' };
     },

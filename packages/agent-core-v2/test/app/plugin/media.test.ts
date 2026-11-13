@@ -40,6 +40,8 @@ import { Event } from '#/_base/event';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.resolve(here, '../../fixtures/plugin-media');
+const asrFixture = path.resolve(here, '../../fixtures/plugin-asr');
+const inlineAsrFixture = path.resolve(here, '../../fixtures/plugin-asr-inline');
 let root: string;
 let home: string;
 let remote: string;
@@ -198,6 +200,66 @@ describe('media provider persisted vertical slice', () => {
     const tts = await start(service, 'speech-1', 'sync', 'tts');
     const speech = await service.run(tts.job_id);
     expect(speech.artifacts[0]).toMatchObject({ kind: 'audio', mime: 'audio/mpeg', name: 'speech.mp3' });
+  });
+
+  it('lists and transcribes enabled ASR providers through the real plugin child with settings and selected connection', async () => {
+    const target = host({
+      'selected-asr-connection': { type: 'openai', baseUrl: 'https://asr.example.test/v1', apiKey: 'fixture-selected-key' },
+      sibling: { type: 'openai', baseUrl: 'https://sibling.example.test/v1', apiKey: 'fixture-sibling-key' },
+    });
+    await install(target, asrFixture);
+    const plugins = target.app.accessor.get(IPluginService);
+    const settings = target.app.accessor.get(IPluginSettingsService);
+    const providers = target.app.accessor.get(IPluginHostService);
+    const definitions = [
+      { id: 'speech', label: 'Speech', description: 'Fixture speech recognition', connectionSetting: 'connectionId' },
+      { id: 'alternate', label: 'Alternate' },
+    ];
+    expect(await providers.listAsrProviders()).toEqual(definitions.map((definition) => ({ pluginId: 'fixture-asr', definition })));
+    expect(await plugins.listPlugins()).toMatchObject([{ id: 'fixture-asr', enabled: true, asrProviders: definitions }]);
+    const configured = await settings.update({ pluginId: 'fixture-asr', values: { connectionId: 'selected-asr-connection', providerToken: 'fixture-provider-token' } });
+    expect(configured.schema?.schema.properties['connectionId']?.format).toBe('kiki-connection');
+    expect(configured.secretsConfigured).toEqual(['providerToken']);
+    expect(JSON.stringify(configured)).not.toContain('fixture-provider-token');
+
+    const input = { wavPath: path.join(root, 'recording.wav'), originalPath: path.join(root, 'recording.flac'), mediaType: 'audio/wav', language: 'zh' };
+    await writeFile(input.wavPath, 'fixture wave');
+    const first = await providers.transcribeAudio('fixture-asr', input, new AbortController().signal);
+    expect(first).toEqual({ text: `audio/wav:zh:${input.wavPath}:${input.originalPath}:fixture-provider-token:selected-asr-connection`, language: 'zh' });
+    await expect(providers.transcribeAudio('fixture-asr/alternate', input, new AbortController().signal)).resolves.toEqual({ text: `alternate:${input.wavPath}` });
+    await settings.update({ pluginId: 'fixture-asr', values: { connectionId: 'missing-asr-connection' } });
+    await expect(providers.transcribeAudio('fixture-asr/speech', input, new AbortController().signal)).rejects.toThrow('Selected Kiki connection does not exist');
+    await settings.update({ pluginId: 'fixture-asr', values: { connectionId: 'selected-asr-connection' } });
+    const abort = new AbortController();
+    const pending = providers.transcribeAudio('fixture-asr/speech', { ...input, language: 'wait' }, abort.signal);
+    setTimeout(() => abort.abort(), 50);
+    await expect(pending).rejects.toThrow();
+
+    await plugins.setPluginEnabled({ id: 'fixture-asr', enabled: false });
+    expect(await plugins.listPlugins()).toMatchObject([{ id: 'fixture-asr', enabled: false, asrProviders: definitions }]);
+    expect(await providers.listAsrProviders()).toEqual([]);
+    await expect(providers.transcribeAudio('fixture-asr', input, new AbortController().signal)).rejects.toThrow('ASR provider is not enabled');
+  });
+
+  it('discovers and transcribes an undeclared inline ASR provider through the real plugin child', async () => {
+    const target = host({ 'inline-asr-connection': { type: 'openai', baseUrl: 'https://inline-asr.example.test/v1', apiKey: 'inline-asr-key' } });
+    await install(target, inlineAsrFixture);
+    const plugins = target.app.accessor.get(IPluginService);
+    const settings = target.app.accessor.get(IPluginSettingsService);
+    const providers = target.app.accessor.get(IPluginHostService);
+    await settings.update({ pluginId: 'fixture-asr-inline', values: { connectionId: 'inline-asr-connection' } });
+
+    const summaries = await plugins.listPlugins();
+    expect(summaries).toMatchObject([{ id: 'fixture-asr-inline', enabled: true }]);
+    expect(summaries.find((plugin) => plugin.id === 'fixture-asr-inline')?.asrProviders).toBeUndefined();
+    const broken = path.join(root, 'broken-plugin');
+    await mkdir(broken);
+    await writeFile(path.join(broken, 'kimi.plugin.json'), JSON.stringify({ name: 'fixture-broken', 'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs' } }));
+    await writeFile(path.join(broken, 'entry.mjs'), 'export function register() { throw new Error("fixture startup failure"); }');
+    await install(target, broken);
+    expect(await providers.listAsrProviders()).toEqual([{ pluginId: 'fixture-asr-inline', definition: { id: 'inline', label: 'Inline speech', connectionSetting: 'connectionId' } }]);
+    await expect(providers.transcribeAudio('fixture-asr-inline', { wavPath: 'recording.wav' }, new AbortController().signal))
+      .resolves.toEqual({ text: 'recording.wav:inline-asr-connection' });
   });
 
   it('gates new media admission and discovery by the owning session without blocking accepted execution', async () => {

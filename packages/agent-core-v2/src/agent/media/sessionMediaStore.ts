@@ -31,7 +31,7 @@ export interface ISessionMediaStore {
 
   read(fileId: string): Promise<{ readonly data: Uint8Array; readonly name: string } | undefined>;
 
-  open(fileId: string): Promise<SessionMediaFile | undefined>;
+  open(fileId: string, variant?: 'wav'): Promise<SessionMediaFile | undefined>;
 
   materialize(input: SessionMediaMaterializeInput): Promise<string | undefined>;
 }

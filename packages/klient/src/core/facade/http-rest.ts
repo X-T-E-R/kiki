@@ -667,6 +667,7 @@ export interface HttpRestFacade {
     setupCatalog(): Promise<import('@kiki/protocol').ImSetupCatalog>;
     setup(input: import('@kiki/protocol').ImSetupRequest): Promise<import('@kiki/protocol').ImSetupResult>;
     setPolicy(policy: import('@kiki/protocol').ImPolicy): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    patchPolicy(policy: Partial<Omit<import('@kiki/protocol').ImPolicy, 'coalesce_window_ms'>> & { coalesce_window_ms?: number | null }): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     paste(text: string, instanceId?: string): Promise<import('@kiki/protocol').ImPasteResult>;
     check(instanceId: string): Promise<import('@kiki/protocol').ImCheckResult>;
     listen(instanceId: string, listening: boolean): Promise<import('@kiki/protocol').ImSessionSnapshot>;

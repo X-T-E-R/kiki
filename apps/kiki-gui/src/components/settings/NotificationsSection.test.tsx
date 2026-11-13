@@ -28,11 +28,13 @@ const imSessions = {
   snapshot: vi.fn(async () => ({ policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 })),
   catalog: vi.fn(async () => ({ personas: [], sessions: [] })),
   setupCatalog: vi.fn(async () => ({ platforms: [] })),
-  setPolicy: vi.fn(), paste: vi.fn(), check: vi.fn(), listen: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(), updateBinding: vi.fn(), removeBinding: vi.fn(),
+  setPolicy: vi.fn(), patchPolicy: vi.fn(async () => ({ policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 })),
+  paste: vi.fn(), check: vi.fn(), listen: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(), updateBinding: vi.fn(), removeBinding: vi.fn(),
 };
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions, klient: { global: { media: undefined } }, getConfig: async () => ({}) } }),
+  useOptionalConnection: () => undefined,
 }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 

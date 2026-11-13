@@ -2,8 +2,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
-  type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
+  asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
+  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
 } from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';
@@ -203,6 +203,7 @@ export interface PluginExtension {
   readonly tools?: readonly PluginTool[];
   readonly sessionSources?: readonly SessionSourceDefinition[];
   readonly mediaProviders?: readonly MediaProviderDefinition[];
+  readonly asrProviders?: readonly AsrProviderDefinition[];
   readonly harnessAccountSources?: readonly HarnessAccountSourceDefinition[];
   readonly harnessQuotaSources?: readonly HarnessQuotaSourceDefinition[];
   readonly imAdapters?: readonly PluginImAdapterDefinition[];
@@ -241,6 +242,7 @@ export async function parsePluginExtension(
     tools: z.array(toolContributionSchema).optional(),
     sessionSources: z.array(sessionSourceDefinitionSchema).max(20).optional(),
     mediaProviders: z.array(mediaProviderDefinitionSchema).max(1000).optional(),
+    asrProviders: z.array(asrProviderDefinitionSchema).max(1000).optional(),
     harnessAccountSources: z.array(harnessAccountSourceDefinitionSchema).max(20).optional(),
     harnessQuotaSources: z.array(harnessQuotaSourceDefinitionSchema).max(20).optional(),
     imAdapters: z.array(pluginImAdapterDefinitionSchema).max(20).optional(),
@@ -262,7 +264,7 @@ export async function parsePluginExtension(
   }
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
-    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
+    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
     value.slots !== undefined || value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
@@ -271,10 +273,10 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
-  for (const definitions of [value.sessionSources, value.mediaProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters]) {
+  for (const definitions of [value.sessionSources, value.mediaProviders, value.asrProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters]) {
     if (new Set(definitions?.map((item) => item.id)).size !== (definitions?.length ?? 0)) {
       diagnostics.push({ severity: 'error', message: 'Duplicate executable contribution id' });
     }
@@ -288,6 +290,11 @@ export async function parsePluginExtension(
         : group.settingsPrefix + provider.connectionSetting;
     if (setting !== undefined && value.settings?.schema.properties[setting]?.type !== 'string') {
       diagnostics.push({ severity: 'error', message: `Media provider ${provider.id} connectionSetting must name a declared string setting` });
+    }
+  }
+  for (const provider of value.asrProviders ?? []) {
+    if (provider.connectionSetting !== undefined && value.settings?.schema.properties[provider.connectionSetting]?.type !== 'string') {
+      diagnostics.push({ severity: 'error', message: `ASR provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }
   const groups = value.mediaSources ?? [];
@@ -373,6 +380,7 @@ export async function parsePluginExtension(
     tools: value.tools,
     sessionSources: value.sessionSources,
     mediaProviders: value.mediaProviders,
+    asrProviders: value.asrProviders,
     harnessAccountSources: value.harnessAccountSources,
     harnessQuotaSources: value.harnessQuotaSources,
     imAdapters: value.imAdapters,

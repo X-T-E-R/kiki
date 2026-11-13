@@ -12,6 +12,7 @@ export interface MediaStripSnapshot {
 export interface ProjectionPolicy {
   readonly structure?: 'strict';
   readonly media?: 'degraded' | { readonly strip: MediaStripSnapshot };
+  readonly audio?: 'omit_unsupported';
   readonly toolResultAppendix?: 'host_auto_injections' | 'trailing_user_text';
   readonly toolResultAppendixHistory?: {
     readonly canonical: readonly ContextMessage[];

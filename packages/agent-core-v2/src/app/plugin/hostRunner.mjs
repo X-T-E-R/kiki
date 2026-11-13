@@ -7,6 +7,7 @@ const tools = new Map();
 let cordisSlots;
 const sources = new Map();
 const providers = new Map();
+const asrProviders = new Map();
 const harnessAccountSources = new Map();
 const harnessQuotaSources = new Map();
 const harnessAccountLeases = new Map();
@@ -324,6 +325,12 @@ for await (const line of input) {
           providers.set(definition.id, adapter);
           send({ method: 'register-media-provider', params: { version: 1, definition } });
         },
+        registerAsrProvider(definition, adapter) {
+          const id = typeof definition === 'string' ? definition : definition?.id;
+          if (typeof id !== 'string' || asrProviders.has(id) || typeof adapter?.transcribe !== 'function') throw new Error('Invalid or duplicate ASR provider');
+          asrProviders.set(id, adapter);
+          send({ method: 'register-asr-provider', params: { version: 1, definition } });
+        },
         registerHarnessAccountSource(definition, adapter) {
           if (typeof definition?.id !== 'string' || harnessAccountSources.has(definition.id) ||
               ['list', 'prepare', 'release'].some((name) => typeof adapter?.[name] !== 'function')) throw new Error('Invalid or duplicate harness account source');
@@ -542,6 +549,22 @@ for await (const line of input) {
         jobId: message.params.jobId, stagingDir: message.params.stagingDir,
         connection() { return callMedia(message.id, 'connection'); },
         progress(update) { send({ method: 'progress', params: { id: message.id, update } }); },
+      });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
+  if (message.method === 'asr-provider-request') {
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    Promise.resolve().then(() => {
+      const adapter = asrProviders.get(message.params?.providerId);
+      if (adapter === undefined) throw new Error('Unsupported ASR provider');
+      return adapter.transcribe(message.params.input, {
+        signal: controller.signal, settings: message.params.settings ?? {},
+        connection() { return callMedia(message.id, 'connection'); },
       });
     }).then(
       (result) => send({ id: message.id, result }),

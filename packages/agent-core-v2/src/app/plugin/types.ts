@@ -176,6 +176,7 @@ export interface PluginSummary {
   readonly enabledMcpServerCount: number;
   readonly hookCount: number;
   readonly commandCount: number;
+  readonly asrProviders?: NonNullable<PluginExtension['asrProviders']>;
   readonly hasErrors: boolean;
   readonly source: PluginSource;
   readonly originalSource?: string;

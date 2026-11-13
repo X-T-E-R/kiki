@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { pluginInstallPlanSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
+import { asrProviderDefinitionSchema, pluginInstallPlanSchema, pluginPreviewRequestSchema } from '@kiki/protocol';
 
 import { noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
@@ -130,6 +130,7 @@ export const pluginSummarySchema = z.object({
   enabled: z.boolean(),
   globalEnabled: z.boolean(),
   defaultEnabled: z.boolean().optional(),
+  asrProviders: z.array(asrProviderDefinitionSchema).optional(),
   state: pluginStateSchema,
   skillCount: z.number(),
   mcpServerCount: z.number(),

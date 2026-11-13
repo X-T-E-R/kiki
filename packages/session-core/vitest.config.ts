@@ -13,6 +13,7 @@ export default defineConfig({
       '@kiki/plugin-sdk/harness-account': fileURLToPath(new URL('../plugin-sdk/src/harness-account.ts', import.meta.url)),
       '@kiki/plugin-sdk/harness-quota': fileURLToPath(new URL('../plugin-sdk/src/harness-quota.ts', import.meta.url)),
       '@kiki/plugin-sdk/session-import': fileURLToPath(new URL('../plugin-sdk/src/session-import.ts', import.meta.url)),
+      '@kiki/plugin-sdk/asr': fileURLToPath(new URL('../plugin-sdk/src/asr.ts', import.meta.url)),
       '@kiki/plugin-sdk': fileURLToPath(new URL('../plugin-sdk/src/index.ts', import.meta.url)),
     },
   },

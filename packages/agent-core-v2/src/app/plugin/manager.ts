@@ -1058,6 +1058,7 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     enabledMcpServerCount: pluginMcpServersInfo(record).filter((server) => server.enabled).length,
     hookCount: record.manifest?.hooks?.length ?? 0,
     commandCount: record.manifest?.commands?.length ?? 0,
+    asrProviders: record.manifest?.kiki?.asrProviders,
     hasErrors: record.diagnostics.some((d) => d.severity === 'error'),
     source: record.source,
     originalSource: record.originalSource,

@@ -18,6 +18,7 @@ import {
   MEDIA_DEGRADE_KEEP_RECENT,
   captureMediaStripSnapshot,
   degradeOlderMediaParts,
+  omitUnsupportedAudio,
   stripMediaPartsBySnapshot,
 } from './mediaProjection';
 import {
@@ -57,11 +58,12 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     messages: readonly ContextMessage[],
     policy: ProjectionPolicy = {},
   ): readonly Message[] {
-    const projected = this.projectWithTrace(messages, policy);
+    let projected = this.projectWithTrace(messages, policy);
     const media = policy.media;
-    if (media === undefined) return projected;
-    if (media === 'degraded') return degradeOlderMediaParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
-    return stripMediaPartsBySnapshot(projected, media.strip);
+    if (media === 'degraded') projected = degradeOlderMediaParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
+    else if (media !== undefined) projected = stripMediaPartsBySnapshot(projected, media.strip);
+    if (policy.audio === 'omit_unsupported') projected = omitUnsupportedAudio(projected);
+    return projected;
   }
 
   captureMediaStripSnapshot(messages: readonly ContextMessage[]): MediaStripSnapshot {

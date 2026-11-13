@@ -17,6 +17,8 @@ import { type ModelRequester } from '#/kosong/model/modelRequester';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { join } from 'pathe';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 
@@ -45,6 +47,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
+    @ISessionContext private readonly session?: ISessionContext,
   ) {
     super();
     this.states.contributeState(mediaRegisteredKeyKey);
@@ -124,6 +127,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     const workspaceCtx = this.workspaceCtx;
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;
+    const session = this.session;
     const definitionRoots = kikiDefinitionReadRoots(this.bootstrap);
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
@@ -144,6 +148,9 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
         },
         get definitionReadRoots() {
           return [...skillCatalog?.catalog.getSkillRoots() ?? [], ...definitionRoots];
+        },
+        get sessionAttachmentsReadRoot() {
+          return session === undefined ? undefined : join(session.sessionDir, 'attachments');
         },
       },
       capabilities,

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
@@ -32,6 +32,25 @@ describe('hub session adapter', () => {
     expect(mimeAllowed).toBe(sharedMimeAllowed);
     expect(mimeAllowed({ kind: 'image', mimeTypes: ['image/*'] }, 'IMAGE/PNG')).toBe(true);
     expect(mimeAllowed({ kind: 'image', mimeTypes: ['image/png'] }, 'image/jpeg')).toBe(false);
+  });
+
+  it('preserves voice identity for native and generic audio parts from the session hub', async () => {
+    const raw = session();
+    const hub = new HubSessionAdapter(raw);
+    const events: import('../../../src/services/imSession/adapter').ImInboundEvent[] = [];
+    await hub.start(async (event) => { events.push(event); });
+    const inbound: SessionInbound = {
+      event_key: 'event-audio',
+      platform_event_id: 'event-audio',
+      identity: { platform: 'personal_wechat', account_id: 'wx', chat_id: 'group', sender_id: 'member', topic_id: '0', chat_kind: 'group' },
+      payload: { type: 'parts', parts: [
+        { type: 'media', media: { kind: 'voice', filename: 'voice.opus', mime: 'audio/opus', bytes: Uint8Array.of(1) } },
+        { type: 'media', media: { kind: 'audio', filename: 'clip.wav', mime: 'audio/wav', bytes: Uint8Array.of(2) } },
+      ] },
+      cursor: '1',
+    };
+    await raw.sink?.admit(inbound);
+    expect(events[0]?.parts).toMatchObject([{ kind: 'audio', voice: true, media: { name: 'voice.opus' } }, { kind: 'audio', voice: false, media: { name: 'clip.wav' } }]);
   });
 
   it('passes the delivery signal through to the session and rejects late sends after cancellation', async () => {

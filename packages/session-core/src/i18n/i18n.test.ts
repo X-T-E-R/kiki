@@ -43,6 +43,22 @@ describe('translate', () => {
     expect(translate('zh', 'sidebar.newSession')).toBe('新会话');
     expect(translate('en', 'diagnostics.unconfigured')).toBe('No recommendations');
     expect(translate('zh', 'diagnostics.unconfigured')).toBe('未配置推荐');
+    expect(translate('en', 'st.im.coalesce.window')).toBe('Combine rapid messages');
+    expect(translate('zh', 'st.im.coalesce.window')).toBe('消息合并');
+    expect(translate('en', 'st.im.coalesce.binding')).toBe('Combine rapid messages');
+    expect(translate('zh', 'st.im.coalesce.binding')).toBe('消息合并');
+    expect(translate('en', 'st.im.coalesce.globalHint')).toContain('text and attachments');
+    expect(translate('zh', 'st.im.coalesce.globalHint')).toContain('文字和附件');
+    expect(translate('en', 'st.im.coalesce.2s')).toBe('2s');
+    expect(translate('zh', 'st.im.coalesce.2s')).toBe('2 秒');
+    expect(translate('en', 'st.im.coalesce.followDefault')).toBe('Follow default');
+    expect(translate('zh', 'st.im.coalesce.followDefault')).toBe('跟随默认');
+    expect(translate('en', 'st.im.asr.mode')).toBe('Voice transcription');
+    expect(translate('zh', 'st.im.asr.mode')).toBe('语音转文字');
+    expect(translate('en', 'st.im.asr.mode.auto')).toBe('Auto');
+    expect(translate('zh', 'st.im.asr.mode.wavOnly')).toBe('仅 WAV 路径');
+    expect(translate('en', 'st.im.asr.connectionSetting', { setting: 'model_path' })).toBe('Connection setting: model_path');
+    expect(translate('zh', 'st.im.asr.connectionSetting', { setting: 'model_path' })).toBe('连接设置：model_path');
   });
 
   it('interpolates {params} and leaves unknown placeholders intact', () => {

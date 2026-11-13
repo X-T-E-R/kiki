@@ -19,6 +19,10 @@
       "types": "./dist/media.d.ts",
       "default": "./dist/media.js"
     },
+    "./asr": {
+      "types": "./dist/asr.d.ts",
+      "default": "./dist/asr.js"
+    },
     "./harness-account": {
       "types": "./dist/harness-account.d.ts",
       "default": "./dist/harness-account.js"

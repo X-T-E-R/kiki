@@ -170,6 +170,7 @@ async function plantCanonical(fileId: string, ext: string, bytes: Buffer): Promi
 function requester(opts: {
   videoIn?: boolean;
   imageIn?: boolean;
+  audioIn?: boolean;
   protocol?: Protocol;
   providerType?: string;
   imagePolicy?: ResolvedImagePolicy;
@@ -191,6 +192,7 @@ function requester(opts: {
       capabilities: {
         video_in: opts.videoIn ?? true,
         image_in: opts.imageIn ?? true,
+        audio_in: opts.audioIn ?? false,
       } as unknown as ModelCapability,
       maxContextSize: 1000,
       alwaysThinking: false,
@@ -245,6 +247,45 @@ function resolver(
   });
   return ix.get(IAgentMediaResolverService);
 }
+
+describe('AgentMediaResolverService audio strategy', () => {
+  it('sends the WAV derivative to an audio model without changing the original playback reference', async () => {
+    const bytes = Buffer.from('RIFF\u0004\u0000\u0000\u0000WAVE');
+    const media = {
+      ...stubMediaStore(),
+      open: vi.fn(async (_id: string, variant?: 'wav') => variant === 'wav' ? {
+        name: 'voice.wav', mediaType: 'audio/wav', size: bytes.length,
+        stream: async function* () { yield bytes; },
+      } : undefined),
+    };
+    const service = resolver(new Map(), undefined, media);
+    const url = buildKimiFileUrl(FILE_ID);
+    const message: Message = { role: 'user', toolCalls: [], content: [{ type: 'audio_url', audioUrl: { url, name: 'voice.amr' } }] };
+    expect(firstPart(await service.resolve([message], requester({ audioIn: true })))).toEqual({
+      type: 'audio_url', audioUrl: { url: `data:audio/wav;base64,${bytes.toString('base64')}`, name: 'voice.wav' },
+    });
+    expect(firstPart(await service.resolve([message], requester({ audioIn: false })))).toMatchObject({ type: 'text' });
+    expect(firstPart([message])).toEqual({ type: 'audio_url', audioUrl: { url, name: 'voice.amr' } });
+    expect(media.open.mock.calls).toEqual([[FILE_ID, 'wav']]);
+  });
+
+  it('keeps a proprietary original as a path reference when no WAV derivative exists', async () => {
+    const stream = vi.fn(async function* () { yield Buffer.from('silk'); });
+    const service = resolver(new Map(), undefined, {
+      ...stubMediaStore(),
+      open: async (_id, variant) => variant === 'wav' ? undefined : {
+        name: 'voice.silk', mediaType: 'audio/silk', size: 4, stream,
+      },
+    });
+    const message: Message = { role: 'user', toolCalls: [], content: [
+      { type: 'text', text: 'Attached audio: /sessions/current/attachments/voice.silk' },
+      { type: 'audio_url', audioUrl: { url: buildKimiFileUrl(FILE_ID) } },
+    ] };
+    const result = await service.resolve([message], requester({ audioIn: true }));
+    expect(result[0]!.content).toEqual([message.content[0], expect.objectContaining({ type: 'text' })]);
+    expect(stream).not.toHaveBeenCalled();
+  });
+});
 
 describe('AgentMediaResolverService video strategy', () => {
   it('uploads a kimi-file video once and reuses the cached reference on later steps', async () => {

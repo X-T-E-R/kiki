@@ -112,6 +112,21 @@ export function stripMediaPartsBySnapshot(
   return changed ? result : messages;
 }
 
+export function omitUnsupportedAudio(messages: readonly Message[]): readonly Message[] {
+  let changed = false;
+  const result = messages.map((message) => {
+    let messageChanged = false;
+    const content = message.content.map((part): ContentPart => {
+      if (part.type !== 'audio_url') return part;
+      changed = true;
+      messageChanged = true;
+      return { type: 'text', text: MEDIA_STRIPPED_PLACEHOLDERS.audio_url };
+    });
+    return messageChanged ? { ...message, content } : message;
+  });
+  return changed ? result : messages;
+}
+
 export function degradeOlderMediaParts(
   messages: readonly Message[],
   keepRecent: number,

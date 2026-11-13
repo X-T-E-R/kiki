@@ -418,7 +418,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
     }
     const kind = toInboundMediaKind(payload.media.kind);
     return {
-      ...base, kind, text: payload.caption ?? '', preview: payload.caption?.slice(0, 80),
+      ...base, kind, text: payload.caption ?? '', preview: payload.caption?.slice(0, 80), voice: payload.media.kind === 'voice',
       media: { name: payload.media.filename, mediaType: payload.media.mime, bytes: payload.media.bytes },
     };
   }
@@ -590,6 +590,7 @@ function toInboundPart(part: SessionInboundPart, degradeTooLarge: boolean): NonN
   return {
     kind,
     text: part.caption,
+    voice: part.media.kind === 'voice',
     media: { name: part.media.filename, mediaType: part.media.mime, bytes: part.media.bytes },
   };
 }

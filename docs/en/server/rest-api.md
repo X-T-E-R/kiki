@@ -1019,7 +1019,8 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 | --- | --- |
 | `GET /api/im/sessions` | Snapshot of policy, instances, discoveries, bindings, strangers and voice fallbacks |
 | `GET /api/im/sessions/catalog` | Personas and sessions available as binding targets |
-| `PUT /api/im/sessions/policy` | Set `allowed`, `default_enabled`, and optional `allow_channel_borrowing` (default `false`) |
+| `PUT /api/im/sessions/policy` | Replace the IM policy; `allowed` and `default_enabled` are required |
+| `PATCH /api/im/sessions/policy` | Update individual fields, including `coalesce_window_ms`, `asr_mode`, and `asr_provider` |
 | `POST /api/im/sessions/instances/{id}/listen` | Set `{ listening: true \| false }`; retry a stopped listener with `true` |
 | `POST /api/im/sessions/discoveries/{id}/confirm` | Bind to `target`; optional `rebind`, `input_enabled`, `output_enabled`, `busy`, `reply`, `mobile_interactions`, `also_home` |
 | `PATCH /api/im/sessions/bindings/{id}` | Update this binding's target, direction switches or options |
@@ -1031,6 +1032,8 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 | `POST /api/sessions/{session_id}/optional-capabilities` | Set `{ id: "send_message", choice: "on" \| "off" \| "inherit" }`; applies at the next step without restarting |
 
 A `target` is `{ kind: "session", session_id }`, or the compatible `{ kind: "persona", persona_id }` shortcut to that Persona's home session. PATCH also accepts legacy `session_id`, but not together with `target`; `also_home` belongs only to confirmation. Reconfirming preserves existing `enabled`, `session_enabled`, `input_enabled` and `output_enabled` unless explicitly changed. `session_enabled: null` follows `policy.default_enabled`; a direction set to `null` removes that direction override. Both directions still require the binding and session allowance to be enabled.
+
+Set `coalesce_window_ms` to an integer from `0` to `30000`. Each new message from the same sender in the same chat and topic extends the window, up to six windows or 60 seconds from the first message, whichever is shorter. On the global policy, `0` or PATCH `null` disables combining. On a binding, `null` follows the global policy and `0` overrides it to off. Set `asr_mode` to `"off"` to keep the audio path without transcription; the default `"auto"` uses an enabled ASR provider. Select one with `asr_provider: "plugin-id/provider-id"`, or clear the selection with `null`.
 
 For groups, confirmation and PATCH accept `binding_scope: "sender" | "topic" | "chat"`; omission matches only the original sender. `topic_id: "0"` means there is no topic: choose `"chat"` for the whole group or `"sender"` for the original sender; `"topic"` returns business code `40001` / `topic_scope_unavailable`. Choosing `"topic"` or `"chat"` outside a group returns `40001` / `group_binding_scope_required`. A stored no-topic `"topic"` binding still matches only its original sender; it does not widen to the group.
 

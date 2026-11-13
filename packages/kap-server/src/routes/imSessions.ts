@@ -49,6 +49,15 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     }
   }));
   app.put('/im/sessions/policy', (req, reply) => respond(req, reply, () => bridge.setPolicy(imPolicySchema.parse(req.body))));
+  const policyPatch = imPolicySchema.partial().extend({ coalesce_window_ms: imPolicySchema.shape.coalesce_window_ms.nullable() });
+  const patchPolicy = (req: FastifyRequest, reply: FastifyReply) => respond(req, reply, () => {
+    const { coalesce_window_ms, ...patch } = policyPatch.parse(req.body);
+    const policy = { ...bridge.policy(), ...patch };
+    if (coalesce_window_ms !== undefined) policy.coalesce_window_ms = coalesce_window_ms ?? undefined;
+    return bridge.setPolicy(policy);
+  });
+  app.patch('/im/sessions/policy', patchPolicy);
+  app.patch('/im-sessions/policy', patchPolicy);
   app.post('/im/sessions/paste', (req, reply) => respond(req, reply, () => {
     const body = z.object({ text: z.string().min(1).max(8192), instance_id: identifier.optional() }).strict().parse(req.body);
     return bridge.paste({ text: body.text, ...(body.instance_id === undefined ? {} : { instanceId: body.instance_id }) });
@@ -71,6 +80,7 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
       enabled: patch.enabled,
       sessionEnabled: patch.session_enabled,
       groupPolicy: patch.group_policy,
+      coalesceWindowMs: patch.coalesce_window_ms,
       inputEnabled: patch.input_enabled,
       outputEnabled: patch.output_enabled,
       rebind: patch.rebind,

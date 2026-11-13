@@ -1002,7 +1002,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | --- | --- |
 | `GET /api/im/sessions` | 读取 policy、instances、discoveries、bindings、strangers 与 voice_fallbacks 快照 |
 | `GET /api/im/sessions/catalog` | 可作为绑定目标的角色与会话 |
-| `PUT /api/im/sessions/policy` | 设置 `allowed`、`default_enabled` 和可选的 `allow_channel_borrowing`（默认 `false`） |
+| `PUT /api/im/sessions/policy` | 替换 IM 策略，必填 `allowed` 和 `default_enabled` |
+| `PATCH /api/im/sessions/policy` | 按字段更新策略，包括 `coalesce_window_ms`、`asr_mode` 和 `asr_provider` |
 | `POST /api/im/sessions/instances/{id}/listen` | 设置 `{ listening: true \| false }`；传 `true` 明确重试已停止的监听 |
 | `POST /api/im/sessions/discoveries/{id}/confirm` | 绑定到 `target`；可选 `rebind`、`input_enabled`、`output_enabled`、`busy`、`reply`、`mobile_interactions`、`also_home` |
 | `PATCH /api/im/sessions/bindings/{id}` | 修改这条绑定的目标、方向开关或选项 |
@@ -1014,6 +1015,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `POST /api/sessions/{session_id}/optional-capabilities` | 设置 `{ id: "send_message", choice: "on" \| "off" \| "inherit" }`，下一步热生效，无需重启 |
 
 `target` 使用 `{ kind: "session", session_id }`；也保留 `{ kind: "persona", persona_id }`，作为绑定到该角色日常会话的快捷方式。PATCH 仍接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认保留已有 `enabled`、`session_enabled`、`input_enabled` 和 `output_enabled`，除非请求明确修改。`session_enabled: null` 跟随 `policy.default_enabled`；方向设为 `null` 则删除该方向覆盖。入站、出站仍受绑定总开关与会话准入限制。
+
+`coalesce_window_ms` 接受 `0` 到 `30000` 的整数。同一聊天、话题和发送者的新消息会延长等待窗口，从第一条消息起最多等待六个窗口或 60 秒，取较短者。全局策略设为 `0` 或通过 PATCH 设为 `null` 可关闭合并。绑定设为 `null` 跟随全局策略，设为 `0` 则单独关闭。`asr_mode: "off"` 只保留音频路径、不转文字；默认 `"auto"` 使用已启用的 ASR 提供商。用 `asr_provider: "plugin-id/provider-id"` 指定提供商，设为 `null` 清除选择。
 
 群聊确认和 PATCH 支持 `binding_scope: "sender" | "topic" | "chat"`；省略时只匹配原发送者。`topic_id: "0"` 表示没有话题：选 `"chat"` 绑定整群，选 `"sender"` 绑定原发送者；选 `"topic"` 返回业务码 `40001` / `topic_scope_unavailable`。非群聊选 `"topic"` 或 `"chat"` 返回 `40001` / `group_binding_scope_required`。已保存的无话题 `"topic"` 绑定仍只匹配原发送者，不会自动扩到整群。
 

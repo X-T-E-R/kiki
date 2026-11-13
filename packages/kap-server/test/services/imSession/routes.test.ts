@@ -248,6 +248,16 @@ it('binds an existing indexed session through native routes and reopens the save
     const bindingId = confirmed.data.bindings[0].id as string;
     const changed = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'im-replacement' }, rebind: true } })).json();
     expect(changed).toMatchObject({ code: 0, data: { bindings: [{ id: bindingId, session_id: 'im-replacement' }] } });
+    const policy = (await app!.inject({ method: 'PATCH', url: '/im/sessions/policy', payload: { coalesce_window_ms: 3000, asr_mode: 'off', asr_provider: ' speech-plugin/recognize ' } })).json();
+    expect(policy).toMatchObject({ code: 0, data: { policy: { allowed: true, default_enabled: true, coalesce_window_ms: 3000, asr_mode: 'off', asr_provider: 'speech-plugin/recognize' } } });
+    const reset = (await app!.inject({ method: 'PATCH', url: '/im-sessions/policy', payload: { coalesce_window_ms: null, asr_provider: null } })).json();
+    expect(reset.data.policy.coalesce_window_ms).toBeUndefined();
+    expect(reset.data.policy).toMatchObject({ asr_mode: 'off', asr_provider: null });
+    for (const invalidWindow of [-1, 30001, 1.5]) expect((await app!.inject({ method: 'PATCH', url: '/im/sessions/policy', payload: { coalesce_window_ms: invalidWindow } })).json().code).toBe(40001);
+    const override = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { coalesce_window_ms: 0 } })).json();
+    expect(override.data.bindings[0].coalesce_window_ms).toBe(0);
+    const inherited = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { coalesce_window_ms: null } })).json();
+    expect(inherited.data.bindings[0].coalesce_window_ms).toBeNull();
     const rejected = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'missing' }, enabled: false } })).json();
     expect(rejected).toMatchObject({ code: 40001, msg: 'unknown_session' });
     const stored = JSON.parse(await readFile(join(home, 'im-session-bridge.json'), 'utf8'));
@@ -255,7 +265,8 @@ it('binds an existing indexed session through native routes and reopens the save
     await close();
     const reopenedAdapter = await open();
     const reread = (await app!.inject({ method: 'GET', url: '/im/sessions' })).json();
-    expect(reread).toMatchObject({ code: 0, data: { bindings: [{ id: bindingId, session_id: 'im-replacement', identity: { chat_id: 'test-chat', sender_id: 'test-sender' } }] } });
+    expect(reread).toMatchObject({ code: 0, data: { policy: { asr_mode: 'off', asr_provider: null }, bindings: [{ id: bindingId, session_id: 'im-replacement', coalesce_window_ms: null, identity: { chat_id: 'test-chat', sender_id: 'test-sender' } }] } });
+    expect(reread.data.policy.coalesce_window_ms).toBeUndefined();
     const test = (await app!.inject({ method: 'POST', url: `/im/sessions/bindings/${bindingId}/test`, payload: {} })).json();
     expect(test).toMatchObject({ code: 0, data: { binding_id: bindingId, status: 'delivered', message_ids: [expect.any(String)] } });
     expect(reopenedAdapter.sent).toHaveLength(1);
@@ -263,7 +274,7 @@ it('binds an existing indexed session through native routes and reopens the save
     const invalid = (await app!.inject({ method: 'POST', url: `/im/sessions/bindings/${bindingId}/test`, payload: { text: 'arbitrary', target: 'other' } })).json();
     expect(invalid.code).toBe(40001);
     expect(reopenedAdapter.sent).toHaveLength(1);
-  } finally { await close(); await rm(home, { recursive: true, force: true }); }
+  } finally { await close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
 it('serves group confirm and PATCH on the envelope, including scope conflicts and failed saves', async () => {

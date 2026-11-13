@@ -57,6 +57,14 @@ export function handleImSessions(server, res, path, method, body) {
     snapshot.policy = structuredClone(body);
     return ok(structuredClone(snapshot));
   }
+  if (path === '/im/sessions/policy' && method === 'PATCH') {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return invalid(server, res);
+    const { coalesce_window_ms, ...fields } = body;
+    Object.assign(snapshot.policy, structuredClone(fields));
+    if (coalesce_window_ms === null) delete snapshot.policy.coalesce_window_ms;
+    else if (coalesce_window_ms !== undefined) snapshot.policy.coalesce_window_ms = coalesce_window_ms;
+    return ok(structuredClone(snapshot));
+  }
 
   const instance = /^\/im\/sessions\/instances\/([^/]+)\/(check|listen)$/u.exec(path);
   if (instance !== null && method === 'POST') {

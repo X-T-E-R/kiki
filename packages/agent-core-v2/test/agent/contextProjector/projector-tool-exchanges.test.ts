@@ -149,6 +149,15 @@ describe('projector tool-exchange normalization', () => {
     return projector.project(history, { structure: 'strict' });
   }
 
+  it('omits unsupported audio only from the provider projection while preserving the canonical audio part', () => {
+    const audio: ContextMessage = { ...user('listen'), content: [{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }] };
+    expect(projector.project([audio])[0]?.content).toEqual([{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }]);
+    expect(projector.project([audio], { audio: 'omit_unsupported' })[0]?.content).toEqual([
+      { type: 'text', text: '[audio omitted for provider compatibility; re-read the file to hear it]' },
+    ]);
+    expect(audio.content).toEqual([{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }]);
+  });
+
   it('leaves a fully resolved exchange untouched', () => {
     const history = [user('go'), assistant('', ['c1']), toolResult('c1', 'one'), user('next')];
     expect(shape(history)).toEqual(['user', 'assistant', 'tool:c1', 'user']);

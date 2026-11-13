@@ -28,7 +28,7 @@ async function fixture(pluginId: string, direction = { inbound: true, outbound: 
   const root = await mkdtemp(resolve('.tmp/plugin-im-adapter/run-'));
   roots.push(root);
   const definition = pluginImAdapterDefinitionSchema.parse({ schemaVersion: 1, id: 'account', label: 'Fixture account', ...direction, listenerRealm: pluginId, maxInboundBytes, supportsReply: true, supportsMentions: true,
-    mediaCapabilities: direction.outbound ? ['image', 'voice', 'video'].map((kind) => ({ kind, mimeTypes: [kind === 'voice' ? 'audio/*' : `${kind}/*`] })) : [] });
+    mediaCapabilities: direction.outbound ? ['image', 'voice', 'video'].map((kind) => ({ kind, mimeTypes: [kind === 'voice' ? 'audio/ogg' : `${kind}/*`] })) : [] });
   const tools = ['event', 'state', 'report'].map((name) => ({ schemaVersion: 1 as const, name, description: name, accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const }));
   await writeFile(join(root, 'entry.mjs'), `
     const definition = ${JSON.stringify(definition)};
@@ -303,7 +303,7 @@ describe('plugin IM adapter contribution', () => {
     await bind(bridge, first, privateChat);
     const bound = (await bridge.snapshot()).bindings.find((item) => item.identity.chat_kind === 'group')!;
     await expect(bridge.updateBinding(bound.id, { sessionId: 'session-2' })).rejects.toThrow();
-    const media = ['voice', 'image', 'video'].map((kind) => ({ blobId: `fixture-${kind}`, path: `fixture.${kind}`, size: 3, mimeType: kind === 'voice' ? 'audio/ogg' : `${kind}/fixture`, kind }));
+    const media = ['voice', 'image', 'video'].map((kind) => ({ blobId: `fixture-${kind}`, path: `fixture.${kind}`, size: 3, mimeType: kind === 'voice' ? 'Audio/Ogg' : `${kind}/fixture`, kind }));
     const receipt = await bridge.sendUserMessage({ sessionId: 'session-1', toolCallId: 'send-1', channel: `im:${bound.id}`, text: 'sent text', attachments: media, replyTo: 'quote-target', mentionIds: ['member-2'] });
     expect(receipt.channels?.[0]).toMatchObject({ status: 'delivered', messageIds: ['media-1', 'media-2', 'media-3'] });
     const state = await first.state();

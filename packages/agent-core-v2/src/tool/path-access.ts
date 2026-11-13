@@ -14,6 +14,7 @@ export interface WorkspaceConfig {
   readonly workspaceDir: string;
   readonly additionalDirs: readonly string[];
   readonly definitionReadRoots?: readonly string[];
+  readonly sessionAttachmentsReadRoot?: string;
 }
 
 const SENSITIVE_BASENAMES = new Set<string>([
@@ -172,6 +173,14 @@ export function isWithinDirectory(
   return comparableCandidate.startsWith(prefix);
 }
 
+function samePath(left: string, right: string, pathClass: PathClass): boolean {
+  const normalizedLeft = pathe.normalize(left);
+  const normalizedRight = pathe.normalize(right);
+  return pathClass === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
 export function isWithinWorkspace(
   candidate: string,
   config: WorkspaceConfig,
@@ -274,6 +283,11 @@ export async function resolveRealPathAccess(
   fs: IHostFileSystem,
 ): Promise<PathAccess> {
   const lexicalPath = resolvePathAccessPath(path, options);
+  const sessionAttachmentsReadRoot = options.operation === 'read' && options.workspace.sessionAttachmentsReadRoot !== undefined
+    ? canonicalizePath(options.workspace.sessionAttachmentsReadRoot, options.workspace.workspaceDir, options.env.pathClass)
+    : undefined;
+  const lexicalSessionAttachmentsRead = sessionAttachmentsReadRoot !== undefined &&
+    isWithinDirectory(lexicalPath, sessionAttachmentsReadRoot, options.env.pathClass);
   const [target, workspaceDir, ...additionalDirs] = await Promise.all([
     realPathOrMissingChild(fs, lexicalPath).catch((error: unknown) => {
       if (error instanceof PathSecurityError && error.code === 'PATH_INVALID') {
@@ -287,6 +301,23 @@ export async function resolveRealPathAccess(
   ]);
   const realWorkspace = { workspaceDir, additionalDirs };
   const realPath = canonicalizePath(target, workspaceDir, options.env.pathClass);
+  let inSessionAttachmentsReadRoot = false;
+  if (lexicalSessionAttachmentsRead && sessionAttachmentsReadRoot !== undefined) {
+    const [sessionDir, attachmentsRoot] = await Promise.all([
+      fs.realpath(pathe.dirname(sessionAttachmentsReadRoot)),
+      realPathOrMissingChild(fs, sessionAttachmentsReadRoot),
+    ]);
+    const expectedAttachmentsRoot = pathe.join(sessionDir, 'attachments');
+    if (!samePath(attachmentsRoot, expectedAttachmentsRoot, options.env.pathClass)) {
+      throw new PathSecurityError('PATH_INVALID', path, attachmentsRoot,
+        `[invalid_path] The current session attachments directory "${sessionAttachmentsReadRoot}" does not resolve to its session's attachments directory.`);
+    }
+    if (!isWithinDirectory(realPath, attachmentsRoot, options.env.pathClass)) {
+      throw new PathSecurityError('PATH_INVALID', path, realPath,
+        `[invalid_path] Path "${path}" resolves outside the current session attachments directory "${attachmentsRoot}".`);
+    }
+    inSessionAttachmentsReadRoot = true;
+  }
   const outsideWorkspace = !isWithinWorkspace(realPath, realWorkspace, options.env.pathClass);
   const inDefinitionRoot = options.workspace.definitionReadRoots?.some((root) =>
     isWithinDirectory(lexicalPath, root, options.env.pathClass));
@@ -294,7 +325,8 @@ export async function resolveRealPathAccess(
     path: realPath,
     outsideWorkspace,
     implicitExternal: outsideWorkspace && lexicalPath !== realPath &&
-      !inDefinitionRoot && isWithinWorkspace(lexicalPath, options.workspace, options.env.pathClass),
+      !inDefinitionRoot && !inSessionAttachmentsReadRoot &&
+      isWithinWorkspace(lexicalPath, options.workspace, options.env.pathClass),
   };
 }
 

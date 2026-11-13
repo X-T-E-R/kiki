@@ -1,4 +1,4 @@
-import { daemonFileRefFromPart, parseDaemonFileUrl, type ContentPart } from '@kiki/agent-core-v2';
+import { daemonFileRefFromPart, type ContentPart } from '@kiki/agent-core-v2';
 import type { MessageContent } from '@kiki/protocol';
 import { readTextPresentation, sessionMediaIdFromBlobUrl } from '@kiki/transcript';
 
@@ -30,7 +30,7 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
             ? part.imageUrl.name
             : part.type === 'video_url'
               ? part.videoUrl.name
-              : undefined,
+              : part.type === 'audio_url' ? part.audioUrl.name : undefined,
       });
       continue;
     }
@@ -38,11 +38,6 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
       const blobId = sessionMediaIdFromBlobUrl(part.audioUrl.url);
       if (blobId !== undefined) {
         parts.push({ type: 'audio', source: { kind: 'session_media', file_id: blobId }, name: part.audioUrl.name });
-        continue;
-      }
-      const daemon = parseDaemonFileUrl(part.audioUrl.url);
-      if (daemon !== undefined) {
-        parts.push({ type: 'audio', source: { kind: 'session_media', file_id: daemon.fileId }, name: part.audioUrl.name });
         continue;
       }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.audioUrl.url);

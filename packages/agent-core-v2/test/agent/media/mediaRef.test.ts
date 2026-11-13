@@ -89,6 +89,8 @@ describe('daemon file URL', () => {
     expect(
       daemonFileRefFromPart({ type: 'video_url', videoUrl: { url } }),
     ).toEqual({ kind: 'video', ref: { fileId: 'file_1' } });
+    expect(daemonFileRefFromPart({ type: 'audio_url', audioUrl: { url } }))
+      .toEqual({ kind: 'audio', ref: { fileId: 'file_1' } });
     expect(
       daemonFileRefFromPart({ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AA' } }),
     ).toBeUndefined();

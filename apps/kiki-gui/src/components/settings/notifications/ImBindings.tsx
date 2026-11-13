@@ -28,6 +28,7 @@ import { AnchoredPopover, usePopover } from '../../overlays/AnchoredPopover';
 import { AdvancedDetails } from '../fields';
 import { StatusText } from './rowParts';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect, type SettingsChoice } from '../SettingsPrimitives';
+import { CoalesceWindowControl } from './CoalesceWindowControl';
 import {
   bindingTargetChoices, bindingTargetName, bindingTargetValue, defaultTarget, IM_KEY as KEY, identityLabel, liveText, MEDIA_KIND_KEYS, parseTarget,
   type SetupPlatformEntry, type Translator,
@@ -582,8 +583,10 @@ export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, 
           update({ group_policy: { ...binding.group_policy, wake: currentWake, senders } });
         }}
       /> : null}
-      <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
-        onBusy={(busy) => { update({ busy }); }} onReply={(reply) => { update({ reply }); }} onActions={(mobile_interactions) => { update({ mobile_interactions }); }} />
+      <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions}
+        coalesceWindow={binding.coalesce_window_ms} disabled={action.saving} prefix="data-im-binding" coalesceAttr="data-im-binding-coalesce"
+        onBusy={(busy) => { update({ busy }); }} onReply={(reply) => { update({ reply }); }} onActions={(mobile_interactions) => { update({ mobile_interactions }); }}
+        onCoalesceWindow={(coalesce_window_ms) => { update({ coalesce_window_ms }); }} />
       <AdvancedDetails summary={t('st.section.advanced')} data-im-binding-advanced={binding.id}>
         <IdentityIds identity={binding.identity} />
         <button type="button" className={SECONDARY_BUTTON} data-im-enabled={binding.id} disabled={action.saving}
@@ -644,6 +647,7 @@ export function DiscoveryRow({ discovery, snapshot, catalog, setupPlatform, init
   const [busy, setBusy] = useState<ImBusyDelivery>('immediate');
   const [reply, setReply] = useState<'final' | 'edit'>('final');
   const [actions, setActions] = useState(true);
+  const [coalesceWindow, setCoalesceWindow] = useState<number | null>(null);
 
   const isGroup = discovery.identity.chat_kind === 'group' && discovery.provider_kind !== 'wechat_bridge';
   const topicDisabled = discovery.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
@@ -689,8 +693,9 @@ export function DiscoveryRow({ discovery, snapshot, catalog, setupPlatform, init
       onPrefixes={setPrefixes}
       onSenders={setSenders}
     /> : null}
-    {expanded ? <BindingOptions kind={discovery.provider_kind} setupPlatform={setupPlatform} busy={busy} reply={reply} actions={actions} disabled={action.saving} prefix="data-im"
-      onBusy={setBusy} onReply={setReply} onActions={setActions} /> : null}
+    {expanded ? <BindingOptions kind={discovery.provider_kind} setupPlatform={setupPlatform} busy={busy} reply={reply} actions={actions}
+      coalesceWindow={coalesceWindow} disabled={action.saving} prefix="data-im" coalesceAttr="data-im-discovery-coalesce"
+      onBusy={setBusy} onReply={setReply} onActions={setActions} onCoalesceWindow={setCoalesceWindow} /> : null}
     <div className="flex flex-wrap gap-2">
       <button type="button" className={PRIMARY_BUTTON} data-im-confirm={discovery.id} disabled={unsupported || selected.length <= 8 || catalog === undefined || action.saving}
         onClick={() => { void action.run(async () => {
@@ -700,6 +705,7 @@ export function DiscoveryRow({ discovery, snapshot, catalog, setupPlatform, init
             reply: liveText(discovery.provider_kind, setupPlatform) ? reply : 'final',
             mobile_interactions: actions,
             also_home: selected.startsWith('persona:') && alsoHome,
+            coalesce_window_ms: coalesceWindow,
           };
           if (isGroup && inbound && scope !== 'sender') {
             request.binding_scope = scope;
@@ -755,18 +761,21 @@ export function TargetPicker({ id, value, onChange, catalog, disabled, attrPrefi
   </div>;
 }
 
-function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, actions, disabled, prefix, onBusy, onReply, onActions }: {
+function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, actions, coalesceWindow, disabled, prefix, coalesceAttr, onBusy, onReply, onActions, onCoalesceWindow }: {
   kind: ImProviderKind;
   setupPlatform?: SetupPlatformEntry;
   capabilities?: readonly ImChannelCapability[];
   busy: ImBusyDelivery;
   reply: 'final' | 'edit';
   actions: boolean;
+  coalesceWindow: number | null | undefined;
   disabled: boolean;
   prefix: string;
+  coalesceAttr: string;
   onBusy: (value: ImBusyDelivery) => void;
   onReply: (value: 'final' | 'edit') => void;
   onActions: (value: boolean) => void;
+  onCoalesceWindow: (value: number | null) => void;
 }) {
   const { t } = useI18n();
   const mediaLabels = (capabilities ?? [])
@@ -783,6 +792,10 @@ function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, action
       </div>
       <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.actions')}</p>
         <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} disabled={disabled} dataAttr={`${prefix}-actions`} onChange={(value) => { onActions(value === 'on'); }} choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+      </div>
+      <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.coalesce.binding')}</p>
+        <CoalesceWindowControl ariaLabel={t('st.im.coalesce.binding')} value={coalesceWindow} disabled={disabled}
+          dataAttr={coalesceAttr} onChange={onCoalesceWindow} />
       </div>
     </div>
     {mediaLabels.length > 0 ? (

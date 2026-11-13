@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { extname } from 'node:path';
 
 import { Error2, ErrorCodes } from '#/errors';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -32,6 +33,7 @@ import {
   unsupportedImageMimeFromUrl,
 } from './image-format-policy';
 import {
+  AUDIO_MIME_BY_SUFFIX,
   buildMediaPathTag,
   type DaemonFileRef,
   daemonFileRefFromPart,
@@ -113,9 +115,11 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
             ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
             : daemonPart?.kind === 'image'
               ? await this.resolveImagePart(daemonPart.ref, requester, signal, headers)
-              : part.type === 'image_url'
-                ? await this.resolveInlineImagePart(part, requester, signal)
-                : part;
+              : daemonPart?.kind === 'audio'
+                ? await this.resolveAudioPart(daemonPart.ref, requester, signal)
+                : part.type === 'image_url'
+                  ? await this.resolveInlineImagePart(part, requester, signal)
+                  : part;
         content.push(resolved);
         changed ||= resolved !== part;
       }
@@ -128,6 +132,33 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
 
   private displayPath(ref: DaemonFileRef): Promise<string | undefined> {
     return this.mediaStore.resolveDisplayPath(ref.fileId);
+  }
+
+  private async resolveAudioPart(
+    ref: DaemonFileRef,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (requester.model.capabilities.audio_in) {
+      try {
+        signal?.throwIfAborted();
+        const file = await this.mediaStore.open(ref.fileId, 'wav') ?? await this.mediaStore.open(ref.fileId);
+        const mime = file?.mediaType.split(';', 1)[0]?.toLowerCase();
+        const type = mime !== undefined && Object.values(AUDIO_MIME_BY_SUFFIX).includes(mime)
+          ? mime : file && AUDIO_MIME_BY_SUFFIX[extname(file.name).toLowerCase()];
+        if (file !== undefined && type !== undefined) {
+          const chunks: Uint8Array[] = [];
+          for await (const chunk of file.stream()) {
+            signal?.throwIfAborted();
+            chunks.push(chunk);
+          }
+          return { type: 'audio_url', audioUrl: { url: `data:${type};base64,${Buffer.concat(chunks).toString('base64')}`, name: file.name } };
+        }
+      } catch {
+        signal?.throwIfAborted();
+      }
+    }
+    return { type: 'text', text: '[audio omitted: inline audio is unavailable for this model request]' };
   }
 
   private async resolveImagePart(

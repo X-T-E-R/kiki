@@ -8,11 +8,11 @@ import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
   PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS,
-  harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
+  asrProviderDefinitionSchema, asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
   pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, sessionSourceDefinitionSchema,
-  type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
+  type AsrProviderDefinition, type AsrTranscribeInput, type AsrTranscribeResult, type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
   type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type PluginHarnessQuotaSnapshot,
-  type ImInboundDiagnostic, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
+  type ImInboundDiagnostic, type MediaConnection, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
 } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
@@ -94,6 +94,7 @@ export class PluginHost {
   private readonly registered = new Set<string>();
   private readonly registeredSources = new Set<string>();
   private readonly registeredProviders = new Set<string>();
+  private readonly registeredAsrProviders = new Map<string, AsrProviderDefinition>();
   private readonly registeredImAdapters = new Set<string>();
   private readonly imListeners = new Map<string, (event: PluginImEvent) => Promise<void>>();
   private readonly imAssemblies = new Map<string, { callId: number; characters: number; received: number; chunks: string[]; listener: (event: PluginImEvent) => Promise<void>; timer: ReturnType<typeof setTimeout> }>();
@@ -122,6 +123,8 @@ export class PluginHost {
     private readonly harnessQuotaSources: readonly HarnessQuotaSourceDefinition[] = [],
     private readonly quotaCache?: () => Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }>,
     private readonly onUnexpectedExit?: (event: PluginHostUnexpectedExit) => void,
+    private readonly asrProviders: readonly AsrProviderDefinition[] = [],
+    private readonly asrStringSettings: readonly string[] = [],
   ) {}
 
   private readonly modelStreams = new Map<number, { readonly owner: number; readonly controller: AbortController; readonly iterator: AsyncIterator<import('@kiki/protocol').PluginModelEvent>; busy: boolean }>();
@@ -336,6 +339,42 @@ export class PluginHost {
       signal.addEventListener('abort', cancel, { once: true });
       this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error), onProgress, connection: context.connection });
       this.send({ id, method: 'media-provider-request', params: { providerId, action, input, settings, jobId: context.jobId, stagingDir: context.stagingDir } });
+    });
+  }
+
+  async listAsrProviders(): Promise<readonly AsrProviderDefinition[]> {
+    await this.start();
+    return [...this.registeredAsrProviders.values()];
+  }
+
+  async transcribeAudio(providerId: string, input: AsrTranscribeInput, signal: AbortSignal, settings: Record<string, unknown>, connection: () => Promise<MediaConnection | undefined>): Promise<AsrTranscribeResult> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
+    const parsed = asrTranscribeInputSchema.parse(input);
+    await this.start();
+    if (!this.registeredAsrProviders.has(providerId)) throw new Error(`Plugin ${this.id} did not register ASR provider ${providerId}`);
+    signal.throwIfAborted();
+    this.clearIdle();
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error, value?: unknown) => {
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(id);
+        if (error) reject(error);
+        else {
+          const parsedResult = asrTranscribeResultSchema.safeParse(value);
+          if (parsedResult.success) resolve(parsedResult.data);
+          else reject(new Error('ASR provider returned an invalid result'));
+        }
+        this.scheduleIdle();
+      };
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id } });
+        finish(signal.reason instanceof Error ? signal.reason : new Error('ASR transcription cancelled'));
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      this.pending.set(id, { resolve: (value) => finish(undefined, value), reject: (error) => finish(error), connection, signal });
+      this.send({ id, method: 'asr-provider-request', params: { providerId, input: parsed, settings } });
     });
   }
 
@@ -640,6 +679,17 @@ export class PluginHost {
             const expected = this.providers.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviders.has(definition.id)) throw new Error('Plugin media provider definition mismatch');
             this.registeredProviders.add(definition.id);
+          } else if (message.method === 'register-asr-provider') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const raw = message.params?.definition;
+            const definition = typeof raw === 'string' ? this.asrProviders.find((item) => item.id === raw) : asrProviderDefinitionSchema.parse(raw);
+            if (definition === undefined) throw new Error('Plugin ASR provider definition mismatch');
+            const expected = this.asrProviders.find((item) => item.id === definition.id);
+            if ((expected !== undefined && JSON.stringify(expected) !== JSON.stringify(definition)) || (expected === undefined && typeof raw === 'string') ||
+              (definition.connectionSetting !== undefined && !this.asrStringSettings.includes(definition.connectionSetting)) || this.registeredAsrProviders.has(definition.id)) {
+              throw new Error('Plugin ASR provider definition mismatch');
+            }
+            this.registeredAsrProviders.set(definition.id, definition);
           } else if (message.method === 'register-harness-account-source') {
             if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
             const definition = harnessAccountSourceDefinitionSchema.parse(message.params?.definition);
@@ -687,7 +737,8 @@ export class PluginHost {
             }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
               () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
+            const registeredAllDeclaredAsrProviders = this.asrProviders.every((definition) => this.registeredAsrProviders.has(definition.id));
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || !registeredAllDeclaredAsrProviders || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             this.handshakeFailures = 0;
             this.handshakeCooldownUntil = 0;
@@ -899,6 +950,7 @@ export class PluginHost {
     this.registered.clear();
     this.registeredSources.clear();
     this.registeredProviders.clear();
+    this.registeredAsrProviders.clear();
     this.registeredImAdapters.clear();
     this.registeredHarnessAccountSources.clear();
     this.registeredHarnessQuotaSources.clear();

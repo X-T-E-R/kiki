@@ -897,6 +897,7 @@ export interface PluginSummary {
   readonly globalEnabled: boolean;
   /** Default for workspaces without their own choice; older servers omit it. */
   readonly defaultEnabled?: boolean;
+  readonly asrProviders?: readonly import('@kiki/protocol').AsrProviderDefinition[];
   readonly state: 'ok' | 'error';
   readonly skillCount: number;
   readonly mcpServerCount: number;
@@ -2082,6 +2083,7 @@ export class KikiClient {
       setupCatalog: wrap(api.setupCatalog.bind(api)),
       setup: wrap(api.setup.bind(api)),
       setPolicy: wrap(api.setPolicy.bind(api)),
+      patchPolicy: wrap(api.patchPolicy.bind(api)),
       paste: wrap(api.paste.bind(api)),
       check: wrap(api.check.bind(api)),
       listen: wrap(api.listen.bind(api)),

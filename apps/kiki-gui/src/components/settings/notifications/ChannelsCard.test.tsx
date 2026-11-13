@@ -45,6 +45,11 @@ let managedSourcesFixture: unknown[] = [
     missing: [],
   },
 ];
+const installedPluginsFixture = [{
+  id: 'kiki-asr', displayName: 'Kiki ASR', enabled: true, globalEnabled: true, state: 'ok',
+  skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0, hasErrors: false, source: 'local-path',
+  asrProviders: [{ id: 'whisper', label: 'Whisper', description: 'Local speech recognition', connectionSetting: 'model_path' }],
+}];
 const notifications = {
   getSettings: async () => ({ global: { enabled: true, suppress_viewing_session: true, min_work_ms: 0, work_stable_ms: 3_000, question_delay_ms: 10_000 }, provider_instances: {}, channels: {}, credential_slots: {} }),
   listProviders: async () => [],
@@ -55,6 +60,7 @@ vi.mock('../../../state/connection', () => ({
     scopeId: 'fixture',
     client: {
       ...fixture.client,
+      listPlugins: async () => ({ plugins: installedPluginsFixture }),
       notifications,
       klient: {
         global: {
@@ -296,7 +302,7 @@ describe('ChannelsCard two-way accounts', () => {
     expect(fixture.calls).toContainEqual({
       operation: 'confirm',
       id: 'immediate-discovery',
-      body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false },
+      body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false, coalesce_window_ms: null },
     });
 
     const created = binding(container, 'bound-immediate-discovery');
@@ -328,8 +334,8 @@ describe('ChannelsCard two-way accounts', () => {
     await click(tg, '[data-im-confirm]');
     await click(await accountRow(document.body, 'account-a'), '[data-im-discovery="wx-new"] [data-im-confirm]');
     expect(fixture.calls.filter((item) => item.operation === 'confirm')).toEqual([
-      { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: true } },
-      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false } },
+      { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: true, coalesce_window_ms: null } },
+      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false, coalesce_window_ms: null } },
     ]);
     expect(fixture.read().bindings.slice(0, original.length)).toEqual(original);
     await accountRow(document.body, 'account-tg');
@@ -362,8 +368,10 @@ describe('ChannelsCard two-way accounts', () => {
     await rules(container);
     await click(container, '#im-default');
     expect(fixture.read().policy.default_enabled).toBe(false);
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { default_enabled: false } });
     expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
     await click(container, '#im-allowed');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { allowed: false } });
     const contact = binding(container, 'binding-contact');
     expect(contact.querySelector<HTMLButtonElement>('[data-im-session-switch]')?.disabled).toBe(true);
     expect(contact.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
@@ -921,6 +929,7 @@ describe('ChannelsCard two-way accounts', () => {
         reply: 'final',
         mobile_interactions: true,
         also_home: false,
+        coalesce_window_ms: null,
       },
     });
     expect(container.querySelectorAll('[data-im-binding]')).toHaveLength(1);
@@ -1359,6 +1368,77 @@ describe('ChannelsCard two-way accounts', () => {
     updateSpy.mockRejectedValueOnce(new Error('group_binding_scope_required'));
     await click(group, '[data-im-binding-scope="chat"]');
     expect(group.textContent).toContain('Only groups support topic or whole-group scope.');
+  });
+
+  it('shows coalescing as off when the global window is omitted', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot());
+    const container = await render();
+    await rules(container);
+    expect(container.querySelector('[data-im-coalesce-global="0"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('saves global coalescing, ASR mode, and an installed ASR provider', async () => {
+    const state = imChannelSnapshot();
+    state.policy = { ...state.policy, coalesce_window_ms: 2_000, asr_mode: 'off', asr_provider: 'kiki-asr/whisper' };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    await rules(container);
+
+    const mediaRules = container.querySelector<HTMLElement>('[data-im-media-rules]')!;
+    expect(mediaRules.querySelector('[data-im-coalesce-global="2000"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(mediaRules.querySelector('[data-im-asr-mode="off"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(mediaRules.querySelector('[data-im-asr-provider-option="kiki-asr/whisper"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(mediaRules.querySelector('[data-im-asr-provider-option="kiki-asr/whisper"]')?.getAttribute('title')).toContain('Connection setting: model_path');
+
+    await click(mediaRules, '[data-im-coalesce-global="5000"]');
+    expect(fixture.read().policy.coalesce_window_ms).toBe(5_000);
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { coalesce_window_ms: 5_000 } });
+    await click(mediaRules, '[data-im-asr-mode="auto"]');
+    expect(fixture.read().policy.asr_mode).toBe('auto');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { asr_mode: 'auto' } });
+    await click(mediaRules, '[data-im-asr-provider-option=""]');
+    expect(fixture.read().policy.asr_provider).toBeNull();
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { asr_provider: null } });
+
+    const providerInput = mediaRules.querySelector<HTMLInputElement>('[data-im-asr-provider]')!;
+    providerInput.focus();
+    await input(mediaRules, '[data-im-asr-provider]', 'plugin/custom-provider');
+    await act(async () => { providerInput.blur(); await settle(); });
+    expect(fixture.read().policy.asr_provider).toBe('plugin/custom-provider');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { asr_provider: 'plugin/custom-provider' } });
+    await click(mediaRules, '[data-im-coalesce-global="0"]');
+    expect(fixture.read().policy.coalesce_window_ms).toBe(0);
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'patchPolicy', body: { coalesce_window_ms: 0 } });
+  });
+
+  it('saves binding coalescing and confirms new bindings with explicit defaults', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
+    await render();
+    const container = await openFirstAccount(document.body);
+    const group = binding(container, 'binding-group');
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-coalesce="default"]')?.getAttribute('aria-pressed')).toBe('true');
+    await click(group, '[data-im-binding-coalesce="0"]');
+    expect(fixture.read().bindings.find((item) => item.id === 'binding-group')?.coalesce_window_ms).toBe(0);
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { coalesce_window_ms: 0 } });
+    await click(group, '[data-im-binding-coalesce="3000"]');
+    expect(fixture.read().bindings.find((item) => item.id === 'binding-group')?.coalesce_window_ms).toBe(3_000);
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { coalesce_window_ms: 3_000 } });
+    await click(group, '[data-im-binding-coalesce="default"]');
+    expect(fixture.read().bindings.find((item) => item.id === 'binding-group')?.coalesce_window_ms).toBeNull();
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { coalesce_window_ms: null } });
+
+    fixture.discover('account-a', 'coalesce-discovery');
+    await click(container, '[data-im-refresh-discovery]');
+    const discovery = container.querySelector<HTMLElement>('[data-im-discovery="coalesce-discovery"]')!;
+    await click(discovery, '[data-im-advanced-toggle]');
+    await click(discovery, '[data-im-discovery-coalesce="5000"]');
+    await click(discovery, '[data-im-confirm="coalesce-discovery"]');
+    expect(fixture.calls.find((item) => item.operation === 'confirm' && item.id === 'coalesce-discovery')).toEqual({
+      operation: 'confirm',
+      id: 'coalesce-discovery',
+      body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false, coalesce_window_ms: 5_000 },
+    });
   });
 
   it('saves and clears SendMessage TTS defaults (voice mode, installed provider chips, voice, model, and more parameters) in conversation rules', async () => {

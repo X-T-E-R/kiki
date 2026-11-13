@@ -8,6 +8,10 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import type { ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { ExternalLinkAccessAskPermissionPolicyService } from '#/agent/permissionPolicy/policies/external-link-access-ask';
+import { DefaultToolApprovePermissionPolicyService } from '#/agent/permissionPolicy/policies/default-tool-approve';
+import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IReadTool } from '#/agent/tools/os/read/read';
@@ -25,8 +29,9 @@ import { HostProcessService } from '#/os/backends/node-local/hostProcessService'
 import { toHostFsError } from '#/os/interface/hostFsErrors';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import type { ToolExecution } from '#/tool/toolContract';
+import { ToolAccesses, type ToolExecution } from '#/tool/toolContract';
 import { registerToolResultTruncationServices } from '../agent/toolResultTruncation/stubs';
 import { stubBootstrap } from '../app/bootstrap/stubs';
 import { stubWorkspaceContext } from '../session/workspaceContext/stub-workspace-context';
@@ -233,15 +238,18 @@ describe('resolveRealPathAccessPath', () => {
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  function options(operation: 'read' | 'write' | 'search' = 'read') {
+  function options(
+    operation: 'read' | 'write' | 'search' = 'read',
+    sessionAttachmentsReadRoot?: string,
+  ) {
     return {
       env,
-      workspace: { workspaceDir, additionalDirs: [additionalDir] },
+      workspace: { workspaceDir, additionalDirs: [additionalDir], sessionAttachmentsReadRoot },
       operation,
     };
   }
 
-  function fileTools(additionalDirs: readonly string[]) {
+  function fileTools(additionalDirs: readonly string[], sessionDir = join(root, 'current-session')) {
     const backend = disposables.add(new FakeRuntime(
       { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
       { capabilities: ['fs', 'process'], pathClass: env.pathClass, environment: { ...env, homeDir: root } },
@@ -260,6 +268,7 @@ describe('resolveRealPathAccessPath', () => {
           acquireFor: acquire,
         });
         reg.defineInstance(ISessionWorkspaceContext, stubWorkspaceContext(workspaceDir));
+        reg.definePartialInstance(ISessionContext, { sessionDir });
         reg.definePartialInstance(ISessionSkillCatalog, {
           catalog: new InMemorySkillCatalog(),
         });
@@ -267,6 +276,7 @@ describe('resolveRealPathAccessPath', () => {
         reg.defineInstance(ITelemetryService, noopTelemetryService);
         reg.definePartialInstance(IAgentToolRegistryService, { resolve: () => undefined });
         reg.definePartialInstance(IAgentToolPolicyService, { isToolActive: () => true });
+        reg.definePartialInstance(IAgentPermissionModeService, { mode: 'manual' });
         reg.define(IReadTool, ReadTool);
         reg.define(IGlobTool, GlobTool);
         reg.define(IWriteTool, WriteTool);
@@ -307,6 +317,94 @@ describe('resolveRealPathAccessPath', () => {
     if (relativeWrite.isError === true) throw new Error(outputText(relativeWrite.output));
     expect(relativeWrite.accesses).toEqual(write.accesses);
     expect(await readFile(current, 'utf8')).toBe('current Space docs');
+  });
+
+  it('reads only the current local session attachments root and preserves its read-only boundary', async () => {
+    const sessionDir = join(root, 'sessions', 'current');
+    const attachmentsDir = join(sessionDir, 'attachments');
+    const otherAttachmentsDir = join(root, 'sessions', 'other', 'attachments');
+    await Promise.all([mkdir(attachmentsDir, { recursive: true }), mkdir(otherAttachmentsDir, { recursive: true })]);
+    const attachment = join(attachmentsDir, 'image.md');
+    const sensitiveAttachment = join(attachmentsDir, '.env');
+    const visibleExample = join(attachmentsDir, '.env.example');
+    const externalFile = join(outsideDir, 'leak.txt');
+    const otherAttachment = join(otherAttachmentsDir, 'other.md');
+    await Promise.all([
+      writeFile(attachment, 'current session attachment'),
+      writeFile(sensitiveAttachment, 'SECRET=value'),
+      writeFile(visibleExample, 'example only'),
+      writeFile(externalFile, 'must stay outside'),
+      writeFile(otherAttachment, 'other session attachment'),
+    ]);
+    await symlink(outsideDir, join(attachmentsDir, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(otherAttachmentsDir, join(attachmentsDir, 'other-session'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(otherAttachmentsDir, join(workspaceDir, 'other-session-attachments'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const services = fileTools([], sessionDir);
+    const read = services.get(IReadTool);
+    const execution = await read.resolveExecution({ path: attachment });
+    if (execution.isError === true) throw new Error(outputText(execution.output));
+    expect(execution.accesses).toEqual(ToolAccesses.readFile(attachment.replaceAll('\\', '/')));
+    const access = await resolveRealPathAccess(attachment, options('read', attachmentsDir), fs);
+    expect(access).toMatchObject({ outsideWorkspace: true, implicitExternal: false });
+    const toolCall = {
+      type: 'function' as const,
+      id: 'read-current-session-attachment',
+      name: 'Read',
+      arguments: JSON.stringify({ path: attachment }),
+    };
+    const permissionContext: ResolvedToolExecutionHookContext = {
+      turnId: 1,
+      signal: new AbortController().signal,
+      toolCall,
+      toolCalls: [toolCall],
+      args: { path: attachment },
+      execution,
+    };
+    expect(services.createInstance(ExternalLinkAccessAskPermissionPolicyService).evaluate(permissionContext)).toBeUndefined();
+    expect(new DefaultToolApprovePermissionPolicyService().evaluate(permissionContext)).toEqual({ kind: 'approve' });
+    expect(await execute(execution)).toMatchObject({ output: expect.stringContaining('current session attachment') });
+
+    const listing = await execute(read.resolveExecution({ path: attachmentsDir }));
+    expect(outputText(listing.output)).toContain('.env.example');
+    expect(outputText(listing.output)).not.toContain('.env\n');
+    expect(isSensitiveFile(sensitiveAttachment)).toBe(true);
+
+    await expect(read.resolveExecution({ path: join(attachmentsDir, 'escape', 'leak.txt') }))
+      .rejects.toMatchObject({ code: 'PATH_INVALID', message: expect.stringContaining('outside the current session attachments directory') });
+    await expect(read.resolveExecution({ path: join(attachmentsDir, 'other-session', 'other.md') }))
+      .rejects.toMatchObject({ code: 'PATH_INVALID', message: expect.stringContaining('outside the current session attachments directory') });
+
+    const internalDir = join(attachmentsDir, 'internal');
+    await mkdir(internalDir);
+    await writeFile(join(internalDir, 'linked.md'), 'link target');
+    const mutableLink = join(attachmentsDir, 'mutable');
+    await symlink(internalDir, mutableLink, process.platform === 'win32' ? 'junction' : 'dir');
+    const admittedLinkRead = await read.resolveExecution({ path: join(mutableLink, 'linked.md') });
+    if (admittedLinkRead.isError === true) throw new Error(outputText(admittedLinkRead.output));
+    await rm(mutableLink, { recursive: true, force: true });
+    await symlink(outsideDir, mutableLink, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(execute(admittedLinkRead)).resolves.toMatchObject({
+      isError: true,
+      output: expect.stringContaining('outside the current session attachments directory'),
+    });
+
+    const otherSessionAlias = await resolveRealPathAccess(join(workspaceDir, 'other-session-attachments', 'other.md'),
+      options('read', attachmentsDir), fs);
+    expect(otherSessionAlias.implicitExternal).toBe(true);
+    const writeWithRoot = await resolveRealPathAccess(attachment, options('write', attachmentsDir), fs);
+    const writeWithoutRoot = await resolveRealPathAccess(attachment, options('write'), fs);
+    const searchWithRoot = await resolveRealPathAccess(attachment, options('search', attachmentsDir), fs);
+    const searchWithoutRoot = await resolveRealPathAccess(attachment, options('search'), fs);
+    expect(writeWithRoot).toEqual(writeWithoutRoot);
+    expect(searchWithRoot).toEqual(searchWithoutRoot);
+
+    const redirectedSessionDir = join(root, 'sessions', 'redirected');
+    await mkdir(redirectedSessionDir, { recursive: true });
+    await symlink(outsideDir, join(redirectedSessionDir, 'attachments'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(resolveRealPathAccess(join(redirectedSessionDir, 'attachments', 'leak.txt'),
+      options('read', join(redirectedSessionDir, 'attachments')), fs))
+      .rejects.toMatchObject({ code: 'PATH_INVALID', message: expect.stringContaining("does not resolve to its session's attachments directory") });
   });
 
   it('keeps native Read, Glob and Write usable with an uncreated additional root', async () => {

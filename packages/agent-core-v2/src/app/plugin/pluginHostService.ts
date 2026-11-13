@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
-  harnessAccountListInputSchema, harnessAccountPrepareInputSchema,
+  asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountListInputSchema, harnessAccountPrepareInputSchema,
+  type AsrProviderDefinition, type AsrProviderRegistration, type AsrTranscribeInput, type AsrTranscribeResult,
   type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput,
   type MediaConnection, type MediaProviderDefinition, type PluginMediaApi, type PluginMessagesApi,
 } from '@kiki/protocol';
@@ -114,6 +115,8 @@ export interface IPluginHostService {
   stopAll(): Promise<void>;
   list(): Promise<readonly PluginToolRegistration[]>;
   listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]>;
+  listAsrProviders(): Promise<readonly AsrProviderRegistration[]>;
+  transcribeAudio(providerRef: string, input: AsrTranscribeInput, signal: AbortSignal): Promise<AsrTranscribeResult>;
   listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]>;
   listHarnessQuotaSources(): Promise<readonly PluginHarnessQuotaSource[]>;
   readHarnessQuota(source: string, signal: AbortSignal): Promise<readonly import('@kiki/protocol').HarnessQuotaReading[]>;
@@ -524,6 +527,24 @@ export class PluginHostService extends Service implements IPluginHostService {
     return items.flat();
   }
 
+  async listAsrProviders(): Promise<readonly AsrProviderRegistration[]> {
+    const installed = await this.plugins.listPlugins();
+    const registrations = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok')
+      .map(async (plugin) => {
+        try {
+          return await this.runRequest(plugin.id, async (info) => {
+            if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined) return [];
+            const definitions = await this.getHost(info).listAsrProviders();
+            return definitions.map((definition) => ({ pluginId: info.id, definition }));
+          });
+        } catch (error) {
+          this.logger?.current?.warn('ASR provider discovery failed for plugin', { pluginId: plugin.id, error });
+          return [];
+        }
+      }));
+    return registrations.flat();
+  }
+
   private async mediaEntry(info: PluginInfo, settings: MediaSettingValues, id: string) {
     const extension = info.manifest?.kiki;
     let definition = extension?.mediaProviders?.find((item) => item.id === id);
@@ -557,6 +578,26 @@ export class PluginHostService extends Service implements IPluginHostService {
     return { registration, execution, runtimeId: group !== undefined ? definition.id : id.startsWith('script-') && extension?.mediaScriptProvider !== undefined ? extension.mediaScriptProvider : definition.id, connectionDefinition };
   }
 
+  transcribeAudio(providerRef: string, input: AsrTranscribeInput, signal: AbortSignal): Promise<AsrTranscribeResult> {
+    const parsed = asrTranscribeInputSchema.safeParse(input);
+    if (!parsed.success) return Promise.reject(new Error('Invalid ASR input'));
+    const [pluginId, providerId, extra] = providerRef.split('/');
+    if (!pluginId || extra !== undefined || (providerRef.includes('/') && !providerId)) return Promise.reject(new Error('Invalid ASR provider reference'));
+    return this.runRequest(pluginId, async (info, settings) => {
+      signal.throwIfAborted();
+      const extension = info.manifest?.kiki;
+      if (!info.enabled || info.state !== 'ok' || extension?.entry === undefined) throw new Error('ASR provider is not enabled');
+      const host = this.getHost(info);
+      const definitions = await host.listAsrProviders();
+      const definition = definitions.find((item) => providerId === undefined || item.id === providerId);
+      if (definition === undefined) throw new Error('ASR provider is not enabled');
+      const result = await host.transcribeAudio(definition.id, parsed.data, signal, settings, () => this.resolveAsrConnection(info, settings, definition));
+      const validated = asrTranscribeResultSchema.safeParse(result);
+      if (!validated.success) throw new Error('ASR provider returned an invalid result');
+      return validated.data;
+    }, signal);
+  }
+
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown> {
     const [pluginId, providerId, extra] = provider.split('/');
     if (!pluginId || !providerId || extra !== undefined) return Promise.reject(new Error('Invalid media provider id'));
@@ -580,11 +621,22 @@ export class PluginHostService extends Service implements IPluginHostService {
       configuration: createHash('sha256').update(JSON.stringify([Object.entries(settings).sort(([a], [b]) => a.localeCompare(b)), connection === undefined ? undefined : { baseUrl: connection.baseUrl, oauth: connection.oauth, apiKey: connection.apiKey, customHeaders: connection.customHeaders }])).digest('hex') };
   }
 
-  private async resolveMediaConnection(info: PluginInfo, settings: Record<string, unknown>, definition: MediaProviderDefinition, context: PluginMediaCallContext): Promise<MediaConnection | undefined> {
+  private async resolveMediaConnection(info: PluginInfo, settings: Record<string, unknown>, definition: Pick<MediaProviderDefinition, 'id' | 'connectionSetting'>, context: PluginMediaCallContext): Promise<MediaConnection | undefined> {
     const setting = definition.connectionSetting;
     if (setting === undefined) return undefined;
     const group = info.manifest?.kiki?.mediaSources?.find((source) => source.providerIds.includes(definition.id));
     if (info.manifest?.kiki?.settings?.schema.properties[(group?.settingsPrefix ?? '') + setting]?.type !== 'string') throw new Error('Media connectionSetting must name a declared string setting');
+    return this.resolveConfiguredConnection(settings, setting, context);
+  }
+
+  private async resolveAsrConnection(info: PluginInfo, settings: Record<string, unknown>, definition: AsrProviderDefinition): Promise<MediaConnection | undefined> {
+    const setting = definition.connectionSetting;
+    if (setting === undefined) return undefined;
+    if (info.manifest?.kiki?.settings?.schema.properties[setting]?.type !== 'string') throw new Error('ASR connectionSetting must name a declared string setting');
+    return this.resolveConfiguredConnection(settings, setting);
+  }
+
+  private async resolveConfiguredConnection(settings: Record<string, unknown>, setting: string, context?: PluginMediaCallContext): Promise<MediaConnection | undefined> {
     const id = settings[setting];
     if (id === undefined || id === '') return undefined;
     if (typeof id !== 'string' || this.connections === undefined) throw new Error('Configured Kiki connection is unavailable');
@@ -595,7 +647,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     const resolvedDef = connection.type === undefined ? undefined : (this.protocolAdapters?.current?.providerDefinition?.(connection.type) ?? getProviderDefinition(connection.type));
     const protocolValue = connection.type === undefined ? undefined : resolvedDef?.baseProtocol ?? connection.type;
     const protocol = ProtocolSchema.safeParse(protocolValue);
-    if (context.owner?.identity !== undefined && this.identityCatalog !== undefined && protocol.success) {
+    if (context?.owner?.identity !== undefined && this.identityCatalog !== undefined && protocol.success) {
       await this.identityCatalog.ready;
       const policy = this.identityCatalog.resolveLayers(defaultOAuthRequestIdentity(connection), this.configService?.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION), connection.requestIdentity);
       const projected = projectRequestIdentity({ policy, protocol: protocol.data, model: context.model ?? '', rawSessionId: context.owner.sessionId, rawAgentId: context.owner.agentId, parentAgentId: context.owner.parentAgentId,
@@ -650,7 +702,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       }
       const filename = `${prerequisiteId}-${prereq.version}${process.platform === 'win32' ? '.exe' : ''}`;
       const destination = path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id, filename);
-      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders, undefined, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources, undefined, info.manifest?.kiki?.harnessQuotaSources);
+      const host = new PluginHost(info.id, entry, info.manifest!.kiki!.tools ?? [], info.manifest?.kiki?.sessionSources, info.manifest?.kiki?.mediaProviders, undefined, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters, info.manifest?.kiki?.harnessAccountSources, undefined, info.manifest?.kiki?.harnessQuotaSources, undefined, undefined, info.manifest?.kiki?.asrProviders, asrStringSettings(info));
       try {
         await host.installPrerequisite(destination);
         await this.settings.update({ pluginId: info.id, values: { [setting]: destination } });
@@ -713,7 +765,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         },
       }, info.manifest?.kiki?.harnessQuotaSources, () => this.cachedHarnessQuota(), (exit) => {
         if (!this.closing) this.logger?.current?.warn('Plugin host exited unexpectedly', exit);
-      });
+      }, info.manifest?.kiki?.asrProviders, asrStringSettings(info));
       this.hosts.set(info.id, host);
       this.hostSignatures.set(info.id, hostSignature(info));
     }
@@ -821,6 +873,12 @@ export class PluginHostService extends Service implements IPluginHostService {
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined {
     return this.navigationRequest !== undefined && Date.now() - this.navigationRequest.at < 10000 ? this.navigationRequest : undefined;
   }
+}
+
+function asrStringSettings(info: Pick<PluginInfo, 'manifest'>): readonly string[] {
+  return Object.entries(info.manifest?.kiki?.settings?.schema.properties ?? {})
+    .filter(([, setting]) => setting.type === 'string')
+    .map(([name]) => name);
 }
 
 function hostSignature(info: Pick<PluginInfo, 'id' | 'manifest'> & Partial<Pick<PluginInfo, 'root' | 'version'>>): string {

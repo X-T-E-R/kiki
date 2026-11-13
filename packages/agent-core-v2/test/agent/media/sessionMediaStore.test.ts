@@ -98,6 +98,20 @@ describe('SessionMediaStoreService', () => {
     expect(await readFile(target!)).toEqual(BYTES);
   });
 
+  it('opens the current session WAV derivative independently from its original playback bytes', async () => {
+    await store.materialize(input({ name: 'voice.amr', mimeType: 'audio/amr' }));
+    const dir = join(sessionDir, 'attachments');
+    await mkdir(dir);
+    const wav = Buffer.from('wav derivative');
+    await writeFile(join(dir, 'f_1.wav'), wav);
+    const derivative = await store.open('f_1', 'wav');
+    expect(derivative).toMatchObject({ name: 'f_1.wav', mediaType: 'audio/wav', path: join(dir, 'f_1.wav') });
+    expect(await collect(derivative!.stream())).toEqual(wav);
+    expect(await store.open('f_1')).toMatchObject({ name: 'voice.amr', mediaType: 'audio/amr' });
+    expect(await store.open('f_missing', 'wav')).toBeUndefined();
+    expect(await store.open('../sibling/f_1', 'wav')).toBeUndefined();
+  });
+
   it('keeps a same-size copy without re-reading the stream', async () => {
     await store.materialize(input());
     const again = await store.materialize(
