@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { withPluginPanelPresentation } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n, type Locale } from '../../../i18n';
@@ -137,51 +138,6 @@ function isSettingsRequest(data: unknown): data is SettingsFrameRequest {
     && record['method'] === 'plugin.dirty';
 }
 
-const PANEL_HOST_BRIDGE_SCRIPT = `<script>(function(){
-const CHANNEL='kiki.panel.v1';
-function applyPresentation(p){
-  if(!p||typeof p!=='object')return;
-  const root=document.documentElement;
-  if(p.theme==='dark'||p.theme==='light')root.style.colorScheme=p.theme;
-  if(p.tokens&&typeof p.tokens==='object'){
-    for(const [k,v] of Object.entries(p.tokens)){if(typeof v==='string')root.style.setProperty(k,v);}
-    const aliases=[['--paper','--color-paper'],['--ink','--color-ink'],['--soft','--color-ink-soft'],['--line','--color-hairline'],['--accent','--color-accent']];
-    for(const [alias,src] of aliases){if(typeof p.tokens[src]==='string')root.style.setProperty(alias,p.tokens[src]);}
-  }
-  if(p.locale==='en'||p.locale==='zh')root.lang=p.locale==='zh'?'zh-CN':'en';
-}
-let lastHeight=0;
-function reportHeight(){
-  const body=document.body,doc=document.documentElement;
-  if(!body||!doc)return;
-  const h=Math.ceil(Math.max(body.scrollHeight,body.getBoundingClientRect().height));
-  if(h>0&&Math.abs(h-lastHeight)>2){
-    lastHeight=h;
-    parent.postMessage({channel:CHANNEL,kind:'resize',height:h},'*');
-  }
-}
-window.addEventListener('message',function(e){
-  if(e.source!==parent||!e.data||e.data.channel!==CHANNEL)return;
-  if(e.data.kind==='init'||e.data.kind==='presentation'){
-    applyPresentation(e.data.presentation);
-    setTimeout(reportHeight,0);
-  }
-  if(e.data.kind==='response')setTimeout(reportHeight,0);
-});
-window.addEventListener('load',reportHeight);
-document.addEventListener('toggle',reportHeight,true);
-if(typeof ResizeObserver==='function'&&document.documentElement){
-  new ResizeObserver(reportHeight).observe(document.documentElement);
-}
-})();</script>`;
-
-function augmentPanelHtml(html: string): string {
-  if (/<\/body>/i.test(html)) {
-    return html.replace(/<\/body>/i, `${PANEL_HOST_BRIDGE_SCRIPT}</body>`);
-  }
-  return `${html}${PANEL_HOST_BRIDGE_SCRIPT}`;
-}
-
 interface PluginSettingsPanelProps {
   readonly pluginId: string;
   readonly panelId: string;
@@ -212,9 +168,12 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
     staleTime: 60_000,
     retry: false,
   });
-  const [renderedHtml, setRenderedHtml] = useState(documentQuery.data?.html);
-  if (!dirty && documentQuery.data !== undefined && renderedHtml !== documentQuery.data.html) {
-    setRenderedHtml(documentQuery.data.html);
+  const panelDocument = documentQuery.data;
+  const [renderedDocument, setRenderedDocument] = useState(panelDocument);
+  if (!dirty && panelDocument !== undefined && (
+    renderedDocument?.html !== panelDocument.html || renderedDocument?.url !== panelDocument.url
+  )) {
+    setRenderedDocument(panelDocument);
     setFrameHeight(undefined);
   }
 
@@ -336,12 +295,13 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
           <button type="button" className={SECONDARY_BUTTON} disabled={documentQuery.isFetching} onClick={() => { void documentQuery.refetch(); }}>{t('common.retry')}</button>
         </div>
       ) : null}
-      {renderedHtml !== undefined ? (
+      {renderedDocument !== undefined ? (
         <iframe
-          key={renderedHtml}
+          key={renderedDocument.url === undefined ? `html:${renderedDocument.html}` : `url:${renderedDocument.url}`}
           ref={frameRef}
           title={label}
-          srcDoc={augmentPanelHtml(renderedHtml)}
+          src={renderedDocument.url === undefined ? undefined : new URL(renderedDocument.url, client.baseUrl || window.location.origin).toString()}
+          srcDoc={renderedDocument.url === undefined ? withPluginPanelPresentation(renderedDocument.html) : undefined}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           onLoad={() => {

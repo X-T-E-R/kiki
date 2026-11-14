@@ -5,7 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
-import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
+import { createScopedTestHost, createServices, stubPair, type ScopedTestHost } from '#/_base/di/test';
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { ILogService } from '#/_base/log/log';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
+import { PluginManager } from '#/app/plugin/manager';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
+import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IWorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
+import { WorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
+import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -41,6 +51,7 @@ import type { RunnableToolExecution } from '#/tool/toolContract';
 
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
+import { stubLog } from '../../_base/log/stubs';
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -232,6 +243,85 @@ describe('plugin hot reload lifecycle', () => {
     expect(registry.resolve('plugin__hot_demo__echo')?.parameters).toEqual(pluginDefinition(2).parameters);
     await expect(execute(registry, 'hot-demo', { message: 'after' }, 'after')).resolves.toMatchObject({ output: expect.stringContaining('"version":2') });
   }, 30_000);
+
+  it.each([false, true])('settles workspace MCP initialization during install (after drain=%s)', async (afterDrain) => {
+    const home = await mkdtemp(path.join(tmpdir(), 'kiki-plugin-mcp-init-home-'));
+    directories.push(home);
+    const source = path.join(home, 'source');
+    await writePlugin(source, 'mcp-init-demo', 1);
+    const created = makeHost(path.join(home, 'kiki-home'));
+    host = created.host;
+    const plugins = host.app.accessor.get(IPluginService);
+    await install(plugins, source, true);
+    const plan = await plugins.previewPlugin({ source });
+    const entered = deferred<void>();
+    const preparation = deferred<void>();
+    const mcpReadStarted = deferred<void>();
+    const originalRead = plugins.enabledMcpServers.bind(plugins);
+    vi.spyOn(plugins, 'enabledMcpServers').mockImplementation((...args) => {
+      mcpReadStarted.resolve(undefined);
+      return originalRead(...args);
+    });
+    const originalInstall = PluginManager.prototype.install;
+    const pause = async () => {
+      entered.resolve(undefined);
+      await preparation.promise;
+    };
+    vi.spyOn(PluginManager.prototype, 'install').mockImplementation(async function (source, options, beforeReplace) {
+      if (!afterDrain) await pause();
+      return originalInstall.call(this, source, options, async (id) => {
+        await beforeReplace?.(id);
+        if (afterDrain) await pause();
+      });
+    });
+    const installing = plugins.installPlugin({ source, fingerprint: plan.fingerprint });
+    await entered.promise;
+    const disposables = new DisposableStore();
+    try {
+      const ix = createServices(disposables, { strict: true, additionalServices: (reg) => {
+        reg.defineInstance(IPluginService, plugins);
+        reg.defineInstance(IBootstrapService, stubBootstrap(path.join(home, 'kiki-home')));
+        reg.defineInstance(IConfigService, configStub());
+        reg.defineInstance(ILogService, stubLog());
+        reg.defineInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IHostFsWatchService, { watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None, dispose() {} }) });
+        reg.definePartialInstance(IWorkspaceContext, { cwd: home, workspaceId: 'fixture' });
+        reg.definePartialInstance(IWorkspaceTrust, { ready: Promise.resolve(), isTrusted: () => true, onDidChange: Event.None });
+        reg.definePartialInstance(IMcpConfigStore, { onDidWrite: Event.None });
+        reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: Event.None });
+        reg.define(IWorkspaceMcpConfigService, WorkspaceMcpConfigService);
+      } });
+      const mcp = ix.get(IWorkspaceMcpConfigService);
+      await mcpReadStarted.promise;
+      let ready = false;
+      void mcp.ready.then(() => { ready = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(ready).toBe(false);
+      preparation.resolve(undefined);
+      await Promise.all([installing, mcp.ready]);
+      expect((await plugins.getPluginInfo({ id: 'mcp-init-demo' })).version).toBe('1.0.0');
+    } finally {
+      preparation.resolve(undefined);
+      await disposables.dispose();
+    }
+  }, 10_000);
+
+  it('keeps the installed copy when a process owner cannot confirm cleanup', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'kiki-plugin-cleanup-home-'));
+    directories.push(home);
+    const source = path.join(home, 'source');
+    await writePlugin(source, 'cleanup-demo', 1);
+    host = makeHost(path.join(home, 'kiki-home')).host;
+    const plugins = host.app.accessor.get(IPluginService);
+    await install(plugins, source, true);
+    await writePlugin(source, 'cleanup-demo', 2);
+    const subscription = plugins.onWillChange((event) => event.reportFailure?.(new Error('subprocess still running')));
+    await expect(install(plugins, source)).rejects.toThrow('Plugin process cleanup failed');
+    subscription.dispose();
+    expect((await plugins.getPluginInfo({ id: 'cleanup-demo' })).version).toBe('1.0.0');
+    await install(plugins, source);
+    expect((await plugins.getPluginInfo({ id: 'cleanup-demo' })).version).toBe('2.0.0');
+  });
 
   it('holds the change gate through enable and disable subscriber delivery', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'kiki-plugin-gate-home-'));

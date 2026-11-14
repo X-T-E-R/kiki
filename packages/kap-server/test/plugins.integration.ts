@@ -1,5 +1,11 @@
+import { request as httpRequest } from 'node:http';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
-import { IPluginHostService, IPluginService } from '@kiki/agent-core-v2';
+import {
+  IPluginHostService,
+  IPluginService,
+  IWorkspaceInstanceManager,
+  IWorkspaceService,
+} from '@kiki/agent-core-v2';
 import { readDefaultPluginCatalog, OFFICIAL_PLUGIN_CATALOG_SOURCE } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +28,38 @@ interface Envelope<T> {
 }
 
 const CATALOG_URL = 'http://marketplace.test/marketplace.json';
+
+interface RawPanelResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  text(): Promise<string>;
+}
+
+function requestHttp(url: string, options: { method?: string; headers?: Record<string, string> } = {}): Promise<RawPanelResponse> {
+  const parsed = new URL(url);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      method: options.method ?? 'GET',
+      host: '127.0.0.1',
+      port: Number(parsed.port),
+      path: parsed.pathname + parsed.search,
+      headers: { host: parsed.host, ...options.headers },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: response.statusCode ?? 0, headers: response.headers, text: async () => body });
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function requestPanelDocument(url: string): Promise<RawPanelResponse> {
+  return requestHttp(url);
+}
 
 const CATALOG = {
   version: '1',
@@ -246,6 +284,12 @@ describe('server-v2 /api plugins', () => {
     } }));
     expect((await install(source)).body.code).toBe(0);
     expect((await call('POST', '/api/plugins/display-settings:enable')).body.code).toBe(0);
+    const settingsDocument = await call<{ html: string; url: string }>('GET', '/api/plugins/display-settings/panels/settings/document');
+    expect(settingsDocument.body.code).toBe(0);
+    expect(settingsDocument.body.data.html).toContain('<script>(function(){');
+    expect(settingsDocument.body.data.html).toContain("kind:'resize'");
+    expect(settingsDocument.body.data.html).toContain("kind==='presentation'");
+    expect(settingsDocument.body.data.html).toContain('ResizeObserver');
     const path = '/api/plugins/display-settings/panels/settings/bridge';
     const patched = await call<{ result: { values: Record<string, unknown>; secretsConfigured: string[] } }>('POST', path, {
       method: 'plugin.settings.patch', values: { instruction: 'Translate', token: 'fixture-private-token' },
@@ -272,12 +316,31 @@ describe('server-v2 /api plugins', () => {
     expect((await call('POST', '/api/plugins/kiki-writing:enable')).body.code).toBe(0);
     const listed = await call<{ panels: { pluginId: string; id: string }[] }>('GET', '/api/plugins/panels');
     expect(listed.body.data.panels).toContainEqual(expect.objectContaining({ pluginId: 'kiki-writing', id: 'manuscript' }));
-    const document = await call<{ html: string; sandbox: string }>('GET', '/api/plugins/kiki-writing/panels/manuscript/document');
+    const document = await call<{ html: string; url: string; sandbox: string }>('GET', '/api/plugins/kiki-writing/panels/manuscript/document');
     expect(document.body.code).toBe(0);
     expect(document.body.data.sandbox).toBe('allow-scripts');
     expect(document.body.data.html).toContain('Content-Security-Policy');
     expect(document.body.data.html).toContain("connect-src 'none'");
     expect(document.body.data.html).toContain('kiki.panel.v1');
+    const loopbackDocument = await requestPanelDocument(document.body.data.url);
+    expect(loopbackDocument.status).toBe(200);
+    const loopbackCsp = loopbackDocument.headers['content-security-policy'];
+    expect(loopbackCsp).toContain('sandbox allow-scripts');
+    expect(loopbackCsp).toContain("script-src 'unsafe-inline'");
+    expect(await loopbackDocument.text()).toContain('kiki.panel.v1');
+    const remoteDocumentResponse = await requestHttp(`${base}/api/plugins/kiki-writing/panels/manuscript/document`, {
+      headers: { ...authHeaders(server as RunningServer), host: '192.0.2.10' },
+    });
+    const remoteDocument = JSON.parse(await remoteDocumentResponse.text()) as Envelope<{ html: string; url: string; sandbox: string }>;
+    expect(remoteDocumentResponse.status).toBe(200);
+    expect(remoteDocument.code).toBe(0);
+    expect(remoteDocument.data.url).toMatch(/^\/plugin-panel\/[a-f0-9]{64}$/u);
+    const rawDocument = await requestHttp(`${base}${remoteDocument.data.url}`);
+    expect(rawDocument.status).toBe(200);
+    const rawCsp = rawDocument.headers['content-security-policy'];
+    expect(rawCsp).toContain('sandbox allow-scripts');
+    expect(rawCsp).toContain("script-src 'unsafe-inline'");
+    expect(rawCsp).not.toContain("default-src 'self'");
     const commands = await call<{ commands: { name: string }[] }>('GET', '/api/plugins/commands');
     expect(commands.body.data.commands).toContainEqual(expect.objectContaining({ name: 'continue-draft' }));
     const rejected = await call('POST', '/api/plugins/kiki-writing/panels/manuscript/bridge', {
@@ -318,6 +381,107 @@ describe('server-v2 /api plugins', () => {
     const manifest = await call<{ manifest: { icon?: string } }>('GET', '/api/plugins/kiki-office');
     expect(manifest.body.data.manifest.icon).toBe(expected['kiki-office']);
   });
+
+  it.runIf(process.platform === 'win32')('stops plugin hosts and plugin MCP children before replacing an enabled plugin root', async () => {
+    const pluginId = 'managed-root-reload';
+    const source = await makePluginDir(pluginId, '1.0.0');
+    const fixtureSource = join(import.meta.dirname, '../../agent-core-v2/test/mcpCore/fixtures/cwd-stdio-server.mjs');
+    const scratchRoot = join(import.meta.dirname, '../../../.tmp');
+    await mkdir(scratchRoot, { recursive: true });
+    const fixtureDirectory = await mkdtemp(join(scratchRoot, 'plugin-mcp-reload-'));
+    createdDirs.push(fixtureDirectory);
+    const fixturePath = join(fixtureDirectory, 'cwd-stdio-server.mjs');
+    const fixtureText = (await readFile(fixtureSource, 'utf8'))
+      .replace("'@modelcontextprotocol/sdk/server/mcp.js'", JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/mcp.js')))
+      .replace("'@modelcontextprotocol/sdk/server/stdio.js'", JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/stdio.js')));
+    const connectStatement = 'await server.connect(new StdioServerTransport());';
+    expect(fixtureText).toContain(connectStatement);
+    await writeFile(fixturePath, fixtureText.replace(connectStatement,
+      `server.registerTool('get_pid', { description: 'Returns the server process id', inputSchema: {} }, () => ({ content: [{ type: 'text', text: String(process.pid) }] }));\n${connectStatement}`));
+    const writeManifest = (version: string) => writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+      name: pluginId,
+      version,
+      mcpServers: { cwd: { transport: 'stdio', command: 'node', args: [fixturePath], cwd: './' } },
+      'x-kiki': {
+        engines: { kiki: '^0.4.1' },
+        entry: './entry.mjs',
+        tools: [{ schemaVersion: 1, name: 'status', description: 'Return the host process id', parameters: { type: 'object', properties: {} }, accesses: [{ kind: 'all' }] }],
+      },
+    }));
+    await writeManifest('1.0.0');
+    await writeFile(join(source, 'entry.mjs'), `export function register(api) { api.registerTool({ schemaVersion: 1, name: 'status', description: 'Return the host process id', parameters: { type: 'object', properties: {} }, accesses: [{ kind: 'all' }] }, async () => ({ output: String(process.pid) })); }`);
+    expect((await install(source)).body.code).toBe(0);
+    expect((await call('POST', `/api/plugins/${pluginId}:enable`)).body.code).toBe(0);
+
+    const workspaceRoot = join(home!, 'plugin-workspace');
+    await mkdir(workspaceRoot, { recursive: true });
+    const workspace = await server!.core.accessor.get(IWorkspaceService).createOrTouch(workspaceRoot);
+    const instance = await server!.core.accessor.get(IWorkspaceInstanceManager).getOrCreate({ workspaceId: workspace.id, root: workspace.root });
+    const mcpName = `plugin-${pluginId}:cwd`;
+    const hostProcesses: number[] = [];
+    const pluginHost = server!.core.accessor.get(IPluginHostService);
+    const mcpChildProcesses: number[] = [];
+    await instance.program.mcp.ready;
+    const mcp = instance.program.mcp.connectionManager();
+    const pidIsAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const callStatus = async () => {
+      const result = await pluginHost.execute(pluginId, 'status', {}, new AbortController().signal);
+      expect(result.isError).toBeFalsy();
+      expect(typeof result.output).toBe('string');
+      const pid = Number(result.output);
+      expect(Number.isSafeInteger(pid)).toBe(true);
+      return pid;
+    };
+    let reloadOldChildrenAlive: boolean | undefined;
+    let subscription: { dispose(): void } | undefined;
+    try {
+      await vi.waitFor(() => {
+        const entry = mcp.get(mcpName);
+        expect(entry?.status, entry?.error).toBe('connected');
+      });
+      const managedRoot = join(home!, 'plugins', 'managed', pluginId);
+      const mcpConfig = mcp.configOf(mcpName);
+      expect(mcpConfig?.transport).toBe('stdio');
+      if (mcpConfig?.transport !== 'stdio') throw new Error('plugin MCP server is not stdio');
+      expect(mcpConfig.cwd).toBe(managedRoot);
+      const cwdResult = await mcp.resolved(mcpName)!.client.callTool('get_cwd', {});
+      expect(cwdResult.content).toContainEqual(expect.objectContaining({ type: 'text', text: managedRoot }));
+      const initialMcpPid = Number((await mcp.resolved(mcpName)!.client.callTool('get_pid', {})).content.find((item) => item.type === 'text')?.text);
+      mcpChildProcesses.push(initialMcpPid);
+      expect(Number.isSafeInteger(initialMcpPid)).toBe(true);
+      hostProcesses.push(await callStatus());
+      expect(hostProcesses[0]).not.toBe(process.pid);
+      expect(pidIsAlive(hostProcesses[0]!)).toBe(true);
+      expect(pidIsAlive(mcpChildProcesses[0]!)).toBe(true);
+      subscription = server!.core.accessor.get(IPluginService).onDidReload(() => {
+        reloadOldChildrenAlive = [hostProcesses[0], mcpChildProcesses[0]].some((pid) => pid !== undefined && pidIsAlive(pid));
+      });
+
+      await writeManifest('1.0.1');
+      const replacement = await install(source);
+      expect(replacement.body.code, replacement.body.msg).toBe(0);
+      expect(reloadOldChildrenAlive).toBe(false);
+      await vi.waitFor(() => expect(pidIsAlive(hostProcesses[0]!)).toBe(false));
+      await vi.waitFor(() => expect(pidIsAlive(mcpChildProcesses[0]!)).toBe(false));
+      await vi.waitFor(() => {
+        const entry = mcp.get(mcpName);
+        expect(entry?.status, entry?.error).toBe('connected');
+      });
+      const reconnectedMcpPid = Number((await mcp.resolved(mcpName)!.client.callTool('get_pid', {})).content.find((item) => item.type === 'text')?.text);
+      mcpChildProcesses.push(reconnectedMcpPid);
+      expect(Number.isSafeInteger(reconnectedMcpPid)).toBe(true);
+      expect(reconnectedMcpPid).not.toBe(mcpChildProcesses[0]);
+      hostProcesses.push(await callStatus());
+      expect(hostProcesses[1]).not.toBe(hostProcesses[0]);
+      expect(pidIsAlive(hostProcesses[1]!)).toBe(true);
+      expect(pidIsAlive(mcpChildProcesses[1]!)).toBe(true);
+      expect((await mcp.resolved(mcpName)!.client.callTool('get_cwd', {})).content).toContainEqual(expect.objectContaining({
+        type: 'text', text: managedRoot,
+      }));
+    } finally {
+      subscription?.dispose();
+    }
+  }, 30_000);
 
   it('stores declared secrets in credentials without exposing them to settings reads', async () => {
     const source = await makePluginDir('settings-fixture', '1.0.0');
@@ -484,15 +648,20 @@ describe('server-v2 /api plugins', () => {
     expect(bogus.body.code).toBe(40001);
     const unknown = await call('POST', '/api/plugins/nope:remove');
     expect(unknown.body.code).toBe(40419);
+    const unknownReload = await call('POST', '/api/plugins/nope:reload');
+    expect(unknownReload.body.code).toBe(40419);
+    const malformedReload = await call('POST', '/api/plugins/:reload');
+    expect(malformedReload.body.code).toBe(40001);
     const badSource = await call('POST', '/api/plugins', { source: '' });
     expect(badSource.body.code).toBe(40001);
   });
 
-  it('fans out event.plugin.changed over WS on install and remove', async () => {
+  it('fans out event.plugin.changed over WS on install, reload, and remove', async () => {
     const ws = new WebSocket(`${base.replace('http', 'ws')}/api/ws`, [
       `kimi-code.bearer.${bearerToken(server!)}`,
     ]);
     const types: string[] = [];
+    const reloadPlugins = vi.spyOn(server!.core.accessor.get(IPluginService), 'reloadPlugins');
     try {
       await new Promise<void>((resolve, reject) => {
         ws.once('message', () => {
@@ -511,11 +680,19 @@ describe('server-v2 /api plugins', () => {
         expect(types).toContain('event.plugin.changed');
       });
 
-      await call('POST', '/api/plugins/demo-plugin:remove');
+      const reloaded = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:reload');
+      expect(reloaded.body.code).toBe(0);
+      expect(reloadPlugins).toHaveBeenCalledTimes(1);
       await vi.waitFor(() => {
         expect(types.filter((t) => t === 'event.plugin.changed').length).toBeGreaterThanOrEqual(2);
       });
+
+      await call('POST', '/api/plugins/demo-plugin:remove');
+      await vi.waitFor(() => {
+        expect(types.filter((t) => t === 'event.plugin.changed').length).toBeGreaterThanOrEqual(3);
+      });
     } finally {
+      reloadPlugins.mockRestore();
       ws.close();
     }
   });

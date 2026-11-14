@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import {
   computeUpdateStatus,
@@ -57,6 +58,7 @@ import {
   pluginSummarySchema,
   type PluginMarketplaceEntryWire,
 } from '../protocol/rest-plugin';
+import type { MintPluginPanelDocument } from './pluginPanelDocuments';
 import { parseActionSuffix } from './action-suffix';
 import { resolvePluginUsageWorkspace } from './pluginUsage';
 
@@ -90,7 +92,7 @@ interface PluginsRouteHost {
   inject(input: { method: 'POST'; url: string; headers: Record<string, string>; payload: unknown }): Promise<{ json(): unknown }>;
 }
 
-const PLUGIN_ACTIONS = ['enable', 'disable', 'remove', 'rollback', 'install-prerequisite', 'dismiss-recommendation'] as const;
+const PLUGIN_ACTIONS = ['enable', 'disable', 'remove', 'rollback', 'reload', 'install-prerequisite', 'dismiss-recommendation'] as const;
 
 const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
 
@@ -107,6 +109,7 @@ export interface PluginsRouteOptions {
    */
   readonly marketplaceUrl: () => string | undefined;
   readonly serverToken: () => string;
+  readonly mintPanelDocument: MintPluginPanelDocument;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -395,7 +398,7 @@ export function registerPluginsRoutes(
     {
       method: 'GET', path: '/plugins/{plugin_id}/panels/{panel_id}/document', params: panelParams, querystring: pluginContextQuery,
       success: { data: pluginPanelDocumentSchema }, errors: { [ErrorCode.PLUGIN_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
-      description: 'Fetch CSP-restricted HTML for an opaque-origin sandbox iframe srcdoc', tags: ['plugins'],
+      description: 'Fetch an isolated document URL and HTML for an opaque-origin sandbox iframe', tags: ['plugins'],
     },
     async (req, reply) => {
       try {
@@ -413,7 +416,8 @@ export function registerPluginsRoutes(
           }
         }
         const html = await panelDocument(info.root, panel);
-        reply.send(okEnvelope({ html, sandbox: 'allow-scripts' as const }, req.id));
+        const url = await opts.mintPanelDocument(html, req as unknown as FastifyRequest);
+        (reply as FastifyReply).header('cache-control', 'no-store').send(okEnvelope({ html, url, sandbox: 'allow-scripts' as const }, req.id));
       } catch (error) { reply.send(mapPluginError(error, req.id)); }
     },
   );
@@ -596,7 +600,7 @@ export function registerPluginsRoutes(
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.PLUGIN_NOT_FOUND]: {},
       },
-      description: 'Enable, disable, remove, roll back, or consent to install a plugin prerequisite',
+      description: 'Enable, disable, remove, reload, roll back, or consent to install a plugin prerequisite',
       tags: ['plugins'],
       operationId: 'pluginAction',
     },
@@ -626,6 +630,10 @@ export function registerPluginsRoutes(
             break;
           case 'rollback':
             await plugins.rollbackPlugin({ id: parsed.id });
+            break;
+          case 'reload':
+            await plugins.getPluginInfo({ id: parsed.id });
+            await plugins.reloadPlugins();
             break;
           case 'install-prerequisite': {
             const consent = pluginPrerequisiteInstallSchema.safeParse(req.body);

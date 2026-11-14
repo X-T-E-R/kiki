@@ -1000,7 +1000,7 @@ describe('long replies', () => {
       expect(submitted.providerMessageId).toBe('om_slice_post');
       expect(submitted.content.map((part) => part.type)).toEqual(['text', 'text', 'image_url', 'text', 'text', 'text', 'text']);
       expect(submitted.content[0]?.text).toBe('Rich Post Title\nFirst paragraph before image');
-      expect(submitted.content[1]?.text).toMatch(/^Attached file "image" \(image\/jpeg, 70 bytes\): .*f_[a-f0-9]{32}-image — open it with the Read tool$/u);
+      expect(submitted.content[1]?.text).toMatch(/^Attached image "image" \(image\/jpeg, 70 bytes\): .*f_[a-f0-9]{32}-image — already visible inline in this message; use this path only when passing the file to a script, subagent, or pixel-crop tool, do not re-read the whole image with ReadMediaFile$/u);
       expect(submitted.content[2]?.imageUrl?.url).toMatch(/^kimi-file:\/\/f_[a-f0-9]{32}$/u);
       expect(submitted.content[3]?.text).toBe('Middle paragraph before failed and oversized images');
       expect(submitted.content[4]?.text).toBe('[Unavailable external image: download_failed]');

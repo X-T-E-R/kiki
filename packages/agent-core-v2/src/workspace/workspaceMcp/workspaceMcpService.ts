@@ -53,6 +53,8 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
   private readonly resolveClientName = (): string | undefined => this.identity.current().slug;
   private readonly sessionLifecycle: LiveRef<ISessionManager>;
   private sessionLifecycleAttached = false;
+  private changingPlugins: readonly string[] | null = [];
+  private readonly pluginSuspensions = new Set<() => Promise<void>>();
   private readonly sessionOverlays = new Map<string, {
     readonly overlay: ISessionMcpOverlay;
     readonly explicit: Readonly<Record<string, McpServerConfig>>;
@@ -104,9 +106,27 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         : this.refreshSessionOverlay(event.sessionId);
       event.waitUntil(refresh);
     }));
-    if (this.plugins !== undefined) this._register(this.plugins.onDidReload((event) => {
-      event.waitUntil(Promise.all([...this.sessionOverlays.keys()].map((sessionId) => this.refreshSessionOverlay(sessionId))));
-    }));
+    if (this.plugins !== undefined) {
+      this._register(this.plugins.onWillChange((event) => {
+        this.changingPlugins = event.affected ?? null;
+        for (const entry of this.sessionOverlays.values()) entry.refreshRevision++;
+        let reloaded = false;
+        const subscription = this.plugins!.onDidReload(() => { reloaded = true; });
+        event.waitUntil(Promise.all([...this.pluginSuspensions].map((suspend) => suspend())).catch((error: unknown) => {
+          event.reportFailure?.(error);
+        }));
+        void event.finished.then(async () => {
+          subscription.dispose();
+          if (reloaded || this._store.isDisposed) return;
+          this.changingPlugins = [];
+          await Promise.all([...this.sessionOverlays.keys()].map((id) => this.refreshSessionOverlay(id)));
+        }).catch((error: unknown) => this.log.error('session mcp plugin restore failed', { error }));
+      }));
+      this._register(this.plugins.onDidReload((event) => {
+        this.changingPlugins = [];
+        event.waitUntil(Promise.all([...this.sessionOverlays.keys()].map((sessionId) => this.refreshSessionOverlay(sessionId))));
+      }));
+    }
     this._register({ dispose: this.oauthEventSubscription(this.manager) });
     this.attachSessionLifecycle();
     this._register(sessionLifecycle.onDidChange(() => this.attachSessionLifecycle()));
@@ -227,8 +247,13 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       mutationTail = next.then(() => undefined, () => undefined);
       return next;
     };
+    let connecting = false;
     const connect = Promise.all([this.mcpConfig.ready, this.identity.resolved()])
-      .then(() => sessionManager.connectAll({ ...servers }))
+      .then(() => {
+        connecting = true;
+        return sessionManager.connectAll(Object.fromEntries(Object.entries(servers).filter(([name]) =>
+          callerNames.has(name) || !this.isChangingPluginServer(name))));
+      })
       .catch((error: unknown) => {
         this.log.error('session mcp overlay initial load failed', { error });
       });
@@ -252,7 +277,8 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       view.replaceOverlayNames(overlayNames);
     };
     let updateRevision = 0;
-    const update = (next: Readonly<Record<string, McpServerConfig>>): Promise<void> => {
+    const update = (servers: Readonly<Record<string, McpServerConfig>>): Promise<void> => {
+      const next = Object.fromEntries(Object.entries(servers).filter(([name]) => callerNames.has(name) || !this.isChangingPluginServer(name)));
       const revision = ++updateRevision;
       for (const name of new Set([...overlayNames, ...Object.keys(next)])) {
         const denied = !callerNames.has(name) && configuredOverrides.has(name) &&
@@ -315,6 +341,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         if (source === 'caller') callerNames.add(runtimeName);
       }
       configuredOverrides.set(runtimeName, enabledConfig);
+      if (source === 'plugin' && this.isChangingPluginServer(runtimeName)) return;
       view.setSourceEnabled(runtimeName, true);
       if (canReuseBase(runtimeName, enabledConfig)) {
         await removeConfiguredOverlay(runtimeName);
@@ -391,6 +418,19 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         view.clearServerOverride(runtimeName);
       });
     };
+    const suspendPlugins = (): Promise<void> => {
+      ++updateRevision;
+      if (!connecting) return Promise.resolve();
+      return mutate(async () => {
+        await connect;
+        await Promise.all(sessionManager.list().filter(({ name }) => !callerNames.has(name) &&
+          !isFileServer(name) && this.isChangingPluginServer(name)).map(async ({ name }) => {
+          view.setSourceEnabled(name, false);
+          await sessionManager.markRemoved(name);
+        }));
+      });
+    };
+    this.pluginSuspensions.add(suspendPlugins);
     const ready = Promise.all([this.ready, connect]).then(() => undefined);
     const baseline = this.sessionBaseline(baseView, this.ready, Object.keys(servers));
     return {
@@ -424,10 +464,15 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         }
       },
       shutdown: () => {
+        this.pluginSuspensions.delete(suspendPlugins);
         unsubscribeOAuth();
         return sessionManager.shutdown();
       },
     };
+  }
+
+  private isChangingPluginServer(name: string): boolean {
+    return this.changingPlugins === null ? name.startsWith('plugin-') : this.changingPlugins.some((id) => name.startsWith(`plugin-${id}:`));
   }
 
   private async refreshSessionOverlay(sessionId: string): Promise<void> {

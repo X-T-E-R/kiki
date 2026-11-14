@@ -1049,6 +1049,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
       "/openapi.json",
     ],
     [
+      "GET",
+      "/plugin-panel/{grantId}",
+    ],
+    [
       "PATCH",
       "/api/agents/{name}",
     ],

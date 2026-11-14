@@ -75,7 +75,7 @@ it('resolves an uploaded video without a session media store', async () => {
     { type: 'video', source: { kind: 'file', file_id: upload.id } },
   ], files, '.unused');
   expect(prepared.content).toEqual([
-    expect.objectContaining({ type: 'text', text: `Attached file "clip.mp4" (video/mp4, 11 bytes): .unused\\${upload.id}-clip.mp4 — open it with the Read tool` }),
+    expect.objectContaining({ type: 'text', text: `Attached video "clip.mp4" (video/mp4, 11 bytes): .unused\\${upload.id}-clip.mp4 — already attached to this message; use this path when a tool or script needs the local file` }),
     { type: 'video', source: { kind: 'url', url: `kimi-file://${upload.id}` }, name: 'clip.mp4' },
   ]);
   await prepared.discard();
@@ -223,9 +223,11 @@ it('copies canonical image and video media once to safe deterministic attachment
     prepared = await resolvePromptMediaFiles(input, mockFileService(), tempDir, { sessionMedia: media, resolveAttachmentsDir: async () => tempDir });
     const imagePath = join(tempDir, 'f_image-_chart.png');
     const videoPath = join(tempDir, 'f_video-clip_.mp4');
+    const imageNotice = `Attached image "_chart.png" (image/png, 11 bytes): ${imagePath} — already visible inline in this message; use this path only when passing the file to a script, subagent, or pixel-crop tool, do not re-read the whole image with ReadMediaFile`;
+    const videoNotice = `Attached video "clip_.mp4" (video/mp4, 11 bytes): ${videoPath} — already attached to this message; use this path when a tool or script needs the local file`;
     expect(prepared.content.map((part) => part.type)).toEqual(['text', 'image', 'image', 'text', 'video']);
-    expect(prepared.content[0]).toMatchObject({ type: 'text', text: `Attached file "_chart.png" (image/png, 11 bytes): ${imagePath} — open it with the Read tool` });
-    expect(prepared.content[3]).toMatchObject({ type: 'text', text: `Attached file "clip_.mp4" (video/mp4, 11 bytes): ${videoPath} — open it with the Read tool` });
+    expect(prepared.content[0]).toMatchObject({ type: 'text', text: imageNotice, presentation: { spans: [{ start: 0, end: imageNotice.length, kind: 'attachment', attachment: { path: imagePath, name: '_chart.png', mime: 'image/png', size: 11 } }] } });
+    expect(prepared.content[3]).toMatchObject({ type: 'text', text: videoNotice, presentation: { spans: [{ start: 0, end: videoNotice.length, kind: 'attachment', attachment: { path: videoPath, name: 'clip_.mp4', mime: 'video/mp4', size: 11 } }] } });
     expect(prepared.content.slice(1, 3)).toEqual([
       { type: 'image', source: { kind: 'session_media', file_id: 'f_image' }, name: '_chart.png' },
       { type: 'image', source: { kind: 'session_media', file_id: 'f_image' }, name: '_chart.png' },

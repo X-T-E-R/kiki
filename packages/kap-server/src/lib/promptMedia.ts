@@ -275,13 +275,17 @@ export async function resolvePromptMediaFiles(
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   const content: WireContent = [];
-  const addAttachmentNote = (input: { readonly path: string; readonly name: string; readonly mediaType: string; readonly size: number; readonly kind: 'audio' | 'file'; readonly audioFormat?: string }): void => {
+  const addAttachmentNote = (input: { readonly path: string; readonly name: string; readonly mediaType: string; readonly size: number; readonly kind: 'audio' | 'file' | 'image' | 'video'; readonly audioFormat?: string }): void => {
     if (attachmentNotes.has(input.path)) return;
     attachmentNotes.add(input.path);
     const name = sanitizeAttachmentName(input.name);
     const text = input.kind === 'audio'
       ? buildAttachedAudioNotice(name, input.audioFormat ?? input.mediaType, input.size, input.path)
-      : buildAttachedFileNotice(name, input.mediaType, input.size, input.path);
+      : input.kind === 'image'
+        ? buildAttachedImageNotice(name, input.mediaType, input.size, input.path)
+        : input.kind === 'video'
+          ? buildAttachedVideoNotice(name, input.mediaType, input.size, input.path)
+          : buildAttachedFileNotice(name, input.mediaType, input.size, input.path);
     content.push({
       type: 'text', text,
       presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment', attachment: { path: input.path, name, mime: input.mediaType, size: input.size } }] },
@@ -365,7 +369,7 @@ export async function resolvePromptMediaFiles(
         const file = await getFile(part.source.file_id);
         assertMediaFile(file, part.type);
         const attachedPath = await materialize(file, await resolveAttachmentsDir());
-        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
         content.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name) });
         changed = true;
         continue;
@@ -413,7 +417,7 @@ export async function resolvePromptMediaFiles(
       assertMediaFile(file, part.type);
       if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
       const attachedPath = await materialize(file, await resolveAttachmentsDir());
-      addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+      addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
       if (part.type === 'image') {
         const data = await readFileOrStream(file);
         let mediaType = file.meta.media_type;
@@ -521,6 +525,14 @@ function imageExtensionForMime(mediaType: string): string {
 
 function buildAttachedFileNotice(name: string, mediaType: string, size: number, path: string): string {
   return `Attached file "${name}" (${mediaType}, ${size} bytes): ${path} — open it with the Read tool`;
+}
+
+function buildAttachedImageNotice(name: string, mediaType: string, size: number, path: string): string {
+  return `Attached image "${name}" (${mediaType}, ${size} bytes): ${path} — already visible inline in this message; use this path only when passing the file to a script, subagent, or pixel-crop tool, do not re-read the whole image with ReadMediaFile`;
+}
+
+function buildAttachedVideoNotice(name: string, mediaType: string, size: number, path: string): string {
+  return `Attached video "${name}" (${mediaType}, ${size} bytes): ${path} — already attached to this message; use this path when a tool or script needs the local file`;
 }
 
 function describeWavFormat(format: WavAudioFormat): string {

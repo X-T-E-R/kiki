@@ -23,13 +23,13 @@ const listPlugins = vi.hoisted(() => vi.fn());
 const listPluginMarketplace = vi.hoisted(() => vi.fn());
 const getPlugin = vi.hoisted(() => vi.fn());
 const callPluginPanelBridge = vi.hoisted(() => vi.fn());
-const connectionBag = vi.hoisted(() => ({ scopeId: 'scope-a', serverId: 'server-a' }));
+const connectionBag = vi.hoisted(() => ({ scopeId: 'scope-a', serverId: 'server-a', baseUrl: 'https://server.example.test' }));
 
 vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
     scopeId: connectionBag.scopeId,
     meta: { server_id: connectionBag.serverId },
-    client: { getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin, callPluginPanelBridge },
+    client: { baseUrl: connectionBag.baseUrl, getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin, callPluginPanelBridge },
   }),
 }));
 
@@ -84,6 +84,7 @@ beforeEach(() => {
   callPluginPanelBridge.mockReset().mockResolvedValue({ result: { catalog: ['m1'] } });
   connectionBag.scopeId = 'scope-a';
   connectionBag.serverId = 'server-a';
+  connectionBag.baseUrl = 'https://server.example.test';
 });
 afterEach(async () => {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
@@ -154,7 +155,9 @@ describe('the settings slot reads and saves the media document', () => {
     const { frame, posted } = await renderPanel();
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(frame.getAttribute('src')).toBeNull();
     expect(frame.getAttribute('srcdoc')).toContain('kiki.panel.v1');
+    expect(frame.getAttribute('srcdoc')).toContain('function applyPresentation(p)');
     expect(getPluginPanelDocument).toHaveBeenCalledWith('kiki-media', 'settings');
 
     await act(async () => {
@@ -177,6 +180,24 @@ describe('the settings slot reads and saves the media document', () => {
       ok: true,
       result: { values: { openai__imageModel: 'gpt-image-2' }, revision: 2 },
     });
+  });
+
+  it('loads a server document URL relative to the connected server without adding a client srcDoc bridge', async () => {
+    getPluginPanelDocument.mockResolvedValueOnce({ html, url: '/api/plugin-panels/kiki-media/settings/document.html' });
+    const { frame } = await renderPanel();
+
+    expect(frame.getAttribute('src')).toBe('https://server.example.test/api/plugin-panels/kiki-media/settings/document.html');
+    expect(frame.getAttribute('srcdoc')).toBeNull();
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
+  });
+
+  it('loads a same-origin document when Web Access uses an empty client base URL', async () => {
+    connectionBag.baseUrl = '';
+    getPluginPanelDocument.mockResolvedValueOnce({ html, url: '/plugin-panel/settings-grant' });
+    const { frame } = await renderPanel();
+    expect(frame.getAttribute('src')).toBe(`${window.location.origin}/plugin-panel/settings-grant`);
+    expect(frame.getAttribute('srcdoc')).toBeNull();
   });
 
   it('relays plugin.models.list and plugin.call through the panel bridge without session', async () => {

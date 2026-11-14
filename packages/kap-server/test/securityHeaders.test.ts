@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
@@ -54,6 +55,39 @@ describe('createSecurityHeadersHook', () => {
     expect(effectiveScriptSrc).not.toContain("'unsafe-inline'");
     expect(effectiveScriptSrc).not.toContain("'unsafe-eval'");
     expect(effectiveScriptSrc).not.toContain('data:');
+  });
+
+  it('allows website frames and blob workers only for the GUI policy', async () => {
+    const gui = captureHeaders();
+    const hook = createSecurityHeadersHook({ tls: false });
+    await hook({ routeOptions: { config: { webGui: true } } } as never, gui.reply as never, '');
+    const directives = parseCsp(gui.headers.get('content-security-policy')!);
+    expect(directives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
+    expect(directives.get('worker-src')).toEqual(["'self'", 'blob:']);
+    expect(directives.get('img-src')).toEqual(["'self'", 'data:', 'blob:', 'https:', 'http:']);
+    expect(directives.get('script-src') ?? directives.get('default-src')).toEqual(["'self'"]);
+
+    const api = captureHeaders();
+    await hook(bareRequest(), api.reply as never, '');
+    const apiDirectives = parseCsp(api.headers.get('content-security-policy')!);
+    expect(apiDirectives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*']);
+    expect(apiDirectives.has('worker-src')).toBe(false);
+    expect(apiDirectives.get('img-src')).toEqual(["'self'", 'data:', 'blob:']);
+  });
+
+  it('keeps the Desktop script policy strict while allowing website frames and PDF workers', async () => {
+    const config = JSON.parse(await readFile(new URL('../../../apps/kiki-gui/src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    const directives = parseCsp(config.app.security.csp);
+    expect(directives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
+    expect(directives.get('worker-src')).toEqual(["'self'", 'blob:']);
+    expect(directives.get('script-src')).toEqual(["'self'"]);
+  });
+
+  it('does not replace an isolated document policy even when the route also marks GUI assets', async () => {
+    const { headers, reply } = captureHeaders();
+    reply.header('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'");
+    await createSecurityHeadersHook({ tls: false })({ routeOptions: { config: { webGui: true, htmlPreviewResource: true } } } as never, reply as never, '');
+    expect(headers.get('content-security-policy')).toBe("sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'");
   });
 
   it('emits HSTS only when TLS is terminated at the server', async () => {
