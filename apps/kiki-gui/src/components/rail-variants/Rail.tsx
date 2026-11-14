@@ -52,6 +52,12 @@ import { usageSessionDeepLink } from '../../lib/usageV2';
 import { AgentPanelContainer } from '../AgentPanelContainer';
 import { InspectorComms } from '../comms/InspectorComms';
 import { AgentRoster, RAIL_MARK, RailCrumbs } from '../agent-panel/InspectorAgents';
+import {
+  collectSessionBranches,
+  extractBranchFoldSummaries,
+  InspectorBranches,
+  isSessionBranchNode,
+} from '../agent-panel/InspectorBranches';
 import { InspectorNow, NowAction, pendingBlocks } from '../agent-panel/InspectorNow';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
@@ -315,9 +321,13 @@ export function Rail({
   const runningSubagentTasks = useMemo(
     () =>
       state.tasks.filter(
-        (task) => task.kind === 'subagent' && task.status === 'running' && task.agent_id !== undefined,
+        (task) =>
+          task.kind === 'subagent' &&
+          task.status === 'running' &&
+          task.agent_id !== undefined &&
+          !isSessionBranchNode(forest.byId[task.agent_id]),
       ),
-    [state.tasks],
+    [forest.byId, state.tasks],
   );
   const runningSubagentTasksRef = useRef(runningSubagentTasks);
   runningSubagentTasksRef.current = runningSubagentTasks;
@@ -334,6 +344,16 @@ export function Rail({
   // Main lists the whole team; a subagent lists the agents under it.
   const rosterCount = useMemo(() => descendantIds(forest, focusedAgentId).length, [forest, focusedAgentId]);
   const showRoster = rosterCount > 0;
+  const sessionBranches = useMemo(
+    () => collectSessionBranches(forest, waitingAgentIds),
+    [forest, waitingAgentIds],
+  );
+  const branchFoldSummaries = useMemo(
+    () => extractBranchFoldSummaries(state.blocks),
+    [state.blocks],
+  );
+  const showBranches = sessionBranches.all.length > 0;
+  const viewingBranch = isSessionBranchNode(focusedNode);
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const nodeStatus = focusedNode?.status;
@@ -556,6 +576,41 @@ export function Rail({
       {t('rail.terminateAll')}
     </button>
   ) : undefined;
+  const backToMainAction = viewingBranch ? (
+    <button
+      type="button"
+      data-branches-back-to-main
+      aria-label={t('rail.branches.backToMainAria')}
+      title={t('rail.branches.backToMainAria')}
+      onClick={() => { selectAgent(MAIN_AGENT_ID); }}
+      className="-mr-2 inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+    >
+      <Icon name="arrowLeft" size={12} />
+      <span>{t('rail.branches.backToMain')}</span>
+    </button>
+  ) : undefined;
+  // Parallel conversation branches sit right below overview so switching between
+  // active or merged side threads never scrolls behind background worker lists.
+  const branchesSection = showBranches ? (
+    <div className={SECTION} data-rail-section="branches">
+      <RailSection
+        title={t('rail.group.branches')}
+        count={sessionBranches.all.length}
+        collapsible={false}
+        data-inspector-branches=""
+        actions={backToMainAction}
+      >
+        <InspectorBranches
+          branches={sessionBranches}
+          focusedAgentId={focusedAgentId}
+          peekAgentId={peekAgentId}
+          waitingAgentIds={waitingAgentIds}
+          foldSummaries={branchFoldSummaries}
+          onSelect={onOpenSubagent}
+        />
+      </RailSection>
+    </div>
+  ) : null;
   // Who is on the team, open in both modes: the status chips filter in place,
   // waiting and running agents lead, settled ones fold into their own group.
   const agentsSection = showRoster ? (
@@ -691,11 +746,12 @@ export function Rail({
       </div>
     </section>
   );
-  // Standard reads figures, then the work in hand, then the team; the cockpit
-  // leads with the session graph and the team it draws.
+  // Standard reads figures, then session branches, then the work in hand and
+  // team; the cockpit leads with the session graph, branches, and worker team.
   const orderedSections = (mode === 'cockpit'
     ? [
       ['overview', overviewSection],
+      ['branches', branchesSection],
       ['agents', agentsSection],
       ['todos', todosSection],
       ['tasks', tasksSection],
@@ -704,6 +760,7 @@ export function Rail({
     ] as const
     : [
       ['overview', overviewSection],
+      ['branches', branchesSection],
       ['todos', todosSection],
       ['tasks', tasksSection],
       ['agents', agentsSection],

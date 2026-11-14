@@ -119,16 +119,26 @@ export function railVisibility(agentId: string, surfaceAgentId: string): RailVis
   };
 }
 
-/** Everyone under `rootId` (main: the whole team), depth-first. */
+/** Everyone under `rootId` (main: the non-branch worker team), depth-first. */
 export function descendantIds(forest: AgentForest, rootId: string): string[] {
-  if (rootId === MAIN_AGENT_ID) return Object.keys(forest.byId).filter((id) => id !== MAIN_AGENT_ID);
+  const isBranchNode = (id: string) => {
+    const node = forest.byId[id];
+    return node?.isBranch === true || node?.branchSealed === true;
+  };
   const out: string[] = [];
-  const seen = new Set<string>();
-  const stack = [...(forest.byId[rootId]?.childIds ?? [])].reverse();
+  const seen = new Set<string>([rootId]);
+  const roots = rootId === MAIN_AGENT_ID
+    ? [
+        ...(forest.byId[MAIN_AGENT_ID]?.childIds ?? []),
+        ...forest.roots.map((node) => node.agentId).filter((id) => id !== MAIN_AGENT_ID),
+      ]
+    : [...(forest.byId[rootId]?.childIds ?? [])];
+  const stack = [...roots].reverse();
   while (stack.length > 0) {
     const id = stack.pop()!;
-    if (seen.has(id)) continue;
+    if (seen.has(id) || isBranchNode(id)) continue;
     seen.add(id);
+    if (forest.byId[id] === undefined) continue;
     out.push(id);
     stack.push(...[...(forest.byId[id]?.childIds ?? [])].reverse());
   }

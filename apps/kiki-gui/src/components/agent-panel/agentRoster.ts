@@ -94,18 +94,26 @@ export interface RosterInput {
   readonly doneOpen: boolean;
 }
 
+function isConversationBranch(node: AgentTreeNode): boolean {
+  return node.isBranch === true || node.branchSealed === true;
+}
+
 function childrenOf(forest: AgentForest, rootId: string): AgentTreeNode[] {
   if (rootId === MAIN_AGENT_ID) {
     const main = forest.byId[MAIN_AGENT_ID];
     // Subagents hang under main when main is known; otherwise every root that
-    // is not main is a top-level team member.
+    // is not main is a top-level team member. Conversation branches live in
+    // their own dedicated rail section, never mixed into background workers.
     const ids = main !== undefined
       ? main.childIds
       : forest.roots.map((root) => root.agentId);
     const extra = main !== undefined ? forest.roots.filter((root) => root.agentId !== MAIN_AGENT_ID) : [];
-    return [...ids.flatMap((id) => (forest.byId[id] === undefined ? [] : [forest.byId[id]!])), ...extra];
+    return [...ids.flatMap((id) => (forest.byId[id] === undefined ? [] : [forest.byId[id]!])), ...extra]
+      .filter((node) => !isConversationBranch(node));
   }
-  return (forest.byId[rootId]?.childIds ?? []).flatMap((id) => (forest.byId[id] === undefined ? [] : [forest.byId[id]!]));
+  return (forest.byId[rootId]?.childIds ?? [])
+    .flatMap((id) => (forest.byId[id] === undefined ? [] : [forest.byId[id]!]))
+    .filter((node) => !isConversationBranch(node));
 }
 
 function matches(node: AgentTreeNode, needle: string): boolean {
@@ -137,7 +145,7 @@ export function buildRoster(input: RosterInput): RosterModel {
     counts[bucket] += 1;
     const children = node.childIds.flatMap((id) => {
       const child = forest.byId[id];
-      if (child === undefined || seen.has(id)) return [];
+      if (child === undefined || isConversationBranch(child) || seen.has(id)) return [];
       seen.add(id);
       return [child];
     });

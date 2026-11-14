@@ -200,4 +200,47 @@ describe('lightweight metadata roster', () => {
       activity_status: 'running', status: 'running', status_source: 'runtime', live: true,
     });
   });
+
+  it('resolves sealed and unsealed session branches cleanly as completed or idle instead of unknown when unloaded', () => {
+    const agents: Record<string, AgentMeta> = {
+      main: {},
+      'branch-open': {
+        type: 'sub',
+        parentAgentId: 'main',
+        userLabel: 'Investigate lockfile',
+        labels: { branch: 'true', branchSeed: 'fresh', branchInitiator: 'user', toolsLocked: 'false' },
+      },
+      'branch-merged': {
+        type: 'sub',
+        parentAgentId: 'main',
+        userLabel: 'Audit cache layer',
+        labels: { branch: 'true', branchSeed: 'compact', branchInitiator: 'agent', toolsLocked: 'false', branchSealed: 'true' },
+      },
+    };
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false, agents };
+    const roster = sessionAgentRoster(meta.id, meta);
+    expect(roster.find((entry) => entry.id === 'branch-open')).toMatchObject({
+      is_branch: true,
+      branch_seed: 'fresh',
+      branch_sealed: false,
+      activity_status: 'idle',
+    });
+    expect(roster.find((entry) => entry.id === 'branch-merged')).toMatchObject({
+      is_branch: true,
+      branch_seed: 'compact',
+      branch_sealed: true,
+      status: 'completed',
+      activity_status: 'completed',
+    });
+    expect(sessionAgentCounts(agents, roster)).toEqual({
+      total: 3,
+      subagents: 2,
+      completed: 1,
+      failed: 0,
+      cancelled: 0,
+      active: 0,
+      idle: 1,
+      unknown: 0,
+    });
+  });
 });

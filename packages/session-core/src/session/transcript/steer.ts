@@ -7,6 +7,7 @@
  * queue strip. It uses the original user-message id so the delivered frame
  * takes over the same row.
  */
+import type { TranscriptItem } from '@kiki/transcript';
 import type { MediaRef } from '../../composer/media';
 import type { Block, SessionViewState, UserBlock } from './types';
 
@@ -49,6 +50,42 @@ export function isSteerSettled(blocks: readonly Block[], steer: PendingSteer): b
     return steer.phase === 'waiting' && block.turnId !== undefined && block.text === steer.text &&
       block.promptId === undefined && Date.parse(block.createdAt) >= since;
   });
+}
+
+/**
+ * True when a steered prompt's delivery step lies inside a bounded turn prefix
+ * that was cut from the resident tail window (e.g. a >8-step turn reconnected
+ * or reset at step 15 after steering at step 12). In that case the turn has
+ * already advanced into steps strictly after `steeredAt` while an unread
+ * turn-level `['steps']` ref or `stepsPartial` marker covers the earlier steps,
+ * so the echo must not masquerade as "waiting for next step" at the tail.
+ */
+export function isSteerDeliveredBeforeCutTail(
+  items: readonly TranscriptItem[],
+  steeredAt: string,
+): boolean {
+  const steeredTime = Date.parse(steeredAt);
+  if (!Number.isFinite(steeredTime)) return false;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item?.kind !== 'turn') continue;
+    const hasCutEarlierSteps =
+      item.stepsPartial === true ||
+      item.contentRefs?.some(
+        (ref) =>
+          ref.path.length === 1 &&
+          ref.path[0] === 'steps' &&
+          ref.direction === 'backward',
+      ) === true;
+    if (!hasCutEarlierSteps) continue;
+    if (item.steps.some((step) => {
+      const started = step.startedAt === undefined ? Number.NaN : Date.parse(step.startedAt);
+      return Number.isFinite(started) && started > steeredTime;
+    })) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function steerBlock(steer: PendingSteer): UserBlock {

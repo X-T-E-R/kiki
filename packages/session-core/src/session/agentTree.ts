@@ -964,7 +964,7 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
 function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: number): void {
   if (draft.status === undefined || !isActiveStatus(draft.status)) return;
   if (draft.statusStartedAt !== undefined && draft.statusStartedAt > disposedAt) return;
-  draft.status = 'unknown';
+  draft.status = draft.branchSealed === true ? 'completed' : draft.isBranch === true ? 'idle' : 'unknown';
   draft.statusAuthority = authority;
   clearRunFields(draft);
   draft.busy = false;

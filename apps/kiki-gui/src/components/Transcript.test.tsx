@@ -30,7 +30,7 @@ import { getReadingSnapshot, saveReadingSnapshot, timelineSnapshotKey, type Time
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
-import { projectPresentedText, type AgentTranscriptSnapshot } from '@kiki/transcript';
+import { projectPresentedText, type AgentTranscriptSnapshot, type ContentRef } from '@kiki/transcript';
 
 import {
   annotationOverrideId,
@@ -9677,7 +9677,7 @@ describe('settled history folds and the unified locate entry', () => {
       return { release, retry: () => {} };
     });
     const refs = vi.spyOn(controller, 'contentRefsFor').mockImplementation((_agent, source) => source.kind === 'turn' ? [{ source,
-      path: ['steps'], kind: 'array', revision: 'partial-window', offset: 8, total: 100 }] : []);
+      path: ['steps', 0, 'frames'], kind: 'array', revision: 'partial-window', offset: 8, total: 100 }] : []);
     const state = transcriptState([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
     const render = (visible = true) => renderSettled(root,
       <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
@@ -9706,6 +9706,161 @@ describe('settled history folds and the unified locate entry', () => {
       refs.mockRestore();
       begin.mockRestore();
       controller.close();
+    }
+  });
+
+  it('auto-hydrates cut turn-level steps while history-fold stays closed, and keeps bottom reply and TurnTailLine mounted without manual fold toggle', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation((_agent, source, roots, _includeOlder, paths) => {
+      const release = vi.fn();
+      if (roots?.length === 1 && roots[0] === 'steps' && paths !== undefined) {
+        releases.set(source.id, release);
+      }
+      return { release, retry: () => {} };
+    });
+    const turnRef: ContentRef = {
+      source: { kind: 'turn', id: 't1' },
+      path: ['steps'],
+      kind: 'array',
+      revision: 'cut-steps',
+      offset: 9,
+      total: 17,
+      direction: 'backward',
+    };
+    const refs = vi.spyOn(controller, 'contentRefsFor').mockImplementation((_agent, source) =>
+      source.kind === 'turn' && source.id === 't1' ? [turnRef] : []);
+    const initialBlocks = [
+      userBlock({ id: 'u1', text: 'Run the 17-step pipeline', turnId: 't1' }),
+      doneTool('tool-10', 't1'),
+      doneTool('tool-11', 't1'),
+      { ...assistantBlock('a1', 'Final pipeline answer after 17 steps.'), turnId: 't1' },
+    ];
+    const hydratedBlocks = [
+      userBlock({ id: 'u1', text: 'Run the 17-step pipeline', turnId: 't1' }),
+      doneTool('tool-1', 't1'),
+      doneTool('tool-2', 't1'),
+      userBlock({ id: 'u-steer', text: 'Also verify the lockfile before wrapping up.', turnId: 't1', promptId: 'msg_steer_1' }),
+      doneTool('tool-10', 't1'),
+      doneTool('tool-11', 't1'),
+      { ...assistantBlock('a1', 'Final pipeline answer after 17 steps.'), turnId: 't1' },
+    ];
+    const render = (blocks: Block[], hasRef = true, visible = true) => {
+      const state = {
+        ...transcriptState(blocks),
+        busy: false,
+        contentRefs: hasRef ? [turnRef] : [],
+        turnTail: {
+          turnId: 't1',
+          state: 'completed' as const,
+          endedAt: '2026-01-01T00:00:15.000Z',
+          durationMs: 12_400,
+          ttftMs: undefined,
+          usage: undefined,
+          tokensPerSecond: undefined,
+        },
+      };
+      return renderSettled(
+        root,
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} contentRefs={state.contentRefs} sessionId="session_test" agentId="main">
+          <Transcript state={state} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+        </TranscriptDetailProvider>,
+      );
+    };
+    try {
+      await render(initialBlocks, true, true);
+      // Fold stays closed, yet turn-level `['steps']` auto-hydrates immediately!
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(0);
+      expect(begin).toHaveBeenCalledWith('main', { kind: 'turn', id: 't1' }, ['steps'], true, [['steps']]);
+      const lease = releases.get('t1');
+      expect(lease).toBeDefined();
+
+      // Simulate the cut steps hydrating into the turn while the user is at the bottom:
+      refs.mockImplementation(() => []);
+      await render(hydratedBlocks, false, true);
+      expect(lease).toHaveBeenCalledTimes(1);
+      // Steered user message, closed fold, final assistant reply, and TurnTailLine are all mounted & visible without touching the fold toggle:
+      expect(container.querySelector('[data-block-id="u-steer"]')?.textContent).toContain('Also verify the lockfile before wrapping up.');
+      expect(container.querySelector('[data-block-id="a1"]')?.textContent).toContain('Final pipeline answer after 17 steps.');
+      expect(container.querySelector('[data-turn-tail][data-turn-tail-state="completed"]')).not.toBeNull();
+      expect(container.querySelector('[data-steer-line]')).toBeNull();
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(1);
+    } finally {
+      refs.mockRestore();
+      begin.mockRestore();
+      controller.close();
+    }
+  });
+
+  it('keeps bottom assistant reply and TurnTailLine mounted and pinned at end when a busy multi-step turn finishes and folds without clicking the fold', async () => {
+    const history = virtualBlocks(40, 'prior');
+    const liveBlocks: Block[] = [
+      ...history,
+      userBlock({ id: 'u-live', text: 'Run all 12 checks', turnId: 't-live' }),
+      ...Array.from({ length: 10 }, (_, idx) => doneTool(`live-tool-${idx}`, 't-live')),
+      doneTool('live-tool-last', 't-live', { status: 'running', output: undefined }),
+      userBlock({ id: 'u-steered', text: 'Include the summary table at the end.', turnId: 't-live', promptId: 'p-steer' }),
+      { ...assistantBlock('a-final', 'All 12 checks passed; summary table included below.'), turnId: 't-live' },
+    ];
+    const settledBlocks: Block[] = [
+      ...history,
+      userBlock({ id: 'u-live', text: 'Run all 12 checks', turnId: 't-live' }),
+      ...Array.from({ length: 11 }, (_, idx) => doneTool(`live-tool-${idx === 10 ? 'last' : idx}`, 't-live')),
+      userBlock({ id: 'u-steered', text: 'Include the summary table at the end.', turnId: 't-live', promptId: 'p-steer' }),
+      { ...assistantBlock('a-final', 'All 12 checks passed; summary table included below.'), turnId: 't-live' },
+    ];
+
+    blockHeights.set('a-final', 260);
+    const { root, container } = makeRoot();
+    try {
+      await renderSettled(
+        root,
+        virtualTranscript({
+          ...transcriptState(liveBlocks),
+          busy: true,
+        }),
+      );
+      await settleVirtualizer();
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+      await settleVirtualizer();
+      expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(1);
+
+      await renderSettled(
+        root,
+        virtualTranscript({
+          ...transcriptState(settledBlocks),
+          busy: false,
+          turnTail: {
+            turnId: 't-live',
+            state: 'completed',
+            endedAt: '2026-01-01T00:01:00.000Z',
+            durationMs: 9_800,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+        }),
+      );
+      await settleVirtualizer();
+
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(0);
+      expect(container.querySelector('[data-block-id="u-steered"]')?.textContent).toContain('Include the summary table at the end.');
+      expect(container.querySelector('[data-block-id="a-final"]')?.textContent).toContain('All 12 checks passed; summary table included below.');
+      expect(container.querySelector('[data-turn-tail][data-turn-tail-state="completed"]')).not.toBeNull();
+      expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(1);
+
+      const items = [...container.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')]
+        .sort((left, right) => Number(left.dataset['index']) - Number(right.dataset['index']));
+      for (let i = 1; i < items.length; i += 1) {
+        const prevEnd = virtualItemStart(items[i - 1]!) + items[i - 1]!.offsetHeight;
+        expect(virtualItemStart(items[i]!)).toBeGreaterThanOrEqual(prevEnd);
+      }
+    } finally {
+      blockHeights.delete('a-final');
     }
   });
 

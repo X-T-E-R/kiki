@@ -27,6 +27,8 @@ export const SHELL_COMMAND_ROOTS: readonly string[] = ['input', 'inputText'];
 export const EDIT_ROOTS: readonly string[] = ['display', 'input', 'inputText'];
 /** Structural refs of a turn: its steps, and one step's own frames. */
 export const TURN_STEP_ROOTS: readonly string[] = ['steps'];
+/** Turn-level step array only (excludes per-step `['steps', i, 'frames']`). */
+export const TURN_STEP_ARRAY_PATHS: readonly (readonly string[])[] = [['steps']];
 
 /**
  * The frame a tool or shell block was projected from. The projection keeps the
@@ -274,6 +276,7 @@ export function ContentOriginalDownload({ ref, label, callerAgentId }: { readonl
 export function ContentContinuation({
   source,
   roots,
+  paths,
   label,
   callerAgentId,
   headingPresent = false,
@@ -289,6 +292,7 @@ export function ContentContinuation({
   /** The canonical entity this body was rendered from; undefined = no reader. */
   source: ContentBodySource | undefined;
   roots: readonly string[];
+  paths?: readonly (readonly (string | number)[])[];
   /** The reading area's own name, e.g. Output / Arguments / Command. */
   label: string;
   className?: string;
@@ -297,14 +301,14 @@ export function ContentContinuation({
   renderText?: (text: string) => ReactNode;
 }): ReactNode {
   const { t, tp } = useI18n();
-  const { pending, statusOf, request } = useContentContinuation(source, roots, callerAgentId);
+  const { pending, statusOf, request } = useContentContinuation(source, roots, callerAgentId, paths);
   const controller = useTranscriptController();
   const target = useTranscriptTarget();
   const agentId = callerAgentId ?? target?.agentId;
-  const identity = JSON.stringify([source, roots, callerAgentId]);
+  const identity = JSON.stringify([source, roots, paths, callerAgentId]);
   const [requested, setRequested] = useState<string>();
   const automatic = controller !== undefined && (autoRead || requested === identity);
-  const retry = useAutomaticContentRead(automatic ? source : undefined, roots, callerAgentId);
+  const retry = useAutomaticContentRead(automatic ? source : undefined, roots, callerAgentId, paths);
   const allRanges = controller !== undefined && agentId !== undefined ? pending.filter((ref) => controller.isContentRange(agentId, ref)) : [];
   const ranges = excludeRanges ? [] : allRanges;
   const ref = pending.find((candidate) => !allRanges.includes(candidate));

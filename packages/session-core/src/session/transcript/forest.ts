@@ -21,6 +21,14 @@ export function rosterFromTranscriptAgents(
   if (agents === undefined) return [];
   return agents.map((agent) => {
     const parentFromDelegator = agent.delegator?.kind === 'agent' ? agent.delegator.agentId : undefined;
+    const status: AgentRosterDescriptor['status'] =
+      agent.agentId === MAIN_AGENT_ID
+        ? undefined
+        : agent.branchSealed === true
+          ? 'completed'
+          : agent.isBranch === true
+            ? 'idle'
+            : 'unknown';
     return {
       agentId: agent.agentId,
       parentAgentId: agent.parentAgentId ?? parentFromDelegator,
@@ -31,7 +39,7 @@ export function rosterFromTranscriptAgents(
       branchInitiator: agent.branchInitiator,
       toolsLocked: agent.toolsLocked,
       branchSealed: agent.branchSealed,
-      status: agent.agentId === MAIN_AGENT_ID ? undefined : 'unknown',
+      status,
       createdAt: agent.createdAt,
       disposedAt: agent.disposedAt,
     };
@@ -87,15 +95,26 @@ export function rosterFromTranscriptResponse(
   const meta = response.meta?.agent;
   if (meta === undefined) return roster;
   const index = roster.findIndex((agent) => agent.agentId === response.agent_id);
+  const existing = index >= 0 ? roster[index] : undefined;
   const projectedStatus = agentStatusFromMeta(response);
+  const resolvedStatus =
+    response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown'
+      ? undefined
+      : projectedStatus === 'unknown' && existing !== undefined
+        ? existing.branchSealed === true
+          ? 'completed'
+          : existing.isBranch === true
+            ? 'idle'
+            : projectedStatus
+        : projectedStatus;
   const statusFields = {
     model: meta.model,
     thinkingEffort: meta.thinkingEffort,
     contextTokens: meta.contextTokens,
     maxContextTokens: meta.maxContextTokens,
     usage: meta.usage,
-    status: response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown' ? undefined : projectedStatus,
-    ...interruptedStatusFields(meta.phase, projectedStatus),
+    status: resolvedStatus,
+    ...interruptedStatusFields(meta.phase, resolvedStatus),
     busy: agentBusyFromMeta(response),
   };
   if (index >= 0) roster[index] = { ...roster[index]!, ...statusFields };
@@ -605,7 +624,17 @@ export function sessionAgentForestFromAgentSnapshots(
   for (const agentId of coldEvidence) {
     const node = byId[agentId];
     if (node === undefined || liveIds.has(agentId)) continue;
-    byId[agentId] = { ...node, busy: false, status: node.status === 'running' || node.status === 'suspended' ? 'unknown' : node.status };
+    const coldFallback = node.branchSealed === true ? 'completed' : node.isBranch === true ? 'idle' : 'unknown';
+    byId[agentId] = {
+      ...node,
+      busy: false,
+      status: node.status === 'running' || node.status === 'suspended' || node.status === 'unknown' ? coldFallback : node.status,
+    };
+  }
+  for (const [agentId, node] of Object.entries(byId)) {
+    if (node.status === 'unknown' && (node.branchSealed === true || node.isBranch === true)) {
+      byId[agentId] = { ...node, status: node.branchSealed === true ? 'completed' : 'idle' };
+    }
   }
   return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };
 }
@@ -662,6 +691,7 @@ function filterRosterToLiveOrPresent(
   if (snapshots.size === 0) return roster;
   const presentIds = new Set<string>(snapshots.keys());
   return roster.filter((entry) => entry.statusSource !== undefined || presentIds.has(entry.agentId) ||
+    entry.isBranch === true || entry.branchSealed === true ||
     entry.status === 'failed' || entry.status === 'cancelled' || (
     entry.disposedAt === undefined &&
     ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||

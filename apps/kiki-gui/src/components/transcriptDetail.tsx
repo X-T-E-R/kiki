@@ -178,6 +178,7 @@ export function useContentContinuation(
   source: ContentBodySource | undefined,
   roots: readonly string[],
   callerAgentId?: string,
+  paths?: readonly (readonly (string | number)[])[],
 ): ContentContinuationHandle {
   const api = useContext(TranscriptDetailContext);
   const kind = source?.kind;
@@ -195,9 +196,13 @@ export function useContentContinuation(
       ref.source.stepId === stepId &&
       ref.path.length > 0 &&
       roots.includes(String(ref.path[0])) &&
+      (paths === undefined || paths.some((path) =>
+        path.length === 1 && kind === 'turn' && path[0] === 'steps'
+          ? ref.path.length === 1 && ref.path[0] === 'steps'
+          : path.every((part, index) => ref.path[index] === part))) &&
       (ref.path[0] !== 'steps' || ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'),
     );
-  }, [api, kind, id, turnId, stepId, roots, callerAgentId]);
+  }, [api, kind, id, turnId, stepId, roots, callerAgentId, paths]);
   const continuation = useContinuationFor(pending);
   const statusOf = useCallback((ref: ContentRef) => {
     const agentId = callerAgentId ?? api?.session?.agentId;
@@ -304,18 +309,27 @@ export function useTranscriptController(): SessionController | undefined {
   return useContext(TranscriptDetailContext)?.controller;
 }
 
-export function useAutomaticContentRead(source: ContentBodySource | undefined, roots: readonly string[], callerAgentId?: string): () => void {
+export function useAutomaticContentRead(
+  source: ContentBodySource | undefined,
+  roots: readonly string[],
+  callerAgentId?: string,
+  paths?: readonly (readonly (string | number)[])[],
+): () => void {
   const api = useContext(TranscriptDetailContext);
   const lease = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
   const sourceKey = JSON.stringify(source);
   const rootsKey = JSON.stringify(roots);
+  const pathsKey = paths === undefined ? undefined : JSON.stringify(paths);
   const controller = api?.controller;
   const agentId = callerAgentId ?? api?.session?.agentId;
   useEffect(() => {
     if (controller === undefined || sourceKey === undefined || agentId === undefined) return;
-    const read = controller.beginContentRead(agentId, JSON.parse(sourceKey) as ContentSource, JSON.parse(rootsKey) as string[]);
+    const parsedPaths = pathsKey === undefined ? undefined : JSON.parse(pathsKey) as (readonly (string | number)[])[];
+    const read = parsedPaths === undefined
+      ? controller.beginContentRead(agentId, JSON.parse(sourceKey) as ContentSource, JSON.parse(rootsKey) as string[])
+      : controller.beginContentRead(agentId, JSON.parse(sourceKey) as ContentSource, JSON.parse(rootsKey) as string[], true, parsedPaths);
     lease.current = read;
     return () => { read.release(); lease.current = undefined; };
-  }, [controller, sourceKey, rootsKey, agentId]);
+  }, [controller, sourceKey, rootsKey, pathsKey, agentId]);
   return useCallback(() => { lease.current?.retry(); }, []);
 }

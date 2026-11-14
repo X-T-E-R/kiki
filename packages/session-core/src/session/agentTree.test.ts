@@ -1966,4 +1966,59 @@ describe('live agent status during partial history recovery', () => {
       status: "completed",
     });
   });
+
+  it("retains sealed and open conversation branches in the forest as completed or idle instead of unknown or filtered out", () => {
+    const snapshots = new Map([["main", snapshot()]]);
+    const branchRows: SnapshotSubagent[] = [
+      {
+        id: "branch-open",
+        agent_id: "branch-open",
+        session_id: "s1",
+        kind: "subagent",
+        parent_agent_id: "main",
+        description: "Explore alternative layout",
+        label: "Explore alternative layout",
+        is_branch: true,
+        branch_seed: "fresh",
+        branch_sealed: false,
+        status: "running",
+        activity_status: "idle",
+        status_source: "metadata",
+        live: false,
+        created_at: startedAt,
+      },
+      {
+        id: "branch-merged",
+        agent_id: "branch-merged",
+        session_id: "s1",
+        kind: "subagent",
+        parent_agent_id: "main",
+        description: "Verify SQLite schema",
+        label: "Verify SQLite schema",
+        is_branch: true,
+        branch_seed: "compact",
+        branch_sealed: true,
+        status: "completed",
+        activity_status: "completed",
+        status_source: "metadata",
+        live: false,
+        created_at: startedAt,
+      },
+    ];
+    const built = sessionAgentForestFromAgentSnapshots(snapshots, branchRows, new Set(["main"]));
+    expect(built.byId["branch-open"]).toMatchObject({
+      isBranch: true,
+      branchSeed: "fresh",
+      branchSealed: false,
+      status: "idle",
+      busy: false,
+    });
+    expect(built.byId["branch-merged"]).toMatchObject({
+      isBranch: true,
+      branchSeed: "compact",
+      branchSealed: true,
+      status: "completed",
+      busy: false,
+    });
+  });
 });
