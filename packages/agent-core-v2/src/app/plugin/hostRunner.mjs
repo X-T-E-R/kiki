@@ -272,6 +272,7 @@ let panelServer;
 let panelServerReady;
 const panelTokens = new Map();
 const panelStreams = new Set();
+const panelCalls = new Map();
 const panelSockets = new Set();
 const PANEL_FRAME_LIMIT = 16 * 1024 * 1024;
 
@@ -311,7 +312,6 @@ async function openPanelChannel(message) {
   if (typeof openPanelStream !== 'function' || shuttingDown !== undefined) throw new Error('Plugin has no panel stream backend');
   const { panelId, stream, args, settings, kikiHome, workspaceId, sessionId } = message.params;
   if (typeof stream !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(stream)) throw new Error('Invalid panel stream name');
-  const port = await listenPanelStreams();
   const token = randomBytes(32).toString('hex');
   const controller = new AbortController();
   const binary = new Set();
@@ -334,6 +334,7 @@ async function openPanelChannel(message) {
     clearTimeout(timer);
     panelTokens.delete(token);
     panelStreams.delete(channel);
+    panelCalls.delete(message.id);
     queued.length = 0; queuedBytes = 0;
     socket?.destroy();
   };
@@ -414,6 +415,7 @@ async function openPanelChannel(message) {
   timer.unref();
   panelTokens.set(token, channel);
   panelStreams.add(channel);
+  panelCalls.set(message.id, channel);
   pending.set(message.id, controller);
   const handle = {
     sendBinary: (chunk) => write(2, chunk instanceof ArrayBuffer ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
@@ -427,6 +429,8 @@ async function openPanelChannel(message) {
   };
   controller.signal.addEventListener('abort', () => { if (!ended) dispose('Plugin stream cancelled'); }, { once: true });
   try {
+    const port = await listenPanelStreams();
+    controller.signal.throwIfAborted();
     const context = { panelId, sessionId, workspaceId, settings: settings ?? {}, kikiHome, ...modelContext(message.id, controller.signal, false), signal: controller.signal };
     const opened = await openPanelStream(stream, args, handle, context);
     const handlers = opened !== null && typeof opened === 'object' && ['onBinary', 'onText', 'onClose'].some((key) => typeof opened[key] === 'function');
@@ -607,6 +611,7 @@ for await (const line of input) {
   if (message.method === 'cancel') {
     const id = message.params?.id;
     pending.get(id)?.abort();
+    panelCalls.get(id)?.dispose('Plugin stream cancelled');
     void releaseHarnessAccount(id).catch(() => undefined);
     continue;
   }

@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeChildEnv } from '#/_base/execEnv/childEnv';
-import { abortError } from '#/_base/utils/abort';
+import { abortable, abortError } from '#/_base/utils/abort';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
@@ -475,55 +475,62 @@ export class PluginHost {
     });
   }
 
-  async openPanelStream(panelId: string, stream: string, args: unknown, settings: Record<string, unknown>, context: { sessionId?: string; workspaceId?: string }): Promise<PluginPanelStream> {
+  async openPanelStream(panelId: string, stream: string, args: unknown, settings: Record<string, unknown>, context: { sessionId?: string; workspaceId?: string; signal?: AbortSignal }): Promise<PluginPanelStream> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(stream)) throw new Error('Invalid panel stream name');
-    await this.start();
+    const { signal, ...scope } = context;
+    signal?.throwIfAborted();
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
     const child = this.child;
     if (this.stopped || child === undefined) throw new Error('Plugin host was withdrawn');
     const id = ++this.nextId;
     const controller = new AbortController();
-    const owner: Call = { resolve: () => {}, reject: () => controller.abort(), signal: controller.signal };
-    this.streamCalls.set(id, owner);
+    let connection: PanelStream | undefined;
+    const release = () => {
+      if (connection !== undefined) this.streams.delete(connection);
+      this.streamCalls.delete(id);
+      signal?.removeEventListener('abort', cancel);
+      controller.abort();
+      this.scheduleIdle();
+    };
+    const interrupt = (reason: Error) => {
+      this.send({ method: 'cancel', params: { id } });
+      controller.abort(reason);
+      const call = this.pending.get(id);
+      this.pending.delete(id);
+      call?.reject(reason);
+      connection?.destroy(reason.message);
+    };
+    const cancel = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError('Plugin panel stream cancelled'));
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.streamCalls.set(id, { resolve: () => {}, reject: () => controller.abort(), signal: controller.signal });
     this.clearIdle();
-    let opened: { result: unknown; port: number; token: string };
     try {
-      opened = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          this.send({ method: 'cancel', params: { id } });
-          this.pending.delete(id);
-          reject(new Error('Plugin panel stream open timed out'));
-        }, 15_000);
+      const opened = await new Promise<{ result: unknown; port: number; token: string }>((resolve, reject) => {
+        const timer = setTimeout(() => interrupt(new Error('Plugin panel stream open timed out')), 15_000);
         timer.unref();
         this.pending.set(id, { signal: controller.signal,
-          resolve: (result) => { clearTimeout(timer); resolve(result as typeof opened); },
+          resolve: (result) => { clearTimeout(timer); resolve(result as { result: unknown; port: number; token: string }); },
           reject: (error) => { clearTimeout(timer); reject(error); },
         });
-        this.send({ id, method: 'panel-stream-open', params: { panelId, stream, args, settings, kikiHome: this.kikiHome, ...context } });
+        this.send({ id, method: 'panel-stream-open', params: { panelId, stream, args, settings, kikiHome: this.kikiHome, ...scope } });
       });
+      controller.signal.throwIfAborted();
+      if (this.stopped || child !== this.child) throw new Error('Plugin host was withdrawn');
+      if (!Number.isInteger(opened.port) || opened.port < 1 || opened.port > 65535 || !/^[a-f0-9]{64}$/.test(opened.token)) throw new Error('Invalid plugin stream endpoint');
+      connection = new PanelStream(opened.result, opened.port, opened.token, release);
+      this.streams.add(connection);
+      this.clearIdle();
+      await connection.connected();
+      controller.signal.throwIfAborted();
+      return connection;
     } catch (error) {
-      this.streamCalls.delete(id);
-      controller.abort();
-      this.scheduleIdle();
+      if (!controller.signal.aborted) this.send({ method: 'cancel', params: { id } });
+      if (connection === undefined) release();
+      else connection.destroy(error instanceof Error ? error.message : String(error));
       throw error;
     }
-    if (this.stopped || child !== this.child) { this.streamCalls.delete(id); controller.abort(); throw new Error('Plugin host was withdrawn'); }
-    if (!Number.isInteger(opened.port) || opened.port < 1 || opened.port > 65535 || !/^[a-f0-9]{64}$/.test(opened.token)) {
-      this.streamCalls.delete(id);
-      controller.abort();
-      this.scheduleIdle();
-      throw new Error('Invalid plugin stream endpoint');
-    }
-    const connection = new PanelStream(opened.result, opened.port, opened.token, () => {
-      this.streams.delete(connection);
-      this.streamCalls.delete(id);
-      controller.abort();
-      this.scheduleIdle();
-    });
-    this.streams.add(connection);
-    this.clearIdle();
-    await connection.connected();
-    return connection;
   }
 
   async requestPanel(action: string, args: unknown, settings: Record<string, unknown>): Promise<unknown> {

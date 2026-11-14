@@ -1,4 +1,5 @@
-import { once } from 'node:events';
+import { once, type EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -187,15 +188,40 @@ describe('plugin panel binary WebSocket', () => {
     await ended;
   });
 
-  it('closes admitted streams when the server authentication generation changes', async () => {
+  it('aborts slow backend startup when the opening WebSocket disconnects', async () => {
+    const args = { startedPath: join(home, 'opening-started'), abortedPath: join(home, 'opening-aborted'), completedPath: join(home, 'opening-completed') };
     const frames = await connect();
-    frames.ws.send(JSON.stringify({ type: 'open', stream: 'video' }));
-    expect(await frames.json()).toMatchObject({ type: 'ready', ok: true });
+    frames.ws.send(JSON.stringify({ type: 'open', stream: 'slow', args }));
+    await vi.waitFor(async () => expect(await readFile(args.startedPath, 'utf8')).toBe('started'));
     const ended = once(frames.ws, 'close');
+    frames.ws.close();
+    await ended;
+    await vi.waitFor(async () => expect(await readFile(args.abortedPath, 'utf8')).toBe('aborted'), { timeout: 1000, interval: 10 });
+    await expect(readFile(args.completedPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('invalidates backend access immediately when a client withholds the credential-rotation close acknowledgement', async () => {
+    const args = { abortedPath: join(home, 'rotation-aborted'), inputPath: join(home, 'rotation-input') };
+    const frames = await connect();
+    frames.ws.send(JSON.stringify({ type: 'open', stream: 'video', args }));
+    expect(await frames.json()).toMatchObject({ type: 'ready', ok: true });
+    await frames.next(); await frames.next();
+    frames.ws.send('accepted');
+    expect((await frames.next()).data.toString()).toBe('accepted');
+    const receiver = (frames.ws as unknown as { _receiver: EventEmitter })._receiver;
+    receiver.removeAllListeners('conclude');
+    const closeSent = once(receiver, 'conclude');
     await writeFile(join(home, 'server.token'), 'B'.repeat(43));
-    const [code, reason] = await ended;
+    const [code, reason] = await closeSent;
     expect(code).toBe(4001);
     expect(reason.toString()).toBe('server authentication changed');
+    expect(frames.ws.readyState).toBe(WebSocket.OPEN);
+    frames.ws.send('late-text');
+    frames.ws.send(Buffer.from([1, 2, 3]));
+    await vi.waitFor(async () => expect(await readFile(args.abortedPath, 'utf8')).toBe('aborted'), { timeout: 1000, interval: 10 });
+    await delay(100);
+    expect(await readFile(args.inputPath, 'utf8')).toBe('accepted\n');
+    frames.ws.terminate();
   });
 
   it('propagates plugin errors and close reasons and tears down active streams when hosts stop', async () => {

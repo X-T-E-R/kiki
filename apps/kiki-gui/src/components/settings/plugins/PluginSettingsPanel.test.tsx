@@ -1000,7 +1000,11 @@ describe('the settings panel stream bridge', () => {
     const response = posted.find((message) => (message as { id?: number }).id === 90) as Record<string, unknown>;
     expect(openPluginPanelStream).toHaveBeenCalledWith('kiki-media', 'settings', {
       stream: 'settings-live', args: { mode: 'compact' }, session_id: undefined, workspace_id: undefined,
+      signal: expect.any(AbortSignal),
     });
+    const streamOptions = openPluginPanelStream.mock.calls[0]?.[2] as { signal?: AbortSignal } | undefined;
+    expect(streamOptions?.signal).toBeInstanceOf(AbortSignal);
+    expect(streamOptions?.signal?.aborted).toBe(false);
     expect(response).toMatchObject({ ok: true, result: { ready: true } });
     expect(response).not.toHaveProperty('port');
     const transferLog = framePostTransfers.get(frame.contentWindow!) ?? [];
@@ -1060,11 +1064,14 @@ describe('settings panel stream lifetimes', () => {
       request(oldFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 92, method: 'plugin.openStream', stream: 'settings-live' });
     });
     const pendingChannel = SettingsTestMessageChannel.instances[1]!;
+    const pendingSignal = (openPluginPanelStream.mock.calls[1]?.[2] as { signal?: AbortSignal }).signal;
+    expect(pendingSignal?.aborted).toBe(false);
     const { root, queryClient } = renderings.get(oldFrame)!;
     connectionBag.scopeId = 'scope-b';
     await act(async () => { root.render(settingsPanelElement(queryClient)); });
     expect(pendingChannel.port1.close).toHaveBeenCalledTimes(1);
     expect(pendingChannel.port2.close).toHaveBeenCalledTimes(1);
+    expect(pendingSignal?.aborted).toBe(true);
     const stale = makeStream();
     await act(async () => { finish(stale); await Promise.resolve(); });
     expect(stale.close).toHaveBeenCalledTimes(1);
@@ -1083,5 +1090,46 @@ describe('settings panel stream lifetimes', () => {
     expect(unmountStream.close).toHaveBeenCalledTimes(1);
     expect(unmountChannel.port1.close).toHaveBeenCalledTimes(1);
     expect(unmountChannel.port2.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts pending streams immediately on iframe reload and unmount before opens resolve', async () => {
+    const makeStream = () => ({
+      result: true,
+      sendBinary: vi.fn(() => true),
+      sendText: vi.fn(() => true),
+      close: vi.fn(),
+      onBinary: vi.fn(() => vi.fn()),
+      onText: vi.fn(() => vi.fn()),
+      onClose: vi.fn(() => vi.fn()),
+    });
+    let finishReload!: (stream: ReturnType<typeof makeStream>) => void;
+    openPluginPanelStream.mockReturnValueOnce(new Promise((resolve) => { finishReload = resolve; }));
+    const { frame: reloadFrame } = await renderPanel();
+    await act(async () => {
+      request(reloadFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 94, method: 'plugin.openStream', stream: 'settings-live' });
+    });
+    const reloadSignal = (openPluginPanelStream.mock.calls[0]?.[2] as { signal?: AbortSignal }).signal;
+    expect(reloadSignal?.aborted).toBe(false);
+    await act(async () => { reloadFrame.dispatchEvent(new Event('load')); });
+    expect(reloadSignal?.aborted).toBe(true);
+    const reloadStale = makeStream();
+    await act(async () => { finishReload(reloadStale); await Promise.resolve(); });
+    expect(reloadStale.close).toHaveBeenCalledTimes(1);
+
+    let finishUnmount!: (stream: ReturnType<typeof makeStream>) => void;
+    openPluginPanelStream.mockReturnValueOnce(new Promise((resolve) => { finishUnmount = resolve; }));
+    const { frame: unmountFrame } = await renderPanel();
+    await act(async () => {
+      request(unmountFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 95, method: 'plugin.openStream', stream: 'settings-live' });
+    });
+    const unmountSignal = (openPluginPanelStream.mock.calls[1]?.[2] as { signal?: AbortSignal }).signal;
+    expect(unmountSignal?.aborted).toBe(false);
+    const unmountRoot = renderings.get(unmountFrame)!.root;
+    await act(async () => { unmountRoot.unmount(); });
+    roots.splice(roots.indexOf(unmountRoot), 1);
+    expect(unmountSignal?.aborted).toBe(true);
+    const unmountStale = makeStream();
+    await act(async () => { finishUnmount(unmountStale); await Promise.resolve(); });
+    expect(unmountStale.close).toHaveBeenCalledTimes(1);
   });
 });

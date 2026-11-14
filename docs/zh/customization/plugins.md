@@ -549,7 +549,7 @@ window.addEventListener("message", event => {
 });
 ```
 
-流名称须匹配 `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`。二进制帧以可转移的 `ArrayBuffer` 到达；字符串原样传递，端口发送的对象转换为 JSON 文本。向端口发送 `{ __kikiStreamControl: "close" }` 可关闭流。后端关闭时，端口收到 `{ __kikiStreamEvent: "close", code, reason }`。打开流计入面板请求限额，端口帧不计入。导航、iframe 重载、组件卸载和插件关闭都会释放活动流。设置面板不能附带会话；其他面板仍检查会话和工作区插件访问权限。
+流名称须匹配 `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`。二进制帧以可转移的 `ArrayBuffer` 到达；字符串原样传递，端口发送的对象转换为 JSON 文本。向端口发送 `{ __kikiStreamControl: "close" }` 可关闭流。后端关闭时，端口收到 `{ __kikiStreamEvent: "close", code, reason }`。打开流计入面板请求限额，端口帧不计入。导航、iframe 重载和组件卸载都会取消正在打开的流，并关闭活动流。插件关闭时也会释放其流。设置面板不能附带会话；其他面板仍检查会话和工作区插件访问权限。
 
 父页面通过 WebSocket 连接 `/api/plugins/{plugin_id}/panels/{panel_id}/stream`，沿用 GUI 的 bearer 子协议或浏览器 cookie 认证。首个文本帧为 `{ type: "open", stream, args, session_id, workspace_id }`；服务器先回复 `{ type: "ready", ok: true, result }` 或 `{ type: "ready", ok: false, error }`，再转发原始二进制帧和文本帧。宿主与插件进程之间使用 capability token 认证的回环套接字传输二进制数据，不经过 JSON-RPC stdout。
 

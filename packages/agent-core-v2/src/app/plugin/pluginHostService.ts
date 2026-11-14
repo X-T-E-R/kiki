@@ -134,7 +134,7 @@ export interface IPluginHostService {
   execute(pluginId: string, tool: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, scope?: PluginExecutionScope, expectedDefinition?: PluginTool): Promise<ExecutableToolResult>;
   installPrerequisite(pluginId: string, prerequisiteId: string, consent: boolean): Promise<string>;
   requestPanel(pluginId: string, panelId: string, action: string, args: unknown): Promise<unknown>;
-  openPanelStream(pluginId: string, panelId: string, stream: string, args: unknown, context: { sessionId?: string; workspaceId?: string }): Promise<PluginPanelStream>;
+  openPanelStream(pluginId: string, panelId: string, stream: string, args: unknown, context: { sessionId?: string; workspaceId?: string; signal?: AbortSignal }): Promise<PluginPanelStream>;
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown>;
   running(pluginId: string): boolean;
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined;
@@ -1114,14 +1114,14 @@ export class PluginHostService extends Service implements IPluginHostService {
     });
   }
 
-  openPanelStream(pluginId: string, panelId: string, stream: string, args: unknown, context: { sessionId?: string; workspaceId?: string }): Promise<PluginPanelStream> {
+  openPanelStream(pluginId: string, panelId: string, stream: string, args: unknown, context: { sessionId?: string; workspaceId?: string; signal?: AbortSignal }): Promise<PluginPanelStream> {
     return this.runRequest(pluginId, (info, settings) => {
       if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined ||
         !info.manifest.kiki.panels?.some((panel) => panel.id === panelId)) {
         throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, `Plugin ${pluginId} panel ${panelId} has no enabled backend`);
       }
       return this.getHost(info).openPanelStream(panelId, stream, args, settings, context);
-    });
+    }, context.signal);
   }
 
   requestPanel(pluginId: string, panelId: string, action: string, args: unknown): Promise<unknown> {

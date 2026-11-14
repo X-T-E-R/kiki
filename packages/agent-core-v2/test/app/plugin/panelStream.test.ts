@@ -112,3 +112,29 @@ it('closes active streams when the plugin child exits', async () => {
     expect(stream.sendText('late')).toBe(false);
   } finally { await host.stopAndWait(); }
 });
+
+it('cancels pending stream startup without waiting for the plugin open result', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'panel-stream-cancel-'));
+  const host = new PluginHost('stream-fixture', entry, []);
+  try {
+    const cancelled = new AbortController();
+    cancelled.abort(new Error('Startup cancelled'));
+    await expect(host.openPanelStream('screen', 'slow', {}, {}, { signal: cancelled.signal })).rejects.toThrow('Startup cancelled');
+    expect(host.running).toBe(false);
+    const args = { startedPath: join(root, 'started'), abortedPath: join(root, 'aborted'), completedPath: join(root, 'completed') };
+    const controller = new AbortController();
+    const opening = host.openPanelStream('screen', 'slow', args, {}, { signal: controller.signal });
+    const rejected = expect(opening).rejects.toThrow('Startup cancelled');
+    await vi.waitFor(async () => expect(await readFile(args.startedPath, 'utf8')).toBe('started'));
+    controller.abort(new Error('Startup cancelled'));
+    await rejected;
+    await vi.waitFor(async () => expect(await readFile(args.abortedPath, 'utf8')).toBe('aborted'), { timeout: 1000, interval: 10 });
+    await expect(readFile(args.completedPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    const recovered = await host.openPanelStream('screen', 'video', {}, {}, {});
+    expect(recovered.result).toMatchObject({ protocol: 'h264-scrcpy-v1' });
+    recovered.close();
+  } finally {
+    await host.stopAndWait();
+    await rm(root, { recursive: true, force: true });
+  }
+});

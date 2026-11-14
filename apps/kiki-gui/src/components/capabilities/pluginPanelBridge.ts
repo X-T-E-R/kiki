@@ -104,6 +104,7 @@ export interface PluginPanelStreamContext {
 interface PendingPluginPanelStream {
   readonly port1: MessagePort;
   readonly port2: MessagePort;
+  readonly controller: AbortController;
   closed: boolean;
 }
 
@@ -136,7 +137,12 @@ export class PluginPanelStreamBridge {
   }): Promise<void> {
     if (!isPluginPanelStreamName(input.request.stream)) throw new Error('invalid stream');
     const channel = new MessageChannel();
-    const pending: PendingPluginPanelStream = { port1: channel.port1, port2: channel.port2, closed: false };
+    const pending: PendingPluginPanelStream = {
+      port1: channel.port1,
+      port2: channel.port2,
+      controller: new AbortController(),
+      closed: false,
+    };
     this.pending.add(pending);
     let stream: PluginPanelStream;
     try {
@@ -145,6 +151,7 @@ export class PluginPanelStreamBridge {
         args: input.request.args,
         session_id: input.context.session_id,
         workspace_id: input.context.workspace_id,
+        signal: pending.controller.signal,
       });
     } catch (error) {
       this.closePending(pending);
@@ -234,6 +241,7 @@ export class PluginPanelStreamBridge {
     this.pending.delete(pending);
     if (pending.closed) return;
     pending.closed = true;
+    pending.controller.abort();
     this.closePorts(pending.port1, pending.port2);
   }
 

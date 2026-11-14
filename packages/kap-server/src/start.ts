@@ -1311,7 +1311,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     enableTerminals,
     logger,
   });
-  const wssPanelStreams = createPluginPanelStreamServer(core);
+  const { server: wssPanelStreams, closeStream: closePanelStream } = createPluginPanelStreamServer(core);
   app.addHook('preClose', () => {
     for (const ws of wssPanelStreams.clients) ws.terminate();
     wssPanelStreams.close();
@@ -1325,7 +1325,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       authGeneration = next;
       admission.closeAll();
       for (const socket of [...wssV1.clients, ...wssKlient.clients, ...wssKlient.peerServer.clients, ...wssBroker.clients, ...wssPanelStreams.clients]) {
-        if (wsAuthGeneration.get(socket) !== next) socket.close(4001, 'server authentication changed');
+        if (wsAuthGeneration.get(socket) === next) continue;
+        if (wssPanelStreams.clients.has(socket)) closePanelStream(socket, 4001, 'server authentication changed');
+        else socket.close(4001, 'server authentication changed');
       }
     }, 250);
     authMonitor.unref();

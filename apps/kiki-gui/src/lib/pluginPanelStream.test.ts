@@ -26,13 +26,17 @@ describe('plugin stream WebSocket client', () => {
   it('uses bearer admission, ready metadata and raw arraybuffer/text frames', async () => {
     vi.stubGlobal('WebSocket', StreamSocket);
     const connection = { baseUrl: 'https://example.test', token: 'fixture-token', signal: new AbortController() };
-    const opening = openPluginPanelStream(connection, 'example', 'screen', { stream: 'video', args: { fps: 60 }, session_id: 'session-a', workspace_id: 'workspace-a' });
+    const caller = new AbortController();
+    const opening = openPluginPanelStream(connection, 'example', 'screen', {
+      stream: 'video', args: { fps: 60 }, session_id: 'session-a', workspace_id: 'workspace-a', signal: caller.signal,
+    });
     const ws = StreamSocket.latest;
     expect(ws.url.href).toBe('wss://example.test/api/plugins/example/panels/screen/stream');
     expect(ws.protocols).toEqual(['kimi-code.bearer.fixture-token']);
     expect(ws.binaryType).toBe('arraybuffer');
     ws.open();
     expect(JSON.parse(ws.sent[0] as string)).toEqual({ type: 'open', stream: 'video', args: { fps: 60 }, session_id: 'session-a', workspace_id: 'workspace-a' });
+    expect(JSON.parse(ws.sent[0] as string)).not.toHaveProperty('signal');
     ws.frame('{"type":"ready","ok":true,"result":{"protocol":"h264"}}');
     const stream = await opening;
     expect(stream.result).toEqual({ protocol: 'h264' });
@@ -83,5 +87,69 @@ describe('plugin stream WebSocket client', () => {
       expect(ws.readyState).toBe(3);
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe('plugin stream cancellation', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it('closes a connecting socket and rejects immediately when the caller aborts', async () => {
+    vi.stubGlobal('WebSocket', StreamSocket);
+    const caller = new AbortController();
+    const opening = openPluginPanelStream(
+      { baseUrl: 'https://example.test', signal: new AbortController() },
+      'example',
+      'screen',
+      { stream: 'video', signal: caller.signal },
+    );
+    const ws = StreamSocket.latest;
+    const rejected = expect(opening).rejects.toThrow('Connection changed');
+
+    caller.abort();
+
+    expect(ws.readyState).toBe(3);
+    await rejected;
+    ws.open();
+    expect(ws.sent).toEqual([]);
+  });
+
+  it.each(['connecting', 'waiting-ready'] as const)('closes a %s socket immediately when the transport closes', async (phase) => {
+    vi.stubGlobal('WebSocket', StreamSocket);
+    const connection = { baseUrl: 'https://example.test', signal: new AbortController() };
+    const opening = openPluginPanelStream(connection, 'example', 'screen', { stream: 'video' });
+    const ws = StreamSocket.latest;
+    if (phase === 'waiting-ready') ws.open();
+    const rejected = expect(opening).rejects.toThrow('Connection changed');
+
+    connection.signal.abort();
+
+    expect(ws.readyState).toBe(3);
+    await rejected;
+    ws.frame('{"type":"ready","ok":true}');
+  });
+
+  it('removes the caller listener at open settlement but keeps connection-lifetime abort for an active stream', async () => {
+    vi.stubGlobal('WebSocket', StreamSocket);
+    const connection = { baseUrl: 'https://example.test', signal: new AbortController() };
+    const caller = new AbortController();
+    const removeCallerAbort = vi.spyOn(caller.signal, 'removeEventListener');
+    const removeConnectionAbort = vi.spyOn(connection.signal.signal, 'removeEventListener');
+    const opening = openPluginPanelStream(connection, 'example', 'screen', { stream: 'video', signal: caller.signal });
+    const ws = StreamSocket.latest;
+    ws.open();
+    ws.frame('{"type":"ready","ok":true}');
+    const stream = await opening;
+    const closed = vi.fn();
+    stream.onClose(closed);
+
+    expect(removeCallerAbort).toHaveBeenCalledWith('abort', expect.any(Function));
+    caller.abort();
+    expect(ws.readyState).toBe(StreamSocket.OPEN);
+    connection.signal.abort();
+
+    expect(ws.readyState).toBe(3);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(1000, '');
+    expect(removeConnectionAbort).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 });

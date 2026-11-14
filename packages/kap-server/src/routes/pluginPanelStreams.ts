@@ -15,16 +15,19 @@ const openSchema = z.object({
   workspace_id: z.string().min(1).max(4096).optional(),
 });
 
-export function createPluginPanelStreamServer(core: Scope): WebSocketServer {
+export function createPluginPanelStreamServer(core: Scope): { server: WebSocketServer; closeStream(ws: WebSocket, code: number, reason: string): void } {
   const server = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol, maxPayload: MAX_BYTES, perMessageDeflate: false });
+  const closers = new WeakMap<WebSocket, (code: number, reason: string) => void>();
   server.on('connection', (ws, request) => {
     let stream: PluginPanelStream | undefined;
     let state: 'waiting' | 'opening' | 'ready' | 'closed' = 'waiting';
     const subscriptions: Array<() => void> = [];
+    const controller = new AbortController();
     const close = (code: number, reason: string) => {
       if (state === 'closed') return;
       state = 'closed';
       clearTimeout(timer);
+      controller.abort(new Error(reason));
       for (const unsubscribe of subscriptions.splice(0)) unsubscribe();
       stream?.close(reason);
       ws.close(code, Buffer.from(reason).subarray(0, 120).toString('utf8'));
@@ -32,6 +35,7 @@ export function createPluginPanelStreamServer(core: Scope): WebSocketServer {
       terminate.unref();
       ws.once('close', () => clearTimeout(terminate));
     };
+    closers.set(ws, close);
     const timer = setTimeout(() => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ready', ok: false, error: 'Plugin stream open timed out' }));
       close(1008, 'Plugin stream open timed out');
@@ -63,7 +67,7 @@ export function createPluginPanelStreamServer(core: Scope): WebSocketServer {
         if (panel.slot !== 'settings' && !await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, sessionId)) throw new Error('Panel is not enabled in this workspace');
         if (ws.readyState !== WebSocket.OPEN) return;
         admitted = true;
-        const opened = await core.accessor.get(IPluginHostService).openPanelStream(info.id, panel.id, message.stream, message.args, { sessionId, workspaceId });
+        const opened = await core.accessor.get(IPluginHostService).openPanelStream(info.id, panel.id, message.stream, message.args, { sessionId, workspaceId, signal: controller.signal });
         if (ws.readyState !== WebSocket.OPEN) { opened.close(); return; }
         stream = opened;
         state = 'ready';
@@ -81,6 +85,7 @@ export function createPluginPanelStreamServer(core: Scope): WebSocketServer {
       }
     };
     ws.on('message', (data, isBinary) => {
+      if (ws.readyState !== WebSocket.OPEN) { close(1000, 'Connection closing'); return; }
       if (state === 'waiting') { state = 'opening'; void open(data, isBinary); }
       else if (state === 'ready') {
         if (isBinary) stream!.sendBinary(Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? new Uint8Array(data) : data);
@@ -90,5 +95,5 @@ export function createPluginPanelStreamServer(core: Scope): WebSocketServer {
     ws.on('error', () => close(1011, 'Plugin stream connection failed'));
     ws.once('close', () => close(1000, 'Client closed'));
   });
-  return server;
+  return { server, closeStream: (ws, code, reason) => { closers.get(ws)?.(code, reason); } };
 }
