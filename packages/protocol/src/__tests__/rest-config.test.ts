@@ -214,7 +214,7 @@ describe('config REST protocol', () => {
     const state = { allowed: true, host_locked: false, default_on: false, origin: 'default' as const, unresolved: false };
     expect(configResponseSchema.parse({
       providers: {},
-      optional_capabilities: { browser: state, computer: state, memory: state, thread: { ...state, allowed: true }, web: { ...state, default_on: true }, send_message: state },
+      optional_capabilities: { browser: state, computer: state, memory: state, thread: { ...state, allowed: true }, branch: state, web: { ...state, default_on: true }, send_message: state },
     }).optional_capabilities?.thread).toEqual({ ...state, allowed: true });
     expect(patchConfigRequestSchema.parse({
       optional_capabilities: { defaults: { thread: true, web: null, send_message: false }, web_allowed: false },

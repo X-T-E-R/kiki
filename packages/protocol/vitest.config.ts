@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@kiki/plugin-sdk/im': fileURLToPath(new URL('../plugin-sdk/src/im.ts', import.meta.url)),
+      '@kiki/plugin-sdk/asr': fileURLToPath(new URL('../plugin-sdk/src/asr.ts', import.meta.url)),
       '@kiki/plugin-sdk/messages': fileURLToPath(new URL('../plugin-sdk/src/messages.ts', import.meta.url)),
       '@kiki/plugin-sdk/media': fileURLToPath(new URL('../plugin-sdk/src/media.ts', import.meta.url)),
       '@kiki/plugin-sdk/media-download': fileURLToPath(new URL('../plugin-sdk/src/media-download.ts', import.meta.url)),
