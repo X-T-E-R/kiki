@@ -3,18 +3,25 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ImSessionSnapshot } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../../lib/peerAccess';
 import { useConnection } from '../../../state/connection';
 import { extractConflictDetails, isIdentityAlreadyBoundError } from '../../im/channelTypes';
 import { IM_KEY } from './imModel';
 
 /** The two-way chat snapshot, the target catalog and the bot setup catalog. */
 export function useImData() {
-  const { client } = useConnection();
+  const { client, connectionSource } = useConnection();
+  const peer = isPeerConnectionSource(connectionSource);
   const snapshot = useQuery({
     queryKey: IM_KEY,
     queryFn: () => client.imSessions.snapshot(),
+    enabled: !peer,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
     placeholderData: (previous) => previous,
-    refetchInterval: (query) => query.state.data?.instances.some((item) => item.listening) === true ? 2_000 : false,
+    refetchInterval: (query) => (
+      !isLocalOwnerRequiredError(query.state.error) &&
+      query.state.data?.instances.some((item) => item.listening) === true
+    ) ? 2_000 : false,
   });
   const catalog = useQuery({
     queryKey: [...IM_KEY, 'catalog'],

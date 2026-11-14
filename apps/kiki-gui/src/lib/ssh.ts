@@ -10,6 +10,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { SshHost, SshHostInput, SshHostStatus, SshSessionHostsResponse } from '@kiki/protocol';
 
 import type { KikiClient } from './client';
+import { isLocalOwnerRequiredError } from './peerAccess';
 
 export type { SshHost, SshHostInput, SshHostStatus } from '@kiki/protocol';
 
@@ -114,6 +115,7 @@ export function useSshHosts(client: KikiClient, enabled = true) {
     queryKey: sshKeys.hosts(),
     queryFn: async () => (await sshApi(client).list()).hosts,
     enabled,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
     staleTime: 10_000,
   });
 }
@@ -123,6 +125,7 @@ export function useSessionSshHosts(client: KikiClient, sessionId: string | undef
     queryKey: sshKeys.session(sessionId ?? ''),
     queryFn: async (): Promise<SshSessionHostsResponse['hosts']> => (await sshApi(client).sessionHosts(sessionId!)).hosts,
     enabled: enabled && sessionId !== undefined,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
     staleTime: 5_000,
     refetchOnWindowFocus: true,
   });

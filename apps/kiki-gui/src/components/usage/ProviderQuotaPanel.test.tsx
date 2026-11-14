@@ -710,11 +710,16 @@ describe('ProviderQuotaPanel', () => {
       }),
     ]);
 
-    // 1. Explicit 404 is treated as an older server (no plugin catalog error banner)
+    // 1. Explicit 404 or 40101 local_owner_required is treated as unsupported on this connection (no plugin catalog error banner)
     harnessQuotaCached.mockRejectedValueOnce(Object.assign(new Error('HTTP 404: Not Found'), { code: 404 }));
     const oldServerContainer = await mount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
     expect(oldServerContainer.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
+
+    harnessQuotaCached.mockRejectedValueOnce(Object.assign(new Error('local_owner_required'), { code: 40101, status: 403 }));
+    const peerContainer = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    expect(peerContainer.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
 
     // 2. Non-404 failure on initial load surfaces error + retry and does not masquerade as pluginMissing
     const freshReadAt = new Date(Date.now() - 30_000).toISOString();

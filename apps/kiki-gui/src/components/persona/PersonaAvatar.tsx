@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import type { PersonaAvatarData } from '@kiki/protocol';
 
@@ -81,6 +81,25 @@ function needsFetch(url: string): boolean {
   return /\/api\/personas\/[^/]+\/avatar$/u.test(url);
 }
 
+function hasNonEmptyMime(entry: { readonly avatarMime?: string }): boolean {
+  return typeof entry.avatarMime === 'string' && entry.avatarMime !== '';
+}
+
+function cachedPersonaHasAvatar(
+  queryClient: QueryClient,
+  persona: PersonaAvatarData & { readonly avatarMime?: string },
+): boolean | undefined {
+  if ('avatarMime' in persona) return hasNonEmptyMime(persona);
+  for (const [, list] of queryClient.getQueriesData<readonly { readonly id: string; readonly avatarMime?: string }[]>({
+    queryKey: ['personas'],
+  })) {
+    if (!Array.isArray(list)) continue;
+    const found = list.find((item) => item.id === persona.id);
+    if (found !== undefined) return hasNonEmptyMime(found);
+  }
+  return undefined;
+}
+
 export function PersonaAvatar({
   persona,
   size = 32,
@@ -95,11 +114,43 @@ export function PersonaAvatar({
   readonly className?: string;
 }) {
   const connection = useOptionalConnection();
+  const queryClient = useQueryClient();
   const url = persona.avatarUrl;
-  const fetchable = url !== undefined && needsFetch(url) && connection !== null;
+  const knownAvatar = cachedPersonaHasAvatar(queryClient, persona);
+  const fetchable = url !== undefined && needsFetch(url) && connection !== null && knownAvatar !== false;
   const avatarQuery = useQuery({
     queryKey: personaAvatarQueryKey(persona.id),
-    queryFn: ({ signal }) => connection!.client.getPersonaAvatar(persona.id, signal),
+    queryFn: async ({ signal }) => {
+      const client = connection!.client as NonNullable<typeof connection>['client'] & {
+        listPersonas?: (options?: { includeArchived?: boolean }) => Promise<readonly { readonly id: string; readonly avatarMime?: string }[]>;
+      };
+      let hasAvatar = cachedPersonaHasAvatar(queryClient, persona);
+      if (hasAvatar === undefined && typeof client.listPersonas === 'function') {
+        try {
+          const active = await queryClient.fetchQuery({
+            queryKey: ['personas', { includeArchived: false }],
+            queryFn: () => client.listPersonas!({ includeArchived: false }),
+            staleTime: 15_000,
+          });
+          const activeMatch = Array.isArray(active) ? active.find((item) => item.id === persona.id) : undefined;
+          if (activeMatch !== undefined) {
+            hasAvatar = hasNonEmptyMime(activeMatch);
+          } else {
+            const all = await queryClient.fetchQuery({
+              queryKey: ['personas', { includeArchived: true }],
+              queryFn: () => client.listPersonas!({ includeArchived: true }),
+              staleTime: 15_000,
+            });
+            const archivedMatch = Array.isArray(all) ? all.find((item) => item.id === persona.id) : undefined;
+            hasAvatar = archivedMatch !== undefined && hasNonEmptyMime(archivedMatch);
+          }
+        } catch {
+          // Fall through to direct avatar fetch if persona listing is unavailable.
+        }
+      }
+      if (hasAvatar === false) return null;
+      return client.getPersonaAvatar(persona.id, signal);
+    },
     enabled: fetchable,
     staleTime: 5 * 60_000,
     retry: false,

@@ -560,6 +560,7 @@ function setTab(name, options = {}) {
 
 function shortLayerLabelFor(originOrRaw) {
   const info = classifyOrigin(originOrRaw);
+  if (info.layer === 'invalid') return '';
   if (info.layer === 'vpn') return copy.layerVpn;
   if (info.layer === 'https') return copy.layerHttps;
   if (info.layer === 'http') return copy.layerHttp;
@@ -568,6 +569,7 @@ function shortLayerLabelFor(originOrRaw) {
 
 function layerLabelFor(originOrRaw) {
   const info = classifyOrigin(originOrRaw);
+  if (info.layer === 'invalid') return '';
   if (info.layer === 'vpn') return copy.layerVpn;
   if (info.layer === 'https') return copy.layerHttps;
   if (info.layer === 'http') return copy.layerHttp;

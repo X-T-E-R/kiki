@@ -20,6 +20,7 @@ import { relativeTime } from '@kiki/session-core/util/time';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { connectionsApi, identityBlock, remoteConnectionKeys, useInboundStatus } from '../../lib/remoteConnections';
 import {
   hasThreadBridgesApi,
@@ -213,11 +214,11 @@ function ManualIdentityExchangeRow({ identity }: { readonly identity: Connection
 
 export function InboundConnectionsSection() {
   const host = useHost();
-  const { client, localClient, connectionId, sshLabel } = useConnection();
+  const { client, localClient, connectionId, sshLabel, connectionSource } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
   const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useInboundStatus(control);
   const threadBridges = useThreadBridges(control);

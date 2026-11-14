@@ -75,6 +75,8 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   const locked = status.source === 'executor';
   const readOnly = locked || !handle.writable;
   const onSession = status.source === 'session';
+  const canSaveGlobal = handle.canSaveGlobal !== false;
+  const hasSourceMenu = !readOnly && (canSaveGlobal || onSession);
   const sourceLabel = (source: Source): string => source === 'profile'
     ? profileName === undefined
       ? t('context.strategy.source.profileUnnamed')
@@ -120,7 +122,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
       <div className="flex items-center justify-between gap-2">
         <p id={titleId} className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
         <div className="relative min-w-0">
-          {readOnly ? (
+          {!hasSourceMenu ? (
             <span data-strategy-source-label className="block truncate px-1.5 text-[12px] text-ink-faint">{sourceLabel(status.source)}</span>
           ) : (
             <button
@@ -139,11 +141,12 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
               <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
             </button>
           )}
-          {!readOnly ? (
+          {hasSourceMenu ? (
             <StrategySourceMenu
               open={menuOpen}
               anchor={menuTriggerRef}
               strategyName={name(status.strategy)}
+              canSaveGlobal={canSaveGlobal}
               canReset={onSession}
               onClose={() => { setMenuOpen(false); }}
               onSaveGlobal={() => {
@@ -218,6 +221,7 @@ function StrategySourceMenu({
   open,
   anchor,
   strategyName,
+  canSaveGlobal,
   canReset,
   onClose,
   onSaveGlobal,
@@ -226,6 +230,7 @@ function StrategySourceMenu({
   open: boolean;
   anchor: RefObject<HTMLButtonElement | null>;
   strategyName: string;
+  canSaveGlobal: boolean;
   canReset: boolean;
   onClose: () => void;
   onSaveGlobal: () => void;
@@ -254,12 +259,14 @@ function StrategySourceMenu({
         return true;
       }}
     >
-      <button type="button" role="menuitem" data-strategy-save-global className={MENU_ROW} onClick={onSaveGlobal}>
-        <span>{t('context.strategy.saveGlobal', { strategy: strategyName })}</span>
-      </button>
+      {canSaveGlobal ? (
+        <button type="button" role="menuitem" data-strategy-save-global className={MENU_ROW} onClick={onSaveGlobal}>
+          <span>{t('context.strategy.saveGlobal', { strategy: strategyName })}</span>
+        </button>
+      ) : null}
       {canReset ? (
         <>
-          <div aria-hidden className="mx-2 my-1 h-px bg-hairline" />
+          {canSaveGlobal ? <div aria-hidden className="mx-2 my-1 h-px bg-hairline" /> : null}
           <button type="button" role="menuitem" data-strategy-reset className={MENU_ROW} onClick={onReset}>
             <span>{t('context.strategy.reset')}</span>
           </button>

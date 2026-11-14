@@ -27,6 +27,7 @@ import { useConnection } from '../../state/connection';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { DisclosureChevron } from '../icons';
 import { ExecutorScheduleControl, scheduleChoiceFromDraft, scheduleChoiceValue } from '../harness/ExecutorScheduleControl';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { harnessQuotaQueryKey, readCachedHarnessQuota } from '../../lib/providerQuota';
 import { EXECUTORS_QUERY_KEY, useExecutorCatalog } from './profileEditor/engines';
 import { KIKI_CONTEXT_ORDER } from './profileEditor/profileDraft';
@@ -196,7 +197,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
   instances?: readonly ExecutorCatalogItem[];
   onSaved: () => Promise<void>;
 }) {
-  const { client, scopeId, meta } = useConnection();
+  const { client, scopeId, meta, connectionSource } = useConnection();
   const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<EngineDefaultsDraft>(() => engineDefaultsDraftFrom(saved));
@@ -210,7 +211,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
   const quotaQuery = useQuery({
     queryKey: harnessQuotaQueryKey(scopeId, meta?.server_id),
     queryFn: ({ signal }) => readCachedHarnessQuota(client.klient?.rest?.harnessQuota, signal),
-    enabled: client.klient?.rest?.harnessQuota !== undefined,
+    enabled: client.klient?.rest?.harnessQuota !== undefined && !isPeerConnectionSource(connectionSource),
     staleTime: 60_000,
     retry: false,
   });

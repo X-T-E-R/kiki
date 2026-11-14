@@ -8,6 +8,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { appShellConnectUrl } from '../lib/appShell';
 import type { PreparedScope } from '../lib/navScope';
+import { isPeerConnectionSource } from '../lib/peerAccess';
 import { browsableRemote, connectionsApi, fingerprint, hasGuiPurpose, remoteConnectionKeys, useRemoteConnections } from '../lib/remoteConnections';
 import { useSpaceLocation } from '../lib/spaceLocation';
 import { useSpacePreferencesFrame } from '../lib/spacePreferences';
@@ -42,7 +43,7 @@ import { Wordmark } from './Wordmark';
  * has no hover. Ctrl+Alt+1…9 opens the Nth space once there are two.
  */
 export function SpaceSwitcher() {
-  const { client, localClient, sshLabel, connectionId, activateLocal, restoreLocal, scopeAdapter, meta } = useConnection();
+  const { client, localClient, sshLabel, connectionId, connectionSource, activateLocal, restoreLocal, scopeAdapter, meta } = useConnection();
   const host = useHost();
   const queryClient = useQueryClient();
   const navigate = useGuardedNavigate();
@@ -57,7 +58,7 @@ export function SpaceSwitcher() {
   const [actionBusy, setActionBusy] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0);
+  const inRemoteScope = (typeof connectionId === 'string' && connectionId !== '') || (typeof sshLabel === 'string' && sshLabel.length > 0) || isPeerConnectionSource(connectionSource);
   const desktop = host.kind === 'tauri';
   // Desktop always reads the local space directory for Ctrl+Alt+1…9 and pending
   // counts; a browser/phone client reads it on demand when the switch panel opens
@@ -180,11 +181,16 @@ export function SpaceSwitcher() {
     };
     let actionStarted = false;
     let guardCancelled = false;
-    const result = mode === 'switch'
-      ? ((actionStarted = true), openTarget())
-      : guard?.runAction !== undefined
-        ? guard.runAction((signal) => { actionStarted = true; return openTarget(signal); }, target, () => { guardCancelled = true; })
-        : ((actionStarted = true), openTarget().then(() => { if (target !== undefined) void navigate(target); }));
+    let result: Promise<unknown>;
+    if (mode === 'switch') {
+      actionStarted = true;
+      result = openTarget();
+    } else if (guard?.runAction !== undefined) {
+      result = guard.runAction((signal) => { actionStarted = true; return openTarget(signal); }, target, () => { guardCancelled = true; });
+    } else {
+      actionStarted = true;
+      result = openTarget().then(() => { if (target !== undefined) void navigate(target); });
+    }
 
     if (!fromShortcut && !actionStarted) {
       closePanel();

@@ -22,12 +22,21 @@ const response = (preferences: ShortcutPreferences, platform: ShortcutPlatform) 
   preferences, bindings: resolveShortcutBindings(preferences, platform), conflicts: detectShortcutConflicts(preferences, platform),
 });
 
-const { client } = vi.hoisted(() => ({
-  client: { readShortcuts: vi.fn(), writeShortcuts: vi.fn(), resetShortcuts: vi.fn() },
-}));
+const { client, connectionState } = vi.hoisted(() => {
+  const mockedClient = { readShortcuts: vi.fn(), writeShortcuts: vi.fn(), resetShortcuts: vi.fn() };
+  return {
+    client: mockedClient,
+    connectionState: {
+      client: mockedClient,
+      localClient: null as typeof mockedClient | null,
+      connectionId: null as string | null,
+      connectionSource: undefined as string | undefined,
+    },
+  };
+});
 
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
-vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
+vi.mock('../../state/connection', () => ({ useConnection: () => connectionState }));
 
 const containers: HTMLDivElement[] = [];
 const roots: Root[] = [];
@@ -41,6 +50,9 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   resetShortcutRuntime('windows');
+  connectionState.localClient = null;
+  connectionState.connectionId = null;
+  connectionState.connectionSource = undefined;
   let saved: ShortcutPreferences = shortcutPreferencesSchema.parse(DEFAULT_SHORTCUT_PREFERENCES);
   client.readShortcuts.mockReset().mockImplementation(async (platform: ShortcutPlatform) => response(saved, platform));
   client.writeShortcuts.mockReset().mockImplementation(async (platform: ShortcutPlatform, next: ShortcutPreferences) => {
@@ -183,5 +195,17 @@ describe('ShortcutsSection', () => {
     expect(container.textContent).not.toContain('Shortcut bindings conflict');
     expect(container.querySelector('[data-shortcut-row="switcher"]')?.getAttribute('data-shortcut-overridden')).toBe('false');
     expect(matchesShortcutAction({ key: 'J', ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, 'switcher')).toBe(false);
+  });
+
+  it('renders shortcuts read-only without host writes on paired app-shell connections', async () => {
+    connectionState.connectionSource = 'app-shell';
+    const container = await render();
+    expect(client.readShortcuts).toHaveBeenCalledWith('windows');
+    expect(container.querySelectorAll('[data-shortcut-row]')).toHaveLength(18);
+    const chord = container.querySelector<HTMLButtonElement>('[data-shortcut-row="switcher"] [data-shortcut-chord="0"]')!;
+    expect(chord.disabled).toBe(true);
+    expect(container.querySelector('[data-shortcut-add]')).toBeNull();
+    expect(container.querySelector('[data-shortcut-reset-all]')).toBeNull();
+    expect(client.writeShortcuts).not.toHaveBeenCalled();
   });
 });

@@ -521,7 +521,7 @@ export function ProfileSelect({
           </>
         ) : (
           <>
-            <Icon name="agent" size={14} className={STATUS_SEGMENT_ICON_CLASS} />
+            <Icon name="persona" size={14} className={STATUS_SEGMENT_ICON_CLASS} />
             <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">
               {triggerText}
             </span>
@@ -799,7 +799,7 @@ export function ProfileSelect({
                       <ExecutorScheduleControl id="execution-schedule" executorId={choice.executor} catalog={catalog}
                         value={choice.overrides?.executor_instance ?? (choice.executor.startsWith('instance-') ? choice.executor : undefined)}
                         onChange={(next) => {
-                          const rest: ExecutionOverrides = { ...(choice.overrides ?? {}) };
+                          const rest: ExecutionOverrides = { ...choice.overrides };
                           delete rest.executor_instance;
                           const hasRest = Object.values(rest).some((entry) => entry !== undefined);
                           onChange({

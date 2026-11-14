@@ -22,10 +22,11 @@ import type { ConnectionsFacade } from '@kiki/klient/http';
 import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SshRemoteProfile } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-export { formatPairingUri, parsePairingUri };
-
 import type { KikiClient } from './client';
+import { isLocalOwnerRequiredError } from './peerAccess';
 import { readHomeViewRoute } from './spaceViewState';
+
+export { formatPairingUri, parsePairingUri };
 
 export const REMOTE_SPACE_PREFIX = 'remote:';
 const CONNECTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -83,7 +84,8 @@ export function useRemoteConnections(client: KikiClient | null) {
       return connectionsApi(client).list();
     },
     enabled: client !== null && client.klient?.rest?.connections !== undefined,
-    refetchInterval: 8_000,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
+    refetchInterval: (query) => (isLocalOwnerRequiredError(query.state.error) ? false : 8_000),
     staleTime: 4_000,
   });
 }
@@ -96,7 +98,8 @@ export function useInboundStatus(client: KikiClient | null) {
       return connectionsApi(client).inbound();
     },
     enabled: client !== null && client.klient?.rest?.connections !== undefined,
-    refetchInterval: 8_000,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
+    refetchInterval: (query) => (isLocalOwnerRequiredError(query.state.error) ? false : 8_000),
     staleTime: 4_000,
   });
 }

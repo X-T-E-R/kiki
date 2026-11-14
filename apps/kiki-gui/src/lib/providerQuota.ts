@@ -5,6 +5,7 @@ import {
   type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource,
 } from '@kiki/protocol';
 import { useConnection } from '../state/connection';
+import { isLocalOwnerRequiredError } from './peerAccess';
 import {
   asConfigRecord, configuredEngineDescriptors, engineDisplayOf, engineOverridesOf, engineVisibilityOf,
 } from '../components/settings/profileEditor/engines';
@@ -23,6 +24,7 @@ export function harnessQuotaQueryKey(scopeId: string, serverId?: string) {
 }
 
 export function isUnsupportedHarnessQuotaError(error: unknown): boolean {
+  if (isLocalOwnerRequiredError(error)) return true;
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;
     if (code === 404 || code === 40404) return true;

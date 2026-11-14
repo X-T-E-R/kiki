@@ -3478,4 +3478,75 @@ describe('hidden prefix turn preview', () => {
       controller.close();
     }
   });
+
+  it('backfills cold todo notes and verified empty todoRead through loadTranscriptEntities', async () => {
+    const meta = (rev: number) => ({ rev, hash: `notes-${rev}`, writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 });
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>();
+    const { controller, deliver } = harness(undefined, undefined, entities);
+    const coldReady = (seq: number) => ({
+      source: 'cold' as const,
+      readiness: 'ready' as const,
+      watermark: { transcript: { seq, epoch: 'epoch-canonical' } },
+    });
+    entities
+      .mockResolvedValueOnce({
+        session_id: 'session_test',
+        agent_id: 'main',
+        kind: 'todo',
+        items: [],
+        has_more: false,
+        read: coldReady(1),
+      })
+      .mockResolvedValueOnce({
+        session_id: 'session_test',
+        agent_id: 'main',
+        kind: 'todo',
+        items: [{
+          todoId: 'todo',
+          items: [{ title: 'Ship fix', status: 'done' }],
+          notes: { goal: 'Verify cold notes', next: 'Done' },
+          notesMeta: meta(2),
+        }],
+        has_more: false,
+        read: coldReady(2),
+      });
+
+    await controller.open();
+    try {
+      deliver({
+        type: 'transcript.reset',
+        session_id: 'session_test',
+        agent_id: 'main',
+        grade: 'delta',
+        cursor: { seq: 1, epoch: 'epoch-canonical' },
+        coverage: { kind: 'tail', hasMoreOlder: true },
+        read: { source: 'cold', readiness: 'partial' },
+        snapshot: emptySnapshot({ items: [], todos: [], hasMoreOlder: true }),
+      });
+      expect(controller.getState().todoRead).toBeUndefined();
+      expect(await controller.loadTranscriptEntities('main', 'todo')).toBe(false);
+      expect(controller.getState().todoRead).toEqual(coldReady(1));
+
+      deliver({
+        type: 'transcript.reset',
+        session_id: 'session_test',
+        agent_id: 'main',
+        grade: 'delta',
+        cursor: { seq: 2, epoch: 'epoch-canonical' },
+        coverage: { kind: 'tail', hasMoreOlder: true },
+        read: { source: 'cold', readiness: 'partial' },
+        snapshot: emptySnapshot({
+          items: [],
+          todos: [{ todoId: 'todo', items: [{ title: 'Ship fix', status: 'done' }] }],
+          hasMoreOlder: true,
+        }),
+      });
+      expect(controller.getState().todoNotes).toBeUndefined();
+      expect(await controller.loadTranscriptEntities('main', 'todo')).toBe(true);
+      expect(controller.getState().todoNotes).toEqual({ goal: 'Verify cold notes', next: 'Done' });
+      expect(controller.getState().todoRead).toEqual(coldReady(2));
+    } finally {
+      controller.close();
+    }
+  });
 });
