@@ -88,4 +88,27 @@ describe('PersonaAvatar', () => {
     expect(getPersonaAvatar).not.toHaveBeenCalled();
     expect(container.querySelector<HTMLElement>('[data-persona-avatar="nia-director"]')?.dataset['personaAvatarKind']).toBe('initial');
   });
+
+  it('still fetches custom avatar when persona detail snapshot is cached without avatarMime', async () => {
+    const getPersonaAvatar = vi.fn().mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+    const listPersonas = vi.fn().mockResolvedValue([
+      { id: 'nia-director', name: 'Nia', avatarMime: 'image/png' },
+    ]);
+    mockConnection = { client: { getPersonaAvatar, listPersonas } };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['persona', 'nia-director'], {
+      definition: { id: 'nia-director', name: 'Nia' },
+      revision: 'rev-1',
+    });
+    queryClient.setQueryData(['personas', { includeArchived: false }], [
+      { id: 'nia-director', name: 'Nia', avatarMime: 'image/png' },
+    ]);
+
+    renderAvatar(
+      <PersonaAvatar persona={{ id: 'nia-director', name: 'Nia', avatarUrl: '/api/personas/nia-director/avatar' }} />,
+      queryClient,
+    );
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(getPersonaAvatar).toHaveBeenCalledTimes(1);
+  });
 });

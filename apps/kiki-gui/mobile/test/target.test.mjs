@@ -95,9 +95,12 @@ await test('other schemes, credentials and junk are refused', () => {
     'my_pc.local:5494',
     '-bad.local',
     'bad-.local',
+    '.',
+    '..',
     '.example.test',
-    'example.test.',
+    'example.test..',
     'a..b.test',
+    '192.168.1.5.',
     '999.1.1.1',
     '999.1.1.1:5494',
     '192.168.1',
@@ -115,9 +118,11 @@ await test('other schemes, credentials and junk are refused', () => {
   }
   assert.equal(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F*&code=2345-6789'), null);
   assert.throws(() => formatPairingUri({ endpoint: 'http://*', code: '2345-6789' }));
-  for (const validHost of ['localhost', 'my-pc', 'desktop-01', 'studio.local', '192.168.1.5', '[::1]', '[fe80::1]', '[fd7a:115c:a1e0::1]', 'kiki.example.test']) {
+  for (const validHost of ['localhost', 'localhost.', 'my-pc', 'desktop-01', 'studio.local', 'studio.local.', '192.168.1.5', '[::1]', '[fe80::1]', '[fd7a:115c:a1e0::1]', 'kiki.example.test', 'kiki.example.test.']) {
     assert.equal(isValidTargetHostname(validHost), true, `expected valid hostname for ${validHost}`);
   }
+  assert.equal(readTarget('https://kiki.example.test./').ok, true);
+  assert.equal(classifyOrigin('https://device.example.ts.net./').layer, 'vpn');
   assert.deepEqual(readTarget('my-pc:5494'), { ok: true, origin: 'http://my-pc:5494', entry: 'http://my-pc:5494/' });
   assert.deepEqual(readTarget('[::1]:5494'), { ok: true, origin: 'http://[::1]:5494', entry: 'http://[::1]:5494/' });
   assert.deepEqual(classifyOrigin('[fd7a:115c:a1e0::1]:5494'), { layer: 'vpn', protocol: 'http', host: '[fd7a:115c:a1e0::1]:5494' });

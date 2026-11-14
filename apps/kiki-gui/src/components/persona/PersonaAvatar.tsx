@@ -90,10 +90,6 @@ function cachedPersonaHasAvatar(
   persona: PersonaAvatarData & { readonly avatarMime?: string },
 ): boolean | undefined {
   if ('avatarMime' in persona) return hasNonEmptyMime(persona);
-  const detail = queryClient.getQueryData<{ readonly avatarMime?: string }>(['persona', persona.id]);
-  if (detail !== undefined && detail !== null && typeof detail === 'object') {
-    return hasNonEmptyMime(detail);
-  }
   for (const [, list] of queryClient.getQueriesData<readonly { readonly id: string; readonly avatarMime?: string }[]>({
     queryKey: ['personas'],
   })) {

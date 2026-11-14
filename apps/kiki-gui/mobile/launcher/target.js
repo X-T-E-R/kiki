@@ -71,11 +71,13 @@ export function isValidTargetHostname(hostname) {
     if (!value.startsWith('[') || !value.endsWith(']')) return false;
     return isValidIpv6Address(value.slice(1, -1));
   }
-  if (value.length > 253 || value.startsWith('.') || value.endsWith('.')) return false;
+  if (value.startsWith('.')) return false;
   if (/^[0-9.]+$/.test(value)) {
     return parseIpv4Octets(value) !== null;
   }
-  const labels = value.split('.');
+  const dns = value.endsWith('.') ? value.slice(0, -1) : value;
+  if (dns === '' || dns.length > 253 || dns.endsWith('.')) return false;
+  const labels = dns.split('.');
   for (const label of labels) {
     if (!DNS_LABEL_PATTERN.test(label)) return false;
   }
@@ -104,9 +106,10 @@ function parseRawAuthorityHost(authority) {
     const portNum = Number(port);
     if (portNum < 1 || portNum > 65535) return null;
   }
-  if (!host.startsWith('[') && /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*$/i.test(host)) {
+  if (!host.startsWith('[') && /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*\.?$/i.test(host)) {
     if (parseIpv4Octets(host) === null) return null;
   }
+  if (!isValidTargetHostname(host)) return null;
   return host;
 }
 
@@ -115,7 +118,8 @@ function isLocalDefaultHost(host) {
   const lower = host.toLowerCase();
   if (lower.startsWith('[')) return true;
   if (parseIpv4Octets(lower) !== null) return true;
-  return lower === 'localhost' || !lower.includes('.') || lower.endsWith('.local');
+  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
+  return bare === 'localhost' || !bare.includes('.') || bare.endsWith('.local');
 }
 
 /** @returns {{ ok: true, origin: string, entry: string } | { ok: false, reason: 'empty' | 'invalid' | 'scheme' | 'credentials' }} */
@@ -357,7 +361,8 @@ export function readConnectInput(rawAddress, rawCode = '') {
 function isVpnHost(hostname) {
   if (!isValidTargetHostname(hostname)) return false;
   const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
-  if (lower.endsWith('.ts.net') || lower.endsWith('.tailscale.net')) return true;
+  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
+  if (bare.endsWith('.ts.net') || bare.endsWith('.tailscale.net')) return true;
   if (lower.startsWith('fd7a:115c:a1e0:')) return true;
   const ipv4 = parseIpv4Octets(lower);
   if (ipv4 !== null) {
@@ -369,7 +374,8 @@ function isVpnHost(hostname) {
 function isLanHost(hostname) {
   if (!isValidTargetHostname(hostname)) return false;
   const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
-  if (lower === 'localhost' || lower === '::1' || lower.endsWith('.local') || !lower.includes('.')) {
+  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
+  if (bare === 'localhost' || lower === '::1' || bare.endsWith('.local') || !bare.includes('.')) {
     if (!lower.includes(':') && parseIpv4Octets(lower) === null) return true;
   }
   if (lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) {
