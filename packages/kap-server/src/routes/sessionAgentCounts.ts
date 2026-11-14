@@ -7,7 +7,11 @@ export function sessionAgentCounts(
 ): SessionAgentCounts {
   const statuses = new Map<string, AgentMeta['status'] | 'active' | 'idle'>();
   for (const [id, meta] of Object.entries(agents ?? {})) {
-    if (id !== 'main') statuses.set(id, meta.status);
+    if (id === 'main') continue;
+    if (meta.status !== undefined) statuses.set(id, meta.status);
+    else if (meta.labels?.['branchSealed'] === 'true') statuses.set(id, 'completed');
+    else if (meta.labels?.['branch'] === 'true') statuses.set(id, 'idle');
+    else statuses.set(id, undefined);
   }
   for (const row of roster) {
     const id = row.agent_id ?? row.id;

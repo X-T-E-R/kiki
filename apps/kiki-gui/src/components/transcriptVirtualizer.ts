@@ -67,6 +67,11 @@ export function noteReaderDisclosure(instance: TranscriptVirtualizer, target: El
   });
 }
 
+/** True while a reader disclosure hold is waiting to spend on its row's resize. */
+export function hasReaderDisclosure(instance: TranscriptVirtualizer): boolean {
+  return readerDisclosures.has(instance);
+}
+
 /** Put the viewport back where it was; the model follows the DOM. */
 function landOffset(instance: TranscriptVirtualizer, offset: number): void {
   const element = instance.scrollElement;

@@ -23,6 +23,7 @@ import {
   useInsertionEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
@@ -147,6 +148,7 @@ import { FloorNavRail } from './FloorNavRail';
 import {
   TRANSCRIPT_END_THRESHOLD,
   TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
+  hasReaderDisclosure,
   installTranscriptAnchoring,
   landAtEnd,
   measureTranscriptRow,
@@ -207,7 +209,7 @@ import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
 import { useSessionRemainderPending } from './SessionRemainder';
-import { ContentContinuation, ContentOriginalDownload, ContinuationRow, frameContentSource, INPUT_ROOTS, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TASK_SUMMARY_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
+import { ContentContinuation, ContentOriginalDownload, ContinuationRow, frameContentSource, INPUT_ROOTS, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TASK_SUMMARY_ROOTS, TURN_STEP_ARRAY_PATHS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { ContentRangeText } from './ContentRangeText';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
@@ -1683,20 +1685,26 @@ function TurnGapRow({
 }
 
 /**
- * A complete turn can still have cut step frames; those sit behind the turn's
- * folds, so they read only while their steps are on screen (`autoRead`).
+ * A complete turn can have two kinds of structural cuts:
+ * - turn-level `['steps']` cuts omit whole steps (including user steers,
+ *   assistant prose, and subagent cards that sit outside any tool fold), so
+ *   they read as soon as the turn is on screen even when its fold is closed;
+ * - per-step `['steps', i, 'frames']` cuts sit behind the turn's folds and
+ *   read only while the fold is open (`foldOpen`).
  */
-function TurnStepsContinuation({ turnId, autoRead }: {
+function TurnStepsContinuation({ turnId, visible, foldOpen }: {
   turnId: string;
-  autoRead: boolean;
+  visible: boolean;
+  foldOpen: boolean;
 }) {
   const { t } = useI18n();
   const source = useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]);
-  const continuation = useContentContinuation(source, TURN_STEP_ROOTS);
-  if (continuation.pending.length === 0 || !autoRead) return null;
+  const paths = foldOpen ? undefined : TURN_STEP_ARRAY_PATHS;
+  const continuation = useContentContinuation(source, TURN_STEP_ROOTS, undefined, paths);
+  if (continuation.pending.length === 0 || !visible) return null;
   return (
     <div data-transcript-lane="agent" className={AGENT_LANE}>
-      <ContentContinuation source={source} roots={TURN_STEP_ROOTS} autoRead={autoRead} label={t('transcript.content.steps')} />
+      <ContentContinuation source={source} roots={TURN_STEP_ROOTS} paths={paths} autoRead={visible} label={t('transcript.content.steps')} />
     </div>
   );
 }
@@ -5581,6 +5589,13 @@ export const Transcript = memo(function Transcript({
   const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
   // Measurement + anchoring model: see transcriptVirtualizer.ts.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
+  const [, rerenderVirtualWindow] = useReducer((count: number) => count + 1, 0);
+  const renderedVirtualRangeRef = useRef<{ startIndex: number; endIndex: number } | null>(null);
+  const renderedVirtualSignatureRef = useRef('');
+  const wasAtEndBeforeRender =
+    scrollRef.current !== null && scrollRef.current.isConnected && scrollRef.current.clientHeight > 0
+      ? scrollRef.current.scrollHeight - scrollRef.current.clientHeight - scrollRef.current.scrollTop <= TRANSCRIPT_END_THRESHOLD
+      : viewportAnchorRef.current.atEnd;
   const priorHistoryShapeRef = useRef({ resetVersion: state.transcriptResetVersion, length: virtualNodes.length });
   useInsertionEffect(() => {
     const prior = priorHistoryShapeRef.current;
@@ -5611,6 +5626,20 @@ export const Transcript = memo(function Transcript({
     directDomUpdates: true,
     directDomUpdatesMode: 'position',
     onChange: (instance) => {
+      // `@tanstack/react-virtual`'s `directDomUpdates` only updates `prevRange`
+      // inside `onChange`, not during React prop renders. If a prop render
+      // narrows the range and a measurement widens it back to `prevRange`,
+      // `directDomUpdates` skips rerendering and leaves the tail unmounted.
+      const range = instance.range;
+      const renderedRange = renderedVirtualRangeRef.current;
+      if (
+        (range === null) !== (renderedRange === null) ||
+        (range !== null &&
+          renderedRange !== null &&
+          (range.startIndex !== renderedRange.startIndex || range.endIndex !== renderedRange.endIndex))
+      ) {
+        rerenderVirtualWindow();
+      }
       // A hidden (display:none) box reports scrollTop 0 on every tick; the
       // reader's real place is the anchor captured while it was shown.
       if (!visibleRef.current) return;
@@ -5622,7 +5651,38 @@ export const Transcript = memo(function Transcript({
   });
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
+  const virtualItems = virtualizer.getVirtualItems();
+  renderedVirtualRangeRef.current =
+    virtualizer.range === null
+      ? null
+      : { startIndex: virtualizer.range.startIndex, endIndex: virtualizer.range.endIndex };
+  renderedVirtualSignatureRef.current = virtualItems.map((item) => `${item.index}:${String(item.key)}`).join('\n');
   useLayoutEffect(() => installTranscriptAnchoring(virtualizer), [loaded, loadError, virtualizer]);
+  // Reconcile mounted row heights synchronously when turns fold, hydrate, or
+  // gain a tail status line, and preserve end-pinning across mid-turn hydration
+  // or turn-end folding without requiring a manual fold toggle.
+  useLayoutEffect(() => {
+    if (!loaded || loadError !== undefined || !visible || scrollRef.current === null || olderInflightRef.current) return;
+    reconcileMountedRows(virtualizer);
+    if (
+      initialScrollDoneRef.current &&
+      wasAtEndBeforeRender &&
+      !navRestorePendingRef.current &&
+      pendingResetRestoreRef.current === null &&
+      rekeyedFoldAnchorRef.current === null &&
+      !hasReaderDisclosure(virtualizer)
+    ) {
+      const scroll = scrollRef.current;
+      if (scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 0.5) {
+        landAtEnd(virtualizer);
+      }
+      viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
+      const afterSignature = virtualizer.getVirtualItems().map((item) => `${item.index}:${String(item.key)}`).join('\n');
+      if (afterSignature !== renderedVirtualSignatureRef.current) {
+        rerenderVirtualWindow();
+      }
+    }
+  }, [loaded, loadError, visible, virtualNodes, state.busy, state.turnTail, virtualizer, wasAtEndBeforeRender]);
   // ---- incomplete turns read their own structure while they are in view ----
   // A turn the window cut (its step list does not reach back to its opening)
   // reads its structure as soon as any of its rows is in the virtual window,
@@ -5631,10 +5691,15 @@ export const Transcript = memo(function Transcript({
   // The read is let go only once none of the turn's rows is in the window, or
   // the timeline is hidden — never because a fold closed.
   const windowTurnIds = new Set<string>();
-  for (const item of virtualizer.getVirtualItems()) {
+  const windowRawTurnIds = new Map<string, string>();
+  for (const item of virtualItems) {
     const node = virtualNodes[item.index];
     const turnId = node === undefined ? undefined : displayNodeTurnId(node);
-    if (turnId !== undefined) windowTurnIds.add(normalizeTurnId(turnId));
+    if (turnId !== undefined) {
+      const normalized = normalizeTurnId(turnId);
+      windowTurnIds.add(normalized);
+      if (!windowRawTurnIds.has(normalized)) windowRawTurnIds.set(normalized, turnId);
+    }
   }
   // The one place the timeline asks which turns are incomplete: the published
   // set plus any explicit gap in `turnGaps`, narrowed to the turns in the
@@ -5679,6 +5744,49 @@ export const Transcript = memo(function Transcript({
     if (controller !== undefined) for (const turnId of wanted) if (!reads.has(turnId))
       reads.set(turnId, controller.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']));
   }, [controller, agentId, state.sessionId, visible, incompleteTurnKey]);
+  // Bounded turns with >8 steps arrive with a turn-level `['steps']` ContentRef
+  // (without `stepsPartial: true`). Those omitted steps include steered user
+  // messages, intermediate assistant prose, and subagent cards that sit outside
+  // the closed tool fold, so hydrate turn-level `['steps']` whenever any row of
+  // the turn is in the virtual window while leaving per-step frame cuts gated
+  // behind fold expansion.
+  const cutStepsTurnCandidates: string[] = [];
+  {
+    const seen = new Set<string>();
+    for (const ref of state.contentRefs ?? []) {
+      if (ref.source.kind !== 'turn' || ref.path.length !== 1 || ref.path[0] !== 'steps') continue;
+      const key = normalizeTurnId(ref.source.id);
+      if (windowTurnIds.has(key) && !incompleteTurns.has(key) && !seen.has(key)) {
+        seen.add(key);
+        cutStepsTurnCandidates.push(ref.source.id);
+      }
+    }
+    if (controller !== undefined) {
+      for (const [key, rawTurnId] of windowRawTurnIds) {
+        if (seen.has(key) || incompleteTurns.has(key)) continue;
+        const hasTurnStepsRef =
+          controller.contentRefsFor(agentId, { kind: 'turn', id: rawTurnId }).some((ref) => ref.path.length === 1 && ref.path[0] === 'steps') ||
+          (rawTurnId !== key && controller.contentRefsFor(agentId, { kind: 'turn', id: key }).some((ref) => ref.path.length === 1 && ref.path[0] === 'steps'));
+        if (hasTurnStepsRef) {
+          seen.add(key);
+          cutStepsTurnCandidates.push(rawTurnId);
+        }
+      }
+    }
+  }
+  const cutStepsTurnKey = controller === undefined ? '[]' : JSON.stringify(cutStepsTurnCandidates);
+  const cutStepsReads = useRef(new Map<string, ReturnType<SessionController['beginContentRead']>>());
+  useEffect(() => {
+    const reads = cutStepsReads.current;
+    return () => { for (const lease of reads.values()) lease.release(); reads.clear(); };
+  }, [controller, agentId, state.sessionId]);
+  useEffect(() => {
+    const reads = cutStepsReads.current;
+    const wanted = new Set<string>(visible && controller !== undefined ? JSON.parse(cutStepsTurnKey) as string[] : []);
+    for (const [turnId, lease] of reads) if (!wanted.has(turnId)) { lease.release(); reads.delete(turnId); }
+    if (controller !== undefined) for (const turnId of wanted) if (!reads.has(turnId))
+      reads.set(turnId, controller.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps'], true, TURN_STEP_ARRAY_PATHS));
+  }, [controller, agentId, state.sessionId, visible, cutStepsTurnKey]);
   const rekeyedFoldAnchorRef =useRef<{ blockId: string; offset: number; intent: number; controller: AbortController; started: boolean } | null>(null);
   const captureRekeyedFold = useCallback((row: HTMLDivElement) => {
     const scroll = scrollRef.current;
@@ -6552,7 +6660,7 @@ export const Transcript = memo(function Transcript({
           data-transcript-virtual-content
           className="relative w-full"
         >
-          {virtualizer.getVirtualItems().map((virtualItem) => {
+          {virtualItems.map((virtualItem) => {
             const node = virtualNodes[virtualItem.index];
             const first = virtualItem.index === 0;
             const last = virtualItem.index === virtualNodes.length - 1;
@@ -6639,7 +6747,7 @@ export const Transcript = memo(function Transcript({
                     </div>
                   )}
                   {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
-                    <TurnStepsContinuation turnId={turnTailId} autoRead={visible && !closedFoldTurns.has(turnTailId)} />
+                    <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
                   ) : null}
                   {last && view === 'message' && presence !== undefined ? (
                     <div className={AGENT_LANE}>

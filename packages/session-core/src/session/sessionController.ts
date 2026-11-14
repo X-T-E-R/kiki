@@ -82,7 +82,7 @@ import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { completeTranscriptTurnStructure, interactionToBlock } from './transcript/project';
 import { readMarkWins, refreshTurn, resolveItemCopies, resolveTurnCopies, turnGapOf, windowItemKey, type ReadMark } from './transcript/window';
-import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
+import { isSteerDeliveredBeforeCutTail, isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import type { QueuedPromptMeta } from './transcript/types';
 import type { AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
@@ -3047,7 +3047,10 @@ export class SessionController {
           entity !== undefined && timeline?.stale.has(target.source.id) === true) continue;
         const ref = partial ? undefined : entity?.contentRefs?.find((candidate) => {
           if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
-            target.paths !== undefined && !target.paths.some(path => path.every((part, index) => candidate.path[index] === part)) ||
+            target.paths !== undefined && !target.paths.some(path =>
+              path.length === 1 && target.source.kind === 'turn' && path[0] === 'steps'
+                ? candidate.path.length === 1 && candidate.path[0] === 'steps'
+                : path.every((part, index) => candidate.path[index] === part)) ||
             !target.includeOlder && candidate.direction === 'backward') return false;
           return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
         });
@@ -5090,7 +5093,13 @@ export class SessionController {
     const store = this.timelines.get(agentId)?.store;
     const live = current.filter(steer => {
       const prompt = store?.getPrompt(steer.promptId);
-      return prompt?.status !== 'blocked' && !(prompt?.status === 'aborted' && prompt.abortedBeforeStart) && !isSteerSettled(next.blocks, steer);
+      if (isSteerSettled(next.blocks, steer)) return false;
+      if (prompt !== undefined) {
+        if (prompt.status === 'blocked' || prompt.status === 'failed' || prompt.status === 'aborted') return false;
+        if (!next.busy && prompt.status !== 'queued') return false;
+        if (prompt.steeredAt !== undefined && store !== undefined && isSteerDeliveredBeforeCutTail(store.getItems(), prompt.steeredAt)) return false;
+      }
+      return true;
     });
     if (live.length === current.length) return;
     timeline.steers = live;

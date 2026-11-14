@@ -72,6 +72,18 @@ function visibleCrumbsEqual(
   );
 }
 
+function isBranchNode(node: AgentTreeNode): boolean {
+  return node.isBranch === true || node.branchSealed === true;
+}
+
+function branchStateI18nKey(node: AgentTreeNode): I18nKey {
+  if (node.branchSealed === true) return 'rail.branches.status.merged';
+  if (node.status === 'suspended') return 'rail.branches.status.waiting';
+  if (node.status === 'running' || node.status === 'background' || node.busy) return 'rail.branches.status.running';
+  if (node.status === 'failed') return 'rail.branches.status.failed';
+  return 'rail.branches.status.open';
+}
+
 export const AgentBreadcrumb = memo(function AgentBreadcrumb({
   crumbs,
   onOpenSession,
@@ -94,20 +106,40 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
           .filter((crumb) => crumb.agentId !== MAIN_AGENT_ID)
           .map((crumb, index, visible) => {
           const last = index === visible.length - 1;
+          const branch = isBranchNode(crumb);
           return (
             <li key={crumb.agentId} className="flex min-w-0 items-center gap-1">
               <span aria-hidden>/</span>
               {last ? (
-                <span className="truncate font-medium text-ink" aria-current="page">
-                  {crumb.label}
+                <span
+                  data-branch-crumb={branch ? (crumb.branchSealed === true ? 'merged' : 'open') : undefined}
+                  className="inline-flex min-w-0 items-center gap-1 truncate font-medium text-ink"
+                  aria-current="page"
+                >
+                  {branch ? (
+                    <Icon
+                      name="branch"
+                      size={12}
+                      className={`shrink-0 ${crumb.branchSealed === true ? 'text-ink-faint' : 'text-accent'}`}
+                    />
+                  ) : null}
+                  <span className="truncate">{crumb.label}</span>
                 </span>
               ) : (
                 <button
                   type="button"
+                  data-branch-crumb={branch ? (crumb.branchSealed === true ? 'merged' : 'open') : undefined}
                   onClick={() => { onOpenAgent(crumb.agentId); }}
-                  className="truncate rounded px-0.5 text-ink-soft transition-colors hover:text-ink"
+                  className="inline-flex min-w-0 items-center gap-1 truncate rounded px-0.5 text-ink-soft transition-colors hover:text-ink"
                 >
-                  {crumb.label}
+                  {branch ? (
+                    <Icon
+                      name="branch"
+                      size={12}
+                      className={`shrink-0 ${crumb.branchSealed === true ? 'text-ink-faint' : 'text-accent'}`}
+                    />
+                  ) : null}
+                  <span className="truncate">{crumb.label}</span>
                 </button>
               )}
             </li>
@@ -152,10 +184,25 @@ function useChipTitle(): (node: AgentTreeNode) => string {
     const started = node.startedAt === undefined ? Number.NaN : Date.parse(node.startedAt);
     const ended = node.endedAt === undefined ? Date.now() : Date.parse(node.endedAt);
     const elapsed = Number.isFinite(started) && ended >= started ? time.formatDuration(ended - started) : undefined;
-    const state = [t(`subagent.status.${node.status}` as I18nKey), elapsed].filter((part) => part !== undefined).join(' · ');
-    return [node.label, node.description, state].filter((part) => part !== undefined && part !== '').join('\n');
+    const branch = isBranchNode(node);
+    const seedLabel = branch && node.branchSeed !== undefined
+      ? t(`transcript.branch.seed.${node.branchSeed}` as I18nKey)
+      : undefined;
+    const statusWord = branch
+      ? t(branchStateI18nKey(node))
+      : t(`subagent.status.${node.status}` as I18nKey);
+    const state = [statusWord, seedLabel, elapsed].filter((part) => part !== undefined).join(' · ');
+    return [node.label, node.description !== node.label ? node.description : undefined, state]
+      .filter((part) => part !== undefined && part !== '')
+      .join('\n');
   };
 }
+
+const BRANCH_CHIP_OPEN =
+  'inline-flex h-6 min-w-0 max-w-[16rem] shrink items-center gap-1.5 rounded-full border border-accent/25 bg-accent/[0.06] px-2 text-[12px] leading-none text-ink transition-colors hover:border-accent/40 hover:bg-accent/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-8';
+
+const BRANCH_CHIP_SEALED =
+  'inline-flex h-6 min-w-0 max-w-[16rem] shrink items-center gap-1.5 rounded-full border border-hairline bg-ink/[0.025] px-2 text-[12px] leading-none text-ink-soft transition-colors hover:border-hairline-strong hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-8';
 
 const AgentChip = memo(function AgentChip({
   node,
@@ -170,17 +217,21 @@ const AgentChip = memo(function AgentChip({
 }) {
   const { t } = useI18n();
   const parentLabel = t('sv.parentAgents');
+  const branch = isBranchNode(node);
+  const sealed = node.branchSealed === true;
+  const baseChip = branch ? (sealed ? BRANCH_CHIP_SEALED : BRANCH_CHIP_OPEN) : CHIP;
   return (
     <button
       type="button"
       data-relation={kind}
       data-relation-chip=""
+      data-branch-chip={branch ? (sealed ? 'merged' : 'open') : undefined}
       data-agent-id={node.agentId}
       title={title}
       aria-label={kind === 'parent' ? `${parentLabel} ${node.label}` : node.label}
       onClick={() => { onOpen(node.agentId); }}
       // The parent may take its whole line: its name is the way back up.
-      className={kind === 'parent' ? CHIP.replace('max-w-[16rem]', 'max-w-full') : CHIP}
+      className={kind === 'parent' ? baseChip.replace('max-w-[16rem]', 'max-w-full') : baseChip}
     >
       {/* The parent's word is its own quiet label beside an up arrow, never a
           "Parent:" prefix glued to the name; the name keeps the width. */}
@@ -190,7 +241,15 @@ const AgentChip = memo(function AgentChip({
           {parentLabel}
         </span>
       ) : null}
-      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+      {branch ? (
+        <Icon
+          name="branch"
+          size={12}
+          className={`-ml-0.5 shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
+        />
+      ) : (
+        <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+      )}
       <span className="min-w-0 truncate">{node.label}</span>
     </button>
   );
@@ -353,21 +412,36 @@ function AgentListChip({
           />
         ) : null}
         <div role="list" className="min-h-0 overflow-y-auto">
-          {shown.map((node) => (
-            <div key={node.agentId} role="listitem">
-              <button
-                type="button"
-                data-agent-id={node.agentId}
-                title={titleOf(node)}
-                onClick={() => { pop.setOpen(false); onOpen(node.agentId); }}
-                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
-              >
-                <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
-                <span className="min-w-0 flex-1 truncate">{node.label}</span>
-                <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`subagent.status.${node.status}` as I18nKey)}</span>
-              </button>
-            </div>
-          ))}
+          {shown.map((node) => {
+            const branch = isBranchNode(node);
+            const sealed = node.branchSealed === true;
+            return (
+              <div key={node.agentId} role="listitem">
+                <button
+                  type="button"
+                  data-agent-id={node.agentId}
+                  data-branch-item={branch ? (sealed ? 'merged' : 'open') : undefined}
+                  title={titleOf(node)}
+                  onClick={() => { pop.setOpen(false); onOpen(node.agentId); }}
+                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+                >
+                  {branch ? (
+                    <Icon
+                      name="branch"
+                      size={12}
+                      className={`shrink-0 ${sealed ? 'text-ink-faint' : 'text-accent'}`}
+                    />
+                  ) : (
+                    <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{node.label}</span>
+                  <span className={`shrink-0 text-[11.5px] ${branch && !sealed ? 'text-accent' : 'text-ink-faint'}`}>
+                    {branch ? t(branchStateI18nKey(node)) : t(`subagent.status.${node.status}` as I18nKey)}
+                  </span>
+                </button>
+              </div>
+            );
+          })}
           {shown.length === 0 ? (
             <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
           ) : null}

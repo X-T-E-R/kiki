@@ -12,6 +12,7 @@ import type { SessionTransport } from '@kiki/session-core/transport';
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
+import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { PreviewFocusBridge } from './SessionView';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { LiveControllerRegistry } from '../state/connection';
@@ -1321,5 +1322,157 @@ describe('RightRail Todos resilient baseline and fallback', () => {
       retryBtn?.click();
     });
     expect(ctrl.refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('places Branches right below overview, separates branches from Agents and Terminate all, and renders distinct branch chips in AgentRelations', async () => {
+    const onOpenSubagent = vi.fn();
+    const onInspectMain = vi.fn();
+    const branchForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      {
+        agentId: 'branch-live',
+        parentAgentId: 'main',
+        name: 'Verify auth token refresh',
+        description: 'Trace OAuth refresh race in background tabs',
+        isBranch: true,
+        branchSeed: 'fresh',
+        status: 'running',
+        busy: true,
+        startedAt: '2026-01-01T00:10:00.000Z',
+      },
+      {
+        agentId: 'branch-open',
+        parentAgentId: 'main',
+        name: 'Compare SQLite WAL tuning',
+        description: 'Check synchronous=NORMAL vs FULL latency',
+        isBranch: true,
+        branchSeed: 'compact',
+        toolsLocked: true,
+        status: 'idle',
+        startedAt: '2026-01-01T00:08:00.000Z',
+      },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        agentId: `branch-merged-${index + 1}`,
+        parentAgentId: 'main',
+        name: `Merged check ${index + 1}`,
+        isBranch: true,
+        branchSeed: 'verbatim' as const,
+        branchSealed: true,
+        status: 'completed' as const,
+        startedAt: `2026-01-01T00:0${index + 1}:00.000Z`,
+        endedAt: `2026-01-01T00:0${index + 1}:30.000Z`,
+      })),
+      {
+        agentId: 'worker-1',
+        parentAgentId: 'main',
+        name: 'Explore codebase',
+        status: 'completed',
+      },
+    ]);
+    const branchTasks: Task[] = [
+      {
+        id: 'task-branch-live',
+        session_id: 'sess-1',
+        kind: 'subagent',
+        agent_id: 'branch-live',
+        description: 'Verify auth token refresh',
+        status: 'running',
+        created_at: '2026-01-01T00:10:00.000Z',
+      },
+    ];
+    const foldBlock = {
+      kind: 'user' as const,
+      id: 'user-fold-1',
+      text: 'Merged branch branch-merged-6 (Merged check 6):\n\nConfirmed schema v3 migration cleans up stale indexes.\n\nBranch history: HistoryList({ agent_id: "branch-merged-6" })',
+      createdAt: '2026-01-01T00:06:35.000Z',
+      branchFold: {
+        branchId: 'branch-merged-6',
+        branchTitle: 'Merged check 6',
+        done: true,
+      },
+    };
+
+    const rail = await renderRail({
+      agentForest: branchForest,
+      stateTasks: branchTasks,
+      onOpenSubagent,
+      onInspectMain,
+      stateOverrides: { blocks: [foldBlock] },
+    });
+
+    const sectionOrder = [...rail.querySelectorAll<HTMLElement>('[data-rail-section], [data-rail-agent-panel-slot]')]
+      .map((el) => el.dataset['railSection'] ?? 'overview');
+    expect(sectionOrder.indexOf('branches')).toBe(1);
+    expect(sectionOrder.indexOf('branches')).toBeLessThan(sectionOrder.indexOf('agents'));
+
+    // Running branch tasks must never trigger "Terminate all" in the subagent worker header:
+    expect(rail.querySelector('[data-terminate-all-subagents]')).toBeNull();
+
+    // Agents section counts only the 1 non-branch worker, not the 8 branches:
+    const agentsSection = rail.querySelector('[data-rail-section="agents"]')!;
+    expect(agentsSection.textContent).not.toContain('Verify auth token refresh');
+    expect(agentsSection.textContent).not.toContain('Merged check');
+
+    // Branches section renders bespoke rows with seed tags, branch states, fold summary preview, and >5 merged disclosure:
+    const branchesSection = rail.querySelector('[data-rail-section="branches"]')!;
+    expect(branchesSection.querySelector('[data-branch-row="branch-live"]')?.getAttribute('data-branch-state')).toBe('running');
+    expect(branchesSection.querySelector('[data-branch-row="branch-open"]')?.getAttribute('data-branch-state')).toBe('open');
+    expect(branchesSection.querySelector('[data-branch-row="branch-merged-6"]')?.textContent).toContain('Confirmed schema v3 migration cleans up stale indexes.');
+    expect(branchesSection.querySelectorAll('[data-branch-state="merged"]')).toHaveLength(5);
+
+    const moreBtn = branchesSection.querySelector<HTMLButtonElement>('[data-branches-more]')!;
+    expect(moreBtn.textContent).toContain('Merged (1)');
+    await act(async () => { moreBtn.click(); });
+    expect(branchesSection.querySelectorAll('[data-branch-state="merged"]')).toHaveLength(6);
+
+    await act(async () => {
+      branchesSection.querySelector<HTMLButtonElement>('[data-branch-row="branch-merged-6"]')?.click();
+    });
+    expect(onOpenSubagent).toHaveBeenCalledWith('branch-merged-6');
+
+    // When viewing a branch, the Branches header exposes a quick "Main" return action:
+    const focusedRail = await renderRail({
+      agentForest: branchForest,
+      stateTasks: [],
+      subagent: {
+        agentId: 'branch-merged-6',
+        block: undefined,
+        pendingInteractionCount: 0,
+        onJumpToSpawn: () => {},
+      },
+      onOpenSubagent,
+      onInspectMain,
+    });
+    expect(focusedRail.querySelector('[data-branch-row="branch-merged-6"]')?.hasAttribute('data-branch-focused')).toBe(true);
+    await act(async () => {
+      focusedRail.querySelector<HTMLButtonElement>('[data-branches-back-to-main]')?.click();
+    });
+    expect(onInspectMain).toHaveBeenCalledTimes(1);
+
+    // Empty session with 0 branches renders no branches section at all:
+    const emptyRail = await renderRail({ empty: true });
+    expect(emptyRail.querySelector('[data-rail-section="branches"]')).toBeNull();
+
+    // Top relations strip & breadcrumb mark branches with [data-branch-chip] / [data-branch-crumb]:
+    const stripMount = document.createElement('div');
+    document.body.append(stripMount);
+    const stripRoot = createRoot(stripMount);
+    mounts.push({ container: stripMount, root: stripRoot });
+    await act(async () => {
+      stripRoot.render(
+        <I18nProvider>
+          <AgentBreadcrumb
+            crumbs={[branchForest.byId['main']!, branchForest.byId['branch-open']!]}
+            onOpenSession={() => {}}
+            onOpenAgent={() => {}}
+          />
+          <AgentRelations forest={branchForest} currentAgentId="main" onOpen={onOpenSubagent} />
+        </I18nProvider>,
+      );
+    });
+    expect(stripMount.querySelector('[data-branch-crumb="open"]')?.textContent).toContain('Compare SQLite WAL tuning');
+    expect(stripMount.querySelector('[data-branch-chip="open"][data-agent-id="branch-live"]')).not.toBeNull();
+    expect(stripMount.querySelector('[data-branch-chip="merged"][data-agent-id="branch-merged-1"]')).not.toBeNull();
+    expect(stripMount.querySelector('[data-agent-id="worker-1"]')?.hasAttribute('data-branch-chip')).toBe(false);
   });
 });

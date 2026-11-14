@@ -149,3 +149,15 @@ it('keeps an unknown parent with live or waiting descendants out of the historic
   expect(ids).toEqual(['needs', 'ask', 'parent', 'child', 'old-0', 'old-1', 'old-2', 'old-3']);
   expect(model.counts).toEqual({ waiting: 1, running: 1, idle: 0, unknown: 6, ended: 0 });
 });
+
+it('excludes session conversation branches from the background worker roster while keeping ordinary subagents', () => {
+  const withBranches = buildAgentForest([], [
+    { agentId: 'main', name: 'Main' },
+    { agentId: 'worker-1', parentAgentId: 'main', name: 'Worker 1', status: 'running' },
+    { agentId: 'branch-open', parentAgentId: 'main', name: 'Side check', isBranch: true, branchSeed: 'fresh', status: 'idle' },
+    { agentId: 'branch-merged', parentAgentId: 'main', name: 'Merged audit', isBranch: true, branchSealed: true, status: 'completed' },
+  ]);
+  const model = buildRoster({ ...base, forest: withBranches, waiting: new Set() });
+  expect(model.total).toBe(1);
+  expect(labels(model.rows)).toEqual(['Worker 1']);
+});

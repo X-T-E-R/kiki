@@ -1016,4 +1016,93 @@ describe('queued submit acknowledgement before transcript recovery', () => {
     expect(controller.getState().queuedPromptIds).toEqual([]);
     controller.close();
   });
+
+  it('retires a steered echo when a multi-step turn ends or resets with earlier steps cut from the bounded tail', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ prompt: 'run 17 steps', streaming: true }), 1));
+    client.submitPrompt.mockImplementationOnce(async (_sid: string, body: { prompt_id: string }) => queuedReceipt(body.prompt_id));
+    const firstSteer = await controller.sendPromptNow({ text: STEER_TEXT });
+    const firstId = firstSteer.promptId;
+    await deliver(controller, opsEvent('main', [queuedOp(firstId), steeredOp(firstId)], 2));
+    // While the turn is still running and waiting for step 12's frame batch, the echo stays visible.
+    expect(steerRows(controller.getState())).toMatchObject([{ steerStatus: 'waiting' }]);
+
+    // Suppose a bounded reset arrives mid-turn at step 15..17 with steps 0..14 cut into a backward ContentRef:
+    const cutRunningTurn = {
+      kind: 'turn' as const,
+      turnId: 't1',
+      ordinal: 1,
+      state: 'running' as const,
+      origin: { kind: 'user' as const },
+      prompt: 'run 17 steps',
+      startedAt: '2026-01-01T00:00:01.000Z',
+      steps: [
+        {
+          kind: 'step' as const,
+          stepId: 't1.15',
+          turnId: 't1',
+          ordinal: 15,
+          state: 'running' as const,
+          startedAt: '2026-01-01T00:00:10.000Z',
+          frames: [],
+        },
+      ],
+      contentRefs: [
+        {
+          source: { kind: 'turn' as const, id: 't1' },
+          path: ['steps'],
+          kind: 'array' as const,
+          revision: 'cut-tail',
+          offset: 9,
+          total: 16,
+          direction: 'backward' as const,
+        },
+      ],
+    };
+    const steeredPromptRecord = {
+      promptId: firstId,
+      status: 'completed' as const,
+      userMessageId: firstId,
+      content: [{ type: 'text' as const, text: STEER_TEXT }],
+      createdAt: '2026-01-01T00:00:03.000Z',
+      finishedAt: '2026-01-01T00:00:04.000Z',
+      steeredAt: '2026-01-01T00:00:04.000Z',
+    };
+    await deliver(controller, resetEvent('main', emptySnapshot({
+      items: [cutRunningTurn],
+      prompts: [steeredPromptRecord],
+      meta: { agent: { phase: { kind: 'running', turnId: 1, step: 15, stepId: 't1.15', since: 1 } } },
+    }), 3));
+    expect(steerRows(controller.getState())).toEqual([]);
+
+    // And if a steer was waiting right as a turn ends without its step frame in the tail, ending the turn retires the echo.
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ prompt: 'second turn', streaming: true }), 4));
+    client.submitPrompt.mockImplementationOnce(async (_sid: string, body: { prompt_id: string }) => queuedReceipt(body.prompt_id));
+    const secondSteer = await controller.sendPromptNow({ text: STEER_TEXT });
+    const secondId = secondSteer.promptId;
+    await deliver(controller, opsEvent('main', [queuedOp(secondId), steeredOp(secondId)], 5));
+    expect(steerRows(controller.getState())).toMatchObject([{ steerStatus: 'waiting' }]);
+    await deliver(controller, opsEvent('main', [
+      {
+        op: 'turn.upsert',
+        turn: {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'second turn',
+          startedAt: '2026-01-01T00:00:20.000Z',
+          endedAt: '2026-01-01T00:00:25.000Z',
+        },
+      },
+      {
+        op: 'meta.merge',
+        meta: { agent: { phase: { kind: 'ended', turnId: 1, reason: 'completed', at: 25_000 } } },
+      },
+    ], 6));
+    expect(controller.getState().busy).toBe(false);
+    expect(steerRows(controller.getState())).toEqual([]);
+    controller.close();
+  });
 });
