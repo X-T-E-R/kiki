@@ -6,8 +6,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { DecisionConnectionsCard } from './DecisionConnections';
-import { DecisionJudgeRows, DecisionSourceSummary } from './DecisionSources';
-import { optionLabels, pickOption } from './testControls';
+import { DecisionJudgeRows, DecisionSourceField } from './DecisionSources';
+import { openOptions, optionLabels, optionValues, pickOption } from './testControls';
 
 const { client, navigate } = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -193,22 +193,54 @@ describe('Who decides', () => {
     expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#decision-connection-add');
   });
 
-  it('points a missing key at its connection on both Who decides and consumer summaries', async () => {
+  it('points a missing key at its connection on both Who decides and consumer fields, and offers attached capabilities on chat connections', async () => {
+    const CHAT_WITH_DECISIONS = {
+      ...CHAT,
+      decision_capabilities: {
+        openai_decisions: { model: 'decisions-alpha' },
+        pair_score: { model: 'rerank-small' },
+      },
+    };
+    client.listProviders.mockResolvedValue({ items: [CHAT_WITH_DECISIONS, JEV, RERANK] });
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'connection', connection: 'typesafe' }, source_status: { state: 'auth', connection: 'typesafe', credential_source: 'none' } } } });
     await render(<DecisionJudgeRows />);
     const row = container.querySelector('[data-decision-judge="reviewer"]')!;
     expect(row.getAttribute('data-decision-problem')).toBe('auth');
     await act(async () => row.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());
-    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=typesafe#st-card-decision-connections');
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=typesafe#st-card-providers');
     navigate.mockClear();
-    await render(<DecisionSourceSummary consumer="memory" source={{ kind: 'connection', connection: 'typesafe' }}
-      status={{ state: 'auth', connection: 'typesafe', credential_source: 'none' }} />);
-    const summary = container.querySelector('[data-decision-summary="memory"]')!;
-    expect(summary.getAttribute('data-decision-problem')).toBe('auth');
-    expect(summary.textContent).not.toContain('below');
-    await act(async () => summary.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());
-    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=typesafe#st-card-decision-connections');
+
+    const values = await optionValues(container.querySelector('#st-decision-reviewer')!);
+    expect(values).toContain('connection:openai#openai_decisions');
+    expect(values).toContain('connection:openai#pair_score');
+    const trigger = container.querySelector<HTMLButtonElement>('#st-decision-reviewer')!;
+    await act(async () => trigger.click());
+    const attachedOption = openOptions(trigger).find((row) => row.getAttribute('data-option-value') === 'connection:openai#openai_decisions')!;
+    expect(attachedOption.textContent).toContain('openai');
+    expect(attachedOption.textContent).toContain('OpenAI Decisions');
+    await act(async () => trigger.click());
+
+    const write = vi.fn(async () => {});
+    await render(
+      <DecisionSourceField
+        consumer="memory"
+        scope="card"
+        label="Memory Advisor"
+        help="Also shown under Models › Defaults."
+        unset="Not set"
+        source={{ kind: 'connection', connection: 'openai', protocol: 'openai_decisions' }}
+        status={{ state: 'auth', connection: 'openai', credential_source: 'none' }}
+        loading={false}
+        error={null}
+        write={write}
+      />,
+    );
+    const field = container.querySelector('[data-decision-field="memory"]')!;
+    expect(field.getAttribute('data-decision-problem')).toBe('auth');
+    expect(field.querySelector('#st-decision-card-memory')?.textContent).toContain('openai · decisions-alpha');
+    await act(async () => field.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers&decision=openai#st-card-providers');
   });
 });
 
@@ -219,6 +251,7 @@ describe('decision connections', () => {
     client.createProvider.mockResolvedValue({ ...JEV, id: 'typesafe-2', revision: 'r1' });
     await render(<DecisionConnectionsCard providers={[]} configuredIds={new Set(['typesafe'])} onChanged={onChanged} />);
     await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-add]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-preset="jev"]')!.click());
     expect(container.querySelector<HTMLInputElement>('[data-decision-id]')!.value).toBe('typesafe-2');
     expect(container.textContent).toContain('Leave empty to use TYPESAFE_API_KEY from the server environment.');
     expect(container.querySelector('[data-decision-new]')!.textContent).not.toContain('Context');
@@ -229,6 +262,21 @@ describe('decision connections', () => {
       api_key_env: 'TYPESAFE_API_KEY', default_model: 'jev-latest', decision_endpoint: undefined,
     });
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('defaults the add form to OpenAI Decisions with /v1/decisions', async () => {
+    client.createProvider.mockResolvedValue({ id: 'decisions', type: 'openai_decisions', service: 'decision', decision_protocol: 'openai_decisions', base_url: 'https://api.openai.com/v1', default_model: 'decisions-alpha', has_api_key: true, status: 'connected', revision: 'r1' });
+    await render(<DecisionConnectionsCard providers={[]} configuredIds={new Set()} onChanged={onChanged} />);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-add]')!.click());
+    expect(container.querySelector<HTMLInputElement>('[data-decision-id]')!.value).toBe('decisions');
+    expect(container.querySelector<HTMLInputElement>('[data-decision-base-url]')!.value).toBe('https://api.openai.com/v1');
+    await type(container.querySelector<HTMLInputElement>('[data-decision-model]')!, 'decisions-alpha');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-create]')!.click());
+    await settle();
+    expect(client.createProvider).toHaveBeenCalledWith({
+      id: 'decisions', type: 'openai_decisions', base_url: 'https://api.openai.com/v1', api_key: undefined,
+      api_key_env: undefined, default_model: 'decisions-alpha', decision_endpoint: undefined,
+    });
   });
 
   it('adds a rerank service with any address and model, and keeps its endpoint on that origin', async () => {

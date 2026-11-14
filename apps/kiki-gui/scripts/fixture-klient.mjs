@@ -1291,6 +1291,19 @@ export class FixtureKlient {
         if (patch.default_model !== undefined) next.default_model = patch.default_model ?? undefined;
         if (patch.api_key !== undefined) next.has_api_key = patch.api_key !== '';
         if (patch.model_source !== undefined) next.model_source = patch.model_source ?? undefined;
+        if (patch.decision_endpoint !== undefined) next.decision_endpoint = patch.decision_endpoint ?? undefined;
+        if (patch.decision_capabilities !== undefined) {
+          if (patch.decision_capabilities === null) {
+            delete next.decision_capabilities;
+          } else {
+            const caps = { ...(next.decision_capabilities ?? {}) };
+            for (const [proto, value] of Object.entries(patch.decision_capabilities)) {
+              if (value === null) delete caps[proto];
+              else caps[proto] = value;
+            }
+            next.decision_capabilities = Object.keys(caps).length === 0 ? undefined : caps;
+          }
+        }
         // Header/env values are write-only: keep only the names, like kap-server.
         for (const [field, keys] of [['custom_headers', 'custom_header_keys'], ['env', 'env_keys']]) {
           if (patch[field] === undefined) continue;

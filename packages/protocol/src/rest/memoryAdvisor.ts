@@ -3,7 +3,7 @@ import { decisionSourceSchema, decisionSourceStatusSchema } from '../decision';
 
 export const memoryAdvisorSelectorSchema = z
   .object({
-    protocol: z.enum(['chat_json', 'system_one', 'pair_score']),
+    protocol: z.enum(['chat_json', 'system_one', 'pair_score', 'openai_decisions']),
     model: z.string().trim().min(1),
     endpoint: z.string().url().optional(),
   })
@@ -85,7 +85,7 @@ export const memoryAdvisorStatusSchema = z.object({
   destination: z.string().optional(),
   provider: z.string().optional(),
   origin: z.string().optional(),
-  protocol: z.enum(['chat_json', 'system_one', 'pair_score']).optional(),
+  protocol: z.enum(['chat_json', 'system_one', 'pair_score', 'openai_decisions']).optional(),
   model: z.string().optional(),
   first_step_wait_ms: z.number().int().optional(),
   first_step_wait_default_ms: z.number().int().optional(),
@@ -126,6 +126,7 @@ export const MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS: Readonly<Record<MemoryAdvi
   chat_json: 1_500,
   system_one: 3_000,
   pair_score: 3_000,
+  openai_decisions: 3_000,
 };
 /** The first-step wait in effect: an explicit value wins; otherwise the default of the resolved protocol, or the chat default when it is unknown. */
 export function memoryAdvisorFirstStepWaitMs(

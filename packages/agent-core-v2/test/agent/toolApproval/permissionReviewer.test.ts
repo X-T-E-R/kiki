@@ -217,4 +217,98 @@ describe('permission reviewer', () => {
     } }) } as Response)) as unknown as typeof fetch;
     expect(await reviewPermission(dependencies(reviewer, { fetcher: deny, apiKey: 'test-key' }), context, 'ask', {})).toMatchObject({ outcome: 'deny', reason: 'Failed no_secret_egress' });
   });
+
+  it('evaluates OpenAI Decisions predicate questions, safely maps refusal to ask unless another category failed, and records zero-output usage', async () => {
+    const reviewer = {
+      source: { kind: 'connection', connection: 'openai', protocol: 'openai_decisions' },
+      allowThreshold: 0.9,
+      denyThreshold: 0.9,
+      categories: ['policy_compliance', 'no_secret_egress'],
+    };
+    const diagnostics: unknown[] = [];
+    const makeDeps = (fetcher: typeof fetch) => {
+      const deps = dependencies(reviewer, { fetcher });
+      deps.catalog = {
+        getConnectionEndpoint: (id: string, protocol?: string) => ({
+          providerName: id,
+          protocol,
+          defaultModel: 'decisions-alpha',
+          baseUrl: 'https://api.example.test/v1',
+          headers: { 'X-Custom': '1' },
+          authProvider: { getAuth: async () => ({ apiKey: 'synthetic-key' }) },
+          credentialSource: 'provider',
+        }),
+      } as unknown as IModelCatalog;
+      return { ...deps, onDiagnostic: (diag: unknown) => { diagnostics.push(diag); } };
+    };
+
+    const allowFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.test/v1/decisions');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-key');
+      const body = JSON.parse(init?.body as string) as {
+        model: string;
+        input: string;
+        questions: { type: string; name: string; instructions: string }[];
+      };
+      expect(body.model).toBe('decisions-alpha');
+      expect(body.questions.map((q) => [q.type, q.name])).toEqual([
+        ['predicate', 'policy_compliance'],
+        ['predicate', 'no_secret_egress'],
+      ]);
+      expect(body.input).not.toContain('Secret output');
+      return {
+        ok: true,
+        json: async () => ({
+          answers: [
+            { type: 'predicate', name: 'no_secret_egress', probability: 0.99 },
+            { type: 'predicate', name: 'policy_compliance', probability: 0.95 },
+          ],
+          usage: {
+            input_tokens: 120,
+            output_tokens: 0,
+            input_tokens_details: { cached_tokens: 20, cache_write_tokens: 5 },
+          },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    expect(await reviewPermission(makeDeps(allowFetch), context, 'ask', {})).toMatchObject({ outcome: 'allow', backend: 'jev' });
+    expect(diagnostics.at(-1)).toMatchObject({
+      stage: 'jev',
+      outcome: 'allow',
+      inputTokens: 120,
+      outputTokens: 0,
+      cacheReadTokens: 20,
+      cacheCreationTokens: 5,
+    });
+
+    const refusalFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        answers: [
+          { type: 'predicate', name: 'policy_compliance', probability: 0.99 },
+          { type: 'refusal', name: 'no_secret_egress', reason: 'Uncertain context' },
+        ],
+      }),
+    } as Response)) as unknown as typeof fetch;
+    expect(await reviewPermission(makeDeps(refusalFetch), context, 'ask', {})).toMatchObject({
+      outcome: 'ask',
+      backend: 'jev',
+      confidence: 0,
+    });
+
+    const refusalPlusDenyFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        answers: [
+          { type: 'refusal', name: 'policy_compliance', reason: 'Uncertain' },
+          { type: 'predicate', name: 'no_secret_egress', probability: 0.05 },
+        ],
+      }),
+    } as Response)) as unknown as typeof fetch;
+    expect(await reviewPermission(makeDeps(refusalPlusDenyFetch), context, 'ask', {})).toMatchObject({
+      outcome: 'deny',
+      reason: 'Failed no_secret_egress',
+    });
+  });
 });

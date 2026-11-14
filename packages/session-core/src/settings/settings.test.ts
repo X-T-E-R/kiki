@@ -7,6 +7,17 @@ import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerd
 import { branchAllowPatch, branchUsagePreference, branchUsagePreferencePatch, isBranchEnabled } from './branchControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorNumberValue, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
+import {
+  DECISION_JUDGES_ROUTE,
+  decisionConnectionDestination,
+  decisionConnectionEndpoint,
+  decisionConnectionRoute,
+  decisionProtocolAllowed,
+  decisionSourceFromValue,
+  decisionSourceProblem,
+  decisionSourceValue,
+  resolveCatalogDecisionTarget,
+} from './decisionSource';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -2752,4 +2763,72 @@ describe('memory advisor settings', () => {
     expect(memoryAdvisorModelBaseUrl({ effective_base_url: 'https://vendor.example.test/v1', base_url: 'https://stale.example.test' }, provider, 'https://status.example.test')).toBe('https://vendor.example.test/v1');
   });
 
+});
+
+describe('decision source settings and routes', () => {
+  it('encodes and decodes standalone connections, attached capabilities (#protocol), and chat models', () => {
+    expect(decisionSourceValue({ kind: 'connection', connection: 'typesafe' })).toBe('connection:typesafe');
+    expect(decisionSourceValue({ kind: 'connection', connection: 'openai', protocol: 'openai_decisions' })).toBe('connection:openai#openai_decisions');
+    expect(decisionSourceFromValue('connection:openai#openai_decisions', {
+      kind: 'connection',
+      connection: 'openai',
+      protocol: 'openai_decisions',
+      model: 'custom-judge',
+    })).toEqual({
+      kind: 'connection',
+      connection: 'openai',
+      protocol: 'openai_decisions',
+      model: 'custom-judge',
+    });
+    expect(decisionSourceFromValue('connection:openai#system_one', {
+      kind: 'connection',
+      connection: 'openai',
+      protocol: 'openai_decisions',
+      model: 'custom-judge',
+    })).toEqual({
+      kind: 'connection',
+      connection: 'openai',
+      protocol: 'system_one',
+      model: undefined,
+    });
+  });
+
+  it('resolves attached capabilities on chat providers, enforces protocol eligibility, and maps legacy card links cleanly', () => {
+    const providers = [
+      {
+        id: 'openai',
+        type: 'openai',
+        base_url: 'https://api.openai.com/v1',
+        decision_capabilities: {
+          openai_decisions: { model: 'decisions-1' },
+          pair_score: {},
+        },
+      },
+      {
+        id: 'standalone',
+        type: 'openai_decisions',
+        service: 'decision' as const,
+        base_url: 'https://api.openai.com/v1',
+        default_model: 'decisions-main',
+      },
+    ];
+    expect(decisionProtocolAllowed('reviewer', 'openai_decisions')).toBe(true);
+    expect(decisionProtocolAllowed('reviewer', 'pair_score')).toBe(false);
+    expect(resolveCatalogDecisionTarget(providers[0]!, 'openai_decisions')).toEqual({ protocol: 'openai_decisions', defaultModel: 'decisions-1' });
+    expect(decisionSourceProblem('reviewer', { kind: 'connection', connection: 'openai', protocol: 'openai_decisions' }, undefined, providers)).toBeNull();
+    expect(decisionSourceProblem('reviewer', { kind: 'connection', connection: 'openai', protocol: 'pair_score' }, undefined, providers)).toBe('pair_score_reviewer');
+    expect(decisionSourceProblem('memory', { kind: 'connection', connection: 'openai', protocol: 'pair_score' }, undefined, providers)).toBe('missing_model');
+    expect(decisionConnectionEndpoint('https://api.openai.com/v1', 'openai_decisions')?.toString()).toBe('https://api.openai.com/v1/decisions');
+    expect(decisionConnectionDestination(providers[0]!, 'openai_decisions')).toBe('openai@https://api.openai.com');
+
+    expect(DECISION_JUDGES_ROUTE).toBe('/settings/ai?tab=defaults#st-card-decision-judges');
+    expect(decisionConnectionRoute('typesafe')).toBe('/settings/ai?tab=providers&decision=typesafe#st-card-providers');
+    expect(aiTabForCard('st-card-decision-judges')).toBe('defaults');
+    expect(resolveSettingsRoute(undefined, '#st-card-decision-connections')).toEqual({
+      status: 'ok',
+      section: 'ai',
+      cardId: 'st-card-decision-judges',
+      tab: 'defaults',
+    });
+  });
 });

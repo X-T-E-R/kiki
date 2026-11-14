@@ -246,6 +246,6 @@ describe('quick switcher memory advisor command', () => {
     await act(async () => { row('Set up Memory Advisor')!.click(); });
     await settle();
     expect(client.patchMemoryAdvisorSettings).not.toHaveBeenCalled();
-    expect(document.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers#st-card-decision-connections');
+    expect(document.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=defaults#st-card-decision-judges');
   });
 });

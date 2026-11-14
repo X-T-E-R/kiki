@@ -1,22 +1,33 @@
 /**
- * Decision models, in Models & providers: which service each job asks
- * (approval review, Memory Advisor), then the services — Jev, any System One
- * service, and rerank or classifier endpoints. Each service is an ordinary
- * connection, so its address, key, reveal and removal work the way every
- * other connection's do; it only has no chat models. This card is the only
- * place a decision source is chosen or a decision key is entered.
+ * Standalone decision connections (`openai_decisions`, `system_one`, `pair_score`)
+ * and attached decision capabilities on chat connections (`decision_capabilities`).
+ *
+ * Standalone services render directly inside the unified Connections list with a
+ * subtle `Decision` / `决策` badge and no chat-model rows; attached capabilities
+ * sit inside a chat connection's editor so `/v1/decisions`, System One, or
+ * Rerank can share that connection's base URL and API key.
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { providerIdSchema, type DecisionConnectionProbeResult, type DecisionProtocol, type ProviderCatalogItem } from '@kiki/protocol';
+import {
+  providerIdSchema,
+  type DecisionCapabilitiesPatch,
+  type DecisionCapabilitiesWire,
+  type DecisionConnectionProbeResult,
+  type DecisionProtocol,
+  type ProviderCatalogItem,
+} from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   DECISION_CONNECTION_PARAM,
   DECISION_CONNECTION_PRESETS,
+  DECISION_PROTOCOLS,
   decisionConnectionDestination,
   decisionConnectionEndpoint,
+  decisionDestination,
   decisionEndpointIssue,
   decisionProtocolOf,
   type DecisionConnectionPreset,
@@ -24,16 +35,17 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { usePhoneMode } from '../../lib/layoutHooks';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
-import { Icon } from '../icons';
+import { DisclosureChevron, Icon } from '../icons';
 import { hostLabel } from '../providerPresets';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { DecisionJudgeRows } from './DecisionSources';
-import { RowFrame } from './RowFrame';
+import { LIST_ROW_HEIGHT, type ListDensity } from './list';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
 import { FieldIssue, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
@@ -87,7 +99,6 @@ function baseUrlIssue(text: string): BaseUrlIssue | null {
   try {
     const url = new URL(text.trim());
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'invalid';
-    // The server refuses a user name or password in the address.
     return url.username !== '' || url.password !== '' ? 'credentials' : null;
   } catch {
     return 'invalid';
@@ -110,6 +121,7 @@ const ENDPOINT_ISSUE_KEYS: Readonly<Record<DecisionEndpointIssue, I18nKey>> = {
 /** Which preset a saved connection reads as: Jev by its address, else by protocol. */
 function presetOf(provider: Pick<ProviderCatalogItem, 'type' | 'decision_protocol' | 'base_url' | 'effective_base_url'>): DecisionConnectionPreset['id'] {
   const protocol = decisionProtocolOf(provider);
+  if (protocol === 'openai_decisions') return 'openai_decisions';
   if (protocol === 'pair_score') return 'pair_score';
   const host = hostLabel(provider.effective_base_url ?? provider.base_url);
   return host === 'api.typesafe.ai' ? 'jev' : 'system_one';
@@ -121,12 +133,11 @@ function freeId(base: string, taken: ReadonlySet<string>): string {
 }
 
 /**
- * The card: every decision connection, then one way to add another. With
- * none yet, the card is the short explanation and the add form.
+ * Standalone card retained for isolated unit tests; the live settings UI places
+ * `DecisionJudgeRows` on Defaults and `DecisionConnectionEditor` in Connections.
  */
 export function DecisionConnectionsCard({ providers, configuredIds, onChanged }: {
   readonly providers: readonly ProviderCatalogItem[];
-  /** Every connection id, chat or decision: a new one may not reuse any. */
   readonly configuredIds: ReadonlySet<string>;
   readonly onChanged: () => Promise<void>;
 }) {
@@ -136,12 +147,6 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
   const requested = params.get(DECISION_CONNECTION_PARAM);
   const [adding, setAdding] = useState(hash === ADD_HASH);
   useEffect(() => { if (hash === ADD_HASH) setAdding(true); }, [hash]);
-  // The list's one open slot (#13): a deep link names its row, a click moves
-  // it; a row holding unsaved edits keeps its own open state (#14).
-  const [openId, setOpenId] = useState<string | null>(requested);
-  // The one home for decision models: which job uses what on top, then the
-  // services themselves with their address and key. No other page asks for
-  // a decision key or picks a decision source.
   return (
     <SectionCard id="st-card-decision-connections" title={t('st.decision.connectionsTitle')}
       actions={adding ? undefined : (
@@ -158,11 +163,9 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
         <div className="space-y-2" data-decision-services>
           <p className="text-[12px] font-medium text-ink-soft">{t('st.decision.servicesTitle')}</p>
           {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
-            <div data-decision-list>
+            <div data-decision-list className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
               {providers.map((provider) => (
-                <DecisionConnectionRow key={provider.id} provider={provider}
-                  open={openId === provider.id}
-                  onOpenChange={(open) => { setOpenId(open ? provider.id : null); }}
+                <DecisionConnectionEditor key={provider.id} provider={provider}
                   defaultOpen={requested === provider.id} onChanged={onChanged} />
               ))}
             </div>
@@ -188,7 +191,6 @@ function ConnectionFields({ idPrefix, draft, onChange, keyDraft, onKeyChange, ke
   readonly keySource: 'kiki' | 'environment' | 'none';
   readonly keyEnv?: string;
   readonly reveal?: () => Promise<string | undefined>;
-  /** What the key line should say when nothing explains it yet (no key, a variable not set). */
   readonly keyHint?: string;
   readonly protocol: DecisionProtocol;
 }) {
@@ -247,23 +249,33 @@ function draftValid(draft: ConnectionDraft): boolean {
 }
 
 /**
- * Add form: pick the kind (Jev fills in its address, key variable and model
- * name), then the same fields a saved row shows. No chat-model fields: a
- * decision service has no context size, thinking or model discovery.
+ * Add form: pick the decision preset (OpenAI Decisions, Jev, System One, or
+ * Rerank), then enter its base URL, key, and default model. No chat-model rows.
  */
-function NewDecisionConnection({ configuredIds, onCancel, onCreated }: {
+export function NewDecisionConnection({
+  configuredIds,
+  initialPreset = 'openai_decisions',
+  onCancel,
+  onCreated,
+}: {
   readonly configuredIds: ReadonlySet<string>;
+  readonly initialPreset?: DecisionConnectionPreset['id'];
   readonly onCancel: () => void;
   readonly onCreated: () => Promise<void>;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const idPrefix = useId();
-  const [presetId, setPresetId] = useState<DecisionConnectionPreset['id']>('jev');
+  const [presetId, setPresetId] = useState<DecisionConnectionPreset['id']>(initialPreset);
   const preset = DECISION_CONNECTION_PRESETS.find((item) => item.id === presetId)!;
   const [id, setId] = useState(() => freeId(preset.suggestedId, configuredIds));
   const [idTouched, setIdTouched] = useState(false);
-  const [draft, setDraft] = useState<ConnectionDraft>({ baseUrl: preset.baseUrl, defaultModel: preset.defaultModel, endpoint: '', keyEnv: preset.apiKeyEnv ?? '' });
+  const [draft, setDraft] = useState<ConnectionDraft>({
+    baseUrl: preset.baseUrl,
+    defaultModel: preset.defaultModel,
+    endpoint: '',
+    keyEnv: preset.apiKeyEnv ?? '',
+  });
   const [key, setKey] = useState<SecretDraft>(KEEP_SECRET);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -293,7 +305,6 @@ function NewDecisionConnection({ configuredIds, onCancel, onCreated }: {
         type: preset.type,
         base_url: draft.baseUrl.trim(),
         api_key: keyValue === '' ? undefined : keyValue,
-        // Without a typed key the server reads the named variable; nothing is copied.
         api_key_env: keyValue === '' ? draft.keyEnv.trim() || undefined : undefined,
         default_model: draft.defaultModel.trim() || undefined,
         decision_endpoint: draft.endpoint.trim() || undefined,
@@ -336,25 +347,32 @@ function NewDecisionConnection({ configuredIds, onCancel, onCreated }: {
   );
 }
 
-/** One saved decision service: a row that opens into its fields, test and removal. */
-function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onChanged }: {
+/**
+ * One standalone decision connection inside the unified Connections list.
+ * Matches `<details data-connection-row={id}>` visually while carrying a quiet
+ * `Decision` / `决策` badge and dedicated decision fields + sample probe.
+ */
+export function DecisionConnectionEditor({
+  provider,
+  density = 'comfortable',
+  defaultOpen = false,
+  openFocusKeySignal = 0,
+  onChanged,
+}: {
   readonly provider: ProviderCatalogItem;
-  /** The list's one open slot, unless this row holds unsaved edits — then it
-   *  keeps its own open state so an edit is never folded away (#14). */
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly defaultOpen: boolean;
+  readonly density?: ListDensity;
+  readonly defaultOpen?: boolean;
+  readonly openFocusKeySignal?: number;
   readonly onChanged: () => Promise<void>;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
+  const phone = usePhoneMode();
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const idPrefix = useId();
   const protocol = decisionProtocolOf(provider) ?? 'system_one';
   const preset = DECISION_CONNECTION_PRESETS.find((item) => item.id === presetOf(provider))!;
   const read = draftOf(provider);
-  // A dirty row keeps the baseline and revision it was edited against, even
-  // when the list refreshes underneath it: a newer read never blesses an
-  // older draft, and untouched fields are not written back.
   const [baseline, setBaseline] = useState(read);
   const [draft, setDraft] = useState(read);
   const [revision, setRevision] = useState<string | undefined>();
@@ -368,7 +386,7 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
   const [test, setTest] = useState<{ result?: DecisionConnectionProbeResult; error?: unknown }>();
   const dirty = !sameDraft(draft, baseline) || key.mode !== 'keep';
   useDirtyReporter(`decision-connection:${provider.id}`, dirty);
-  // Only a new read moves a clean row; its own save already set the baseline.
+
   const readKey = JSON.stringify(read);
   const [seenRead, setSeenRead] = useState(readKey);
   useEffect(() => {
@@ -377,9 +395,7 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
     if (sameDraft(read, baseline)) return;
     setBaseline(read); setDraft(read); setRevision(undefined); setConflicts(null);
   }, [readKey, seenRead, dirty, saving]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The revision and the baseline come from one entity read, never a list row
-  // paired with a newer revision. A read that lands while the row is dirty
-  // re-bases the draft on it, the same way a 409 does.
+
   const live = useRef({ draft, baseline });
   live.current = { draft, baseline };
   const baselineKey = JSON.stringify(baseline);
@@ -403,8 +419,27 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
     return () => { current = false; };
   }, [baselineKey, revision, provider.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Every save renews the reveal handle, so a copy shown before a key change
-  // is dropped even when the listing reads the same afterwards.
+  useEffect(() => {
+    if (!defaultOpen) return;
+    if (detailsRef.current !== null) detailsRef.current.open = true;
+  }, [defaultOpen]);
+
+  useEffect(() => {
+    if (openFocusKeySignal === 0) return;
+    const details = detailsRef.current;
+    if (details === null) return;
+    details.open = true;
+    const focusKey = () => {
+      const editBtn = details.querySelector<HTMLButtonElement>('[data-secret-field] [data-secret-edit]');
+      if (editBtn !== null && !editBtn.disabled) {
+        editBtn.click();
+        return;
+      }
+      details.querySelector<HTMLInputElement>('[data-secret-field] input')?.focus();
+    };
+    requestAnimationFrame(focusKey);
+  }, [openFocusKeySignal]);
+
   const [keySaves, setKeySaves] = useState(0);
   const keySource = provider.api_key_env !== undefined ? 'environment' : provider.has_api_key ? 'kiki' : 'none';
   const reveal = useCallback(
@@ -412,9 +447,6 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
     [client, provider.id, provider.has_api_key, provider.api_key_env, keySaves], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const destination = decisionConnectionDestination(provider);
-  // `has_api_key` is the effective answer: an inline key, or a named variable
-  // that is set. No key at all is a valid setup (keyless or custom-header
-  // services); only a named variable that is not set is reported.
   const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
   const needsModel = (provider.default_model ?? '') === '';
   const testFailed = test?.result !== undefined && !test.result.ok;
@@ -452,14 +484,12 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
       ping();
     } catch (error) {
       if (isRevisionConflict(error)) {
-        // Nothing was written. Re-base the draft on what is saved now and let
-        // the person check it; the next click saves against the new revision.
         try {
           const latest = await client.getProviderEntity(provider.id);
-          const saved = draftOf(latest);
-          const rebased = rebaseDraft(draft, baseline, saved);
-          setBaseline(saved); setDraft(rebased.draft); setRevision(latest.revision);
-          setConflicts(rebased.conflicts.length === 0 ? null : { fields: rebased.conflicts, saved });
+          const savedSnap = draftOf(latest);
+          const rebased = rebaseDraft(draft, baseline, savedSnap);
+          setBaseline(savedSnap); setDraft(rebased.draft); setRevision(latest.revision);
+          setConflicts(rebased.conflicts.length === 0 ? null : { fields: rebased.conflicts, saved: savedSnap });
           setFeedback({ tone: 'error', text: t('st.decision.conflict') });
           void onChanged();
         } catch (refreshError) {
@@ -505,52 +535,60 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
             reason: t(`st.decision.reason.${test.result.reason ?? 'unavailable'}` as I18nKey),
           })}</span>;
 
-  // A dirty row answers its own open state; a clean one rides the list's
-  // single slot.
-  const [selfOpen, setSelfOpen] = useState(defaultOpen);
-  useEffect(() => { if (defaultOpen) setSelfOpen(true); }, [defaultOpen]);
-  const expanded = dirty ? selfOpen : open;
+  const displayName = preset.id === 'jev' ? t('st.decision.preset.jev') : provider.id;
+  const host = hostLabel(provider.effective_base_url ?? provider.base_url);
+  const statusBadge = (
+    <span data-connection-status={state} data-decision-status={state}
+      className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+        state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+        state === 'error' ? 'bg-danger' : state === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+      <span>{stateText}</span>
+    </span>
+  );
 
   return (
-    <RowFrame
-      data={{
-        'data-decision-row': provider.id,
-        'data-decision-health': state,
-      }}
-      open={expanded}
-      onToggle={() => { if (dirty) setSelfOpen((current) => !current); else onOpenChange(!open); }}
-      bodyId={`decision-row-body-${provider.id}`}
-      expandLabel={t('st.decision.openRow', { name: provider.id })}
-      name={preset.id === 'jev' ? t('st.decision.preset.jev') : provider.id}
-      marks={(
-        <span className="flex shrink-0 items-center gap-1.5">
-          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
-          <span data-decision-status={state} className={`inline-flex items-center gap-1.5 text-[12px] ${
-            state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-            <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${state === 'error' ? 'bg-danger' : state === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
-            {stateText}
-          </span>
-        </span>
-      )}
-      subtitle={(
-        <>
-          <span>{t(`st.decision.protocol.${protocol}` as I18nKey)}</span>
-          {hostLabel(provider.effective_base_url ?? provider.base_url) === undefined ? null : (
-            <>
-              <span aria-hidden>·</span>
-              <span>{hostLabel(provider.effective_base_url ?? provider.base_url)}</span>
-            </>
-          )}
-          {provider.default_model === undefined ? null : (
-            <>
-              <span aria-hidden>·</span>
-              <span>{provider.default_model}</span>
-            </>
-          )}
-        </>
-      )}
+    <details
+      ref={detailsRef}
+      data-connection-row={provider.id}
+      data-decision-row={provider.id}
+      data-connection-kind="decision"
+      data-connection-health={state}
+      data-decision-health={state}
+      className="group/provider [&[open]]:bg-paper"
+      open={defaultOpen || undefined}
     >
-      <div className="space-y-4">
+      <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
+        className={`flex cursor-pointer list-none items-center gap-3 px-3 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden ${density === 'compact' ? 'py-1' : 'py-2'}`}>
+        <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
+          <Icon name="gate" size={14} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className={`flex min-w-0 items-baseline ${phone ? 'justify-between gap-2' : 'gap-2'}`}>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[13px] font-medium text-ink">{displayName}</span>
+              {displayName !== provider.id ? (
+                <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
+              ) : null}
+              <span data-decision-badge className="shrink-0 rounded border border-hairline px-1.5 py-0.5 text-[11px] font-medium leading-none text-ink-soft">
+                {t('st.decision.badge')}
+              </span>
+            </span>
+            {phone ? statusBadge : null}
+          </span>
+          {density === 'compact' ? null : (
+            <span className="block truncate text-[12px] text-ink-faint">
+              {t(`st.decision.protocol.${protocol}` as I18nKey)}
+              {host === undefined ? '' : ` · ${host}`}
+              {provider.default_model === undefined || provider.default_model === '' ? '' : ` · ${provider.default_model}`}
+            </span>
+          )}
+        </span>
+        {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        {phone ? null : statusBadge}
+        <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
+      </summary>
+      <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
         {destination !== undefined ? (
           <div data-decision-test className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <button type="button" data-decision-test-button className={SECONDARY_BUTTON} disabled={testing || saving || dirty}
@@ -587,6 +625,283 @@ function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onCh
         confirmLabel={t('st.decision.removeConfirm')} busy={saving}
         onConfirm={() => { setConfirming(false); void remove(); }}
         onCancel={() => { setConfirming(false); }} />
-    </RowFrame>
+    </details>
+  );
+}
+
+interface CapabilityRowDraft {
+  readonly enabled: boolean;
+  readonly model: string;
+  readonly endpoint: string;
+}
+
+type CapabilitiesDraft = Record<DecisionProtocol, CapabilityRowDraft>;
+
+function capabilitiesDraftFrom(wire: DecisionCapabilitiesWire | undefined): CapabilitiesDraft {
+  return {
+    openai_decisions: {
+      enabled: wire?.openai_decisions !== undefined,
+      model: wire?.openai_decisions?.model ?? '',
+      endpoint: wire?.openai_decisions?.endpoint ?? '',
+    },
+    system_one: {
+      enabled: wire?.system_one !== undefined,
+      model: wire?.system_one?.model ?? '',
+      endpoint: wire?.system_one?.endpoint ?? '',
+    },
+    pair_score: {
+      enabled: wire?.pair_score !== undefined,
+      model: wire?.pair_score?.model ?? '',
+      endpoint: wire?.pair_score?.endpoint ?? '',
+    },
+  };
+}
+
+function sameCapabilityRow(a: CapabilityRowDraft, b: CapabilityRowDraft): boolean {
+  return a.enabled === b.enabled && a.model.trim() === b.model.trim() && a.endpoint.trim() === b.endpoint.trim();
+}
+
+function sameCapabilitiesDraft(a: CapabilitiesDraft, b: CapabilitiesDraft): boolean {
+  return DECISION_PROTOCOLS.every((protocol) => sameCapabilityRow(a[protocol], b[protocol]));
+}
+
+function capabilitiesPatchFrom(draft: CapabilitiesDraft, baseline: CapabilitiesDraft): DecisionCapabilitiesPatch | null {
+  const patch: Record<string, { model?: string | null; endpoint?: string | null } | null> = {};
+  for (const protocol of DECISION_PROTOCOLS) {
+    const cur = draft[protocol];
+    const prev = baseline[protocol];
+    if (sameCapabilityRow(cur, prev)) continue;
+    if (!cur.enabled) {
+      patch[protocol] = null;
+      continue;
+    }
+    patch[protocol] = {
+      model: cur.model.trim() || null,
+      endpoint: cur.endpoint.trim() || null,
+    };
+  }
+  return Object.keys(patch).length === 0 ? null : patch as DecisionCapabilitiesPatch;
+}
+
+/**
+ * Attached decision capabilities inside an expanded chat connection (`ProviderEditor`):
+ * toggle on `OpenAI Decisions`, `System One`, or `Pair score` to reuse this
+ * connection's base URL and credentials without duplicating API keys, set a
+ * default model or custom path, and run the sample probe in place.
+ */
+export function ProviderDecisionCapabilitiesEditor({
+  provider,
+  onSaved,
+}: {
+  readonly provider: ProviderCatalogItem;
+  readonly onSaved?: () => Promise<void>;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const idPrefix = useId();
+  const query = useQuery({
+    queryKey: ['provider-entity', provider.id],
+    queryFn: () => client.getProviderEntity(provider.id),
+  });
+  const entity = query.data;
+  const sourceWire = entity?.decision_capabilities ?? provider.decision_capabilities;
+  const [draft, setDraft] = useState<CapabilitiesDraft>(() => capabilitiesDraftFrom(sourceWire));
+  const [baseline, setBaseline] = useState<CapabilitiesDraft>(() => capabilitiesDraftFrom(sourceWire));
+  const [revision, setRevision] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [justSaved, pingSaved] = useSavedTick();
+  const [testingProtocol, setTestingProtocol] = useState<DecisionProtocol | null>(null);
+  const [probeState, setProbeState] = useState<Partial<Record<DecisionProtocol, { result?: DecisionConnectionProbeResult; error?: unknown }>>>({});
+
+  const dirty = !sameCapabilitiesDraft(draft, baseline);
+  useDirtyReporter(`provider-decision-capabilities:${provider.id}`, dirty);
+
+  useEffect(() => {
+    if (entity === undefined || dirty || saving || entity.revision === revision) return;
+    const next = capabilitiesDraftFrom(entity.decision_capabilities);
+    setDraft(next);
+    setBaseline(next);
+    setRevision(entity.revision);
+  }, [entity, dirty, saving, revision]);
+
+  const effectiveBaseUrl = entity?.effective_base_url ?? entity?.base_url ?? provider.effective_base_url ?? provider.base_url;
+  const endpointIssues: Partial<Record<DecisionProtocol, DecisionEndpointIssue>> = {};
+  for (const protocol of DECISION_PROTOCOLS) {
+    const row = draft[protocol];
+    if (!row.enabled || effectiveBaseUrl === undefined || effectiveBaseUrl.trim() === '') continue;
+    const issue = decisionEndpointIssue(effectiveBaseUrl, row.endpoint);
+    if (issue !== null) endpointIssues[protocol] = issue;
+  }
+  const hasInvalidEndpoint = Object.keys(endpointIssues).length > 0;
+
+  const updateRow = (protocol: DecisionProtocol, patch: Partial<CapabilityRowDraft>) => {
+    setDraft((current) => ({ ...current, [protocol]: { ...current[protocol], ...patch } }));
+    setFeedback(null);
+  };
+
+  const save = async () => {
+    const patch = capabilitiesPatchFrom(draft, baseline);
+    if (patch === null || hasInvalidEndpoint || revision === '') return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const updated = await client.updateProvider(provider.id, {
+        base_revision: revision,
+        decision_capabilities: patch,
+      });
+      const next = capabilitiesDraftFrom(updated.decision_capabilities);
+      setDraft(next);
+      setBaseline(next);
+      setRevision(updated.revision);
+      setProbeState({});
+      await Promise.all([
+        query.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+      ]);
+      await onSaved?.();
+      pingSaved();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runProbe = async (protocol: DecisionProtocol) => {
+    const row = baseline[protocol];
+    if (!row.enabled || testingProtocol !== null) return;
+    const endpoint = decisionConnectionEndpoint(effectiveBaseUrl, protocol, row.endpoint);
+    const destination = decisionDestination(provider.id, endpoint);
+    if (destination === undefined) return;
+    setTestingProtocol(protocol);
+    try {
+      const result = await client.probeDecisionSource({ kind: 'connection', connection: provider.id, protocol }, destination);
+      setProbeState((current) => ({ ...current, [protocol]: { result } }));
+    } catch (error) {
+      setProbeState((current) => ({ ...current, [protocol]: { error } }));
+    } finally {
+      setTestingProtocol(null);
+    }
+  };
+
+  if (query.isError) return <InlineError error={query.error} />;
+
+  return (
+    <div className="space-y-3" data-provider-decision-capabilities={provider.id}>
+      <div className="divide-y divide-hairline rounded-lg border border-hairline bg-panel/50 px-3">
+        {DECISION_PROTOCOLS.map((protocol) => {
+          const row = draft[protocol];
+          const savedRow = baseline[protocol];
+          const rowDirty = !sameCapabilityRow(row, savedRow);
+          const protocolLabel = t(`st.decision.protocol.${protocol}` as I18nKey);
+          const target = decisionConnectionEndpoint(effectiveBaseUrl, protocol);
+          const issue = endpointIssues[protocol] ?? null;
+          const probe = probeState[protocol];
+          const testing = testingProtocol === protocol;
+          const canTest = savedRow.enabled && !rowDirty && target !== null && !saving && testingProtocol === null;
+          const testNode = testing ? <span>{t('st.decision.testing')}</span>
+            : probe?.error !== undefined ? <span className="text-danger">{t('st.decision.testFailed', { reason: errorText(locale, probe.error) })}</span>
+              : probe?.result === undefined ? (rowDirty ? <span>{t('st.decision.capabilities.unsavedHint')}</span> : null)
+                : probe.result.ok ? <span className="text-success">{t('st.decision.testOk', { ms: Math.round(probe.result.duration_ms) })}</span>
+                  : <span className="text-danger">{t('st.decision.testFailed', {
+                    reason: t(`st.decision.reason.${probe.result.reason ?? 'unavailable'}` as I18nKey),
+                  })}</span>;
+
+          return (
+            <div key={protocol} data-decision-capability={protocol} className="space-y-2.5 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium text-ink">{protocolLabel}</p>
+                  <p className="text-[12px] leading-4 text-ink-faint">
+                    {t(`st.decision.presetHint.${protocol === 'system_one' ? 'system_one' : protocol === 'pair_score' ? 'pair_score' : 'openai_decisions'}` as I18nKey)}
+                  </p>
+                </div>
+                <Toggle
+                  id={`${idPrefix}-${protocol}-toggle`}
+                  layout="bare"
+                  label={t('st.decision.capabilities.enableAria', { protocol: protocolLabel, provider: provider.id })}
+                  checked={row.enabled}
+                  disabled={saving || revision === ''}
+                  onChange={(enabled) => { updateRow(protocol, { enabled }); }}
+                />
+              </div>
+              {row.enabled ? (
+                <div className="space-y-2.5 pl-0.5 pt-0.5">
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <label htmlFor={`${idPrefix}-${protocol}-model`} className="block text-[12px] text-ink-soft">{t('st.decision.model')}</label>
+                      <input
+                        id={`${idPrefix}-${protocol}-model`}
+                        data-decision-capability-model={protocol}
+                        className={`${INPUT} font-mono`}
+                        value={row.model}
+                        disabled={saving}
+                        spellCheck={false}
+                        autoComplete="off"
+                        onChange={(event) => { updateRow(protocol, { model: event.target.value }); }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor={`${idPrefix}-${protocol}-endpoint`} className="block text-[12px] text-ink-soft">{t('st.decision.endpoint')}</label>
+                      <input
+                        id={`${idPrefix}-${protocol}-endpoint`}
+                        data-decision-capability-endpoint={protocol}
+                        className={`${INPUT} font-mono`}
+                        value={row.endpoint}
+                        placeholder={target?.pathname ?? '/'}
+                        disabled={saving}
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-invalid={issue !== null}
+                        onChange={(event) => { updateRow(protocol, { endpoint: event.target.value }); }}
+                      />
+                    </div>
+                  </div>
+                  {issue !== null ? (
+                    <p data-decision-capability-endpoint-issue={issue} role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
+                      {t(ENDPOINT_ISSUE_KEYS[issue], { origin: target?.origin ?? effectiveBaseUrl ?? '' })}
+                    </p>
+                  ) : null}
+                  {target !== null ? (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <button
+                        type="button"
+                        data-decision-capability-test={protocol}
+                        className={SECONDARY_BUTTON}
+                        disabled={!canTest}
+                        aria-busy={testing}
+                        onClick={() => { void runProbe(protocol); }}
+                      >
+                        {testing ? t('st.decision.testing') : t('st.decision.test')}
+                      </button>
+                      <p
+                        data-decision-capability-test-result={probe?.result === undefined && probe?.error === undefined ? 'none' : probe.result?.ok === true ? 'ok' : 'error'}
+                        aria-live="polite"
+                        className="min-w-0 break-all text-[12px] leading-4 text-ink-faint"
+                      >
+                        {testNode}
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <SettingsDraftFooter
+        id={`provider-decision-capabilities-${provider.id}`}
+        dirty={dirty}
+        saving={saving}
+        saved={justSaved}
+        saveDisabled={hasInvalidEndpoint || revision === ''}
+        onSave={() => void save()}
+        onDiscard={() => { setDraft(baseline); setFeedback(null); }}
+      />
+      <FeedbackLine feedback={feedback} />
+    </div>
   );
 }

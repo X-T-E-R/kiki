@@ -534,7 +534,7 @@ workspaces = {  }
 # [memory.advisor]
   # mode: "off" | "rank" | "select" (default: "rank")
   # selector: object
-    # protocol: "chat_json" | "system_one" | "pair_score"
+    # protocol: "chat_json" | "system_one" | "pair_score" | "openai_decisions"
     # model: string
     # endpoint: string
   # source: object | object
@@ -849,6 +849,16 @@ enter_approval_timeout_ms = 60000
   # enabled: boolean
   # base_url: string
   # decision_endpoint: string
+  # decision: object
+    # system_one: object
+      # model: string
+      # endpoint: string
+    # pair_score: object
+      # model: string
+      # endpoint: string
+    # openai_decisions: object
+      # model: string
+      # endpoint: string
   # custom_headers: record<string, string>
   # default_model: string
   # defaults: object

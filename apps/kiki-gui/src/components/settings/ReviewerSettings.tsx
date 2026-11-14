@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT } from '../ui';
-import { DecisionSourceSummary } from './DecisionSources';
+import { DecisionSourceField, useReviewerDecisionExtra } from './DecisionSources';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
@@ -96,16 +96,29 @@ export function ReviewerSettings() {
     } catch (error) { setFeedback({ tone: 'error', text: errorText(locale, error) }); }
     finally { setSaving(false); }
   };
-  // Older settings still in effect while no source is saved.
+  const reviewerExtra = useReviewerDecisionExtra(reviewer);
   const legacyText = reviewer?.source !== undefined ? undefined
-    : reviewer?.backend === 'jev' ? t('st.decision.preset.jev')
-      : reviewer?.model !== undefined ? reviewer.model : undefined;
+    : reviewer?.backend === 'jev' ? t('st.decision.row.reviewerLegacy')
+      : reviewer?.model !== undefined ? t('st.reviewer.legacyModel', { model: reviewer.model }) : undefined;
   return <SectionCard id="st-card-reviewer" title={t('st.reviewer.title')}>
     <div className="space-y-3" data-reviewer-settings>
       <Hint>{t('st.reviewer.hint')}</Hint>
-      {/* Which service reviews, and every key it needs, live in Models &
-          providers › Decision models; this card only shows the choice. */}
-      <DecisionSourceSummary consumer="reviewer" source={reviewer?.source} status={reviewer?.source_status} legacy={legacyText} />
+      <DecisionSourceField
+        consumer="reviewer"
+        scope="card"
+        label={t('st.decision.row.reviewer')}
+        help={t('st.decision.sourceHint')}
+        unset={t('st.decision.row.reviewerUnset')}
+        source={reviewer?.source}
+        status={reviewer?.source_status}
+        legacy={legacyText}
+        loading={configQuery.isPending}
+        error={configQuery.error}
+        write={async (source) => {
+          queryClient.setQueryData(['config'], await client.patchConfig({ permission: { reviewer: { source } } }));
+        }}
+        extra={reviewerExtra}
+      />
       <fieldset disabled={saving || configQuery.isLoading} className="space-y-4 disabled:opacity-60">
         <AdvancedDetails summary={t('st.advanced.disclosure')} data-reviewer-advanced className="space-y-4 text-[13px] text-ink">
         <div className="mt-3 grid gap-3 sm:grid-cols-3">

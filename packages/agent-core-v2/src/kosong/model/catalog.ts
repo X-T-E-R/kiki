@@ -1,5 +1,17 @@
 import { z } from 'zod';
-import { bindingOriginSchema, generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema, decisionProtocolSchema, decisionProtocolForProviderType, type DecisionSourceStatus } from '@kiki/protocol';
+import {
+  bindingOriginSchema,
+  decisionCapabilitiesWireSchema,
+  decisionProtocolForProviderType,
+  decisionProtocolSchema,
+  generationParametersSchema,
+  modelBehaviorToWire,
+  modelBehaviorWireSchema,
+  modelProtocolSourceSchema,
+  type DecisionCapabilitiesWire,
+  type DecisionProtocol,
+  type DecisionSourceStatus,
+} from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -9,7 +21,7 @@ import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
-import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
+import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig, type ProviderDecisionConfig } from '../provider/provider';
 import { resolveProviderApiKey } from '../provider/providerDefinition';
 import {
   IMAGE_MIME_TYPES,
@@ -152,6 +164,7 @@ export const providerCatalogItemSchema = z.object({
   service: z.enum(['chat', 'decision']).optional(),
   decision_protocol: decisionProtocolSchema.optional(),
   decision_endpoint: z.string().optional(),
+  decision_capabilities: decisionCapabilitiesWireSchema.optional(),
   effective_base_url: z.string().optional(),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
@@ -321,6 +334,7 @@ export function toProtocolProvider(
     service: decisionProtocolForProviderType(provider.type) === undefined ? 'chat' : 'decision',
     decision_protocol: decisionProtocolForProviderType(provider.type),
     decision_endpoint: provider.decisionEndpoint,
+    decision_capabilities: decisionCapabilitiesToWire(provider.decision),
     effective_base_url: explainModelEndpointOrigin({}, provider).baseUrl,
     base_url: provider.baseUrl,
     default_model: defaultModel,
@@ -338,6 +352,17 @@ export function toProtocolProvider(
     env_keys: provider.env === undefined ? undefined : Object.keys(provider.env),
     oauth: provider.oauth === undefined ? undefined : { storage: provider.oauth.storage, signed_in: credential.hasOAuthToken },
   };
+}
+
+function decisionCapabilitiesToWire(config: ProviderDecisionConfig | undefined): DecisionCapabilitiesWire | undefined {
+  if (config === undefined) return undefined;
+  const out: Record<string, { model?: string; endpoint?: string }> = {};
+  for (const protocol of ['system_one', 'pair_score', 'openai_decisions'] as const) {
+    const cap = config[protocol];
+    if (cap === undefined) continue;
+    out[protocol] = { model: cap.model, endpoint: cap.endpoint };
+  }
+  return Object.keys(out).length === 0 ? undefined : out as DecisionCapabilitiesWire;
 }
 
 function imagePolicyToWire(config: ImagePolicyConfig | undefined): z.infer<typeof imagePolicyWireSchema> | undefined {
@@ -385,7 +410,7 @@ export interface IModelCatalog {
   get(id: string, recipeSettings?: Record<string, unknown>): Model;
   getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester;
   getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester;
-  getConnectionEndpoint(providerId: string): ConnectionEndpoint;
+  getConnectionEndpoint(providerId: string, protocol?: DecisionProtocol): ConnectionEndpoint;
   inspect(id: string): ModelInspection;
   ping(id: string): Promise<ModelPingResult>;
   findByName(name: string): readonly string[];

@@ -139,6 +139,17 @@ export default {
       model: 'fixture/kiki-lite',
       triggers: ['first_user_message', 'first_turn_completed'],
     },
+    permission: {
+      reviewer: {
+        backend: 'model',
+        allowThreshold: 0.9,
+        denyThreshold: 0.9,
+        categories: ['policy_compliance', 'no_secret_egress', 'no_irreversible_damage', 'no_outward_effect', 'prompt_injection_absent'],
+        hasApiKey: false,
+        source: { kind: 'connection', connection: 'fixture', protocol: 'openai_decisions' },
+        source_status: { state: 'ready', connection: 'fixture', protocol: 'openai_decisions', model: 'decisions-1' },
+      },
+    },
     experimental: { desktop_search: true, auto_session_title: true },
     // nb_search: one configured service (Exa, with a two-key credential) out of
     // the whole engine catalogue. This is the S1 acceptance shape: the page must
@@ -340,20 +351,26 @@ export default {
     {
       id: 'fixture',
       type: 'openai',
+      base_url: 'https://api.example.com/v1',
       has_api_key: true,
       status: 'connected',
       default_model: 'fixture/kiki-pro',
       request_identity: { preset: 'kimi_code' },
+      decision_capabilities: {
+        openai_decisions: { model: 'decisions-1' },
+      },
       models: ['fixture/kiki-pro', 'fixture/kiki-lite'],
       // Write-only extras: names only, values never read back.
       custom_header_keys: ['X-Team'],
       env_keys: ['KIMI_BASE_URL'],
     },
     {
-      // A decision service: the connections card under the models list reads
-      // it as a row (address, key source, model), never as a chat provider.
+      // A standalone decision service: rendered directly in the main connection
+      // list with a subtle Decision badge, never as a chat provider.
       id: 'typesafe',
       type: 'system_one',
+      service: 'decision',
+      decision_protocol: 'system_one',
       has_api_key: true,
       status: 'connected',
       base_url: 'https://api.typesafe.ai/v1',

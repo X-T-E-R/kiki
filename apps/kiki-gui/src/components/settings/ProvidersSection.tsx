@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ProviderCatalogItem } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
-import { DECISION_CONNECTION_PARAM, isDecisionConnection } from '@kiki/session-core/settings';
+import { DECISION_CONNECTION_PARAM, decisionProtocolOf, isDecisionConnection } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -18,7 +18,7 @@ import { connectionKind, isLocalBaseUrl, vendorLabelFor, type ConnectionKind } f
 import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
 import { useOAuthFlow } from '../useOAuthFlow';
-import { DecisionConnectionsCard } from './DecisionConnections';
+import { DecisionConnectionEditor } from './DecisionConnections';
 import { connectionNeedsAttention } from './DefaultModelBar';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
@@ -26,8 +26,7 @@ import { MODEL_QUERY_PARAM, ModelDetailSplit, ModelMaintenance, ProviderModelLis
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 import { SettingsLoadFailure, SettingsLoading, TEXT_BUTTON } from './SettingsPrimitives';
 
-const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local'];
-const DECISION_CARDS = new Set(['#st-card-decision-connections', '#decision-connection-add']);
+const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local', 'decision'];
 
 export function OAuthAccountCard({
   configuredProviderIds,
@@ -61,7 +60,8 @@ export function OAuthAccountCard({
 
 /**
  * Connections tab: Needs attention (only when something needs it), one unified
- * Connections list, and two folds (Command-line agents, Decision models).
+ * Connections list (chat, local, account, and standalone decision services),
+ * and the Command-line agents fold.
  */
 export function ProvidersSection() {
   const { client } = useConnection();
@@ -95,10 +95,10 @@ export function ProvidersSection() {
   const oauthFlow = useOAuthFlow(refreshProviderData);
 
   const allProviders = providersQuery.data?.items ?? [];
-  const providerItems = useMemo(() => allProviders.filter((provider) => !isDecisionConnection(provider)), [allProviders]);
-  const decisionProviders = useMemo(() => allProviders.filter(isDecisionConnection), [allProviders]);
+  const providerItems = allProviders;
+  const chatProviders = useMemo(() => allProviders.filter((provider) => !isDecisionConnection(provider)), [allProviders]);
   const allProviderIds = useMemo(() => new Set(allProviders.map((provider) => provider.id)), [allProviders]);
-  const chatProviderIds = useMemo(() => new Set(providerItems.map((provider) => provider.id)), [providerItems]);
+  const chatProviderIds = useMemo(() => new Set(chatProviders.map((provider) => provider.id)), [chatProviders]);
   const methods = methodsQuery.data ?? [];
   const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
 
@@ -118,7 +118,8 @@ export function ProvidersSection() {
   const keyOf = useCallback((provider: ProviderCatalogItem) => provider.id, []);
   const textOf = useCallback(
     (provider: ProviderCatalogItem) => [
-      provider.id, methodFor(provider.id)?.label, provider.base_url,
+      provider.id, methodFor(provider.id)?.label, provider.base_url, provider.default_model,
+      decisionProtocolOf(provider),
       ...(modelsQuery.data?.items ?? []).filter((model) => model.provider_id === provider.id)
         .flatMap((model) => [model.id, model.remote_id, model.display_name]),
     ],
@@ -145,6 +146,17 @@ export function ProvidersSection() {
   const view = useListView({ listId: 'connections', items: providerItems, keyOf, textOf, filters, sorts });
 
   const renderProvider = (provider: ProviderCatalogItem) => {
+    if (isDecisionConnection(provider)) {
+      return (
+        <DecisionConnectionEditor
+          provider={provider}
+          density={view.density}
+          defaultOpen={requestedDecision === provider.id || openRowRequest === provider.id}
+          openFocusKeySignal={focusKeyRequest?.providerId === provider.id ? focusKeyRequest.nonce : 0}
+          onChanged={refreshProviderData}
+        />
+      );
+    }
     const method = methodFor(provider.id);
     const models = modelsQuery.data?.items ?? [];
     const modelRequested = requestedModel !== null
@@ -153,7 +165,7 @@ export function ProvidersSection() {
       <ProviderEditor
         provider={provider}
         models={models}
-        defaultOpen={modelRequested || openRowRequest === provider.id}
+        defaultOpen={modelRequested || requestedDecision === provider.id || openRowRequest === provider.id}
         openFocusKeySignal={focusKeyRequest?.providerId === provider.id ? focusKeyRequest.nonce : 0}
         modelList={(
           <ProviderModelList providerId={provider.id} models={models} />
@@ -171,7 +183,8 @@ export function ProvidersSection() {
   const [adding, setAdding] = useState(false);
   const [customFormOpen, setCustomFormOpen] = useState(false);
   const [linkClosed, setLinkClosed] = useState<string | null>(null);
-  const wanted = hash === '#st-card-auth' || hash === '#st-card-providers-add';
+  const decisionAddHash = hash === '#decision-connection-add';
+  const wanted = hash === '#st-card-auth' || hash === '#st-card-providers-add' || decisionAddHash;
   const linked = wanted && linkClosed !== hash;
   const addOpen = adding || empty || linked;
   const closeAdd = () => {
@@ -189,20 +202,17 @@ export function ProvidersSection() {
   const [enginesOpen, setEnginesOpen] = useState(enginesLinked);
   useEffect(() => { if (enginesLinked) setEnginesOpen(true); }, [enginesLinked]);
 
-  const decisionLinked = DECISION_CARDS.has(hash) || requestedDecision !== null;
-  const [decisionOpen, setDecisionOpen] = useState(decisionLinked);
-  useEffect(() => { if (decisionLinked) setDecisionOpen(true); }, [decisionLinked]);
-
   const onCardMount = useContext(SettingsCardMountContext);
   useEffect(() => {
     if (addOpen && hash === '#st-card-auth') onCardMount?.('st-card-auth');
-    if (addOpen && hash === '#st-card-providers-add') onCardMount?.('st-card-providers-add');
-  }, [addOpen, hash, onCardMount]);
+    if (addOpen && (hash === '#st-card-providers-add' || decisionAddHash)) onCardMount?.('st-card-providers-add');
+  }, [addOpen, hash, decisionAddHash, onCardMount]);
 
-  const addContent = customFormOpen ? (
+  const addContent = customFormOpen || (decisionAddHash && linkClosed !== hash) ? (
     <NewProviderWizard
-      key="custom"
+      key={decisionAddHash && linkClosed !== hash ? 'decision-add' : 'custom'}
       initialMethod="api"
+      initialDecisionPreset={decisionAddHash && linkClosed !== hash ? 'openai_decisions' : undefined}
       configuredIds={allProviderIds}
       onSaved={async () => { await refreshProviderData(); closeAdd(); }}
       onImported={refreshProviderData}
@@ -277,6 +287,9 @@ export function ProvidersSection() {
               const method = methodFor(provider.id);
               const kind = connectionKind(provider, accountProviders);
               const count = modelCount(provider.id);
+              const isDecision = kind === 'decision';
+              const envMissing = isDecision && provider.api_key_env !== undefined && !provider.has_api_key;
+              const needsDecisionModel = isDecision && (provider.default_model ?? '') === '';
               const needsKey = kind === 'api' && !isLocalBaseUrl(provider.base_url)
                 && !provider.has_api_key && provider.api_key_env === undefined;
               const accountFacts = method === undefined ? null : accountState(method, undefined);
@@ -284,10 +297,14 @@ export function ProvidersSection() {
                 ? t(accountStateKey(accountFacts))
                 : provider.status === 'error'
                   ? t('st.connections.statusError')
-                  : needsKey
-                    ? t('st.connections.statusNeedsKey')
-                    : t('st.connections.statusSetup');
-              const displayName = method?.label ?? vendorLabelFor(provider.base_url) ?? provider.id;
+                  : envMissing
+                    ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
+                    : needsDecisionModel
+                      ? t('st.decision.status.needsModel')
+                      : needsKey
+                        ? t('st.connections.statusNeedsKey')
+                        : t('st.connections.statusSetup');
+              const displayName = method?.label ?? (isDecision ? provider.id : vendorLabelFor(provider.base_url) ?? provider.id);
 
               return (
                 <li
@@ -298,7 +315,8 @@ export function ProvidersSection() {
                   <span className="min-w-0 flex-1">
                     <span className="text-[13px] font-medium text-ink">{displayName}</span>
                     <span className="ml-2 text-[12px] text-ink-faint">
-                      {t(`st.connections.kind.${kind}`)} · {t('st.connections.modelCount', { count })}
+                      {t(`st.connections.kind.${kind}`)}
+                      {isDecision ? '' : ` · ${t('st.connections.modelCount', { count })}`}
                     </span>
                   </span>
                   <span className={`shrink-0 text-[12px] ${provider.status === 'error' ? 'text-danger' : 'text-amber-ink'}`}>
@@ -429,24 +447,6 @@ export function ProvidersSection() {
                 </Link>
               </div>
             </SectionCard>
-          </div>
-        ) : null}
-      </details>
-
-      <details
-        className="group"
-        data-providers-zone="decision"
-        data-decision-fold
-        open={decisionOpen}
-        onToggle={(event) => { setDecisionOpen(event.currentTarget.open); }}
-      >
-        <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12.5px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
-          <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
-          {t('st.ai.decision.fold')}
-        </summary>
-        {decisionOpen ? (
-          <div className="pt-3">
-            <DecisionConnectionsCard providers={decisionProviders} configuredIds={allProviderIds} onChanged={refreshProviderData} />
           </div>
         ) : null}
       </details>

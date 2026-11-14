@@ -34,6 +34,7 @@ import {
   toProtocolProvider,
 } from '#/kosong/model/catalog';
 import { ModelCatalog } from '#/kosong/model/catalogService';
+import { resolveDecisionSource } from '#/kosong/model/decision';
 import '#/kosong/model/modelService';
 import '#/kosong/model/errors';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
@@ -161,6 +162,61 @@ describe('Model assembly (pure data)', () => {
       await providers.delete('judgment');
       expect(() => catalog.getConnectionEndpoint('judgment')).toThrow('does not exist');
     } finally { await host.dispose(); vi.unstubAllEnvs(); }
+  });
+  it('resolves standalone openai_decisions and attached decision capabilities on chat providers reusing parent credentials', async () => {
+    const { host, catalog } = createHost({
+      providers: {
+        standalone: { type: 'openai_decisions', apiKey: 'standalone-key', defaultModel: 'decisions-1' },
+        gateway: {
+          type: 'openai',
+          baseUrl: 'https://gateway.example.test/v1',
+          apiKey: 'gateway-shared-key',
+          decision: {
+            openai_decisions: { model: 'gw-decisions', endpoint: '/v2/decisions' },
+            pair_score: { model: 'gw-rerank' },
+          },
+        },
+      },
+      models: {
+        chat: { provider: 'gateway', model: 'gpt-4o', maxContextSize: 128000 },
+      },
+    });
+    try {
+      const standaloneEp = catalog.getConnectionEndpoint('standalone');
+      expect(standaloneEp).toMatchObject({
+        providerName: 'standalone',
+        protocol: 'openai_decisions',
+        baseUrl: 'https://api.openai.com/v1',
+        defaultModel: 'decisions-1',
+        credentialSource: 'provider',
+      });
+      expect(await standaloneEp.authProvider.getAuth()).toEqual({ apiKey: 'standalone-key' });
+
+      expect(catalog.getConnectionEndpoint('gateway').protocol).toBeUndefined();
+      expect(catalog.getConnectionEndpoint('gateway', 'system_one').protocol).toBeUndefined();
+      expect(() => resolveDecisionSource(catalog, { kind: 'connection', connection: 'gateway' })).toThrow('protocol');
+      expect(() => resolveDecisionSource(catalog, { kind: 'connection', connection: 'gateway', protocol: 'system_one' })).toThrow('protocol');
+
+      const attachedDecisions = catalog.getConnectionEndpoint('gateway', 'openai_decisions');
+      expect(attachedDecisions).toMatchObject({
+        providerName: 'gateway',
+        protocol: 'openai_decisions',
+        baseUrl: 'https://gateway.example.test/v1',
+        decisionEndpoint: '/v2/decisions',
+        defaultModel: 'gw-decisions',
+        credentialSource: 'provider',
+      });
+      expect(await attachedDecisions.authProvider.getAuth()).toEqual({ apiKey: 'gateway-shared-key' });
+
+      const items = Object.fromEntries((await catalog.listProviders()).map((item) => [item.id, item]));
+      expect(items['standalone']).toMatchObject({ service: 'decision', decision_protocol: 'openai_decisions' });
+      expect(items['gateway']?.decision_capabilities).toEqual({
+        openai_decisions: { model: 'gw-decisions', endpoint: '/v2/decisions' },
+        pair_score: { model: 'gw-rerank' },
+      });
+    } finally {
+      await host.dispose();
+    }
   });
   it('scopes implicit System One credentials to the exact TypeSafe origin', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-typesafe-key');

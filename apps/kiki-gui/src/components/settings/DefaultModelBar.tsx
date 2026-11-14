@@ -20,6 +20,11 @@ export function connectionNeedsAttention(
   provider: ProviderCatalogItem,
   method: OAuthMethodStatus | undefined,
 ): boolean {
+  if (isDecisionConnection(provider)) {
+    const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
+    const needsModel = (provider.default_model ?? '') === '';
+    return provider.status === 'error' || envMissing || needsModel;
+  }
   const needsKey = method === undefined && !isLocalBaseUrl(provider.base_url)
     && !provider.has_api_key && provider.api_key_env === undefined;
   return provider.status === 'error'

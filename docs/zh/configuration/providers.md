@@ -14,6 +14,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 | `openai_responses` | OpenAI Responses API | OpenAI 较新的 Responses 接口 |
 | `google-genai` | Google GenAI | Gemini API |
 | `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI |
+| `openai_decisions` | OpenAI Decisions | 原生 `/v1/decisions` 决策服务；权限审查与记忆推荐 |
 | `system_one` | System One | Jev 等决策服务；权限审查与记忆推荐 |
 | `pair_score` | 重排分数 | 兼容重排器或分类器，用于记忆排序 |
 
@@ -23,7 +24,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 
 ### 决策连接
 
-决策连接统一保存地址、协议和凭证。权限审查与[记忆顾问](../guides/memory.md#记忆顾问)可共用一个连接，各自保留来源选择与行为设置。填写兼容服务的地址和远端模型名即可，无需创建本地对话模型或填写上下文长度。
+决策连接可以作为独立连接统一保存地址、协议和凭证，也可以在已有对话供应商上直接挂载决策能力。权限审查与[记忆顾问](../guides/memory.md#记忆顾问)可共用一个连接，各自保留来源选择与行为设置。填写兼容服务的地址和远端模型名即可，无需创建本地对话模型或填写上下文长度。
 
 下面两个功能共用 Jev 连接，读取服务器已有的环境变量：
 
@@ -41,11 +42,28 @@ source = { kind = "connection", connection = "judgment" }
 source = { kind = "connection", connection = "judgment" }
 ```
 
-`default_model` 是发送给远端决策服务的模型名。来源可通过 `model` 覆盖它，也可用 `{ kind = "model", model = "review-model" }` 选择已有对话模型别名。修改一方的来源不会改变另一方。[记忆顾问](../guides/memory.md#记忆顾问)开启后使用所选来源；保存来源会保留已有的关闭设置。
+如果对话网关在同一地址上同时提供 `/v1/decisions`、System One 或重排接口，可以直接在供应商下配置 `[providers.<name>.decision.<protocol>]`，无需再建一个重复填写 API 密钥的连接：
 
-重排器使用 `type = "pair_score"`，填写其 `base_url` 和远端 `default_model`。配对分数支持记忆**排序**，不支持**筛选**或权限审查。默认在基础路径后添加 `/systemone` 或 `/rerank`；服务使用其他路由时，可用 `decision_endpoint` 填写路径或完整 URL，须与基础地址同源（协议、主机和端口相同），且不含嵌入式凭据。
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://example.com/v1"
 
-两种连接均使用现有提供商凭证字段和自定义请求头。允许无认证 HTTP 请求的服务可不填凭证；显式指定的 `api_key_env` 无值且无其他认证方式时，会报告认证问题，上游返回 401 或 403 时也一样。API 密钥通过现有连接凭证字段或 `credentials.toml` 保存。[决策连接测试](../server/rest-api.md#决策连接)使用虚构内容验证所选服务。
+[providers.gateway.decision.openai_decisions]
+model = "decisions-model"
+
+[permission.reviewer]
+source = { kind = "connection", connection = "gateway", protocol = "openai_decisions" }
+
+[memory.advisor]
+source = { kind = "connection", connection = "gateway", protocol = "openai_decisions" }
+```
+
+`default_model`（或 `[providers.<name>.decision.<protocol>]` 中的 `model`）是发送给远端决策服务的模型名。来源可通过 `model` 覆盖它，也可用 `{ kind = "model", model = "review-model" }` 选择已有对话模型别名。修改一方的来源不会改变另一方。[记忆顾问](../guides/memory.md#记忆顾问)开启后使用所选来源；保存来源会保留已有的关闭设置。
+
+独立的 OpenAI Decisions 服务使用 `type = "openai_decisions"`（`base_url` 默认为 `https://api.openai.com/v1`）。重排器使用 `type = "pair_score"`，填写其 `base_url` 和远端 `default_model`。配对分数支持记忆**排序**，不支持**筛选**或权限审查。默认在基础路径后添加 `/decisions`、`/systemone` 或 `/rerank`；服务使用其他路由时，可在独立连接上用 `decision_endpoint`（或在 `[providers.<name>.decision.<protocol>]` 中用 `endpoint`）填写路径或完整 URL，须与基础地址同源（协议、主机和端口相同），且不含嵌入式凭据。
+
+决策服务统一复用现有供应商凭证字段和自定义请求头。允许无认证 HTTP 请求的服务可不填凭证；显式指定的 `api_key_env` 无值且无其他认证方式时，会报告认证问题，上游返回 401 或 403 时也一样。API 密钥通过现有连接凭证字段或 `credentials.toml` 保存。[决策连接测试](../server/rest-api.md#决策连接)使用虚构内容验证所选服务。
 
 旧的 Reviewer `backend = "jev"` 和顾问 `selector` 配置继续可用。显式[整理 Reviewer 密钥](../server/rest-api.md#决策连接)会在服务器上转存旧密钥、切换 Reviewer 来源，再清除旧字段。部分完成时会保留较新的设置：先刷新并核对连接和 Reviewer，再重试。若 Reviewer 密钥已换新、目标连接仍持旧密钥，应选择新的连接名；冲突连接始终保留。使用环境变量的连接无需转存密钥。
 

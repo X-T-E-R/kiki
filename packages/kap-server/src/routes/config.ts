@@ -449,7 +449,7 @@ async function patchReviewer(config: IConfigService, patch: Record<string, unkno
   }
   const source = decisionSourceSchema.optional().parse(next['source']);
   if (source?.kind === 'connection' && describeDecisionSource(catalog, source, true).state === 'capability_mismatch')
-    throw new Error2('config.invalid', 'Permission Reviewer requires System One or a chat model; pair_score is for memory ranking');
+    throw new Error2('config.invalid', 'Permission Reviewer requires System One, OpenAI Decisions, or a chat model; pair_score is for memory ranking');
   await config.replace('permission', { ...(isPlainObject(current) ? current : {}), ...permissionPatch, reviewer: next }, ConfigTarget.User);
   delete patch['permission'];
 }
@@ -644,7 +644,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options', 'tool_arg_matches', 'toolArgMatches']);
+const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'decision', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options', 'tool_arg_matches', 'toolArgMatches']);
 
 function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
   if (Array.isArray(obj)) {

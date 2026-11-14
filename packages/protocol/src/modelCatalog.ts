@@ -271,6 +271,32 @@ export const modelCatalogItemSchema = z.object({
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
+export const decisionCapabilityWireSchema = z.object({
+  model: z.string().trim().min(1).optional(),
+  endpoint: z.string().trim().min(1).optional(),
+}).strict();
+export type DecisionCapabilityWire = z.infer<typeof decisionCapabilityWireSchema>;
+
+export const decisionCapabilitiesWireSchema = z.object({
+  system_one: decisionCapabilityWireSchema.optional(),
+  pair_score: decisionCapabilityWireSchema.optional(),
+  openai_decisions: decisionCapabilityWireSchema.optional(),
+}).strict();
+export type DecisionCapabilitiesWire = z.infer<typeof decisionCapabilitiesWireSchema>;
+
+export const decisionCapabilityPatchSchema = z.object({
+  model: z.string().trim().min(1).nullable().optional(),
+  endpoint: z.string().trim().min(1).nullable().optional(),
+}).strict();
+export type DecisionCapabilityPatch = z.infer<typeof decisionCapabilityPatchSchema>;
+
+export const decisionCapabilitiesPatchSchema = z.object({
+  system_one: decisionCapabilityPatchSchema.nullable().optional(),
+  pair_score: decisionCapabilityPatchSchema.nullable().optional(),
+  openai_decisions: decisionCapabilityPatchSchema.nullable().optional(),
+}).strict();
+export type DecisionCapabilitiesPatch = z.infer<typeof decisionCapabilitiesPatchSchema>;
+
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
   enabled: z.boolean().optional(),
@@ -278,6 +304,7 @@ export const providerCatalogItemSchema = z.object({
   service: z.enum(['chat', 'decision']).optional(),
   decision_protocol: decisionProtocolSchema.optional(),
   decision_endpoint: z.string().optional(),
+  decision_capabilities: decisionCapabilitiesWireSchema.optional(),
   effective_base_url: z.string().optional(),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
@@ -620,6 +647,7 @@ export const patchProviderRequestSchema = z
     api_key_env: z.string().trim().min(1).nullable().optional(),
     base_url: z.string().trim().nullable().optional(),
     decision_endpoint: z.string().trim().min(1).nullable().optional(),
+    decision_capabilities: decisionCapabilitiesPatchSchema.nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
     defaults: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
@@ -729,6 +757,7 @@ export const createProviderRequestSchema = z
     api_key_env: z.string().trim().min(1).optional(),
     base_url: z.string().trim().optional(),
     decision_endpoint: z.string().trim().min(1).optional(),
+    decision_capabilities: decisionCapabilitiesWireSchema.optional(),
     default_model: z.string().min(1).optional(),
     defaults: generationParametersSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
@@ -743,6 +772,9 @@ export const createProviderRequestSchema = z
     const decision = decisionProtocolForProviderType(value.type) !== undefined;
     if (decision && (value.models?.length ?? 0) > 0) {
       ctx.addIssue({ code: 'custom', path: ['models'], message: 'Decision connections do not contain chat models' });
+    }
+    if (decision && value.decision_capabilities !== undefined) {
+      ctx.addIssue({ code: 'custom', path: ['decision_capabilities'], message: 'Decision connections cannot attach extra decision_capabilities' });
     }
     if (
       !decision && value.default_model !== undefined &&

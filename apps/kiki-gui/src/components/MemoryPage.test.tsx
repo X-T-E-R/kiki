@@ -341,7 +341,7 @@ describe('MemoryPage advisor switch', () => {
     const setup = container.querySelector<HTMLButtonElement>('[data-memory-advisor-setup]')!;
     expect(setup.textContent).toBe('Choose a source');
     await act(async () => { setup.click(); });
-    expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-decision-connections');
+    expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=defaults#st-card-decision-judges');
   });
 
   it('re-reads the advisor when workspace memory is switched off or back on here', async () => {

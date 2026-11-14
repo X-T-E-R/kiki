@@ -24,6 +24,9 @@ const getModel = vi.fn();
 const listCatalogProviders = vi.fn();
 const listRecipes = vi.fn();
 const getRequestGovernance = vi.fn();
+const getMemoryAdvisorSettings = vi.fn();
+const updateProvider = vi.fn();
+const probeDecisionSource = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -40,6 +43,9 @@ vi.mock('../../state/connection', () => ({
       listCatalogProviders,
       listRecipes,
       getRequestGovernance,
+      getMemoryAdvisorSettings,
+      updateProvider,
+      probeDecisionSource,
     },
   }),
 }));
@@ -60,6 +66,13 @@ beforeEach(() => {
   listCatalogProviders.mockReset().mockResolvedValue({ items: [] });
   listRecipes.mockReset().mockResolvedValue([]);
   getRequestGovernance.mockReset().mockResolvedValue({ revision: 'rev-1', rules: [], runtime: { inflight: [], queued: [] } });
+  getMemoryAdvisorSettings.mockReset().mockResolvedValue({
+    enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true,
+    advisor: { mode: 'off' },
+    advisor_status: { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
+  });
+  updateProvider.mockReset();
+  probeDecisionSource.mockReset();
   listProviders.mockReset().mockResolvedValue({
     items: [
       { id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1', has_api_key: true },
@@ -287,11 +300,18 @@ describe('Models status card, attention, and tabs', () => {
     }
   });
 
-  it('shows the Concurrency card on Defaults tab', async () => {
+  it('shows the Who decides and Concurrency cards on Defaults tab, and redirects legacy #st-card-decision-connections links', async () => {
     const container = await render(<AiSection />, ['/settings/ai?tab=defaults']);
+    const judgesCard = container.querySelector('#st-card-decision-judges');
+    expect(judgesCard).not.toBeNull();
+    expect(judgesCard!.textContent).toContain('Who decides');
     const concurrencyCard = container.querySelector('#st-card-concurrency');
     expect(concurrencyCard).not.toBeNull();
     expect(concurrencyCard!.textContent).toContain('Concurrency limits');
+
+    const legacy = await render(<AiSection />, ['/settings/ai?tab=providers#st-card-decision-connections']);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(legacy.querySelector('#st-card-decision-judges')).not.toBeNull();
   });
 
   it('shows SettingsLoadFailure with Retry when listOAuthMethods fails in the account lane', async () => {
@@ -313,35 +333,60 @@ describe('Models status card, attention, and tabs', () => {
 });
 
 describe('ProvidersSection unified connections list and folds', () => {
-  it('renders unified connections list followed by Command-line agents and Decision models folds without a flat account catalogue', async () => {
+  it('renders unified connections list followed by Command-line agents without a buried decision fold', async () => {
     listProviders.mockResolvedValue({ items: [LOCAL_PROVIDER, ACCOUNT_PROVIDER, API_PROVIDER] });
     listModels.mockResolvedValue({ items: [] });
     listOAuthMethods.mockResolvedValue([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]);
     const container = await render();
 
     const zones = [...container.querySelectorAll('[data-providers-zone]')].map((z) => z.getAttribute('data-providers-zone'));
-    expect(zones).toEqual(['connections', 'harnesses', 'decision']);
+    expect(zones).toEqual(['connections', 'harnesses']);
+    expect(container.querySelector('[data-decision-fold]')).toBeNull();
     expect(container.querySelector('#st-card-auth')).toBeNull();
     expect(container.querySelectorAll('[data-oauth-method]')).toHaveLength(0);
 
     expect(connectionRows(container)).toEqual(['openai-api', 'copilot', 'ollama']);
     expect(container.querySelector('[data-engines-fold] summary')!.textContent)
       .toContain('Command-line agents (on the computer running Kiki)');
-    expect(container.querySelector('[data-decision-fold] summary')!.textContent)
-      .toContain('Decision models (which model reviews approvals and which picks memories)');
 
     // No external engines configured: the visibility switch does not show inside the engines fold.
     expect(container.querySelector('[data-external-engines-visibility]')).toBeNull();
   });
 
-  it('lists a decision service inside the Decision models fold and not among chat connections', async () => {
+  it('lists a standalone decision service directly in Connections with a Decision badge and attaches capabilities on chat connections', async () => {
+    const chatWithCap = {
+      ...API_PROVIDER,
+      decision_capabilities: { openai_decisions: { model: 'decisions-alpha' } },
+    };
     listProviders.mockResolvedValue({ items: [
-      API_PROVIDER,
-      { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: false },
+      chatWithCap,
+      { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: true },
     ] });
-    const container = await render(<ProvidersSection />, ['/settings/ai#st-card-decision-connections']);
-    expect(container.querySelector('[data-providers-zone="connections"] [data-connection-row="typesafe"]')).toBeNull();
-    expect(container.querySelector('[data-providers-zone="decision"] [data-decision-row="typesafe"]')).not.toBeNull();
+    getProviderEntity.mockImplementation(async (id: string) => (id === 'typesafe'
+      ? { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: true, revision: 'rev-1', custom_header_keys: [], env_keys: [] }
+      : { ...chatWithCap, revision: 'rev-1', custom_header_keys: [], env_keys: [] }));
+    probeDecisionSource.mockResolvedValue({ ok: true, duration_ms: 42, status: { state: 'ready' } });
+
+    const container = await render(<ProvidersSection />, ['/settings/ai?tab=providers&decision=typesafe#st-card-providers']);
+    expect(connectionRows(container)).toEqual(['openai-api', 'typesafe']);
+    const decisionRow = container.querySelector<HTMLDetailsElement>('[data-connection-row="typesafe"]')!;
+    expect(decisionRow.open).toBe(true);
+    expect(decisionRow.querySelector('[data-decision-badge]')?.textContent).toBe('Decision');
+
+    const chatRow = container.querySelector<HTMLDetailsElement>('[data-connection-row="openai-api"]')!;
+    chatRow.open = true;
+    const capPanel = chatRow.querySelector('[data-provider-decision-capabilities="openai-api"]')!;
+    expect(capPanel).not.toBeNull();
+    const modelInput = capPanel.querySelector<HTMLInputElement>('[data-decision-capability-model="openai_decisions"]')!;
+    expect(modelInput.value).toBe('decisions-alpha');
+    const testBtn = capPanel.querySelector<HTMLButtonElement>('[data-decision-capability-test="openai_decisions"]')!;
+    await act(async () => { testBtn.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(probeDecisionSource).toHaveBeenCalledWith(
+      { kind: 'connection', connection: 'openai-api', protocol: 'openai_decisions' },
+      'openai-api@https://api.openai.com',
+    );
+    expect(capPanel.textContent).toContain('Answered in 42 ms.');
   });
 
   it('shows a failed connection list read with Retry and falls back to Default (unknown) on the status card when default model cannot resolve', async () => {

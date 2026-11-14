@@ -25,7 +25,7 @@ import type { I18nKey } from '../i18n/locale';
 export type MemoryAdvisorProtocol = MemoryAdvisorSelector['protocol'];
 export type MemoryAdvisorMode = MemoryAdvisorConfig['mode'];
 
-export const MEMORY_ADVISOR_PROTOCOLS: readonly MemoryAdvisorProtocol[] = ['chat_json', 'system_one', 'pair_score'];
+export const MEMORY_ADVISOR_PROTOCOLS: readonly MemoryAdvisorProtocol[] = ['chat_json', 'system_one', 'pair_score', 'openai_decisions'];
 
 /** The tuning fields a person may change, in the order the settings card lists them. */
 export const MEMORY_ADVISOR_NUMBER_FIELDS = [

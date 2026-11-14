@@ -810,7 +810,7 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
 });
 
 describe('Advisor governed protocols', () => {
-  function selector(protocol: 'system_one' | 'pair_score' = 'system_one') {
+  function selector(protocol: 'system_one' | 'pair_score' | 'openai_decisions' = 'system_one') {
     const ix = new TestInstantiationService();
     disposables.push(ix);
     const model = {
@@ -855,7 +855,7 @@ describe('Advisor governed protocols', () => {
     logicalRequestId: 'logical',
     waitBudget: { waitedMs: 0 },
   };
-  function input(protocol: 'chat_json' | 'system_one' | 'pair_score'): MemorySelectorCall {
+  function input(protocol: 'chat_json' | 'system_one' | 'pair_score' | 'openai_decisions'): MemorySelectorCall {
     return {
       config: memoryAdvisorConfigSchema.parse({
         selector: { protocol, model: 'chosen' },
@@ -983,6 +983,74 @@ describe('Advisor governed protocols', () => {
     expect(decision.service.describe({ ...config, first_step_wait_ms: 1_500 }, workspace)).toMatchObject({ first_step_wait_ms: 1_500, first_step_wait_default_ms: 3_000 });
     const chat = selector().service.describe(input('chat_json').config, workspace);
     expect(chat).toMatchObject({ protocol: 'chat_json', first_step_wait_ms: 1_500, first_step_wait_default_ms: 1_500 });
+    const openai = selector('openai_decisions').service.describe(input('openai_decisions').config, workspace);
+    expect(openai).toMatchObject({ protocol: 'openai_decisions', applicability: 'full_units', first_step_wait_ms: 3_000, first_step_wait_default_ms: 3_000 });
+  });
+
+  it('uses OpenAI Decisions input_text + input_json choice questions across discover and judge, maps refusal to skip, and keeps output_tokens: 0 as known usage', async () => {
+    const f = selector('openai_decisions');
+    const http = vi.fn(async (_url, init) => {
+      const body = JSON.parse(init.body) as {
+        model: string;
+        input: { role: string; content: { type: string; text?: string; data?: { stage: string; units: { handle: string }[] } }[] }[];
+        questions: { type: string; name: string; instructions: string; choices: { value: string }[] }[];
+      };
+      expect(body.input[0]?.role).toBe('user');
+      expect(body.input[0]?.content.map((part) => part.type)).toEqual(['input_text', 'input_json']);
+      const stage = body.input[0]?.content[1]?.data?.stage;
+      if (stage === 'discover') {
+        expect(body.questions[0]?.choices.map((c) => c.value)).toEqual(['read', 'skip']);
+        return Response.json({
+          answers: [
+            { type: 'choice', name: 'c0', choice: 'read', probabilities: [{ value: 'read', probability: 0.92 }, { value: 'skip', probability: 0.08 }] },
+            { type: 'refusal', name: 'c1', reason: 'Ambiguous' },
+          ],
+          usage: { input_tokens: 80, output_tokens: 0, input_tokens_details: { cached_tokens: 15, cache_write_tokens: 0 } },
+        });
+      }
+      expect(body.questions[0]?.choices.map((c) => c.value)).toEqual(['apply', 'history', 'skip']);
+      return Response.json({
+        answers: [
+          { type: 'choice', name: 'c0', choice: 'history', probabilities: [{ value: 'apply', probability: 0.1 }, { value: 'history', probability: 0.85 }, { value: 'skip', probability: 0.05 }] },
+          { type: 'refusal', name: 'c1', reason: 'No clear instruction' },
+        ],
+        usage: { input_tokens: 95, output_tokens: 0 },
+      });
+    });
+    vi.stubGlobal('fetch', http);
+    const discoverCall = {
+      ...input('openai_decisions'),
+      stage: 'discover' as const,
+      units: [{ handle: 'c0', text: 'Entry zero' }, { handle: 'c1', text: 'Entry one' }],
+    };
+    const record = vi.fn();
+    expect(await f.service.call({ ...discoverCall, record })).toEqual([
+      { handle: 'c0', use: 'read' },
+      { handle: 'c1', use: 'skip' },
+    ]);
+    expect(http.mock.calls[0]![0].toString()).toBe('https://example.test/v1/decisions');
+    expect(discoverCall.stats).toMatchObject({
+      requests: 1,
+      inputTokens: 80,
+      outputTokens: 0,
+      usageKnown: true,
+    });
+    expect(record).toHaveBeenCalledWith(
+      expect.anything(),
+      { inputOther: 65, inputCacheRead: 15, inputCacheCreation: 0, output: 0 },
+      true,
+    );
+
+    const judgeCall = {
+      ...input('openai_decisions'),
+      stage: 'judge' as const,
+      units: [{ handle: 'c0', text: 'Full zero' }, { handle: 'c1', text: 'Full one' }],
+    };
+    expect(await f.service.call(judgeCall)).toEqual([
+      { handle: 'c0', use: 'history' },
+      { handle: 'c1', use: 'skip' },
+    ]);
+    expect(judgeCall.stats.usageKnown).toBe(true);
   });
   it('describes System One choices so discovery reads defaults and exceptions the answer depends on', async () => {
     const f = selector();
@@ -1097,7 +1165,7 @@ describe('Advisor governed protocols', () => {
       memorySelectorBatches([{ handle: 'c0', text: 'x'.repeat(5_000) }], 'query', 40, 256).omitted,
     ).toBe(1);
   });
-  it.each(['chat_json', 'system_one', 'pair_score'] as const)(
+  it.each(['chat_json', 'system_one', 'pair_score', 'openai_decisions'] as const)(
     'batches the complete %s wire payload and rejects an oversized call before admission',
     async (protocol) => {
       const f = selector();

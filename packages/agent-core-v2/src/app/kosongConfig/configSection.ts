@@ -28,7 +28,7 @@ import type {
 } from '#/kosong/model/model';
 import type { GenerationParameters } from '#/kosong/model/parameters';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
-import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type ProvidersSection } from '#/kosong/provider/provider';
+import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type ProviderDecisionCapability, type ProviderDecisionConfig, type ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
@@ -99,12 +99,26 @@ export const ModelUsagePolicySchema = z.object({
 type _AssertModelUsageParameters = AssertExact<Equal<z.infer<typeof ModelUsageParametersSchema>, ModelUsageParameters>>;
 type _AssertModelUsagePolicy = AssertExact<Equal<z.infer<typeof ModelUsagePolicySchema>, ModelUsagePolicy>>;
 
+export const ProviderDecisionCapabilitySchema = z.object({
+  model: z.string().trim().min(1).optional(),
+  endpoint: z.string().trim().min(1).optional(),
+}).strict();
+
+export const ProviderDecisionConfigSchema = z.object({
+  system_one: ProviderDecisionCapabilitySchema.optional(),
+  pair_score: ProviderDecisionCapabilitySchema.optional(),
+  openai_decisions: ProviderDecisionCapabilitySchema.optional(),
+}).strict();
+type _AssertProviderDecisionCapability = AssertExact<Equal<z.infer<typeof ProviderDecisionCapabilitySchema>, ProviderDecisionCapability>>;
+type _AssertProviderDecisionConfig = AssertExact<Equal<z.infer<typeof ProviderDecisionConfigSchema>, ProviderDecisionConfig>>;
+
 const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
   enabled: z.boolean().optional(),
 
   baseUrl: z.string().optional(),
   decisionEndpoint: z.string().optional(),
+  decision: ProviderDecisionConfigSchema.optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),
@@ -182,6 +196,8 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'requestIdentity' || targetKey === 'requestCompression' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
+    } else if (targetKey === 'decision') {
+      out[targetKey] = isPlainObject(value) ? providerDecisionFromToml(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
     } else {
@@ -213,11 +229,31 @@ function providerEntryToToml(
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'requestIdentity' || key === 'requestCompression' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
+    } else if (key === 'decision' && isPlainObject(value)) {
+      out['decision'] = providerDecisionToToml(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
     } else {
       setDefined(out, camelToSnake(key), value);
     }
+  }
+  return out;
+}
+
+function providerDecisionFromToml(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([protocol, entry]) => [
+      protocol,
+      isPlainObject(entry) ? deepSnakeToCamel(entry) : entry,
+    ]),
+  );
+}
+
+function providerDecisionToToml(value: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [protocol, entry] of Object.entries(value)) {
+    if (entry === undefined) continue;
+    out[protocol] = isPlainObject(entry) ? deepCamelToSnake(entry) : entry;
   }
   return out;
 }

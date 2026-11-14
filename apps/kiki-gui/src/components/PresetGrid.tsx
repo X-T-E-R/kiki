@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
+import { DECISION_CONNECTION_PRESETS, type DecisionConnectionPreset } from '@kiki/session-core/settings';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -36,9 +37,11 @@ function normalize(value: string): string {
 
 export function PresetGrid({
   onPick,
+  onPickDecision,
   dense = false,
 }: {
   onPick: (preset: ProviderPreset | null, protocol?: ProviderWireType) => void;
+  onPickDecision?: (presetId: DecisionConnectionPreset['id']) => void;
   /** Onboarding uses the same protocol and search paths without shortcut chips. */
   dense?: boolean;
 }) {
@@ -52,10 +55,20 @@ export function PresetGrid({
       || normalize(preset.baseUrl).includes(needle)),
     [needle],
   );
+  const decisionMatches = useMemo(
+    () => needle === '' || onPickDecision === undefined ? [] : DECISION_CONNECTION_PRESETS.filter((preset) => {
+      const label = t(`st.decision.preset.${preset.id}` as I18nKey);
+      return normalize(preset.id).includes(needle)
+        || normalize(label).includes(needle)
+        || normalize(preset.baseUrl).includes(needle);
+    }),
+    [needle, onPickDecision, t],
+  );
   const shortcuts = SHORTCUT_IDS.flatMap((id) => {
     const preset = presetById(id);
     return preset === undefined ? [] : [preset];
   });
+  const hasAnyMatches = matches.length > 0 || decisionMatches.length > 0;
 
   return (
     <div className="space-y-3" data-preset-grid>
@@ -67,7 +80,7 @@ export function PresetGrid({
         value={query}
         onChange={(event) => { setQuery(event.target.value); }}
       />
-      {matches.length > 0 ? (
+      {hasAnyMatches ? (
         <section aria-label={t('st.presets.matches')} data-preset-results>
           <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.matches')}</p>
           <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
@@ -80,6 +93,20 @@ export function PresetGrid({
                       {protocolLabel(preset.type)} · {hostLabel(preset.baseUrl)}
                     </span>
                   </span>
+                  <Icon name="arrowRight" size={12} className="text-ink-faint group-hover:text-ink" />
+                </button>
+              </li>
+            ))}
+            {decisionMatches.map((preset) => (
+              <li key={`decision-${preset.id}`}>
+                <button type="button" data-decision-template={preset.id} onClick={() => { onPickDecision?.(preset.id); }} className={ROW}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
+                    <span className="block truncate text-[12px] text-ink-faint">
+                      {t(`st.decision.presetHint.${preset.id}` as I18nKey)}
+                    </span>
+                  </span>
+                  <span className="hidden shrink-0 font-mono text-[11px] text-ink-faint sm:inline">{preset.type}</span>
                   <Icon name="arrowRight" size={12} className="text-ink-faint group-hover:text-ink" />
                 </button>
               </li>
@@ -111,6 +138,25 @@ export function PresetGrid({
               })}
             </ul>
           </section>
+          {onPickDecision !== undefined && !dense && needle === '' ? (
+            <section aria-label={t('st.decision.presetsGroup')} data-decision-presets>
+              <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.decision.presetsGroup')}</p>
+              <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
+                {DECISION_CONNECTION_PRESETS.map((preset) => (
+                  <li key={preset.id}>
+                    <button type="button" data-decision-template={preset.id} onClick={() => { onPickDecision(preset.id); }} className={ROW}>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
+                        <span className="block text-[12px] leading-4 text-ink-faint">{t(`st.decision.presetHint.${preset.id}` as I18nKey)}</span>
+                      </span>
+                      <span className="hidden shrink-0 font-mono text-[11px] text-ink-faint sm:inline">{preset.type}</span>
+                      <Icon name="arrowRight" size={12} className="text-ink-faint group-hover:text-ink" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           {!dense && needle === '' ? (
             <section aria-label={t('st.presets.shortcuts')} className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
               <span className="mr-1 text-[12px] text-ink-faint">{t('st.presets.shortcuts')}</span>

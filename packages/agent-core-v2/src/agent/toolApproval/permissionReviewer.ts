@@ -44,7 +44,35 @@ export interface ReviewerDiagnostic {
 }
 
 const jevAnswerSchema = z.object({ type: z.literal('noul'), noul: z.number().min(0).max(1) });
-const jevResponseSchema = z.object({ answers: z.record(z.string(), jevAnswerSchema) });
+const decisionUsageSchema = z.object({
+  input_tokens: z.number().int().nonnegative().optional(),
+  output_tokens: z.number().int().nonnegative().optional(),
+  input_tokens_details: z.object({
+    cached_tokens: z.number().int().nonnegative().optional(),
+    cache_write_tokens: z.number().int().nonnegative().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+const jevResponseSchema = z.object({
+  answers: z.record(z.string(), jevAnswerSchema),
+  usage: decisionUsageSchema.optional(),
+});
+const openAiDecisionAnswerSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('predicate'),
+    name: z.string().nullable().optional(),
+    probability: z.number().finite().min(0).max(1),
+  }).passthrough(),
+  z.object({
+    type: z.literal('refusal'),
+    name: z.string().nullable().optional(),
+    reason: z.string().optional(),
+  }).passthrough(),
+]);
+const openAiDecisionResponseSchema = z.object({
+  model: z.string().optional(),
+  answers: z.array(openAiDecisionAnswerSchema),
+  usage: decisionUsageSchema.optional(),
+});
 
 type ReviewerConfig = z.infer<typeof PermissionReviewerConfigSchema>;
 
@@ -250,14 +278,30 @@ async function reviewConfigured(config: ReviewerConfig, input: string, dependenc
   let source: ResolvedDecisionSource;
   if (config.source !== undefined) {
     source = resolveDecisionSource(dependencies.catalog, config.source);
-    if (source.protocol !== 'system_one') return undefined;
+    if (source.protocol !== 'system_one' && source.protocol !== 'openai_decisions') return undefined;
   } else {
     const apiKey = dependencies.apiKey ?? config.apiKey ?? process.env['TYPESAFE_API_KEY'];
     if (!apiKey) return undefined;
     source = { id: 'legacy:jev', name: config.model ?? 'jev-latest', providerName: 'legacy:jev', protocol: 'system_one', endpoint: new URL('https://api.typesafe.ai/v1/systemone'), headers: {}, authProvider: new StaticAuthProvider(apiKey), credentialSource: 'provider' };
   }
   diagnostic.stage = 'jev';
-  return reviewWithJev(config, input, source, signal, dependencies);
+  diagnostic.inputChars = input.length;
+  return source.protocol === 'openai_decisions'
+    ? reviewWithOpenAiDecisions(config, input, source, signal, dependencies, diagnostic)
+    : reviewWithJev(config, input, source, signal, dependencies, diagnostic);
+}
+
+function recordDecisionDiagnosticUsage(
+  usage: z.infer<typeof decisionUsageSchema> | undefined,
+  diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] },
+): void {
+  if (usage?.input_tokens === undefined) return;
+  const cached = usage.input_tokens_details?.cached_tokens ?? 0;
+  const cacheWrite = usage.input_tokens_details?.cache_write_tokens ?? 0;
+  diagnostic.cacheReadTokens = (diagnostic.cacheReadTokens ?? 0) + cached;
+  diagnostic.cacheCreationTokens = (diagnostic.cacheCreationTokens ?? 0) + cacheWrite;
+  diagnostic.inputTokens = (diagnostic.inputTokens ?? 0) + usage.input_tokens;
+  diagnostic.outputTokens = (diagnostic.outputTokens ?? 0) + (usage.output_tokens ?? 0);
 }
 
 async function reviewWithJev(
@@ -266,6 +310,7 @@ async function reviewWithJev(
   source: ResolvedDecisionSource,
   signal: AbortSignal,
   dependencies: ReviewerDependencies,
+  diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] },
 ): Promise<ReviewerVerdict | undefined> {
   const questions = Object.fromEntries(config.categories.map((category) => [category, {
     type: 'noul', instructions: QUESTIONS[category],
@@ -275,6 +320,7 @@ async function reviewWithJev(
     body: { state: { value: input }, model: source.name, questions } });
   const parsed = jevResponseSchema.safeParse(response);
   if (!parsed.success) return undefined;
+  recordDecisionDiagnosticUsage(parsed.data.usage, diagnostic);
   const values = config.categories.map((category) => parsed.data.answers[category]?.noul);
   if (values.some((value) => value === undefined)) return undefined;
   const probabilities = values as number[];
@@ -287,6 +333,69 @@ async function reviewWithJev(
   return confidence >= config.allowThreshold
     ? { outcome: 'allow', confidence, reason: 'All reviewer checks passed', backend: 'jev' }
     : { outcome: 'ask', confidence, reason: 'Reviewer checks inconclusive', backend: 'jev' };
+}
+
+async function reviewWithOpenAiDecisions(
+  config: ReviewerConfig,
+  input: string,
+  source: ResolvedDecisionSource,
+  signal: AbortSignal,
+  dependencies: ReviewerDependencies,
+  diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] },
+): Promise<ReviewerVerdict | undefined> {
+  const questions = config.categories.map((category) => ({
+    type: 'predicate' as const,
+    name: category,
+    instructions: QUESTIONS[category],
+  }));
+  const response = await requestDecision({
+    source,
+    signal,
+    admission: dependencies.admission,
+    fetcher: dependencies.fetch,
+    attribution: { ...dependencies.owner, purpose: 'permission_review', logicalRequestId: crypto.randomUUID(), waitBudget: { waitedMs: 0 } },
+    body: { model: source.name, input, questions },
+  });
+  const parsed = openAiDecisionResponseSchema.safeParse(response);
+  if (!parsed.success || parsed.data.answers.length !== config.categories.length) return undefined;
+  recordDecisionDiagnosticUsage(parsed.data.usage, diagnostic);
+  const matched = matchOrderedAnswers(config.categories, parsed.data.answers);
+  if (matched === undefined) return undefined;
+  const denied = matched.findIndex((answer) => answer.type === 'predicate' && answer.probability <= 1 - config.denyThreshold);
+  if (denied >= 0) {
+    const entry = matched[denied];
+    const prob = entry?.type === 'predicate' ? entry.probability : 1;
+    return { outcome: 'deny', confidence: 1 - prob, reason: `Failed ${config.categories[denied]}`, backend: 'jev' };
+  }
+  if (matched.some((answer) => answer.type === 'refusal')) {
+    return { outcome: 'ask', confidence: 0, reason: 'Reviewer checks inconclusive', backend: 'jev' };
+  }
+  const probabilities = matched.map((answer) => answer.type === 'predicate' ? answer.probability : 0);
+  const confidence = Math.min(...probabilities);
+  return confidence >= config.allowThreshold
+    ? { outcome: 'allow', confidence, reason: 'All reviewer checks passed', backend: 'jev' }
+    : { outcome: 'ask', confidence, reason: 'Reviewer checks inconclusive', backend: 'jev' };
+}
+
+function matchOrderedAnswers<T extends { readonly name?: string | null }>(
+  expectedNames: readonly string[],
+  answers: readonly T[],
+): readonly T[] | undefined {
+  if (answers.length !== expectedNames.length) return undefined;
+  const expectedSet = new Set(expectedNames);
+  const byName = new Map<string, T>();
+  for (const answer of answers) {
+    if (answer.name === undefined || answer.name === null) continue;
+    if (!expectedSet.has(answer.name) || byName.has(answer.name)) return undefined;
+    byName.set(answer.name, answer);
+  }
+  if (byName.size === expectedNames.length) return expectedNames.map((name) => byName.get(name)!);
+  if (byName.size === 0) return answers;
+  for (let index = 0; index < answers.length; index++) {
+    const name = answers[index]!.name;
+    if (name !== undefined && name !== null && name !== expectedNames[index]) return undefined;
+  }
+  return answers;
 }
 
 function editReplacements(args: Record<string, unknown> | null): { old: string; replacement: string }[] | undefined {
