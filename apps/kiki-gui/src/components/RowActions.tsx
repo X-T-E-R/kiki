@@ -113,6 +113,7 @@ export interface MessageRowActionsProps {
   canEdit?: boolean;
   canRegenerate?: boolean;
   canFork?: boolean;
+  forkBusy?: boolean;
   /** Turn running / resync in flight — mutating actions disable with a hint. */
   disabled?: boolean;
   /**
@@ -123,7 +124,7 @@ export interface MessageRowActionsProps {
   align?: 'left' | 'right';
   onEdit?: () => void;
   onRegenerate?: () => void;
-  onFork?: (seed?: SessionSeedMode) => void;
+  onFork?: (seed?: SessionSeedMode) => void | Promise<unknown>;
 }
 
 const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
@@ -165,6 +166,7 @@ export function MessageRowActions({
   canEdit = false,
   canRegenerate = false,
   canFork = false,
+  forkBusy = false,
   disabled = false,
   align = 'left',
   onEdit,
@@ -182,6 +184,8 @@ export function MessageRowActions({
   const [openUp, setOpenUp] = useState(false);
   const [forkMenuOpen, setForkMenuOpen] = useState(false);
   const [forkOpenUp, setForkOpenUp] = useState(false);
+  const [forkingLocal, setForkingLocal] = useState(false);
+  const forkingRef = useRef(false);
   const menuContainerRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -273,7 +277,24 @@ export function MessageRowActions({
     };
   }, [menuOpen, coarse]);
 
+  const forkDisabled = forkBusy || forkingLocal;
+  const triggerFork = (seed?: SessionSeedMode) => {
+    if (onFork === undefined || forkDisabled || forkingRef.current) return;
+    setForkMenuOpen(false);
+    setMenuOpen(false);
+    const result = onFork(seed);
+    if (result !== undefined && typeof (result as PromiseLike<unknown>).then === 'function') {
+      forkingRef.current = true;
+      setForkingLocal(true);
+      void Promise.resolve(result).finally(() => {
+        forkingRef.current = false;
+        setForkingLocal(false);
+      });
+    }
+  };
+
   const openForkMenu = (focusFirst: boolean) => {
+    if (forkDisabled || forkingRef.current) return;
     const rawRect = forkTriggerRef.current?.getBoundingClientRect();
     if (rawRect !== undefined) {
       const rect = unzoomedRect(rawRect);
@@ -393,9 +414,9 @@ export function MessageRowActions({
           data-row-action-menu="fork"
           title={t('transcript.forkTitle')}
           aria-label={t('transcript.forkTitle')}
+          disabled={forkDisabled}
           onClick={() => {
-            setMenuOpen(false);
-            onFork();
+            triggerFork();
           }}
           className={`${MENU_ITEM} sm:hidden`}
         >
@@ -510,7 +531,7 @@ export function MessageRowActions({
           <span
             className="relative inline-flex"
             onPointerEnter={(event) => {
-              if (event.pointerType === 'mouse') openForkMenu(false);
+              if (event.pointerType === 'mouse' && !forkDisabled && !forkingRef.current) openForkMenu(false);
             }}
             onPointerLeave={(event) => {
               if (event.pointerType === 'mouse') setForkMenuOpen(false);
@@ -522,24 +543,25 @@ export function MessageRowActions({
               data-row-action="fork"
               title={t('transcript.forkTitle')}
               aria-label={t('transcript.forkTitle')}
+              aria-busy={forkDisabled || undefined}
+              disabled={forkDisabled}
               aria-haspopup={coarse ? undefined : 'menu'}
               aria-expanded={coarse ? undefined : forkMenuOpen}
               onKeyDown={(event) => {
-                if (coarse) return;
+                if (coarse || forkDisabled || forkingRef.current) return;
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                   event.preventDefault();
                   openForkMenu(true);
                 }
               }}
               onClick={() => {
-                setForkMenuOpen(false);
-                onFork();
+                triggerFork();
               }}
               className={TILE}
             >
               <Icon name="branch" size={14} />
             </button>
-            {!coarse && forkMenuOpen ? (
+            {!coarse && forkMenuOpen && !forkDisabled ? (
               <div
                 ref={forkMenuRef}
                 role="menu"
@@ -555,9 +577,9 @@ export function MessageRowActions({
                     type="button"
                     role="menuitem"
                     data-row-fork-seed={mode}
+                    disabled={forkDisabled}
                     onClick={() => {
-                      setForkMenuOpen(false);
-                      onFork(mode);
+                      triggerFork(mode);
                     }}
                     className={MENU_ITEM}
                   >

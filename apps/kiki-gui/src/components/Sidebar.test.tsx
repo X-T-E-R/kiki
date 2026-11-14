@@ -4047,4 +4047,65 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
     await settle();
     expect(updateSessionProfile).toHaveBeenCalledWith('s-untitled', { title: 'Fix cold session rename' });
   });
+
+  it('commits dirty draft and closes unchanged draft on keyboard focus exit outside the rename editor without closing on internal Tab or IME', async () => {
+    const item = session('s-tab');
+    const outsideButton = document.createElement('button');
+    document.body.appendChild(outsideButton);
+    try {
+      const { container } = await mount({
+        sessions: [item],
+        sessionGroups: [{ key: 'today', label: 'Today', items: [item] }],
+      });
+      const editor1 = await openSessionRename(container, 's-tab');
+      const input1 = editor1.querySelector<HTMLInputElement>('[data-rename-input]')!;
+      const confirm1 = editor1.querySelector<HTMLButtonElement>('[data-rename-confirm]')!;
+      const cancel1 = editor1.querySelector<HTMLButtonElement>('[data-rename-cancel]')!;
+
+      // Internal focus movement between input -> confirm -> cancel stays open.
+      await act(async () => {
+        input1.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: confirm1 }));
+        confirm1.focus();
+        confirm1.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: cancel1 }));
+        cancel1.focus();
+      });
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).not.toBeNull();
+      expect(updateSessionProfile).not.toHaveBeenCalled();
+
+      // IME composition blur does not dismiss or submit.
+      await act(async () => {
+        input1.focus();
+        input1.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+        input1.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outsideButton }));
+        input1.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+      });
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).not.toBeNull();
+
+      // Unchanged draft + Tab focus exit outside closes without saving.
+      await act(async () => {
+        cancel1.focus();
+        cancel1.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outsideButton }));
+        outsideButton.focus();
+      });
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).toBeNull();
+      expect(updateSessionProfile).not.toHaveBeenCalled();
+
+      // Modified draft + Tab focus exit outside saves once and closes.
+      const editor2 = await openSessionRename(container, 's-tab');
+      const input2 = editor2.querySelector<HTMLInputElement>('[data-rename-input]')!;
+      const cancel2 = editor2.querySelector<HTMLButtonElement>('[data-rename-cancel]')!;
+      await setInputValue(input2, 'Saved by Tab exit');
+      await act(async () => {
+        cancel2.focus();
+        cancel2.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outsideButton }));
+        outsideButton.focus();
+      });
+      await settle();
+      expect(updateSessionProfile).toHaveBeenCalledTimes(1);
+      expect(updateSessionProfile).toHaveBeenCalledWith('s-tab', { title: 'Saved by Tab exit' });
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).toBeNull();
+    } finally {
+      outsideButton.remove();
+    }
+  });
 });

@@ -331,7 +331,8 @@ export interface TranscriptRowActions {
   onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[], presentation?: TextPresentation) => void | Promise<void>;
   loadEditAttachments?: (block: UserBlock, signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
-  onFork: (block: UserBlock | AssistantBlock, seed?: SessionSeedMode) => void;
+  onFork: (block: UserBlock | AssistantBlock, seed?: SessionSeedMode) => void | Promise<unknown>;
+  forkBusy?: boolean;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
   canFork?: boolean;
   /** Re-run the stopped turn (regenerate its assistant reply). */
@@ -962,9 +963,10 @@ const UserMessage = memo(function UserMessage({
           linkHref={messageLink?.(block.id)}
           canEdit={canMutate}
           canFork={canMutate && rowActions?.canFork !== false}
+          forkBusy={rowActions?.forkBusy}
           disabled={rowActions?.disabled}
           onEdit={() => { setEditing(true); }}
-          onFork={(seed) => { rowActions?.onFork(block, seed); }}
+          onFork={(seed) => rowActions?.onFork(block, seed)}
         />
       ) : null}
 
@@ -1242,9 +1244,10 @@ const AssistantMessage = memo(function AssistantMessage({
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
           canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}
+          forkBusy={rowActions?.forkBusy}
           disabled={rowActions?.disabled ?? false}
           onRegenerate={() => { rowActions?.onRegenerate(block); }}
-          onFork={(seed) => { rowActions?.onFork(block, seed); }}
+          onFork={(seed) => rowActions?.onFork(block, seed)}
         />
       ) : null}
     </div>

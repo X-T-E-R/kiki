@@ -4507,6 +4507,7 @@ function SidebarRenameEditor({
   const fieldRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const didAutoFocusRef = useRef(false);
+  const composingRef = useRef(false);
   const submittingRef = useRef(false);
   const titleRef = useRef(title);
   titleRef.current = title;
@@ -4642,6 +4643,17 @@ function SidebarRenameEditor({
       aria-busy={busy || undefined}
       data-rename-editor={item.id}
       data-rename-saving={busy ? '' : undefined}
+      onBlur={(event) => {
+        if (submittingRef.current || composingRef.current) return;
+        const next = event.relatedTarget;
+        if (!(next instanceof Node) || fieldRef.current === null || fieldRef.current.contains(next)) return;
+        const nextTrimmed = titleRef.current.trim();
+        if (nextTrimmed !== '' && nextTrimmed !== persistedTitleRef.current) {
+          submitCurrent();
+        } else {
+          cancelCurrent();
+        }
+      }}
       className="anim-enter fixed z-50 flex flex-col justify-center rounded-xl border border-hairline-strong bg-panel px-2 py-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.32)] focus-within:border-selected-ink focus-within:ring-2 focus-within:ring-selected-ink/25"
       style={{ left: anchor.left, top: anchor.top, width: anchor.width, minHeight: anchor.minHeight }}
     >
@@ -4658,6 +4670,8 @@ function SidebarRenameEditor({
           className="h-7 min-w-0 flex-1 bg-transparent px-1.5 text-[13px] font-medium text-ink placeholder:font-normal placeholder:text-ink-faint disabled:opacity-65"
           value={title}
           maxLength={200}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onChange={(event) => {
             titleRef.current = event.target.value;
             setTitle(event.target.value);

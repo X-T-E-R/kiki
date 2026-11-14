@@ -3557,6 +3557,56 @@ describe('message row actions', () => {
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
   });
 
+  it('guards message fork against duplicate concurrent clicks while keeping fork enabled when busy', async () => {
+    let resolveFork!: () => void;
+    const onFork = vi.fn<TranscriptRowActions['onFork']>(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFork = resolve;
+        }),
+    );
+    const rowActions: TranscriptRowActions = {
+      disabled: true,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    const forkTile = row.querySelector<HTMLButtonElement>('[data-row-action="fork"]')!;
+    const editTile = row.querySelector<HTMLButtonElement>('[data-row-action="edit"]')!;
+    expect(editTile.disabled).toBe(true);
+    expect(forkTile.disabled).toBe(false);
+
+    await drainDeferredFrames();
+    await act(async () => {
+      forkTile.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    });
+    const freshSeedBtn = row.querySelector<HTMLButtonElement>('[data-row-fork-seed="fresh"]')!;
+    expect(freshSeedBtn).not.toBeNull();
+
+    await act(async () => {
+      click(freshSeedBtn);
+      click(forkTile);
+    });
+    expect(onFork).toHaveBeenCalledTimes(1);
+    expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-m1' }), 'fresh');
+    expect(forkTile.disabled).toBe(true);
+
+    await act(async () => {
+      click(forkTile);
+    });
+    expect(onFork).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFork();
+    });
+    expect(forkTile.disabled).toBe(false);
+  });
+
   it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
     const container = await renderTranscript([
       userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
@@ -4250,6 +4300,7 @@ describe('message row actions', () => {
     expect(forkTile.disabled).toBe(false);
     expect(forkMenuBtn.disabled).toBe(false);
 
+    await drainDeferredFrames();
     await act(async () => {
       forkTile.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     });

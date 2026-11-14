@@ -22,7 +22,7 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentTaskService } from '#/agent/task/task';
-import { TERMINAL_STATUSES } from '#/agent/task/types';
+import { TERMINAL_STATUSES, type AgentTaskStatus } from '#/agent/task/types';
 import { pruneResumeRecords, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -1319,16 +1319,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     ) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sourceId} does not exist`);
     }
-    let anyActiveTurn = false;
-    if (sourceHandle !== undefined) {
-      for (const agent of sourceHandle.accessor.get(IAgentLifecycleService).list()) {
-        if (opts.externalMaterialOnly === true && agent.id !== MAIN_AGENT_ID) continue;
-        if (agent.accessor.get(IAgentActivityView).state().turn !== undefined) {
-          anyActiveTurn = true;
-          break;
-        }
-      }
-    }
+    const repairSource = sourceHandle === undefined;
+    let anyActiveTurn = hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true);
     assertForkTurnIndex(opts.turnIndex);
 
     let targetId: string | undefined;
@@ -1336,6 +1328,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let targetSessionDir: string | undefined;
     try {
       if (sourceHandle !== undefined) await sourceHandle.accessor.get(ISessionMetadata).drain();
+      if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) anyActiveTurn = true;
       const sourceMeta =
         sourceHandle !== undefined
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
@@ -1361,15 +1354,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       targetId = opts.newSessionId ?? createSessionId();
       await this.assertNewSession(targetId);
 
-      const turnSlice =
-        opts.turnIndex === undefined
-          ? undefined
-          : sliceMainRecordsAtTurn(
-              await this.readSourceWireRecords(sourceHandle, sourceId, MAIN_AGENT_ID, !anyActiveTurn),
-              sourceId,
-              opts.turnIndex,
-              opts.throughUserMessage,
-            );
+      if (opts.turnIndex !== undefined) {
+        sliceMainRecordsAtTurn(
+          await this.readSourceWireRecords(sourceHandle, sourceId, MAIN_AGENT_ID, repairSource),
+          sourceId,
+          opts.turnIndex,
+          opts.throughUserMessage,
+        );
+      }
 
       await this.acquireSessionLock(targetId);
       try {
@@ -1396,74 +1388,97 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const targetCtx = target.accessor.get(ISessionContext);
       const targetMeta = target.accessor.get(ISessionMetadata);
 
-      const sourceAgents = sourceMeta?.agents ?? {};
+      const latestSourceMeta = sourceHandle !== undefined
+        ? await sourceHandle.accessor.get(ISessionMetadata).read()
+        : sourceMeta;
+      if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) anyActiveTurn = true;
+      const sourceAgents = latestSourceMeta?.agents ?? sourceMeta?.agents ?? {};
       const agentIds = opts.externalMaterialOnly === true
         ? [MAIN_AGENT_ID]
         : Object.keys(sourceAgents);
       const retainedAgentIds: string[] = [];
-      let settledMainLastTurnReason = sourceMeta?.lastTurnReason;
+      let settledMainLastTurnReason = latestSourceMeta?.lastTurnReason ?? sourceMeta?.lastTurnReason;
       const isAcpExecutor = (id: string) =>
         this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutorRegistry).get(id)?.protocol === 'acp-v1');
 
-      if (!anyActiveTurn) {
-        for (const agentId of agentIds) {
-          let slicedRecords: readonly WireRecord[] | undefined;
-          if (turnSlice !== undefined) {
-            if (agentId === MAIN_AGENT_ID) {
-              slicedRecords = turnSlice.records;
-            } else {
-              const subagentRecords = sliceSubagentRecordsAtTime(
-                await this.readSourceWireRecords(sourceHandle, sourceId, agentId),
-                turnSlice.cutoffTime,
-              );
-              if (subagentRecords.length === 0) continue;
-              slicedRecords = subagentRecords;
-            }
+      const mainSourceRecords = await this.readSourceWireRecords(sourceHandle, sourceId, MAIN_AGENT_ID, repairSource);
+      const turnSlice =
+        opts.turnIndex === undefined
+          ? undefined
+          : sliceMainRecordsAtTurn(
+              mainSourceRecords,
+              sourceId,
+              opts.turnIndex,
+              opts.throughUserMessage,
+            );
+
+      const rawRecordsByAgent = new Map<string, readonly WireRecord[]>();
+      for (const agentId of agentIds) {
+        if (turnSlice !== undefined) {
+          if (agentId === MAIN_AGENT_ID) {
+            rawRecordsByAgent.set(agentId, turnSlice.records);
+            retainedAgentIds.push(agentId);
+          } else {
+            const subagentRecords = sliceSubagentRecordsAtTime(
+              await this.readSourceWireRecords(sourceHandle, sourceId, agentId, repairSource),
+              turnSlice.cutoffTime,
+            );
+            if (subagentRecords.length === 0) continue;
+            rawRecordsByAgent.set(agentId, subagentRecords);
+            retainedAgentIds.push(agentId);
           }
+        } else {
+          rawRecordsByAgent.set(
+            agentId,
+            agentId === MAIN_AGENT_ID
+              ? mainSourceRecords
+              : await this.readSourceWireRecords(sourceHandle, sourceId, agentId, repairSource),
+          );
+          retainedAgentIds.push(agentId);
+        }
+      }
+
+      if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) anyActiveTurn = true;
+
+      const descendantIdSet = new Set(retainedAgentIds.filter((id) => id !== MAIN_AGENT_ID));
+      const taskDocsByAgent = new Map<string, ReadonlyMap<string, PromotedTaskDocument>>();
+      if (turnSlice === undefined && opts.externalMaterialOnly !== true && (anyActiveTurn || sourceHandle !== undefined)) {
+        for (const agentId of retainedAgentIds) {
+          const docs = await this.readPromotedTaskDocuments(join(sourceSessionDir, 'agents', agentId), agentId, descendantIdSet);
+          taskDocsByAgent.set(agentId, docs);
+          if (!anyActiveTurn && hasUnsettledTaskDocuments(docs)) {
+            anyActiveTurn = true;
+          }
+        }
+      }
+      if (!anyActiveTurn && hasUnsettledForkRecords(rawRecordsByAgent, opts.throughUserMessage === true)) {
+        anyActiveTurn = true;
+      }
+
+      if (!anyActiveTurn) {
+        for (const agentId of retainedAgentIds) {
+          const agentRecords = rawRecordsByAgent.get(agentId) ?? [];
           await this.copyAgentWire({
             sourceHandle,
             sourceSessionId: sourceId,
             agentId,
             targetSessionId: targetCtx.sessionId,
             records: externalAcpForkRecords(
-              (opts.externalMaterialOnly === true && agentId === MAIN_AGENT_ID
-                ? externalMaterialForkRecords(slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId))
-                : slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId)),
+              opts.externalMaterialOnly === true && agentId === MAIN_AGENT_ID
+                ? externalMaterialForkRecords(agentRecords)
+                : agentRecords,
               isAcpExecutor,
               agentId === MAIN_AGENT_ID && opts.throughUserMessage === true,
             ),
           });
-          retainedAgentIds.push(agentId);
         }
 
         if (turnSlice !== undefined) {
           await this.pruneTruncatedForkFiles(targetSessionDir, agentIds, retainedAgentIds);
         }
       } else {
-        const rawRecordsByAgent = new Map<string, readonly WireRecord[]>();
-        for (const agentId of agentIds) {
-          if (turnSlice !== undefined) {
-            if (agentId === MAIN_AGENT_ID) {
-              rawRecordsByAgent.set(agentId, turnSlice.records);
-              retainedAgentIds.push(agentId);
-            } else {
-              const subagentRecords = sliceSubagentRecordsAtTime(
-                await this.readSourceWireRecords(sourceHandle, sourceId, agentId, false),
-                turnSlice.cutoffTime,
-              );
-              if (subagentRecords.length === 0) continue;
-              rawRecordsByAgent.set(agentId, subagentRecords);
-              retainedAgentIds.push(agentId);
-            }
-          } else {
-            rawRecordsByAgent.set(agentId, await this.readSourceWireRecords(sourceHandle, sourceId, agentId, false));
-            retainedAgentIds.push(agentId);
-          }
-        }
-
         await this.pruneTruncatedForkFiles(targetSessionDir, agentIds, retainedAgentIds);
 
-        const descendantIdSet = new Set(retainedAgentIds.filter((id) => id !== MAIN_AGENT_ID));
         const agentOutcomes = new Map<string, PromotedAgentOutcome>();
         let mainSettleTime = Date.now();
         const orderedAgentIds = [
@@ -1479,6 +1494,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           const rawRecords = rawRecordsByAgent.get(agentId) ?? [];
           const sourceAgentDir = join(sourceSessionDir, 'agents', agentId);
           const targetAgentDir = join(targetSessionDir, 'agents', agentId);
+          const cachedTaskDocs = taskDocsByAgent.get(agentId);
           if (agentId === MAIN_AGENT_ID) {
             const prepared = opts.externalMaterialOnly === true
               ? externalMaterialForkRecords(rawRecords)
@@ -1486,14 +1502,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             let baseRecords: readonly WireRecord[];
             if (opts.throughUserMessage === true) {
               settledMainLastTurnReason = sliceSettledAgentRecords(prepared.slice(0, -1)).lastTurnReason;
-              baseRecords = filterPromotedDescendantRecords(prepared);
+              baseRecords = filterSettledForkRecords(prepared);
             } else {
               const sliced = sliceSettledAgentRecords(prepared);
               settledMainLastTurnReason = sliced.lastTurnReason;
-              baseRecords = filterPromotedDescendantRecords(sliced.records);
+              baseRecords = filterSettledForkRecords(sliced.records);
             }
             const taskDocuments = turnSlice === undefined && opts.externalMaterialOnly !== true
-              ? await this.readPromotedTaskDocuments(sourceAgentDir, MAIN_AGENT_ID, descendantIdSet)
+              ? (cachedTaskDocs ?? await this.readPromotedTaskDocuments(sourceAgentDir, MAIN_AGENT_ID, descendantIdSet))
               : undefined;
             const settled = settlePromotedWireRecords(baseRecords, {
               sourceRootAgentId: MAIN_AGENT_ID,
@@ -1514,11 +1530,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               sourceSessionId: sourceId,
               agentId: MAIN_AGENT_ID,
               targetSessionId: targetCtx.sessionId,
-              records: externalAcpForkRecords(
-                settled.records,
-                isAcpExecutor,
-                opts.throughUserMessage === true,
-              ),
+              records: settled.records,
             });
           } else {
             const sourceAgent: AgentMeta = sourceAgents[agentId] ?? { type: 'sub' };
@@ -1526,9 +1538,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             const isUnsealedBranch = sourceAgent.labels?.['branch'] === 'true' &&
               (sourceAgent.labels['branchSealed'] !== 'true' || sliced.wasOpen === true);
             const taskDocuments = turnSlice === undefined
-              ? await this.readPromotedTaskDocuments(sourceAgentDir, agentId, descendantIdSet)
+              ? (cachedTaskDocs ?? await this.readPromotedTaskDocuments(sourceAgentDir, agentId, descendantIdSet))
               : undefined;
-            const settled = settlePromotedWireRecords(filterPromotedDescendantRecords(sliced.records), {
+            const settled = settlePromotedWireRecords(filterSettledForkRecords(sliced.records), {
               sourceRootAgentId: MAIN_AGENT_ID,
               targetAgentId: agentId,
               isDescendant: true,
@@ -1549,7 +1561,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               sourceSessionId: sourceId,
               agentId,
               targetSessionId: targetCtx.sessionId,
-              records: externalAcpForkRecords(settled.records, isAcpExecutor, false),
+              records: settled.records,
             });
             const parentAgentId = subagentParentAgentId(sourceAgent) ??
               (sourceAgent.labels?.['branch'] === 'true' ? (sourceAgent.forkedFrom ?? MAIN_AGENT_ID) : MAIN_AGENT_ID);
@@ -2213,8 +2225,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     retainedAgentIds: readonly string[],
   ): Promise<void> {
     const retained = new Set(retainedAgentIds);
+    const knownAgentDirs = new Set(agentIds);
+    try {
+      const copiedEntries = await this.hostFs.readdir(join(targetSessionDir, 'agents'));
+      for (const entry of copiedEntries) knownAgentDirs.add(entry.name);
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+    }
     const removals: Promise<void>[] = [];
-    for (const agentId of agentIds) {
+    for (const agentId of knownAgentDirs) {
       if (retained.has(agentId)) continue;
       removals.push(this.hostFs.remove(join(targetSessionDir, 'agents', agentId)));
     }
@@ -2323,4 +2342,130 @@ function withoutGoal(value: Record<string, unknown> | undefined): Record<string,
   if (value === undefined) return {};
   const { goal: _drop, ...rest } = value as { goal?: unknown; [key: string]: unknown };
   return rest;
+}
+
+function hasActiveTurnOnSession(
+  sourceHandle: ISessionScopeHandle | undefined,
+  externalMaterialOnly: boolean,
+): boolean {
+  if (sourceHandle === undefined) return false;
+  for (const agent of sourceHandle.accessor.get(IAgentLifecycleService).list()) {
+    if (externalMaterialOnly && agent.id !== MAIN_AGENT_ID) continue;
+    if (agent.accessor.get(IAgentActivityView).state().turn !== undefined) return true;
+  }
+  return false;
+}
+
+function hasUnsettledTaskDocuments(docs: ReadonlyMap<string, PromotedTaskDocument>): boolean {
+  for (const doc of docs.values()) {
+    const status = doc.info['status'];
+    if (typeof status === 'string' && !TERMINAL_STATUSES.has(status as AgentTaskStatus)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUnsettledForkRecords(
+  recordsByAgent: ReadonlyMap<string, readonly WireRecord[]>,
+  throughUserMessage: boolean,
+): boolean {
+  for (const [agentId, records] of recordsByAgent) {
+    const openTaskIds = new Set<string>();
+    const openSubagents = new Set<string>();
+    const openInteractions = new Set<string>();
+    const openPrompts = new Set<string>();
+    const openModelSwitches = new Set<string>();
+    let lastTurnEnded = -1;
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index]!;
+      if (record.type === 'turn.ended') lastTurnEnded = index;
+      if (record.type === 'task.started') {
+        const info = record['info'];
+        const taskId = info !== null && typeof info === 'object' ? (info as Record<string, unknown>)['taskId'] : undefined;
+        if (typeof taskId === 'string') openTaskIds.add(taskId);
+      } else if (record.type === 'task.terminated') {
+        const info = record['info'];
+        const taskId = info !== null && typeof info === 'object'
+          ? (info as Record<string, unknown>)['taskId']
+          : record['taskId'];
+        if (typeof taskId === 'string') openTaskIds.delete(taskId);
+      } else if (record.type === 'subagent.spawned' || record.type === 'subagent.started' || record.type === 'subagent.suspended') {
+        const key = typeof record['taskId'] === 'string' ? record['taskId'] : record['subagentId'];
+        if (typeof key === 'string') openSubagents.add(key);
+      } else if (record.type === 'subagent.completed' || record.type === 'subagent.failed') {
+        const taskId = record['taskId'];
+        const subagentId = record['subagentId'];
+        if (typeof taskId === 'string') openSubagents.delete(taskId);
+        if (typeof subagentId === 'string') openSubagents.delete(subagentId);
+      } else if (record.type === 'interaction.request') {
+        const id = record['id'];
+        if (typeof id === 'string') openInteractions.add(id);
+      } else if (record.type === 'interaction.resolved') {
+        const id = record['id'];
+        if (typeof id === 'string') openInteractions.delete(id);
+      } else if (record.type.startsWith('permission.approval.')) {
+        return true;
+      } else if (record.type === 'prompt.enqueued' || record.type === 'prompt.submitted') {
+        const id = typeof record['id'] === 'string' ? record['id'] : record['promptId'];
+        if (typeof id === 'string') openPrompts.add(id);
+        else return true;
+      } else if (record.type === 'prompt.completed' || record.type === 'prompt.aborted' || record.type === 'prompt.outcome_committed') {
+        const id = typeof record['id'] === 'string' ? record['id'] : record['promptId'];
+        if (typeof id === 'string') openPrompts.delete(id);
+      } else if (record.type === 'prompt.model_switch_queued') {
+        const id = record['id'];
+        if (typeof id === 'string') openModelSwitches.add(id);
+        else return true;
+      } else if (record.type === 'prompt.model_switch_status') {
+        const id = record['id'];
+        const status = record['status'];
+        if (typeof id === 'string' && (status === 'completed' || status === 'cancelled' || status === 'failed')) {
+          openModelSwitches.delete(id);
+        }
+      }
+    }
+    if (
+      openTaskIds.size > 0 ||
+      openSubagents.size > 0 ||
+      openInteractions.size > 0 ||
+      openPrompts.size > 0 ||
+      openModelSwitches.size > 0
+    ) {
+      return true;
+    }
+    const inspectEnd = agentId === MAIN_AGENT_ID && throughUserMessage ? records.length - 1 : records.length;
+    let openAfterEnded = false;
+    for (let index = Math.max(0, lastTurnEnded + 1); index < inspectEnd; index += 1) {
+      const record = records[index]!;
+      if (
+        record.type === 'branch.base' ||
+        record.type === 'context.clear' ||
+        (record.type === 'agent.branch_sealed' && record['sealed'] === true)
+      ) {
+        openAfterEnded = false;
+        continue;
+      }
+      if (
+        record.type === 'turn.prompt' ||
+        record.type === 'turn.steer' ||
+        record.type === 'turn.started' ||
+        record.type === 'turn.step.retrying' ||
+        record.type === 'turn.step.interrupted' ||
+        record.type === 'context.append_loop_event' ||
+        record.type.startsWith('prompt.')
+      ) {
+        openAfterEnded = true;
+      }
+    }
+    if (openAfterEnded) return true;
+  }
+  return false;
+}
+
+function filterSettledForkRecords(records: readonly WireRecord[]): readonly WireRecord[] {
+  return records.flatMap((record) => {
+    if (record.type === 'cron.fired') return [record];
+    return filterPromotedDescendantRecords([record]);
+  });
 }

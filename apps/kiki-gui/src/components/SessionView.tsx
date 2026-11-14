@@ -4329,10 +4329,14 @@ boundExecution,
     [controller, resolveAssistantMessageId, t, locale],
   );
 
+  const pendingMessageForkRef = useRef(false);
+  const [forkingMessage, setForkingMessage] = useState(false);
   const handleForkMessage = useCallback(
-    (block: UserBlock | AssistantBlock, seed?: SessionSeedMode) => {
-      if (controller === null) return;
-      void (async () => {
+    (block: UserBlock | AssistantBlock, seed?: SessionSeedMode): Promise<void> | undefined => {
+      if (controller === null || pendingMessageForkRef.current) return undefined;
+      pendingMessageForkRef.current = true;
+      setForkingMessage(true);
+      return (async () => {
         const messageId =
           block.kind === 'user'
             ? block.userMessageId
@@ -4346,12 +4350,17 @@ boundExecution,
         queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
         pushToast({ tone: 'success', text: t('action.forkDoneSession') });
         void navigate(`/s/${fork.id}`);
-      })().catch((error: unknown) => {
-        pushToast({
-          tone: 'error',
-          text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+      })()
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+          });
+        })
+        .finally(() => {
+          pendingMessageForkRef.current = false;
+          setForkingMessage(false);
         });
-      });
     },
     [controller, resolveAssistantMessageId, queryClient, navigate, t, locale],
   );
@@ -4363,11 +4372,12 @@ boundExecution,
       loadEditAttachments: loadMessageEditAttachments,
       onRegenerate: handleRegenerate,
       onFork: handleForkMessage,
+      forkBusy: forkingMessage,
       canFork: composerEngine?.fork !== false,
       // Resume after a user stop re-runs the stopped reply (same path as regenerate).
       onResumeStopped: handleRegenerate,
     }),
-    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, composerEngine?.fork],
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, forkingMessage, composerEngine?.fork],
   );
 
   const forestRaw = useMemo(
