@@ -85,6 +85,8 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
     include_ephemeral: booleanQueryParam,
+    include_private: booleanQueryParam,
+    private_only: booleanQueryParam,
     archived_only: booleanQueryParam,
     q: z.string().max(500).optional(),
     exclude_empty: booleanQueryParam,

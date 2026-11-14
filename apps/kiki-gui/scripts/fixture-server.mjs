@@ -4445,6 +4445,8 @@ class FixtureServer {
       // list is served without being asked to include archived rows first.
       if (query.get('archived_only') === 'true') items = items.filter((s) => s.archived === true);
       else if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
+      if (query.get('private_only') === 'true') items = items.filter((s) => s.private === true);
+      else if (query.get('include_private') !== 'true') items = items.filter((s) => s.private !== true);
       // The needle is the same three fields kap-server matches: the title,
       // the conversation's cwd and its workspace id. A workspace *name* is not
       // searched, so the fixture must not pretend it is.
@@ -4507,6 +4509,7 @@ class FixtureServer {
         busy: false,
         pending_interaction: 'none',
         archived: false,
+        ...(body.private === true ? { private: true } : {}),
         metadata: isolated !== undefined ? { ...body.metadata, cwd: isolated.cwd } : body.metadata ?? { cwd: 'C:/fixture' },
         ...(isolated !== undefined ? { worktree: isolated.worktree } : {}),
         agent_config: {
@@ -4565,6 +4568,10 @@ class FixtureServer {
     if (tail === '' ) return this.envelope(res, session.record);
     if (tail === '/profile' && body !== undefined) {
       if (typeof body.title === 'string') session.record.title = body.title;
+      if (typeof body.private === 'boolean') {
+        if (body.private) session.record.private = true;
+        else delete session.record.private;
+      }
       if (body.delivery === 'reply' || body.delivery === 'message') session.record.delivery = body.delivery;
       // Mirror the real `updateSessionProfile`: a metadata patch merges onto
       // the existing custom document (pin flags survive renames that omit it).

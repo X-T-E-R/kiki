@@ -140,10 +140,12 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
   // carries both. The kind buttons and object pickers are mutually exclusive —
   // choosing one clears the other's param, so the URL always names the visible scope.
   const [params, setParams] = useSearchParams();
-  const personasQuery = usePersonaList();
-  const personas = (personasQuery.data ?? []).filter((item) => !item.archived);
   const rawPersona = params.get('persona');
   const personaParam = rawPersona && rawPersona.trim() !== '' ? rawPersona : undefined;
+  const personasQuery = usePersonaList();
+  const personas = (personasQuery.data ?? []).filter(
+    (item) => !item.archived && (!item.hidden || item.id === personaParam),
+  );
   const persona = personas.find((item) => item.id === personaParam);
   // While personas are still loading, honour personaParam to prevent prematurely
   // falling back to another namespace. Once loaded, an unknown/empty/archived

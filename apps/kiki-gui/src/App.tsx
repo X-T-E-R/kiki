@@ -84,6 +84,7 @@ import {
   readLastSessionId,
   writeDesktopPrefs,
   writeLayoutPreferences,
+  type SessionPrivateFilter,
 } from '@kiki/session-core/settings';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
 import { useLayerHistory } from './lib/layerHistory';
@@ -148,8 +149,14 @@ const NAV_ENTRY_PAGES: readonly (readonly [string, { preload(): void }])[] = [
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
 
 /** The complete pinned-session read, under ['sessions'] so list refreshes reach it. */
-export function pinnedSessionsQueryKey(showArchived: boolean, workspaceFilter: string | undefined) {
-  return [...PINNED_SESSIONS_QUERY_KEY, showArchived, workspaceFilter] as const;
+export function pinnedSessionsQueryKey(
+  showArchived: boolean,
+  workspaceFilter: string | undefined,
+  privateFilter?: SessionPrivateFilter,
+) {
+  return privateFilter === undefined || privateFilter === 'hide'
+    ? ([...PINNED_SESSIONS_QUERY_KEY, showArchived, workspaceFilter] as const)
+    : ([...PINNED_SESSIONS_QUERY_KEY, showArchived, workspaceFilter, privateFilter] as const);
 }
 
 async function showDesktopWindow(): Promise<void> {
@@ -288,7 +295,13 @@ function NormalApp() {
   // remaining dimensions filter the loaded list client-side.
   const listFilters = layoutPrefs.filters;
   const showArchived = listFilters.archived !== 'hide';
+  const privateFilter = listFilters.private ?? 'hide';
+  const includePrivate = privateFilter === 'include';
+  const privateOnly = privateFilter === 'only';
   const workspaceFilter = listFilters.workspaces.length === 1 ? listFilters.workspaces[0] : undefined;
+  const sessionsKey = privateFilter === 'hide'
+    ? (['sessions', showArchived, workspaceFilter] as const)
+    : (['sessions', showArchived, workspaceFilter, privateFilter] as const);
   const newSessionPath = workspaceFilter === undefined ? '/new' : `/new?workspace=${encodeURIComponent(workspaceFilter)}`;
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -500,11 +513,13 @@ function NormalApp() {
   const isUsageRoute = useMatch('/usage') !== null;
 
   const sessionsQuery = useInfiniteQuery({
-    queryKey: ['sessions', showArchived, workspaceFilter],
+    queryKey: sessionsKey,
     queryFn: ({ pageParam, signal }) =>
       client.listSessions({
         page_size: 50,
         include_archive: showArchived || undefined,
+        include_private: includePrivate || undefined,
+        private_only: privateOnly || undefined,
         workspace_id: workspaceFilter,
         before_id: pageParam,
       }, { signal }),
@@ -525,12 +540,14 @@ function NormalApp() {
         const first = await readSessionFirstPage((before_id) => client.listSessions({
           page_size: 50,
           include_archive: showArchived || undefined,
+          include_private: includePrivate || undefined,
+          private_only: privateOnly || undefined,
           workspace_id: workspaceFilter,
           before_id,
-        }, { signal: controller.signal }), queryClient.getQueryData<SessionListData>(['sessions', showArchived, workspaceFilter]), controller.signal);
+        }, { signal: controller.signal }), queryClient.getQueryData<SessionListData>(sessionsKey), controller.signal);
         if (controller.signal.aborted) return;
         queryClient.setQueryData(
-          ['sessions', showArchived, workspaceFilter],
+          sessionsKey,
           (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
         );
       },
@@ -539,17 +556,19 @@ function NormalApp() {
       stop();
       controller.abort();
     };
-  }, [client, queryClient, showArchived, workspaceFilter]);
+  }, [client, includePrivate, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter]);
   // Pinned sessions are read as their own complete set: the recency pages
   // above only reach as far as the reader has scrolled, and an old pinned
   // session must not wait for them. The key sits under ['sessions'], so every
   // list refresh and pin toggle refreshes it too.
   const pinnedSessionsQuery = useQuery({
-    queryKey: pinnedSessionsQueryKey(showArchived, workspaceFilter),
+    queryKey: pinnedSessionsQueryKey(showArchived, workspaceFilter, privateFilter),
     queryFn: ({ signal }) => readAllSessionPages((before_id) => client.listSessions({
       page_size: 100,
       pinned: true,
       include_archive: showArchived || undefined,
+      include_private: includePrivate || undefined,
+      private_only: privateOnly || undefined,
       workspace_id: workspaceFilter,
       before_id,
     }, { signal }), signal),
@@ -574,10 +593,12 @@ function NormalApp() {
   // The canonical session order powers QuickSwitcher and the /new recent
   // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
-  const sessions = useMemo(
-    () => arrangePinnedFirst(withPinnedSessions(sessionsQuery.data, pinnedSessionsQuery.data)),
-    [sessionsQuery.data, pinnedSessionsQuery.data],
-  );
+  const sessions = useMemo(() => {
+    const all = arrangePinnedFirst(withPinnedSessions(sessionsQuery.data, pinnedSessionsQuery.data));
+    if (privateFilter === 'only') return all.filter((session) => session.private === true);
+    if (privateFilter === 'include') return all;
+    return all.filter((session) => session.private !== true);
+  }, [privateFilter, sessionsQuery.data, pinnedSessionsQuery.data]);
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
   // The one update schedule for the whole app: a check after the first screen,
   // a daily tick for a window left open, and a catch-up when it comes back. A

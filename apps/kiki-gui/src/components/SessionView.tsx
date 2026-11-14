@@ -141,7 +141,8 @@ import {
   type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
-import { settingsCardRoute, shortCwd } from '@kiki/session-core/sessions';
+import { settingsCardRoute, shortCwd, type SessionListData } from '@kiki/session-core/sessions';
+import { errorText } from '@kiki/session-core/i18n';
 import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, submitFirstSessionMessage, type FirstSessionMessageRecord, type FirstSessionSubmission } from '../lib/newSessionCreation';
 import { spaceStorage } from '../lib/spaceStorage';
 import {
@@ -178,6 +179,8 @@ import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 import { useTimelineNavigation } from '../lib/useTimelineNavigation';
 import { EphemeralBar, TemporaryMark } from './EphemeralBar';
+import { PrivateMark } from './PrivateSessionOption';
+import { isSubagentSession } from './room/threadRooms';
 import { InteractionPlacementContext, type InteractionPlacement } from './Interactions';
 import { externalClientsFacade } from '../lib/externalClients';
 import { ExternalClientMark, ExternalSessionComposer, useExternalClientMark } from './externalClients/ExternalClientSession';
@@ -405,6 +408,7 @@ function Header({
   onToggleSidebar,
   sidebarBadge,
   onRenameSession,
+  onTogglePrivate,
   onSessionAction,
   freshContextAvailable = false,
   onSideQuestion,
@@ -427,6 +431,7 @@ function Header({
   onToggleSidebar: () => void;
   sidebarBadge?: SidebarBadge;
   onRenameSession: (title: string) => Promise<void>;
+  onTogglePrivate?: () => void;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   freshContextAvailable?: boolean;
   onSideQuestion?: () => void;
@@ -534,6 +539,7 @@ function Header({
             <PhoneRemoteSpaceLine />
           </div>
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
+          {session.private === true ? <PrivateMark className="self-center" /> : null}
           {harness !== undefined ? <HarnessMark harness={harness} /> : null}
           {/* An externally driven session says which client drives it instead
               of naming a model, because no Kiki model runs it. */}
@@ -556,6 +562,8 @@ function Header({
             terminalOpen={terminalOpen}
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
+            isPrivate={session.private === true}
+            onTogglePrivate={session.ephemeral === true || isSubagentSession(session) ? undefined : onTogglePrivate}
             onPromptDetails={() => { setPromptDetailsOpen(true); }}
             // Below lg the header has no rail toggle (and on a phone the cwd
             // that also opens it is hidden), so the overview's way in is here.
@@ -850,6 +858,8 @@ export function SessionActionsMenu({
   terminalOpen,
   onToggleTerminal,
   onBeginRename,
+  isPrivate = false,
+  onTogglePrivate,
   onAction,
   onSideQuestion,
   onOpenBranch,
@@ -865,6 +875,8 @@ export function SessionActionsMenu({
   terminalOpen: boolean;
   onToggleTerminal: () => void;
   onBeginRename: () => void;
+  isPrivate?: boolean;
+  onTogglePrivate?: () => void;
   /**
    * Opens the session overview (the right rail) where the header has no
    * rail toggle of its own; the row is hidden without it.
@@ -968,6 +980,20 @@ export function SessionActionsMenu({
           >
             {t('menu.rename')}
           </button>
+          {onTogglePrivate !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={sheetItemClass}
+              data-session-private
+              onClick={() => {
+                setOpen(false);
+                onTogglePrivate();
+              }}
+            >
+              {t(isPrivate ? 'private.exitPrivate' : 'private.makePrivate')}
+            </button>
+          ) : null}
           {onOpenOverview !== undefined ? (
             <button
               type="button"
@@ -1099,6 +1125,20 @@ export function SessionActionsMenu({
           >
             {t('menu.rename')}
           </button>
+          {onTogglePrivate !== undefined ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={itemClass}
+              data-session-private
+              onClick={() => {
+                setOpen(false);
+                onTogglePrivate();
+              }}
+            >
+              {t(isPrivate ? 'private.exitPrivate' : 'private.makePrivate')}
+            </button>
+          ) : null}
           {onPromptDetails !== undefined ? <button type="button" role="menuitem" className={itemClass} data-prompt-details-open
             onClick={() => { setOpen(false); onPromptDetails(); }}>{t('agentPanel.prompt.title')}</button> : null}
           {onOpenOverview !== undefined ? (
@@ -4005,6 +4045,33 @@ boundExecution,
     [client, sessionId, actionContext],
   );
 
+  const toggleSessionPrivate = useCallback(() => {
+    const record = state.session;
+    if (record === undefined) return;
+    const nextPrivate = record.private !== true;
+    void client.updateSession(sessionId, { private: nextPrivate })
+      .then((updated) => {
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+          old === undefined || !Array.isArray(old.pages)
+            ? old
+            : {
+                ...old,
+                pages: old.pages.map((page) => ({
+                  ...page,
+                  items: page.items.map((item) => (item.id === sessionId ? { ...item, ...updated, private: nextPrivate } : item)),
+                })),
+              },
+        );
+        actionContext.refreshSessions();
+        void queryClient.invalidateQueries({ queryKey: ['global-search'] });
+        void controller?.refreshSession();
+        pushToast({ tone: 'success', text: t(nextPrivate ? 'private.madeToast' : 'private.exitedToast') });
+      })
+      .catch((cause: unknown) => {
+        pushToast({ tone: 'error', text: t('private.updateFailed', { detail: errorText(locale, cause) }) });
+      });
+  }, [actionContext, client, controller, locale, queryClient, sessionId, state.session, t]);
+
   // One state fact for manual compaction: the receipt seeds it and live events
   // advance it. The composer meter renders it; a toast only stands in when no
   // meter is on screen to carry the state.
@@ -5494,6 +5561,7 @@ boundExecution,
             terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
+            onTogglePrivate={toggleSessionPrivate}
             onSessionAction={runSessionAction}
             freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}

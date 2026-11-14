@@ -78,7 +78,8 @@ const archiveSession = vi.fn<(
 ) => Promise<ArchiveFamilyResponse>>();
 /** A family archive that confirmed exactly one conversation. */
 const archived = (id: string): ArchiveFamilyResponse => ({ archived: true, outcomes: [{ id, ok: true }] });
-// The room rows' lifecycle calls; wired into the mocked client's klient.rest.
+const restoreSession = vi.fn(async () => { throw new Error('not stubbed'); });
+const updateSession = vi.fn(async (_id: string, body: Record<string, unknown>) => ({ id: _id, ...body }));
 const compactSession = vi.fn<(id: string, body: Record<string, never>) => Promise<unknown>>();
 const roomRest = vi.hoisted(() => ({
   list: vi.fn(),
@@ -107,7 +108,8 @@ vi.mock('../state/connection', () => {
       archiveSession,
       compactSession,
       getConfig,
-      restoreSession: vi.fn(async () => { throw new Error('not stubbed'); }),
+      restoreSession,
+      updateSession,
       updateSessionProfile: vi.fn(async () => ({ ok: true })),
       klient: { rest: { rooms: roomRest } },
     },
@@ -248,6 +250,8 @@ beforeEach(() => {
   listPersonas.mockResolvedValue([]);
   archiveSession.mockReset();
   archiveSession.mockImplementation(async (id: string) => archived(id));
+  updateSession.mockReset();
+  updateSession.mockImplementation(async (id: string, body: Record<string, unknown>) => ({ id, ...body }));
   for (const fn of Object.values(roomRest)) fn.mockReset();
   getConfig.mockReset();
   getConfig.mockReturnValue(new Promise(() => {}));
@@ -1930,7 +1934,7 @@ describe('Sidebar session menu location & link group', () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
     const keys = () => [...menu.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item'));
-    expect(keys()).toEqual(['pin', 'rename', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
+    expect(keys()).toEqual(['pin', 'rename', 'private', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
     const more = menu.querySelector<HTMLButtonElement>('[data-menu-item="more"]')!;
     expect(more.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { more.click(); });
@@ -3423,7 +3427,7 @@ describe('sidebar on a phone', () => {
     // No fork, export, compact or undo, and no More: those live in the
     // conversation's own menu, one tap away.
     expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
-      .toEqual(['pin', 'rename', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
+      .toEqual(['pin', 'rename', 'private', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
   });
 
   it('keeps a choice saved before, even when it is the desktop default', async () => {
@@ -3655,7 +3659,10 @@ describe('sidebar on a phone', () => {
       for (let index = 0; index < 3; index += 1) await settle();
 
       const row = container.querySelector<HTMLButtonElement>('[data-plugin-sidebar-panel="kiki-phone:preview"]');
+      const moreTools = container.querySelector<HTMLButtonElement>('[data-sidebar-secondary-nav]');
       expect(row).not.toBeNull();
+      expect(moreTools).not.toBeNull();
+      expect(Boolean(row!.compareDocumentPosition(moreTools!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
       expect(row?.querySelector('svg[data-icon="smartphone"]')).not.toBeNull();
       expect(row?.getAttribute('aria-current')).toBeNull();
 
@@ -3681,5 +3688,87 @@ describe('sidebar on a phone', () => {
       resetSessionPluginPanelOpenersForTests();
       vi.stubGlobal('fetch', originalFetch);
     }
+  });
+
+  it('offers private conversation filter options, row lock indicator, and Make private / Exit private row action', async () => {
+    const publicSession = session('s-public');
+    const privateSession: Session = { ...session('s-private'), title: 'Private diary', private: true };
+    const filterChanges: unknown[] = [];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <MemoryRouter initialEntries={['/s/s-public']}>
+                <Sidebar
+                  activeSessionId="s-public"
+                  sessions={[publicSession, privateSession]}
+                  sessionGroups={[{ key: 'today', label: 'Today', items: [threadItem(publicSession), threadItem(privateSession)] }]}
+                  sessionsQuery={{
+                    isLoading: false,
+                    isError: false,
+                    error: null,
+                    hasNextPage: false,
+                    isFetchingNextPage: false,
+                    fetchNextPage: async () => {},
+                  }}
+                  workspaceOptions={[]}
+                  filters={{ ...DEFAULT_SESSION_LIST_FILTERS, private: 'include' }}
+                  onFiltersChange={(next) => { filterChanges.push(next); }}
+                  onNewSession={() => {}}
+                  groupBy="time"
+                  onGroupBy={() => {}}
+                  sortBy="updated-desc"
+                  onSortBy={() => {}}
+                />
+              </MemoryRouter>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+
+    // Private row wears quiet lock glyph, public row does not.
+    const privateRow = container.querySelector('[data-session-row="s-private"]');
+    const publicRow = container.querySelector('[data-session-row="s-public"]');
+    expect(privateRow?.querySelector('[data-session-private] svg[data-icon="lock"]')).not.toBeNull();
+    expect(publicRow?.querySelector('[data-session-private]')).toBeNull();
+
+    // Filter chip is shown for non-hide private filter and clears cleanly without dangling `private` key.
+    const chips = [...container.querySelectorAll('[data-sidebar-filters] [data-sidebar-filter-chip]')];
+    expect(chips.some((chip) => chip.textContent?.includes('Including private'))).toBe(true);
+
+    // Filter menu exposes Hide / Show / Private only options.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-filter-menu-toggle]')!.click();
+    });
+    const onlyBtn = document.body.querySelector<HTMLButtonElement>('[data-private-filter="only"]');
+    const hideBtn = document.body.querySelector<HTMLButtonElement>('[data-private-filter="hide"]');
+    expect(onlyBtn).not.toBeNull();
+    expect(hideBtn).not.toBeNull();
+    await act(async () => { onlyBtn!.click(); });
+    expect(filterChanges.at(-1)).toEqual({ status: [], workspaces: [], archived: 'hide', private: 'only' });
+    await act(async () => { hideBtn!.click(); });
+    expect(filterChanges.at(-1)).toEqual({ status: [], workspaces: [], archived: 'hide' });
+
+    // Close filter menu and open row context menu on public row -> Make private.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-filter-menu-toggle]')!.click();
+    });
+    await act(async () => {
+      publicRow!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 80 }));
+    });
+    const makePrivateBtn = document.body.querySelector<HTMLButtonElement>('[data-menu-item="private"]');
+    expect(makePrivateBtn?.textContent).toBe('Make private');
+    await act(async () => { makePrivateBtn!.click(); });
+    expect(updateSession).toHaveBeenCalledWith('s-public', { private: true });
   });
 });

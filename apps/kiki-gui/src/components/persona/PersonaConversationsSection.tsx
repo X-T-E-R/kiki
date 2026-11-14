@@ -94,6 +94,7 @@ export function PersonaConversationsSection({
           persona: persona.id,
           page_size: PAGE_SIZE,
           include_archive: true,
+          include_private: true,
           workspace_id: workspaceFilter === '' ? undefined : workspaceFilter,
           before_id: before,
         });

@@ -189,6 +189,7 @@ export const sessionSchema = z.object({
   execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   archived: z.boolean().optional(),
   ephemeral: z.boolean().optional(),
+  private: z.boolean().optional(),
   /** When the session was archived (ISO 8601); absent for sessions archived
    *  before the field existed — clients fall back to `updated_at`. */
   archived_at: isoDateTimeSchema.optional(),
@@ -230,6 +231,7 @@ export const sessionCreateSchema = z.object({
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
   ephemeral: z.boolean().optional(),
+  private: z.boolean().optional(),
   isolation: worktreeIsolationSchema.optional(),
 });
 
@@ -238,6 +240,7 @@ export type SessionCreate = z.infer<typeof sessionCreateSchema>;
 export const sessionUpdateSchema = z.object({
   title: z.string().min(1).optional(),
   delivery: sessionDeliverySchema.optional(),
+  private: z.boolean().optional(),
   metadata: sessionMetadataSchema.partial().optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
   permission_rules: z.array(permissionRuleSchema).optional(),

@@ -88,7 +88,8 @@ export type IconName =
   | 'thread'
   | 'compass'
   | 'smartphone'
-  | 'plugin';
+  | 'plugin'
+  | 'lock';
 
 export type IconSize = 12 | 14 | 16;
 
@@ -341,6 +342,13 @@ const PATHS: Record<IconName, ReactNode> = {
   // A puzzle piece: an installed plugin panel or extension surface.
   plugin: (
     <path d="M6.2 3.2h-2a.9.9 0 0 0-.9.9v2.3c.9-.4 2 .1 2 1.3S4.2 9.5 3.3 9.1v2.8c0 .5.4.9.9.9h2.8c-.4-.9.1-2 1.3-2s1.7 1.1 1.3 2h2.3c.5 0 .9-.4.9-.9v-2c.9.3 1.9-.2 1.9-1.4s-1-1.7-1.9-1.4v-3c0-.5-.4-.9-.9-.9h-3c.3-.9-.2-1.9-1.4-1.9s-1.7 1-1.4 1.9z" />
+  ),
+  // A closed padlock: a private conversation excluded from search and stats.
+  lock: (
+    <>
+      <rect x="3.5" y="7.2" width="9" height="6.3" rx="1.5" />
+      <path d="M5.5 7.2V5.3a2.5 2.5 0 0 1 5 0v1.9" />
+    </>
   ),
 };
 

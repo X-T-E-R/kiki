@@ -444,6 +444,14 @@ describe('sessionStatusOf / filterSessions', () => {
     expect(filterSessions(all, { ...none, archived: 'only' }).map((s) => s.id)).toEqual(['archived']);
   });
 
+  it('hides private rows by default, includes them, or shows only them', () => {
+    const priv = session('private-1', '2026-01-04T00:00:00.000Z', { private: true, workspace_id: 'ws-a' });
+    const withPrivate = [priv, ...all];
+    expect(filterSessions(withPrivate, none).map((s) => s.id)).toEqual(['running', 'waiting', 'idle']);
+    expect(filterSessions(withPrivate, { ...none, private: 'include' }).map((s) => s.id)).toEqual(['private-1', 'running', 'waiting', 'idle']);
+    expect(filterSessions(withPrivate, { ...none, private: 'only' }).map((s) => s.id)).toEqual(['private-1']);
+  });
+
   it('ORs within a dimension and ANDs across dimensions', () => {
     expect(filterSessions(all, { ...none, status: ['running', 'needs-me'] }).map((s) => s.id)).toEqual(['running', 'waiting']);
     expect(filterSessions(all, { ...none, status: ['running', 'needs-me'], workspaces: ['ws-a'] }).map((s) => s.id)).toEqual(['running']);
@@ -452,6 +460,8 @@ describe('sessionStatusOf / filterSessions', () => {
   it('reports whether any filter narrows the list', () => {
     expect(hasActiveSessionFilters(none)).toBe(false);
     expect(hasActiveSessionFilters({ ...none, archived: 'include' })).toBe(true);
+    expect(hasActiveSessionFilters({ ...none, private: 'include' })).toBe(true);
+    expect(hasActiveSessionFilters({ ...none, private: 'only' })).toBe(true);
     expect(hasActiveSessionFilters({ ...none, workspaces: ['ws-a'] })).toBe(true);
   });
 });

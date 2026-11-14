@@ -328,7 +328,11 @@ export function ProfileSelect({
   }, [candidateProfiles]);
 
   const personasQuery = usePersonaList({ enabled: onSelectPersona !== undefined });
-  const allPersonas = useMemo(() => sortPersonas((personasQuery.data ?? []).filter((item) => !item.archived)), [personasQuery.data]);
+  const activePersonaId = persona?.id;
+  const allPersonas = useMemo(
+    () => sortPersonas((personasQuery.data ?? []).filter((item) => !item.archived && (!item.hidden || item.id === activePersonaId))),
+    [personasQuery.data, activePersonaId],
+  );
   const filteredPersonas = useMemo(() => {
     if (allPersonas.length === 0) return [];
     return allPersonas.filter((item) => matchesPersona(item, query));

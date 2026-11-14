@@ -184,6 +184,20 @@ describe('session header overflow menu', () => {
     expect(trigger?.textContent).toBe('');
     expect(trigger?.getAttribute('aria-label')).toBe('Session actions');
   });
+
+  it('offers Make private / Exit private when onTogglePrivate is provided', () => {
+    const onTogglePrivate = vi.fn();
+    const { container } = actionsMenu({ isPrivate: false, onTogglePrivate });
+    click(container.querySelector('button[aria-haspopup="menu"]'));
+    const makeBtn = container.querySelector('[data-session-private]');
+    expect(makeBtn?.textContent).toBe('Make private');
+    click(makeBtn);
+    expect(onTogglePrivate).toHaveBeenCalledTimes(1);
+
+    const exited = actionsMenu({ isPrivate: true, onTogglePrivate });
+    click(exited.container.querySelector('button[aria-haspopup="menu"]'));
+    expect(exited.container.querySelector('[data-session-private]')?.textContent).toBe('Exit private');
+  });
 });
 
 describe('session header overflow menu on a phone', () => {
