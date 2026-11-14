@@ -2103,6 +2103,42 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(onAttemptRetry.mock.calls).toEqual(partial ? [] : [['discard']]);
   });
 
+  it.each(['signature', 'thinking', 'text', 'tool', 'discarded-text', 'discarded-tool'] as const)('retries a missing terminal only before substantive output: %s', async (kind) => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const base = requester.request.bind(requester);
+    const error = markProviderEventError(new ChatProviderError('Missing terminal'), 'antigravity_missing_terminal');
+    attachErrorDetails(error, { upstream_retryable: false });
+    const parts: Record<typeof kind, StreamedMessagePart> = {
+      signature: { type: 'think', think: '', encrypted: 'discarded-signature' },
+      thinking: { type: 'think', think: 'discarded thought' },
+      text: { type: 'text', text: 'Retained partial answer' },
+      tool: { type: 'function', id: 'uncommitted-tool', name: 'SaveWork', arguments: '{}' },
+      'discarded-text': { type: 'text', text: 'Earlier response' },
+      'discarded-tool': { type: 'function', id: 'earlier-tool', name: 'SaveWork', arguments: '{}' },
+    };
+    requester.request = async function* (input, signal, params) {
+      if (calls.value === 0) {
+        calls.value++;
+        yield { type: 'part', part: parts[kind] };
+        if (kind.startsWith('discarded-')) yield { type: 'attempt.discarded', responseInstanceId: 'discarded-response' };
+        throw error;
+      }
+      yield* base(input, signal, params);
+    };
+    const { service, events } = createService(requester, undefined);
+    const onAttemptRetry = vi.fn();
+    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
+    const result = pending.then(value => ({ value }), error => ({ error }));
+    await vi.runAllTimersAsync();
+    const retryable = kind !== 'text' && kind !== 'tool';
+    expect(await result).toHaveProperty(retryable ? 'value' : 'error');
+    expect(calls.value).toBe(retryable ? 2 : 1);
+    expect(onAttemptRetry.mock.calls).toEqual(retryable ? Array.from({ length: kind.startsWith('discarded-') ? 2 : 1 }, () => ['discard']) : []);
+    expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(retryable ? 1 : 0);
+  });
+
   it('cancels during interrupted response backoff without resending', async () => {
     vi.useFakeTimers();
     const calls = { value: 0 };

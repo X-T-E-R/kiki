@@ -398,22 +398,32 @@ export function hasExplicitRetryVeto(error: unknown): boolean {
 }
 
 export function isRetryableMalformedFunctionCallError(error: unknown): boolean {
+  return isRetryableUncommittedProviderError(error, (cause, code) =>
+    code === 'antigravity_malformed_function_call' || code === 'MALFORMED_FUNCTION_CALL' ||
+    (cause instanceof APIEmptyResponseError && cause.rawFinishReason === 'MALFORMED_FUNCTION_CALL'));
+}
+
+export function isRetryableMissingTerminalError(error: unknown): boolean {
+  return isRetryableUncommittedProviderError(error, (_cause, code) => code === 'antigravity_missing_terminal');
+}
+
+function isRetryableUncommittedProviderError(error: unknown, matches: (cause: object, code: unknown) => boolean): boolean {
   if (isAbortError(error)) return false;
   const visited = new Set<object>();
   let current = error;
-  let malformed = false;
+  let matched = false;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     const details = providerErrorMetadata(current);
     if (details['execution'] === 'executed' || details['retry'] === false ||
       (current instanceof Error2 && current.details?.['retry'] === false)) return false;
     const code = details['upstreamErrorCode'];
-    const namedMalformed = code === 'antigravity_malformed_function_call' || code === 'MALFORMED_FUNCTION_CALL';
-    if (typeof code === 'string' && !namedMalformed && details['upstream_retryable'] === false) return false;
-    malformed ||= namedMalformed || (current instanceof APIEmptyResponseError && current.rawFinishReason === 'MALFORMED_FUNCTION_CALL');
+    const matchesCause = matches(current, code);
+    if (typeof code === 'string' && !matchesCause && details['upstream_retryable'] === false) return false;
+    matched ||= matchesCause;
     current = current instanceof Error ? current.cause : undefined;
   }
-  return malformed;
+  return matched;
 }
 
 export function isRetryableGenerateError(error: unknown): boolean {

@@ -10,6 +10,7 @@ import {
 } from '#/agent/contextMemory/contextMemory';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
+import { isSubstantiveContentPart } from '#/agent/contextMemory/vacuousContent';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IAgentPluginStateService } from '#/agent/pluginState/pluginState';
 import { PluginStateError } from '#/agent/pluginState/pluginStateErrors';
@@ -56,6 +57,7 @@ import {
   createAbortError,
   hasExplicitRetryVeto,
   isRetryableMalformedFunctionCallError,
+  isRetryableMissingTerminalError,
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
@@ -613,6 +615,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       return { strip: snapshot };
     };
     let attemptObservedOutput = false;
+    let attemptObservedSubstantiveOutput = false;
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
     const run = async (
@@ -620,6 +623,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       params: ModelRequestParams,
     ): Promise<AgentLLMRequestFinish> => {
       attemptObservedOutput = false;
+      attemptObservedSubstantiveOutput = false;
       attemptStartedAt = Date.now();
       attemptTraceId = undefined;
       onRequestTrace(undefined);
@@ -743,12 +747,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           signal?.throwIfAborted();
           switch (event.type) {
             case 'attempt.discarded':
+              attemptObservedOutput = false;
+              attemptObservedSubstantiveOutput = false;
               toolCallIds.rollback();
               toolCallIds = this.toolCallIdNormalizer.beginResponse();
               onAttemptRetry?.('discard');
               break;
             case 'part':
               attemptObservedOutput ||= !isContentPart(event.part) || !isVacuousContentPart(event.part);
+              attemptObservedSubstantiveOutput ||= !isContentPart(event.part) || isSubstantiveContentPart(event.part);
               handlingPart = true;
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
               handlingPart = false;
@@ -870,13 +877,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           model: request.model.id, provider: request.model.providerName,
         });
         const malformedFunctionCall = source?.type === 'turn' && isRetryableMalformedFunctionCallError(error);
-        if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !malformedFunctionCall) ||
+        const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
+        const discardRetry = malformedFunctionCall || missingTerminal;
+        if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||
           isAbortError(error) || signal?.aborted === true) throw error;
-        if (source?.type === 'turn' && (malformedFunctionCall || isRetryableRequestInterruption(error))) {
-          const partialOutput = attemptObservedOutput || (malformedFunctionCall
+        if (source?.type === 'turn' && (discardRetry || isRetryableRequestInterruption(error))) {
+          const partialOutput = attemptObservedOutput || (discardRetry
             ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));
           if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
-          const maxAttempts = Math.min(malformedFunctionCall ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+          const maxAttempts = Math.min(discardRetry ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           if (interruptionAttempt >= maxAttempts) {
             const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
@@ -889,9 +898,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             throw error;
           }
           if (request.model.protocol === 'google-genai') {
-            params = { ...params, googleContinuationToken: malformedFunctionCall ? undefined : readGenerateContinuationToken(error) };
+            params = { ...params, googleContinuationToken: discardRetry ? undefined : readGenerateContinuationToken(error) };
           }
-          const retryMode: AgentLLMAttemptRetryMode = malformedFunctionCall || request.model.protocol !== 'google-genai'
+          const retryMode: AgentLLMAttemptRetryMode = discardRetry || request.model.protocol !== 'google-genai'
             ? 'discard'
             : params.googleContinuationToken === undefined ? 'retain' : 'continue';
           const discardedPartialOutput = partialOutput && retryMode === 'discard';

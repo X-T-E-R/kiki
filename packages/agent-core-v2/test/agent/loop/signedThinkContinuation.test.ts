@@ -392,12 +392,28 @@ describe('thinking-only continuation', () => {
     }
   });
 
-  it.each(['antigravity_empty_response', 'antigravity_missing_terminal', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
+  it.each(['antigravity_empty_response', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
     const create = scriptedCreate([gatewayNoUsableAnswerStream(code), textStream('should not run')]);
     const local = anthropicAgent(create);
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toEqual([]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('retries a missing terminal without continuing signed thinking', async () => {
+    const create = scriptedCreate([gatewayNoUsableAnswerStream('antigravity_missing_terminal'), textStream('Recovered answer')]);
+    const local = anthropicAgent(create, { initialConfig: { retry: { policies: [{ match: 'ChatProviderError', backoff: 1 }] } } });
+    try {
+      expect(await (await prompt(local)).completion).toMatchObject({ state: 'completed', result: { steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(continued(local)).toBe(false);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
       expect(storedThinking(local)).toEqual([]);
       await local.expectResumeMatches();
     } finally {

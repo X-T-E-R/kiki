@@ -21,6 +21,7 @@ import {
   isRetryableGenerateError,
   isRetryableRequestInterruption,
   isRetryableMalformedFunctionCallError,
+  isRetryableMissingTerminalError,
   markProviderEventError,
   markProviderHttpError,
   noteExplicitUpstreamRetryDenial,
@@ -143,6 +144,32 @@ describe('isRetryableMalformedFunctionCallError', () => {
     expect(isRetryableMalformedFunctionCallError(markProviderEventError(new ChatProviderError('MALFORMED_FUNCTION_CALL'), 'antigravity_missing_terminal'))).toBe(false);
     expect(isRetryableMalformedFunctionCallError(new APIEmptyResponseError('MALFORMED_FUNCTION_CALL', { rawFinishReason: 'STOP' }))).toBe(false);
     expect(isRetryableMalformedFunctionCallError(createAbortError())).toBe(false);
+  });
+});
+
+describe('isRetryableMissingTerminalError', () => {
+  it('allows the exact missing-terminal code with upstream denial without changing general retry classification', () => {
+    const error = noteExplicitUpstreamRetryDenial(
+      markProviderEventError(new ChatProviderError('Upstream ended without a terminal event'), 'antigravity_missing_terminal'),
+      { error: { retryable: false } },
+    );
+    const wrapped = new Error('wrapped', { cause: error });
+    expect(isRetryableMissingTerminalError(wrapped)).toBe(true);
+    expect(isRetryableGenerateError(wrapped)).toBe(false);
+    expect(isRetryableRequestInterruption(wrapped)).toBe(false);
+    expect(sameRequestRetryProhibition(readAttachedErrorDetails(error))).toBe('upstream');
+    attachErrorDetails(wrapped, { retry: false, retry_exhausted: true });
+    expect(isRetryableMissingTerminalError(wrapped)).toBe(false);
+    expect(sameRequestRetryProhibition(readAttachedErrorDetails(wrapped))).toBe('budget');
+  });
+
+  it('excludes neighboring codes, local vetoes, and confirmed execution', () => {
+    const mark = (code: string) => markProviderEventError(new ChatProviderError('antigravity_missing_terminal'), code);
+    expect(isRetryableMissingTerminalError(mark('antigravity_empty_response'))).toBe(false);
+    expect(isRetryableMissingTerminalError(mark('antigravity_malformed_function_call'))).toBe(false);
+    const error = mark('antigravity_missing_terminal');
+    expect(isRetryableMissingTerminalError(attachErrorDetails(new Error('local veto', { cause: error }), { retry: false }))).toBe(false);
+    expect(isRetryableMissingTerminalError(noteConfirmedRequestExecution(error))).toBe(false);
   });
 });
 
