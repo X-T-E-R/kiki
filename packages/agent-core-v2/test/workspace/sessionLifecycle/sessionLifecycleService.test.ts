@@ -1927,6 +1927,102 @@ describe('SessionLifecycleService active-turn fork', () => {
       await fx.service.dispose();
     }
   });
+
+  it('detaches non-ACP executor session identity even when a live source starts a turn during readPromotedTaskDocuments', async () => {
+    const fx = fixture();
+    const settledRecords: Array<Record<string, unknown>> = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      {
+        type: 'executor.session.updated',
+        time: 2,
+        executorId: 'codex',
+        sessionRef: { executorId: 'codex', version: 1, ref: { threadId: 'live-thread-9' } },
+      },
+      { type: 'turn.started', turnId: 1, time: 3 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4 },
+    ];
+    let currentTurn: { id: number } | undefined;
+    const rewrite = vi.fn();
+    const update = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const target = {
+      id: 'late-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'late-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: currentTurn }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({
+            title: 'Live Late Turn',
+            lastTurnReason: 'completed',
+            agents: { main: { type: 'main', executor: 'codex' } },
+          }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      hostFs: {
+        readdir: async (dir: string) => {
+          if (dir.endsWith('/agents/main/tasks')) {
+            currentTurn = { id: 2 };
+          }
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        },
+        mkdir: async () => {},
+        readBytes: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        writeBytes: async () => {},
+        remove,
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      },
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* () {
+          yield* settledRecords;
+        },
+        rewrite,
+      },
+    });
+    try {
+      await fx.service.fork({ sourceSessionId: 'session-1', newSessionId: target.id });
+      const copied = rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.find((record) => record['type'] === 'executor.session.updated')).toMatchObject({
+        sessionRef: { executorId: 'codex', version: 1, ref: { copiedIdentity: true } },
+      });
+      expect(JSON.stringify(copied)).not.toContain('live-thread-9');
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
 });
 
 describe('SessionLifecycleService subagent promotion', () => {

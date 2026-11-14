@@ -4509,6 +4509,8 @@ function SidebarRenameEditor({
   const didAutoFocusRef = useRef(false);
   const composingRef = useRef(false);
   const submittingRef = useRef(false);
+  const tabKeyActiveRef = useRef(false);
+  const tabClearTimerRef = useRef<number | null>(null);
   const titleRef = useRef(title);
   titleRef.current = title;
   const persistedTitleRef = useRef(persistedTitle);
@@ -4604,9 +4606,28 @@ function SidebarRenameEditor({
     onCloseRef.current();
   }, []);
 
+  const commitOrCloseOnExit = useCallback(() => {
+    if (submittingRef.current || composingRef.current) return;
+    const trimmed = titleRef.current.trim();
+    if (trimmed !== '' && trimmed !== persistedTitleRef.current) {
+      submitCurrent();
+    } else {
+      cancelCurrent();
+    }
+  }, [cancelCurrent, submitCurrent]);
+
   useEffect(() => {
     const unregister = registerOverlay('sidebar-rename');
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && !isImeKeyEvent(event) && fieldRef.current?.contains(event.target as Node)) {
+        tabKeyActiveRef.current = true;
+        if (tabClearTimerRef.current !== null) window.clearTimeout(tabClearTimerRef.current);
+        tabClearTimerRef.current = window.setTimeout(() => {
+          tabKeyActiveRef.current = false;
+          tabClearTimerRef.current = null;
+        }, 0);
+        return;
+      }
       // An IME Escape cancels the candidate, not the rename.
       if (event.key !== 'Escape' || isImeKeyEvent(event)) return;
       event.preventDefault();
@@ -4615,22 +4636,20 @@ function SidebarRenameEditor({
     };
     const onPointerDown = (event: PointerEvent) => {
       if (fieldRef.current === null || fieldRef.current.contains(event.target as Node)) return;
-      if (submittingRef.current) return;
-      const trimmed = titleRef.current.trim();
-      if (trimmed !== '' && trimmed !== persistedTitleRef.current) {
-        submitCurrent();
-      } else {
-        cancelCurrent();
-      }
+      commitOrCloseOnExit();
     };
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
       unregister();
+      if (tabClearTimerRef.current !== null) {
+        window.clearTimeout(tabClearTimerRef.current);
+        tabClearTimerRef.current = null;
+      }
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [cancelCurrent, submitCurrent]);
+  }, [cancelCurrent, commitOrCloseOnExit]);
 
   if (anchor === null) return null;
   const trimmed = title.trim();
@@ -4644,15 +4663,21 @@ function SidebarRenameEditor({
       data-rename-editor={item.id}
       data-rename-saving={busy ? '' : undefined}
       onBlur={(event) => {
-        if (submittingRef.current || composingRef.current) return;
+        if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
         const next = event.relatedTarget;
-        if (!(next instanceof Node) || fieldRef.current === null || fieldRef.current.contains(next)) return;
-        const nextTrimmed = titleRef.current.trim();
-        if (nextTrimmed !== '' && nextTrimmed !== persistedTitleRef.current) {
-          submitCurrent();
-        } else {
-          cancelCurrent();
+        if (next instanceof Node) {
+          if (fieldRef.current.contains(next)) return;
+          commitOrCloseOnExit();
+          return;
         }
+        if (!tabKeyActiveRef.current) return;
+        tabKeyActiveRef.current = false;
+        queueMicrotask(() => {
+          if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
+          const active = document.activeElement;
+          if (active instanceof Node && fieldRef.current.contains(active)) return;
+          commitOrCloseOnExit();
+        });
       }}
       className="anim-enter fixed z-50 flex flex-col justify-center rounded-xl border border-hairline-strong bg-panel px-2 py-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.32)] focus-within:border-selected-ink focus-within:ring-2 focus-within:ring-selected-ink/25"
       style={{ left: anchor.left, top: anchor.top, width: anchor.width, minHeight: anchor.minHeight }}

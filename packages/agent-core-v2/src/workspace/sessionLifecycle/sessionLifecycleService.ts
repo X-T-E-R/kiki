@@ -1450,6 +1450,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             anyActiveTurn = true;
           }
         }
+        if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) {
+          anyActiveTurn = true;
+        }
       }
       if (!anyActiveTurn && hasUnsettledForkRecords(rawRecordsByAgent, opts.throughUserMessage === true)) {
         anyActiveTurn = true;
@@ -1463,7 +1466,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             sourceSessionId: sourceId,
             agentId,
             targetSessionId: targetCtx.sessionId,
-            records: externalAcpForkRecords(
+            records: detachForkExecutorSessionRefs(
               opts.externalMaterialOnly === true && agentId === MAIN_AGENT_ID
                 ? externalMaterialForkRecords(agentRecords)
                 : agentRecords,
@@ -2461,6 +2464,24 @@ function hasUnsettledForkRecords(
     if (openAfterEnded) return true;
   }
   return false;
+}
+
+function detachForkExecutorSessionRefs(
+  records: readonly WireRecord[],
+  isAcp: (executorId: string) => boolean,
+  throughUserMessage: boolean,
+): readonly WireRecord[] {
+  const acpPrepared = externalAcpForkRecords(records, isAcp, throughUserMessage);
+  return acpPrepared.map((record) => {
+    if (record.type !== 'executor.session.updated') return record;
+    if (typeof record['executorId'] === 'string' && isAcp(record['executorId'])) return record;
+    return {
+      ...record,
+      sessionRef: { executorId: record['executorId'], version: 1, ref: { copiedIdentity: true } },
+      profileDeliveredSessionId: undefined,
+      lastCumulativeUsage: undefined,
+    };
+  });
 }
 
 function filterSettledForkRecords(records: readonly WireRecord[]): readonly WireRecord[] {

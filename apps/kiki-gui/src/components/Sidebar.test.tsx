@@ -4104,6 +4104,30 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
       expect(updateSessionProfile).toHaveBeenCalledTimes(1);
       expect(updateSessionProfile).toHaveBeenCalledWith('s-tab', { title: 'Saved by Tab exit' });
       expect(document.body.querySelector('[data-rename-editor="s-tab"]')).toBeNull();
+
+      // Browser Tab exit out of document (relatedTarget: null) also commits dirty draft, while incidental null blur without Tab stays open.
+      const editor3 = await openSessionRename(container, 's-tab');
+      const input3 = editor3.querySelector<HTMLInputElement>('[data-rename-input]')!;
+      const cancel3 = editor3.querySelector<HTMLButtonElement>('[data-rename-cancel]')!;
+      await setInputValue(input3, 'Saved by document Tab exit');
+      await act(async () => {
+        input3.blur();
+        input3.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      });
+      await settle();
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).not.toBeNull();
+      expect(updateSessionProfile).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        cancel3.focus();
+        cancel3.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        cancel3.blur();
+        cancel3.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      });
+      await settle();
+      expect(updateSessionProfile).toHaveBeenCalledTimes(2);
+      expect(updateSessionProfile).toHaveBeenLastCalledWith('s-tab', { title: 'Saved by document Tab exit' });
+      expect(document.body.querySelector('[data-rename-editor="s-tab"]')).toBeNull();
     } finally {
       outsideButton.remove();
     }
