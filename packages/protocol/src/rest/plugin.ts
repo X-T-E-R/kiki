@@ -50,7 +50,7 @@ export const pluginPrerequisiteInstallSchema = z.object({
 export const pluginPanelSummarySchema = z.object({
   pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace', 'settings']),
 });
-export const pluginPanelDocumentSchema = z.object({ html: z.string(), sandbox: z.literal('allow-scripts') });
+export const pluginPanelDocumentSchema = z.object({ html: z.string(), url: z.string().optional(), sandbox: z.literal('allow-scripts') });
 export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('session.summary'), session_id: z.string().min(1) }),
   z.object({ method: z.literal('session.sendMessage'), session_id: z.string().min(1), text: z.string().min(1).max(16_384) }),
@@ -100,3 +100,48 @@ export type PluginUsageOverride = z.infer<typeof pluginUsageOverrideSchema>;
 export type PluginUsageRequest = z.infer<typeof pluginUsageRequestSchema>;
 export type PluginUsageResponse = z.infer<typeof pluginUsageResponseSchema>;
 export type PluginUsageItem = z.infer<typeof pluginUsageItemSchema>;
+
+const PANEL_HOST_BRIDGE_SCRIPT = `<script>(function(){
+const CHANNEL='kiki.panel.v1';
+function applyPresentation(p){
+  if(!p||typeof p!=='object')return;
+  const root=document.documentElement;
+  if(p.theme==='dark'||p.theme==='light')root.style.colorScheme=p.theme;
+  if(p.tokens&&typeof p.tokens==='object'){
+    for(const [k,v] of Object.entries(p.tokens)){if(typeof v==='string')root.style.setProperty(k,v);}
+    const aliases=[['--paper','--color-paper'],['--ink','--color-ink'],['--soft','--color-ink-soft'],['--line','--color-hairline'],['--accent','--color-accent']];
+    for(const [alias,src] of aliases){if(typeof p.tokens[src]==='string')root.style.setProperty(alias,p.tokens[src]);}
+  }
+  if(p.locale==='en'||p.locale==='zh')root.lang=p.locale==='zh'?'zh-CN':'en';
+}
+let lastHeight=0;
+function reportHeight(){
+  const body=document.body,doc=document.documentElement;
+  if(!body||!doc)return;
+  const h=Math.ceil(Math.max(body.scrollHeight,body.getBoundingClientRect().height));
+  if(h>0&&Math.abs(h-lastHeight)>2){
+    lastHeight=h;
+    parent.postMessage({channel:CHANNEL,kind:'resize',height:h},'*');
+  }
+}
+window.addEventListener('message',function(e){
+  if(e.source!==parent||!e.data||e.data.channel!==CHANNEL)return;
+  if(e.data.kind==='init'||e.data.kind==='presentation'){
+    applyPresentation(e.data.presentation);
+    setTimeout(reportHeight,0);
+  }
+  if(e.data.kind==='response')setTimeout(reportHeight,0);
+});
+window.addEventListener('load',reportHeight);
+document.addEventListener('toggle',reportHeight,true);
+if(typeof ResizeObserver==='function'&&document.documentElement){
+  new ResizeObserver(reportHeight).observe(document.documentElement);
+}
+})();</script>`;
+
+export function withPluginPanelPresentation(html: string): string {
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${PANEL_HOST_BRIDGE_SCRIPT}</body>`);
+  }
+  return `${html}${PANEL_HOST_BRIDGE_SCRIPT}`;
+}

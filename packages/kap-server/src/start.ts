@@ -1153,7 +1153,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
 
   if (managedOwner !== undefined) registerRuntimeSwitchRoutes(app, core, managedOwner,
     () => { void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed')); }, shutdownController.signal);
-  await registerApiV1Routes(app, core, {
+  const mintPanelDocument = await registerApiV1Routes(app, core, {
     serverVersion,
     buildId,
     buildChannel,
@@ -1274,7 +1274,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
   const pairingHooks: { current?: PairingHooks } = {};
-  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined);
+  const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);
   const pairedBridge = threadBridge;
   remoteConnections.setPairingBridgeRetirement((id, grantId) => pairedBridge.retirePairing(id, grantId));

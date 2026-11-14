@@ -79,6 +79,7 @@ describe('Workspace MCP initialization', () => {
         reg.defineInstance(IPluginUsageService, stubPluginUsageService());
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => ({}),
+          onWillChange: Event.None,
           onDidReload: Event.None as Event<PluginReloadEvent>,
         });
         reg.definePartialInstance(

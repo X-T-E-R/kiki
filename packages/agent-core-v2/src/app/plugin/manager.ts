@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, realpath, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import { discoverFileSkills } from '#/app/skillCatalog/fileSkillDiscovery';
@@ -935,6 +936,22 @@ async function normalizeInstallRoot(rootPath: string, signal?: AbortSignal): Pro
   return resolved;
 }
 
+const WINDOWS_RENAME_DELAYS_MS = [30, 60, 120, 240, 250, 250, 250, 250];
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      const wait = WINDOWS_RENAME_DELAYS_MS[attempt];
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || wait === undefined || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
+      await delay(wait);
+    }
+  }
+}
+
 async function copyPluginToManagedRoot(
   kimiHomeDir: string,
   id: string,
@@ -963,12 +980,12 @@ async function copyPluginToManagedRoot(
       throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
     }
     try {
-      await rename(managedRoot, previousRoot);
+      await renameWithRetry(managedRoot, previousRoot);
       movedPreviousRoot = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    await rename(stagingRoot, managedRoot);
+    await renameWithRetry(stagingRoot, managedRoot);
     published = true;
     return {
       root: await realpath(managedRoot),
@@ -976,20 +993,20 @@ async function copyPluginToManagedRoot(
     };
   } catch (error) {
     await rm(published ? managedRoot : stagingRoot, { recursive: true, force: true });
-    if (movedPreviousRoot) await rename(previousRoot, managedRoot);
+    if (movedPreviousRoot) await renameWithRetry(previousRoot, managedRoot);
     throw error;
   }
 }
 
 async function swapPluginCopies(current: string, rollback: string): Promise<void> {
   const staging = `${current}.swap-${randomUUID()}`;
-  await rename(current, staging);
+  await renameWithRetry(current, staging);
   try {
-    await rename(rollback, current);
-    try { await rename(staging, rollback); }
-    catch (error) { await rename(current, rollback); throw error; }
+    await renameWithRetry(rollback, current);
+    try { await renameWithRetry(staging, rollback); }
+    catch (error) { await renameWithRetry(current, rollback); throw error; }
   } catch (error) {
-    await rename(staging, current);
+    await renameWithRetry(staging, current);
     throw error;
   }
 }
@@ -997,7 +1014,7 @@ async function swapPluginCopies(current: string, rollback: string): Promise<void
 async function rollbackManagedPluginCopy(copy: ManagedPluginCopy): Promise<void> {
   await rm(copy.root, { recursive: true, force: true });
   if (copy.previousRoot !== undefined) {
-    await rename(copy.previousRoot, copy.root);
+    await renameWithRetry(copy.previousRoot, copy.root);
   }
 }
 

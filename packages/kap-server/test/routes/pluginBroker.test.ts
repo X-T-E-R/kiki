@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { registerPluginPanelDocuments } from '../../src/routes/pluginPanelDocuments';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -255,11 +256,13 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
 
     const core = { accessor: container } as unknown as Scope;
 
+    const mintPanelDocument = registerPluginPanelDocuments(app);
     await app.register(
       async (api) => {
         registerPluginsRoutes(api as never, core, {
           marketplaceUrl: () => undefined,
           serverToken: () => SERVER_TOKEN,
+          mintPanelDocument,
         });
         registerPluginBrokerRoutes(api as never, core);
       },
@@ -939,11 +942,13 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
         isValid: async (candidate: string) => candidate === SERVER_TOKEN,
       } as never),
     );
+    const mintPanelDocument = registerPluginPanelDocuments(app);
     await app.register(
       async (api) => {
         registerPluginsRoutes(api as never, scopedHost.app, {
           marketplaceUrl: () => undefined,
           serverToken: () => SERVER_TOKEN,
+          mintPanelDocument,
         });
         registerPluginBrokerRoutes(api as never, scopedHost.app);
       },

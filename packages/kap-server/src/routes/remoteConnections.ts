@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
-import { MEDIA_PREVIEW_MAX_BYTES, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame } from '@kiki/klient/host';
@@ -15,6 +15,7 @@ import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, B
 import { directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
 import { pinnedAgent, requirePinnedTls } from '../services/connections/peerTls';
+import type { MintPluginPanelDocument } from './pluginPanelDocuments';
 
 export const CONNECTION_BROKER_WS = /^\/api\/remote-connections\/([0-9a-f-]{36})\/events(?:\?.*)?$/;
 function isWebSharedRecord(record: { id: string; enabled: boolean; state: string; purposes: readonly string[] }, web: WebAccess | undefined): boolean {
@@ -27,7 +28,7 @@ function attachWebSharedConnection(request: object, id: string, manager: RemoteC
   if (!isWebSharedRecord(record, web)) throw new AdmissionError(403, 'connection_not_shared');
   return web!.attachConnection(id, close);
 }
-export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined): WebSocketServer {
+export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: ConnectionAdmission, manager: RemoteConnectionManager, serverId: string, getOwnerToken: () => string, ssh?: SshRemoteConnector, hooks: { current?: PairingHooks } = {}, web?: WebAccess, tlsFingerprint: () => string | undefined = () => undefined, mintPanelDocument?: MintPluginPanelDocument): WebSocketServer {
   const pairingLimit = new PairingRateLimit();
   const respond = async <T>(requestId: string, reply: { code(status: number): unknown; send(value: unknown): unknown }, work: () => Promise<T>) => {
     try { return reply.send(okEnvelope(await work(), requestId)); }
@@ -159,6 +160,13 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
       const response = await manager.forward(id, input, lease.signal);
       const cap = reading ? SESSION_READ_BODY_BYTES : input.operation === 'fsRead' ? BROKER_FS_READ_BODY_BYTES : BROKER_BODY_BYTES;
       const body = await readBoundedJsonBody(response, cap, lease.signal);
+      if (input.operation === 'pluginPanelDocument' && mintPanelDocument !== undefined && response.ok) {
+        const envelope = z.object({ code: z.literal(0), data: pluginPanelDocumentSchema }).safeParse(body);
+        if (envelope.success) {
+          const { data } = envelope.data;
+          return await reply.header('cache-control', 'no-store').send(okEnvelope({ ...data, url: await mintPanelDocument(data.html, req) }, req.id));
+        }
+      }
       return await reply.code(response.status).send(body);
     } catch (error) {
       const reason = controller.signal.reason;

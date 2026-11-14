@@ -17,7 +17,7 @@ import {
   IMcpConfigStore,
   type McpConfigWriteEvent,
 } from '#/app/mcpConfig/configStore';
-import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginService, type PluginChangeEvent } from '#/app/plugin/plugin';
 import type { PluginReloadEvent } from '#/app/plugin/types';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -51,6 +51,7 @@ describe('WorkspaceMcpConfigService', () => {
   let watchFires: Map<string, Emitter<HostFsChange>>;
   let pluginServers: Record<string, McpServerConfig>;
   let pluginReloads: AsyncEmitter<PluginReloadEvent>;
+  let pluginChanges: AsyncEmitter<PluginChangeEvent>;
   let storeWrites: AsyncEmitter<McpConfigWriteEvent>;
   let trusted: boolean;
   let trustFlips: Emitter<WorkspaceTrustChange>;
@@ -63,6 +64,7 @@ describe('WorkspaceMcpConfigService', () => {
     watchFires = new Map();
     pluginServers = {};
     pluginReloads = disposables.add(new AsyncEmitter<PluginReloadEvent>());
+    pluginChanges = disposables.add(new AsyncEmitter<PluginChangeEvent>());
     storeWrites = disposables.add(new AsyncEmitter<McpConfigWriteEvent>());
     trusted = true;
     trustFlips = new Emitter<WorkspaceTrustChange>();
@@ -101,6 +103,7 @@ describe('WorkspaceMcpConfigService', () => {
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => pluginServers,
           mcpServerEntries: async () => ['plugin-example-shared', 'plugin-example-only'].map((name) => ({ name, pluginId: 'example', serverName: name, config: stdioConfig('plugin') })),
+          onWillChange: pluginChanges.event,
           onDidReload: pluginReloads.event,
         });
         if (usage !== undefined) reg.defineInstance(IPluginUsageService, usage);
@@ -134,6 +137,42 @@ describe('WorkspaceMcpConfigService', () => {
     await writeFile(file, JSON.stringify({ mcpServers: servers }), 'utf8');
     return file;
   }
+
+  it('withdraws only changing plugin servers, joins cleanup and restores after an abandoned change', async () => {
+    pluginServers = { 'plugin-example:server': stdioConfig('example'), 'plugin-other:server': stdioConfig('other') };
+    const service = createService();
+    await service.ready;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    const subscription = service.onDidChange((event) => {
+      if (event.remove.includes('plugin-example:server')) event.waitUntil(cleanup);
+    });
+    let drained = false;
+    const changing = pluginChanges.fireAsync({ affected: ['example'], finished }, new AbortController().signal).then(() => { drained = true; });
+    await vi.waitFor(() => expect(service.servers()).toEqual({ 'plugin-other:server': stdioConfig('other') }));
+    expect(drained).toBe(false);
+    release();
+    await changing;
+    finish();
+    await vi.waitFor(() => expect(service.servers()).toEqual(pluginServers));
+    subscription.dispose();
+  });
+
+  it('restores a fresh plugin snapshot on reload after a global change', async () => {
+    pluginServers = { 'plugin-example:server': stdioConfig('old') };
+    const service = createService();
+    await service.ready;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    await pluginChanges.fireAsync({ finished }, new AbortController().signal);
+    expect(service.servers()).toEqual({});
+    pluginServers = { 'plugin-example:server': stdioConfig('new') };
+    await pluginReloads.fireAsync({ added: [], removed: [], errors: [] }, new AbortController().signal);
+    finish();
+    expect(service.servers()).toEqual(pluginServers);
+  });
 
   it('merges file and plugin servers in the initial resolve (file wins name collisions)', async () => {
     await writeProjectConfig({

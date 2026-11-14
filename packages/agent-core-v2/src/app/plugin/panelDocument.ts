@@ -2,9 +2,10 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { PluginPanel } from './contributions';
+import { withPluginPanelPresentation } from '@kiki/protocol';
 
 const MAX_PANEL_BYTES = 256 * 1024;
-const PANEL_CSP = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'";
+export const PANEL_CSP = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'";
 const ASSET_MIME: Readonly<Record<string, string>> = {
   '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.webp': 'image/webp',
@@ -40,6 +41,7 @@ export async function panelDocument(root: string, panel: PluginPanel): Promise<s
   if (/<(?:script|link|img)\b[^>]*\b(?:src|href)\s*=\s*["'](?!data:)/i.test(html)) {
     throw new Error('Panel references an undeclared external asset');
   }
+  if (panel.slot === 'settings') html = withPluginPanelPresentation(html);
   const policy = `<meta http-equiv="Content-Security-Policy" content="${PANEL_CSP}">`;
   const withoutDoctype = html.replace(/^\s*<!doctype html>\s*/i, '');
   const metadata = `${policy}<meta name="referrer" content="no-referrer">`;

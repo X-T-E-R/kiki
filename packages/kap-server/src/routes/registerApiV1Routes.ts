@@ -46,6 +46,8 @@ import type { NotificationService } from '../services/notifications/notification
 import type { ImSessionBridge } from '../services/imSession/bridge';
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
+import { registerPluginPanelDocuments, type MintPluginPanelDocument } from './pluginPanelDocuments';
+import type { FastifyInstance } from 'fastify';
 import { registerPluginBrokerRoutes } from './pluginBroker';
 import { registerHarnessQuotaRoutes } from './harnessQuota';
 import { registerPluginUsageRoutes } from './pluginUsage';
@@ -148,7 +150,8 @@ export async function registerApiV1Routes(
   app: ApiV1AppHost,
   core: Scope,
   opts: RegisterApiV1RoutesOptions,
-): Promise<void> {
+): Promise<MintPluginPanelDocument> {
+  const mintPanelDocument = registerPluginPanelDocuments(app as unknown as FastifyInstance);
   if (opts.enableShutdown !== false) {
     registerDesktopLifecycleRoutes(app as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core,
       { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api', explicitExitPath: opts.explicitExitPath, pid: opts.pid, startedAt: Date.parse(opts.startedAt) });
@@ -258,6 +261,7 @@ export async function registerApiV1Routes(
       registerPluginsRoutes(apiV1 as unknown as Parameters<typeof registerPluginsRoutes>[0], core, {
         marketplaceUrl: opts.pluginMarketplaceUrl,
         serverToken: opts.pluginBridgeServerToken,
+        mintPanelDocument,
       });
       registerPluginBrokerRoutes(apiV1 as unknown as Parameters<typeof registerPluginBrokerRoutes>[0], core);
       registerHarnessQuotaRoutes(apiV1 as unknown as Parameters<typeof registerHarnessQuotaRoutes>[0], core);
@@ -351,6 +355,7 @@ export async function registerApiV1Routes(
     },
     { prefix: '/api' },
   );
+  return mintPanelDocument;
 }
 
 function registerHealthRoute(apiV1: ApiV1RouteHost): void {

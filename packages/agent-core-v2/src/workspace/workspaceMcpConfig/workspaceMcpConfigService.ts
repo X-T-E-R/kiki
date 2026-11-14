@@ -34,6 +34,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   private mutationTail: Promise<void> = Promise.resolve();
   private fileServers = new Map<string, McpServerConfig>();
   private pluginServers = new Map<string, McpServerConfig>();
+  private changingPlugins: readonly string[] | null = [];
   private current: Readonly<Record<string, McpServerConfig>> = {};
   private readonly inheritedHomeDir: string | undefined;
   private readonly watchDebounce = this._register(new TimeoutTimer());
@@ -63,8 +64,23 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     this.ready = this.initialize().catch((error: unknown) => {
       this.log.error('mcp config initial load failed', { error });
     });
+    this._register(this.plugins.onWillChange((event) => {
+      this.changingPlugins = event.affected ?? null;
+      let reloaded = false;
+      const subscription = this.plugins.onDidReload(() => { reloaded = true; });
+      event.waitUntil(this.publishIfChanged().catch((error: unknown) => {
+        event.reportFailure?.(error);
+      }));
+      void event.finished.then(async () => {
+        subscription.dispose();
+        if (reloaded || this._store.isDisposed) return;
+        this.changingPlugins = [];
+        await this.mutate(() => this.publishIfChanged());
+      }).catch((error: unknown) => this.log.error('mcp plugin restore failed', { error }));
+    }));
     this._register(
       this.plugins.onDidReload((event) => {
+        this.changingPlugins = [];
         event.waitUntil(
           this.reloadPluginServers().catch((error) => {
             this.log.warn(`mcp plugin reload failed: ${String(error)}`);
@@ -141,7 +157,9 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   }
 
   private merged(): Record<string, McpServerConfig> {
-    return { ...Object.fromEntries(this.pluginServers), ...Object.fromEntries(this.fileServers) };
+    const plugins = [...this.pluginServers].filter(([name]) =>
+      this.changingPlugins !== null && !this.changingPlugins.some((id) => name.startsWith(`plugin-${id}:`)));
+    return { ...Object.fromEntries(plugins), ...Object.fromEntries(this.fileServers) };
   }
 
   private async watchConfigFiles(): Promise<void> {

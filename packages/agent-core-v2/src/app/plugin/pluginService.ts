@@ -293,7 +293,13 @@ export class PluginService extends Service implements IPluginService {
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => { finish = resolve; });
     this.changing = { affected: affected?.map((id) => id.toLowerCase()), draining: true };
-    await this.onWillChangeEmitter.fireAsyncConcurrent({ affected: this.changing.affected, finished }, NO_ABORT);
+    const failures: unknown[] = [];
+    await this.onWillChangeEmitter.fireAsyncConcurrent({ affected: this.changing.affected, finished, reportFailure: (error) => { failures.push(error); } }, NO_ABORT);
+    if (failures.length > 0) {
+      this.changing = undefined;
+      finish();
+      throw new AggregateError(failures, 'Plugin process cleanup failed');
+    }
     this.changing.draining = false;
     return () => {
       this.changing = undefined;

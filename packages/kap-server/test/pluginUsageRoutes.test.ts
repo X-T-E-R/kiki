@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import Fastify from 'fastify';
 import { IPluginHostService } from '@kiki/agent-core-v2';
 import { registerPluginsRoutes } from '../src/routes/plugins';
+import { registerPluginPanelDocuments } from '../src/routes/pluginPanelDocuments';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -282,7 +283,7 @@ describe('plugin usage routes', () => {
       : id === 'other-session' ? { id, workspaceId: 'workspace-b' } : undefined);
     plugins.listPluginCommands = vi.fn(async (workspaceId?: string) => workspaceId !== undefined && !await usage.allows(workspaceId, 'demo') ? []
       : [{ pluginId: 'demo', name: 'example', description: 'Example', body: 'Example prompt', path: 'example.md' }]);
-    registerPluginsRoutes(app as unknown as Parameters<typeof registerPluginsRoutes>[0], core, { marketplaceUrl: () => undefined, serverToken: () => 'test-token' });
+    registerPluginsRoutes(app as unknown as Parameters<typeof registerPluginsRoutes>[0], core, { marketplaceUrl: () => undefined, serverToken: () => 'test-token', mintPanelDocument: registerPluginPanelDocuments(app) });
     try {
       const document = '/plugins/demo/panels/work/document';
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=cold-session` })).json().code).toBe(0);

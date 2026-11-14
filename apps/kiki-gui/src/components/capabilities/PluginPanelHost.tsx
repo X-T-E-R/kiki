@@ -2,8 +2,9 @@
  * Plugin panel host — renders a plugin's panel HTML in a sandboxed iframe and
  * relays its requests to the REST bridge.
  *
- * Contract (plugin REST contract, "P2 panels"): `srcdoc` = the served HTML,
- * `sandbox="allow-scripts"` exactly — never `allow-same-origin` — so the
+ * Contract (plugin REST contract, "P2 panels"): a returned `url` is resolved
+ * against the client base URL for `src`; without one, `html` is loaded as
+ * `srcdoc`. `sandbox="allow-scripts"` exactly — never `allow-same-origin` — so the
  * frame has an opaque origin and cannot reach the parent DOM, cookies or the
  * bearer token. The host accepts a message only when it comes from this
  * iframe's window with origin `'null'`, and pins plugin/panel/session from
@@ -71,7 +72,7 @@ export function PluginPanelHost({
   const { t, locale } = useI18n();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const recent = useRef<number[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [loadSeq, setLoadSeq] = useState(0);
   const effectiveLabel = label ?? title ?? panelId;
   const effectiveTarget: PluginUsageTarget | undefined =
     target ??
@@ -100,9 +101,9 @@ export function PluginPanelHost({
   // Init once the frame document has loaded, and again when the pinned
   // session changes under an already-loaded panel.
   useEffect(() => {
-    if (!loaded) return;
+    if (loadSeq === 0) return;
     post({ channel: CHANNEL, kind: 'init', sessionId: sessionId ?? null });
-  }, [loaded, sessionId, post]);
+  }, [loadSeq, sessionId, post]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -168,14 +169,19 @@ export function PluginPanelHost({
       </div>
     );
   }
+  const panelDocument = documentQuery.data;
   return (
     <iframe
       ref={frameRef}
       title={effectiveLabel}
-      srcDoc={documentQuery.data.html}
+      src={panelDocument.url === undefined ? undefined : new URL(panelDocument.url, client.baseUrl || window.location.origin).toString()}
+      srcDoc={panelDocument.url === undefined ? panelDocument.html : undefined}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
-      onLoad={() => { setLoaded(true); }}
+      onLoad={() => {
+        recent.current = [];
+        setLoadSeq((seq) => seq + 1);
+      }}
       data-plugin-panel={`${pluginId}:${panelId}`}
       data-plugin-panel-variant={variant}
       className={`${resolvedClassName} block border-0 bg-paper`}

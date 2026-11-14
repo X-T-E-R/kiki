@@ -16,7 +16,7 @@ import { AsyncEmitter, Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
-import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginService, type PluginChangeEvent } from '#/app/plugin/plugin';
 import type { PluginReloadEvent } from '#/app/plugin/types';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -130,6 +130,7 @@ describe('WorkspaceMcpService', () => {
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => ({}),
           mcpServerEntries: async () => [],
+          onWillChange: () => ({ dispose: () => {} }),
           onDidReload: () => ({ dispose: () => {} }),
           ...options.plugins,
         });
@@ -807,6 +808,43 @@ describe('WorkspaceMcpService', () => {
         await Promise.all(disposers.map(async (dispose) => { await dispose(); }));
       }
     });
+
+    it.each([true, false])('stops plugin session subprocesses before a change and restores them (reload=%s)', async (reload) => {
+      const changes = disposables.add(new AsyncEmitter<PluginChangeEvent>());
+      const reloads = disposables.add(new AsyncEmitter<PluginReloadEvent>());
+      const config = stdioServer();
+      const service = createService({ plugins: {
+        onWillChange: changes.event,
+        onDidReload: reloads.event,
+        enabledMcpServers: async () => ({ 'plugin-example:server': config }),
+      } });
+      manager = service.connectionManager();
+      await service.ready;
+      const { event, disposers } = willCreateEvent({ caller: config }, cwd);
+      const sessionOverlay = vi.spyOn(service, 'sessionOverlay');
+      assemblyEvents.fire(event);
+      const overlay = sessionOverlay.mock.results[0]?.value as ISessionMcpOverlay;
+      let finish!: () => void;
+      const finished = new Promise<void>((resolve) => { finish = resolve; });
+      try {
+        await overlay.handle.ready;
+        await overlay.enableConfiguredServer?.('plugin-example:server', config, 'plugin');
+        const oldClient = overlay.handle.connectionManager.resolved('plugin-example:server')!.client;
+        const close = vi.spyOn(oldClient, 'close');
+        await changes.fireAsync({ affected: ['example'], finished }, new AbortController().signal);
+        expect(close).toHaveBeenCalledOnce();
+        await close.mock.results[0]?.value;
+        expect(overlay.handle.connectionManager.resolved('plugin-example:server')).toBeUndefined();
+        expect(overlay.handle.connectionManager.get('caller')?.status).toBe('connected');
+        if (reload) await reloads.fireAsync({ added: [], removed: [], errors: [] }, new AbortController().signal);
+        finish();
+        await vi.waitFor(() => expect(overlay.handle.connectionManager.get('plugin-example:server')?.status).toBe('connected'));
+        expect(overlay.handle.connectionManager.resolved('plugin-example:server')!.client).not.toBe(oldClient);
+      } finally {
+        finish();
+        await Promise.all(disposers.map(async (dispose) => { await dispose(); }));
+      }
+    }, 20_000);
 
     it('withdraws a selected plugin overlay when its source disappears without removing caller servers', async () => {
       const reloads = disposables.add(new AsyncEmitter<PluginReloadEvent>());

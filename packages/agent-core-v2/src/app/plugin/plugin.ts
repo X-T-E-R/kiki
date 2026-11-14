@@ -55,6 +55,7 @@ export interface GetPluginInfoInput {
 export interface PluginChangeEvent extends IWaitUntil {
   readonly affected?: readonly string[];
   readonly finished: Promise<void>;
+  readonly reportFailure?: (error: unknown) => void;
 }
 
 export interface IPluginService {

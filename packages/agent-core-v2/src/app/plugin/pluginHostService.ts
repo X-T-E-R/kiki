@@ -297,8 +297,12 @@ export class PluginHostService extends Service implements IPluginHostService {
         const affected = this.affectedPlugins(event.affected);
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
         this.withdrawExtensionPorts(affected);
-        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys()])];
-        await Promise.allSettled(ids.map(id => this.withdrawSlot(id)));
+        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys()])];
+        await Promise.all(ids.map(async (id) => {
+          await this.withdrawSlot(id);
+          await this.isolates?.current?.terminatePlugin(id, 'Plugin changing');
+        }));
+        await Promise.allSettled(this.extensionDiscoveries);
         await Promise.all(ids.map((id) => Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>())));
         const preserved = affected === undefined
           ? new Set([...this.hosts].filter(([, host]) => host.running && host.hasActiveLeases).map(([id]) => id))
@@ -316,7 +320,9 @@ export class PluginHostService extends Service implements IPluginHostService {
           this.hostSignatures.delete(id);
           await host?.stopAndWait();
         }));
-      })());
+      })().catch((error: unknown) => {
+        event.reportFailure?.(error);
+      }));
     }));
     this._register(this.plugins.onDidReload((event) => {
       event.waitUntil((async () => {
@@ -484,8 +490,11 @@ export class PluginHostService extends Service implements IPluginHostService {
       this.extensionRegistrations.set(id, store);
 
       if (hasE12Slot) {
+        const controller = new AbortController();
+        store.add(toDisposable(() => controller.abort()));
         const discovery = this.discoverDynamicE12Contributions({
           info,
+          signal: controller.signal,
           generation,
           registry,
           store,
@@ -504,6 +513,7 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   private async discoverDynamicE12Contributions(input: {
     readonly info: PluginInfo;
+    readonly signal: AbortSignal;
     readonly generation: number;
     readonly registry: IPluginExtensionPortRegistry;
     readonly store: DisposableStore;
@@ -520,9 +530,11 @@ export class PluginHostService extends Service implements IPluginHostService {
         pluginId: info.id,
         slot: 'E12:server-gui-slots',
         payload: { kind: 'describe', action: 'describe' },
+        signal: input.signal,
         timeoutMs: 5_000,
       });
     } catch (error) {
+      if (input.signal.aborted) return;
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('Plugin did not register the requested slot')) {
         this.logger?.current?.warn('plugin E12 slot discovery failed', {
