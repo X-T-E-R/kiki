@@ -267,7 +267,7 @@ describe('plugin hot reload lifecycle', () => {
       entered.resolve(undefined);
       await preparation.promise;
     };
-    vi.spyOn(PluginManager.prototype, 'install').mockImplementation(async function (source, options, beforeReplace) {
+    vi.spyOn(PluginManager.prototype, 'install').mockImplementation(async function (this: PluginManager, source, options, beforeReplace) {
       if (!afterDrain) await pause();
       return originalInstall.call(this, source, options, async (id) => {
         await beforeReplace?.(id);
@@ -284,11 +284,11 @@ describe('plugin hot reload lifecycle', () => {
         reg.defineInstance(IConfigService, configStub());
         reg.defineInstance(ILogService, stubLog());
         reg.defineInstance(IHostFileSystem, new HostFileSystem());
-        reg.definePartialInstance(IHostFsWatchService, { watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None, dispose() {} }) });
+        reg.definePartialInstance(IHostFsWatchService, { watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None as ReturnType<IHostFsWatchService['watch']>['onDidChange'], dispose() {} }) });
         reg.definePartialInstance(IWorkspaceContext, { cwd: home, workspaceId: 'fixture' });
-        reg.definePartialInstance(IWorkspaceTrust, { ready: Promise.resolve(), isTrusted: () => true, onDidChange: Event.None });
-        reg.definePartialInstance(IMcpConfigStore, { onDidWrite: Event.None });
-        reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: Event.None });
+        reg.definePartialInstance(IWorkspaceTrust, { ready: Promise.resolve(), isTrusted: () => true, onDidChange: Event.None as IWorkspaceTrust['onDidChange'] });
+        reg.definePartialInstance(IMcpConfigStore, { onDidWrite: Event.None as IMcpConfigStore['onDidWrite'] });
+        reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: Event.None as IPluginUsageService['onDidChange'] });
         reg.define(IWorkspaceMcpConfigService, WorkspaceMcpConfigService);
       } });
       const mcp = ix.get(IWorkspaceMcpConfigService);

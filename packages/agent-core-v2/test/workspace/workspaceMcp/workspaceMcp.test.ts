@@ -829,7 +829,7 @@ describe('WorkspaceMcpService', () => {
       try {
         await overlay.handle.ready;
         await overlay.enableConfiguredServer?.('plugin-example:server', config, 'plugin');
-        const oldClient = overlay.handle.connectionManager.resolved('plugin-example:server')!.client;
+        const oldClient = overlay.handle.connectionManager.resolved('plugin-example:server')!.client as import('#/mcpCore/types').MCPClient & { close(): Promise<void> };
         const close = vi.spyOn(oldClient, 'close');
         await changes.fireAsync({ affected: ['example'], finished }, new AbortController().signal);
         expect(close).toHaveBeenCalledOnce();
