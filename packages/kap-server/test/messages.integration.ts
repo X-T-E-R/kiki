@@ -888,6 +888,50 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     ]);
   });
 
+  it('allows session fork, targeted message fork, and branch creation while main is actively streaming', async () => {
+    const { id, main, submitted: firstSubmit } = await createTerminalPrompt('first settled prompt');
+    modelRequestMode = 'pending';
+    let requestStarted!: () => void;
+    const requestReady = new Promise<void>((resolve) => { requestStarted = resolve; });
+    modelRequestStarted = requestStarted;
+
+    const activeSubmit = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active streaming prompt' }],
+    });
+    expect(activeSubmit.code, JSON.stringify(activeSubmit)).toBe(0);
+    await requestReady;
+
+    try {
+      const fullFork = await postJson<{ id: string; busy: boolean }>(`/api/sessions/${id}:fork`, {
+        seed: 'verbatim',
+      });
+      expect(fullFork.code, JSON.stringify(fullFork)).toBe(0);
+      expect(fullFork.data.busy).toBe(false);
+
+      const messageFork = await postJson<{ id: string; busy: boolean }>(`/api/sessions/${id}:fork`, {
+        through_message_id: firstSubmit.data.user_message_id,
+        seed: 'fresh',
+      });
+      expect(messageFork.code, JSON.stringify(messageFork)).toBe(0);
+      expect(messageFork.data.busy).toBe(false);
+      const forkedMessages = await getJson<PageWire>(
+        `/api/sessions/${messageFork.data.id}/messages?page_size=100`,
+      );
+      expect(forkedMessages.body.data.items.some((item) => item.id === firstSubmit.data.user_message_id)).toBe(true);
+
+      const branched = await postJson<{ agent_id: string; seed: string }>(`/api/sessions/${id}:branch`, {
+        seed: 'compact',
+        tools_locked: false,
+      });
+      expect(branched.code, JSON.stringify(branched)).toBe(0);
+      expect(branched.data.seed).toBe('compact');
+      expect(branched.data.agent_id).toBeTruthy();
+    } finally {
+      await postJson(`/api/sessions/${id}/prompts/${activeSubmit.data.prompt_id}:abort`, {});
+      await waitForTerminal(main);
+    }
+  });
+
   it('rejects unsupported message roles with MESSAGE_ACTION_UNAVAILABLE', async () => {
     const id = await createSession();
     await seedMainAgentMessages(id, [

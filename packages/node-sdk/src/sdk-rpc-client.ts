@@ -1421,10 +1421,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
 
   /**
    * Fork through the shared facade, including the explicit target id and
-   * `turnIndex`. Truncation and the live-source busy rejection stay engine-owned;
-   * failures retain the SDK's codes and details
-   * (`request.invalid` with `{turnIndex, availableTurns}` /
-   * `session.fork_active_turn`). The default title still differs by design
+   * `turnIndex`. Truncation and active-turn settlement stay engine-owned;
+   * failures retain the SDK's codes and details (`request.invalid` with
+   * `{turnIndex, availableTurns}`). The default title still differs by design
    * (v1: "New Session", v2: "Fork: <source>") — pass an explicit title for
    * identical results.
    */

@@ -80,6 +80,15 @@ const archiveSession = vi.fn<(
 const archived = (id: string): ArchiveFamilyResponse => ({ archived: true, outcomes: [{ id, ok: true }] });
 const restoreSession = vi.fn(async () => { throw new Error('not stubbed'); });
 const updateSession = vi.fn(async (_id: string, body: Record<string, unknown>) => ({ id: _id, ...body }));
+const updateSessionProfile = vi.fn(async (id: string, body: Record<string, unknown>) => ({ id, ...body }));
+const forkSessionMock = vi.fn(async (id: string, body: Record<string, unknown> = {}) => ({ ...session(`${id}_fork`), ...body }));
+const createBranchMock = vi.fn(async (_id: string, body: { seed?: string } = {}) => ({
+  agent_id: 'branch_1',
+  parent_agent_id: 'main',
+  seed: body.seed ?? 'fresh',
+  tools_locked: false,
+  started: false,
+}));
 const compactSession = vi.fn<(id: string, body: Record<string, never>) => Promise<unknown>>();
 const roomRest = vi.hoisted(() => ({
   list: vi.fn(),
@@ -110,7 +119,9 @@ vi.mock('../state/connection', () => {
       getConfig,
       restoreSession,
       updateSession,
-      updateSessionProfile: vi.fn(async () => ({ ok: true })),
+      forkSession: forkSessionMock,
+      createBranch: createBranchMock,
+      updateSessionProfile,
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
@@ -252,6 +263,18 @@ beforeEach(() => {
   archiveSession.mockImplementation(async (id: string) => archived(id));
   updateSession.mockReset();
   updateSession.mockImplementation(async (id: string, body: Record<string, unknown>) => ({ id, ...body }));
+  updateSessionProfile.mockReset();
+  updateSessionProfile.mockImplementation(async (id: string, body: Record<string, unknown>) => ({ id, ...body }));
+  forkSessionMock.mockReset();
+  forkSessionMock.mockImplementation(async (id: string, body: Record<string, unknown> = {}) => ({ ...session(`${id}_fork`), ...body }));
+  createBranchMock.mockReset();
+  createBranchMock.mockImplementation(async (_id: string, body: { seed?: string } = {}) => ({
+    agent_id: 'branch_1',
+    parent_agent_id: 'main',
+    seed: body.seed ?? 'fresh',
+    tools_locked: false,
+    started: false,
+  }));
   for (const fn of Object.values(roomRest)) fn.mockReset();
   getConfig.mockReset();
   getConfig.mockReturnValue(new Promise(() => {}));
@@ -1930,23 +1953,67 @@ describe('Sidebar session menu location & link group', () => {
     expect(menu.querySelector('[data-menu-item="add-to-conversation"]')).toBeNull();
   });
 
-  it('leads with list management and keeps the content actions under More on a desktop', async () => {
+  it('promotes branch and fork with seed submenus to level 1 and keeps export/compact/undo under More on desktop', async () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
     const keys = () => [...menu.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item'));
-    expect(keys()).toEqual(['pin', 'rename', 'private', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
+    expect(keys()).toEqual(['pin', 'rename', 'private', 'branch', 'fork', 'copy-link', 'join-room', 'copy-path', 'archive', 'more']);
+
+    const branchBtn = menu.querySelector<HTMLButtonElement>('[data-menu-item="branch"]')!;
+    await act(async () => { branchBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    const branchSubmenu = menu.querySelector('[data-session-submenu="branch"]');
+    expect([...(branchSubmenu?.querySelectorAll('[role="menuitem"]') ?? [])].map((element) => element.getAttribute('data-menu-item')))
+      .toEqual(['branch-fresh', 'branch-compact', 'branch-verbatim']);
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
+    expect(menu.querySelector('[data-session-submenu]')).toBeNull();
+    expect(document.activeElement).toBe(branchBtn);
+
+    const forkBtn = menu.querySelector<HTMLButtonElement>('[data-menu-item="fork"]')!;
+    await act(async () => { forkBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    const forkSubmenu = menu.querySelector('[data-session-submenu="fork"]');
+    expect([...(forkSubmenu?.querySelectorAll('[role="menuitem"]') ?? [])].map((element) => element.getAttribute('data-menu-item')))
+      .toEqual(['fork-verbatim', 'fork-fresh', 'fork-compact']);
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
+    expect(document.activeElement).toBe(forkBtn);
+
     const more = menu.querySelector<HTMLButtonElement>('[data-menu-item="more"]')!;
     expect(more.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { more.click(); });
     expect(more.getAttribute('aria-expanded')).toBe('true');
-    const submenu = menu.querySelector('[data-session-submenu]');
+    const submenu = menu.querySelector('[data-session-submenu="more"]');
     expect([...(submenu?.querySelectorAll('[role="menuitem"]') ?? [])].map((element) => element.getAttribute('data-menu-item')))
-      .toEqual(['fork', 'export', 'compact', 'undo']);
+      .toEqual(['export', 'compact', 'undo']);
     // Focus moves in, and ← brings it back to More with the submenu closed.
     expect(submenu?.contains(document.activeElement)).toBe(true);
     await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
     expect(menu.querySelector('[data-session-submenu]')).toBeNull();
     expect(document.activeElement).toBe(more);
+  });
+
+  it('creates a branch or forks with the selected seed mode directly from the sidebar menu', async () => {
+    const navigated: string[] = [];
+    const { container } = await mount({
+      ...listed(),
+      guard: { dirty: false, rawNavigate: (to) => { navigated.push(String(to)); } },
+    });
+    const menu1 = await openSessionMenu(container);
+    const branchBtn = menu1.querySelector<HTMLButtonElement>('[data-menu-item="branch"]')!;
+    await act(async () => { branchBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    await act(async () => {
+      menu1.querySelector<HTMLButtonElement>('[data-menu-item="branch-compact"]')!.click();
+    });
+    await settle();
+    expect(createBranchMock).toHaveBeenCalledWith('one', { seed: 'compact', tools_locked: false });
+    expect(navigated.at(-1)).toBe('/s/one/agent/branch_1');
+
+    const menu2 = await openSessionMenu(container);
+    const forkBtn = menu2.querySelector<HTMLButtonElement>('[data-menu-item="fork"]')!;
+    await act(async () => { forkBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    await act(async () => {
+      menu2.querySelector<HTMLButtonElement>('[data-menu-item="fork-fresh"]')!.click();
+    });
+    await settle();
+    expect(forkSessionMock).toHaveBeenCalledWith('one', { seed: 'fresh' });
   });
 
   it('offers rooms only while thread communication is on', async () => {
@@ -3417,7 +3484,7 @@ describe('sidebar on a phone', () => {
     expect(nav?.querySelector('[data-nav-memory]')).toBeNull();
   });
 
-  it('opens the row menu as a bottom sheet holding list management only', async () => {
+  it('opens the row menu as a bottom sheet with level-1 branch and fork stepping into seed choices', async () => {
     const other = session('other');
     const current = session('current');
     const items = [other, current];
@@ -3426,10 +3493,14 @@ describe('sidebar on a phone', () => {
     await act(async () => { trigger!.click(); });
     const sheet = document.querySelector<HTMLElement>('[data-session-menu]');
     expect(sheet?.classList.contains('kiki-action-sheet-layer')).toBe(true);
-    // No fork, export, compact or undo, and no More: those live in the
-    // conversation's own menu, one tap away.
     expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
-      .toEqual(['pin', 'rename', 'private', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
+      .toEqual(['pin', 'rename', 'private', 'branch', 'fork', 'copy-link', 'add-to-conversation', 'join-room', 'copy-path', 'archive']);
+    await act(async () => { sheet!.querySelector<HTMLButtonElement>('[data-menu-item="fork"]')!.click(); });
+    expect([...sheet!.querySelectorAll('[role="menuitem"]')].map((element) => element.getAttribute('data-menu-item')))
+      .toEqual(['seed-back', 'fork-verbatim', 'fork-fresh', 'fork-compact']);
+    await act(async () => { sheet!.querySelector<HTMLButtonElement>('[data-menu-item="fork-compact"]')!.click(); });
+    await settle();
+    expect(forkSessionMock).toHaveBeenCalledWith('other', { seed: 'compact' });
   });
 
   it('keeps a choice saved before, even when it is the desktop default', async () => {
@@ -3772,5 +3843,208 @@ describe('sidebar on a phone', () => {
     expect(makePrivateBtn?.textContent).toBe('Make private');
     await act(async () => { makePrivateBtn!.click(); });
     expect(updateSession).toHaveBeenCalledWith('s-public', { private: true });
+  });
+
+  it('guards against concurrent double-toggles while a privacy update is in flight', async () => {
+    let resolveToggle!: (value: { id: string; private: boolean }) => void;
+    updateSession.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveToggle = resolve; }),
+    );
+    const s = session('s-guard');
+    const { container } = await mount({
+      sessions: [s],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [s] }],
+    });
+    const row = container.querySelector('[data-session-row="s-guard"]')!;
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 60 }));
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-menu-item="private"]')!.click();
+    });
+    expect(updateSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 60 }));
+    });
+    const secondBtn = document.body.querySelector<HTMLButtonElement>('[data-menu-item="private"]')!;
+    expect(secondBtn.disabled).toBe(true);
+    await act(async () => { secondBtn.click(); });
+    expect(updateSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolveToggle({ id: 's-guard', private: true }); });
+    await settle();
+  });
+});
+
+describe('Sidebar inline session rename reliability and confirmation UX', () => {
+  const setInputValue = async (input: HTMLInputElement, next: string) => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, next);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+
+  const openSessionRename = async (container: HTMLElement, id: string) => {
+    const row = container.querySelector(`[data-session-row="${id}"]`)!;
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 32, clientY: 64 }));
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-menu-item="rename"]')!.click();
+    });
+    return document.body.querySelector<HTMLElement>(`[data-rename-editor="${id}"]`)!;
+  };
+
+  it('saves via the inline confirm button, prevents duplicate submits, updates cache synchronously, and flashes saved state', async () => {
+    let resolveSave!: (value: Session) => void;
+    const item = session('s-confirm');
+    updateSessionProfile.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSave = resolve as (value: unknown) => void; }),
+    );
+    const { container, queryClient } = await mount(
+      { sessions: [item], sessionGroups: [{ key: 'today', label: 'Today', items: [item] }] },
+      undefined,
+      [item],
+    );
+    const editor = await openSessionRename(container, 's-confirm');
+    const input = editor.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    const confirmBtn = editor.querySelector<HTMLButtonElement>('[data-rename-confirm]')!;
+    const cancelBtn = editor.querySelector<HTMLButtonElement>('[data-rename-cancel]')!;
+    expect(confirmBtn).not.toBeNull();
+    expect(cancelBtn).not.toBeNull();
+
+    await setInputValue(input, 'Renamed via button');
+    await act(async () => {
+      confirmBtn.click();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(updateSessionProfile).toHaveBeenCalledTimes(1);
+    expect(updateSessionProfile).toHaveBeenCalledWith('s-confirm', { title: 'Renamed via button' });
+    expect(input.disabled).toBe(true);
+    expect(confirmBtn.disabled).toBe(true);
+    expect(cancelBtn.disabled).toBe(true);
+
+    await act(async () => { resolveSave({ ...item, title: 'Renamed via button' }); });
+    await settle();
+
+    expect(document.body.querySelector('[data-rename-editor="s-confirm"]')).toBeNull();
+    expect(container.querySelector('[data-session-row="s-confirm"] [data-session-title]')?.textContent)
+      .toContain('Renamed via button');
+    expect(container.querySelector('[data-session-row="s-confirm"] [data-rename-saved]')).not.toBeNull();
+    const cached = queryClient.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', 'cached']);
+    expect(cached?.pages[0]?.items[0]?.title).toBe('Renamed via button');
+  });
+
+  it('saves dirty draft on outside pointerdown, and cancels cleanly via Escape or cancel button', async () => {
+    const item = session('s-outside');
+    const { container } = await mount({
+      sessions: [item],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [item] }],
+    });
+    const editor1 = await openSessionRename(container, 's-outside');
+    const input1 = editor1.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    await setInputValue(input1, 'Draft cancelled');
+    await act(async () => {
+      editor1.querySelector<HTMLButtonElement>('[data-rename-cancel]')!.click();
+    });
+    expect(updateSessionProfile).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-rename-editor="s-outside"]')).toBeNull();
+
+    const editor2 = await openSessionRename(container, 's-outside');
+    const input2 = editor2.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    await setInputValue(input2, 'Saved by outside click');
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    await settle();
+    expect(updateSessionProfile).toHaveBeenCalledWith('s-outside', { title: 'Saved by outside click' });
+    expect(document.body.querySelector('[data-rename-editor="s-outside"]')).toBeNull();
+  });
+
+  it('retains the editor and user draft with an inline error when saving fails', async () => {
+    updateSessionProfile.mockRejectedValueOnce(new Error('Cold backend failed'));
+    const item = session('s-err');
+    const { container } = await mount({
+      sessions: [item],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [item] }],
+    });
+    const editor = await openSessionRename(container, 's-err');
+    const input = editor.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    await setInputValue(input, 'Keep my draft');
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-rename-confirm]')!.click();
+    });
+    await settle();
+    expect(document.body.querySelector('[data-rename-editor="s-err"]')).not.toBeNull();
+    expect(input.value).toBe('Keep my draft');
+    expect(editor.querySelector('[data-rename-error]')?.textContent).toContain('Cold backend failed');
+  });
+
+  it('seeds untitled sessions from last_prompt and preserves draft and selection across parent re-renders and focus bounces', async () => {
+    const untitledItem: Session = {
+      ...session('s-untitled'),
+      title: '',
+      last_prompt: 'Fix cold session rename',
+    };
+    const { container, root, queryClient } = await mount({
+      sessions: [untitledItem],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [untitledItem] }],
+    });
+    const editor = await openSessionRename(container, 's-untitled');
+    const input = editor.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    expect(input.value).toBe('Fix cold session rename');
+
+    await setInputValue(input, 'Edited title');
+    input.setSelectionRange(6, 6);
+    await act(async () => {
+      input.dispatchEvent(new FocusEvent('blur'));
+      input.focus();
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <MemoryRouter>
+                <MaybeGuard guard={undefined}>
+                  <Sidebar
+                    activeSessionId={undefined}
+                    sessions={[untitledItem]}
+                    sessionGroups={[{ key: 'today', label: 'Today', items: [threadItem(untitledItem)] }]}
+                    sessionsQuery={{
+                      isLoading: false,
+                      isError: false,
+                      error: null,
+                      hasNextPage: false,
+                      isFetchingNextPage: false,
+                      fetchNextPage: async () => {},
+                    }}
+                    workspaceOptions={[]}
+                    filters={DEFAULT_SESSION_LIST_FILTERS}
+                    onFiltersChange={() => {}}
+                    onNewSession={() => {}}
+                    groupBy="time"
+                    onGroupBy={() => {}}
+                    sortBy="updated-desc"
+                    onSortBy={() => {}}
+                  />
+                </MaybeGuard>
+              </MemoryRouter>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(document.body.querySelector('[data-rename-editor="s-untitled"]')).not.toBeNull();
+    expect(input.value).toBe('Edited title');
+    expect(input.selectionStart).toBe(6);
+    expect(input.selectionEnd).toBe(6);
+
+    await setInputValue(input, 'Fix cold session rename');
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-rename-confirm]')!.click();
+    });
+    await settle();
+    expect(updateSessionProfile).toHaveBeenCalledWith('s-untitled', { title: 'Fix cold session rename' });
   });
 });

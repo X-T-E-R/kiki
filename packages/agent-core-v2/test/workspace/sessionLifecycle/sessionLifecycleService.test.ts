@@ -1541,6 +1541,247 @@ describe('SessionLifecycleService fork cron ownership', () => {
   });
 });
 
+describe('SessionLifecycleService active-turn fork', () => {
+  it('forks a session with active main and subagent turns at settled boundaries without repairing live journals', async () => {
+    const fx = fixture();
+    const mainRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'profile.bind', profile: 'agent', time: 2 },
+      { type: 'tools.set_active_tools', tools: ['Read'], time: 3 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 4 },
+      {
+        type: 'context.append_message',
+        time: 5,
+        message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'First turn' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 6,
+        message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'First reply' }], toolCalls: [] },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 7 },
+      { type: 'prompt.submitted', id: 'p2', time: 8 },
+      { type: 'turn.prompt', turnId: 2, origin: { kind: 'user' }, time: 9 },
+      {
+        type: 'context.append_message',
+        time: 10,
+        message: { id: 'u2', role: 'user', content: [{ type: 'text', text: 'Active turn' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      { type: 'task.started', info: { taskId: 'task-sub', kind: 'agent', agentId: 'child-1', status: 'running' }, time: 11 },
+      { type: 'subagent.spawned', subagentId: 'child-1', taskId: 'task-sub', parentAgentId: 'main', time: 12 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 2, stepIndex: 0 }, time: 13 },
+    ];
+    const childRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 11 },
+      { type: 'profile.bind', profile: 'worker', time: 12 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 13 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, stepIndex: 0 }, time: 14 },
+    ];
+    const rewrite = vi.fn();
+    const registerAgent = vi.fn(async () => {});
+    const update = vi.fn(async () => {});
+    const createAgent = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const target = {
+      id: 'active-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'active-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent, update }],
+        [IAgentLifecycleService, { list: () => [], create: createAgent }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const liveChild = {
+      id: 'child-1',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 1 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({
+            title: 'Running source',
+            lastPrompt: 'Active turn',
+            lastTurnReason: 'completed',
+            agents: {
+              main: { type: 'main' },
+              'child-1': {
+                type: 'sub',
+                parentAgentId: 'main',
+                delegator: { kind: 'agent', agentId: 'main' },
+                taskId: 'task-sub',
+                labels: { parentAgentId: 'main', profileName: 'worker' },
+              },
+            },
+          }),
+        }],
+        [IAgentLifecycleService, {
+          list: () => [liveMain, liveChild],
+          get: (id: string) => (id === 'main' ? liveMain : id === 'child-1' ? liveChild : undefined),
+        }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      hostFs: {
+        readdir: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        readBytes: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        writeBytes: async () => {},
+        mkdir: async () => {},
+        remove,
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      },
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* (scope: string, _key: string, opts?: { onTruncate?: (info: { byteOffset: number; droppedBytes: number }) => void }) {
+          opts?.onTruncate?.({ byteOffset: 64, droppedBytes: 12 });
+          if (scope.endsWith('/agents/main')) yield* mainRecords;
+          else yield* childRecords;
+        },
+        rewrite,
+      },
+    });
+    try {
+      const forked = await fx.service.fork({
+        sourceSessionId: 'session-1',
+        newSessionId: target.id,
+      });
+      expect(forked).toBe(target);
+      expect(rewrite).toHaveBeenCalledTimes(2);
+      expect(rewrite.mock.calls.every(([scope]) => String(scope).includes(target.id))).toBe(true);
+      const forkedMain = rewrite.mock.calls.find(([scope]) => String(scope).endsWith('/agents/main'))![2] as Array<Record<string, unknown>>;
+      expect(forkedMain.some((record) => record['type'] === 'profile.bind')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'tools.set_active_tools')).toBe(true);
+      expect(forkedMain.some((record) => String(record['type']).startsWith('prompt.'))).toBe(false);
+      expect(forkedMain.some((record) => record['type'] === 'context.append_loop_event')).toBe(false);
+      expect(forkedMain.some((record) => record['type'] === 'turn.ended' && record['turnId'] === 2 && record['reason'] === 'cancelled')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'task.terminated')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'subagent.failed' && record['subagentId'] === 'child-1')).toBe(true);
+      expect(forkedMain.at(-1)?.['type']).toBe('forked');
+      expect(registerAgent).toHaveBeenCalledWith('child-1', expect.objectContaining({
+        status: 'cancelled',
+        parentAgentId: 'main',
+      }));
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({
+        forkedFrom: 'session-1',
+        lastTurnReason: 'cancelled',
+      }));
+      expect(remove).toHaveBeenCalled();
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
+  it('preserves open-tail user boundary when forking throughUserMessage while a later turn is active', async () => {
+    const fx = fixture();
+    const mainRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 2 },
+      {
+        type: 'context.append_message',
+        time: 3,
+        message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'Turn one user' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 4,
+        message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'Turn one reply' }], toolCalls: [] },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 5 },
+      { type: 'turn.prompt', turnId: 2, origin: { kind: 'user' }, time: 6 },
+      {
+        type: 'context.append_message',
+        time: 7,
+        message: { id: 'u2', role: 'user', content: [{ type: 'text', text: 'Turn two running' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+    ];
+    const rewrite = vi.fn();
+    const update = vi.fn(async () => {});
+    const target = {
+      id: 'open-tail-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'open-tail-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({ title: 'Source', agents: { main: { type: 'main' } } }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      appendLogStore: { append: vi.fn(), flush: async () => {}, read: async function* () { yield* mainRecords; }, rewrite },
+    });
+    try {
+      await fx.service.fork({
+        sourceSessionId: 'session-1',
+        newSessionId: target.id,
+        turnIndex: 0,
+        throughUserMessage: true,
+      });
+      const copied = rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.some((record) => record['type'] === 'turn.ended')).toBe(false);
+      expect(copied.some((record) => record['type'] === 'context.append_message' && (record['message'] as { id?: string })?.id === 'u1')).toBe(true);
+      expect(copied.some((record) => record['type'] === 'context.append_message' && (record['message'] as { id?: string })?.id === 'a1')).toBe(false);
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+});
+
 describe('SessionLifecycleService subagent promotion', () => {
   const hash = 'c'.repeat(64);
   const parentHash = 'd'.repeat(64);

@@ -17,6 +17,7 @@ import type {
   PromptSubmitResult,
   QuestionResponse,
   Session,
+  SessionSeedMode,
   SessionSnapshotResponse,
 } from '@kiki/protocol';
 import {
@@ -4595,14 +4596,15 @@ export class SessionController {
   }
 
   /**
-   * Fork the session at a message (`POST …:fork` with the truncation pair).
-   * Returns the new session record; the caller navigates. Open-tail semantics:
-   * no prompt runs in the fork until the user sends one.
+   * Fork the session at a message (`POST …:fork` with `through_message_id` and
+   * optional `seed`). Returns the new session record; the caller navigates.
+   * Open-tail semantics: no prompt runs in the fork until the user sends one.
    */
-  async forkFromMessage(messageId: string): Promise<Session> {
+  async forkFromMessage(messageId: string, seed?: SessionSeedMode): Promise<Session> {
     const fork = await this.client.forkSession(this.sessionId, {
       through_message_id: messageId,
       expected_cursor: this.expectedCursor(),
+      seed,
     });
     return fork;
   }

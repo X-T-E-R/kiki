@@ -10,11 +10,13 @@ import {
   ISessionIndexMirror,
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import {
   setColdSessionArchived,
   setSessionArchivedBatch,
+  updateColdSessionProfile,
 } from '#/workspace/sessionLifecycle/coldSessionArchive';
 
 function accessor(
@@ -45,6 +47,7 @@ interface ColdPathOptions {
   readonly onMirrorRecord?: (recorded: SessionSummary) => void;
   readonly onStoreSet?: (scope: string, key: string, value: unknown) => void;
   readonly onStoreDelete?: (scope: string, key: string) => void;
+  readonly onSetSessionPrivacy?: (recorded: SessionSummary) => void | Promise<void>;
   readonly resumeError?: Error;
 }
 
@@ -80,6 +83,10 @@ function coldPathAccessor(options: ColdPathOptions): ServicesAccessor {
     [
       ISessionIndexMirror,
       { record: (recorded: SessionSummary) => options.onMirrorRecord?.(recorded) },
+    ],
+    [
+      IUsageFactStore,
+      { setSessionPrivacy: async (recorded: SessionSummary) => options.onSetSessionPrivacy?.(recorded) },
     ],
     [IEventService, { publish: () => {} }],
   ]);
@@ -221,5 +228,152 @@ describe('setSessionArchivedBatch', () => {
     expect(written[0]?.scope.endsWith('/session-meta')).toBe(false);
     expect(deleted).toHaveLength(1);
     expect(deleted[0]?.endsWith('/session-meta')).toBe(true);
+  });
+
+  it('preserves private flag in mirrored summary when archiving a cold session', async () => {
+    const recorded: SessionSummary[] = [];
+    const outcome = await setColdSessionArchived(
+      coldPathAccessor({
+        storeGet: async () => ({
+          id: 's1',
+          createdAt: 1,
+          updatedAt: 5,
+          archived: false,
+          private: true,
+        }),
+        onMirrorRecord: (r) => recorded.push(r),
+      }),
+      's1',
+      true,
+    );
+    expect(outcome).toBe('updated');
+    expect(recorded).toEqual([expect.objectContaining({ id: 's1', archived: true, private: true })]);
+  });
+});
+
+describe('updateColdSessionProfile', () => {
+  it('updates custom title on a cold session without bumping updatedAt or losing custom metadata', async () => {
+    const recorded: SessionSummary[] = [];
+    const written: unknown[] = [];
+    const outcome = await updateColdSessionProfile(
+      coldPathAccessor({
+        indexSummary: { ...summary, cwd: '/deleted/worktree' },
+        storeGet: async () => ({
+          id: 's1',
+          cwd: '/deleted/worktree',
+          title: 'auto',
+          titleKind: 'generated',
+          createdAt: 10,
+          updatedAt: 42,
+          archived: false,
+          custom: { 'kiki.pinned': true },
+        }),
+        onMirrorRecord: (r) => recorded.push(r),
+        onStoreSet: (_scope, _key, value) => written.push(value),
+      }),
+      's1',
+      { title: 'Renamed Cold' },
+    );
+    expect(outcome).toEqual({
+      kind: 'updated',
+      workspaceId: 'wd',
+      cwd: '/deleted/worktree',
+      meta: expect.objectContaining({
+        id: 's1',
+        title: 'Renamed Cold',
+        titleKind: 'custom',
+        updatedAt: 42,
+        custom: { 'kiki.pinned': true },
+      }),
+    });
+    expect(written[0]).toMatchObject({
+      title: 'Renamed Cold',
+      titleKind: 'custom',
+      isCustomTitle: true,
+      updatedAt: 42,
+      custom: { 'kiki.pinned': true },
+    });
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        id: 's1',
+        title: 'Renamed Cold',
+        updatedAt: 42,
+        ownUpdatedAt: 42,
+        cwd: '/deleted/worktree',
+        custom: { 'kiki.pinned': true },
+      }),
+    ]);
+  });
+
+  it('orders usage privacy updates around persistence and strips statistics when marking private', async () => {
+    const steps: string[] = [];
+    const recorded: SessionSummary[] = [];
+    let stored: SessionMeta = {
+      id: 's1',
+      cwd: '/deleted/worktree',
+      createdAt: 10,
+      updatedAt: 20,
+      archived: false,
+      usage: {
+        total: { inputOther: 5, output: 3, inputCacheRead: 0, inputCacheCreation: 0 },
+        byModel: { m: { inputOther: 5, output: 3, inputCacheRead: 0, inputCacheCreation: 0 } },
+      },
+      agents: {
+        main: {
+          type: 'main',
+          model: 'm',
+          toolCallCount: 4,
+          usage: { inputOther: 5, output: 3, inputCacheRead: 0, inputCacheCreation: 0 },
+        },
+      },
+    };
+    const makePrivate = await updateColdSessionProfile(
+      coldPathAccessor({
+        storeGet: async () => stored,
+        onSetSessionPrivacy: (s) => {
+          steps.push(`privacy:${String(s.private)}`);
+        },
+        onStoreSet: (_scope, _key, value) => {
+          steps.push('persist');
+          stored = value as SessionMeta;
+        },
+        onMirrorRecord: (s) => {
+          steps.push('mirror');
+          recorded.push(s);
+        },
+      }),
+      's1',
+      { private: true },
+    );
+    expect(makePrivate.kind).toBe('updated');
+    expect(steps).toEqual(['privacy:true', 'persist', 'mirror']);
+    expect(stored.private).toBe(true);
+    expect(stored.usage).toBeUndefined();
+    expect(stored.agents?.['main']?.usage).toBeUndefined();
+    expect(stored.agents?.['main']?.toolCallCount).toBeUndefined();
+    expect(stored.updatedAt).toBeGreaterThan(20);
+    expect(recorded[0]?.private).toBe(true);
+
+    steps.length = 0;
+    const exitPrivate = await updateColdSessionProfile(
+      coldPathAccessor({
+        storeGet: async () => stored,
+        onSetSessionPrivacy: (s) => {
+          steps.push(`privacy:${String(s.private)}`);
+        },
+        onStoreSet: (_scope, _key, value) => {
+          steps.push('persist');
+          stored = value as SessionMeta;
+        },
+        onMirrorRecord: () => {
+          steps.push('mirror');
+        },
+      }),
+      's1',
+      { private: false },
+    );
+    expect(exitPrivate.kind).toBe('updated');
+    expect(steps).toEqual(['persist', 'privacy:false', 'mirror']);
+    expect(stored.private).toBe(false);
   });
 });

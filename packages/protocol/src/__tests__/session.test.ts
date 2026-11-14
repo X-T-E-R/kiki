@@ -319,13 +319,16 @@ describe('sessionForkSchema', () => {
     expect(sessionForkSchema.parse({ title: 'copy' })).toEqual({ title: 'copy' });
   });
 
-  it('requires through_message_id and expected_cursor as a pair', () => {
+  it('accepts through_message_id with or without expected_cursor', () => {
     const pair = {
       through_message_id: 'msg_1',
       expected_cursor: { seq: 4, epoch: 'ep_test' },
     };
     expect(sessionForkSchema.parse(pair)).toEqual(pair);
-    expect(sessionForkSchema.safeParse({ through_message_id: 'msg_1' }).success).toBe(false);
-    expect(sessionForkSchema.safeParse({ expected_cursor: pair.expected_cursor }).success).toBe(false);
+    expect(sessionForkSchema.parse({ through_message_id: 'msg_1' })).toEqual({ through_message_id: 'msg_1' });
+    expect(sessionForkSchema.parse({ through_message_id: 'msg_1', seed: 'fresh' })).toEqual({
+      through_message_id: 'msg_1',
+      seed: 'fresh',
+    });
   });
 });

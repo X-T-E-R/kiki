@@ -14,6 +14,8 @@ import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { RetainedUsageService } from '#/app/retainedUsage/retainedUsageService';
 import { IEventService } from '#/app/event/event';
 import { IUsageReadModel, type UsageReadModelQuery } from '#/persistence/interface/usageReadModel';
+import { UsageReadModelWorker } from '#/persistence/backends/sqlite/usageHost';
+import { configureUsageReadModelWorkerRuntime } from '#/persistence/backends/sqlite/usageProtocol';
 import { SqliteUsageReadModel } from '#/persistence/backends/sqlite/sqliteUsageReadModel';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -486,5 +488,60 @@ describe('Usage source read model', () => {
     const expected = { batchStart: 100, offset: 110, ordinal: 1 };
     expect(await model.apply({ source: SCOPE, progress: expected, records: [record(2)] })).toBe(true);
     expect(await model.apply({ source: SCOPE, progress: expected, records: [record(2)] })).toBe(false);
+  });
+
+  it('prioritizes session privacy operations ahead of queued batch work with 4:1 fairness', async () => {
+    const workerEntry = join(home, 'priority-lane.mjs');
+    await writeFile(workerEntry, `
+      import { parentPort } from 'node:worker_threads';
+      const order = [];
+      let firstHeld = true;
+      parentPort.on('message', ({ id, operation }) => {
+        if (operation.type === 'close') {
+          parentPort.postMessage({ id, result: undefined });
+          parentPort.close();
+          return;
+        }
+        const tag = operation.type === 'setSessionPrivacy'
+          ? \`privacy:\${operation.sessionId}\`
+          : operation.type === 'source'
+            ? \`source:\${operation.source}\`
+            : operation.type;
+        order.push(tag);
+        if (firstHeld) {
+          firstHeld = false;
+          setTimeout(() => parentPort.postMessage({ id, result: order.slice() }), 30);
+          return;
+        }
+        parentPort.postMessage({ id, result: order.slice() });
+      });
+    `);
+    configureUsageReadModelWorkerRuntime(workerEntry);
+    const worker = new UsageReadModelWorker('unused', true);
+    try {
+      const active = worker.request<string[]>({ type: 'source', source: 'active' });
+      const ord1 = worker.request<string[]>({ type: 'source', source: 'ord-1' });
+      const ord2 = worker.request<string[]>({ type: 'maintain' });
+      const pri1 = worker.request<string[]>({ type: 'setSessionPrivacy', workspaceId: 'w', sessionId: 'p1', private: true });
+      const pri2 = worker.request<string[]>({ type: 'setSessionPrivacy', workspaceId: 'w', sessionId: 'p2', private: false });
+      const pri3 = worker.request<string[]>({ type: 'isPrivateSession', workspaceId: 'w', sessionId: 'p3' });
+      const pri4 = worker.request<string[]>({ type: 'privateSessions' });
+      const pri5 = worker.request<string[]>({ type: 'setSessionPrivacy', workspaceId: 'w', sessionId: 'p5', private: true });
+      const results = await Promise.all([active, ord1, ord2, pri1, pri2, pri3, pri4, pri5]);
+      const finalOrder = results[2];
+      expect(finalOrder).toEqual([
+        'source:active',
+        'privacy:p1',
+        'privacy:p2',
+        'isPrivateSession',
+        'privateSessions',
+        'source:ord-1',
+        'privacy:p5',
+        'maintain',
+      ]);
+    } finally {
+      configureUsageReadModelWorkerRuntime(undefined);
+      await worker.close();
+    }
   });
 });

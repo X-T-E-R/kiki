@@ -36,7 +36,7 @@ import { parseMarkdownIntoBlocks } from 'streamdown';
 import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
-import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
+import type { ApprovalDecision, QuestionAnswer, SessionSeedMode } from '@kiki/protocol';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -331,7 +331,7 @@ export interface TranscriptRowActions {
   onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[], presentation?: TextPresentation) => void | Promise<void>;
   loadEditAttachments?: (block: UserBlock, signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
-  onFork: (block: UserBlock | AssistantBlock) => void;
+  onFork: (block: UserBlock | AssistantBlock, seed?: SessionSeedMode) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
   canFork?: boolean;
   /** Re-run the stopped turn (regenerate its assistant reply). */
@@ -964,7 +964,7 @@ const UserMessage = memo(function UserMessage({
           canFork={canMutate && rowActions?.canFork !== false}
           disabled={rowActions?.disabled}
           onEdit={() => { setEditing(true); }}
-          onFork={() => { rowActions?.onFork(block); }}
+          onFork={(seed) => { rowActions?.onFork(block, seed); }}
         />
       ) : null}
 
@@ -1244,7 +1244,7 @@ const AssistantMessage = memo(function AssistantMessage({
           canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}
           disabled={rowActions?.disabled ?? false}
           onRegenerate={() => { rowActions?.onRegenerate(block); }}
-          onFork={() => { rowActions?.onFork(block); }}
+          onFork={(seed) => { rowActions?.onFork(block, seed); }}
         />
       ) : null}
     </div>

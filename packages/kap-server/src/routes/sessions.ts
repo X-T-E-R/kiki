@@ -33,7 +33,6 @@ import {
   ISessionBranchService,
   ISessionBtwService,
   ISessionContext,
-  ISessionHistoryMutationService,
   ISessionIndex,
   ISessionMetadata,
   ISessionLegacyService,
@@ -53,6 +52,7 @@ import {
   getLiveSessionById,
   programForSession,
   setSessionArchivedBatch,
+  updateColdSessionProfile,
   archiveSessionFamily,
   isError2,
   Error2,
@@ -125,8 +125,6 @@ import { usageRuntime } from '../usage/usageRuntime';
 import type { LeaseRegistry } from '../services/leaseRegistry';
 import { loadMessageHistoryEntries } from '../services/messages/messageHistory';
 import {
-  assertCursor,
-  assertSessionIdle,
   resolveForkMessageBoundary,
 } from '../services/messages/messageActions';
 import { ensureMainAgent } from '../transport/mainAgent';
@@ -1037,28 +1035,67 @@ export function registerSessionsRoutes(
       try {
         const { session_id } = req.params;
         const { agent_config, delivery, ...profileBody } = req.body;
+        const publishMetaUpdated = (fields: { readonly title?: string; readonly private?: boolean }) => {
+          const hasCustomTitle = typeof req.body.title === 'string' && req.body.title.trim().length > 0;
+          if (!hasCustomTitle && req.body.private === undefined) return;
+          core.accessor.get(IEventService).publish(
+            new SessionMetaUpdated({
+              payload: {
+                agentId: 'main',
+                sessionId: session_id,
+                title: hasCustomTitle ? fields.title : undefined,
+                patch: {
+                  title: hasCustomTitle ? fields.title : undefined,
+                  isCustomTitle: hasCustomTitle ? true : undefined,
+                  private: req.body.private === undefined ? undefined : fields.private,
+                },
+              },
+            }),
+          );
+        };
+        if (agent_config === undefined && delivery === undefined) {
+          const manager = core.accessor.get(ISessionManager);
+          const result = await manager.withLifecycleSerialization(session_id, async () => {
+            const live = manager.get(session_id);
+            if (live !== undefined) {
+              const fields = await updateSessionProfile(live, profileBody);
+              return { kind: 'live' as const, fields, ephemeral: manager.isEphemeral(fields.id) };
+            }
+            if (manager.isEphemeral(session_id)) return { kind: 'not_found' as const };
+            return updateColdSessionProfile(core.accessor, session_id, profileBody);
+          });
+          if (result.kind === 'not_found') {
+            throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          }
+          if (result.kind === 'live') {
+            publishMetaUpdated(result.fields);
+            const cursor = await broadcaster?.getCursor(result.fields.id);
+            const session = toWireSession(result.fields, result.fields.root, resolveSessionFacts(core, result.fields.id), cursor?.seq, result.ephemeral);
+            reply.send(okEnvelope(session, req.id));
+            return;
+          }
+          const cwd = result.cwd ?? (await core.accessor.get(IWorkspaceService).get(result.workspaceId))?.root;
+          if (cwd === undefined) {
+            throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} has no recoverable cwd`);
+          }
+          publishMetaUpdated(result.meta);
+          const cursor = await broadcaster?.getCursor(session_id);
+          const facts = await resolveSessionBindingFacts(
+            core,
+            session_id,
+            result.workspaceId,
+            result.meta.usage,
+            result.meta.agents?.[MAIN_AGENT_ID],
+          );
+          reply.send(okEnvelope(toWireSession({ ...result.meta, workspaceId: result.workspaceId }, cwd, facts, cursor?.seq), req.id));
+          return;
+        }
         await withSessionOperation(core, session_id, async (handle) => {
           if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
           if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
           const fields = await updateSessionProfile(handle, profileBody);
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
-          const hasCustomTitle = typeof req.body.title === 'string' && req.body.title.trim().length > 0;
-          if (hasCustomTitle || req.body.private !== undefined) {
-            core.accessor.get(IEventService).publish(
-              new SessionMetaUpdated({
-                payload: {
-                  agentId: 'main',
-                  sessionId: session_id,
-                  title: hasCustomTitle ? fields.title : undefined,
-                  patch: {
-                    title: hasCustomTitle ? fields.title : undefined,
-                    isCustomTitle: hasCustomTitle ? true : undefined,
-                    private: req.body.private === undefined ? undefined : fields.private,
-                  },
-                },
-              }),
-            );
-          }
+          publishMetaUpdated(fields);
           const cursor = await broadcaster?.getCursor(fields.id);
           const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id));
           reply.send(okEnvelope(session, req.id));
@@ -1266,32 +1303,16 @@ export function registerSessionsRoutes(
               carry,
             });
           } else {
-            if (broadcaster === undefined || body.expected_cursor === undefined) {
-              throw new Error2(ErrorCodes.REQUEST_INVALID, 'Targeted fork is unavailable');
-            }
-            const expectedCursor = body.expected_cursor;
-            const throughMessageId = body.through_message_id;
-            handle = await withSessionOperation(core, parsed.id, async (source) => {
-              if (source === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
-              const gate = source.accessor.get(ISessionHistoryMutationService);
-              const lease = await gate.acquire();
-              try {
-                await assertCursor(broadcaster, parsed.id, expectedCursor);
-                assertSessionIdle(source);
-                const entries = await loadMessageHistoryEntries(core, parsed.id);
-                const boundary = resolveForkMessageBoundary(entries, throughMessageId);
-                return await core.accessor.get(ISessionManager).fork({
-                  sourceSessionId: parsed.id,
-                  title: body.title,
-                  metadata: body.metadata,
-                  seed: body.seed,
-                  carry,
-                  turnIndex: boundary.turnIndex,
-                  throughUserMessage: boundary.throughUserMessage,
-                });
-              } finally {
-                lease.dispose();
-              }
+            const entries = await loadMessageHistoryEntries(core, parsed.id);
+            const boundary = resolveForkMessageBoundary(entries, body.through_message_id);
+            handle = await core.accessor.get(ISessionManager).fork({
+              sourceSessionId: parsed.id,
+              title: body.title,
+              metadata: body.metadata,
+              seed: body.seed,
+              carry,
+              turnIndex: boundary.turnIndex,
+              throughUserMessage: boundary.throughUserMessage,
             });
           }
           const meta = await handle.accessor.get(ISessionMetadata).read();

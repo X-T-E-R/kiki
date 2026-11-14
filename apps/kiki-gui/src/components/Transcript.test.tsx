@@ -3430,12 +3430,12 @@ describe('message row actions', () => {
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rows).toHaveLength(4);
-    // Tiled first (copy / edit / regenerate), then what the `⋯` holds.
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'link', 'fork']);
+    // Tiled first (copy / edit / regenerate / fork), then what the `⋯` holds.
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
     // An older assistant row copies but never regenerates.
     expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'link']);
-    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'link', 'fork']);
-    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'link', 'fork']);
+    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'fork', 'link']);
+    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork', 'link']);
   });
 
   it('hides edit/fork on a user row without a wire identity', async () => {
@@ -3531,7 +3531,7 @@ describe('message row actions', () => {
     const settledRow = delivered.querySelector('[data-block-id="user-p-now"]')!;
     expect(settledRow.querySelector('[data-steer-line]')).toBeNull();
     expect(settledRow.querySelector('.steer-bubble')?.className).toContain('bg-bubble-user');
-    expect(rowActionButtons(settledRow)).toEqual(['copy', 'edit', 'link', 'fork']);
+    expect(rowActionButtons(settledRow)).toEqual(['copy', 'edit', 'fork', 'link']);
   });
 
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
@@ -3554,7 +3554,7 @@ describe('message row actions', () => {
       rowActions,
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
-    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'link', 'fork']);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
   });
 
   it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
@@ -4213,9 +4213,9 @@ describe('message row actions', () => {
     expect(tiles.className).toContain('hidden');
     expect(tiles.className).toContain('sm:flex');
     // Every action is one control on the flat surface…
-    expect(rowActionButtons(row)).toEqual(['copy', 'edit', 'link', 'fork']);
-    // …and a narrow lane gets its own copies of the tiled three inside the menu.
-    expect(rowMenuItems(row)).toEqual(['copy', 'edit']);
+    expect(rowActionButtons(row)).toEqual(['copy', 'edit', 'fork', 'link']);
+    // …and a narrow lane gets its own copies of the tiled four inside the menu.
+    expect(rowMenuItems(row)).toEqual(['copy', 'edit', 'fork']);
     for (const item of row.querySelectorAll('[data-row-action-menu]')) {
       expect(item.className).toContain('sm:hidden');
     }
@@ -4224,6 +4224,41 @@ describe('message row actions', () => {
     expect(more.className).toContain('h-7');
     // The trigger itself stays at every width while the menu-only actions exist.
     expect(more.className).not.toContain('sm:hidden');
+  });
+
+  it('keeps fork enabled while busy and exposes the three seed modes on hover', async () => {
+    const onFork = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: true,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
+        assistantBlock('assistant-live-1-final-end@9', 'answer'),
+      ],
+      rowActions,
+    );
+    const userRow = container.querySelector('[data-block-id="user-m1"]')!;
+    const assistantRow = container.querySelector('[data-block-id="assistant-live-1-final-end@9"]')!;
+    expect(userRow.querySelector<HTMLButtonElement>('[data-row-action="edit"]')!.disabled).toBe(true);
+    expect(assistantRow.querySelector<HTMLButtonElement>('[data-row-action="regenerate"]')!.disabled).toBe(true);
+    const forkTile = userRow.querySelector<HTMLButtonElement>('[data-row-action="fork"]')!;
+    const forkMenuBtn = userRow.querySelector<HTMLButtonElement>('[data-row-action-menu="fork"]')!;
+    expect(forkTile.disabled).toBe(false);
+    expect(forkMenuBtn.disabled).toBe(false);
+
+    await act(async () => {
+      forkTile.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    const seedMenu = userRow.querySelector('[data-row-fork-menu]');
+    expect(seedMenu).not.toBeNull();
+    const seedButtons = [...seedMenu!.querySelectorAll<HTMLButtonElement>('[data-row-fork-seed]')];
+    expect(seedButtons.map((btn) => btn.getAttribute('data-row-fork-seed'))).toEqual(['verbatim', 'fresh', 'compact']);
+    await act(async () => { click(seedButtons[1]!); });
+    expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-m1' }), 'fresh');
   });
 
   it('keeps Esc and the arrow keys working inside a user row’s ⋯ menu', async () => {
@@ -4253,11 +4288,16 @@ describe('message row actions', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     });
     expect(document.activeElement).toBe(items()[0]);
-    // ArrowUp wraps to the last item — the fork the menu exists for.
+    const forkItem = () => menu().querySelector<HTMLButtonElement>('[data-row-action-menu="fork"]')!;
+    // ArrowUp wraps to the last item (`link`), and one more ArrowUp reaches `fork`.
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     });
     expect(document.activeElement).toBe(items()[items().length - 1]);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(forkItem());
     await act(async () => { click(document.activeElement as Element); });
     expect(onFork).toHaveBeenCalledTimes(1);
     expect(menu().className).toContain('hidden');
