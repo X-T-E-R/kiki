@@ -238,6 +238,10 @@ export function listPeerReachableSurface(): readonly string[] {
   surface.push('WEB PROCEDURE all other services: allowed');
   return surface.toSorted();
 }
+function isPeerSocketPath(path: string | undefined): boolean {
+  return path === '/api/klient/events' || /^\/api\/plugins\/[^/?]+\/panels\/[^/?]+\/stream$/.test(path ?? '');
+}
+
 export class ConnectionAudience {
   constructor(readonly admission: ConnectionAdmission, readonly localOwnerToken: string, private readonly validateOwner: CredentialValidator, private readonly currentSpaceId: () => string) {}
   async authorize(token: string, request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
@@ -291,13 +295,13 @@ export class ConnectionAudience {
     if (token !== null) {
       const bearer = this.admission.matchBearer(token);
       if (bearer !== undefined) {
-        if (request.url?.split('?', 1)[0] !== '/api/klient/events') throw new AdmissionError(403, 'local_owner_required');
+        if (!isPeerSocketPath(request.url?.split('?', 1)[0])) throw new AdmissionError(403, 'local_owner_required');
         const audience = { grantId: bearer.id, revision: bearer.revision }; peers.set(request, audience); return audience;
       }
     }
     if (token === null || !(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
     const peer = this.admission.authorize(peerGrant(request.headers));
-    if (request.url?.split('?', 1)[0] !== '/api/klient/events') throw new AdmissionError(403, 'local_owner_required');
+    if (!isPeerSocketPath(request.url?.split('?', 1)[0])) throw new AdmissionError(403, 'local_owner_required');
     const audience = { grantId: peer.id, revision: peer.revision }; peers.set(request, audience); return audience;
   }
 }

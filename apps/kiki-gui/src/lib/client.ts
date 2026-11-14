@@ -6,6 +6,7 @@
 
 import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DeferredAppendTiming, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type PromptSkillActivation, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, createRebindableKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
+import { openPluginPanelStream, type PluginPanelStream, type PluginPanelStreamOptions } from './pluginPanelStream';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
@@ -1031,6 +1032,8 @@ export interface PluginInfo extends PluginSummary {
   readonly shadowedManifestPath?: string;
   readonly diagnostics: readonly PluginDiagnostic[];
 }
+
+export type { PluginPanelStream } from './pluginPanelStream';
 
 export interface KikiClientTransport {
   readonly fetch: typeof fetch;
@@ -2976,6 +2979,11 @@ export class KikiClient {
 
   setPluginUsage(input: PluginUsageRequest): Promise<PluginUsageResponse> {
     return this.run(this.rest.plugins.setUsage(input));
+  }
+
+  openPluginPanelStream(pluginId: string, panelId: string, input: PluginPanelStreamOptions): Promise<PluginPanelStream> {
+    if (this.transport !== undefined) return Promise.reject(new Error('Plugin panel streams require a direct server connection'));
+    return openPluginPanelStream(this.connection, pluginId, panelId, input);
   }
 
   callPluginPanelBridge(

@@ -517,6 +517,41 @@ A custom panel backend receives `PluginPanelContext` as the third argument of `h
 
 For a plugin-owned secret, use `await context.credentials.status("apiKey")` and `await context.credentials.set("apiKey", value)`. Status returns `{ reference: { kind: "plugin-setting", setting: "apiKey" }, configured }`, never the secret. A string replaces the value; `null` clears it. Only declared secret fields are accepted, and writing requires `permissions.secrets`. These calls use Kiki's existing credential storage. Settings reads return `secretsConfigured`; settings patches keep an omitted secret, replace a supplied string and clear a supplied `null`.
 
+### Binary panel streams
+
+Sandboxed panels can exchange video and control frames with their plugin backend through `plugin.openStream`. The iframe keeps `sandbox="allow-scripts"` and cannot open network connections; the parent opens the authenticated connection and transfers a `MessagePort` to the panel. Streams currently require a direct GUI-to-server connection, not a remote-connection broker.
+
+Export `openPanelStream(stream, args, session, context)` from `entry.mjs`, or register it with `api.registerPanelStream(handler)`. Return metadata directly, or return `{ result, onBinary, onText, onClose }` to supply input handlers alongside metadata:
+
+```js
+export function openPanelStream(stream, args, session, context) {
+  session.onBinary(bytes => session.sendBinary(bytes));
+  session.onText(text => session.sendText(text));
+  return { protocol: "example-video-v1", width: 1080, height: 1920 };
+}
+```
+
+`session` provides `sendBinary(Uint8Array | ArrayBuffer)`, `sendText(string | object)`, `close(reason?)`, `onBinary`, `onText`, `onClose`, `signal`, and `bufferedAmount()`. Listener registration returns an unsubscribe function. A `false` send result signals backpressure: bound the producer queue instead of retrying that frame. Frames emitted during opening are retained up to 4 MiB until the host connects. Each frame is limited to 16 MiB; exceeding the buffer limit closes the stream. Types are exported from `@kiki/plugin-sdk` as `PluginPanelStreamSession`, `PluginPanelStreamContext`, and `PluginPanelStreamHandler`.
+
+From the iframe, send a normal panel request with a unique id and receive the port through `event.ports[0]` on its successful response:
+
+```js
+parent.postMessage({
+  channel: "kiki.panel.v1", kind: "request", id: 1,
+  method: "plugin.openStream", stream: "video", args: { fps: 60 }
+}, "*");
+window.addEventListener("message", event => {
+  if (event.source !== parent || event.data?.kind !== "response" || event.data.id !== 1 || !event.data.ok) return;
+  const port = event.ports[0];
+  port.onmessage = event => console.log(event.data);
+  port.postMessage(new Uint8Array([1, 2]).buffer);
+});
+```
+
+Stream names must match `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. Binary frames arrive as transferable `ArrayBuffer` values; strings pass unchanged, and objects sent through the port become JSON text. Send `{ __kikiStreamControl: "close" }` through the port to close it. Backend closure arrives as `{ __kikiStreamEvent: "close", code, reason }`. Opening counts against the panel request limit; port frames do not. Navigation, iframe reload, and unmount cancel pending opens and close active streams. Plugin shutdown closes its streams. Settings panels cannot attach a session; other panels retain session and workspace plugin-access checks.
+
+The parent uses `/api/plugins/{plugin_id}/panels/{panel_id}/stream` over WebSocket, with the same bearer subprotocol or browser cookie admission as the GUI. Its first text frame is `{ type: "open", stream, args, session_id, workspace_id }`; the server answers `{ type: "ready", ok: true, result }` or `{ type: "ready", ok: false, error }` before forwarding raw binary and text frames. Binary data travels over a capability-authenticated loopback socket between the host and plugin process, not JSON-RPC stdout.
+
 ### External harness account sources
 
 An account-source plugin lets users choose one of its accounts for a specific [external harness](../configuration/config-files.md#external-harness-defaults). Install and enable the plugin, sign in through the plugin, then select its source and account for the harness instance. The default AGY CLI bridge keeps its existing login. If a selected account is signed out or the plugin is disabled or missing, restore that account or explicitly choose another one; Kiki does not switch accounts for you.

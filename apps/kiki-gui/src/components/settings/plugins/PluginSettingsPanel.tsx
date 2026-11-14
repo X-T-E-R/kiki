@@ -29,7 +29,15 @@ import { useI18n, type Locale } from '../../../i18n';
 import { prefersDark, type ResolvedTheme } from '../../../lib/theme';
 import { useConnection } from '../../../state/connection';
 
-import { bridgeBody, isPanelRequest, patchValues, PANEL_CHANNEL as CHANNEL, type PanelRequest } from '../../capabilities/pluginPanelBridge';
+import {
+  bridgeBody,
+  isPanelRequest,
+  isPluginPanelStreamName,
+  patchValues,
+  PANEL_CHANNEL as CHANNEL,
+  PluginPanelStreamBridge,
+  type PanelRequest,
+} from '../../capabilities/pluginPanelBridge';
 import { InlineError } from '../../controls';
 import { useDirtyReporter } from '../../dirtyGuard';
 import { Spinner } from '../../icons';
@@ -124,6 +132,7 @@ interface SettingsFrameRequest {
   readonly action?: unknown;
   readonly args?: unknown;
   readonly url?: unknown;
+  readonly stream?: unknown;
   readonly prerequisiteId?: unknown;
   readonly consent?: unknown;
   readonly values?: unknown;
@@ -214,11 +223,37 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
     }
   }
   const renderedDocument = renderedState?.doc;
+  const streamBridgeRef = useRef<PluginPanelStreamBridge | null>(null);
+  streamBridgeRef.current ??= new PluginPanelStreamBridge();
+  const streamScopeRef = useRef<{ identity: string; document: object | undefined; version: number }>({
+    identity: documentIdentity,
+    document: renderedDocument,
+    version: 0,
+  });
+  if (streamScopeRef.current.identity !== documentIdentity || streamScopeRef.current.document !== renderedDocument) {
+    streamScopeRef.current = {
+      identity: documentIdentity,
+      document: renderedDocument,
+      version: streamScopeRef.current.version + 1,
+    };
+  }
+  useEffect(() => {
+    const scope = { ...streamScopeRef.current };
+    return () => {
+      if (streamScopeRef.current.identity === scope.identity && streamScopeRef.current.document === scope.document
+        && streamScopeRef.current.version === scope.version) {
+        streamScopeRef.current = { ...scope, version: scope.version + 1 };
+      }
+      streamBridgeRef.current?.closeAll();
+    };
+  }, [documentIdentity, renderedDocument]);
 
-  const post = useCallback((message: unknown) => {
+  const post = useCallback((message: unknown, transfer?: Transferable[]) => {
     const target = frameRef.current?.contentWindow;
-    if ((target === null || target === undefined) || target !== frameWindowRef.current) return;
-    target.postMessage(message, '*');
+    if ((target === null || target === undefined) || target !== frameWindowRef.current) return false;
+    if (transfer === undefined) target.postMessage(message, '*');
+    else target.postMessage(message, '*', transfer);
+    return true;
   }, []);
 
   // init fires on every real document load — a routed switch to another plugin
@@ -267,9 +302,12 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
       const request = event.data;
       const target = frame.contentWindow;
       const stillHere = () => target !== null && frameRef.current?.contentWindow === target;
-      const respond = (ok: boolean, payload: { result?: unknown; error?: string }) => {
-        if (!stillHere() || target === null) return;
-        target.postMessage({ channel: CHANNEL, kind: 'response', id: request.id, ok, ...payload }, '*');
+      const respond = (ok: boolean, payload: { result?: unknown; error?: string }, transfer?: Transferable[]) => {
+        if (!stillHere() || target === null) return false;
+        const message = { channel: CHANNEL, kind: 'response', id: request.id, ok, ...payload };
+        if (transfer === undefined) target.postMessage(message, '*');
+        else target.postMessage(message, '*', transfer);
+        return true;
       };
       if (request.method === 'plugin.dirty') {
         dirtyRevision.current += 1;
@@ -284,6 +322,28 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
         return;
       }
       recent.current.push(now);
+      if (request.method === 'plugin.openStream') {
+        if (!isPluginPanelStreamName(request.stream)) {
+          respond(false, { error: 'invalid stream' });
+          return;
+        }
+        const frameWindow = frame.contentWindow;
+        const streamScope = { ...streamScopeRef.current };
+        const isCurrent = () => stillHere() && frame.contentWindow === frameWindow
+          && streamScopeRef.current.identity === streamScope.identity
+          && streamScopeRef.current.document === streamScope.document
+          && streamScopeRef.current.version === streamScope.version;
+        void streamBridgeRef.current!.open({
+          client,
+          pluginId,
+          panelId,
+          request: request as PanelRequest,
+          context: {},
+          isCurrent,
+          respond: (message, transfer) => isCurrent() && post(message, transfer),
+        }).catch((error: unknown) => { if (isCurrent()) respond(false, { error: errorText(locale, error) }); });
+        return;
+      }
       if (request.method === 'plugin.settings.get') {
         void client.getPluginSettings(pluginId)
           .then((result) => {
@@ -345,6 +405,8 @@ function PluginSettingsDocument({ pluginId, panelId, label }: PluginSettingsPane
           onLoad={() => {
             frameWindowRef.current = frameRef.current?.contentWindow ?? null;
             recent.current = [];
+            streamScopeRef.current = { ...streamScopeRef.current, version: streamScopeRef.current.version + 1 };
+            streamBridgeRef.current?.closeAll();
             setLoadSeq((seq) => seq + 1);
           }}
           data-plugin-panel={`${pluginId}:${panelId}`}

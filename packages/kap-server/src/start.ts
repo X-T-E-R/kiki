@@ -117,6 +117,7 @@ import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBr
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
+import { createPluginPanelStreamServer, PLUGIN_PANEL_STREAM_PATH } from './routes/pluginPanelStreams';
 import { PeerListeners, type PairingHooks } from './services/connections/pairing';
 import { loadPeerTlsIdentity } from './services/connections/tlsIdentity';
 import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
@@ -1310,6 +1311,11 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     enableTerminals,
     logger,
   });
+  const { server: wssPanelStreams, closeStream: closePanelStream } = createPluginPanelStreamServer(core);
+  app.addHook('preClose', () => {
+    for (const ws of wssPanelStreams.clients) ws.terminate();
+    wssPanelStreams.close();
+  });
   const wsAuthGeneration = new WeakMap<object, number>();
   if (managedTokenStore !== undefined) {
     let authGeneration = managedTokenStore.generation();
@@ -1318,8 +1324,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       if (next === authGeneration) return;
       authGeneration = next;
       admission.closeAll();
-      for (const socket of [...wssV1.clients, ...wssKlient.clients, ...wssKlient.peerServer.clients, ...wssBroker.clients]) {
-        if (wsAuthGeneration.get(socket) !== next) socket.close(4001, 'server authentication changed');
+      for (const socket of [...wssV1.clients, ...wssKlient.clients, ...wssKlient.peerServer.clients, ...wssBroker.clients, ...wssPanelStreams.clients]) {
+        if (wsAuthGeneration.get(socket) === next) continue;
+        if (wssPanelStreams.clients.has(socket)) closePanelStream(socket, 4001, 'server authentication changed');
+        else socket.close(4001, 'server authentication changed');
       }
     }, 250);
     authMonitor.unref();
@@ -1334,6 +1342,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const isV1 = url === WS_PATH_V1 || url.startsWith(`${WS_PATH_V1}?`);
     const isKlient = url === KLIENT_EVENTS_PATH || url.startsWith(`${KLIENT_EVENTS_PATH}?`);
     const isBroker = CONNECTION_BROKER_WS.test(url);
+    const isPanelStream = PLUGIN_PANEL_STREAM_PATH.test(url);
     const header = req.headers.authorization;
     const protocolToken = extractWsBearerToken(req.headers['sec-websocket-protocol']);
     const hasBearerProtocol = req.headers['sec-websocket-protocol']?.split(',').some((entry) => entry.trim().startsWith('kimi-code.bearer.')) === true;
@@ -1347,7 +1356,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         socket.end(`HTTP/1.1 ${invalid ? '401 Unauthorized' : '403 Forbidden'}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
         return;
       }
-    } else if (!isV1 && !isKlient && !isBroker) {
+    } else if (!isV1 && !isKlient && !isBroker && !isPanelStream) {
       socket.destroy();
       return;
     }
@@ -1398,7 +1407,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       }
     }
     (socket as Socket).setNoDelay(true);
-    const wss = isBroker ? wssBroker : isV1 ? wssV1 : admitted === 'local' ? wssKlient : wssKlient.peerServer;
+    const wss = isPanelStream ? wssPanelStreams : isBroker ? wssBroker : isV1 ? wssV1 : admitted === 'local' ? wssKlient : wssKlient.peerServer;
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (admittedGeneration !== undefined) {
         wsAuthGeneration.set(ws, admittedGeneration);

@@ -1,6 +1,8 @@
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { createServer } from 'node:net';
+import { randomBytes } from 'node:crypto';
 
 const [entry] = process.argv.slice(2);
 const tools = new Map();
@@ -265,9 +267,190 @@ function updateSettings(values) {
     send({ method: 'settings-update', params: { callId, values } });
   });
 }
+let openPanelStream;
+let panelServer;
+let panelServerReady;
+const panelTokens = new Map();
+const panelStreams = new Set();
+const panelCalls = new Map();
+const panelSockets = new Set();
+const PANEL_FRAME_LIMIT = 16 * 1024 * 1024;
+
+function listenPanelStreams() {
+  return panelServerReady ??= new Promise((resolve, reject) => {
+    panelServer = createServer((socket) => {
+      socket.setNoDelay(true);
+      panelSockets.add(socket);
+      const token = Buffer.allocUnsafe(32);
+      let received = 0;
+      const timer = setTimeout(() => socket.destroy(), 10_000);
+      timer.unref();
+      socket.on('error', () => socket.destroy());
+      socket.once('close', () => { clearTimeout(timer); panelSockets.delete(socket); });
+      const authenticate = (chunk) => {
+        const bytes = Math.min(32 - received, chunk.length);
+        chunk.copy(token, received, 0, bytes);
+        received += bytes;
+        if (received !== 32) return;
+        clearTimeout(timer);
+        socket.off('data', authenticate);
+        const key = token.toString('hex');
+        const stream = panelTokens.get(key);
+        if (stream === undefined) { socket.destroy(); return; }
+        panelTokens.delete(key);
+        stream.connect(socket);
+        if (chunk.length > bytes) stream.receive(chunk.subarray(bytes));
+      };
+      socket.on('data', authenticate);
+    });
+    panelServer.once('error', reject);
+    panelServer.listen(0, '127.0.0.1', () => { panelServer.unref(); resolve(panelServer.address().port); });
+  });
+}
+
+async function openPanelChannel(message) {
+  if (typeof openPanelStream !== 'function' || shuttingDown !== undefined) throw new Error('Plugin has no panel stream backend');
+  const { panelId, stream, args, settings, kikiHome, workspaceId, sessionId } = message.params;
+  if (typeof stream !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(stream)) throw new Error('Invalid panel stream name');
+  const token = randomBytes(32).toString('hex');
+  const controller = new AbortController();
+  const binary = new Set();
+  const text = new Set();
+  const closed = new Set();
+  let socket;
+  let ended = false;
+  let reason;
+  let queuedBytes = 0;
+  const queued = [];
+  const finish = (why) => {
+    if (ended) return;
+    ended = true; reason = why;
+    controller.abort();
+    for (const listener of closed) listener(why);
+    binary.clear(); text.clear(); closed.clear();
+  };
+  const dispose = (why) => {
+    finish(why);
+    clearTimeout(timer);
+    panelTokens.delete(token);
+    panelStreams.delete(channel);
+    panelCalls.delete(message.id);
+    queued.length = 0; queuedBytes = 0;
+    socket?.destroy();
+  };
+  const write = (opcode, payload) => {
+    if (ended) return false;
+    if (payload.length > PANEL_FRAME_LIMIT || (socket === undefined ? queuedBytes + payload.length + 5 > 4 * 1024 * 1024 : socket.writableLength + payload.length + 5 > PANEL_FRAME_LIMIT + 5)) {
+      dispose('Plugin stream buffer limit exceeded');
+      return false;
+    }
+    const header = Buffer.allocUnsafe(5);
+    header[0] = opcode; header.writeUInt32BE(payload.length, 1);
+    if (socket === undefined) {
+      queued.push(header, Buffer.from(payload));
+      queuedBytes += header.length + payload.length;
+      return true;
+    }
+    socket.cork(); socket.write(header);
+    const writable = socket.write(payload);
+    socket.uncork();
+    return writable;
+  };
+  const close = (why) => {
+    if (ended) return;
+    write(8, Buffer.from(why ?? ''));
+    finish(why);
+    if (socket !== undefined) socket.end();
+  };
+  const header = Buffer.allocUnsafe(5);
+  let headerBytes = 0;
+  let payload;
+  let payloadBytes = 0;
+  let length = 0;
+  const channel = {
+    dispose,
+    connect(connection) {
+      socket = connection;
+      clearTimeout(timer);
+      socket.on('error', (error) => dispose(error.message));
+      socket.on('close', () => dispose());
+      socket.on('data', (chunk) => {
+        try { channel.receive(chunk); } catch (error) { dispose(String(error)); }
+      });
+      for (const chunk of queued) socket.write(chunk);
+      queued.length = 0; queuedBytes = 0;
+      if (ended) socket.end();
+    },
+    receive(chunk) {
+      let offset = 0;
+      while (offset < chunk.length && !ended) {
+        if (headerBytes < 5) {
+          const bytes = Math.min(5 - headerBytes, chunk.length - offset);
+          chunk.copy(header, headerBytes, offset, offset + bytes);
+          headerBytes += bytes; offset += bytes;
+          if (headerBytes !== 5) return;
+          length = header.readUInt32BE(1);
+          if (length > PANEL_FRAME_LIMIT || ![1, 2, 8].includes(header[0])) { dispose('Invalid plugin stream frame'); return; }
+        }
+        const bytes = Math.min(length - payloadBytes, chunk.length - offset);
+        let frame;
+        if (payload === undefined && bytes === length) frame = chunk.subarray(offset, offset + bytes);
+        else {
+          payload ??= Buffer.allocUnsafe(length);
+          chunk.copy(payload, payloadBytes, offset, offset + bytes);
+          payloadBytes += bytes;
+          if (payloadBytes !== length) return;
+          frame = payload;
+        }
+        offset += bytes;
+        const opcode = header[0];
+        headerBytes = 0; payloadBytes = 0; payload = undefined;
+        if (opcode === 8) close(frame.toString('utf8'));
+        else if (opcode === 1) { for (const listener of text) listener(frame.toString('utf8')); }
+        else { for (const listener of binary) listener(frame); }
+      }
+    },
+  };
+  const timer = setTimeout(() => dispose('Plugin stream connect timed out'), 10_000);
+  timer.unref();
+  panelTokens.set(token, channel);
+  panelStreams.add(channel);
+  panelCalls.set(message.id, channel);
+  pending.set(message.id, controller);
+  const handle = {
+    sendBinary: (chunk) => write(2, chunk instanceof ArrayBuffer ? Buffer.from(chunk) : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
+    sendText: (value) => write(1, Buffer.from(typeof value === 'string' ? value : JSON.stringify(value))),
+    close,
+    onBinary: (fn) => { binary.add(fn); return () => binary.delete(fn); },
+    onText: (fn) => { text.add(fn); return () => text.delete(fn); },
+    onClose: (fn) => { if (ended) fn(reason); else closed.add(fn); return () => closed.delete(fn); },
+    signal: controller.signal,
+    bufferedAmount: () => queuedBytes + (socket?.writableLength ?? 0),
+  };
+  controller.signal.addEventListener('abort', () => { if (!ended) dispose('Plugin stream cancelled'); }, { once: true });
+  try {
+    const port = await listenPanelStreams();
+    controller.signal.throwIfAborted();
+    const context = { panelId, sessionId, workspaceId, settings: settings ?? {}, kikiHome, ...modelContext(message.id, controller.signal, false), signal: controller.signal };
+    const opened = await openPanelStream(stream, args, handle, context);
+    const handlers = opened !== null && typeof opened === 'object' && ['onBinary', 'onText', 'onClose'].some((key) => typeof opened[key] === 'function');
+    if (handlers) {
+      if (typeof opened.onBinary === 'function') handle.onBinary((chunk) => opened.onBinary(chunk));
+      if (typeof opened.onText === 'function') handle.onText((value) => opened.onText(value));
+      if (typeof opened.onClose === 'function') handle.onClose((why) => opened.onClose(why));
+    }
+    if (!panelStreams.has(channel)) throw new Error(reason ?? 'Plugin stream closed during open');
+    return { result: handlers ? opened.result : opened, port, token };
+  } catch (error) { dispose(String(error)); throw error; }
+  finally { pending.delete(message.id); }
+}
+
 function shutdown() {
   if (shuttingDown !== undefined) return shuttingDown;
   lifetime.abort();
+  for (const stream of panelStreams) stream.dispose('Plugin host stopped');
+  for (const socket of panelSockets) socket.destroy();
+  panelServer?.close();
   for (const controller of pending.values()) controller.abort();
   shuttingDown = Promise.resolve().then(async () => {
     await Promise.allSettled([...harnessAccountWork, ...[...harnessAccountLeases.keys()].map(releaseHarnessAccount)]);
@@ -300,12 +483,17 @@ for await (const line of input) {
       const plugin = await import(pathToFileURL(entry).href);
       cordisSlots = plugin.slots ?? plugin.default?.slots;
       handleRouteRequest = plugin.handleRouteRequest ?? plugin.default?.handleRouteRequest;
-      if (typeof plugin.register !== 'function' && (typeof cordisSlots !== 'object' || cordisSlots === null) && typeof handleRouteRequest !== 'function') throw new Error('Plugin must export register(api) or a slots map');
+      openPanelStream = plugin.openPanelStream ?? plugin.default?.openPanelStream;
+      if (typeof plugin.register !== 'function' && (typeof cordisSlots !== 'object' || cordisSlots === null) && typeof handleRouteRequest !== 'function' && typeof openPanelStream !== 'function') throw new Error('Plugin must export register(api) or a slots map');
       installPrerequisite = plugin.installPrerequisite;
       handlePanelRequest = plugin.handlePanelRequest;
       activate = plugin.activate;
       deactivate = plugin.deactivate;
       if (typeof plugin.register === 'function') await plugin.register({
+        registerPanelStream(fn) {
+          if (typeof fn !== 'function' || openPanelStream !== undefined) throw new Error('Invalid or duplicate panel stream backend');
+          openPanelStream = fn;
+        },
         registerTool(definition, execute) {
           if (typeof execute !== 'function' || typeof definition?.name !== 'string' || tools.has(definition.name)) {
             throw new Error('Invalid or duplicate plugin tool');
@@ -423,6 +611,7 @@ for await (const line of input) {
   if (message.method === 'cancel') {
     const id = message.params?.id;
     pending.get(id)?.abort();
+    panelCalls.get(id)?.dispose('Plugin stream cancelled');
     void releaseHarnessAccount(id).catch(() => undefined);
     continue;
   }
@@ -590,6 +779,11 @@ for await (const line of input) {
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
     );
+    continue;
+  }
+  if (message.method === 'panel-stream-open') {
+    void openPanelChannel(message).then((result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }));
     continue;
   }
   if (message.method === 'panel-request') {

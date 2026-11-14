@@ -518,6 +518,41 @@ return { output: text };
 
 对于插件自有密钥，使用 `await context.credentials.status("apiKey")` 和 `await context.credentials.set("apiKey", value)`。状态返回 `{ reference: { kind: "plugin-setting", setting: "apiKey" }, configured }`，不返回密钥。字符串替换原值，`null` 清除。仅接受声明为密钥的字段，写入须声明 `permissions.secrets`。这些操作沿用 Kiki 的凭据存储。设置读取返回 `secretsConfigured`；更新设置时，省略字段保留原值，传字符串替换，传 `null` 清除。
 
+### 面板二进制流
+
+沙箱面板可通过 `plugin.openStream` 与插件后端交换视频和控制帧。iframe 保持 `sandbox="allow-scripts"`，不能自行连接网络；父页面建立经过认证的连接，再向面板转交 `MessagePort`。流目前要求 GUI 直连服务器，不经过远端连接代理。
+
+在 `entry.mjs` 导出 `openPanelStream(stream, args, session, context)`，或通过 `api.registerPanelStream(handler)` 注册。可以直接返回元数据，也可以返回 `{ result, onBinary, onText, onClose }`，同时提供输入处理函数和元数据：
+
+```js
+export function openPanelStream(stream, args, session, context) {
+  session.onBinary(bytes => session.sendBinary(bytes));
+  session.onText(text => session.sendText(text));
+  return { protocol: "example-video-v1", width: 1080, height: 1920 };
+}
+```
+
+`session` 提供 `sendBinary(Uint8Array | ArrayBuffer)`、`sendText(string | object)`、`close(reason?)`、`onBinary`、`onText`、`onClose`、`signal` 和 `bufferedAmount()`。注册监听器会返回取消订阅函数。发送返回 `false` 表示背压：限制生产端队列，不要重发这一帧。打开期间发出的帧会暂存，最多 4 MiB，直到宿主连接。单帧上限为 16 MiB；超过缓冲上限会关闭流。`@kiki/plugin-sdk` 导出 `PluginPanelStreamSession`、`PluginPanelStreamContext` 和 `PluginPanelStreamHandler` 类型。
+
+在 iframe 内发送带唯一 id 的面板请求，并从成功响应的 `event.ports[0]` 取得端口：
+
+```js
+parent.postMessage({
+  channel: "kiki.panel.v1", kind: "request", id: 1,
+  method: "plugin.openStream", stream: "video", args: { fps: 60 }
+}, "*");
+window.addEventListener("message", event => {
+  if (event.source !== parent || event.data?.kind !== "response" || event.data.id !== 1 || !event.data.ok) return;
+  const port = event.ports[0];
+  port.onmessage = event => console.log(event.data);
+  port.postMessage(new Uint8Array([1, 2]).buffer);
+});
+```
+
+流名称须匹配 `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`。二进制帧以可转移的 `ArrayBuffer` 到达；字符串原样传递，端口发送的对象转换为 JSON 文本。向端口发送 `{ __kikiStreamControl: "close" }` 可关闭流。后端关闭时，端口收到 `{ __kikiStreamEvent: "close", code, reason }`。打开流计入面板请求限额，端口帧不计入。导航、iframe 重载和组件卸载都会取消正在打开的流，并关闭活动流。插件关闭时也会释放其流。设置面板不能附带会话；其他面板仍检查会话和工作区插件访问权限。
+
+父页面通过 WebSocket 连接 `/api/plugins/{plugin_id}/panels/{panel_id}/stream`，沿用 GUI 的 bearer 子协议或浏览器 cookie 认证。首个文本帧为 `{ type: "open", stream, args, session_id, workspace_id }`；服务器先回复 `{ type: "ready", ok: true, result }` 或 `{ type: "ready", ok: false, error }`，再转发原始二进制帧和文本帧。宿主与插件进程之间使用 capability token 认证的回环套接字传输二进制数据，不经过 JSON-RPC stdout。
+
 ### 外部 harness 账号来源
 
 账号来源插件可为指定的[外部 harness](../configuration/config-files.md#外部-harness-默认设置)提供账号。安装并启用插件，在插件中登录，然后为 harness 实例选择该来源和账号。默认 AGY CLI 桥仍使用原有登录。如果选定账号已退出登录，或插件已停用、卸载，请恢复该账号或明确另选一个；Kiki 不会自动换号。

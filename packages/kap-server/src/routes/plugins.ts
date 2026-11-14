@@ -63,7 +63,7 @@ import { parseActionSuffix } from './action-suffix';
 import { resolvePluginUsageWorkspace } from './pluginUsage';
 
 const pluginContextQuery = z.object({ workspace_id: z.string().min(1).optional(), session_id: z.string().min(1).optional() }).refine((query) => query.workspace_id === undefined || query.session_id === undefined);
-async function pluginContextWorkspace(core: Scope, query: { workspace_id?: string; session_id?: string }): Promise<string | undefined> {
+export async function pluginContextWorkspace(core: Scope, query: { workspace_id?: string; session_id?: string }): Promise<string | undefined> {
   if (!core.accessor.get(IPluginUsageService).enabled()) return undefined;
   const target = query.workspace_id !== undefined ? { workspace_id: query.workspace_id } : query.session_id !== undefined ? { session_id: query.session_id } : undefined;
   if (target === undefined) return undefined;

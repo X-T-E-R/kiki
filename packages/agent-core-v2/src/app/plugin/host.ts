@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeChildEnv } from '#/_base/execEnv/childEnv';
-import { abortError } from '#/_base/utils/abort';
+import { abortable, abortError } from '#/_base/utils/abort';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
@@ -19,6 +19,7 @@ import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { PluginToolOutput } from './toolOutput';
+import { PanelStream, type PluginPanelStream } from './panelStream';
 import type { IsolatedPluginInvocation, IsolatedPluginResult } from '#/app/cordisRuntime/cordisRuntime';
 import { matchesInvocation } from '#/app/cordisRuntime/isolationProtocol';
 import {
@@ -93,6 +94,8 @@ export class PluginHost {
   private handshakeCooldownUntil = 0;
   private lastHandshakeError?: Error;
   private readonly pending = new Map<number, Call>();
+  private readonly streams = new Set<PanelStream>();
+  private readonly streamCalls = new Map<number, Call>();
   private readonly registered = new Set<string>();
   private readonly registeredSources = new Set<string>();
   private readonly registeredProviders = new Set<string>();
@@ -472,6 +475,64 @@ export class PluginHost {
     });
   }
 
+  async openPanelStream(panelId: string, stream: string, args: unknown, settings: Record<string, unknown>, context: { sessionId?: string; workspaceId?: string; signal?: AbortSignal }): Promise<PluginPanelStream> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(stream)) throw new Error('Invalid panel stream name');
+    const { signal, ...scope } = context;
+    signal?.throwIfAborted();
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
+    const child = this.child;
+    if (this.stopped || child === undefined) throw new Error('Plugin host was withdrawn');
+    const id = ++this.nextId;
+    const controller = new AbortController();
+    let connection: PanelStream | undefined;
+    const release = () => {
+      if (connection !== undefined) this.streams.delete(connection);
+      this.streamCalls.delete(id);
+      signal?.removeEventListener('abort', cancel);
+      controller.abort();
+      this.scheduleIdle();
+    };
+    const interrupt = (reason: Error) => {
+      this.send({ method: 'cancel', params: { id } });
+      controller.abort(reason);
+      const call = this.pending.get(id);
+      this.pending.delete(id);
+      call?.reject(reason);
+      connection?.destroy(reason.message);
+    };
+    const cancel = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError('Plugin panel stream cancelled'));
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.streamCalls.set(id, { resolve: () => {}, reject: () => controller.abort(), signal: controller.signal });
+    this.clearIdle();
+    try {
+      const opened = await new Promise<{ result: unknown; port: number; token: string }>((resolve, reject) => {
+        const timer = setTimeout(() => interrupt(new Error('Plugin panel stream open timed out')), 15_000);
+        timer.unref();
+        this.pending.set(id, { signal: controller.signal,
+          resolve: (result) => { clearTimeout(timer); resolve(result as { result: unknown; port: number; token: string }); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        });
+        this.send({ id, method: 'panel-stream-open', params: { panelId, stream, args, settings, kikiHome: this.kikiHome, ...scope } });
+      });
+      controller.signal.throwIfAborted();
+      if (this.stopped || child !== this.child) throw new Error('Plugin host was withdrawn');
+      if (!Number.isInteger(opened.port) || opened.port < 1 || opened.port > 65535 || !/^[a-f0-9]{64}$/.test(opened.token)) throw new Error('Invalid plugin stream endpoint');
+      connection = new PanelStream(opened.result, opened.port, opened.token, release);
+      this.streams.add(connection);
+      this.clearIdle();
+      await connection.connected();
+      controller.signal.throwIfAborted();
+      return connection;
+    } catch (error) {
+      if (!controller.signal.aborted) this.send({ method: 'cancel', params: { id } });
+      if (connection === undefined) release();
+      else connection.destroy(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
+
   async requestPanel(action: string, args: unknown, settings: Record<string, unknown>): Promise<unknown> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     await this.start();
@@ -534,6 +595,7 @@ export class PluginHost {
 
   stopAndWait(): Promise<void> {
     this.stopped = true;
+    for (const stream of this.streams) stream.destroy('Plugin host stopped');
     return this.shutdown ??= this.shutdownChild();
   }
 
@@ -849,7 +911,7 @@ export class PluginHost {
   }
 
   private async modelCall(id: number, action: string, input: unknown, streamId: number): Promise<unknown> {
-    const call = this.pending.get(id);
+    const call = this.pending.get(id) ?? this.streamCalls.get(id);
     if (this.stopped || call === undefined) throw new Error('Plugin invocation has ended');
     call.signal?.throwIfAborted();
     if (action === 'list') {
@@ -938,19 +1000,24 @@ export class PluginHost {
   }
 
   private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) {
+    if (this.pending.size > 0 || this.streams.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) {
       this.clearIdle();
       return;
     }
     this.clearIdle();
     this.idle = setTimeout(() => {
-      if (this.pending.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+      if (this.pending.size > 0 || this.streams.size > 0 || this.harnessAccountLeases.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
       this.terminate(new Error(`Plugin ${this.id} idle`));
     }, IDLE_MS);
     this.idle.unref();
   }
 
   private terminate(reason: Error): void {
+    this.clearIdle();
+    for (const stream of this.streams) stream.destroy(reason.message);
+    this.streams.clear();
+    for (const call of this.streamCalls.values()) call.reject(reason);
+    this.streamCalls.clear();
     this.clearIdle();
     const lineReader = this.lineReader;
     this.lineReader = undefined;

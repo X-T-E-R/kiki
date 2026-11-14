@@ -23,13 +23,14 @@ const listPlugins = vi.hoisted(() => vi.fn());
 const listPluginMarketplace = vi.hoisted(() => vi.fn());
 const getPlugin = vi.hoisted(() => vi.fn());
 const callPluginPanelBridge = vi.hoisted(() => vi.fn());
+const openPluginPanelStream = vi.hoisted(() => vi.fn());
 const connectionBag = vi.hoisted(() => ({ scopeId: 'scope-a', serverId: 'server-a', baseUrl: 'https://server.example.test' }));
 
 vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
     scopeId: connectionBag.scopeId,
     meta: { server_id: connectionBag.serverId },
-    client: { baseUrl: connectionBag.baseUrl, getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin, callPluginPanelBridge },
+    client: { baseUrl: connectionBag.baseUrl, getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin, callPluginPanelBridge, openPluginPanelStream },
   }),
 }));
 
@@ -42,12 +43,32 @@ const stored = {
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
+const renderings = new WeakMap<HTMLIFrameElement, { readonly root: Root; readonly queryClient: QueryClient }>();
 const reactAct = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 /* jsdom fires the srcdoc iframe's load before a post-stub can land, so the
  * frame's postMessage is captured from the moment the window exists. */
 const framePosts = new WeakMap<Window, unknown[]>();
+const framePostTransfers = new WeakMap<Window, Array<Transferable[] | undefined>>();
 let restoreContentWindow: (() => void) | undefined;
+let restoreMessageChannel: (() => void) | undefined;
+let originalMessageChannel: PropertyDescriptor | undefined;
+
+class SettingsTestPort {
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+  readonly messages: Array<{ readonly data: unknown; readonly transfer?: Transferable[] }> = [];
+  readonly start = vi.fn();
+  readonly close = vi.fn();
+  postMessage = vi.fn((data: unknown, transfer?: Transferable[]) => { this.messages.push({ data, transfer }); });
+  dispatch(data: unknown): void { this.onmessage?.({ data } as MessageEvent<unknown>); }
+}
+
+class SettingsTestMessageChannel {
+  static readonly instances: SettingsTestMessageChannel[] = [];
+  readonly port1 = new SettingsTestPort();
+  readonly port2 = new SettingsTestPort();
+  constructor() { SettingsTestMessageChannel.instances.push(this); }
+}
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
@@ -60,7 +81,11 @@ beforeAll(() => {
         const win = original.get!.call(this) as Window | null;
         if (win !== null && !framePosts.has(win)) {
           framePosts.set(win, []);
-          win.postMessage = (message: unknown) => { framePosts.get(win)!.push(message); };
+          framePostTransfers.set(win, []);
+          win.postMessage = ((message: unknown, _target?: string, transfer?: Transferable[]) => {
+            framePosts.get(win)!.push(message);
+            framePostTransfers.get(win)!.push(transfer);
+          }) as typeof win.postMessage;
         }
         return win;
       },
@@ -71,6 +96,13 @@ beforeAll(() => {
   }
 });
 beforeEach(() => {
+  SettingsTestMessageChannel.instances.length = 0;
+  originalMessageChannel = Object.getOwnPropertyDescriptor(globalThis, 'MessageChannel');
+  Object.defineProperty(globalThis, 'MessageChannel', { configurable: true, writable: true, value: SettingsTestMessageChannel });
+  restoreMessageChannel = () => {
+    if (originalMessageChannel === undefined) delete (globalThis as { MessageChannel?: unknown }).MessageChannel;
+    else Object.defineProperty(globalThis, 'MessageChannel', originalMessageChannel);
+  };
   getPluginPanelDocument.mockReset().mockResolvedValue({ html });
   getPluginSettings.mockReset().mockResolvedValue(stored);
   setPluginSettings.mockReset().mockImplementation(async (_id: string, values: Record<string, string>) => ({
@@ -82,6 +114,7 @@ beforeEach(() => {
   listPluginMarketplace.mockReset().mockResolvedValue({ configured: false, entries: [] });
   getPlugin.mockReset();
   callPluginPanelBridge.mockReset().mockResolvedValue({ result: { catalog: ['m1'] } });
+  openPluginPanelStream.mockReset();
   connectionBag.scopeId = 'scope-a';
   connectionBag.serverId = 'server-a';
   connectionBag.baseUrl = 'https://server.example.test';
@@ -89,6 +122,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
+  restoreMessageChannel?.();
+  restoreMessageChannel = undefined;
 });
 afterAll(() => {
   reactAct.IS_REACT_ACT_ENVIRONMENT = false;
@@ -122,24 +157,28 @@ async function awaitInit(frame: HTMLIFrameElement): Promise<unknown[]> {
   return framePosts.get(frame.contentWindow!) ?? [];
 }
 
+function settingsPanelElement(queryClient: QueryClient) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider>
+        <PluginSettingsPanel pluginId="kiki-media" panelId="settings" label="Settings" />
+      </I18nProvider>
+    </QueryClientProvider>
+  );
+}
+
 async function renderPanel(): Promise<{ frame: HTMLIFrameElement; posted: unknown[] }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <I18nProvider>
-          <PluginSettingsPanel pluginId="kiki-media" panelId="settings" label="Settings" />
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => { root.render(settingsPanelElement(queryClient)); });
   // The iframe appears once the document query resolves; posts are captured
   // per content window from creation, so nothing the frame is sent is missed.
   const frame = await waitFrame(container);
+  renderings.set(frame, { root, queryClient });
   const posted = await awaitInit(frame);
   return { frame, posted };
 }
@@ -932,5 +971,165 @@ describe('the settings page chooses the declared panel or the generic schema for
     expect(getPluginPanelDocument).toHaveBeenCalledTimes(1);
     expect(container.querySelector('iframe')?.getAttribute('src')).toBe('https://server.example.test/plugin-panel/fresh-grant');
     queryClient.clear();
+  });
+});
+
+
+describe('the settings panel stream bridge', () => {
+  it('opens with a transferred port and relays binary, text, object and close frames', async () => {
+    let binaryListener: ((chunk: ArrayBuffer) => void) | undefined;
+    let textListener: ((text: string) => void) | undefined;
+    let closeListener: ((code: number, reason: string) => void) | undefined;
+    const stream = {
+      result: { ready: true },
+      sendBinary: vi.fn(() => true),
+      sendText: vi.fn(() => true),
+      close: vi.fn(),
+      onBinary: vi.fn((listener: (chunk: ArrayBuffer) => void) => { binaryListener = listener; return () => { binaryListener = undefined; }; }),
+      onText: vi.fn((listener: (text: string) => void) => { textListener = listener; return () => { textListener = undefined; }; }),
+      onClose: vi.fn((listener: (code: number, reason: string) => void) => { closeListener = listener; return () => { closeListener = undefined; }; }),
+    };
+    openPluginPanelStream.mockResolvedValueOnce(stream);
+    const { frame, posted } = await renderPanel();
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 90, method: 'plugin.openStream', stream: 'settings-live', args: { mode: 'compact' } });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+
+    const channel = SettingsTestMessageChannel.instances[0]!;
+    const response = posted.find((message) => (message as { id?: number }).id === 90) as Record<string, unknown>;
+    expect(openPluginPanelStream).toHaveBeenCalledWith('kiki-media', 'settings', {
+      stream: 'settings-live', args: { mode: 'compact' }, session_id: undefined, workspace_id: undefined,
+      signal: expect.any(AbortSignal),
+    });
+    const streamOptions = openPluginPanelStream.mock.calls[0]?.[2] as { signal?: AbortSignal } | undefined;
+    expect(streamOptions?.signal).toBeInstanceOf(AbortSignal);
+    expect(streamOptions?.signal?.aborted).toBe(false);
+    expect(response).toMatchObject({ ok: true, result: { ready: true } });
+    expect(response).not.toHaveProperty('port');
+    const transferLog = framePostTransfers.get(frame.contentWindow!) ?? [];
+    expect(transferLog[posted.indexOf(response)]).toEqual([channel.port2]);
+
+    const binary = new ArrayBuffer(2);
+    const view = new Uint8Array([7, 8]);
+    await act(async () => {
+      channel.port1.dispatch(binary);
+      channel.port1.dispatch(view);
+      channel.port1.dispatch('text-input');
+      channel.port1.dispatch({ action: 'update' });
+      binaryListener?.(new ArrayBuffer(3));
+      textListener?.('text-output');
+    });
+    expect(stream.sendBinary.mock.calls).toEqual([[binary], [view]]);
+    expect(stream.sendText.mock.calls).toEqual([['text-input'], [JSON.stringify({ action: 'update' })]]);
+    expect(channel.port1.postMessage).toHaveBeenCalledWith('text-output');
+
+    await act(async () => { closeListener?.(1001, 'going away'); });
+    expect(channel.port1.postMessage).toHaveBeenCalledWith({ __kikiStreamEvent: 'close', code: 1001, reason: 'going away' });
+    expect(channel.port1.close).toHaveBeenCalledTimes(1);
+    expect(channel.port2.close).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('settings panel stream lifetimes', () => {
+  it('closes streams on iframe reload, document identity change, and unmount, including pending opens', async () => {
+    const makeStream = () => ({
+      result: true,
+      sendBinary: vi.fn(() => true),
+      sendText: vi.fn(() => true),
+      close: vi.fn(),
+      onBinary: vi.fn(() => vi.fn()),
+      onText: vi.fn(() => vi.fn()),
+      onClose: vi.fn(() => vi.fn()),
+    });
+
+    const reloadStream = makeStream();
+    openPluginPanelStream.mockResolvedValueOnce(reloadStream);
+    const { frame: reloadFrame } = await renderPanel();
+    await act(async () => {
+      request(reloadFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 91, method: 'plugin.openStream', stream: 'settings-live' });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    const reloadChannel = SettingsTestMessageChannel.instances[0]!;
+    await act(async () => { reloadFrame.dispatchEvent(new Event('load')); });
+    expect(reloadStream.close).toHaveBeenCalledTimes(1);
+    expect(reloadChannel.port1.close).toHaveBeenCalledTimes(1);
+    expect(reloadChannel.port2.close).toHaveBeenCalledTimes(1);
+
+    let finish!: (stream: ReturnType<typeof makeStream>) => void;
+    openPluginPanelStream.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { frame: oldFrame } = await renderPanel();
+    await act(async () => {
+      request(oldFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 92, method: 'plugin.openStream', stream: 'settings-live' });
+    });
+    const pendingChannel = SettingsTestMessageChannel.instances[1]!;
+    const pendingSignal = (openPluginPanelStream.mock.calls[1]?.[2] as { signal?: AbortSignal }).signal;
+    expect(pendingSignal?.aborted).toBe(false);
+    const { root, queryClient } = renderings.get(oldFrame)!;
+    connectionBag.scopeId = 'scope-b';
+    await act(async () => { root.render(settingsPanelElement(queryClient)); });
+    expect(pendingChannel.port1.close).toHaveBeenCalledTimes(1);
+    expect(pendingChannel.port2.close).toHaveBeenCalledTimes(1);
+    expect(pendingSignal?.aborted).toBe(true);
+    const stale = makeStream();
+    await act(async () => { finish(stale); await Promise.resolve(); });
+    expect(stale.close).toHaveBeenCalledTimes(1);
+
+    const unmountStream = makeStream();
+    openPluginPanelStream.mockResolvedValueOnce(unmountStream);
+    const { frame: unmountFrame } = await renderPanel();
+    await act(async () => {
+      request(unmountFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 93, method: 'plugin.openStream', stream: 'settings-live' });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    const unmountChannel = SettingsTestMessageChannel.instances[2]!;
+    const unmountRoot = renderings.get(unmountFrame)!.root;
+    await act(async () => { unmountRoot.unmount(); });
+    roots.splice(roots.indexOf(unmountRoot), 1);
+    expect(unmountStream.close).toHaveBeenCalledTimes(1);
+    expect(unmountChannel.port1.close).toHaveBeenCalledTimes(1);
+    expect(unmountChannel.port2.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts pending streams immediately on iframe reload and unmount before opens resolve', async () => {
+    const makeStream = () => ({
+      result: true,
+      sendBinary: vi.fn(() => true),
+      sendText: vi.fn(() => true),
+      close: vi.fn(),
+      onBinary: vi.fn(() => vi.fn()),
+      onText: vi.fn(() => vi.fn()),
+      onClose: vi.fn(() => vi.fn()),
+    });
+    let finishReload!: (stream: ReturnType<typeof makeStream>) => void;
+    openPluginPanelStream.mockReturnValueOnce(new Promise((resolve) => { finishReload = resolve; }));
+    const { frame: reloadFrame } = await renderPanel();
+    await act(async () => {
+      request(reloadFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 94, method: 'plugin.openStream', stream: 'settings-live' });
+    });
+    const reloadSignal = (openPluginPanelStream.mock.calls[0]?.[2] as { signal?: AbortSignal }).signal;
+    expect(reloadSignal?.aborted).toBe(false);
+    await act(async () => { reloadFrame.dispatchEvent(new Event('load')); });
+    expect(reloadSignal?.aborted).toBe(true);
+    const reloadStale = makeStream();
+    await act(async () => { finishReload(reloadStale); await Promise.resolve(); });
+    expect(reloadStale.close).toHaveBeenCalledTimes(1);
+
+    let finishUnmount!: (stream: ReturnType<typeof makeStream>) => void;
+    openPluginPanelStream.mockReturnValueOnce(new Promise((resolve) => { finishUnmount = resolve; }));
+    const { frame: unmountFrame } = await renderPanel();
+    await act(async () => {
+      request(unmountFrame, { channel: 'kiki.panel.v1', kind: 'request', id: 95, method: 'plugin.openStream', stream: 'settings-live' });
+    });
+    const unmountSignal = (openPluginPanelStream.mock.calls[1]?.[2] as { signal?: AbortSignal }).signal;
+    expect(unmountSignal?.aborted).toBe(false);
+    const unmountRoot = renderings.get(unmountFrame)!.root;
+    await act(async () => { unmountRoot.unmount(); });
+    roots.splice(roots.indexOf(unmountRoot), 1);
+    expect(unmountSignal?.aborted).toBe(true);
+    const unmountStale = makeStream();
+    await act(async () => { finishUnmount(unmountStale); await Promise.resolve(); });
+    expect(unmountStale.close).toHaveBeenCalledTimes(1);
   });
 });
