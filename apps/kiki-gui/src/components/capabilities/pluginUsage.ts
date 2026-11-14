@@ -46,12 +46,21 @@ export interface UsageScope {
 }
 
 /** Explicit workspace selection wins; a workspace alone never guesses a bridge session. */
-export function panelScopeFrom(params: URLSearchParams): { readonly target?: PluginUsageTarget; readonly sessionId?: string } {
+export function panelScopeFrom(
+  params: URLSearchParams,
+  fallback?: { readonly workspaceId?: string; readonly sessionId?: string },
+): { readonly target?: PluginUsageTarget; readonly sessionId?: string } {
   const workspaceId = params.get('workspace');
   if (workspaceId !== null && workspaceId !== '') return { target: { workspace_id: workspaceId }, sessionId: undefined };
   const requestedSession = params.get('session');
-  const sessionId = requestedSession === null || requestedSession === '' ? undefined : requestedSession;
-  return { target: sessionId === undefined ? undefined : { session_id: sessionId }, sessionId };
+  const explicitSessionId = requestedSession === null || requestedSession === '' ? undefined : requestedSession;
+  if (explicitSessionId !== undefined) return { target: { session_id: explicitSessionId }, sessionId: explicitSessionId };
+  const fallbackSessionId = fallback?.sessionId !== undefined && fallback.sessionId !== '' ? fallback.sessionId : undefined;
+  const fallbackWorkspaceId = fallback?.workspaceId !== undefined && fallback.workspaceId !== '' ? fallback.workspaceId : undefined;
+  if (fallbackWorkspaceId !== undefined) {
+    return { target: { workspace_id: fallbackWorkspaceId }, sessionId: fallbackSessionId };
+  }
+  return { target: fallbackSessionId === undefined ? undefined : { session_id: fallbackSessionId }, sessionId: fallbackSessionId };
 }
 
 /**

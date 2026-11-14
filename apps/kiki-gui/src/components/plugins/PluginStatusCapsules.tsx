@@ -53,7 +53,7 @@ export function PluginStatusCapsules({
       role="group"
       aria-label={t('pluginSlot.statusAria')}
       data-plugin-status-capsules
-      className="flex min-w-0 shrink items-center gap-0.5 overflow-hidden @max-[22rem]/toolbar:hidden"
+      className="flex min-w-0 shrink items-center gap-0.5 overflow-hidden @max-[32rem]/toolbar:hidden"
     >
       {capsules.map((capsule) => {
         const key = `${capsule.pluginId}:${capsule.id}`;
@@ -75,11 +75,11 @@ export function PluginStatusCapsules({
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_TONE_CLASSES[capsule.dotTone]}`}
               />
             )}
-            <span className="truncate text-[12px] leading-4 text-ink-soft">{label}</span>
+            <span className="min-w-0 truncate text-[12px] leading-4 text-ink-soft">{label}</span>
             {capsule.valueText !== undefined && capsule.valueText !== '' ? (
               <span
                 data-plugin-capsule-value
-                className="max-w-28 shrink-0 truncate font-mono text-[11.5px] leading-4 text-ink-faint tabular-nums"
+                className="max-w-28 shrink-0 truncate font-mono text-[11.5px] leading-4 text-ink-faint tabular-nums @max-[38rem]/toolbar:hidden"
               >
                 {capsule.valueText}
               </span>

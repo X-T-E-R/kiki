@@ -539,6 +539,147 @@ export function mediaFromTextPresentation(presentation: TextPresentation | undef
   });
 }
 
+function sanitizeNoticeAttachmentName(name: string): string {
+  let cleaned = name
+    .replaceAll(/[\\/:*?"<>|]/g, '_')
+    .replaceAll(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/^\.+/, '')
+    .trim()
+    .replace(/[ .]+$/u, '')
+    .slice(0, 100);
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(cleaned)) cleaned = `_${cleaned}`;
+  return cleaned.length > 0 ? cleaned : 'attachment';
+}
+
+function attachmentBasename(path: string): string {
+  const index = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return index >= 0 ? path.slice(index + 1) : path;
+}
+
+function stemOfAttachmentName(name: string): string {
+  return name.replace(/\.[^./\\]*$/u, '');
+}
+
+function mediaFamilyOfMime(mime: string | undefined): 'image' | 'video' | 'audio' | undefined {
+  if (mime === undefined) return undefined;
+  const lower = mime.toLowerCase();
+  if (lower.startsWith('image/')) return 'image';
+  if (lower.startsWith('video/')) return 'video';
+  if (lower.startsWith('audio/')) return 'audio';
+  return undefined;
+}
+
+function matchesAttachmentFileId(fileId: string | undefined, basename: string): boolean {
+  if (fileId === undefined || fileId === '' || fileId.startsWith('inline:') || fileId.startsWith('inline-content:') || fileId.startsWith('blobref:')) {
+    return false;
+  }
+  if (basename.startsWith(`${fileId}-`) || basename === `${fileId}.wav`) return true;
+  const wavSafeId = fileId.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 120) || 'media';
+  return basename === `${wavSafeId}.wav`;
+}
+
+function namesMatchAttachment(itemName: string | undefined, noticeName: string | undefined): boolean {
+  if (itemName === undefined || noticeName === undefined) return false;
+  const left = sanitizeNoticeAttachmentName(itemName).toLowerCase();
+  const right = sanitizeNoticeAttachmentName(noticeName).toLowerCase();
+  return left === right || stemOfAttachmentName(left) === stemOfAttachmentName(right);
+}
+
+/**
+ * Fold attachment presentation spans into existing structured media refs when
+ * they describe the materialized copy of the same image/video/audio/file part,
+ * preserving standalone file uploads and deduplicating repeated paths.
+ */
+export function mergeMediaWithPresentation(
+  media: readonly MediaRef[] | undefined,
+  presentation: TextPresentation | undefined,
+): readonly MediaRef[] {
+  const notices = mediaFromTextPresentation(presentation);
+  if (notices.length === 0) return media ?? [];
+  const items: MediaRef[] = [...(media ?? [])];
+  const claimedPrimary = new Set<number>();
+  const claimedAudioWav = new Set<number>();
+  const seenStandalonePaths = new Set<string>();
+  const standalone: MediaRef[] = [];
+
+  for (const item of items) {
+    if (item.path !== undefined && item.path !== '') seenStandalonePaths.add(item.path);
+  }
+
+  for (const notice of notices) {
+    const basename = notice.path === undefined ? '' : attachmentBasename(notice.path);
+    const family = mediaFamilyOfMime(notice.mime);
+    const isWavNotice = notice.mime?.toLowerCase() === 'audio/wav' || basename.toLowerCase().endsWith('.wav');
+
+    let targetIndex = items.findIndex((item) => matchesAttachmentFileId(item.fileId, basename));
+
+    if (targetIndex < 0 && family !== undefined) {
+      targetIndex = items.findIndex((item, index) => {
+        const claimSet = family === 'audio' && isWavNotice ? claimedAudioWav : claimedPrimary;
+        if (claimSet.has(index)) return false;
+        const itemMatchesFamily =
+          item.kind === family ||
+          (item.kind === 'file' && item.detail !== undefined && (item.mime === undefined || mediaFamilyOfMime(item.mime) === family));
+        return itemMatchesFamily && namesMatchAttachment(item.name, notice.name);
+      });
+
+      if (targetIndex < 0) {
+        const candidates = items.flatMap((item, index) => {
+          const claimSet = family === 'audio' && isWavNotice ? claimedAudioWav : claimedPrimary;
+          if (claimSet.has(index)) return [];
+          const unnamedCandidate =
+            (item.kind === family && item.name === undefined) ||
+            (item.kind === 'file' && item.detail !== undefined && item.name === undefined && item.mime === undefined);
+          return unnamedCandidate ? [index] : [];
+        });
+        if (candidates.length === 1) targetIndex = candidates[0]!;
+      }
+    }
+
+    if (targetIndex < 0) {
+      targetIndex = items.findIndex((item, index) =>
+        !claimedPrimary.has(index) &&
+        item.kind === 'file' &&
+        namesMatchAttachment(item.name, notice.name) &&
+        (item.size === undefined || notice.size === undefined || item.size === notice.size),
+      );
+    }
+
+    if (targetIndex >= 0) {
+      const existing = items[targetIndex]!;
+      const resolvedKind =
+        existing.kind === 'file' && existing.detail !== undefined && family !== undefined
+          ? family
+          : existing.kind;
+      if (resolvedKind === 'audio' && isWavNotice && claimedPrimary.has(targetIndex)) {
+        claimedAudioWav.add(targetIndex);
+      } else {
+        claimedPrimary.add(targetIndex);
+      }
+      const keepCanonicalWithoutHostPath = existing.fileId !== undefined || existing.blobHash !== undefined || existing.detail !== undefined;
+      const preferExistingMeta = resolvedKind === 'audio' && isWavNotice && existing.mime !== undefined && existing.mime.toLowerCase() !== 'audio/wav';
+      items[targetIndex] = {
+        ...existing,
+        kind: resolvedKind,
+        name: existing.name ?? notice.name,
+        mime: preferExistingMeta ? existing.mime : (existing.mime ?? notice.mime),
+        size: preferExistingMeta ? (existing.size ?? notice.size) : (existing.size ?? notice.size),
+        path: keepCanonicalWithoutHostPath ? existing.path : (existing.path ?? notice.path),
+      };
+      if (notice.path !== undefined && notice.path !== '') seenStandalonePaths.add(notice.path);
+      continue;
+    }
+
+    if (notice.path !== undefined && notice.path !== '') {
+      if (seenStandalonePaths.has(notice.path)) continue;
+      seenStandalonePaths.add(notice.path);
+    }
+    standalone.push(notice);
+  }
+
+  return [...items, ...standalone];
+}
+
 function contentPartsTextPresentation(
   content: Message['content'],
   contentRefs?: readonly ContentRef[],
@@ -578,5 +719,5 @@ export function projectMessageContent(
     if (part.type === 'text') parts.push(part.text);
   }
   const presentation = contentPartsTextPresentation(content, contentRefs);
-  return { text: parts.join('\n'), presentation, media: [...mediaFromContentParts(content), ...mediaFromTextPresentation(presentation)] };
+  return { text: parts.join('\n'), presentation, media: mergeMediaWithPresentation(mediaFromContentParts(content), presentation) };
 }

@@ -634,6 +634,43 @@ describe('preview optimization fallback', () => {
     expect(mocks.readHostFileBytes).not.toHaveBeenCalled();
     expect(container.querySelector('[data-media-broken="read"]')).not.toBeNull();
   });
+
+  it('prefers canonical session media over a deleted temp host path and skips deferred placeholder when blobHash or fileId is already present', async () => {
+    const hash = 'e'.repeat(64);
+    mocks.readHostMediaPreviewBytes.mockRejectedValue(new ApiError({ code: 40402, msg: 'not found', data: null }));
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session">
+        <MediaPartList
+          media={[
+            {
+              kind: 'image',
+              fileId: 'f_canonical',
+              path: 'C:/TODO/.tmp/deleted-shot.png',
+              mime: 'image/png',
+              name: 'deleted-shot.png',
+            },
+            {
+              kind: 'image',
+              blobHash: hash,
+              path: 'C:/TODO/.tmp/mobile_390x844.png',
+              mime: 'image/png',
+              detail: { agentId: 'main', attachmentId: 'f1.att1' },
+            },
+          ]}
+        />
+      </MediaPreviewProvider>,
+    );
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    expect(container.querySelector('[data-media-deferred]')).toBeNull();
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
+    expect(mocks.readSessionMediaPreviewBytes.mock.calls.map(([, fileId]) => fileId)).toEqual([
+      'f_canonical',
+      `blobref:main:${hash}`,
+    ]);
+  });
 });
 
 describe('sequential bounded previews', () => {

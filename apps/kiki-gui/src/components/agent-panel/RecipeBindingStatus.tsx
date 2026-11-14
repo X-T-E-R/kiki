@@ -26,8 +26,8 @@ export function RecipeBindingStatus({ sessionId, agentId, sourceRevision = '' }:
   return <>
     <button type="button" data-recipe-binding-status aria-label={t('composer.recipeBindingAria', { name })}
       title={t('composer.recipeBindingTitle', { name })} onClick={() => { setOpen(true); }}
-      className="flex h-7 min-w-0 max-w-44 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none">
-      <span className="shrink-0 text-ink-faint">{t('composer.recipeBindingLabel')}</span>
+      className="flex h-7 min-w-0 max-w-40 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none">
+      <span className="shrink-0 text-ink-faint @max-[42rem]/toolbar:sr-only">{t('composer.recipeBindingLabel')}</span>
       <span className="min-w-0 truncate font-medium text-ink">{name}</span>
     </button>
     {open ? <PromptEffectiveDrawer sessionId={query.session_id} agentId={query.agent_id} onClose={() => { setOpen(false); }} /> : null}

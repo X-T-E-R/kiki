@@ -67,9 +67,17 @@ describe('panel route identity', () => {
     expect(panelScopeFrom(new URLSearchParams('workspace=&session=sess-a'))).toEqual({ target: { session_id: 'sess-a' }, sessionId: 'sess-a' });
   });
 
-  it('leaves untargeted and empty routes unscoped without consulting last session', () => {
+  it('leaves untargeted and empty routes unscoped without consulting last session unless page fallback is provided', () => {
     expect(panelScopeFrom(new URLSearchParams())).toEqual({ target: undefined, sessionId: undefined });
     expect(panelScopeFrom(new URLSearchParams('workspace=&session='))).toEqual({ target: undefined, sessionId: undefined });
+    expect(panelScopeFrom(new URLSearchParams('plugin=kiki-phone'), { workspaceId: 'ws-a', sessionId: 'sess-a' })).toEqual({
+      target: { workspace_id: 'ws-a' },
+      sessionId: 'sess-a',
+    });
+    expect(panelScopeFrom(new URLSearchParams('plugin=kiki-phone'), { workspaceId: '', sessionId: 'sess-a' })).toEqual({
+      target: { session_id: 'sess-a' },
+      sessionId: 'sess-a',
+    });
   });
 });
 

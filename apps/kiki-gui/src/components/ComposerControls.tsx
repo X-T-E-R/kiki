@@ -1715,7 +1715,7 @@ export function PermissionSelect({
       >
         <Icon name="gate" size={14} className={danger ? '' : STATUS_SEGMENT_ICON_CLASS} />
         {/* Narrow composers keep the shield; the mode name stays in the tooltip. */}
-        <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">{t(current.labelKey)}</span>
+        <span className="min-w-0 truncate @max-[28rem]/toolbar:sr-only">{t(current.labelKey)}</span>
       </button>
       {open ? (
         <div data-permission-panel className={`anim-enter ${COMPOSER_PANEL_END} w-72 p-1 ${POPOVER_SURFACE_CLASS}`}>

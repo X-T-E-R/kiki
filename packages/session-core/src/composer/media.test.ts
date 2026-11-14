@@ -274,7 +274,7 @@ describe('toolResultMedia', () => {
     expect(toolResultMedia(references, parts, 'agent-a')).toHaveLength(4);
     expect(toolResultMedia(references, parts, 'agent-a', true)).toEqual([
       { ...references[0], url: parts[0]!.url, path: parts[0]!.path },
-      { ...references[1], blobHash: parts[1]!.blobHash, path: parts[1]!.path },
+      { ...references[1], detail: undefined, blobHash: parts[1]!.blobHash, path: parts[1]!.path },
     ]);
     expect(toolResultMedia(references, [parts[0]!], 'agent-a', true)).toHaveLength(3);
     expect(toolResultMedia(references, [parts[0]!, { ...parts[1]!, kind: 'video' }], 'agent-a', true)).toHaveLength(4);
@@ -283,6 +283,14 @@ describe('toolResultMedia', () => {
     expect(toolResultMedia([{ ...canonical, fileId: `blobref:agent-b:${hash}` }], [part], 'agent-a', true)).toHaveLength(2);
     expect(toolResultMedia([{ kind: 'image', url: 'data:image/png;base64,AAA' }], [{ kind: 'image', url: 'data:image/png;base64,BBB' }], 'agent-a', true)).toHaveLength(2);
     expect(toolResultMedia([{ kind: 'image', detail: { agentId: 'agent-b', attachmentId: 'frame.att1' } }], [parts[0]!], 'agent-a', true)).toHaveLength(2);
+  });
+
+  it('pairs an omitted attachment placeholder (kind: file, detail) with its tool output media part and clears detail once loadable', () => {
+    const omitted = { kind: 'file' as const, detail: { agentId: 'main', attachmentId: 'f1.att1' } };
+    const imagePart = { kind: 'image' as const, path: 'C:/TODO/.tmp/mobile_390x844.png', mime: 'image/png', blobHash: hash };
+    expect(toolResultMedia([omitted], [imagePart], 'main', true)).toEqual([
+      { kind: 'image', path: imagePart.path, mime: 'image/png', blobHash: hash, detail: undefined },
+    ]);
   });
 
   it('pairs bounded attachment and frame-content handles only for the same agent and image revision', () => {

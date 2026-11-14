@@ -180,7 +180,16 @@ export function toolResultMedia(
       const item = references[index]!;
       const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
       const referenceHash = item.blobHash ?? blob?.hash;
-      return item.kind === part.kind &&
+      const omittedTypedPlaceholder =
+        item.kind === 'file' &&
+        item.detail !== undefined &&
+        item.fileId === undefined &&
+        item.blobHash === undefined &&
+        item.url === undefined &&
+        item.mime === undefined &&
+        item.name === undefined &&
+        (part.kind === 'image' || part.kind === 'video' || part.kind === 'audio');
+      return (item.kind === part.kind || omittedTypedPlaceholder) &&
         (blob?.kind !== 'agent' || agentId === undefined || blob.agentId === agentId) &&
         (item.detail === undefined || agentId === undefined || item.detail.agentId === agentId) &&
         (referenceHash === undefined || part.blobHash === undefined || referenceHash === part.blobHash) &&
@@ -191,13 +200,20 @@ export function toolResultMedia(
     ? references.map((item, index): MediaRef => {
       const part = parts[index];
       if (part === undefined) return item;
+      const url = item.url ?? part.url;
+      const fileId = item.fileId ?? part.fileId;
+      const blobHash = item.blobHash ?? part.blobHash;
+      const hasLoadablePart = part.url !== undefined || part.fileId !== undefined || part.blobHash !== undefined;
       return {
         ...part, ...item,
-        url: item.url ?? part.url,
+        kind: item.kind === 'file' && item.detail !== undefined && (part.kind === 'image' || part.kind === 'video' || part.kind === 'audio')
+          ? part.kind
+          : item.kind,
+        url,
         path: item.path ?? part.path,
-        fileId: item.fileId ?? part.fileId,
-        blobHash: item.blobHash ?? part.blobHash,
-        detail: item.detail ?? part.detail,
+        fileId,
+        blobHash,
+        detail: hasLoadablePart ? undefined : (item.detail ?? part.detail),
         name: item.name ?? part.name,
         mime: item.mime ?? part.mime,
         size: item.size ?? part.size,
