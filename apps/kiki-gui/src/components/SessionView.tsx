@@ -409,6 +409,7 @@ function Header({
   sidebarBadge,
   onRenameSession,
   onTogglePrivate,
+  privateBusy = false,
   onSessionAction,
   freshContextAvailable = false,
   onSideQuestion,
@@ -432,6 +433,7 @@ function Header({
   sidebarBadge?: SidebarBadge;
   onRenameSession: (title: string) => Promise<void>;
   onTogglePrivate?: () => void;
+  privateBusy?: boolean;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   freshContextAvailable?: boolean;
   onSideQuestion?: () => void;
@@ -563,6 +565,7 @@ function Header({
             onToggleTerminal={onToggleTerminal}
             onBeginRename={() => { setRenaming(true); }}
             isPrivate={session.private === true}
+            privateBusy={privateBusy}
             onTogglePrivate={session.ephemeral === true || isSubagentSession(session) ? undefined : onTogglePrivate}
             onPromptDetails={() => { setPromptDetailsOpen(true); }}
             // Below lg the header has no rail toggle (and on a phone the cwd
@@ -859,6 +862,7 @@ export function SessionActionsMenu({
   onToggleTerminal,
   onBeginRename,
   isPrivate = false,
+  privateBusy = false,
   onTogglePrivate,
   onAction,
   onSideQuestion,
@@ -876,6 +880,7 @@ export function SessionActionsMenu({
   onToggleTerminal: () => void;
   onBeginRename: () => void;
   isPrivate?: boolean;
+  privateBusy?: boolean;
   onTogglePrivate?: () => void;
   /**
    * Opens the session overview (the right rail) where the header has no
@@ -984,7 +989,8 @@ export function SessionActionsMenu({
             <button
               type="button"
               role="menuitem"
-              className={sheetItemClass}
+              disabled={privateBusy}
+              className={`${sheetItemClass} disabled:cursor-default disabled:opacity-50`}
               data-session-private
               onClick={() => {
                 setOpen(false);
@@ -1129,7 +1135,8 @@ export function SessionActionsMenu({
             <button
               type="button"
               role="menuitem"
-              className={itemClass}
+              disabled={privateBusy}
+              className={`${itemClass} disabled:cursor-default disabled:opacity-50`}
               data-session-private
               onClick={() => {
                 setOpen(false);
@@ -4031,7 +4038,28 @@ boundExecution,
   const renameSession = useCallback(
     async (title: string) => {
       try {
-        await client.updateSessionProfile(sessionId, { title });
+        const updated = await client.updateSessionProfile(sessionId, { title });
+        const mergeUpdated = (existing: Session): Session => ({
+          ...existing,
+          ...(updated !== null && typeof updated === 'object' && 'id' in updated ? updated : undefined),
+          title,
+        });
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+          old === undefined || !Array.isArray(old.pages)
+            ? old
+            : {
+                ...old,
+                pages: old.pages.map((page) => ({
+                  ...page,
+                  items: page.items.map((item) => (item.id === sessionId ? mergeUpdated(item) : item)),
+                })),
+              },
+        );
+        if (queryClient.getQueryData(['session', sessionId]) !== undefined) {
+          queryClient.setQueryData<Session>(['session', sessionId], (old) =>
+            old === undefined ? old : mergeUpdated(old),
+          );
+        }
         actionContext.refreshSessions();
       } catch (error: unknown) {
         pushToast({
@@ -4042,12 +4070,17 @@ boundExecution,
         throw error;
       }
     },
-    [client, sessionId, actionContext],
+    [client, queryClient, sessionId, actionContext],
   );
+
+  const pendingPrivacyRef = useRef(new Set<string>());
+  const [pendingPrivacy, setPendingPrivacy] = useState<ReadonlySet<string>>(() => new Set());
 
   const toggleSessionPrivate = useCallback(() => {
     const record = state.session;
-    if (record === undefined) return;
+    if (record === undefined || pendingPrivacyRef.current.has(sessionId)) return;
+    pendingPrivacyRef.current.add(sessionId);
+    setPendingPrivacy((current) => new Set(current).add(sessionId));
     const nextPrivate = record.private !== true;
     void client.updateSession(sessionId, { private: nextPrivate })
       .then((updated) => {
@@ -4062,6 +4095,11 @@ boundExecution,
                 })),
               },
         );
+        if (queryClient.getQueryData(['session', sessionId]) !== undefined) {
+          queryClient.setQueryData<Session>(['session', sessionId], (old) =>
+            old === undefined ? old : { ...old, ...updated, private: nextPrivate },
+          );
+        }
         actionContext.refreshSessions();
         void queryClient.invalidateQueries({ queryKey: ['global-search'] });
         void controller?.refreshSession();
@@ -4069,6 +4107,15 @@ boundExecution,
       })
       .catch((cause: unknown) => {
         pushToast({ tone: 'error', text: t('private.updateFailed', { detail: errorText(locale, cause) }) });
+      })
+      .finally(() => {
+        pendingPrivacyRef.current.delete(sessionId);
+        setPendingPrivacy((current) => {
+          if (!current.has(sessionId)) return current;
+          const next = new Set(current);
+          next.delete(sessionId);
+          return next;
+        });
       });
   }, [actionContext, client, controller, locale, queryClient, sessionId, state.session, t]);
 
@@ -4282,10 +4329,14 @@ boundExecution,
     [controller, resolveAssistantMessageId, t, locale],
   );
 
+  const pendingMessageForkRef = useRef(false);
+  const [forkingMessage, setForkingMessage] = useState(false);
   const handleForkMessage = useCallback(
-    (block: UserBlock | AssistantBlock) => {
-      if (controller === null) return;
-      void (async () => {
+    (block: UserBlock | AssistantBlock, seed?: SessionSeedMode): Promise<void> | undefined => {
+      if (controller === null || pendingMessageForkRef.current) return undefined;
+      pendingMessageForkRef.current = true;
+      setForkingMessage(true);
+      return (async () => {
         const messageId =
           block.kind === 'user'
             ? block.userMessageId
@@ -4295,16 +4346,21 @@ boundExecution,
           return;
         }
         // Open-tail fork: navigate only — nothing auto-runs in the copy.
-        const fork = await controller.forkFromMessage(messageId);
+        const fork = await controller.forkFromMessage(messageId, seed);
         queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
         pushToast({ tone: 'success', text: t('action.forkDoneSession') });
         void navigate(`/s/${fork.id}`);
-      })().catch((error: unknown) => {
-        pushToast({
-          tone: 'error',
-          text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+      })()
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+          });
+        })
+        .finally(() => {
+          pendingMessageForkRef.current = false;
+          setForkingMessage(false);
         });
-      });
     },
     [controller, resolveAssistantMessageId, queryClient, navigate, t, locale],
   );
@@ -4316,11 +4372,12 @@ boundExecution,
       loadEditAttachments: loadMessageEditAttachments,
       onRegenerate: handleRegenerate,
       onFork: handleForkMessage,
+      forkBusy: forkingMessage,
       canFork: composerEngine?.fork !== false,
       // Resume after a user stop re-runs the stopped reply (same path as regenerate).
       onResumeStopped: handleRegenerate,
     }),
-    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, composerEngine?.fork],
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, forkingMessage, composerEngine?.fork],
   );
 
   const forestRaw = useMemo(
@@ -5562,6 +5619,7 @@ boundExecution,
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
             onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
             onTogglePrivate={toggleSessionPrivate}
+            privateBusy={pendingPrivacy.has(sessionId)}
             onSessionAction={runSessionAction}
             freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}

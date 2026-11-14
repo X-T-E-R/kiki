@@ -28,7 +28,7 @@ import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
-import type { RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
+import type { RoomListItem, Session, SessionSeedMode, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   compactReceiptOutcome,
@@ -696,9 +696,9 @@ function CollapsedSidebarRail({
 
 export function Sidebar({
   activeSessionId,
-  sessions,
-  rooms = [],
-  sessionGroups,
+  sessions: rawSessions,
+  rooms: rawRooms = [],
+  sessionGroups: rawSessionGroups,
   sessionsQuery,
   roomsQuery,
   workspaceOptions,
@@ -793,6 +793,50 @@ export function Sidebar({
     return () => { window.removeEventListener('keydown', onKeyDown, true); };
   }, [selected.size]);
   const [renaming, setRenaming] = useState<ConversationListItem | null>(null);
+  const [renamedTitles, setRenamedTitles] = useState<ReadonlyMap<string, { readonly from: string; readonly to: string }>>(() => new Map());
+  const [justRenamed, setJustRenamed] = useState<{ readonly key: string; readonly seq: number } | null>(null);
+  const pendingPrivacyRef = useRef(new Set<string>());
+  const [pendingPrivacy, setPendingPrivacy] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (justRenamed === null) return undefined;
+    const timer = window.setTimeout(() => {
+      setJustRenamed((current) => (current?.seq === justRenamed.seq ? null : current));
+    }, 400);
+    return () => { window.clearTimeout(timer); };
+  }, [justRenamed]);
+  const sessions = useMemo(() => {
+    if (renamedTitles.size === 0) return rawSessions;
+    return rawSessions.map((entry) => {
+      const override = renamedTitles.get(`session:${entry.id}`);
+      return override !== undefined && entry.title === override.from ? { ...entry, title: override.to } : entry;
+    });
+  }, [rawSessions, renamedTitles]);
+  const rooms = useMemo(() => {
+    if (renamedTitles.size === 0) return rawRooms;
+    return rawRooms.map((entry) => {
+      const override = renamedTitles.get(`room:${entry.id}`);
+      return override !== undefined && entry.title === override.from ? { ...entry, title: override.to } : entry;
+    });
+  }, [rawRooms, renamedTitles]);
+  const sessionGroups = useMemo(() => {
+    if (renamedTitles.size === 0) return rawSessionGroups;
+    return rawSessionGroups.map((group) => ({
+      ...group,
+      items: group.items.map((item) => {
+        const override = renamedTitles.get(item.key);
+        if (override === undefined) return item;
+        if (item.kind === 'room') {
+          return item.title === override.from
+            ? { ...item, title: override.to, room: { ...item.room, title: override.to } }
+            : item;
+        }
+        return item.session.title === override.from
+          ? { ...item, title: override.to, session: { ...item.session, title: override.to } }
+          : item;
+      }),
+    }));
+  }, [rawSessionGroups, renamedTitles]);
+  const closeRenameEditor = useCallback(() => { setRenaming(null); }, []);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [confirmArchiveWorktree, setConfirmArchiveWorktree] = useState<Session | null>(null);
   const [deletingRoom, setDeletingRoom] = useState<Extract<ConversationListItem, { kind: 'room' }> | null>(null);
@@ -1042,6 +1086,9 @@ export function Sidebar({
 
   const togglePrivate = (session: Session) => {
     setMenu(null);
+    if (pendingPrivacyRef.current.has(session.id)) return;
+    pendingPrivacyRef.current.add(session.id);
+    setPendingPrivacy((current) => new Set(current).add(session.id));
     setActionError(null);
     const nextPrivate = session.private !== true;
     void client
@@ -1058,12 +1105,26 @@ export function Sidebar({
                 })),
               },
         );
+        if (queryClient.getQueryData(['session', session.id]) !== undefined) {
+          queryClient.setQueryData<Session>(['session', session.id], (old) =>
+            old === undefined ? old : { ...old, ...updated, private: nextPrivate },
+          );
+        }
         refreshSessions();
         void queryClient.invalidateQueries({ queryKey: ['global-search'] });
         pushToast({ tone: 'success', text: t(nextPrivate ? 'private.madeToast' : 'private.exitedToast') });
       })
       .catch((error: unknown) => {
         setActionError(t('private.updateFailed', { detail: errorText(locale, error) }));
+      })
+      .finally(() => {
+        pendingPrivacyRef.current.delete(session.id);
+        setPendingPrivacy((current) => {
+          if (!current.has(session.id)) return current;
+          const next = new Set(current);
+          next.delete(session.id);
+          return next;
+        });
       });
   };
 
@@ -1123,7 +1184,31 @@ export function Sidebar({
     return () => { clearTimeout(timer); };
   }, [actionNotice]);
 
-  const runAction = (session: Session, action: 'fork' | 'undo' | 'compact' | 'export') => {
+  const runForkSession = (session: Session, seed: SessionSeedMode = 'verbatim') => {
+    setMenu(null);
+    setActionError(null);
+    setActionNotice(null);
+    void forkSession(actionContext, session, { seed }).catch((error: unknown) => {
+      setActionError(t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }));
+    });
+  };
+
+  const runCreateBranch = (session: Session, seed: SessionSeedMode = 'fresh') => {
+    setMenu(null);
+    setActionError(null);
+    setActionNotice(null);
+    void client
+      .createBranch(session.id, { seed, tools_locked: false })
+      .then((created) => {
+        refreshSessions();
+        void navigate(`/s/${session.id}/agent/${encodeURIComponent(created.agent_id)}`);
+      })
+      .catch((error: unknown) => {
+        setActionError(t('branch.failed', { detail: sessionActionErrorText(locale, error) }));
+      });
+  };
+
+  const runAction = (session: Session, action: 'undo' | 'compact' | 'export') => {
     setMenu(null);
     if (action === 'undo') {
       setConfirmUndo(session);
@@ -1131,11 +1216,7 @@ export function Sidebar({
     }
     setActionError(null);
     setActionNotice(null);
-    if (action === 'fork') {
-      void forkSession(actionContext, session).catch((error: unknown) => {
-        setActionError(t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }));
-      });
-    } else if (action === 'export') {
+    if (action === 'export') {
       void exportSessionArchive(actionContext, session)
         .then((saved) => {
           if (saved) setActionNotice(t('action.exportDone', { title: resolveTitle(sessionLabel(session, untitled)) }));
@@ -1929,6 +2010,7 @@ export function Sidebar({
                         toggle && current?.item.key === item.key ? null : { item, x, y });
                     }}
                     onTogglePin={() => { toggleRoomPin(item); }}
+                    justRenamed={justRenamed?.key === item.key}
                     archiving={pendingArchives.has(item.key)}
                     archiveError={archiveErrors.get(item.key)}
                   />
@@ -1963,6 +2045,7 @@ export function Sidebar({
                   }}
                   onTogglePin={() => { togglePin(session); }}
                   seen={seen}
+                  justRenamed={justRenamed?.key === item.key}
                   archiving={pendingArchives.has(item.key)}
                   archiveError={archiveErrors.get(item.key)}
                 />
@@ -2137,10 +2220,13 @@ export function Sidebar({
           }}
           onTogglePin={() => { togglePin(menuItem.session); }}
           onTogglePrivate={() => { togglePrivate(menuItem.session); }}
+          onCreateBranch={(seed) => { runCreateBranch(menuItem.session, seed); }}
+          onForkSession={(seed) => { runForkSession(menuItem.session, seed); }}
           onAction={(action) => { runAction(menuItem.session, action); }}
           onArchive={() => { archive(menuItem.session, menuItem.key); }}
           onRestore={() => { restore(menuItem.session); }}
           archiving={pendingArchives.has(menuItem.key)}
+          privateBusy={pendingPrivacy.has(menuItem.id)}
           threadCommsEnabled={threadCommsEnabled}
           onJoinRoom={() => {
             const ids = selected.has(menuItem.id) && selected.size >= 2 ? selected : new Set([menuItem.id]);
@@ -2183,18 +2269,58 @@ export function Sidebar({
           key={renaming.id}
           item={renaming}
           heading={renaming.kind === 'room' ? t('room.renameTitle') : t('rename.title')}
+          untitled={untitled}
+          resolveTitle={resolveTitle}
           onSubmit={async (title) => {
-            if (renaming.kind === 'room') await roomApi.updateRoom(renaming.id, { name: title });
+            const target = renaming;
+            if (target.kind === 'room') {
+              const updated = await roomApi.updateRoom(target.id, { name: title });
+              queryClient.setQueryData<RoomListItem[]>(ROOM_ITEMS_QUERY_KEY, (old) =>
+                old === undefined ? old : old.map((room) => (room.id === target.id ? { ...room, title } : room)),
+              );
+              if (updated !== undefined && updated !== null && typeof updated === 'object' && 'id' in updated) {
+                queryClient.setQueryData(roomQueryKey(target.id), { ...updated, name: title });
+              } else if (queryClient.getQueryData(roomQueryKey(target.id)) !== undefined) {
+                queryClient.setQueryData(roomQueryKey(target.id), (old: unknown) =>
+                  old !== null && typeof old === 'object' ? { ...old, name: title } : old,
+                );
+              }
+              setRenamedTitles((prev) => new Map(prev).set(target.key, { from: target.title, to: title }));
+              setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
+              setRenaming(null);
+              refreshRooms();
+              return;
+            }
             // A bare title patch omits `metadata`, so the server leaves the
             // stored custom document (and with it any client-local pin) untouched.
-            else await client.updateSessionProfile(renaming.id, { title });
-          }}
-          onClose={() => { setRenaming(null); }}
-          onRenamed={() => {
+            const updated = await client.updateSessionProfile(target.id, { title });
+            const mergeUpdated = (existing: Session): Session => ({
+              ...existing,
+              ...(updated !== null && typeof updated === 'object' && 'id' in updated ? updated : undefined),
+              title,
+            });
+            queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+              old === undefined || !Array.isArray(old.pages)
+                ? old
+                : {
+                    ...old,
+                    pages: old.pages.map((page) => ({
+                      ...page,
+                      items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
+                    })),
+                  },
+            );
+            if (queryClient.getQueryData(['session', target.id]) !== undefined) {
+              queryClient.setQueryData<Session>(['session', target.id], (old) =>
+                old === undefined ? old : mergeUpdated(old),
+              );
+            }
+            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: target.session.title, to: title }));
+            setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
             setRenaming(null);
             refreshSessions();
-            refreshRooms();
           }}
+          onClose={closeRenameEditor}
         />
       ) : null}
       {deletingRoom !== null ? (
@@ -2277,6 +2403,7 @@ function SessionRow({
   temporary = false,
   selected = false,
   onToggleSelect,
+  justRenamed = false,
   archiving = false,
   archiveError,
 }: {
@@ -2307,6 +2434,8 @@ function SessionRow({
   selected?: boolean;
   /** Ctrl/⌘-click toggles selection; absent for rows that cannot join a room. */
   onToggleSelect?: () => void;
+  /** Brief confirmation tick shown right after an inline rename lands. */
+  justRenamed?: boolean;
   /** Its archive is in flight: the row keeps its place and says so. */
   archiving?: boolean;
   /** The last archive refusal, said in place until the next attempt. */
@@ -2463,6 +2592,17 @@ function SessionRow({
               </span>
             ) : null}
             <span className="min-w-0 flex-1 truncate">{label}</span>
+            {justRenamed ? (
+              <span
+                role="status"
+                data-rename-saved
+                aria-label={t('st.savedTick')}
+                title={t('st.savedTick')}
+                className="anim-enter inline-flex shrink-0 items-center text-success"
+              >
+                <Icon name="check" size={12} />
+              </span>
+            ) : null}
             {/* Trailing slot: the time, replaced by the row actions on hover /
               * focus. Wide enough for the two 28px actions so the title never
               * slides under them. */}
@@ -2598,6 +2738,7 @@ function RoomConversationRow({
   onOpen,
   onMenu,
   onTogglePin,
+  justRenamed = false,
   archiving = false,
   archiveError,
 }: {
@@ -2613,6 +2754,8 @@ function RoomConversationRow({
   onOpen: () => void;
   onMenu: (x: number, y: number, toggle: boolean) => void;
   onTogglePin: () => void;
+  /** Brief confirmation tick shown right after an inline rename lands. */
+  justRenamed?: boolean;
   /** Its archive is in flight: the row keeps its place and says so, in the
       same words a thread row uses. */
   archiving?: boolean;
@@ -2704,6 +2847,17 @@ function RoomConversationRow({
             {/* The one kind glyph: a room is a channel, so the channel mark. */}
             <span data-room-kind aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
             <span className="min-w-0 flex-1 truncate">{item.title}</span>
+            {justRenamed ? (
+              <span
+                role="status"
+                data-rename-saved
+                aria-label={t('st.savedTick')}
+                title={t('st.savedTick')}
+                className="anim-enter inline-flex shrink-0 items-center text-success"
+              >
+                <Icon name="check" size={12} />
+              </span>
+            ) : null}
             <span
               data-room-time
               className={`min-w-13 shrink-0 text-right text-[12px] leading-4 font-normal text-ink-faint tabular-nums ${
@@ -3744,7 +3898,11 @@ function SidebarFilterMenu({
   );
 }
 
-type SessionContentAction = 'fork' | 'undo' | 'compact' | 'export';
+type SessionContentAction = 'undo' | 'compact' | 'export';
+type SessionSubmenuKey = 'branch' | 'fork' | 'more';
+
+const BRANCH_SEED_MODES: readonly SessionSeedMode[] = ['fresh', 'compact', 'verbatim'];
+const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
 
 interface SessionMenuProps {
   session: Session;
@@ -3761,6 +3919,8 @@ interface SessionMenuProps {
   onRename: () => void;
   onTogglePin: () => void;
   onTogglePrivate: () => void;
+  onCreateBranch: (seed: SessionSeedMode) => void;
+  onForkSession: (seed: SessionSeedMode) => void;
   onAction: (action: SessionContentAction) => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -3769,25 +3929,69 @@ interface SessionMenuProps {
   onJoinRoom: () => void;
   /** Its archive is in flight: only the entries that would race it go quiet. */
   archiving?: boolean;
+  /** Its privacy toggle is in flight: prevents concurrent conflicting toggles. */
+  privateBusy?: boolean;
 }
 
 /**
- * The session row's menu. Its first level is list management only: where the
- * row sits and what it is called, its link, adding it to the open
- * conversation or to a room, its folder, and whether it stays in the list.
- * What acts on the conversation's content — fork, export, compact, undo —
- * belongs to the conversation's own ⋯. A desktop keeps those four one level
- * down here, under More, because acting on a conversation without opening it
- * is a real desktop use; phone mode shows the first level only, as a bottom
- * sheet, and the four stay one tap away inside the conversation.
+ * The session row's menu. Its first level holds list management plus direct
+ * branch and fork entry points (each expanding into the three context-seed
+ * modes). Export, compact, and undo remain one level down under More on
+ * desktop; phone mode shows the first level in a bottom sheet and steps into
+ * the seed-mode choices when branch or fork is tapped.
  */
 function SessionMenu(props: SessionMenuProps) {
   const { t } = useI18n();
+  const [sheetSubmenu, setSheetSubmenu] = useState<'branch' | 'fork' | null>(null);
   if (!usePhoneMode()) return <SessionPointerMenu {...props} />;
+  const modes = sheetSubmenu === 'branch' ? BRANCH_SEED_MODES : FORK_SEED_MODES;
   return (
-    <ActionSheet ariaLabel={t('sidebar.sessionActionsFor', { title: props.title })} overlayId="session-menu"
-      dataAttribute="data-session-menu" onClose={props.onClose}>
-      <SessionMenuEntries {...props} phone />
+    <ActionSheet
+      ariaLabel={t('sidebar.sessionActionsFor', { title: props.title })}
+      overlayId="session-menu"
+      dataAttribute="data-session-menu"
+      onClose={() => {
+        setSheetSubmenu(null);
+        props.onClose();
+      }}
+    >
+      {sheetSubmenu === null ? (
+        <SessionMenuEntries
+          {...props}
+          phone
+          onOpenSeedSubmenu={(kind) => { setSheetSubmenu(kind); }}
+        />
+      ) : (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="seed-back"
+            className={`${ROW_MENU_ITEM} text-ink-soft`}
+            onClick={() => { setSheetSubmenu(null); }}
+          >
+            {t(sheetSubmenu === 'branch' ? 'menu.branch' : 'menu.fork')}
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          {modes.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="menuitem"
+              data-menu-item={`${sheetSubmenu}-${mode}`}
+              className={ROW_MENU_ITEM}
+              onClick={() => {
+                const kind = sheetSubmenu;
+                setSheetSubmenu(null);
+                if (kind === 'branch') props.onCreateBranch(mode);
+                else props.onForkSession(mode);
+              }}
+            >
+              {t(`transcript.branch.seed.${mode}`)}
+            </button>
+          ))}
+        </>
+      )}
     </ActionSheet>
   );
 }
@@ -3804,15 +4008,29 @@ function SessionMenuEntries({
   onRename,
   onTogglePin,
   onTogglePrivate,
+  onCreateBranch,
+  onForkSession,
   onArchive,
   onRestore,
   threadCommsEnabled,
   onJoinRoom,
   archiving = false,
-}: SessionMenuProps & { phone: boolean }) {
+  privateBusy = false,
+  activeSubmenu = null,
+  branchRef,
+  forkRef,
+  onOpenSeedSubmenu,
+}: SessionMenuProps & {
+  phone: boolean;
+  activeSubmenu?: SessionSubmenuKey | null;
+  branchRef?: RefObject<HTMLButtonElement | null>;
+  forkRef?: RefObject<HTMLButtonElement | null>;
+  onOpenSeedSubmenu?: (kind: 'branch' | 'fork') => void;
+}) {
   const host = useHost();
   const { t } = useI18n();
   const archived = session.archived === true;
+  const canBranchOrFork = session.ephemeral !== true && !isSubagentSession(session);
   // The lightweight link is the in-app route (the protocol-level kiki:// deep
   // link is deliberately out of scope). Opening the folder rides the desktop
   // opener commands, so the browser build and a phone get the copy only.
@@ -3858,18 +4076,61 @@ function SessionMenuEntries({
           <button type="button" role="menuitem" data-menu-item="rename" className={ROW_MENU_ITEM} onClick={onRename}>
             {t('menu.rename')}
           </button>
-          {session.ephemeral === true || isSubagentSession(session) ? null : (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="private"
-              disabled={archiving}
-              className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
-              onClick={onTogglePrivate}
-            >
-              {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
-            </button>
-          )}
+          {canBranchOrFork ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="private"
+                disabled={archiving || privateBusy}
+                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
+                onClick={onTogglePrivate}
+              >
+                {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
+              </button>
+              <div className="mx-1 my-1 border-t border-hairline" />
+              <button
+                ref={branchRef}
+                type="button"
+                role="menuitem"
+                data-menu-item="branch"
+                disabled={archiving}
+                aria-haspopup={phone ? undefined : 'menu'}
+                aria-expanded={phone ? undefined : activeSubmenu === 'branch'}
+                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED} flex items-center gap-2 ${!phone && activeSubmenu === 'branch' ? 'bg-paper' : ''}`}
+                onClick={() => {
+                  if (phone && onOpenSeedSubmenu !== undefined) {
+                    onOpenSeedSubmenu('branch');
+                    return;
+                  }
+                  onCreateBranch('fresh');
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">{t('menu.branch')}</span>
+                <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+              </button>
+              <button
+                ref={forkRef}
+                type="button"
+                role="menuitem"
+                data-menu-item="fork"
+                disabled={archiving}
+                aria-haspopup={phone ? undefined : 'menu'}
+                aria-expanded={phone ? undefined : activeSubmenu === 'fork'}
+                className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED} flex items-center gap-2 ${!phone && activeSubmenu === 'fork' ? 'bg-paper' : ''}`}
+                onClick={() => {
+                  if (phone && onOpenSeedSubmenu !== undefined) {
+                    onOpenSeedSubmenu('fork');
+                    return;
+                  }
+                  onForkSession('verbatim');
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">{t('menu.fork')}</span>
+                <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+              </button>
+            </>
+          ) : null}
           <div className="mx-1 my-1 border-t border-hairline" />
           <button
             type="button"
@@ -4013,40 +4274,78 @@ function SessionPointerMenu(props: SessionMenuProps) {
     // onClose rides the ref; attach once.
   }, []);
 
-  // More: a click, Enter/Space or → opens it and moves focus in; a mouse
-  // hover opens it without taking focus, like a native submenu. ← or hovering
-  // another entry closes it; Escape closes the whole menu.
+  // Submenus (`branch`, `fork`, `more`): ArrowRight or mouse hover opens a
+  // submenu; ArrowLeft or hovering another level-1 entry closes it; Escape
+  // closes the whole menu. Clicking `More` opens its submenu, whereas clicking
+  // `Branch` or `Fork` directly invokes its default seed mode immediately.
+  const branchRef = useRef<HTMLButtonElement>(null);
+  const forkRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [moreFocus, setMoreFocus] = useState(0);
-  const openMore = (focus: boolean) => {
-    setMoreOpen(true);
-    if (focus) setMoreFocus((count) => count + 1);
+  const [activeSubmenu, setActiveSubmenu] = useState<SessionSubmenuKey | null>(null);
+  const [submenuFocus, setSubmenuFocus] = useState(0);
+  const anchorForSubmenu = (key: SessionSubmenuKey | null): HTMLButtonElement | null => {
+    if (key === 'branch') return branchRef.current;
+    if (key === 'fork') return forkRef.current;
+    if (key === 'more') return moreRef.current;
+    return null;
+  };
+  const openSubmenu = (key: SessionSubmenuKey, focus: boolean) => {
+    setActiveSubmenu(key);
+    if (focus) setSubmenuFocus((count) => count + 1);
   };
   useEffect(() => {
-    if (moreFocus > 0) submenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-  }, [moreFocus]);
-  // More is the menu's last entry, so near the bottom edge the submenu climbs
-  // to stay on screen, and near the right edge it opens to the left.
+    if (submenuFocus > 0) submenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+  }, [submenuFocus]);
+  // Clamp the active submenu against the bottom and right viewport edges.
   const [submenuPlace, setSubmenuPlace] = useState<{ top: number; left: boolean }>({ top: 0, left: false });
   useLayoutEffect(() => {
     const submenu = submenuRef.current;
-    const anchor = moreRef.current;
-    if (!moreOpen || submenu === null || anchor === null) return;
+    const anchor = anchorForSubmenu(activeSubmenu);
+    const menuNode = menuRef.current;
+    if (activeSubmenu === null || submenu === null || anchor === null || menuNode === null) return;
     const rect = anchor.getBoundingClientRect();
+    const menuRect = menuNode.getBoundingClientRect();
+    const baseTop = rect.top - menuRect.top - 5;
     const overflow = rect.top - 5 + submenu.offsetHeight - (window.innerHeight - 8);
     setSubmenuPlace({
-      top: overflow > 0 ? -overflow : 0,
+      top: overflow > 0 ? baseTop - overflow : baseTop,
       left: rect.right + 8 + submenu.offsetWidth > window.innerWidth - 8,
     });
-  }, [moreOpen]);
+  }, [activeSubmenu]);
   const contentActions: readonly { action: SessionContentAction; label: string; danger?: boolean }[] = [
-    { action: 'fork', label: t('menu.fork') },
     { action: 'export', label: t('menu.export') },
     { action: 'compact', label: t('menu.compact') },
     { action: 'undo', label: t('menu.undo'), danger: true },
   ];
+
+  const submenuEntries = activeSubmenu === 'branch'
+    ? BRANCH_SEED_MODES.map((mode) => ({
+        key: `branch-${mode}`,
+        label: t(`transcript.branch.seed.${mode}`),
+        danger: false,
+        onSelect: () => { props.onCreateBranch(mode); },
+      }))
+    : activeSubmenu === 'fork'
+      ? FORK_SEED_MODES.map((mode) => ({
+          key: `fork-${mode}`,
+          label: t(`transcript.branch.seed.${mode}`),
+          danger: false,
+          onSelect: () => { props.onForkSession(mode); },
+        }))
+      : activeSubmenu === 'more'
+        ? contentActions.map((entry) => ({
+            key: entry.action,
+            label: entry.label,
+            danger: entry.danger === true,
+            onSelect: () => { onAction(entry.action); },
+          }))
+        : [];
+  const submenuLabel = activeSubmenu === 'branch'
+    ? t('menu.branch')
+    : activeSubmenu === 'fork'
+      ? t('menu.fork')
+      : t('sidebar.menu.more');
 
   return (
     <div
@@ -4059,24 +4358,29 @@ function SessionPointerMenu(props: SessionMenuProps) {
         const inSubmenu = submenu !== null && event.target instanceof Node && submenu.contains(event.target);
         if (inSubmenu && event.key === 'ArrowLeft') {
           event.preventDefault();
-          setMoreOpen(false);
-          moreRef.current?.focus();
+          const parent = anchorForSubmenu(activeSubmenu);
+          setActiveSubmenu(null);
+          parent?.focus();
           return;
         }
-        if (!inSubmenu && event.key === 'ArrowRight' && event.target === moreRef.current) {
-          event.preventDefault();
-          openMore(true);
-          return;
+        if (!inSubmenu && event.key === 'ArrowRight') {
+          const key: SessionSubmenuKey | null = event.target === branchRef.current ? 'branch'
+            : event.target === forkRef.current ? 'fork'
+              : event.target === moreRef.current ? 'more'
+                : null;
+          if (key !== null) {
+            event.preventDefault();
+            openSubmenu(key, true);
+            return;
+          }
         }
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-        // The arrows walk the level that holds focus: the submenu's four, or
-        // the first level without them.
         const scope = inSubmenu ? submenu : menuRef.current;
         const items = [...(scope?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])]
           .filter((item) => inSubmenu || submenu === null || !submenu.contains(item));
         if (items.length === 0) return;
         event.preventDefault();
-        if (!inSubmenu) setMoreOpen(false);
+        if (!inSubmenu) setActiveSubmenu(null);
         const index = items.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === 'Home' ? 0
           : event.key === 'End' ? items.length - 1
@@ -4088,8 +4392,10 @@ function SessionPointerMenu(props: SessionMenuProps) {
         if (event.pointerType !== 'mouse' || !(event.target instanceof Element)) return;
         const item = event.target.closest('[role="menuitem"]');
         if (item === null || submenuRef.current?.contains(item) === true) return;
-        if (item === moreRef.current) openMore(false);
-        else setMoreOpen(false);
+        if (item === branchRef.current) openSubmenu('branch', false);
+        else if (item === forkRef.current) openSubmenu('fork', false);
+        else if (item === moreRef.current) openSubmenu('more', false);
+        else setActiveSubmenu(null);
       }}
       onClick={(event) => {
         // Item activation hands focus back to the opener — but only after
@@ -4109,161 +4415,335 @@ function SessionPointerMenu(props: SessionMenuProps) {
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
-      <SessionMenuEntries {...props} phone={false} />
+      <SessionMenuEntries
+        {...props}
+        phone={false}
+        activeSubmenu={activeSubmenu}
+        branchRef={branchRef}
+        forkRef={forkRef}
+      />
       {archived ? null : (
         <>
           <div className="mx-1 my-1 border-t border-hairline" />
-          <div className="relative">
-            <button
-              ref={moreRef}
-              type="button"
-              role="menuitem"
-              data-menu-item="more"
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-              className={`${ROW_MENU_ITEM} flex items-center gap-2 ${moreOpen ? 'bg-paper' : ''}`}
-              onClick={() => { openMore(true); }}
+          <button
+            ref={moreRef}
+            type="button"
+            role="menuitem"
+            data-menu-item="more"
+            aria-haspopup="menu"
+            aria-expanded={activeSubmenu === 'more'}
+            className={`${ROW_MENU_ITEM} flex items-center gap-2 ${activeSubmenu === 'more' ? 'bg-paper' : ''}`}
+            onClick={() => { openSubmenu('more', true); }}
+          >
+            <span className="min-w-0 flex-1 truncate">{t('sidebar.menu.more')}</span>
+            <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+          </button>
+          {activeSubmenu !== null ? (
+            <div
+              ref={submenuRef}
+              role="menu"
+              aria-label={submenuLabel}
+              data-session-submenu={activeSubmenu}
+              className={`anim-enter absolute w-40 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)] ${
+                submenuPlace.left ? 'right-full mr-2' : 'left-full ml-2'
+              }`}
+              style={{ top: submenuPlace.top }}
             >
-              <span className="min-w-0 flex-1 truncate">{t('sidebar.menu.more')}</span>
-              <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-            </button>
-            {moreOpen ? (
-              <div
-                ref={submenuRef}
-                role="menu"
-                aria-label={t('sidebar.menu.more')}
-                data-session-submenu
-                className={`anim-enter absolute w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)] ${
-                  submenuPlace.left ? 'right-full mr-2' : 'left-full ml-2'
-                }`}
-                style={{ top: submenuPlace.top - 5 }}
-              >
-                {contentActions.map((entry) => (
-                  <button
-                    key={entry.action}
-                    type="button"
-                    role="menuitem"
-                    data-menu-item={entry.action}
-                    className={`${ROW_MENU_ITEM} ${entry.danger === true ? 'hover:text-danger' : ''}`}
-                    onClick={() => { onAction(entry.action); }}
-                  >
-                    {entry.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+              {submenuEntries.map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  role="menuitem"
+                  data-menu-item={entry.key}
+                  className={`${ROW_MENU_ITEM} ${entry.danger ? 'hover:text-danger' : ''}`}
+                  onClick={entry.onSelect}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </>
       )}
     </div>
   );
 }
 
-/** Rename dialog seeded with the current title; the caller owns the write
- * (a thread's profile patch, a room's name patch). */
 /**
  * The one/two-value tier: renaming a session or room edits the row it names,
  * not a dialog. The editor portals to <body> over the row's title so the row
- * never reflows while the field is open; Enter saves, Escape cancels, and a
- * click anywhere else closes without writing. The title it covers carries
- * data-session-title / data-room-title, so the field lands exactly on it.
+ * never reflows while the field is open; Enter, the inline check button, or
+ * clicking outside a modified draft saves, while Escape or the close button
+ * cancels without writing. The title it covers carries data-session-title /
+ * data-room-title, so the field lands directly over it.
  */
 function SidebarRenameEditor({
   item,
   heading,
+  untitled,
+  resolveTitle,
   onSubmit,
   onClose,
-  onRenamed,
 }: {
   item: ConversationListItem;
   heading: string;
-  onSubmit: (title: string) => Promise<unknown>;
+  untitled: string;
+  resolveTitle: (text: string) => string;
+  onSubmit: (title: string) => Promise<void>;
   onClose: () => void;
-  onRenamed: () => void;
 }) {
-  const currentTitle = item.kind === 'room' ? item.title : item.session.title;
-  const [title, setTitle] = useState(currentTitle);
+  const { t } = useI18n();
+  const persistedTitle = item.kind === 'room' ? item.title.trim() : item.session.title.trim();
+  const [title, setTitle] = useState(() => {
+    if (item.kind === 'room') return item.title;
+    if (item.session.title.trim() !== '') return item.session.title;
+    const rawPrompt = item.session.last_prompt?.trim() ?? '';
+    if (rawPrompt === '') return '';
+    return resolveTitle(rawPrompt).replace(/\s+/g, ' ').trim().slice(0, 200);
+  });
+  const placeholder = item.kind === 'session' ? untitled : undefined;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fieldRef = useRef<HTMLDivElement | null>(null);
-  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const didAutoFocusRef = useRef(false);
+  const composingRef = useRef(false);
+  const submittingRef = useRef(false);
+  const tabKeyActiveRef = useRef(false);
+  const tabClearTimerRef = useRef<number | null>(null);
+  const titleRef = useRef(title);
+  titleRef.current = title;
+  const persistedTitleRef = useRef(persistedTitle);
+  persistedTitleRef.current = persistedTitle;
+  const onSubmitRef = useRef(onSubmit);
+  onSubmitRef.current = onSubmit;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number; minHeight: number } | null>(null);
 
   useLayoutEffect(() => {
+    const escapedId = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(item.id) : item.id;
     const selector = item.kind === 'room'
-      ? `[data-room-row="${item.id}"] [data-room-title]`
-      : `[data-session-row="${item.id}"] [data-session-title]`;
-    const target = document.querySelector<HTMLElement>(selector);
-    if (target === null) { onClose(); return; }
-    const rect = unzoomedRect(target.getBoundingClientRect());
-    setAnchor({ left: rect.left - 4, top: rect.top - 4, width: Math.max(rect.width + 32, 200) });
-  }, [item, onClose]);
+      ? `[data-room-row="${escapedId}"] [data-room-title]`
+      : `[data-session-row="${escapedId}"] [data-session-title]`;
+    const computeAnchor = (target: HTMLElement) => {
+      const rect = unzoomedRect(target.getBoundingClientRect());
+      const row = target.closest<HTMLElement>('[data-session-row], [data-room-row]');
+      const rowRect = row === null ? null : unzoomedRect(row.getBoundingClientRect());
+      const hasRowBox = rowRect !== null && rowRect.width > 0;
+      const left = hasRowBox ? Math.max(4, rowRect.left) : Math.max(4, rect.left - 4);
+      const top = hasRowBox ? rowRect.top : rect.top - 5;
+      const minHeight = hasRowBox ? Math.max(36, rowRect.height) : 36;
+      const rowSpan = hasRowBox ? rowRect.width : rect.width + 32;
+      const viewport = unzoomedViewport();
+      const maxWidth = viewport.width > left + 8 ? viewport.width - left - 8 : Infinity;
+      const width = Math.min(Math.max(rowSpan, 200), maxWidth);
+      return { left, top, width, minHeight };
+    };
+    const initialTarget = document.querySelector<HTMLElement>(selector);
+    if (initialTarget === null) {
+      onCloseRef.current();
+      return undefined;
+    }
+    setAnchor(computeAnchor(initialTarget));
+    const updateOnViewportChange = () => {
+      const target = document.querySelector<HTMLElement>(selector);
+      if (target === null) return;
+      const next = computeAnchor(target);
+      setAnchor((prev) =>
+        prev !== null
+          && prev.left === next.left
+          && prev.top === next.top
+          && prev.width === next.width
+          && prev.minHeight === next.minHeight
+          ? prev
+          : next,
+      );
+    };
+    window.addEventListener('scroll', updateOnViewportChange, { capture: true, passive: true });
+    window.addEventListener('resize', updateOnViewportChange, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', updateOnViewportChange, true);
+      window.removeEventListener('resize', updateOnViewportChange);
+    };
+  }, [item.kind, item.id]);
 
+  const hasAnchor = anchor !== null;
   useEffect(() => {
-    if (anchor !== null) fieldRef.current?.querySelector<HTMLInputElement>('[data-autofocus]')?.focus();
-  }, [anchor]);
+    if (!hasAnchor || didAutoFocusRef.current) return;
+    const input = inputRef.current;
+    if (input === null) return;
+    didAutoFocusRef.current = true;
+    input.focus();
+    input.select();
+  }, [hasAnchor]);
+
+  const submitCurrent = useCallback(() => {
+    if (submittingRef.current) return;
+    const trimmed = titleRef.current.trim();
+    if (trimmed === '') return;
+    if (trimmed === persistedTitleRef.current) {
+      submittingRef.current = true;
+      onCloseRef.current();
+      return;
+    }
+    submittingRef.current = true;
+    setBusy(true);
+    setError(null);
+    void Promise.resolve(onSubmitRef.current(trimmed)).catch((cause: unknown) => {
+      submittingRef.current = false;
+      setBusy(false);
+      setError(cause instanceof Error ? cause.message : String(cause));
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
+    });
+  }, []);
+
+  const cancelCurrent = useCallback(() => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    onCloseRef.current();
+  }, []);
+
+  const commitOrCloseOnExit = useCallback(() => {
+    if (submittingRef.current || composingRef.current) return;
+    const trimmed = titleRef.current.trim();
+    if (trimmed !== '' && trimmed !== persistedTitleRef.current) {
+      submitCurrent();
+    } else {
+      cancelCurrent();
+    }
+  }, [cancelCurrent, submitCurrent]);
 
   useEffect(() => {
     const unregister = registerOverlay('sidebar-rename');
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && !isImeKeyEvent(event) && fieldRef.current?.contains(event.target as Node)) {
+        tabKeyActiveRef.current = true;
+        if (tabClearTimerRef.current !== null) window.clearTimeout(tabClearTimerRef.current);
+        tabClearTimerRef.current = window.setTimeout(() => {
+          tabKeyActiveRef.current = false;
+          tabClearTimerRef.current = null;
+        }, 0);
+        return;
+      }
       // An IME Escape cancels the candidate, not the rename.
       if (event.key !== 'Escape' || isImeKeyEvent(event)) return;
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      cancelCurrent();
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (fieldRef.current !== null && !fieldRef.current.contains(event.target as Node)) onClose();
+      if (fieldRef.current === null || fieldRef.current.contains(event.target as Node)) return;
+      commitOrCloseOnExit();
     };
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
       unregister();
+      if (tabClearTimerRef.current !== null) {
+        window.clearTimeout(tabClearTimerRef.current);
+        tabClearTimerRef.current = null;
+      }
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [onClose]);
-
-  const submit = () => {
-    const trimmed = title.trim();
-    if (trimmed === '' || busy) return;
-    if (trimmed === currentTitle) { onClose(); return; }
-    setBusy(true);
-    setError(null);
-    void Promise.resolve(onSubmit(trimmed))
-      .then(onRenamed)
-      .catch((cause: unknown) => {
-        setBusy(false);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      });
-  };
+  }, [cancelCurrent, commitOrCloseOnExit]);
 
   if (anchor === null) return null;
+  const trimmed = title.trim();
+  const dirty = trimmed !== '' && trimmed !== persistedTitle;
   return createPortal(
     <div
       ref={fieldRef}
       role="dialog"
       aria-label={heading}
+      aria-busy={busy || undefined}
       data-rename-editor={item.id}
-      className="anim-enter fixed z-50 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
-      style={{ left: anchor.left, top: anchor.top, width: anchor.width }}
+      data-rename-saving={busy ? '' : undefined}
+      onBlur={(event) => {
+        if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
+        const next = event.relatedTarget;
+        if (next instanceof Node) {
+          if (fieldRef.current.contains(next)) return;
+          commitOrCloseOnExit();
+          return;
+        }
+        if (!tabKeyActiveRef.current) return;
+        tabKeyActiveRef.current = false;
+        queueMicrotask(() => {
+          if (submittingRef.current || composingRef.current || fieldRef.current === null) return;
+          const active = document.activeElement;
+          if (active instanceof Node && fieldRef.current.contains(active)) return;
+          commitOrCloseOnExit();
+        });
+      }}
+      className="anim-enter fixed z-50 flex flex-col justify-center rounded-xl border border-hairline-strong bg-panel px-2 py-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.32)] focus-within:border-selected-ink focus-within:ring-2 focus-within:ring-selected-ink/25"
+      style={{ left: anchor.left, top: anchor.top, width: anchor.width, minHeight: anchor.minHeight }}
     >
-      <input
-        data-autofocus
-        data-rename-input
-        aria-label={heading}
-        className="h-7 w-full rounded-md bg-paper px-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-selected-ink/40"
-        value={title}
-        maxLength={200}
-        onChange={(event) => { setTitle(event.target.value); }}
-        onKeyDown={(event) => {
-          // The Enter that commits an IME candidate must not save a
-          // half-typed title.
-          if (event.key === 'Enter' && !isImeKeyEvent(event)) { event.preventDefault(); submit(); }
-        }}
-        onFocus={(event) => { event.currentTarget.select(); }}
-      />
+      <div className="flex items-center gap-1">
+        <input
+          ref={inputRef}
+          data-autofocus
+          data-rename-input
+          aria-label={heading}
+          aria-invalid={error !== null || undefined}
+          placeholder={placeholder}
+          disabled={busy}
+          style={{ outline: 'none' }}
+          className="h-7 min-w-0 flex-1 bg-transparent px-1.5 text-[13px] font-medium text-ink placeholder:font-normal placeholder:text-ink-faint disabled:opacity-65"
+          value={title}
+          maxLength={200}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
+          onChange={(event) => {
+            titleRef.current = event.target.value;
+            setTitle(event.target.value);
+            if (error !== null) setError(null);
+          }}
+          onKeyDown={(event) => {
+            // The Enter that commits an IME candidate must not save a
+            // half-typed title.
+            if (event.key === 'Enter' && !isImeKeyEvent(event)) {
+              event.preventDefault();
+              submitCurrent();
+            }
+          }}
+        />
+        <button
+          type="button"
+          data-rename-confirm
+          disabled={busy || trimmed === ''}
+          aria-label={t(busy ? 'common.saving' : 'common.save')}
+          title={t(busy ? 'common.saving' : 'common.save')}
+          onPointerDown={(event) => { event.preventDefault(); }}
+          onClick={submitCurrent}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent ${
+            dirty && !busy
+              ? 'bg-accent/12 text-accent hover:bg-accent/20'
+              : 'text-ink-soft hover:bg-ink/[0.06] hover:text-ink'
+          }`}
+        >
+          {busy ? <Spinner label={t('common.saving')} size={12} /> : <Icon name="check" size={14} />}
+        </button>
+        <button
+          type="button"
+          data-rename-cancel
+          disabled={busy}
+          aria-label={t('common.cancel')}
+          title={t('common.cancel')}
+          onPointerDown={(event) => { event.preventDefault(); }}
+          onClick={cancelCurrent}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <Icon name="close" size={14} />
+        </button>
+      </div>
       {error !== null ? (
-        <p className="mt-1 px-1 font-mono text-[11px] text-danger">{error}</p>
+        <p role="alert" data-rename-error className="mt-1 px-1.5 py-0.5 text-[11.5px] leading-4 text-danger">
+          {error}
+        </p>
       ) : null}
     </div>,
     document.body,

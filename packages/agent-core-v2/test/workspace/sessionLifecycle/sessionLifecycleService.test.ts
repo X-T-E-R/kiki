@@ -1541,6 +1541,490 @@ describe('SessionLifecycleService fork cron ownership', () => {
   });
 });
 
+describe('SessionLifecycleService active-turn fork', () => {
+  it('forks a session with active main and subagent turns at settled boundaries without repairing live journals', async () => {
+    const fx = fixture();
+    const mainRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'profile.bind', profile: 'agent', time: 2 },
+      { type: 'tools.set_active_tools', tools: ['Read'], time: 3 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 4 },
+      {
+        type: 'context.append_message',
+        time: 5,
+        message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'First turn' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 6,
+        message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'First reply' }], toolCalls: [] },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 7 },
+      { type: 'prompt.submitted', id: 'p2', time: 8 },
+      { type: 'turn.prompt', turnId: 2, origin: { kind: 'user' }, time: 9 },
+      {
+        type: 'context.append_message',
+        time: 10,
+        message: { id: 'u2', role: 'user', content: [{ type: 'text', text: 'Active turn' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      { type: 'task.started', info: { taskId: 'task-sub', kind: 'agent', agentId: 'child-1', status: 'running' }, time: 11 },
+      { type: 'subagent.spawned', subagentId: 'child-1', taskId: 'task-sub', parentAgentId: 'main', time: 12 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 2, stepIndex: 0 }, time: 13 },
+    ];
+    const childRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 11 },
+      { type: 'profile.bind', profile: 'worker', time: 12 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 13 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, stepIndex: 0 }, time: 14 },
+    ];
+    const rewrite = vi.fn();
+    const registerAgent = vi.fn(async () => {});
+    const update = vi.fn(async () => {});
+    const createAgent = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const target = {
+      id: 'active-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'active-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent, update }],
+        [IAgentLifecycleService, { list: () => [], create: createAgent }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const liveChild = {
+      id: 'child-1',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 1 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({
+            title: 'Running source',
+            lastPrompt: 'Active turn',
+            lastTurnReason: 'completed',
+            agents: {
+              main: { type: 'main' },
+              'child-1': {
+                type: 'sub',
+                parentAgentId: 'main',
+                delegator: { kind: 'agent', agentId: 'main' },
+                taskId: 'task-sub',
+                labels: { parentAgentId: 'main', profileName: 'worker' },
+              },
+            },
+          }),
+        }],
+        [IAgentLifecycleService, {
+          list: () => [liveMain, liveChild],
+          get: (id: string) => (id === 'main' ? liveMain : id === 'child-1' ? liveChild : undefined),
+        }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      hostFs: {
+        readdir: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        readBytes: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        writeBytes: async () => {},
+        mkdir: async () => {},
+        remove,
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      },
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* (scope: string, _key: string, opts?: { onTruncate?: (info: { byteOffset: number; droppedBytes: number }) => void }) {
+          opts?.onTruncate?.({ byteOffset: 64, droppedBytes: 12 });
+          if (scope.endsWith('/agents/main')) yield* mainRecords;
+          else yield* childRecords;
+        },
+        rewrite,
+      },
+    });
+    try {
+      const forked = await fx.service.fork({
+        sourceSessionId: 'session-1',
+        newSessionId: target.id,
+      });
+      expect(forked).toBe(target);
+      expect(rewrite).toHaveBeenCalledTimes(2);
+      expect(rewrite.mock.calls.every(([scope]) => String(scope).includes(target.id))).toBe(true);
+      const forkedMain = rewrite.mock.calls.find(([scope]) => String(scope).endsWith('/agents/main'))![2] as Array<Record<string, unknown>>;
+      expect(forkedMain.some((record) => record['type'] === 'profile.bind')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'tools.set_active_tools')).toBe(true);
+      expect(forkedMain.some((record) => String(record['type']).startsWith('prompt.'))).toBe(false);
+      expect(forkedMain.some((record) => record['type'] === 'context.append_loop_event')).toBe(false);
+      expect(forkedMain.some((record) => record['type'] === 'turn.ended' && record['turnId'] === 2 && record['reason'] === 'cancelled')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'task.terminated')).toBe(true);
+      expect(forkedMain.some((record) => record['type'] === 'subagent.failed' && record['subagentId'] === 'child-1')).toBe(true);
+      expect(forkedMain.at(-1)?.['type']).toBe('forked');
+      expect(registerAgent).toHaveBeenCalledWith('child-1', expect.objectContaining({
+        status: 'cancelled',
+        parentAgentId: 'main',
+      }));
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({
+        forkedFrom: 'session-1',
+        lastTurnReason: 'cancelled',
+      }));
+      expect(remove).toHaveBeenCalled();
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
+  it('preserves open-tail user boundary when forking throughUserMessage while a later turn is active', async () => {
+    const fx = fixture();
+    const mainRecords = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 2 },
+      {
+        type: 'context.append_message',
+        time: 3,
+        message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'Turn one user' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 4,
+        message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'Turn one reply' }], toolCalls: [] },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 5 },
+      { type: 'turn.prompt', turnId: 2, origin: { kind: 'user' }, time: 6 },
+      {
+        type: 'context.append_message',
+        time: 7,
+        message: { id: 'u2', role: 'user', content: [{ type: 'text', text: 'Turn two running' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+    ];
+    const rewrite = vi.fn();
+    const update = vi.fn(async () => {});
+    const target = {
+      id: 'open-tail-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'open-tail-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({ title: 'Source', agents: { main: { type: 'main' } } }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      appendLogStore: { append: vi.fn(), flush: async () => {}, read: async function* () { yield* mainRecords; }, rewrite },
+    });
+    try {
+      await fx.service.fork({
+        sourceSessionId: 'session-1',
+        newSessionId: target.id,
+        turnIndex: 0,
+        throughUserMessage: true,
+      });
+      const copied = rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.some((record) => record['type'] === 'turn.ended')).toBe(false);
+      expect(copied.some((record) => record['type'] === 'context.append_message' && (record['message'] as { id?: string })?.id === 'u1')).toBe(true);
+      expect(copied.some((record) => record['type'] === 'context.append_message' && (record['message'] as { id?: string })?.id === 'a1')).toBe(false);
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
+  it('normalizes and isolates a live session that transitions from idle to running mid-fork during metadata.drain()', async () => {
+    const fx = fixture();
+    const mainRecords: Array<Record<string, unknown>> = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'profile.bind', profile: 'agent', time: 2 },
+      {
+        type: 'executor.session.updated',
+        executorId: 'codex',
+        descriptorRevision: 'r1',
+        sessionEpoch: 1,
+        sessionRef: { executorId: 'codex', version: 1, ref: { threadId: 'live-thread-9' } },
+        time: 3,
+      },
+      {
+        type: 'cron.fired',
+        origin: { kind: 'cron_job', jobId: 'job-1', cron: '0 9 * * *', recurring: true, coalescedCount: 1, stale: false },
+        prompt: 'Scheduled check',
+        time: 4,
+      },
+      { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, time: 5 },
+      {
+        type: 'context.append_message',
+        time: 6,
+        message: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'First turn' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 7,
+        message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'First reply' }], toolCalls: [] },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 8 },
+    ];
+    let currentTurn: { id: number } | undefined;
+    const rewrite = vi.fn();
+    const update = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const target = {
+      id: 'mid-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'mid-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: currentTurn }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {
+            currentTurn = { id: 2 };
+            mainRecords.push(
+              { type: 'prompt.submitted', id: 'p-mid', time: 9 },
+              { type: 'turn.prompt', turnId: 2, origin: { kind: 'user' }, time: 10 },
+              {
+                type: 'context.append_message',
+                time: 11,
+                message: { id: 'u2', role: 'user', content: [{ type: 'text', text: 'Mid-fork turn' }], toolCalls: [], origin: { kind: 'user' } },
+              },
+              { type: 'task.started', info: { taskId: 'bash-mid-1', kind: 'process', status: 'running', startedAt: 12 }, time: 12 },
+              { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 2, stepIndex: 0 }, time: 13 },
+            );
+          },
+          read: async () => ({
+            title: 'Idle at entry',
+            lastPrompt: 'Mid-fork turn',
+            lastTurnReason: 'completed',
+            agents: { main: { type: 'main' } },
+          }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      hostFs: {
+        readdir: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        mkdir: async () => {},
+        readBytes: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        writeBytes: async () => {},
+        remove,
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      },
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* (
+          _scope: string,
+          _key: string,
+          options?: { onTruncate?: (info: { lineNumber: number; reason: 'corrupted' | 'truncated' }) => void },
+        ) {
+          options?.onTruncate?.({ lineNumber: mainRecords.length, reason: 'truncated' });
+          yield* mainRecords;
+        },
+        rewrite,
+      },
+    });
+    try {
+      await fx.service.fork({ sourceSessionId: 'session-1', newSessionId: target.id });
+      expect(rewrite).toHaveBeenCalledTimes(1);
+      expect(rewrite.mock.calls[0]![0]).toBe('workspace-1/mid-fork/agents/main');
+      const copied = rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.some((record) => record['type'] === 'cron.fired')).toBe(true);
+      expect(copied.some((record) => record['type'] === 'prompt.submitted')).toBe(false);
+      expect(copied.some((record) => record['type'] === 'context.append_loop_event')).toBe(false);
+      expect(copied.some((record) =>
+        record['type'] === 'context.append_message' && (record['message'] as { id?: string })?.id === 'a1',
+      )).toBe(true);
+      expect(copied.some((record) =>
+        record['type'] === 'turn.ended' && record['turnId'] === 2 && record['reason'] === 'cancelled',
+      )).toBe(true);
+      expect(copied.some((record) => {
+        if (record['type'] !== 'task.terminated') return false;
+        const info = record['info'] as Record<string, unknown> | undefined;
+        return info?.['taskId'] === 'bash-mid-1' && info['status'] === 'killed';
+      })).toBe(true);
+      expect(copied.find((record) => record['type'] === 'executor.session.updated')).toMatchObject({
+        sessionRef: { executorId: 'codex', version: 1, ref: { copiedIdentity: true } },
+      });
+      expect(JSON.stringify(copied)).not.toContain('live-thread-9');
+      expect(remove).toHaveBeenCalledWith('/home/workspace-1/mid-fork/agents/main/tasks');
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({ lastTurnReason: 'cancelled' }));
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
+  it('detaches non-ACP executor session identity even when a live source starts a turn during readPromotedTaskDocuments', async () => {
+    const fx = fixture();
+    const settledRecords: Array<Record<string, unknown>> = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      {
+        type: 'executor.session.updated',
+        time: 2,
+        executorId: 'codex',
+        sessionRef: { executorId: 'codex', version: 1, ref: { threadId: 'live-thread-9' } },
+      },
+      { type: 'turn.started', turnId: 1, time: 3 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4 },
+    ];
+    let currentTurn: { id: number } | undefined;
+    const rewrite = vi.fn();
+    const update = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const target = {
+      id: 'late-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'late-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: currentTurn }) }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {},
+          read: async () => ({
+            title: 'Live Late Turn',
+            lastTurnReason: 'completed',
+            agents: { main: { type: 'main', executor: 'codex' } },
+          }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    Object.assign(fx.service, {
+      hostFs: {
+        readdir: async (dir: string) => {
+          if (dir.endsWith('/agents/main/tasks')) {
+            currentTurn = { id: 2 };
+          }
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        },
+        mkdir: async () => {},
+        readBytes: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        writeBytes: async () => {},
+        remove,
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      },
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* () {
+          yield* settledRecords;
+        },
+        rewrite,
+      },
+    });
+    try {
+      await fx.service.fork({ sourceSessionId: 'session-1', newSessionId: target.id });
+      const copied = rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.find((record) => record['type'] === 'executor.session.updated')).toMatchObject({
+        sessionRef: { executorId: 'codex', version: 1, ref: { copiedIdentity: true } },
+      });
+      expect(JSON.stringify(copied)).not.toContain('live-thread-9');
+    } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+});
+
 describe('SessionLifecycleService subagent promotion', () => {
   const hash = 'c'.repeat(64);
   const parentHash = 'd'.repeat(64);

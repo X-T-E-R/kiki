@@ -6,6 +6,7 @@ import { usageReadModelWorkerEntry, type UsageStoreOperation, type UsageStoreReq
 
 interface Pending {
   readonly operation: UsageStoreOperation;
+  readonly priority: boolean;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
   readonly signal?: AbortSignal;
@@ -14,9 +15,17 @@ interface Pending {
   watchdog?: ReturnType<typeof setTimeout>;
 }
 
+const MAX_PRIORITY_BURST = 4;
+
+function isPriorityOperation(operation: UsageStoreOperation): boolean {
+  return operation.type === 'setSessionPrivacy' || operation.type === 'isPrivateSession' || operation.type === 'privateSessions';
+}
+
 export class UsageReadModelWorker {
   private readonly worker: Worker;
+  private readonly priorityWaiting: Pending[] = [];
   private readonly waiting: Pending[] = [];
+  private priorityStreak = 0;
   private active?: Pending;
   private serial = 0;
   private stopped = false;
@@ -39,29 +48,32 @@ export class UsageReadModelWorker {
       this.pump();
     });
     this.worker.on('error', (error) => this.fail(error));
-    this.worker.on('exit', (code) => { if (this.active !== undefined || this.waiting.length > 0) this.fail(new Error(`Usage worker exited (${code})`)); this.stopped = true; });
+    this.worker.on('exit', (code) => { if (this.active !== undefined || this.priorityWaiting.length > 0 || this.waiting.length > 0) this.fail(new Error(`Usage worker exited (${code})`)); this.stopped = true; });
   }
   get isStopped(): boolean { return this.stopped; }
   request<T>(operation: UsageStoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Usage worker closed'));
-    if (this.waiting.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(Object.assign(new Error('Usage queue full; retry'), { code: 'usage.busy' }));
+    const queue = isPriorityOperation(operation) ? this.priorityWaiting : this.waiting;
+    if (queue.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(Object.assign(new Error('Usage queue full; retry'), { code: 'usage.busy' }));
     return this.enqueue(operation, signal);
   }
   private enqueue<T>(operation: UsageStoreOperation, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      const priority = isPriorityOperation(operation);
+      const queue = priority ? this.priorityWaiting : this.waiting;
       const cancellation = signal === undefined ? undefined : new Int32Array(new SharedArrayBuffer(4));
       const abort = signal === undefined ? undefined : (): void => {
-        const index = this.waiting.indexOf(pending);
-        if (index >= 0) { this.waiting.splice(index, 1); this.release(pending); reject(signal.reason); }
+        const index = queue.indexOf(pending);
+        if (index >= 0) { queue.splice(index, 1); this.release(pending); reject(signal.reason); }
         else if (this.active === pending) {
           Atomics.store(cancellation!, 0, 1);
           if (!this.writable) pending.watchdog ??= setTimeout(() => this.fail(signal.reason), 100);
         }
       };
-      const pending: Pending = { operation, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
+      const pending: Pending = { operation, priority, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
       signal?.addEventListener('abort', abort!, { once: true });
-      this.waiting.push(pending);
+      queue.push(pending);
       this.pump();
     });
   }
@@ -71,8 +83,11 @@ export class UsageReadModelWorker {
   }
   private pump(): void {
     if (this.stopped || this.active !== undefined) return;
-    const pending = this.waiting.shift();
+    const takePriority = this.priorityWaiting.length > 0 &&
+      (this.waiting.length === 0 || this.priorityStreak < MAX_PRIORITY_BURST);
+    const pending = takePriority ? this.priorityWaiting.shift() : this.waiting.shift() ?? this.priorityWaiting.shift();
     if (pending === undefined) { if (this.closing === undefined) this.worker.unref(); return; }
+    this.priorityStreak = pending.priority ? this.priorityStreak + 1 : 0;
     this.active = pending;
     this.worker.ref();
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies UsageStoreRequest); }
@@ -87,13 +102,14 @@ export class UsageReadModelWorker {
   }
   private fail(error: unknown): void {
     this.stopped = true;
-    for (const pending of [this.active, ...this.waiting]) {
+    for (const pending of [this.active, ...this.priorityWaiting, ...this.waiting]) {
       if (pending === undefined) continue;
       this.release(pending);
-      const writing = ['apply', 'applyBatch', 'catalog', 'maintain', 'abandon', 'invalidate', 'settleRetained'].includes(pending.operation.type);
+      const writing = ['apply', 'applyBatch', 'catalog', 'maintain', 'abandon', 'invalidate', 'settleRetained', 'setSessionPrivacy'].includes(pending.operation.type);
       pending.reject(writing ? Object.assign(new Error('Usage worker stopped; reconcile persisted source progress before retry', { cause: error }), { committed: pending === this.active ? undefined : false }) : error);
     }
     this.active = undefined;
+    this.priorityWaiting.length = 0;
     this.waiting.length = 0;
     void this.worker.terminate();
   }

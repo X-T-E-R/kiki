@@ -10,12 +10,13 @@
  * left) or under the user bubble (flush right) from the row's bottom edge,
  * reserves no height of its own, and revealing it never moves the text. It
  * only takes the pointer while revealed, so the rows it hangs over keep their
- * clicks and their selection. Copy / edit / regenerate — the three that are
- * used on a normal pass through a conversation — are flat 28px tiles;
- * copy-link and fork sit behind the trailing `⋯`. Below `sm` the tiles fold
- * into that same `⋯` menu so the strip never crowds a narrow lane. On a
- * coarse pointer the tiles are 40px and the `⋯` menu opens as an
- * `ActionSheet` at the bottom of the screen instead of a popover.
+ * clicks and their selection. Copy / edit / regenerate / fork — the actions
+ * used on a normal pass through a conversation — are flat 28px tiles (with a
+ * hover seed-mode flyout on fork); copy-link and plugin actions sit behind the
+ * trailing `⋯`. Below `sm` the tiles fold into that same `⋯` menu so the strip
+ * never crowds a narrow lane. On a coarse pointer the tiles are 40px and the
+ * `⋯` menu opens as an `ActionSheet` at the bottom of the screen instead of a
+ * popover.
  *
  * The inline user-message editor also lives here: it replaces the bubble in
  * place (anything-llm's EditMessageForm shape), prefills the original text,
@@ -23,6 +24,7 @@
  */
 
 import { createContext, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import type { SessionSeedMode } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -111,6 +113,7 @@ export interface MessageRowActionsProps {
   canEdit?: boolean;
   canRegenerate?: boolean;
   canFork?: boolean;
+  forkBusy?: boolean;
   /** Turn running / resync in flight — mutating actions disable with a hint. */
   disabled?: boolean;
   /**
@@ -121,8 +124,10 @@ export interface MessageRowActionsProps {
   align?: 'left' | 'right';
   onEdit?: () => void;
   onRegenerate?: () => void;
-  onFork?: () => void;
+  onFork?: (seed?: SessionSeedMode) => void | Promise<unknown>;
 }
+
+const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
 
 /** A row-action target: 14px glyph in a 28px box (40px on touch) — no border, no pill. */
 const TILE =
@@ -161,6 +166,7 @@ export function MessageRowActions({
   canEdit = false,
   canRegenerate = false,
   canFork = false,
+  forkBusy = false,
   disabled = false,
   align = 'left',
   onEdit,
@@ -176,9 +182,15 @@ export function MessageRowActions({
   const [copied, setCopied] = useState<'text' | 'link' | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [openUp, setOpenUp] = useState(false);
+  const [forkMenuOpen, setForkMenuOpen] = useState(false);
+  const [forkOpenUp, setForkOpenUp] = useState(false);
+  const [forkingLocal, setForkingLocal] = useState(false);
+  const forkingRef = useRef(false);
   const menuContainerRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const forkTriggerRef = useRef<HTMLButtonElement>(null);
+  const forkMenuRef = useRef<HTMLDivElement>(null);
   // Touch: the `⋯` menu is an action sheet, which owns its own dismissal.
   const coarse = useCoarsePointer();
 
@@ -201,6 +213,7 @@ export function MessageRowActions({
   };
 
   const toggleMenu = () => {
+    setForkMenuOpen(false);
     if (!menuOpen) {
       const rawRect = triggerRef.current?.getBoundingClientRect();
       if (rawRect !== undefined) {
@@ -264,6 +277,80 @@ export function MessageRowActions({
     };
   }, [menuOpen, coarse]);
 
+  const forkDisabled = forkBusy || forkingLocal;
+  const triggerFork = (seed?: SessionSeedMode) => {
+    if (onFork === undefined || forkDisabled || forkingRef.current) return;
+    setForkMenuOpen(false);
+    setMenuOpen(false);
+    const result = onFork(seed);
+    if (result !== undefined && typeof (result as PromiseLike<unknown>).then === 'function') {
+      forkingRef.current = true;
+      setForkingLocal(true);
+      void Promise.resolve(result).finally(() => {
+        forkingRef.current = false;
+        setForkingLocal(false);
+      });
+    }
+  };
+
+  const openForkMenu = (focusFirst: boolean) => {
+    if (forkDisabled || forkingRef.current) return;
+    const rawRect = forkTriggerRef.current?.getBoundingClientRect();
+    if (rawRect !== undefined) {
+      const rect = unzoomedRect(rawRect);
+      const spaceBelow = unzoomedViewport().height - rect.bottom;
+      const spaceAbove = rect.top;
+      setForkOpenUp(spaceBelow < 180 && spaceAbove > spaceBelow);
+    }
+    setMenuOpen(false);
+    setForkMenuOpen(true);
+    if (focusFirst) {
+      queueMicrotask(() => {
+        forkMenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!forkMenuOpen || coarse) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setForkMenuOpen(false);
+        forkTriggerRef.current?.focus();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const buttons = [...(forkMenuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (buttons.length === 0) return;
+        event.preventDefault();
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'ArrowDown'
+          ? (index + 1) % buttons.length
+          : (index - 1 + buttons.length) % buttons.length;
+        buttons[next]?.focus();
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !menuContainerRef.current?.contains(event.target)) {
+        setForkMenuOpen(false);
+      }
+    };
+    const onScrollOrResize = () => {
+      setForkMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [forkMenuOpen, coarse]);
+
   // The `⋯` menu's rows: a popover on a fine pointer, an action sheet on touch.
   const menuItems = (
     <>
@@ -320,6 +407,22 @@ export function MessageRowActions({
           {t('transcript.regenerate')}
         </button>
       ) : null}
+      {showFork ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-row-action-menu="fork"
+          title={t('transcript.forkTitle')}
+          aria-label={t('transcript.forkTitle')}
+          disabled={forkDisabled}
+          onClick={() => {
+            triggerFork();
+          }}
+          className={`${MENU_ITEM} sm:hidden`}
+        >
+          {t('transcript.fork')}
+        </button>
+      ) : null}
       {showLink ? (
         <button
           type="button"
@@ -335,23 +438,6 @@ export function MessageRowActions({
         >
           <span>{t('transcript.copyLink')}</span>
           {copied === 'link' ? <Icon name="check" size={12} className="text-success" /> : null}
-        </button>
-      ) : null}
-      {showFork ? (
-        <button
-          type="button"
-          role="menuitem"
-          data-row-action="fork"
-          title={disabled ? t('transcript.actionsBusyTitle') : t('transcript.forkTitle')}
-          aria-label={t('transcript.forkTitle')}
-          disabled={disabled}
-          onClick={() => {
-            setMenuOpen(false);
-            onFork();
-          }}
-          className={MENU_ITEM}
-        >
-          {t('transcript.fork')}
         </button>
       ) : null}
       {role !== undefined ? (
@@ -376,10 +462,10 @@ export function MessageRowActions({
   const visibility =
     'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
 
-  // Only copy-link, fork, and plugin message actions are menu-only, so the `⋯`
+  // Only copy-link and plugin message actions are menu-only, so the `⋯`
   // trigger is needed at every width while one of them exists; a strip of tiled
   // actions alone folds it away above `sm`, where those tiles are already on screen.
-  const menuOnly = showLink || showFork || showPluginActions;
+  const menuOnly = showLink || showPluginActions;
 
   // `absolute top-full`: the strip hangs from the row's bottom edge into the
   // gap under the message, so it reserves no height and revealing it moves
@@ -440,6 +526,69 @@ export function MessageRowActions({
           >
             <RegenerateIcon />
           </button>
+        ) : null}
+        {showFork ? (
+          <span
+            className="relative inline-flex"
+            onPointerEnter={(event) => {
+              if (event.pointerType === 'mouse' && !forkDisabled && !forkingRef.current) openForkMenu(false);
+            }}
+            onPointerLeave={(event) => {
+              if (event.pointerType === 'mouse') setForkMenuOpen(false);
+            }}
+          >
+            <button
+              ref={forkTriggerRef}
+              type="button"
+              data-row-action="fork"
+              title={t('transcript.forkTitle')}
+              aria-label={t('transcript.forkTitle')}
+              aria-busy={forkDisabled || undefined}
+              disabled={forkDisabled}
+              aria-haspopup={coarse ? undefined : 'menu'}
+              aria-expanded={coarse ? undefined : forkMenuOpen}
+              onKeyDown={(event) => {
+                if (coarse || forkDisabled || forkingRef.current) return;
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  openForkMenu(true);
+                }
+              }}
+              onClick={() => {
+                triggerFork();
+              }}
+              className={TILE}
+            >
+              <Icon name="branch" size={14} />
+            </button>
+            {!coarse && forkMenuOpen && !forkDisabled ? (
+              <div
+                ref={forkMenuRef}
+                role="menu"
+                data-row-fork-menu
+                aria-label={t('transcript.forkTitle')}
+                className={`anim-enter pointer-events-auto absolute z-30 flex min-w-[116px] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
+                  align === 'right' ? 'right-0' : 'left-0'
+                } ${forkOpenUp ? 'bottom-full pb-1' : 'top-full pt-1'}`}
+              >
+                {FORK_SEED_MODES.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="menuitem"
+                    data-row-fork-seed={mode}
+                    disabled={forkDisabled}
+                    onClick={() => {
+                      triggerFork(mode);
+                    }}
+                    className={MENU_ITEM}
+                  >
+                    <span>{t(`transcript.branch.seed.${mode}`)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </span>
         ) : null}
       </span>
       <button

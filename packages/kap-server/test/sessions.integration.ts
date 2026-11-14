@@ -3397,6 +3397,85 @@ describe('server-v2 /api/sessions', () => {
     expect((meta?.payload as { title?: string } | undefined)?.title).toBe('renamed-via-profile');
   });
 
+  it('updates title, metadata, and privacy on a cold session whose cwd was deleted without resuming it', async () => {
+    const retiredCwd = join(home as string, 'retired-worktree');
+    await mkdir(retiredCwd, { recursive: true });
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: retiredCwd } });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+    const workspaceId = created.body.data.workspace_id;
+
+    const core = (server as RunningServer).core.accessor;
+    const manager = core.get(ISessionManager);
+    await manager.close(id);
+    await core.get(IWorkspaceInstanceManager).close?.(workspaceId);
+    expect(manager.get(id)).toBeUndefined();
+    await rm(retiredCwd, { recursive: true, force: true });
+
+    const index = core.get(ISessionIndex);
+    const beforeSummary = await index.get(id);
+    expect(beforeSummary).toBeDefined();
+    const originalUpdatedAt = beforeSummary!.updatedAt;
+
+    const acquireSpy = vi.spyOn(core.get(IWorkspaceInstanceManager), 'acquire');
+    const events: { type: string; payload: unknown }[] = [];
+    const sub = core.get(IEventService).subscribe((event) => {
+      events.push(event as unknown as { type: string; payload: unknown });
+    });
+
+    try {
+      const renamed = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+        title: 'cold-worktree-renamed',
+      });
+      expect(renamed.body.code).toBe(0);
+      expect(renamed.body.data.title).toBe('cold-worktree-renamed');
+      expect(renamed.body.data.metadata.cwd).toBe(retiredCwd);
+      expect(manager.get(id)).toBeUndefined();
+      expect(acquireSpy).not.toHaveBeenCalled();
+
+      const afterRename = await index.get(id);
+      expect(afterRename?.title).toBe('cold-worktree-renamed');
+      expect(afterRename?.updatedAt).toBe(originalUpdatedAt);
+
+      const pinned = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+        metadata: { 'kiki.pinned': true },
+      });
+      expect(pinned.body.code).toBe(0);
+      expect(pinned.body.data.title).toBe('cold-worktree-renamed');
+      expect(pinned.body.data.metadata['kiki.pinned']).toBe(true);
+      expect(pinned.body.data.metadata.cwd).toBe(retiredCwd);
+      expect(manager.get(id)).toBeUndefined();
+      expect((await index.get(id))?.custom?.['kiki.pinned']).toBe(true);
+
+      const privatized = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+        private: true,
+      });
+      expect(privatized.body.code).toBe(0);
+      expect(privatized.body.data.private).toBe(true);
+      expect(manager.get(id)).toBeUndefined();
+      expect((await index.get(id))?.private).toBe(true);
+
+      const unprivatized = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+        private: false,
+      });
+      expect(unprivatized.body.code).toBe(0);
+      expect(unprivatized.body.data.private).toBe(false);
+      expect(manager.get(id)).toBeUndefined();
+      expect((await index.get(id))?.private).toBe(false);
+      expect(acquireSpy).not.toHaveBeenCalled();
+    } finally {
+      await sub.dispose();
+      acquireSpy.mockRestore();
+    }
+
+    const metaEvents = events.filter((e) => e.type === 'session.meta.updated');
+    expect(metaEvents.map((e) => e.payload)).toEqual([
+      expect.objectContaining({ sessionId: id, title: 'cold-worktree-renamed', patch: expect.objectContaining({ title: 'cold-worktree-renamed', isCustomTitle: true }) }),
+      expect.objectContaining({ sessionId: id, patch: expect.objectContaining({ private: true }) }),
+      expect.objectContaining({ sessionId: id, patch: expect.objectContaining({ private: false }) }),
+    ]);
+  });
+
   it('returns 40401 when updating the profile of a missing session', async () => {
     const { body } = await postJson<null>('/api/sessions/sess_missing_profile/profile', {
       title: 'nope',

@@ -544,7 +544,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 }
 
-function withoutAgentStatistics(agents: SessionMeta['agents']): SessionMeta['agents'] {
+export function withoutAgentStatistics(agents: SessionMeta['agents']): SessionMeta['agents'] {
   return agents === undefined ? undefined : Object.fromEntries(Object.entries(agents).map(([id, agent]) => [
     id, { ...agent, usage: undefined, toolCallCount: undefined },
   ]));

@@ -5,9 +5,10 @@ import { IEventService } from '#/app/event/event';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
-import { normalizeSessionMeta, encodeSessionMeta } from '#/session/sessionMetadata/sessionMetadataService';
+import { normalizeSessionMeta, encodeSessionMeta, withoutAgentStatistics } from '#/session/sessionMetadata/sessionMetadataService';
 
 import { sessionScopeOf, legacySessionMetaScopeOf, workspacePersistenceScope } from './internal/addressing';
 import { SessionArchived } from './sessionLifecycleEvents';
@@ -59,33 +60,96 @@ async function setColdArchived(
   const persisted = normalizeSessionMeta(raw, sessionId);
   const archivedAt = archived ? persisted.archived ? persisted.archivedAt : Date.now() : undefined;
   const nextMeta: SessionMeta = { ...persisted, archived, archivedAt };
-  await docs.set(metaScope, 'state.json', encodeSessionMeta(nextMeta));
+  const encoded = encodeSessionMeta(nextMeta);
+  await docs.set(metaScope, 'state.json', encoded);
   if (legacyMetaScope !== undefined) await docs.delete(legacyMetaScope, 'state.json');
   mirror.record(
     buildSessionSummary({
+      ...encoded,
       id: sessionId,
       workspaceId: summary.workspaceId,
-      cwd: nextMeta.cwd ?? summary.cwd,
-      title: nextMeta.title,
-      lastPrompt: nextMeta.lastPrompt,
-      delivery: nextMeta.delivery,
-      createdAt: nextMeta.createdAt,
-      updatedAt: nextMeta.updatedAt,
-      activityUpdatedAt: nextMeta.activityUpdatedAt,
-      executionPhase: nextMeta.executionPhase,
-      archived,
-      archivedAt,
-      custom: nextMeta.custom,
-      worktree: nextMeta.worktree,
-      usage: nextMeta.usage,
-      agents: nextMeta.agents,
-      lastTurnReason: nextMeta.lastTurnReason,
+      cwd: encoded.cwd ?? summary.cwd,
     }),
   );
   if (archived && !persisted.archived) {
     event.publish(new SessionArchived({ payload: { sessionId } }));
   }
   return 'updated';
+}
+
+export interface ColdSessionProfilePatch {
+  readonly title?: string;
+  readonly private?: boolean;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export type ColdSessionProfileOutcome =
+  | { readonly kind: 'not_found' }
+  | { readonly kind: 'updated'; readonly workspaceId: string; readonly cwd?: string; readonly meta: SessionMeta };
+
+export function updateColdSessionProfile(
+  accessor: ServicesAccessor,
+  sessionId: string,
+  patch: ColdSessionProfilePatch,
+): Promise<ColdSessionProfileOutcome> {
+  const services = archiveServices(accessor);
+  const usageFacts = patch.private === undefined ? undefined : accessor.get(IUsageFactStore);
+  return applyColdProfilePatch(services, usageFacts, sessionId, patch);
+}
+
+async function applyColdProfilePatch(
+  { index, docs, bootstrap, mirror }: ArchiveServices,
+  usageFacts: IUsageFactStore | undefined,
+  sessionId: string,
+  patch: ColdSessionProfilePatch,
+): Promise<ColdSessionProfileOutcome> {
+  const summary = await index.get(sessionId);
+  if (summary === undefined) return { kind: 'not_found' };
+  const metaScope = sessionScopeOf(
+    workspacePersistenceScope(
+      bootstrap.scope('sessions'),
+      summary.workspaceId,
+    ),
+    sessionId,
+  );
+  let raw = await docs.get<SessionMeta>(metaScope, 'state.json');
+  let legacyMetaScope: string | undefined;
+  if (raw === undefined) {
+    legacyMetaScope = legacySessionMetaScopeOf(metaScope);
+    raw = await docs.get<SessionMeta>(legacyMetaScope, 'state.json');
+  }
+  if (raw === undefined) return { kind: 'not_found' };
+  const persisted = normalizeSessionMeta(raw, sessionId);
+  const hasTitle = typeof patch.title === 'string';
+  const hasPrivate = patch.private !== undefined;
+  const hasCustom = patch.metadata !== undefined && Object.keys(patch.metadata).length > 0;
+  if (!hasTitle && !hasPrivate && !hasCustom && legacyMetaScope === undefined) {
+    return { kind: 'updated', workspaceId: summary.workspaceId, cwd: persisted.cwd ?? summary.cwd, meta: persisted };
+  }
+  const isPrivate = patch.private ?? persisted.private;
+  const nextMeta: SessionMeta = {
+    ...persisted,
+    title: hasTitle ? patch.title : persisted.title,
+    titleKind: hasTitle ? 'custom' : persisted.titleKind,
+    private: isPrivate,
+    agents: isPrivate === true && persisted.private !== true ? withoutAgentStatistics(persisted.agents) : persisted.agents,
+    usage: isPrivate === true ? undefined : persisted.usage,
+    custom: hasCustom ? { ...(patch.metadata as Record<string, unknown>) } : persisted.custom,
+    updatedAt: hasPrivate || hasCustom ? Date.now() : persisted.updatedAt,
+  };
+  const cwd = nextMeta.cwd ?? summary.cwd;
+  if (patch.private === true && usageFacts !== undefined) {
+    await usageFacts.setSessionPrivacy(buildSessionSummary({ ...nextMeta, id: sessionId, workspaceId: summary.workspaceId, cwd }));
+  }
+  const encoded = encodeSessionMeta(nextMeta);
+  await docs.set(metaScope, 'state.json', encoded, { cooperative: true });
+  if (legacyMetaScope !== undefined) await docs.delete(legacyMetaScope, 'state.json');
+  const updatedSummary = buildSessionSummary({ ...encoded, id: sessionId, workspaceId: summary.workspaceId, cwd });
+  if (patch.private === false && usageFacts !== undefined) {
+    await usageFacts.setSessionPrivacy(updatedSummary);
+  }
+  mirror.record(updatedSummary);
+  return { kind: 'updated', workspaceId: summary.workspaceId, cwd, meta: nextMeta };
 }
 
 export type SessionArchiveBatchItemOutcome =

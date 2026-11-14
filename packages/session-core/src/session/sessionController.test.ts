@@ -2043,14 +2043,22 @@ describe('SessionController message closure', () => {
     controller.close();
   });
 
-  it('forkFromMessage sends the truncation pair and returns the new session', async () => {
+  it('forkFromMessage sends the truncation pair and optional seed mode, returning the new session', async () => {
     const { controller, client } = await openController();
     const fork = await controller.forkFromMessage('m-user');
     expect(client.forkSession).toHaveBeenCalledWith('session_test', {
       through_message_id: 'm-user',
       expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      seed: undefined,
     });
     expect(fork.id).toBe('session_fork');
+
+    await controller.forkFromMessage('m-user', 'fresh');
+    expect(client.forkSession).toHaveBeenLastCalledWith('session_test', {
+      through_message_id: 'm-user',
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      seed: 'fresh',
+    });
     controller.close();
   });
 
