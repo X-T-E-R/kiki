@@ -47,6 +47,7 @@ describe('inbox model', () => {
       session({ id: 'seen', last_seq: 7, updated_at: '2026-01-01T02:00:00.000Z', last_turn_reason: 'completed' }),
       session({ id: 'empty', last_seq: 0, updated_at: '2026-01-01T06:00:00.000Z' }),
       session({ id: 'archived', archived: true, last_seq: 4, updated_at: '2026-01-01T07:00:00.000Z' }),
+      session({ id: 'priv-unread', private: true, last_seq: 8, updated_at: '2026-01-01T08:00:00.000Z', pending_interaction: 'question' }),
     ];
     const model = buildInboxModel(sessions, { seen: 7 });
     expect(model.unread.map((item) => item.sessionId)).toEqual(['done-new', 'done-old']);

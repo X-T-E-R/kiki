@@ -136,6 +136,8 @@ import type {
   PersonaImportResponse,
   PersonaPutInput,
   PersonaSnapshot,
+  PersonaState,
+  PersonaStateUpdate,
   PersonaSummary,
   PluginUsageRequest,
   PluginUsageResponse,
@@ -1614,6 +1616,13 @@ export class KikiClient {
     body: UpdateSessionProfileRequest,
   ): Promise<Session> {
     return this.run(() => this.rest.sessions.updateProfile(sessionId, body));
+  }
+
+  updateSession(
+    sessionId: string,
+    body: UpdateSessionProfileRequest,
+  ): Promise<Session> {
+    return this.updateSessionProfile(sessionId, body);
   }
 
   /** The persona copy this conversation runs, against the persona's current one. */
@@ -3569,6 +3578,10 @@ export class KikiClient {
 
   archivePersona(id: string, archived: boolean): Promise<{ readonly version: 1; readonly archived: boolean }> {
     return this.run(() => this.rest.personas.archive(id, archived));
+  }
+
+  updatePersona(id: string, patch: PersonaStateUpdate): Promise<PersonaState> {
+    return this.run(() => this.rest.personas.updateState(id, patch));
   }
 
   deletePersona(id: string, expectedRevision?: string): Promise<PersonaDeleteResponse> {

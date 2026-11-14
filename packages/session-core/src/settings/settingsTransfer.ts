@@ -51,6 +51,7 @@ const LAYOUT_KEYS = [
   'sidebarCollapsed',
   'pinnedNavItems',
   'sidebarNavSectionCollapsed',
+  'sidebarPersonaSectionCollapsed',
   'groupBy',
   'sortBy',
 ] as const;
@@ -263,7 +264,7 @@ function writeDesktopSetting(target: Partial<DesktopSettings>, key: LocalSetting
 function validLayoutValue(key: LayoutTransferKey, value: unknown): boolean {
   if (key === 'sidebarWidth') return typeof value === 'number' && Number.isFinite(value);
   if (key === 'railWidth') return typeof value === 'number' && Number.isFinite(value);
-  if (key === 'sidebarCollapsed' || key === 'sidebarNavSectionCollapsed') return typeof value === 'boolean';
+  if (key === 'sidebarCollapsed' || key === 'sidebarNavSectionCollapsed' || key === 'sidebarPersonaSectionCollapsed') return typeof value === 'boolean';
   if (key === 'pinnedNavItems') return Array.isArray(value) && value.every((item) => typeof item === 'string');
   if (key === 'groupBy') return value === 'time' || value === 'workspace' || value === 'none';
   return value === 'updated-desc' || value === 'updated-asc' || value === 'created-desc' || value === 'title';
@@ -293,6 +294,7 @@ function toLocalPreferences(value: SettingsTransferPreferences | undefined): Set
     if (layout.sidebarCollapsed !== undefined) nextLayout.sidebarCollapsed = layout.sidebarCollapsed;
     if (layout.pinnedNavItems !== undefined) nextLayout.pinnedNavItems = [...layout.pinnedNavItems];
     if (layout.sidebarNavSectionCollapsed !== undefined) nextLayout.sidebarNavSectionCollapsed = layout.sidebarNavSectionCollapsed;
+    if (layout.sidebarPersonaSectionCollapsed !== undefined) nextLayout.sidebarPersonaSectionCollapsed = layout.sidebarPersonaSectionCollapsed;
     if (layout.groupBy !== undefined) nextLayout.groupBy = layout.groupBy;
     if (layout.sortBy !== undefined) nextLayout.sortBy = layout.sortBy;
   }
@@ -403,6 +405,7 @@ function readLocalPreferencesFromStorage(): SettingsTransferPreferences | undefi
   if (hasOwn(storedLayout, 'sidebarCollapsed') && validLayoutValue('sidebarCollapsed', layoutPreferences.sidebarCollapsed)) layout.sidebarCollapsed = layoutPreferences.sidebarCollapsed;
   if (hasOwn(storedLayout, 'pinnedNavItems') && validLayoutValue('pinnedNavItems', layoutPreferences.pinnedNavItems)) layout.pinnedNavItems = [...layoutPreferences.pinnedNavItems];
   if (hasOwn(storedLayout, 'sidebarNavSectionCollapsed') && validLayoutValue('sidebarNavSectionCollapsed', layoutPreferences.sidebarNavSectionCollapsed)) layout.sidebarNavSectionCollapsed = layoutPreferences.sidebarNavSectionCollapsed;
+  if (hasOwn(storedLayout, 'sidebarPersonaSectionCollapsed') && validLayoutValue('sidebarPersonaSectionCollapsed', layoutPreferences.sidebarPersonaSectionCollapsed)) layout.sidebarPersonaSectionCollapsed = layoutPreferences.sidebarPersonaSectionCollapsed;
   if (hasOwn(storedLayout, 'groupBy') && validLayoutValue('groupBy', layoutPreferences.groupBy)) layout.groupBy = layoutPreferences.groupBy;
   if (hasOwn(storedLayout, 'sortBy') && validLayoutValue('sortBy', layoutPreferences.sortBy)) layout.sortBy = layoutPreferences.sortBy;
 
@@ -570,6 +573,13 @@ function applyLayoutPatch(
       expected.sidebarNavSectionCollapsed = incoming.sidebarNavSectionCollapsed;
       attempted.push('layout.sidebarNavSectionCollapsed');
     } else if (current?.layout?.sidebarNavSectionCollapsed !== undefined) expected.sidebarNavSectionCollapsed = current.layout.sidebarNavSectionCollapsed;
+  }
+  if (incoming.sidebarPersonaSectionCollapsed !== undefined) {
+    if (preferencePatchAllowed('layout.sidebarPersonaSectionCollapsed', current, mode)) {
+      patch.sidebarPersonaSectionCollapsed = incoming.sidebarPersonaSectionCollapsed;
+      expected.sidebarPersonaSectionCollapsed = incoming.sidebarPersonaSectionCollapsed;
+      attempted.push('layout.sidebarPersonaSectionCollapsed');
+    } else if (current?.layout?.sidebarPersonaSectionCollapsed !== undefined) expected.sidebarPersonaSectionCollapsed = current.layout.sidebarPersonaSectionCollapsed;
   }
   if (incoming.groupBy !== undefined) {
     if (preferencePatchAllowed('layout.groupBy', current, mode)) {

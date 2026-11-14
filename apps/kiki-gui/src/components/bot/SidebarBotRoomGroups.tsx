@@ -76,7 +76,7 @@ export function SidebarBotRoomGroups({
   const bots = visibleBots(botsQuery.data ?? []);
   const sessionById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
   const candidates = [...avatars.values()].filter((persona) =>
-    !persona.archived && (botsQuery.data ?? []).every((bot) => bot.personaId !== persona.id));
+    !persona.archived && !persona.hidden && (botsQuery.data ?? []).every((bot) => bot.personaId !== persona.id));
 
   const openBot = useMutation({
     mutationFn: async (bot: BotSummary) => bot.homeSessionId ?? (await api.ensureBotHome(bot.personaId)).homeSessionId,

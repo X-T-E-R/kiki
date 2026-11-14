@@ -29,7 +29,7 @@ import type { SessionSeenMap } from '../settings/sessionReadState';
 import { pendingKindOf } from './activity';
 import { sessionIsExecuting } from './sessionList';
 
-export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
+export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'last_seq' | 'archived' | 'private' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
 
 /** Why a session is in the inbox. */
 export type InboxReason = 'approval' | 'question' | 'budget' | 'completed' | 'failed' | 'cancelled';
@@ -100,7 +100,7 @@ export function buildInboxModel(
   const needsYou: InboxItem[] = [];
   const unread: InboxItem[] = [];
   for (const session of sessions) {
-    if (session.archived === true) continue;
+    if (session.archived === true || session.private === true) continue;
     const base = {
       sessionId: session.id,
       roomId: session.roomId,

@@ -16,7 +16,10 @@ import { EngineInstanceForm } from '../settings/EngineInstanceForm';
 import { optionValues, pickValue, selectText } from '../settings/testControls';
 import { ProfileSelect } from './ProfileSelect';
 
+const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
+reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 const patchConfig = vi.fn(async () => ({ agent_executor_instances: {} }));
+const listPersonas = vi.fn(async () => []);
 const cached = vi.fn(async () => ({ sources: [
   { id: 'plugin:fixture-quota/example', label: 'Fixture quota', engineIds: ['agy-cli'], minRefreshIntervalMs: 300_000 },
 ] }));
@@ -28,6 +31,7 @@ vi.mock('../../state/connection', () => ({
         'agy-cli': { show_in_profile_list: true },
         'fixture-acp': { show_in_profile_list: true },
       } } }),
+      listPersonas,
       patchConfig,
       klient: { rest: { harnessQuota: { cached } } },
     },
@@ -35,6 +39,7 @@ vi.mock('../../state/connection', () => ({
     meta: { server_id: 'fixture' },
     connectionSource: 'local',
   }),
+  useOptionalConnection: () => null,
 }));
 
 const family = {
@@ -78,6 +83,7 @@ function mount(node: ReactNode): { root: Root; host: HTMLDivElement } {
 afterEach(() => {
   document.body.innerHTML = '';
   patchConfig.mockClear();
+  listPersonas.mockReset().mockResolvedValue([]);
   cached.mockClear();
 });
 
@@ -157,4 +163,43 @@ describe('executor schedule controls', () => {
     expect(host.textContent).not.toContain('Instance-work');
     act(() => { root.unmount(); });
   });
+
+  it('filters hidden personas out of ProfileSelect unless currently bound as the active persona', async () => {
+    listPersonas.mockResolvedValue([
+      { id: 'public-1', name: 'Public Persona', archived: false, hidden: false },
+      { id: 'hidden-1', name: 'Secret Persona', archived: false, hidden: true },
+    ] as never);
+
+    const onSelectPersona = vi.fn();
+    const { root, host } = mount(
+      <ProfileSelect
+        choice={{ executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined }}
+        onChange={() => {}}
+        onSelectPersona={onSelectPersona}
+        catalog={catalog}
+        profiles={[]}
+        nativeLabel="Kiki"
+      />,
+    );
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-profile-trigger]')!.click(); });
+    await vi.waitFor(() => expect(host.querySelector('[data-persona-id="public-1"]')).not.toBeNull());
+    expect(host.querySelector('[data-persona-id="hidden-1"]')).toBeNull();
+    act(() => { root.unmount(); });
+
+    const bound = mount(
+      <ProfileSelect
+        choice={{ executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined }}
+        onChange={() => {}}
+        persona={{ id: 'hidden-1', name: 'Secret Persona', avatar: null }}
+        onSelectPersona={onSelectPersona}
+        catalog={catalog}
+        profiles={[]}
+        nativeLabel="Kiki"
+      />,
+    );
+    await act(async () => { bound.host.querySelector<HTMLButtonElement>('[data-profile-trigger]')!.click(); });
+    await vi.waitFor(() => expect(bound.host.querySelector('[data-persona-id="hidden-1"]')).not.toBeNull());
+    act(() => { bound.root.unmount(); });
+  });
 });
+

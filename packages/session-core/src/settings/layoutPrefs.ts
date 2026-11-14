@@ -17,6 +17,8 @@ import { isSessionSortOrder, type SessionSortOrder } from '../sessions/sessionLi
 export type SessionStatusFilter = 'running' | 'needs-me' | 'cleanup-pending' | 'idle';
 /** Archived visibility: hidden (default), included, or archived only. */
 export type SessionArchivedFilter = 'hide' | 'include' | 'only';
+/** Private visibility: hidden (default), included, or private only. */
+export type SessionPrivateFilter = 'hide' | 'include' | 'only';
 
 export interface SessionListFilters {
   /** Empty = any status; several = OR within the dimension. */
@@ -24,6 +26,8 @@ export interface SessionListFilters {
   /** Empty = every workspace; several = OR within the dimension. */
   workspaces: readonly string[];
   archived: SessionArchivedFilter;
+  /** Undefined or `hide` excludes private sessions; `include` shows all; `only` shows private only. */
+  private?: SessionPrivateFilter;
 }
 
 export const DEFAULT_SESSION_LIST_FILTERS: SessionListFilters = {
@@ -107,6 +111,8 @@ export interface LayoutPreferences extends SessionListPreferences {
   pinnedNavItems: readonly SidebarNavKey[];
   /** Whether that secondary navigation section is folded. Default: folded. */
   sidebarNavSectionCollapsed?: boolean;
+  /** Whether the sidebar persona group is folded. Default: expanded (`false`). */
+  sidebarPersonaSectionCollapsed?: boolean;
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 264;
@@ -166,7 +172,12 @@ export function parseSessionListFilters(value: unknown): SessionListFilters {
   const archivedRaw = record['archived'];
   const archived: SessionArchivedFilter =
     archivedRaw === 'include' || archivedRaw === 'only' ? archivedRaw : 'hide';
-  return { status, workspaces, archived };
+  const privateRaw = record['private'];
+  const privateFilter: SessionPrivateFilter =
+    privateRaw === 'include' || privateRaw === 'only' ? privateRaw : 'hide';
+  return privateFilter === 'hide'
+    ? { status, workspaces, archived }
+    : { status, workspaces, archived, private: privateFilter };
 }
 
 function readObject(key: string): Record<string, unknown> {
@@ -194,6 +205,9 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarNavSectionCollapsed = typeof stored['sidebarNavSectionCollapsed'] === 'boolean'
     ? stored['sidebarNavSectionCollapsed']
     : DEFAULT_LAYOUT_PREFERENCES.sidebarNavSectionCollapsed;
+  const sidebarPersonaSectionCollapsed = typeof stored['sidebarPersonaSectionCollapsed'] === 'boolean'
+    ? stored['sidebarPersonaSectionCollapsed']
+    : undefined;
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
@@ -212,6 +226,7 @@ export function readLayoutPreferences(): LayoutPreferences {
     railOpen: typeof railOpen === 'boolean' ? railOpen : undefined,
     pinnedNavItems,
     sidebarNavSectionCollapsed,
+    ...(sidebarPersonaSectionCollapsed !== undefined ? { sidebarPersonaSectionCollapsed } : {}),
   };
 }
 
@@ -286,6 +301,11 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
     sidebarNavSectionCollapsed: patch.sidebarNavSectionCollapsed !== undefined
       ? patch.sidebarNavSectionCollapsed
       : current.sidebarNavSectionCollapsed,
+    ...(patch.sidebarPersonaSectionCollapsed !== undefined
+      ? { sidebarPersonaSectionCollapsed: patch.sidebarPersonaSectionCollapsed }
+      : current.sidebarPersonaSectionCollapsed !== undefined
+        ? { sidebarPersonaSectionCollapsed: current.sidebarPersonaSectionCollapsed }
+        : {}),
   };
   // Every write stores the whole record, so an unrelated write (a width, the
   // grouping) would otherwise save the default tool list as if it had been
@@ -299,4 +319,8 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
     // Storage is a convenience; in-memory state remains authoritative.
   }
   return publish(next);
+}
+
+export function setSidebarPersonaSectionCollapsed(collapsed: boolean): LayoutPreferences {
+  return writeLayoutPreferences({ sidebarPersonaSectionCollapsed: collapsed });
 }

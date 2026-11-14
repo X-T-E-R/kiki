@@ -382,4 +382,35 @@ describe('handing a new persona to Kiki', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/memory?persona=imported-bot');
   });
 
+  it('hides hidden personas from the default roster, discloses them via Hidden (N), and keeps deep links working', async () => {
+    const HIDDEN_NIA: PersonaSummary = {
+      id: 'nia-whisper',
+      name: 'Nia Whisper',
+      title: 'Private companion',
+      revision: 'revision-2',
+      archived: false,
+      hidden: true,
+    };
+    listPersonas.mockResolvedValue([LIN_LAN, HIDDEN_NIA]);
+
+    const container = await render('/personas');
+    expect(container.querySelector('[data-persona-row="xiao-you"]')).not.toBeNull();
+    expect(container.querySelector('[data-persona-row="nia-whisper"]')).toBeNull();
+
+    const showHiddenBtn = container.querySelector<HTMLButtonElement>('[data-persona-show-hidden]')!;
+    expect(showHiddenBtn).not.toBeNull();
+    expect(showHiddenBtn.textContent).toContain('已隐藏 (1)');
+    expect(showHiddenBtn.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => { showHiddenBtn.click(); });
+    expect(showHiddenBtn.getAttribute('aria-expanded')).toBe('true');
+    const hiddenRow = container.querySelector('[data-persona-row="nia-whisper"]');
+    expect(hiddenRow).not.toBeNull();
+    expect(hiddenRow?.querySelector('[data-persona-hidden-tag]')?.textContent).toBe('已隐藏');
+
+    getPersona.mockResolvedValue(snapshot({ id: 'nia-whisper', name: 'Nia Whisper', description: 'Quiet.' }));
+    const deepLinked = await render('/personas?persona=nia-whisper');
+    expect(deepLinked.querySelector('[data-persona-row="nia-whisper"]')).not.toBeNull();
+  });
+
 });

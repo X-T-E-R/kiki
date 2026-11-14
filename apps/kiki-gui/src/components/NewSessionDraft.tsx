@@ -62,6 +62,7 @@ import {
 import { DEFAULT_AGENT_PROFILE } from './Composer';
 import { applyPendingNewSessionCapabilities, bindPendingNewSessionDraft } from './capabilities/newSessionCapabilities';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
+import { usePersonaList } from './persona/usePersonas';
 import { useHost } from '../host';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
 import {
@@ -338,6 +339,7 @@ export function buildNewSessionCreate(input: {
   /** Opt-in only: run in a fresh Kiki-managed worktree of the target repository. */
   readonly worktree?: boolean;
   readonly ephemeral?: boolean;
+  readonly private?: boolean;
   /**
    * Bind a persona. Its own profile then applies (the profile field is left
    * out so the server does not override it with the default), and model /
@@ -400,7 +402,11 @@ export function buildNewSessionCreate(input: {
     ...(input.creation_id !== undefined ? { creation_id: input.creation_id } : {}),
     metadata,
     workspace_id: input.cwd === '' ? input.workspaceId : undefined,
-    ...persona, agent_config, ...isolation, ephemeral: input.ephemeral,
+    ...persona,
+    agent_config,
+    ...isolation,
+    ephemeral: input.ephemeral,
+    private: input.private ? true : undefined,
   };
 }
 
@@ -516,9 +522,23 @@ export function useNewSessionDraft({
   // Remembered for this window only, so a new window never starts temporary
   // without the user choosing it again.
   const [ephemeral, setEphemeralState] = useState(ephemeralForWindow);
+  const [privateSession, setPrivateSessionState] = useState(false);
+  const privateTouched = useRef(false);
   const setEphemeral = useCallback((value: boolean) => {
     ephemeralForWindow = value;
     setEphemeralState(value);
+    if (value) {
+      privateTouched.current = true;
+      setPrivateSessionState(false);
+    }
+  }, []);
+  const setPrivateSession = useCallback((value: boolean) => {
+    privateTouched.current = true;
+    setPrivateSessionState(value);
+    if (value) {
+      ephemeralForWindow = false;
+      setEphemeralState(false);
+    }
   }, []);
   const [modelOverride, setModelOverrideState] = useState(() =>
     resolveSessionModelOverride(initialRestoredDraft.modelOverride),
@@ -547,6 +567,22 @@ export function useNewSessionDraft({
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(restoredPersona);
   const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
   const [personaPending, setPersonaPending] = useState(restoredPersona !== undefined);
+  const personaListQuery = usePersonaList({ enabled: selectedPersonaId !== undefined });
+  useEffect(() => {
+    if (privateTouched.current) return;
+    if (selectedPersonaId === undefined) {
+      setPrivateSessionState(false);
+      return;
+    }
+    if (personaListQuery.data === undefined) return;
+    const summary = personaListQuery.data.find((item) => item.id === selectedPersonaId);
+    const shouldBePrivate = summary?.hidden === true;
+    setPrivateSessionState(shouldBePrivate);
+    if (shouldBePrivate) {
+      ephemeralForWindow = false;
+      setEphemeralState(false);
+    }
+  }, [selectedPersonaId, personaListQuery.data]);
   const [selectionRevision, setSelectionRevision] = useState(0);
   const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
   const profileCatalogTransitionRef = useRef(false);
@@ -849,6 +885,7 @@ export function useNewSessionDraft({
     goalObjective,
     worktree,
     ephemeral,
+    privateSession,
     persona,
   });
   sendContextRef.current = {
@@ -866,6 +903,7 @@ export function useNewSessionDraft({
     goalObjective,
     worktree,
     ephemeral,
+    privateSession,
     persona,
   };
 
@@ -1022,6 +1060,7 @@ export function useNewSessionDraft({
       permissionTouched: permissionTouched.current,
       worktree: context.worktree,
       ephemeral: context.ephemeral || undefined,
+      private: context.privateSession || undefined,
       persona: context.persona?.definition.id,
       personaHome: isDailyDraft,
     });
@@ -1532,6 +1571,8 @@ export function useNewSessionDraft({
     setWorktreeRequested,
     ephemeral,
     setEphemeral,
+    privateSession,
+    setPrivateSession,
     agentProfileCatalogMode,
     agentProfileCatalogPending,
     needsProviderSetup: providerSetupNeeded,

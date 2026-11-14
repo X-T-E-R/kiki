@@ -239,8 +239,8 @@ export type SessionCreate = z.infer<typeof sessionCreateSchema>;
 
 export const sessionUpdateSchema = z.object({
   title: z.string().min(1).optional(),
-  private: z.boolean().optional(),
   delivery: sessionDeliverySchema.optional(),
+  private: z.boolean().optional(),
   metadata: sessionMetadataSchema.partial().optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
   permission_rules: z.array(permissionRuleSchema).optional(),

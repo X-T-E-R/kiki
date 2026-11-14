@@ -27,6 +27,7 @@ export const settingsTransferPreferencesSchema = z.object({
     sidebarCollapsed: z.boolean().optional(),
     pinnedNavItems: z.array(z.enum(['cron', 'memory', 'personas', 'usage', 'capabilities', 'discover'])).max(6).optional(),
     sidebarNavSectionCollapsed: z.boolean().optional(),
+    sidebarPersonaSectionCollapsed: z.boolean().optional(),
     groupBy: z.enum(['time', 'workspace', 'none']).optional(),
     sortBy: z.enum(['updated-desc', 'updated-asc', 'created-desc', 'title']).optional(),
   }).strict().optional(),

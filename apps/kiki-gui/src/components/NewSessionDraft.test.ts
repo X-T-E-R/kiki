@@ -15,6 +15,7 @@ import {
   buildNewSessionCreate,
   isAbsoluteCwdPath,
   isAbsoluteRemoteCwdPath,
+  resetEphemeralChoiceForTests,
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
@@ -34,7 +35,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     listModels: vi.fn(),
     listExecutors: vi.fn(async () => ({ items: [{ id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' }] })),
     listDraftSkills: vi.fn(async () => ({ skills: [] })),
-    listPersonas: vi.fn(async () => []),
+    listPersonas: vi.fn<() => Promise<unknown[]>>(async () => []),
     meta: vi.fn(async () => ({ experimental_flags: { native_ssh: false } })),
     listNamedAgentProfiles: vi.fn(),
     getAuth: vi.fn(),
@@ -81,8 +82,10 @@ beforeEach(() => {
   configureSpaceStorage(null);
   resetDraftMemoryForTests();
   resetComposerMemoryForTests();
+  resetEphemeralChoiceForTests();
   localStorage.clear();
   navigate.mockReset();
+  client.listPersonas.mockReset().mockResolvedValue([]);
   client.listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [] });
   client.klient.rest.workspaces.inspect.mockReset().mockResolvedValue({ isGit: false });
   client.klient.rest.agents.previewFile.mockReset();
@@ -3668,3 +3671,63 @@ describe('new-session real dirty navigation handoff', () => {
     }
   });
 });
+
+describe('private session draft & hidden-persona linkage', () => {
+  it('passes private: true in SessionCreate and keeps privateSession mutually exclusive with ephemeral', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] });
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady && !value.agentProfileCatalogPending);
+    expect(state.privateSession).toBe(false);
+    expect(state.ephemeral).toBe(false);
+
+    await act(async () => { state.setEphemeral(true); });
+    state = latestDraftState!;
+    expect(state.ephemeral).toBe(true);
+    expect(state.privateSession).toBe(false);
+
+    await act(async () => { state.setPrivateSession(true); });
+    state = latestDraftState!;
+    expect(state.privateSession).toBe(true);
+    expect(state.ephemeral).toBe(false);
+
+    await act(async () => { await state.send('Private hello', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    const createdBody = client.createSession.mock.calls[0]?.[0] as SessionCreate;
+    expect(sessionCreateSchema.safeParse(createdBody).success).toBe(true);
+    expect(createdBody.private).toBe(true);
+    expect(createdBody.ephemeral).toBeUndefined();
+  });
+
+  it('auto-enables privateSession for a hidden persona unless the user explicitly toggled it off', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] });
+    client.listPersonas.mockResolvedValue([
+      { id: 'hidden-role', name: 'Hidden Role', archived: false, hidden: true },
+      { id: 'public-role', name: 'Public Role', archived: false, hidden: false },
+    ]);
+    client.getPersona.mockImplementation(async (id: string) => ({
+      definition: { id, name: id === 'hidden-role' ? 'Hidden Role' : 'Public Role', profile: 'agent' },
+      systemPrompt: 'prompt',
+    }));
+
+    await renderDraft({ initialPersona: 'hidden-role' });
+    let state = await settleDraft((value) => value.persona?.definition.id === 'hidden-role' && value.privateSession === true);
+    expect(state.privateSession).toBe(true);
+
+    // Switching to a public persona before manual touch resets auto-enabled privateSession.
+    await act(async () => { state.selectPersona('public-role'); });
+    state = await settleDraft((value) => value.persona?.definition.id === 'public-role' && value.privateSession === false);
+    expect(state.privateSession).toBe(false);
+
+    // Switching back to the hidden persona auto-enables it again, and user override sticks.
+    await act(async () => { state.selectPersona('hidden-role'); });
+    state = await settleDraft((value) => value.persona?.definition.id === 'hidden-role' && value.privateSession === true);
+    await act(async () => { state.setPrivateSession(false); });
+    state = latestDraftState!;
+    expect(state.privateSession).toBe(false);
+
+    await act(async () => { await state.send('Explicitly non-private message', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect((client.createSession.mock.calls[0]?.[0] as SessionCreate).private).toBeUndefined();
+  });
+});
+

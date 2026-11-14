@@ -18,7 +18,7 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
-export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
+export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'private' | 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction'>;
 
 export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'cleanup_pending' | 'main_turn_active' | 'pending_interaction' | 'last_turn_reason'> & {
   readonly sessionId: string;
@@ -455,20 +455,25 @@ export interface SessionFilterInput {
   readonly status: readonly ('running' | 'needs-me' | 'cleanup-pending' | 'idle')[];
   readonly workspaces: readonly string[];
   readonly archived: 'hide' | 'include' | 'only';
+  readonly private?: 'hide' | 'include' | 'only';
 }
 
 /**
  * Apply the composable sidebar filters client-side. Dimensions AND together;
- * entries within one dimension OR. Archived `hide` also drops archived rows a
- * caller may still hold from an earlier include fetch.
+ * entries within one dimension OR. Archived and private `hide` also drop rows a
+ * caller may still hold from an earlier include fetch or live event.
  */
 export function filterSessions<T extends SessionListEntry>(sessions: readonly T[], filters: SessionFilterInput): T[] {
   const status = new Set(filters.status);
   const workspaces = new Set(filters.workspaces);
+  const privateFilter = filters.private ?? 'hide';
   return sessions.filter((session) => {
     const archived = session.archived === true;
     if (filters.archived === 'hide' && archived) return false;
     if (filters.archived === 'only' && !archived) return false;
+    const isPrivate = session.private === true;
+    if (privateFilter === 'hide' && isPrivate) return false;
+    if (privateFilter === 'only' && !isPrivate) return false;
     if (workspaces.size > 0 && !workspaces.has(session.workspace_id)) return false;
     if (status.size > 0 && !status.has(sessionStatusOf(session))) return false;
     return true;
@@ -477,5 +482,10 @@ export function filterSessions<T extends SessionListEntry>(sessions: readonly T[
 
 /** True when any filter narrows the list (drives the chip row + empty copy). */
 export function hasActiveSessionFilters(filters: SessionFilterInput): boolean {
-  return filters.status.length > 0 || filters.workspaces.length > 0 || filters.archived !== 'hide';
+  return (
+    filters.status.length > 0
+    || filters.workspaces.length > 0
+    || filters.archived !== 'hide'
+    || (filters.private ?? 'hide') !== 'hide'
+  );
 }

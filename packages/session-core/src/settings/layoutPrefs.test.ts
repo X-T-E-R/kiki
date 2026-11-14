@@ -8,6 +8,7 @@ import {
   RAIL_MIN_WIDTH,
   readLayoutPreferences,
   resetLayoutPreferencesForTests,
+  setSidebarPersonaSectionCollapsed,
   shownPinnedNavItems,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -59,12 +60,12 @@ describe('readLayoutPreferences', () => {
     ls().setItem('kiki.layout', JSON.stringify({
       groupBy: 'none',
       sortBy: 'created-desc',
-      filters: { status: ['running', 'cleanup-pending', 'bogus'], workspaces: ['ws-a', 'ws-a', 3], archived: 'only' },
+      filters: { status: ['running', 'cleanup-pending', 'bogus'], workspaces: ['ws-a', 'ws-a', 3], archived: 'only', private: 'only' },
     }));
     const prefs = readLayoutPreferences();
     expect(prefs.groupBy).toBe('none');
     expect(prefs.sortBy).toBe('created-desc');
-    expect(prefs.filters).toEqual({ status: ['running', 'cleanup-pending'], workspaces: ['ws-a'], archived: 'only' });
+    expect(prefs.filters).toEqual({ status: ['running', 'cleanup-pending'], workspaces: ['ws-a'], archived: 'only', private: 'only' });
   });
 
   it('falls back to default filters for a malformed value', () => {
@@ -162,7 +163,9 @@ describe('writeLayoutPreferences', () => {
     expect(next.railWidth).toBe(RAIL_MIN_WIDTH);
   });
 
-  it('writes and updates pinnedNavItems and sidebarNavSectionCollapsed', () => {
+  it('writes and updates pinnedNavItems, sidebarNavSectionCollapsed and sidebarPersonaSectionCollapsed', () => {
+    resetLayoutPreferencesForTests();
+    expect(readLayoutPreferences().sidebarPersonaSectionCollapsed).toBeUndefined();
     const next = writeLayoutPreferences({
       pinnedNavItems: ['usage', 'capabilities'],
       sidebarNavSectionCollapsed: false,
@@ -171,6 +174,10 @@ describe('writeLayoutPreferences', () => {
     expect(next.sidebarNavSectionCollapsed).toBe(false);
     expect(readLayoutPreferences().pinnedNavItems).toEqual(['usage', 'capabilities']);
     expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(false);
+    expect(setSidebarPersonaSectionCollapsed(true).sidebarPersonaSectionCollapsed).toBe(true);
+    expect(readLayoutPreferences().sidebarPersonaSectionCollapsed).toBe(true);
+    expect(setSidebarPersonaSectionCollapsed(false).sidebarPersonaSectionCollapsed).toBe(false);
+    expect(readLayoutPreferences().sidebarPersonaSectionCollapsed).toBe(false);
   });
 });
 

@@ -47,6 +47,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   const { t, tp } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [importing, setImporting] = useState(false);
   const listQuery = usePersonaList({ includeArchived: true });
@@ -73,7 +74,12 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   // it, and a query typed before it went away stops narrowing the list.
   const searchable = all.length >= LIST_TOOLS_MIN_ITEMS;
   const query = searchable ? search.trim() : '';
-  const visible = all.filter((item) => (showArchived || !item.archived || item.id === selectedId) && matchesPersona(item, query));
+  const visible = all.filter((item) => {
+    const archivedAllowed = showArchived || !item.archived || item.id === selectedId;
+    const hiddenAllowed = query !== '' || showHidden || item.hidden !== true || item.id === selectedId;
+    return archivedAllowed && hiddenAllowed && matchesPersona(item, query);
+  });
+  const hiddenCount = all.filter((item) => !item.archived && item.hidden === true).length;
   const archivedCount = all.filter((item) => item.archived).length;
   const selected = all.find((item) => item.id === selectedId);
 
@@ -187,19 +193,35 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                     ))}
                   </ul>
                 )}
-                {/* Archived personas stay out of the roster until asked for:
-                    one quiet row at the end says how many there are. */}
-                {archivedCount > 0 ? (
-                  <button
-                    type="button"
-                    data-persona-show-archived
-                    aria-expanded={showArchived}
-                    onClick={() => { setShowArchived((shown) => !shown); }}
-                    className="mt-2 inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                  >
-                    {tp('persona.archivedRow', archivedCount)}
-                    <DisclosureChevron open={showArchived} className="text-ink-faint" />
-                  </button>
+                {/* Hidden and archived personas stay out of the roster until
+                    asked for: quiet footer disclosures say how many there are. */}
+                {hiddenCount > 0 || archivedCount > 0 ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    {hiddenCount > 0 ? (
+                      <button
+                        type="button"
+                        data-persona-show-hidden
+                        aria-expanded={showHidden}
+                        onClick={() => { setShowHidden((shown) => !shown); }}
+                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                      >
+                        {tp('persona.hiddenRow', hiddenCount)}
+                        <DisclosureChevron open={showHidden} className="text-ink-faint" />
+                      </button>
+                    ) : null}
+                    {archivedCount > 0 ? (
+                      <button
+                        type="button"
+                        data-persona-show-archived
+                        aria-expanded={showArchived}
+                        onClick={() => { setShowArchived((shown) => !shown); }}
+                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                      >
+                        {tp('persona.archivedRow', archivedCount)}
+                        <DisclosureChevron open={showArchived} className="text-ink-faint" />
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
               <div className={`min-w-0 md:border-l md:border-hairline md:pl-6 ${detailOpen ? '' : 'max-md:hidden'}`}>
@@ -305,6 +327,7 @@ function PersonaRow({ persona, active, onOpen }: { readonly persona: PersonaSumm
         <span className="flex min-w-0 items-baseline gap-2">
           <span className={`min-w-0 truncate text-[13.5px] ${active ? 'font-medium text-ink' : persona.archived ? 'text-ink-soft' : 'text-ink'}`}>{persona.name}</span>
           {persona.title !== undefined ? <span className="min-w-0 shrink-[2] truncate text-[12px] text-section-ink">{persona.title}</span> : null}
+          {persona.hidden === true && !persona.archived ? <span data-persona-hidden-tag className="shrink-0 text-[11px] text-ink-faint">{t('persona.hiddenTag')}</span> : null}
           {persona.archived ? <span className="shrink-0 text-[11px] text-ink-faint">{t('persona.archivedTag')}</span> : null}
         </span>
         {persona.job !== undefined ? <span className="truncate text-[12px] leading-4 text-ink-faint">{persona.job}</span> : null}

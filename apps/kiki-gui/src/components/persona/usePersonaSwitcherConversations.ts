@@ -26,7 +26,7 @@ export function usePersonaSwitcherConversations(personaId: string | undefined, o
   const hasValidPersona = Boolean(personaId && personaId.trim() !== '');
   return useQuery({
     queryKey: personaSwitcherQueryKey(personaId),
-    queryFn: () => client.listSessions({ persona: personaId!, page_size: PAGE_SIZE }),
+    queryFn: () => client.listSessions({ persona: personaId!, page_size: PAGE_SIZE, include_private: true }),
     enabled: open && hasValidPersona,
     staleTime: 15_000,
   });

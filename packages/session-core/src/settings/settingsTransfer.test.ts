@@ -106,7 +106,7 @@ describe('local settings transfer projection', () => {
     localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'dark' }));
     const incoming = settingsTransferPreferencesSchema.parse({
       settings: { theme: 'light', proseFont: 'sans' },
-      layout: { sidebarWidth: 340 },
+      layout: { sidebarWidth: 340, sidebarPersonaSectionCollapsed: true },
       desktop: { closeToTray: false },
       locale: 'zh',
     });
@@ -115,7 +115,7 @@ describe('local settings transfer projection', () => {
     expect(append.status).toBe('complete');
     expect(readLocalSettingsTransferPreferences()).toEqual({
       settings: { theme: 'dark', proseFont: 'sans' },
-      layout: { sidebarWidth: 340 },
+      layout: { sidebarWidth: 340, sidebarPersonaSectionCollapsed: true },
       desktop: { closeToTray: false },
       locale: 'zh',
     });

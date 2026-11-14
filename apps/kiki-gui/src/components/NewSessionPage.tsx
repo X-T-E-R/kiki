@@ -44,6 +44,7 @@ import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
+import { PrivateSessionOption } from './PrivateSessionOption';
 import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
 import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
@@ -531,6 +532,7 @@ function NewSessionPageContent({
             <div data-hero-target className="mt-5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
               <span className="-ml-3 inline-flex"><HeroWorkspaceChip state={state} /></span>
               <EphemeralOption state={state} />
+              <PrivateSessionOption state={state} />
               <WorktreeOption state={state} />
               <span className="ml-auto inline-flex"><LocalSessionsEntry /></span>
             </div>

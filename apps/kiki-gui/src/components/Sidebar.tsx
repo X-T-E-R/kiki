@@ -75,6 +75,7 @@ import {
   shownPinnedNavItems,
   writeLayoutPreferences,
   type SessionArchivedFilter,
+  type SessionPrivateFilter,
   type SessionSeenMap,
   type SessionListFilters,
   type SessionStatusFilter,
@@ -456,7 +457,50 @@ function PrimaryNav({
 
   return (
     <nav aria-label={t('nav.aria')} data-primary-nav className="px-2 pb-2">
-      <ul className="space-y-px">{primaryItems.map(renderNavItem)}</ul>
+      <ul className="space-y-px">
+        {primaryItems.map(renderNavItem)}
+        {pluginSidebarPanels.map((panel) => {
+          const panelKey = `${panel.pluginId}:${panel.panelId}`;
+          const current = activeInSessionPanelKey === panelKey || activePanelParam === panelKey;
+          const title = resolvePluginLocalizedText(panel.title, locale);
+          const iconName = resolvePluginSlotIconName({
+            icon: (panel as { readonly icon?: string }).icon,
+            pluginId: panel.pluginId,
+            panelId: panel.panelId,
+            fallback: 'star',
+          });
+          return (
+            <li key={panelKey} data-plugin-sidebar-panels="">
+              <button
+                type="button"
+                data-plugin-sidebar-panel={panelKey}
+                aria-current={current ? 'page' : undefined}
+                onClick={() => {
+                  openSidebarPluginPanel({
+                    pluginId: panel.pluginId,
+                    panelId: panel.panelId,
+                    title,
+                    activeSessionId,
+                    reachableSessionId,
+                    activeWorkspaceId,
+                    currentPathname: location.pathname,
+                    navigate,
+                    onCloseSidebar,
+                  });
+                }}
+                className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
+                  current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+                }`}
+              >
+                <span className={current ? 'text-ink' : 'text-ink-faint'}>
+                  <Icon name={iconName} size={16} className={ICON} />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{title}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
       {secondaryItems.length > 0 ? (
         <div data-sidebar-secondary-nav className="space-y-px pt-1">
           {sectionCollapsed ? (
@@ -504,51 +548,6 @@ function PrimaryNav({
           )}
         </div>
       ) : null}
-      {pluginSidebarPanels.length > 0 ? (
-        <ul data-plugin-sidebar-panels className="space-y-px pt-1">
-          {pluginSidebarPanels.map((panel) => {
-            const panelKey = `${panel.pluginId}:${panel.panelId}`;
-            const current = activeInSessionPanelKey === panelKey || activePanelParam === panelKey;
-            const title = resolvePluginLocalizedText(panel.title, locale);
-            const iconName = resolvePluginSlotIconName({
-              icon: (panel as { readonly icon?: string }).icon,
-              pluginId: panel.pluginId,
-              panelId: panel.panelId,
-              fallback: 'star',
-            });
-            return (
-              <li key={panelKey}>
-                <button
-                  type="button"
-                  data-plugin-sidebar-panel={panelKey}
-                  aria-current={current ? 'page' : undefined}
-                  onClick={() => {
-                    openSidebarPluginPanel({
-                      pluginId: panel.pluginId,
-                      panelId: panel.panelId,
-                      title,
-                      activeSessionId,
-                      reachableSessionId,
-                      activeWorkspaceId,
-                      currentPathname: location.pathname,
-                      navigate,
-                      onCloseSidebar,
-                    });
-                  }}
-                  className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
-                    current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
-                  }`}
-                >
-                  <span className={current ? 'text-ink' : 'text-ink-faint'}>
-                    <Icon name={iconName} size={16} />
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{title}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
     </nav>
   );
 }
@@ -573,6 +572,10 @@ function CollapsedSidebarRail({
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
+  const layoutPrefs = useLayoutPreferences();
+  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
+  const primaryRailItems = useMemo(() => NAV_ITEMS.filter((item) => pinnedSet.has(item.key)), [pinnedSet]);
+  const secondaryRailItems = useMemo(() => NAV_ITEMS.filter((item) => !pinnedSet.has(item.key)), [pinnedSet]);
   const sessionPluginPanel = useSessionPluginPanelSnapshot();
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: activeSessionId,
@@ -592,6 +595,26 @@ function CollapsedSidebarRail({
     (activeSessionId === undefined || sessionPluginPanel.sessionId === activeSessionId)
       ? sessionPluginPanel.activePluginPanelKey
       : undefined;
+  const renderRailNavItem = (item: (typeof NAV_ITEMS)[number]) => {
+    const current = location.pathname === item.route
+      || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
+    const label = item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`);
+    const ItemIcon = item.icon;
+    return (
+      <button
+        key={item.key}
+        type="button"
+        {...item.hook}
+        aria-current={current ? 'page' : undefined}
+        aria-label={label}
+        title={label}
+        onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+        className={RAIL_ICON}
+      >
+        <span className="relative"><ItemIcon />{item.key === 'usage' ? <RequestGovernanceBadge compact /> : null}</span>
+      </button>
+    );
+  };
   return (
     <>
       <nav aria-label={t('nav.aria')} data-sidebar-rail className="flex flex-col items-center gap-1 px-2 pt-3">
@@ -605,26 +628,7 @@ function CollapsedSidebarRail({
         >
           <span className="text-accent"><Icon name="plus" size={16} /></span>
         </button>
-        {NAV_ITEMS.map((item) => {
-          const current = location.pathname === item.route
-            || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
-          const label = item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`);
-          const ItemIcon = item.icon;
-          return (
-            <button
-              key={item.key}
-              type="button"
-              {...item.hook}
-              aria-current={current ? 'page' : undefined}
-              aria-label={label}
-              title={label}
-              onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-              className={RAIL_ICON}
-            >
-              <span className="relative"><ItemIcon />{item.key === 'usage' ? <RequestGovernanceBadge compact /> : null}</span>
-            </button>
-          );
-        })}
+        {primaryRailItems.map(renderRailNavItem)}
         {pluginSidebarPanels.map((panel) => {
           const panelKey = `${panel.pluginId}:${panel.panelId}`;
           const current = activeInSessionPanelKey === panelKey || activePanelParam === panelKey;
@@ -661,6 +665,7 @@ function CollapsedSidebarRail({
             </button>
           );
         })}
+        {secondaryRailItems.map(renderRailNavItem)}
       </nav>
       <div className="mt-auto flex flex-col items-center gap-1 px-2 pb-3">
         <button
@@ -946,13 +951,14 @@ export function Sidebar({
     () => sessionGroups.flatMap((group) => group.items).flatMap((item) => (item.kind === 'session' ? [item.session] : [])),
     [sessionGroups],
   );
-  const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide';
+  const privateFilter = filters.private ?? 'hide';
+  const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide' || privateFilter !== 'hide';
   const allowedSessionIds = useMemo(
     () => (narrowsBeyondWorkspace ? new Set(visibleSessions.map((session) => session.id)) : undefined),
     [narrowsBeyondWorkspace, visibleSessions],
   );
   const searchableSessions = useMemo(
-    () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true)),
+    () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
     [narrowsBeyondWorkspace, visibleSessions, sessions],
   );
   const search = useSessionSearch({
@@ -988,7 +994,9 @@ export function Sidebar({
   }, []);
 
   const setFilters = (patch: Partial<SessionListFilters>) => {
-    onFiltersChange({ ...filters, ...patch });
+    const merged = { ...filters, ...patch };
+    const { private: nextPrivate, ...rest } = merged;
+    onFiltersChange(nextPrivate !== undefined && nextPrivate !== 'hide' ? { ...rest, private: nextPrivate } : rest);
   };
   const toggleStatus = (status: SessionStatusFilter) => {
     setFilters({
@@ -1029,6 +1037,33 @@ export function Sidebar({
       .then(() => { refreshSessions(); })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
+      });
+  };
+
+  const togglePrivate = (session: Session) => {
+    setMenu(null);
+    setActionError(null);
+    const nextPrivate = session.private !== true;
+    void client
+      .updateSession(session.id, { private: nextPrivate })
+      .then((updated) => {
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+          old === undefined || !Array.isArray(old.pages)
+            ? old
+            : {
+                ...old,
+                pages: old.pages.map((page) => ({
+                  ...page,
+                  items: page.items.map((item) => (item.id === session.id ? { ...item, ...updated, private: nextPrivate } : item)),
+                })),
+              },
+        );
+        refreshSessions();
+        void queryClient.invalidateQueries({ queryKey: ['global-search'] });
+        pushToast({ tone: 'success', text: t(nextPrivate ? 'private.madeToast' : 'private.exitedToast') });
+      })
+      .catch((error: unknown) => {
+        setActionError(t('private.updateFailed', { detail: errorText(locale, error) }));
       });
   };
 
@@ -1301,6 +1336,13 @@ export function Sidebar({
           label: filters.archived === 'only' ? t('sidebar.filterArchivedOnly') : t('sidebar.filterArchived'),
           clear: () => { setFilters({ archived: 'hide' }); },
         }]),
+    ...(privateFilter === 'hide'
+      ? []
+      : [{
+          key: 'private',
+          label: privateFilter === 'only' ? t('sidebar.filterPrivateOnly') : t('sidebar.filterPrivate'),
+          clear: () => { setFilters({ private: 'hide' }); },
+        }]),
   ];
   const filtersActive = hasActiveSessionFilters(filters);
   const counts = { running: activity.model.running.length };
@@ -1310,7 +1352,9 @@ export function Sidebar({
   const presentStatuses = useMemo(() => new Set<SessionStatusFilter>(sessions
     .filter((session) => (filters.archived === 'only' ? session.archived === true
       : filters.archived === 'hide' ? session.archived !== true : true))
-    .map((session) => sessionStatusOf(session))), [sessions, filters.archived]);
+    .filter((session) => (privateFilter === 'only' ? session.private === true
+      : privateFilter === 'hide' ? session.private !== true : true))
+    .map((session) => sessionStatusOf(session))), [sessions, filters.archived, privateFilter]);
 
   const toggleGroupCollapsed = (key: string) => {
     setCollapsedGroups((current) => {
@@ -1406,13 +1450,18 @@ export function Sidebar({
     const totals = new Map<string, number>();
     for (const session of sessions) {
       if (session.archived === true) continue;
+      if (privateFilter === 'hide' && session.private === true) continue;
+      if (privateFilter === 'only' && session.private !== true) continue;
       totals.set(session.workspace_id, (totals.get(session.workspace_id) ?? 0) + 1);
     }
     return totals;
-  }, [sessions]);
+  }, [privateFilter, sessions]);
   const pinnedTotal = useMemo(
-    () => sessions.filter((session) => session.archived !== true && isPinnedSession(session)).length,
-    [sessions],
+    () => sessions.filter((session) =>
+      session.archived !== true
+      && (privateFilter === 'hide' ? session.private !== true : privateFilter === 'only' ? session.private === true : true)
+      && isPinnedSession(session)).length,
+    [privateFilter, sessions],
   );
   const workspaceGroupKeys = groupBy === 'workspace'
     ? sessionTree.map((group) => group.key)
@@ -2061,6 +2110,7 @@ export function Sidebar({
           onToggleStatus={toggleStatus}
           onToggleWorkspace={toggleWorkspace}
           onArchived={(archived) => { setFilters({ archived }); }}
+          onPrivate={(nextPrivate) => { setFilters({ private: nextPrivate }); }}
           workspaceOptions={workspaceOptions}
           workspacePinBusy={workspacePinBusy}
           onToggleWorkspacePin={toggleWorkspacePin}
@@ -2086,6 +2136,7 @@ export function Sidebar({
             setMenu(null);
           }}
           onTogglePin={() => { togglePin(menuItem.session); }}
+          onTogglePrivate={() => { togglePrivate(menuItem.session); }}
           onAction={(action) => { runAction(menuItem.session, action); }}
           onArchive={() => { archive(menuItem.session, menuItem.key); }}
           onRestore={() => { restore(menuItem.session); }}
@@ -2394,6 +2445,11 @@ function SessionRow({
             {/* Pinned is said by the Pinned group; only a list with no groups
               * needs the glyph. */}
             {pinned && showPin ? <PinIcon className="text-ink-faint" /> : null}
+            {session.private === true ? (
+              <span data-session-private aria-label={t('private.badge')} title={t('private.badge')} className="shrink-0 text-ink-faint">
+                <Icon name="lock" size={12} />
+              </span>
+            ) : null}
             {/* Show 16px persona avatar if session belongs to a persona */}
             {session.agent_config?.persona ? (
               <span className="shrink-0 -my-0.5">
@@ -3348,9 +3404,9 @@ function searchQueryDisplay(search: SessionSearchState): string {
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
-const MENU_HEADING = 'px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]';
+const MENU_HEADING = 'px-3 pt-1.5 pb-0.5 text-[11px] font-medium text-ink-faint phone:px-4 phone:pt-2 phone:pb-1 phone:text-[13px]';
 const MENU_ITEM =
-  'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper';
+  'flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[12.5px] text-ink transition-colors hover:bg-paper phone:h-9 phone:text-[14px] pointer-coarse:min-h-10';
 
 /** The selection column: reserved on every row so labels stay aligned. */
 function MenuMark({ on }: { on: boolean }) {
@@ -3518,6 +3574,7 @@ function SidebarFilterMenu({
   onToggleStatus,
   onToggleWorkspace,
   onArchived,
+  onPrivate,
   workspaceOptions,
   workspacePinBusy,
   onToggleWorkspacePin,
@@ -3532,6 +3589,7 @@ function SidebarFilterMenu({
   onToggleStatus: (status: SessionStatusFilter) => void;
   onToggleWorkspace: (workspaceId: string) => void;
   onArchived: (archived: SessionArchivedFilter) => void;
+  onPrivate: (privateFilter: SessionPrivateFilter) => void;
   workspaceOptions: readonly WorkspaceCatalogEntry[];
   workspacePinBusy: boolean;
   onToggleWorkspacePin: (workspace: WorkspaceCatalogEntry) => void;
@@ -3539,6 +3597,7 @@ function SidebarFilterMenu({
 }) {
   const { t } = useI18n();
   const phone = usePhoneMode();
+  const privateFilter = filters.private ?? 'hide';
   const allStatuses: readonly { value: SessionStatusFilter; label: string }[] = [
     { value: 'running', label: t('sidebar.statusRunning') },
     { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
@@ -3552,6 +3611,11 @@ function SidebarFilterMenu({
     { value: 'hide', label: t('sidebar.archivedHide') },
     { value: 'include', label: t('sidebar.archivedInclude') },
     { value: 'only', label: t('sidebar.archivedOnly') },
+  ];
+  const privateOptions: readonly { value: SessionPrivateFilter; label: string }[] = [
+    { value: 'hide', label: t('sidebar.privateHide') },
+    { value: 'include', label: t('sidebar.privateInclude') },
+    { value: 'only', label: t('sidebar.privateOnly') },
   ];
   const body = (
     <>
@@ -3639,6 +3703,22 @@ function SidebarFilterMenu({
           <span className="truncate">{option.label}</span>
         </button>
       ))}
+      <div className="mx-1 my-1 border-t border-hairline" />
+      <p className={MENU_HEADING}>{t('sidebar.filterPrivateHeading')}</p>
+      {privateOptions.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="menuitemradio"
+          aria-checked={privateFilter === option.value}
+          data-private-filter={option.value}
+          className={`${MENU_ITEM} w-full`}
+          onClick={() => { onPrivate(option.value); }}
+        >
+          <MenuMark on={privateFilter === option.value} />
+          <span className="truncate">{option.label}</span>
+        </button>
+      ))}
     </>
   );
   return phone ? (
@@ -3680,6 +3760,7 @@ interface SessionMenuProps {
   onClose: () => void;
   onRename: () => void;
   onTogglePin: () => void;
+  onTogglePrivate: () => void;
   onAction: (action: SessionContentAction) => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -3722,6 +3803,7 @@ function SessionMenuEntries({
   onClose,
   onRename,
   onTogglePin,
+  onTogglePrivate,
   onArchive,
   onRestore,
   threadCommsEnabled,
@@ -3776,6 +3858,18 @@ function SessionMenuEntries({
           <button type="button" role="menuitem" data-menu-item="rename" className={ROW_MENU_ITEM} onClick={onRename}>
             {t('menu.rename')}
           </button>
+          {session.ephemeral === true || isSubagentSession(session) ? null : (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="private"
+              disabled={archiving}
+              className={`${ROW_MENU_ITEM} ${ROW_MENU_DISABLED}`}
+              onClick={onTogglePrivate}
+            >
+              {t(session.private === true ? 'private.exitPrivate' : 'private.makePrivate')}
+            </button>
+          )}
           <div className="mx-1 my-1 border-t border-hairline" />
           <button
             type="button"
