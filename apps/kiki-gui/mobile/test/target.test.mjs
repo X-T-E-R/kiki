@@ -123,6 +123,13 @@ await test('other schemes, credentials and junk are refused', () => {
   }
   assert.equal(readTarget('https://kiki.example.test./').ok, true);
   assert.equal(classifyOrigin('https://device.example.ts.net./').layer, 'vpn');
+  assert.equal(readTarget('https://例子.测试/').ok, true);
+  assert.equal(readTarget('https://münchen.example/').ok, true);
+  assert.deepEqual(readTarget('https://%65xample.test/'), {
+    ok: true,
+    origin: 'https://example.test',
+    entry: 'https://example.test/',
+  });
   assert.deepEqual(readTarget('my-pc:5494'), { ok: true, origin: 'http://my-pc:5494', entry: 'http://my-pc:5494/' });
   assert.deepEqual(readTarget('[::1]:5494'), { ok: true, origin: 'http://[::1]:5494', entry: 'http://[::1]:5494/' });
   assert.deepEqual(classifyOrigin('[fd7a:115c:a1e0::1]:5494'), { layer: 'vpn', protocol: 'http', host: '[fd7a:115c:a1e0::1]:5494' });

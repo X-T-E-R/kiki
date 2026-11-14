@@ -106,10 +106,12 @@ function parseRawAuthorityHost(authority) {
     const portNum = Number(port);
     if (portNum < 1 || portNum > 65535) return null;
   }
+  if (!host.startsWith('[') && (host.startsWith('.') || host.endsWith('..') || host.includes('..') || host.includes('*'))) {
+    return null;
+  }
   if (!host.startsWith('[') && /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*\.?$/i.test(host)) {
     if (parseIpv4Octets(host) === null) return null;
   }
-  if (!isValidTargetHostname(host)) return null;
   return host;
 }
 
