@@ -1,12 +1,24 @@
 import { z } from 'zod';
 
-export const decisionProtocolSchema = z.enum(['system_one', 'pair_score']);
+export const decisionProtocolSchema = z.enum(['system_one', 'pair_score', 'openai_decisions']);
 export type DecisionProtocol = z.infer<typeof decisionProtocolSchema>;
+
+export const DECISION_PROTOCOL_PATHS: Readonly<Record<DecisionProtocol, string>> = {
+  system_one: 'systemone',
+  pair_score: 'rerank',
+  openai_decisions: 'decisions',
+};
+
 export function decisionProtocolForProviderType(type: string | undefined): DecisionProtocol | undefined {
-  return type === 'system_one' || type === 'pair_score' ? type : undefined;
+  return type === 'system_one' || type === 'pair_score' || type === 'openai_decisions' ? type : undefined;
 }
 export const decisionSourceSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('connection'), connection: z.string().trim().min(1), model: z.string().trim().min(1).optional() }).strict(),
+  z.object({
+    kind: z.literal('connection'),
+    connection: z.string().trim().min(1),
+    protocol: decisionProtocolSchema.optional(),
+    model: z.string().trim().min(1).optional(),
+  }).strict(),
   z.object({ kind: z.literal('model'), model: z.string().trim().min(1) }).strict(),
 ]);
 export type DecisionSource = z.infer<typeof decisionSourceSchema>;
@@ -14,7 +26,7 @@ export const decisionSourceStatusSchema = z.object({
   state: z.enum(['ready', 'unconfigured', 'auth', 'protocol', 'capability_mismatch']),
   connection: z.string().optional(),
   model: z.string().optional(),
-  protocol: z.enum(['chat_json', 'system_one', 'pair_score']).optional(),
+  protocol: z.enum(['chat_json', 'system_one', 'pair_score', 'openai_decisions']).optional(),
   origin: z.string().optional(),
   destination: z.string().optional(),
   credential_source: z.enum(['provider', 'env', 'oauth', 'headers', 'model', 'none']).optional(),

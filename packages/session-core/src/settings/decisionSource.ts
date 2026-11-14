@@ -7,15 +7,25 @@
  * one saved key serves every consumer and none of them edits another.
  */
 
-import type { DecisionProtocol, DecisionSource, DecisionSourceStatus, ProviderCatalogItem } from '@kiki/protocol';
+import {
+  DECISION_PROTOCOL_PATHS,
+  decisionProtocolSchema,
+  type DecisionCapabilitiesWire,
+  type DecisionProtocol,
+  type DecisionSource,
+  type DecisionSourceStatus,
+  type ProviderCatalogItem,
+} from '@kiki/protocol';
 
 import type { I18nKey } from '../i18n';
 
 export type DecisionConsumer = 'reviewer' | 'memory';
 
-/** The three ways to add a decision connection; Jev is a filled-in System One. */
+export const DECISION_PROTOCOLS: readonly DecisionProtocol[] = ['openai_decisions', 'system_one', 'pair_score'];
+
+/** The presets for adding a standalone decision connection. */
 export interface DecisionConnectionPreset {
-  readonly id: 'jev' | 'system_one' | 'pair_score';
+  readonly id: 'openai_decisions' | 'jev' | 'system_one' | 'pair_score';
   readonly type: DecisionProtocol;
   readonly suggestedId: string;
   readonly baseUrl: string;
@@ -24,6 +34,7 @@ export interface DecisionConnectionPreset {
 }
 
 export const DECISION_CONNECTION_PRESETS: readonly DecisionConnectionPreset[] = [
+  { id: 'openai_decisions', type: 'openai_decisions', suggestedId: 'decisions', baseUrl: 'https://api.openai.com/v1', defaultModel: '' },
   { id: 'jev', type: 'system_one', suggestedId: 'typesafe', baseUrl: 'https://api.typesafe.ai/v1', apiKeyEnv: 'TYPESAFE_API_KEY', defaultModel: 'jev-latest' },
   { id: 'system_one', type: 'system_one', suggestedId: 'system-one', baseUrl: '', defaultModel: '' },
   { id: 'pair_score', type: 'pair_score', suggestedId: 'rerank', baseUrl: '', defaultModel: '' },
@@ -31,12 +42,17 @@ export const DECISION_CONNECTION_PRESETS: readonly DecisionConnectionPreset[] = 
 
 /** A connection that answers decisions rather than chat; older servers carry only its type. */
 export function isDecisionConnection(provider: Pick<ProviderCatalogItem, 'type' | 'service'>): boolean {
-  return provider.service === 'decision' || provider.type === 'system_one' || provider.type === 'pair_score';
+  return provider.service === 'decision'
+    || provider.type === 'system_one'
+    || provider.type === 'pair_score'
+    || provider.type === 'openai_decisions';
 }
 
 export function decisionProtocolOf(provider: Pick<ProviderCatalogItem, 'type' | 'decision_protocol'>): DecisionProtocol | undefined {
   if (provider.decision_protocol !== undefined) return provider.decision_protocol;
-  return provider.type === 'system_one' || provider.type === 'pair_score' ? provider.type : undefined;
+  return provider.type === 'system_one' || provider.type === 'pair_score' || provider.type === 'openai_decisions'
+    ? provider.type
+    : undefined;
 }
 
 /**
@@ -48,19 +64,39 @@ export function decisionProtocolAllowed(consumer: DecisionConsumer, protocol: De
   return consumer === 'memory' || protocol !== 'pair_score';
 }
 
-/** Picker value for a source: the connection row (`connection:<id>`) or the chat model (`model:<alias>`). */
+/**
+ * Picker value for a source: a dedicated decision connection (`connection:<id>`),
+ * an attached capability on a chat connection (`connection:<id>#<protocol>`),
+ * or a chat model (`model:<alias>`).
+ */
 export function decisionSourceValue(source: DecisionSource | undefined): string {
   if (source === undefined) return '';
-  return source.kind === 'connection' ? `connection:${source.connection}` : `model:${source.model}`;
+  if (source.kind === 'model') return `model:${source.model}`;
+  return source.protocol === undefined
+    ? `connection:${source.connection}`
+    : `connection:${source.connection}#${source.protocol}`;
 }
 
-/** The source a picker value stands for, keeping a model override when the same connection stays chosen. */
+/** The source a picker value stands for, keeping a model override when the same connection target stays chosen. */
 export function decisionSourceFromValue(value: string, current?: DecisionSource): DecisionSource | null {
   if (value.startsWith('connection:')) {
-    const connection = value.slice('connection:'.length);
+    const raw = value.slice('connection:'.length);
+    const hashIndex = raw.lastIndexOf('#');
+    const connection = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+    const rawProtocol = hashIndex >= 0 ? raw.slice(hashIndex + 1) : undefined;
     if (connection === '') return null;
-    const model = current?.kind === 'connection' && current.connection === connection ? current.model : undefined;
-    return model === undefined ? { kind: 'connection', connection } : { kind: 'connection', connection, model };
+    let protocol: DecisionProtocol | undefined;
+    if (rawProtocol !== undefined) {
+      const parsed = decisionProtocolSchema.safeParse(rawProtocol);
+      if (!parsed.success) return null;
+      protocol = parsed.data;
+    }
+    const model = current?.kind === 'connection'
+      && current.connection === connection
+      && (current.protocol ?? undefined) === protocol
+      ? current.model
+      : undefined;
+    return { kind: 'connection', connection, protocol, model };
   }
   if (value.startsWith('model:')) {
     const model = value.slice('model:'.length);
@@ -72,17 +108,47 @@ export function decisionSourceFromValue(value: string, current?: DecisionSource)
 /** A connection source with its model name replaced; an empty name means "use the connection's default". */
 export function decisionSourceWithModel(source: Extract<DecisionSource, { kind: 'connection' }>, model: string): DecisionSource {
   const trimmed = model.trim();
-  return trimmed === '' ? { kind: 'connection', connection: source.connection } : { kind: 'connection', connection: source.connection, model: trimmed };
+  return {
+    kind: 'connection',
+    connection: source.connection,
+    protocol: source.protocol,
+    model: trimmed === '' ? undefined : trimmed,
+  };
 }
 
 export function sameDecisionSource(a: DecisionSource | undefined, b: DecisionSource | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   if (a.kind !== b.kind) return false;
   if (a.kind === 'model') return b.kind === 'model' && a.model === b.model;
-  return b.kind === 'connection' && a.connection === b.connection && (a.model ?? '') === (b.model ?? '');
+  return b.kind === 'connection'
+    && a.connection === b.connection
+    && (a.protocol ?? '') === (b.protocol ?? '')
+    && (a.model ?? '') === (b.model ?? '');
 }
 
 export type DecisionSourceProblem = 'missing_connection' | 'not_decision' | 'pair_score_reviewer' | 'missing_model' | 'auth' | 'protocol' | 'unconfigured';
+
+export type DecisionCatalogProvider = Pick<ProviderCatalogItem, 'id' | 'type' | 'service' | 'decision_protocol' | 'default_model'> & {
+  readonly decision_capabilities?: DecisionCapabilitiesWire;
+};
+
+/**
+ * Resolve the protocol and default model for a connection source against a catalog item.
+ */
+export function resolveCatalogDecisionTarget(
+  provider: DecisionCatalogProvider,
+  requestedProtocol?: DecisionProtocol,
+): { readonly protocol: DecisionProtocol; readonly defaultModel?: string } | null {
+  const standalone = decisionProtocolOf(provider);
+  if (standalone !== undefined) {
+    if (requestedProtocol !== undefined && requestedProtocol !== standalone) return null;
+    return { protocol: standalone, defaultModel: provider.default_model };
+  }
+  if (requestedProtocol === undefined) return null;
+  const attached = provider.decision_capabilities?.[requestedProtocol];
+  if (attached === undefined) return null;
+  return { protocol: requestedProtocol, defaultModel: attached.model };
+}
 
 /**
  * What stands between a saved source and a working one, read from the
@@ -93,16 +159,16 @@ export function decisionSourceProblem(
   consumer: DecisionConsumer,
   source: DecisionSource | undefined,
   status: DecisionSourceStatus | undefined,
-  providers: readonly Pick<ProviderCatalogItem, 'id' | 'type' | 'service' | 'decision_protocol' | 'default_model'>[] | undefined,
+  providers: readonly DecisionCatalogProvider[] | undefined,
 ): DecisionSourceProblem | null {
   if (source === undefined) return null;
   if (source.kind === 'connection' && providers !== undefined) {
     const provider = providers.find((item) => item.id === source.connection);
     if (provider === undefined) return 'missing_connection';
-    const protocol = decisionProtocolOf(provider);
-    if (protocol === undefined) return 'not_decision';
-    if (!decisionProtocolAllowed(consumer, protocol)) return 'pair_score_reviewer';
-    if (source.model === undefined && (provider.default_model ?? '') === '') return 'missing_model';
+    const target = resolveCatalogDecisionTarget(provider, source.protocol);
+    if (target === null) return 'not_decision';
+    if (!decisionProtocolAllowed(consumer, target.protocol)) return 'pair_score_reviewer';
+    if (source.model === undefined && (target.defaultModel ?? '') === '') return 'missing_model';
   }
   switch (status?.state) {
     case 'auth': return 'auth';
@@ -135,7 +201,7 @@ export function decisionConnectionEndpoint(baseUrl: string | undefined, protocol
     const path = override?.trim();
     return path !== undefined && path !== ''
       ? new URL(path, base)
-      : new URL(`${base.pathname.replace(/\/$/, '')}/${protocol === 'system_one' ? 'systemone' : 'rerank'}`, base);
+      : new URL(`${base.pathname.replace(/\/$/, '')}/${DECISION_PROTOCOL_PATHS[protocol]}`, base);
   } catch {
     return null;
   }
@@ -165,24 +231,29 @@ export function decisionDestination(connection: string, endpoint: URL | null): s
   return endpoint === null ? undefined : `${connection}@${endpoint.origin}`;
 }
 
-/** Where a saved decision connection sends, from its effective address first. */
+/** Where a saved decision connection or attached capability sends, from its effective address first. */
 export function decisionConnectionDestination(
-  provider: Pick<ProviderCatalogItem, 'id' | 'type' | 'decision_protocol' | 'base_url' | 'effective_base_url' | 'decision_endpoint'>,
+  provider: Pick<ProviderCatalogItem, 'id' | 'type' | 'decision_protocol' | 'base_url' | 'effective_base_url' | 'decision_endpoint'> & {
+    readonly decision_capabilities?: DecisionCapabilitiesWire;
+  },
+  requestedProtocol?: DecisionProtocol,
 ): string | undefined {
-  const protocol = decisionProtocolOf(provider);
+  const standalone = decisionProtocolOf(provider);
+  const protocol = standalone ?? requestedProtocol;
   if (protocol === undefined) return undefined;
-  return decisionDestination(provider.id, decisionConnectionEndpoint(provider.effective_base_url ?? provider.base_url, protocol, provider.decision_endpoint));
+  const override = standalone !== undefined ? provider.decision_endpoint : provider.decision_capabilities?.[protocol]?.endpoint;
+  return decisionDestination(provider.id, decisionConnectionEndpoint(provider.effective_base_url ?? provider.base_url, protocol, override));
 }
 
-/** The settings card that owns which source each consumer uses: the decision-models card in Models & providers. */
-export const DECISION_JUDGES_ROUTE = '/settings/ai?tab=providers#st-card-decision-connections';
-/** The connections card, opened on the add flow for a decision service. */
-export const DECISION_CONNECTIONS_ROUTE = '/settings/ai?tab=providers#st-card-decision-connections';
-/** The same card with its add form open. */
+/** The settings card that owns which source each consumer uses: Defaults in Models & providers. */
+export const DECISION_JUDGES_ROUTE = '/settings/ai?tab=defaults#st-card-decision-judges';
+/** The connections card in Models & providers. */
+export const DECISION_CONNECTIONS_ROUTE = '/settings/ai?tab=providers#st-card-providers';
+/** The connections card opened on the add flow for a decision service. */
 export const DECISION_CONNECTION_ADD_ROUTE = '/settings/ai?tab=providers#decision-connection-add';
-/** The query parameter that opens one decision connection's row on arrival. */
+/** The query parameter that opens one connection's row on arrival. */
 export const DECISION_CONNECTION_PARAM = 'decision';
-/** One decision connection, opened in its card. */
+/** One connection, opened in Connections. */
 export function decisionConnectionRoute(connection: string): string {
-  return `/settings/ai?tab=providers&${DECISION_CONNECTION_PARAM}=${encodeURIComponent(connection)}#st-card-decision-connections`;
+  return `/settings/ai?tab=providers&${DECISION_CONNECTION_PARAM}=${encodeURIComponent(connection)}#st-card-providers`;
 }

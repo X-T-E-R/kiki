@@ -13,8 +13,8 @@ import { providerIdSchema, type DecisionSource, type DecisionSourceStatus, type 
 import { errorText } from '@kiki/session-core/i18n';
 import {
   DECISION_CONNECTION_ADD_ROUTE,
-  DECISION_JUDGES_ROUTE,
   DECISION_SOURCE_PROBLEM_KEYS,
+  DECISION_PROTOCOLS,
   decisionProtocolAllowed,
   decisionProtocolOf,
   decisionSourceFromValue,
@@ -23,6 +23,7 @@ import {
   decisionSourceWithModel,
   decisionConnectionRoute,
   isDecisionConnection,
+  resolveCatalogDecisionTarget,
   sameDecisionSource,
   type DecisionConsumer,
   type DecisionSourceProblem,
@@ -52,18 +53,27 @@ const providersQueryOptions = (client: ReturnType<typeof useConnection>['client'
 });
 
 /** The name a person recognizes for a source, used on triggers and summaries. */
-function sourceLabel(source: DecisionSource, providers: readonly ProviderCatalogItem[] | undefined, chatLabel: (id: string) => string | undefined): string {
+function sourceLabel(
+  source: DecisionSource,
+  providers: readonly ProviderCatalogItem[] | undefined,
+  chatLabel: (id: string) => string | undefined,
+  protocolName?: (protocol: NonNullable<Extract<DecisionSource, { kind: 'connection' }>['protocol']>) => string,
+): string {
   if (source.kind === 'model') return chatLabel(source.model) ?? source.model;
   const provider = providers?.find((item) => item.id === source.connection);
-  const model = source.model ?? provider?.default_model;
-  return model === undefined ? source.connection : `${source.connection} · ${model}`;
+  const target = provider === undefined ? null : resolveCatalogDecisionTarget(provider, source.protocol);
+  const model = source.model ?? target?.defaultModel;
+  const qualifier = model ?? (source.protocol === undefined ? undefined : protocolName?.(source.protocol) ?? source.protocol);
+  return qualifier === undefined || qualifier === '' ? source.connection : `${source.connection} · ${qualifier}`;
 }
 
 /**
- * One picker over both kinds of source, grouped. Decision services first
- * (the reviewer sees rerank services but cannot pick them: a relevance score
- * is not the chance an action is safe), then every chat model. A saved source
- * that no longer resolves stays visible as "(missing)" so it can be replaced.
+ * One picker over both kinds of source, grouped. Decision services first —
+ * standalone decision connections and chat connections with attached decision
+ * capabilities (the reviewer sees rerank services but cannot pick them: a
+ * relevance score is not the chance an action is safe) — then every chat model.
+ * A saved source that no longer resolves stays visible as "(missing)" so it
+ * can be replaced.
  */
 export function DecisionSourcePicker({ id, consumer, value, onChange, disabled, ariaLabel }: {
   readonly id: string;
@@ -84,31 +94,58 @@ export function DecisionSourcePicker({ id, consumer, value, onChange, disabled, 
   const current = decisionSourceValue(value);
   const missing = current !== '' && value !== undefined && providers !== undefined && !modelsQuery.isPending
     && !(value.kind === 'connection'
-      ? providers.some((provider) => provider.id === value.connection && isDecisionConnection(provider))
+      ? providers.some((provider) => provider.id === value.connection && resolveCatalogDecisionTarget(provider, value.protocol) !== null)
       : models.some((model) => model.id === value.model));
   const options = useMemo<SearchableSelectOption[]>(() => {
-    const decision = (providers ?? []).filter(isDecisionConnection).map((provider): SearchableSelectOption => {
-      const protocol = decisionProtocolOf(provider) ?? 'system_one';
-      const allowed = decisionProtocolAllowed(consumer, protocol);
+    const decision: SearchableSelectOption[] = [];
+    for (const provider of providers ?? []) {
+      if (isDecisionConnection(provider)) {
+        const protocol = decisionProtocolOf(provider) ?? 'system_one';
+        const allowed = decisionProtocolAllowed(consumer, protocol);
+        const host = hostLabel(provider.effective_base_url ?? provider.base_url);
+        const isJev = protocol === 'system_one' && host === 'api.typesafe.ai';
+        const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
+        const needsModel = (provider.default_model ?? '') === '';
+        const statusDesc = provider.status === 'error' ? t('st.connections.statusError')
+          : envMissing ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
+            : needsModel ? t('st.decision.status.needsModel') : t('st.decision.status.ready');
+        const jevDesc = isJev ? `${t('st.decision.preset.jev')} · ${statusDesc}` : statusDesc;
+        decision.push({
+          value: `connection:${provider.id}`,
+          label: provider.id,
+          hint: [host, provider.default_model].filter(Boolean).join(' · ') || undefined,
+          description: allowed ? jevDesc : t('st.decision.picker.pairScoreOnly'),
+          badges: [{ label: t(`st.decision.protocol.${protocol}`) }],
+          group: t('st.decision.picker.groupDecision'),
+          disabled: !allowed,
+          keywords: `${provider.id} ${isJev ? 'Jev TypeSafe' : ''} ${protocol} ${provider.base_url ?? ''} ${provider.default_model ?? ''}`,
+        });
+        continue;
+      }
+      const capabilities = provider.decision_capabilities;
+      if (capabilities === undefined) continue;
       const host = hostLabel(provider.effective_base_url ?? provider.base_url);
-      const isJev = protocol !== 'pair_score' && host === 'api.typesafe.ai';
       const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
-      const needsModel = (provider.default_model ?? '') === '';
-      const statusDesc = provider.status === 'error' ? t('st.connections.statusError')
-        : envMissing ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
-          : needsModel ? t('st.decision.status.needsModel') : t('st.decision.status.ready');
-      const jevDesc = isJev ? `${t('st.decision.preset.jev')} · ${statusDesc}` : statusDesc;
-      return {
-        value: `connection:${provider.id}`,
-        label: provider.id,
-        hint: [host, provider.default_model].filter(Boolean).join(' · ') || undefined,
-        description: allowed ? jevDesc : t('st.decision.picker.pairScoreOnly'),
-        badges: [{ label: t(`st.decision.protocol.${protocol}`) }],
-        group: t('st.decision.picker.groupDecision'),
-        disabled: !allowed,
-        keywords: `${provider.id} ${isJev ? 'Jev TypeSafe' : ''} ${provider.base_url ?? ''} ${provider.default_model ?? ''}`,
-      };
-    });
+      for (const protocol of DECISION_PROTOCOLS) {
+        const cap = capabilities[protocol];
+        if (cap === undefined) continue;
+        const allowed = decisionProtocolAllowed(consumer, protocol);
+        const needsModel = (cap.model ?? '') === '';
+        const statusDesc = provider.status === 'error' ? t('st.connections.statusError')
+          : envMissing ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
+            : needsModel ? t('st.decision.status.needsModel') : t('st.decision.status.ready');
+        decision.push({
+          value: `connection:${provider.id}#${protocol}`,
+          label: provider.id,
+          hint: [host, cap.model].filter(Boolean).join(' · ') || undefined,
+          description: allowed ? statusDesc : t('st.decision.picker.pairScoreOnly'),
+          badges: [{ label: t(`st.decision.protocol.${protocol}`) }],
+          group: t('st.decision.picker.groupDecision'),
+          disabled: !allowed,
+          keywords: `${provider.id} ${protocol} ${provider.base_url ?? ''} ${cap.model ?? ''}`,
+        });
+      }
+    }
     const chat = buildCatalogModelOptions(models, t, { groupLabel }).map((option) => ({
       ...option, value: `model:${option.value}`, group: `${t('st.decision.picker.groupChat')} · ${option.group ?? ''}`,
     }));
@@ -120,15 +157,16 @@ export function DecisionSourcePicker({ id, consumer, value, onChange, disabled, 
       });
     }
     return list;
-  }, [providers, models, consumer, t, groupLabel, value, modelsQuery.isPending]);
+  }, [providers, models, consumer, t, groupLabel, value, current, modelsQuery.isPending]);
   const chatLabel = (modelId: string) => models.find((item) => item.id === modelId)?.display_name;
+  const protocolName = (protocol: NonNullable<Extract<DecisionSource, { kind: 'connection' }>['protocol']>) => t(`st.decision.protocol.${protocol}`);
   return (
     <ModelPicker id={id} value={decisionSourceValue(value)} options={options} allowCustomValue={false} ariaLabel={ariaLabel}
       searchPlaceholder={t('st.decision.picker.search')} emptyText={t('st.decision.picker.none')}
       align="end" placement="auto" disabled={disabled} buttonClassName={PICKER}
       triggerLabel={value === undefined ? undefined
         : missing ? t('st.decision.picker.missing', { id: value.kind === 'connection' ? value.connection : value.model })
-          : sourceLabel(value, providers, chatLabel)}
+          : sourceLabel(value, providers, chatLabel, protocolName)}
       onChange={(next) => { onChange(next === '' ? null : decisionSourceFromValue(next, value)); }} />
   );
 }
@@ -150,11 +188,32 @@ interface JudgeRowModel {
 }
 
 /**
- * "Who decides": approval review and Memory Advisor, one row each, at the
- * top of the decision-models card. A pick saves at once; a model name for a
- * connection is a small draft with its own save. Each row writes only its own
- * consumer's `source`, never the advisor's on/off, so picking a source does
- * not switch anything on.
+ * Shared reviewer legacy key/env helper, used on both Defaults › Who decides
+ * and Permissions › Reviewer so an older TypeSafe key can be migrated wherever
+ * the person opens the reviewer setting.
+ */
+export function useReviewerDecisionExtra(reviewer: {
+  readonly source?: DecisionSource;
+  readonly backend?: string;
+  readonly apiKeySource?: string;
+  readonly hasApiKey?: boolean;
+  readonly apiKeyEnv?: string;
+} | undefined): React.ReactNode {
+  const { t } = useI18n();
+  const [moved, setMoved] = useState<string | null>(null);
+  const legacyJev = reviewer?.source === undefined && reviewer?.backend === 'jev';
+  const keySource = reviewer?.apiKeySource ?? (reviewer?.hasApiKey === true ? 'kiki' : 'none');
+  if (keySource === 'kiki') return <LegacyJevKey source={reviewer?.source} onMoved={setMoved} />;
+  if (legacyJev) return <LegacyJevEnv keyEnv={reviewer?.apiKeyEnv} />;
+  if (moved !== null) return <p role="status" className="text-[12px] text-success">{t('st.reviewer.moveDone', { id: moved })}</p>;
+  return null;
+}
+
+/**
+ * "Who decides": approval review and Memory Advisor, one row each, on the
+ * Defaults tab. A pick saves at once; a model name for a connection is a small
+ * draft with its own save. Each row writes only its own consumer's `source`,
+ * never the advisor's on/off, so picking a source does not switch anything on.
  */
 export function DecisionJudgeRows() {
   const { client } = useConnection();
@@ -163,15 +222,7 @@ export function DecisionJudgeRows() {
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const advisor = useMemoryAdvisor();
   const reviewer = configQuery.data?.permission?.reviewer;
-  const [moved, setMoved] = useState<string | null>(null);
-  // While an older key is still saved for the reviewer, moving it stays
-  // offered, whatever the source says by now: a move that stopped half way,
-  // a reload or a later change must not strand that key.
-  const legacyJev = reviewer?.source === undefined && reviewer?.backend === 'jev';
-  const keySource = reviewer?.apiKeySource ?? (reviewer?.hasApiKey === true ? 'kiki' : 'none');
-  const reviewerExtra = keySource === 'kiki' ? <LegacyJevKey source={reviewer?.source} onMoved={setMoved} />
-    : legacyJev ? <LegacyJevEnv keyEnv={reviewer?.apiKeyEnv} />
-      : moved !== null ? <p role="status" className="text-[12px] text-success">{t('st.reviewer.moveDone', { id: moved })}</p> : null;
+  const reviewerExtra = useReviewerDecisionExtra(reviewer);
   const advisorConfig = advisor.data?.advisor;
   const rows: readonly (JudgeRowModel & { readonly label: string; readonly help: string; readonly unset: string })[] = [
     {
@@ -211,15 +262,38 @@ export function DecisionJudgeRows() {
   ];
   return (
     <div className="divide-y divide-hairline" data-decision-judges>
-      {rows.map((row) => <JudgeRow key={row.consumer} {...row} />)}
+      {rows.map((row) => <DecisionSourceField key={row.consumer} {...row} scope="defaults" />)}
     </div>
   );
 }
 
-function JudgeRow({ consumer, label, help, unset, source, status, legacy, loading, error, retry, write, extra }: JudgeRowModel & {
+/**
+ * Interactive decision source selector used both in Defaults › Who decides and
+ * directly in place on each consumer card (Permissions › Reviewer and Memory ›
+ * Memory Advisor). Selecting a source saves immediately; when a connection is
+ * chosen, an optional model override input lets this job pick its own model.
+ * Problem links ("Open connection" / "Add a decision service") appear only when
+ * the chosen source has a configuration or credential issue.
+ */
+export function DecisionSourceField({
+  consumer,
+  label,
+  help,
+  unset,
+  source,
+  status,
+  legacy,
+  loading,
+  error,
+  retry,
+  write,
+  extra,
+  scope = 'card',
+}: JudgeRowModel & {
   readonly label: string;
   readonly help: string;
   readonly unset: string;
+  readonly scope?: 'defaults' | 'card';
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -229,18 +303,21 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [saved, ping] = useSavedTick();
   const connection = source?.kind === 'connection' ? source : undefined;
+  const connectionTargetKey = connection === undefined ? undefined : decisionSourceValue(connection);
   const provider = connection === undefined ? undefined : providersQuery.data?.items.find((item) => item.id === connection.connection);
+  const resolvedTarget = provider === undefined || connection === undefined ? null : resolveCatalogDecisionTarget(provider, connection.protocol);
+  const defaultModel = resolvedTarget?.defaultModel;
   // The model name is the one free-text part, so it is a draft with its own
   // save; every other change here applies on pick. The draft belongs to the
-  // connection it was typed for: another source never inherits it.
+  // connection target it was typed for: another source never inherits it.
   const savedModel = connection?.model ?? '';
-  const [modelDraft, setModelDraft] = useState<{ readonly connection: string; readonly value: string } | null>(null);
-  const model = modelDraft !== null && modelDraft.connection === connection?.connection ? modelDraft.value : savedModel;
+  const [modelDraft, setModelDraft] = useState<{ readonly target: string; readonly value: string } | null>(null);
+  const model = modelDraft !== null && modelDraft.target === connectionTargetKey ? modelDraft.value : savedModel;
   const setModel = (value: string) => {
-    if (connection !== undefined) setModelDraft({ connection: connection.connection, value });
+    if (connectionTargetKey !== undefined) setModelDraft({ target: connectionTargetKey, value });
   };
   const modelDirty = connection !== undefined && model.trim() !== savedModel;
-  useDirtyReporter(`decision-judge:${consumer}`, modelDirty);
+  useDirtyReporter(`decision-judge:${scope}:${consumer}`, modelDirty);
   const [pendingSwitch, setPendingSwitch] = useState<{ readonly next: DecisionSource | null } | null>(null);
   const problem: DecisionSourceProblem | null = decisionSourceProblem(consumer, source, status, providersQuery.data?.items);
 
@@ -253,7 +330,7 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
     setFeedback(null);
     try {
       await write(next);
-      if (next === null || next.kind !== 'connection' || next.connection !== connection?.connection) setModelDraft(null);
+      if (next === null || next.kind !== 'connection' || decisionSourceValue(next) !== connectionTargetKey) setModelDraft(null);
       ping();
     } catch (cause) {
       setFeedback({ tone: 'error', text: t('st.decision.saveFailed', { detail: errorText(locale, cause) }) });
@@ -261,11 +338,14 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
       setBusy(false);
     }
   };
-  const pickerId = `st-decision-${consumer}`;
+  const pickerId = scope === 'defaults' ? `st-decision-${consumer}` : `st-decision-${scope}-${consumer}`;
   const fix = decisionProblemFix(problem, source, t);
+  const rowAttrs = scope === 'defaults'
+    ? { 'data-decision-judge': consumer }
+    : { 'data-decision-field': consumer };
   return (
-    <div data-decision-judge={consumer} data-decision-problem={problem ?? undefined}
-      className="grid gap-x-6 gap-y-1.5 py-3 first:pt-0 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] sm:items-start">
+    <div {...rowAttrs} data-decision-problem={problem ?? undefined}
+      className={`grid gap-x-6 gap-y-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] sm:items-start ${scope === 'defaults' ? 'py-3 first:pt-0' : 'py-1'}`}>
       <div className="min-w-0 sm:pt-1.5">
         <div className="flex items-center gap-2">
           <label htmlFor={pickerId} className="text-[13px] text-ink">{label}</label>
@@ -302,21 +382,21 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
           <div className="space-y-1">
             <label htmlFor={`${pickerId}-model`} className="block text-[12px] text-ink-soft">{t('st.decision.row.modelOverride')}</label>
             <input id={`${pickerId}-model`} data-decision-judge-model className={`${INPUT} font-mono`} value={model}
-              placeholder={provider?.default_model === undefined ? '' : t('st.decision.row.modelDefault', { model: provider.default_model })}
+              placeholder={defaultModel === undefined || defaultModel === '' ? '' : t('st.decision.row.modelDefault', { model: defaultModel })}
               spellCheck={false} autoComplete="off" disabled={busy}
               onChange={(event) => { setModel(event.target.value); }}
               onKeyDown={(event) => {
                 if (isImeKeyEvent(event)) return;
                 if (event.key === 'Enter' && modelDirty) { event.preventDefault(); void commit(decisionSourceWithModel(connection, model)); }
               }} />
-            <SettingsDraftFooter id={`decision-judge-${consumer}`} dirty={modelDirty} saving={busy}
+            <SettingsDraftFooter id={`decision-judge-${scope}-${consumer}`} dirty={modelDirty} saving={busy}
               saveLabel={t('st.decision.row.saveModel')}
               onSave={() => { void commit(decisionSourceWithModel(connection, model)); }}
               onDiscard={() => { setModelDraft(null); }} />
           </div>
         ) : null}
       </div>
-      <ConfirmDialog open={pendingSwitch !== null} overlayId={`decision-judge-switch:${consumer}`}
+      <ConfirmDialog open={pendingSwitch !== null} overlayId={`decision-judge-switch:${scope}:${consumer}`}
         title={t('st.dirty.leaveTitle')} body={t('st.decision.row.switchBody')}
         confirmLabel={t('st.decision.row.switchConfirm')} cancelLabel={t('st.dirty.stay')}
         onConfirm={() => {
@@ -329,55 +409,18 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
   );
 }
 
-/**
- * The read-only line a consumer card shows instead of its own model, protocol
- * and endpoint fields: what this job uses, whether it works, and a link to the
- * one place it is chosen.
- */
-export function DecisionSourceSummary({ consumer, source, status, legacy }: {
-  readonly consumer: DecisionConsumer;
-  readonly source: DecisionSource | undefined;
-  readonly status: DecisionSourceStatus | undefined;
-  readonly legacy?: string;
-}) {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const navigate = useGuardedNavigate();
-  const providersQuery = useQuery(providersQueryOptions(client));
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
-  const problem = decisionSourceProblem(consumer, source, status, providersQuery.data?.items);
-  const fix = decisionProblemFix(problem, source, t);
-  const chatLabel = (id: string) => modelsQuery.data?.items.find((item) => item.id === id)?.display_name;
-  return (
-    <div data-decision-summary={consumer} data-decision-problem={problem ?? undefined} className="space-y-1">
-      {/* One line: the value in the middle, the way to change it on the right
-          edge — not three loose words the eye has to reassemble. */}
-      <div className="flex items-baseline gap-3">
-        <span className={`min-w-0 flex-1 truncate ${source === undefined ? 'text-[13px] text-ink-faint' : 'font-mono text-[12px] text-ink'}`}
-          data-decision-summary-value>
-          {source === undefined ? legacy ?? t('st.decision.sourceNone') : sourceLabel(source, providersQuery.data?.items, chatLabel)}
-        </span>
-        <button type="button" data-decision-change className={`shrink-0 ${LINK}`} onClick={() => { void navigate(DECISION_JUDGES_ROUTE); }}>
-          {t('st.decision.change')}
-        </button>
-      </div>
-      {problem !== null ? (
-        <div role="alert" className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <p className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(DECISION_SOURCE_PROBLEM_KEYS[problem])}</p>
-          {fix !== undefined ? (
-            <button type="button" data-decision-fix className={LINK} onClick={() => { void navigate(fix.route); }}>{fix.label}</button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 function decisionProblemFix(
   problem: DecisionSourceProblem | null,
   source: DecisionSource | undefined,
   t: ReturnType<typeof useI18n>['t'],
 ): { readonly label: string; readonly route: string } | undefined {
-  if (problem === 'missing_connection' || problem === 'not_decision' || problem === 'pair_score_reviewer') {
+  if (problem === 'missing_connection' || problem === 'pair_score_reviewer') {
+    return { label: t('st.decision.fix.addService'), route: DECISION_CONNECTION_ADD_ROUTE };
+  }
+  if (problem === 'not_decision' && source?.kind === 'connection') {
+    return { label: t('st.decision.fix.openConnection'), route: decisionConnectionRoute(source.connection) };
+  }
+  if (problem === 'not_decision') {
     return { label: t('st.decision.fix.addService'), route: DECISION_CONNECTION_ADD_ROUTE };
   }
   if ((problem === 'auth' || problem === 'protocol' || problem === 'missing_model' || problem === 'unconfigured') && source?.kind === 'connection') {

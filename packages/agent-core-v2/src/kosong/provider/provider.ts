@@ -1,4 +1,5 @@
 import type { LocalOriginalOAuthSourceRef } from '@kiki/oauth';
+import type { DecisionProtocol } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
@@ -26,12 +27,20 @@ export interface OAuthRef {
 
 export type ModelSource = 'static' | 'discover' | 'oauth-catalog';
 
+export interface ProviderDecisionCapability {
+  model?: string;
+  endpoint?: string;
+}
+
+export type ProviderDecisionConfig = Partial<Record<DecisionProtocol, ProviderDecisionCapability>>;
+
 export interface ProviderConfig {
   modelSource?: ModelSource;
   enabled?: boolean;
 
   baseUrl?: string;
   decisionEndpoint?: string;
+  decision?: ProviderDecisionConfig;
   customHeaders?: Record<string, string>;
   defaultModel?: string;
   defaults?: GenerationParameters;

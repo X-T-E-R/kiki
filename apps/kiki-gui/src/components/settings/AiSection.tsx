@@ -4,7 +4,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AI_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_TABS,
+  DECISION_CONNECTION_PARAM,
+  DECISION_JUDGES_ROUTE,
   aiTabLabelKey,
+  decisionConnectionRoute,
   normalizeAiTab,
   recipeSettingsIdFromQuery,
   type AiSettingsTab,
@@ -47,6 +50,18 @@ export function AiSection({ resolvedTab }: { resolvedTab?: AiSettingsTab } = {})
     next.set('tab', AI_SETTINGS_DEFAULT_TAB);
     void rawNavigate(`/settings/ai?${next.toString()}${hash}`, { replace: true });
   }, [rawTab, search, hash, rawNavigate]);
+
+  // Legacy Decision models card links: a named connection (`?decision=<id>`)
+  // opens that connection row on Connections; a bare link to the retired
+  // `#st-card-decision-connections` lands on Defaults › Who decides.
+  useEffect(() => {
+    if (hash !== '#st-card-decision-connections') return;
+    const decisionId = new URLSearchParams(search).get(DECISION_CONNECTION_PARAM);
+    void rawNavigate(
+      decisionId !== null && decisionId !== '' ? decisionConnectionRoute(decisionId) : DECISION_JUDGES_ROUTE,
+      { replace: true },
+    );
+  }, [search, hash, rawNavigate]);
 
   // Tab switches go through the guarded navigator: an unsaved provider or
   // recipe draft arms the same leave-guard as a section switch.

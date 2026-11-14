@@ -13,6 +13,7 @@
  */
 
 import { useState } from 'react';
+import type { DecisionConnectionPreset } from '@kiki/session-core/settings';
 
 import { useI18n } from '../i18n';
 import { AccountSignIn } from './AccountSignIn';
@@ -29,6 +30,7 @@ const CHOICE =
 
 export function ConnectionMethodPicker({
   onPickApi,
+  onPickDecision,
   onAccountChanged,
   onImported,
   configuredIds,
@@ -37,6 +39,7 @@ export function ConnectionMethodPicker({
 }: {
   /** A protocol card (preset null) or a vendor preset was chosen. */
   onPickApi: (preset: ProviderPreset | null, protocol?: ProviderWireType) => void;
+  onPickDecision?: (presetId: DecisionConnectionPreset['id']) => void;
   onAccountChanged?: () => Promise<void> | void;
   /** A directory pick wrote a connection; the page re-reads its lists. */
   onImported?: () => Promise<void> | void;
@@ -120,7 +123,7 @@ export function ConnectionMethodPicker({
                 configuredIds={configuredIds ?? new Set<string>()}
                 onImported={async () => { await onImported?.(); }} />
             ) : (
-              <PresetGrid dense={dense} onPick={onPickApi} />
+              <PresetGrid dense={dense} onPick={onPickApi} onPickDecision={onPickDecision} />
             )}
           </div>
         )}

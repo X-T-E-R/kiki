@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { assertProviderCredential, assertProviderHeaders } from '@kiki/oauth';
-import type { DecisionProtocol, DecisionSource, DecisionSourceStatus, MemoryAdvisorFailure } from '@kiki/protocol';
+import { DECISION_PROTOCOL_PATHS, type DecisionProtocol, type DecisionSource, type DecisionSourceStatus, type MemoryAdvisorFailure } from '@kiki/protocol';
 import type { AuthProvider, IModelCatalog, Model } from './catalog';
 import type { RequestAdmissionPort, RequestAttribution } from './requestAdmission';
 
@@ -26,7 +26,7 @@ export function decisionEndpoint(baseUrl: string | undefined, protocol: Resolved
   try {
     const base = new URL(baseUrl);
     const url = override === undefined
-      ? new URL(protocol === 'chat_json' ? base.pathname : `${base.pathname.replace(/\/$/, '')}/${protocol === 'system_one' ? 'systemone' : 'rerank'}`, base)
+      ? new URL(protocol === 'chat_json' ? base.pathname : `${base.pathname.replace(/\/$/, '')}/${DECISION_PROTOCOL_PATHS[protocol]}`, base)
       : new URL(override, base);
     if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || url.username || url.password || url.origin !== base.origin || (protocol === 'chat_json' && override !== undefined)) throw new DecisionRequestError('protocol');
     return url;
@@ -37,12 +37,14 @@ export function decisionEndpoint(baseUrl: string | undefined, protocol: Resolved
 }
 export function resolveDecisionSource(catalog: IModelCatalog, source: DecisionSource): ResolvedDecisionSource {
   if (source.kind === 'model') return resolveLegacyDecisionModel(catalog.get(source.model), 'chat_json', undefined, source.model);
-  const connection = catalog.getConnectionEndpoint(source.connection);
+  const connection = catalog.getConnectionEndpoint(source.connection, source.protocol);
   if (connection.protocol === undefined) throw new DecisionRequestError('protocol');
+  if (source.protocol !== undefined && connection.protocol !== source.protocol) throw new DecisionRequestError('protocol');
   const endpoint = decisionEndpoint(connection.baseUrl, connection.protocol, connection.decisionEndpoint);
   const name = source.model ?? connection.defaultModel;
   if (!name) throw new DecisionRequestError('unconfigured');
-  return { id: `connection:${source.connection}/${name}`, name, providerName: source.connection, protocol: connection.protocol, endpoint,
+  const id = source.protocol === undefined ? `connection:${source.connection}/${name}` : `connection:${source.connection}#${source.protocol}/${name}`;
+  return { id, name, providerName: source.connection, protocol: connection.protocol, endpoint,
     headers: connection.headers, authProvider: connection.authProvider, credentialSource: connection.credentialSource, credentialEnv: connection.credentialEnv };
 }
 export function resolveLegacyDecisionModel(model: Model, protocol: ResolvedDecisionSource['protocol'], override?: string, alias = model.id): ResolvedDecisionSource {

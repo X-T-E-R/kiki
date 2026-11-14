@@ -15,7 +15,7 @@ import { useConnection } from '../../state/connection';
 import { StatusDot } from '../capabilities/primitives';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
-import { DecisionSourceSummary } from './DecisionSources';
+import { DecisionSourceField } from './DecisionSources';
 import { MemoryAdvisorTuning } from './MemoryAdvisorTuning';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingsGroup } from './fields';
@@ -101,9 +101,23 @@ export function MemoryAdvisorSettingsCard() {
 
         <SettingsGroup title={t('memory.advisor.selectorGroup')}>
           <div className="space-y-2">
-            <DecisionSourceSummary consumer="memory" source={config?.source} status={status?.source_status}
+            <DecisionSourceField
+              consumer="memory"
+              scope="card"
+              label={t('st.decision.row.memory')}
+              help={t('st.decision.sourceHint')}
+              unset={t('st.decision.row.memoryUnset')}
+              source={config?.source}
+              status={status?.source_status}
               legacy={config?.source === undefined && config?.selector !== undefined
-                ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined} />
+                ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined}
+              loading={advisor.query.isPending}
+              error={advisor.query.error}
+              retry={() => { void advisor.query.refetch(); }}
+              write={async (source) => {
+                await advisor.save.mutateAsync({ advisor: source === null && config?.selector !== undefined ? { source, selector: null } : { source } });
+              }}
+            />
             {destination !== undefined || config !== undefined ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 {destination !== undefined ? (

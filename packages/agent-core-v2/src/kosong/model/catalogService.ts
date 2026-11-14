@@ -1,5 +1,5 @@
 import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
-import { decisionProtocolForProviderType } from '@kiki/protocol';
+import { decisionProtocolForProviderType, type DecisionProtocol } from '@kiki/protocol';
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -127,19 +127,24 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     return this.entry(id, recipeSettings).requester;
   }
 
-  getConnectionEndpoint(providerId: string): ConnectionEndpoint {
+  getConnectionEndpoint(providerId: string, requestedProtocol?: DecisionProtocol): ConnectionEndpoint {
     const provider = this.providers.get(providerId);
     if (provider === undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
     const adapter = provider.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type);
     const auth = resolveModelAuthMaterial({ modelId: `connection:${providerId}`, model: { provider: providerId }, provider, providerName: providerId, adapter });
     const headers = resolveOutboundHeaders(provider.type, provider.customHeaders, this.hostRequestHeaders, adapter);
     const key = resolveProviderApiKey(provider, adapter);
+    const standaloneProtocol = decisionProtocolForProviderType(provider.type);
+    const attached = standaloneProtocol === undefined && requestedProtocol !== undefined ? provider.decision?.[requestedProtocol] : undefined;
+    const protocol = standaloneProtocol !== undefined
+      ? (requestedProtocol === undefined || requestedProtocol === standaloneProtocol ? standaloneProtocol : undefined)
+      : (attached === undefined ? undefined : requestedProtocol);
     return {
       providerName: providerId,
       baseUrl: resolveConfiguredModelBaseUrl({}, provider, adapter),
-      defaultModel: provider.defaultModel,
-      protocol: decisionProtocolForProviderType(provider.type),
-      decisionEndpoint: provider.decisionEndpoint,
+      defaultModel: standaloneProtocol !== undefined ? provider.defaultModel : attached?.model,
+      protocol,
+      decisionEndpoint: standaloneProtocol !== undefined ? provider.decisionEndpoint : attached?.endpoint,
       headers,
       authProvider: this.buildAuthProvider(providerId, auth),
       credentialSource: auth.apiKey !== undefined ? (provider.apiKey?.trim() ? 'provider' : 'env') : auth.oauth !== undefined ? 'oauth' : Object.values(provider.customHeaders ?? {}).some(Boolean) || Object.keys(headers).some((name) => /^(authorization|x-api-key)$/i.test(name) && headers[name]) ? 'headers' : 'none',

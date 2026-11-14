@@ -8,7 +8,13 @@
 
 import { providerIdSchema } from '@kiki/protocol';
 import type { ValidationIssue } from '@kiki/session-core/i18n';
-import { DEFAULT_MODEL_CAPABILITIES, DEFAULT_MODEL_SUPPORT_EFFORTS, validateProviderDraft, type ProviderDraft } from '@kiki/session-core/settings';
+import {
+  DEFAULT_MODEL_CAPABILITIES,
+  DEFAULT_MODEL_SUPPORT_EFFORTS,
+  isDecisionConnection,
+  validateProviderDraft,
+  type ProviderDraft,
+} from '@kiki/session-core/settings';
 
 export type ProviderWireType = ProviderDraft['type'];
 
@@ -111,10 +117,10 @@ export function vendorLabelFor(baseUrl: string | undefined): string | undefined 
 
 /**
  * How a configured connection reaches its models, as the list groups them:
- * an account sign-in (OAuth-managed), a server on this machine, or a hosted
- * API reached with a key. There is deliberately no per-vendor kind.
+ * an account sign-in (OAuth-managed), a server on this machine, a hosted API
+ * reached with a key, or a standalone decision service.
  */
-export type ConnectionKind = 'account' | 'local' | 'api';
+export type ConnectionKind = 'account' | 'local' | 'api' | 'decision';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
 
@@ -129,9 +135,12 @@ export function isLocalBaseUrl(baseUrl: string | undefined): boolean {
 }
 
 export function connectionKind(
-  provider: { readonly id: string; readonly base_url?: string },
+  provider: { readonly id: string; readonly type?: string; readonly service?: 'chat' | 'decision'; readonly base_url?: string },
   accountProviders: ReadonlySet<string>,
 ): ConnectionKind {
+  if (provider.type !== undefined && isDecisionConnection({ type: provider.type as never, service: provider.service })) {
+    return 'decision';
+  }
   if (accountProviders.has(provider.id)) return 'account';
   return isLocalBaseUrl(provider.base_url) ? 'local' : 'api';
 }

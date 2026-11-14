@@ -57,6 +57,7 @@ import { useRequestGovernance } from '../../lib/useRequestGovernance';
 import { ConcurrencyRulesEditor } from '../usage/ConcurrencyRulesEditor';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
+import { DecisionJudgeRows } from './DecisionSources';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { SettingHelp } from './SettingHelp';
 import { effortLabel } from './profileEditor/profileDraft';
@@ -1043,6 +1044,18 @@ export function ConcurrencyCard() {
   );
 }
 
+export function DecisionJudgesCard() {
+  const { t } = useI18n();
+  return (
+    <SectionCard id="st-card-decision-judges" title={t('st.decision.judgesTitle')}>
+      <div className="space-y-3">
+        <Hint>{t('st.decision.judgesHint')}</Hint>
+        <DecisionJudgeRows />
+      </div>
+    </SectionCard>
+  );
+}
+
 /**
  * Defaults tab: which model each job uses, then how models behave by default
  * (thinking, compaction), then what new sessions are allowed to do.
@@ -1051,6 +1064,7 @@ export function DefaultsTab() {
   return (
     <div className="space-y-6">
       <GlobalDefaultsCard />
+      <DecisionJudgesCard />
       <ModelSwitchCard />
       <ThinkingCard />
       <GlobalCompactionCard />

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { DecisionJudgeRows } from './DecisionSources';
 import { ReviewerSettings } from './ReviewerSettings';
+import { pickOption } from './testControls';
 
 const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), listProviders: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn(), moveReviewerKey: vi.fn(), getMemoryAdvisorSettings: vi.fn(), patchMemoryAdvisorSettings: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
@@ -62,7 +63,7 @@ async function render() {
 const TUNING = { timeoutMs: 8000, allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance'] };
 
 describe('permission reviewer settings', () => {
-  it('saves only tuning: the source, backend and key are never written from this card', async () => {
+  it('saves tuning independently and shows the active decision source in place', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: {
       ...TUNING, backend: 'model', hasApiKey: false, source: { kind: 'connection', connection: 'typesafe' },
       source_status: { state: 'ready', connection: 'typesafe', model: 'jev-latest', protocol: 'system_one' },
@@ -71,7 +72,7 @@ describe('permission reviewer settings', () => {
     await render();
     expect(container.querySelector('#reviewer-model')).toBeNull();
     expect(container.querySelector('#reviewer-api-key')).toBeNull();
-    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
+    expect(container.querySelector('#st-decision-card-reviewer')?.textContent).toContain('typesafe · jev-latest');
     // The field works in seconds (unit right of the input); the wire keeps ms.
     await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5');
     await act(async () => button('Save').click());
@@ -81,11 +82,18 @@ describe('permission reviewer settings', () => {
     } } });
   });
 
-  it('links the read-only source to Decision models', async () => {
+  it('lets the user select a reviewer source directly in place without navigating away', async () => {
+    client.patchConfig.mockImplementation(async (patch: { permission: { reviewer: Record<string, unknown> } }) => ({
+      permission: { reviewer: { ...TUNING, source: patch.permission.reviewer['source'] } },
+    }));
     await render();
-    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('Not chosen');
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-change]')!.click());
-    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-decision-connections');
+    expect(container.querySelector('#st-decision-card-reviewer')?.textContent).toContain('Not set');
+    await pickOption(container.querySelector('#st-decision-card-reviewer')!, 'Test model');
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      permission: { reviewer: { source: { kind: 'model', model: 'test-model' } } },
+    });
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('echoes an older Jev key and moves it on the server into a free connection ID', async () => {
@@ -98,7 +106,7 @@ describe('permission reviewer settings', () => {
       return { connection: 'typesafe-2', state: 'complete', retryable: false };
     });
     await render();
-    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('Jev · TypeSafe');
+    expect(container.textContent).toContain('Using the older Jev key on the Reviewer card.');
     expect(container.querySelector('[data-reviewer-legacy]')?.getAttribute('data-reviewer-legacy')).toBe('key');
     // The id the suggestion would collide with is skipped.
     expect(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!.value).toBe('typesafe-2');
@@ -108,7 +116,7 @@ describe('permission reviewer settings', () => {
     expect(client.revealSecret).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Moved. The reviewer now uses typesafe-2.');
     // The refreshed config is what the card shows: the new source, no key left to move.
-    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe-2');
+    expect(container.querySelector('#st-decision-card-reviewer')?.textContent).toContain('typesafe-2');
     expect(container.querySelector('[data-reviewer-legacy]')).toBeNull();
   });
 
@@ -156,7 +164,7 @@ describe('permission reviewer settings', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-move-key]')!.click());
     await settle();
     // The refreshed source is shown, and the leftover key keeps its way out.
-    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe');
+    expect(container.querySelector('#st-decision-card-reviewer')?.textContent).toContain('typesafe');
     expect(container.querySelector('[data-reviewer-legacy]')?.getAttribute('data-reviewer-legacy')).toBe('key');
     expect(container.textContent).toContain('An older TypeSafe key is still saved in the reviewer settings.');
     expect(container.textContent).not.toContain('still uses its own TypeSafe key');

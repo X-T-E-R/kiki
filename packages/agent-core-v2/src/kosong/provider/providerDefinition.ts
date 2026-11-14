@@ -113,6 +113,9 @@ export function explainProviderEndpoint(
     return { baseUrl: `${TYPESAFE_ORIGIN}/v1`, baseUrlIsDefault: true,
       apiKey, apiKeyEnvName: apiKey ? 'TYPESAFE_API_KEY' : undefined };
   }
+  if (providerType === 'openai_decisions') {
+    return { baseUrl: 'https://api.openai.com/v1', baseUrlIsDefault: true };
+  }
   if (definition === undefined) return {};
   const endpoint =
     normalizeEndpointDeclaration(definition.endpoint) ?? aggregateTraitEndpoints(definition);

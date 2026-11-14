@@ -14,6 +14,7 @@ The `type` field in the `providers` table selects the connection's request forma
 | `openai_responses` | OpenAI Responses API | OpenAI's newer Responses interface |
 | `google-genai` | Google GenAI | Gemini API |
 | `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI |
+| `openai_decisions` | OpenAI Decisions | Native `/v1/decisions` services; permission review and memory recommendations |
 | `system_one` | System One | Decision services such as Jev; permission review and memory recommendations |
 | `pair_score` | Reranking scores | Memory ranking with compatible rerankers or classifiers |
 
@@ -23,7 +24,7 @@ Chat connections stream by default. Capabilities such as thinking, vision, and t
 
 ### Decision connections
 
-A decision connection owns its address, protocol and credentials. Permission review and [Memory Advisor](../guides/memory.md#memory-advisor) can reference the same connection, while each keeps its own source choice and behavior settings. Use a compatible service's address and remote model name; no local chat model or context size is needed.
+A decision connection owns its address, protocol, and credentials, or attaches decision protocols onto an existing chat provider. Permission review and [Memory Advisor](../guides/memory.md#memory-advisor) can reference the same connection while each keeps its own source choice and behavior settings. Use a compatible service's address and remote model name; no local chat model or context size is needed.
 
 This example shares one Jev connection, using the server's existing environment variable:
 
@@ -41,11 +42,28 @@ source = { kind = "connection", connection = "judgment" }
 source = { kind = "connection", connection = "judgment" }
 ```
 
-`default_model` is the name sent to the remote decision service. A source can override it with `model`, or select an existing chat alias with `{ kind = "model", model = "review-model" }`. Changing one consumer's source does not change the other. [Memory Advisor](../guides/memory.md#memory-advisor) uses the source when enabled; saving a source preserves an existing off switch.
+When your chat gateway also serves `/v1/decisions`, System One, or a reranker on the same origin, attach `[providers.<name>.decision.<protocol>]` instead of creating a second connection with a duplicate API key:
 
-For a reranker, use `type = "pair_score"`, its `base_url`, and its remote `default_model`. Pair scores support memory **Rank**, not **Select** or permission review. By default, requests append `/systemone` or `/rerank` to the base path. Set `decision_endpoint` to a path or complete URL when the service needs another route; it must share the base URL's scheme, host and port and contain no embedded credentials.
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://example.com/v1"
 
-Both types use the existing provider credential fields and custom headers. A service that accepts unauthenticated HTTP requests can leave credentials unset. An explicitly selected `api_key_env` that has no value and no alternative authentication reports an authentication issue; an upstream 401 or 403 does too. Store API keys through the existing connection credential field or `credentials.toml`, not a second consumer-specific key field. The [decision probe](../server/rest-api.md#decision-connections) tests the selected service with synthetic content.
+[providers.gateway.decision.openai_decisions]
+model = "decisions-model"
+
+[permission.reviewer]
+source = { kind = "connection", connection = "gateway", protocol = "openai_decisions" }
+
+[memory.advisor]
+source = { kind = "connection", connection = "gateway", protocol = "openai_decisions" }
+```
+
+`default_model` (or `model` inside `[providers.<name>.decision.<protocol>]`) is the name sent to the remote decision service. A source can override it with `model`, or select an existing chat alias with `{ kind = "model", model = "review-model" }`. Changing one consumer's source does not change the other. [Memory Advisor](../guides/memory.md#memory-advisor) uses the source when enabled; saving a source preserves an existing off switch.
+
+For a standalone OpenAI Decisions service, use `type = "openai_decisions"` (defaults `base_url` to `https://api.openai.com/v1`). For a reranker, use `type = "pair_score"`, its `base_url`, and its remote `default_model`. Pair scores support memory **Rank**, not **Select** or permission review. By default, requests append `/decisions`, `/systemone`, or `/rerank` to the base path. Set `decision_endpoint` on a standalone connection (or `endpoint` inside `[providers.<name>.decision.<protocol>]`) to a path or complete URL when the service needs another route; it must share the base URL's scheme, host, and port and contain no embedded credentials.
+
+Decision services use the existing provider credential fields and custom headers. A service that accepts unauthenticated HTTP requests can leave credentials unset. An explicitly selected `api_key_env` that has no value and no alternative authentication reports an authentication issue; an upstream 401 or 403 does too. Store API keys through the existing connection credential field or `credentials.toml`, not a second consumer-specific key field. The [decision probe](../server/rest-api.md#decision-connections) tests the selected service with synthetic content.
 
 Existing Reviewer `backend = "jev"` and advisor `selector` configurations continue working. The explicit [move Reviewer key](../server/rest-api.md#decision-connections) action transfers a saved legacy key on the server, switches the Reviewer source, then clears that old key. A partial result preserves newer settings: refresh and check the connection and Reviewer before retrying. If the Reviewer key has changed while the target connection still holds the old key, choose a new connection name; conflicting connections are never overwritten. Environment-variable connections require no key transfer.
 

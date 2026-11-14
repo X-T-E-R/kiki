@@ -11,6 +11,8 @@ import {
   patchProviderRequestSchema,
   type CreateModelRequest,
   type CreateProviderRequest,
+  type DecisionCapabilitiesPatch,
+  type DecisionCapabilitiesWire,
   type ImagePolicyPatch,
   type ImagePolicyWire,
   type ModelEntity,
@@ -40,7 +42,7 @@ import { decisionEndpoint } from '#/kosong/model/decision';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
 import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/modelProtocol';
-import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
+import type { ProviderConfig, ProviderDecisionCapability, ProviderDecisionConfig, ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
   requestCompressionFromWire,
@@ -457,13 +459,63 @@ function applyNamedValues(
   return Object.keys(next).length === 0 ? undefined : next;
 }
 
+function decisionCapabilitiesFromWire(value: DecisionCapabilitiesWire): ProviderDecisionConfig | undefined {
+  const next: ProviderDecisionConfig = {};
+  for (const protocol of ['system_one', 'pair_score', 'openai_decisions'] as const) {
+    const cap = value[protocol];
+    if (cap === undefined) continue;
+    const entry: ProviderDecisionCapability = {};
+    if (cap.model !== undefined) entry.model = cap.model;
+    if (cap.endpoint !== undefined) entry.endpoint = cap.endpoint;
+    next[protocol] = entry;
+  }
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+function applyDecisionCapabilitiesPatch(
+  current: ProviderDecisionConfig | undefined,
+  patch: DecisionCapabilitiesPatch,
+): ProviderDecisionConfig | undefined {
+  const next: ProviderDecisionConfig = { ...current };
+  for (const protocol of ['system_one', 'pair_score', 'openai_decisions'] as const) {
+    const capPatch = patch[protocol];
+    if (capPatch === undefined) continue;
+    if (capPatch === null) {
+      delete next[protocol];
+      continue;
+    }
+    const existing = next[protocol];
+    const entry: ProviderDecisionCapability = { ...existing };
+    if (capPatch.model !== undefined) {
+      if (capPatch.model === null) delete entry.model;
+      else entry.model = capPatch.model;
+    }
+    if (capPatch.endpoint !== undefined) {
+      if (capPatch.endpoint === null) delete entry.endpoint;
+      else entry.endpoint = capPatch.endpoint;
+    }
+    next[protocol] = entry;
+  }
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
 function validateDecisionConnection(provider: ProviderConfig): void {
   const protocol = decisionProtocolForProviderType(provider.type);
+  const baseUrl = resolveConfiguredModelBaseUrl({}, provider);
   if (protocol === undefined) {
     if (provider.decisionEndpoint !== undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, 'decision_endpoint requires a decision connection');
+    if (provider.decision !== undefined) {
+      for (const key of ['system_one', 'pair_score', 'openai_decisions'] as const) {
+        const cap = provider.decision[key];
+        if (cap === undefined) continue;
+        if (baseUrl === undefined && cap.endpoint === undefined) continue;
+        try { decisionEndpoint(baseUrl, key, cap.endpoint); }
+        catch { throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision endpoint must be HTTP(S), have no embedded credential, and stay on the connection origin'); }
+      }
+    }
     return;
   }
-  const baseUrl = resolveConfiguredModelBaseUrl({}, provider);
+  if (provider.decision !== undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections cannot attach extra decision_capabilities');
   if (baseUrl === undefined && provider.decisionEndpoint === undefined) return;
   try { decisionEndpoint(baseUrl, protocol, provider.decisionEndpoint); }
   catch { throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision endpoint must be HTTP(S), have no embedded credential, and stay on the connection origin'); }
@@ -472,7 +524,19 @@ function validateDecisionConnection(provider: ProviderConfig): void {
 function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderRequest): ProviderConfig {
   const next: ProviderConfig = { ...provider };
   if (patch.type !== undefined) next.type = patch.type;
-  if (patch.decision_endpoint !== undefined) next.decisionEndpoint = patch.decision_endpoint ?? undefined;
+  if (patch.decision_endpoint !== undefined) {
+    if (patch.decision_endpoint === null) setCleared(next, 'decisionEndpoint');
+    else next.decisionEndpoint = patch.decision_endpoint;
+  }
+  if (patch.decision_capabilities !== undefined) {
+    if (patch.decision_capabilities === null) {
+      setCleared(next, 'decision');
+    } else {
+      const updated = applyDecisionCapabilitiesPatch(provider.decision, patch.decision_capabilities);
+      if (updated === undefined) setCleared(next, 'decision');
+      else next.decision = updated;
+    }
+  }
   if (patch.base_url !== undefined) {
     if (patch.base_url !== null && patch.base_url.includes('${')) {
       throw new Error2(
@@ -804,6 +868,10 @@ export class ModelCatalogMutationService
         }
       }
       const provider: ProviderConfig = { type: request.type, decisionEndpoint: request.decision_endpoint };
+      if (request.decision_capabilities !== undefined) {
+        const decision = decisionCapabilitiesFromWire(request.decision_capabilities);
+        if (decision !== undefined) provider.decision = decision;
+      }
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
       if (request.api_key_env !== undefined) provider.apiKeyEnv = request.api_key_env;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);

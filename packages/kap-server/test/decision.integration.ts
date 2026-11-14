@@ -287,4 +287,84 @@ describe('decision connections', () => {
     }
     expect(calls).toHaveLength(4);
   });
+
+  it('attaches OpenAI Decisions onto an existing chat provider, reuses its saved API key across reviewer, advisor, and probes, and persists TOML snake_case protocol keys', async () => {
+    const calls: { path: string; authorization?: string; body: any }[] = [];
+    upstream = createServer((req, res) => {
+      runUpstream(res, async () => {
+        let text = '';
+        for await (const chunk of req) text += String(chunk);
+        const body = JSON.parse(text);
+        calls.push({ path: req.url ?? '', authorization: req.headers.authorization, body });
+        res.setHeader('content-type', 'application/json');
+        const answers = (body.questions as any[]).map((q) => q.type === 'predicate'
+          ? { type: 'predicate', name: q.name, probability: 0.99 }
+          : {
+              type: 'choice',
+              name: q.name,
+              choice: q.choices.some((c: { value: string }) => c.value === 'read') ? 'read' : 'apply',
+            });
+        res.end(JSON.stringify({ answers, usage: { input_tokens: 42, output_tokens: 0 } }));
+      });
+    });
+    await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+    const port = (upstream.address() as { port: number }).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const active = await boot();
+
+    const created = await request('POST', '/providers', {
+      id: 'gateway',
+      type: 'openai',
+      base_url: `${origin}/v1`,
+      api_key: 'shared-chat-key',
+      models: [{ remote_id: 'gpt-4o', max_context_size: 128000 }],
+    });
+    expect(created.code).toBe(0);
+
+    const patched = await request('PATCH', '/providers/gateway', {
+      decision_capabilities: {
+        openai_decisions: { model: 'decisions-1' },
+      },
+    });
+    expect(patched.code).toBe(0);
+    expect(patched.data.provider.decision_capabilities).toEqual({
+      openai_decisions: { model: 'decisions-1' },
+    });
+
+    const toml = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect(toml).toContain('openai_decisions');
+    expect(toml).not.toContain('shared-chat-key');
+
+    const crossOriginPatch = await request('PATCH', '/providers/gateway', {
+      decision_capabilities: {
+        openai_decisions: { model: 'decisions-1', endpoint: 'https://evil.example.test/decisions' },
+      },
+    });
+    expect(crossOriginPatch.code).not.toBe(0);
+
+    const attachedSource = { kind: 'connection' as const, connection: 'gateway', protocol: 'openai_decisions' as const };
+    const probeRes = await request('POST', '/decision/probe', {
+      source: attachedSource,
+      confirm_destination: `gateway@${origin}`,
+    });
+    expect(probeRes.data).toMatchObject({ ok: true, status: { state: 'ready', protocol: 'openai_decisions', connection: 'gateway' } });
+
+    expect((await request('POST', '/config', { permission: { reviewer: { source: attachedSource } } })).code).toBe(0);
+    expect(await reviewPermission(reviewerDependencies(active), context, 'example', {})).toMatchObject({ outcome: 'allow', backend: 'jev' });
+
+    const advisorPatch = await request('PATCH', '/memory/settings', {
+      enabled: true,
+      advisor: { source: attachedSource },
+    });
+    expect(advisorPatch.data.advisor_status).toMatchObject({
+      state: 'ready',
+      protocol: 'openai_decisions',
+      first_step_wait_default_ms: 3000,
+    });
+    const advisorProbe = await request('POST', '/memory/advisor/probe', {
+      confirm_destination: `gateway@${origin}`,
+    });
+    expect(advisorProbe.data).toMatchObject({ ok: true, usage_known: true, input_tokens: expect.any(Number), output_tokens: 0 });
+    expect(calls.every((call) => call.path === '/v1/decisions' && call.authorization === 'Bearer shared-chat-key')).toBe(true);
+  }, 30_000);
 });

@@ -35,6 +35,7 @@ import { errorText, issueText } from '@kiki/session-core/i18n';
 import { AccountConnectionPanel } from './AccountConnectionPanel';
 import { accountState, accountStateKey } from './accountSignInState';
 import {
+  DECISION_PROTOCOLS,
   humanizeMs,
   isProviderDraftDirty,
   KNOWN_CAPABILITIES,
@@ -52,6 +53,7 @@ import {
   providerPatchBody,
   validateNewProviderDraft,
   validateProviderDraft,
+  type DecisionConnectionPreset,
   type ImagePolicyDraft,
   type MsUnit,
   type ProviderDraft,
@@ -89,6 +91,7 @@ import { SearchableSelect, type SearchableSelectOption } from './SearchableSelec
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSelect } from './settings/SettingsPrimitives';
 import { SecretField, type SecretDraft } from './settings/SecretField';
 import { ProviderConnectionExtras } from './settings/ProviderConnectionExtras';
+import { NewDecisionConnection, ProviderDecisionCapabilitiesEditor } from './settings/DecisionConnections';
 import { ModelProtocolField } from './settings/ModelProtocolField';
 import {
   alignProtocolChoices,
@@ -847,6 +850,7 @@ export function ProviderFields({
   onModelProtocolsChange,
   onRefreshed,
   fieldIssue = null,
+  decisionCapabilitiesExtra,
   advancedExtra,
   revealKey,
   storedModels,
@@ -890,6 +894,8 @@ export function ProviderFields({
   onRefreshed?: () => Promise<void>;
   /** New connections only: the field-level problem the last create attempt found. */
   fieldIssue?: ConnectionFieldIssue | null;
+  /** Saved chat connections expose attached decision capabilities in their own disclosure. */
+  decisionCapabilitiesExtra?: React.ReactNode;
   /** Saved connections add their request defaults to the advanced block. */
   advancedExtra?: React.ReactNode;
   /** Fetches the effective key (saved or environment) on explicit request. */
@@ -1131,6 +1137,7 @@ export function ProviderFields({
           />
         ))}
       </div>
+      {decisionCapabilitiesExtra}
       <AdvancedDisclosure
         id={`provider-${draft.id || 'new'}`}
         label={t('st.providers.advancedProtocol')}
@@ -1636,6 +1643,16 @@ export function ProviderEditor({
             onModelProtocolsChange={setModelProtocols}
             onRefreshed={onSaved}
             storedModels={modelList ?? null}
+            decisionCapabilitiesExtra={(
+              <AdvancedDisclosure
+                id={`provider-decisions-${provider.id}`}
+                label={t('st.decision.capabilities.title')}
+                summary={t('st.decision.capabilities.summary')}
+                defaultOpen={DECISION_PROTOCOLS.some((protocol) => provider.decision_capabilities?.[protocol] !== undefined)}
+              >
+                <ProviderDecisionCapabilitiesEditor provider={provider} onSaved={onSaved} />
+              </AdvancedDisclosure>
+            )}
             advancedExtra={<>
               <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
               <ProviderConnectionExtras providerId={provider.id} onSaved={onSaved} />
@@ -1854,6 +1871,7 @@ export function NewProviderWizard({
   onAccountChanged,
   onImported,
   initialMethod = 'api',
+  initialDecisionPreset,
   configuredIds,
 }: {
   onSaved: () => Promise<void>;
@@ -1862,13 +1880,16 @@ export function NewProviderWizard({
   /** A directory import wrote a connection. Refresh the list; leave this form open. */
   onImported?: () => Promise<void> | void;
   initialMethod?: 'api' | 'account';
+  /** When set, open directly on the standalone decision service form. */
+  initialDecisionPreset?: DecisionConnectionPreset['id'];
   /** Ids already on the list, so a directory pick can say it updates one. */
   configuredIds?: ReadonlySet<string>;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const blank = useMemo(blankProviderDraft, []);
-  const [step, setStep] = useState<'template' | 'form'>('template');
+  const [step, setStep] = useState<'template' | 'form' | 'decision'>(initialDecisionPreset === undefined ? 'template' : 'decision');
+  const [decisionPreset, setDecisionPreset] = useState<DecisionConnectionPreset['id']>(initialDecisionPreset ?? 'openai_decisions');
   const [draft, setDraft] = useState(blank);
   const [modelProtocols, setModelProtocols] = useState<readonly ModelProtocolChoice[]>(() =>
     alignProtocolChoices(undefined, blank.models.length));
@@ -1896,6 +1917,13 @@ export function NewProviderWizard({
     setFeedback(null);
     setFieldIssue(null);
     setStep('form');
+  };
+
+  const chooseDecision = (presetId: DecisionConnectionPreset['id']) => {
+    setDecisionPreset(presetId);
+    setFeedback(null);
+    setFieldIssue(null);
+    setStep('decision');
   };
 
   const save = async () => {
@@ -1938,10 +1966,38 @@ export function NewProviderWizard({
       <div className="space-y-3">
         <ConnectionMethodPicker initialMethod={initialMethod}
           onPickApi={chooseTemplate}
+          onPickDecision={chooseDecision}
           onAccountChanged={onAccountChanged ?? onSaved}
           onImported={onImported}
           configuredIds={configuredIds ?? new Set<string>()} />
         <FeedbackLine feedback={feedback} />
+      </div>
+    );
+  }
+
+  if (step === 'decision') {
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            onClick={() => {
+              setFeedback(null);
+              setStep('template');
+            }}
+            className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink"
+          >
+            <Icon name="arrowLeft" size={12} />
+            {t('st.wizard.back')}
+          </button>
+        </div>
+        <NewDecisionConnection
+          key={decisionPreset}
+          initialPreset={decisionPreset}
+          configuredIds={configuredIds ?? new Set<string>()}
+          onCancel={() => { setStep('template'); }}
+          onCreated={onSaved}
+        />
       </div>
     );
   }

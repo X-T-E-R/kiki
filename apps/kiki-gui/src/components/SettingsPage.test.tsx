@@ -834,16 +834,13 @@ describe('SettingsPage memory advisor', () => {
     expect(client.getMemoryAdvisorSettings).toHaveBeenCalledWith('ws-beta');
   });
 
-  it('shows the chosen source read-only, works without a separate OK and probes the reported destination', async () => {
+  it('shows the chosen source in place, works without a separate OK and probes the reported destination', async () => {
     advisorFake.advisor = { source: { kind: 'connection', connection: 'typesafe' } };
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    expect(card(container).querySelector('[data-decision-summary="memory"]')?.hasAttribute('data-decision-problem')).toBe(false);
-    // The card has no model, protocol or endpoint fields of its own any more.
+    expect(card(container).querySelector('[data-decision-field="memory"]')?.hasAttribute('data-decision-problem')).toBe(false);
     expect(card(container).querySelector('#memory-advisor-model')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-endpoint]')).toBeNull();
-    expect(card(container).querySelector('[data-decision-summary="memory"] [data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
-    // No sending-out block, OK button or workspace picker; the destination
-    // diagnostic and the tuning numbers sit in the card's 高级 fold.
+    expect(card(container).querySelector('#st-decision-card-memory')?.textContent).toContain('typesafe · jev-latest');
     expect(card(container).querySelector('[data-memory-advisor-egress]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-workspace]')).toBeNull();
@@ -860,13 +857,13 @@ describe('SettingsPage memory advisor', () => {
     expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('typesafe@https://api.typesafe.ai');
   });
 
-  it('echoes an older model setting as the source in effect and links to Decision models', async () => {
+  it('echoes an older model setting as the source in effect and lets the user pick a replacement in place', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory', { guarded: true });
-    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Still using the source saved in the older settings: cheap-judge.');
-    await click(card(container).querySelector('[data-decision-change]')!);
+    expect(card(container).textContent).toContain('Still using the source saved in the older settings: cheap-judge.');
+    await pickOption(card(container).querySelector('#st-decision-card-memory')!, 'typesafe');
     await flush();
-    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=providers#st-card-decision-connections');
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { source: { kind: 'connection', connection: 'typesafe' } } });
   });
   it('turns only the advisor off: the mode alone is written, memory stays on, the model and consent stay', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
@@ -1805,6 +1802,10 @@ describe('SettingsPage search ownership', () => {
     const indexed = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId));
     // The bucket card stays available for legacy editor tests, not Settings navigation.
     rendered.delete('st-card-subagent-profiles');
+    // The standalone decision-connections card stays exported for isolated unit tests;
+    // Settings mounts Who decides on Defaults (`st-card-decision-judges`) and
+    // decision connections directly inside `st-card-providers`.
+    rendered.delete('st-card-decision-connections');
     // The board card stays on disk for the direct AgentTaskSettings test. Settings does not mount it.
     rendered.delete('st-card-agent-board');
     // An open plugin's own page renders its cards only for a chosen plugin;
