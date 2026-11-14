@@ -3,9 +3,47 @@
   "engineVersion": "0.4.3",
   "official": [
     {
+      "id": "kiki-bilibili",
+      "tier": "official",
+      "version": "0.1.2",
+      "displayName": "Kiki Bilibili",
+      "description": "Search and understand Bilibili videos, manage comments and notifications, and publish through bili-agent.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-bilibili",
+      "keywords": [
+        "bilibili",
+        "video",
+        "comments",
+        "publishing"
+      ],
+      "relevance": {
+        "commands": [
+          "bili"
+        ]
+      },
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-bilibili/icon-0.1.2.svg",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-bilibili-0.1.2.zip",
+      "sha256": "6aa185f0969c49d2e6f36e7e80fffb8cfab26e7e17ebc075db57a541a8e48ec7",
+      "localizations": {
+        "zh": {
+          "description": "搜索与理解 B 站视频、回复评论、处理通知和私信，并通过 bili-agent 投稿。",
+          "keywords": [
+            "B站",
+            "视频",
+            "评论",
+            "投稿"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-cloudflare",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "displayName": "Cloudflare Tunnel",
       "description": "Connect an existing Cloudflare Tunnel and manage its Kiki-owned connector.",
       "homepage": "https://developers.cloudflare.com/tunnel/",
@@ -15,14 +53,14 @@
         "tunnel",
         "remote"
       ],
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.1.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.2.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
       "license": "MIT",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip",
-      "sha256": "bb3b84bc4b46cdef2b1a8db3acdccc8ae91ce120f0aed6fbdb61e65676ed72d3",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-cloudflare-0.1.2.zip",
+      "sha256": "6232338d1a2f30b572fc55bd60cbc64b7628af58c413c69207ad35423f958982",
       "localizations": {
         "zh": {
           "description": "连接已有 Cloudflare 隧道，管理随 Kiki 常驻的连接器。",
@@ -31,6 +69,39 @@
             "外部连接",
             "远程",
             "cloudflare"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-everything",
+      "tier": "official",
+      "version": "0.1.2",
+      "displayName": "Everything Search",
+      "description": "Find files and folders on Windows by name, path, size or date with the Everything index.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-everything",
+      "keywords": [
+        "search",
+        "files",
+        "everything",
+        "windows"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-everything/icon-0.1.2.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-everything-0.1.2.zip",
+      "sha256": "18de8a57cc676d6dbaa747af72a9b90c26da82ca18218b3456ac4dd59c1ddf9a",
+      "localizations": {
+        "zh": {
+          "description": "用 Everything 索引按名称、路径、大小或日期查找 Windows 本机文件和文件夹。",
+          "keywords": [
+            "文件搜索",
+            "文件夹",
+            "Everything",
+            "Windows"
           ]
         }
       }
@@ -78,9 +149,42 @@
       }
     },
     {
+      "id": "kiki-mail",
+      "tier": "official",
+      "version": "0.3.0",
+      "displayName": "Mail",
+      "description": "Search mail across Open Archiver sources, or read and send through your IMAP and SMTP accounts.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-mail",
+      "keywords": [
+        "mail",
+        "archive",
+        "imap",
+        "smtp"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-mail/icon-0.3.0.svg",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-mail-0.3.0.zip",
+      "sha256": "8346786e0c6ba43f1e58b9e620f924222abdbe7b3c45cb2466039f5e684650ca",
+      "localizations": {
+        "zh": {
+          "description": "跨来源搜索 Open Archiver 归档邮件，或用自己的 IMAP 和 SMTP 账号收发邮件。",
+          "keywords": [
+            "邮件",
+            "归档",
+            "IMAP",
+            "SMTP"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-media",
       "tier": "official",
-      "version": "0.2.1",
+      "version": "0.2.3",
       "displayName": "Kiki Media",
       "description": "One media plugin with OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources. Configure or disable each service inside Media, or add your own local script. Requires a Kiki host with grouped media sources and script-source management. Cloud generation requires media API access and can incur charges.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media",
@@ -103,14 +207,14 @@
         "comfyui"
       ],
       "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.1.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.3.svg",
       "engines": {
-        "kiki": ">=0.4.0"
+        "kiki": ">=0.4.3"
       },
       "license": "MIT AND Apache-2.0",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-media-0.2.1.zip",
-      "sha256": "2f96944f00d2cacc54ac3979a6264921addea5a57a1c409b51254db998426c93",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-media-0.2.3.zip",
+      "sha256": "036924f07ed25a015db69fde62eaa932d4377ca335a7758bc30ab412daa885cc",
       "localizations": {
         "zh": {
           "description": "一个媒体插件，内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 来源。可在媒体页分别配置、启停或移除，也可添加自己的本地脚本。需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。云端生成需媒体 API 权限，并可能产生费用。",
@@ -166,7 +270,7 @@
     {
       "id": "kiki-office",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "displayName": "Kiki Office Suite",
       "description": "Create and edit local Word, Excel and PowerPoint files.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office",
@@ -186,14 +290,14 @@
           "officecli"
         ]
       },
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.1.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.2.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
       "license": "MIT",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip",
-      "sha256": "12189919fe7b52a6ea9f785126be72bdd6c53cdbc666e2961c9a7dfacf29c7be",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-office-0.1.2.zip",
+      "sha256": "f2a4ff62296bd968585a68be5e4c5942d90f23fbeacf53e72e13ed1a55c01a9c",
       "localizations": {
         "zh": {
           "description": "在本机创建、读取、编辑和预览 Word、Excel 与 PowerPoint 文件。",
@@ -211,9 +315,40 @@
       }
     },
     {
+      "id": "kiki-output-layer",
+      "tier": "official",
+      "version": "0.1.2",
+      "displayName": "Kiki Output Layer",
+      "description": "Stream translations and plain-language rewrites without changing the conversation.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-output-layer",
+      "keywords": [
+        "translation",
+        "rewrite",
+        "reading"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-output-layer/icon-0.1.2.svg",
+      "engines": {
+        "kiki": "^0.4.1"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-output-layer-0.1.2.zip",
+      "sha256": "3ecdd27c40b58e77ddc1c8bf29d76a950855db0f72d3ac893e904789e9ab1bb8",
+      "localizations": {
+        "zh": {
+          "description": "流式翻译与说人话，保留原始对话。",
+          "keywords": [
+            "翻译",
+            "说人话",
+            "阅读"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-pet",
       "tier": "official",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "displayName": "Desktop Pet",
       "description": "An isolated native desktop companion that reacts to Kiki tasks, imports Codex pets and carries a pet-making skill.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet",
@@ -227,8 +362,8 @@
       },
       "license": "GPL-3.0-or-later",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-pet-0.1.0.zip",
-      "sha256": "cc6b3766300a6377621c45c902f1eff3f61460b050df680b5fde07ad2b46a280",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-pet-0.1.1.zip",
+      "sha256": "9fb7cd252008cf28206c6ec70f7db5ab1561f69a0e63dd76e6b58b7d03742217",
       "localizations": {
         "zh": {
           "description": "随 Kiki 任务反应的隔离桌面伴侣，可导入 Codex 宠物，并带制作 skill。",
@@ -241,9 +376,78 @@
       }
     },
     {
+      "id": "kiki-phone",
+      "tier": "official",
+      "version": "0.2.1",
+      "displayName": "Kiki Phone",
+      "description": "Prepare the runtime, then use Mobilewright semantic scripts or Mobile MCP to operate a connected Android or iOS phone. Rooted Android also supports su commands.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-phone",
+      "keywords": [
+        "phone",
+        "android",
+        "ios",
+        "mobile",
+        "mcp",
+        "root"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-phone/icon-0.2.1.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-phone-0.2.1.zip",
+      "sha256": "db76e5f7e4dae95f0180852aded72f3eb79ba9ea77b099e66b105118fe3e3ef1",
+      "localizations": {
+        "zh": {
+          "description": "准备运行环境后，用 Mobilewright 语义脚本或 Mobile MCP 操作已连接的安卓与 iOS 手机；root 安卓还可按需调用 su。",
+          "keywords": [
+            "手机",
+            "安卓",
+            "苹果",
+            "操作手机",
+            "root"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-qq",
+      "tier": "official",
+      "version": "0.4.0",
+      "displayName": "QQ",
+      "description": "Connect an official QQ Bot or OneBot 11 channel to exchange messages and media in Kiki.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-qq",
+      "keywords": [
+        "qq",
+        "onebot",
+        "chat",
+        "messaging"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-qq/icon-0.4.0.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-qq-0.4.0.zip",
+      "sha256": "1835b4ca4e5382e10b1e9d9d166b4ccc7505651133ed643d78333afee56e82e7",
+      "localizations": {
+        "zh": {
+          "description": "连接官方 QQ 机器人或 OneBot 11 渠道，在 Kiki 中收发消息与媒体。",
+          "keywords": [
+            "QQ",
+            "OneBot",
+            "聊天",
+            "消息"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-sites",
       "tier": "official",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "displayName": "Kiki Sites",
       "description": "Connect code hosting and deploy sites or apps through official service CLIs and APIs.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites",
@@ -253,14 +457,14 @@
         "github",
         "hosting"
       ],
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.0.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.1.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
       "license": "MIT",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-sites-0.1.0.zip",
-      "sha256": "68077256d33e602e092811fa30cbbfbb465f2728156f95a4ccbf2b7521745f4d",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-sites-0.1.1.zip",
+      "sha256": "4ac3962eaa62c8b9af3aad06810e7d48e31bf2b6a02f83c719f002fc921cc25a",
       "localizations": {
         "zh": {
           "description": "连接代码托管，并用官方服务 CLI 与 API 部署站点或应用。",
@@ -304,9 +508,41 @@
       }
     },
     {
+      "id": "kiki-voice",
+      "tier": "official",
+      "version": "0.1.2",
+      "displayName": "Voice",
+      "description": "Generate playable speech through Kiki Media and send original audio to connected chats.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-voice",
+      "keywords": [
+        "voice",
+        "speech",
+        "tts",
+        "media"
+      ],
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-voice-0.1.2.zip",
+      "sha256": "e57f81d467d2e38ae1d48f80c3745db46082599b236354d2cad55ba7eea97644",
+      "localizations": {
+        "zh": {
+          "description": "通过 Kiki Media 生成可播放语音，并把原始音频发送到已连接的聊天。",
+          "keywords": [
+            "语音",
+            "朗读",
+            "音色",
+            "消息"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-work",
       "tier": "official",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "displayName": "Kiki Work",
       "description": "Local table checks for office work: audit CSV keys and reconcile two tables without modifying or uploading them.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work",
@@ -321,8 +557,8 @@
       },
       "license": "MIT",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-work-0.1.0.zip",
-      "sha256": "2b2d216e961af4746fa6e51070cc9b7198ac7f7499ee98e9db71a6204a810f16",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-work-0.1.1.zip",
+      "sha256": "048fd5b1d621e2806bc2798dfd9e2fcd53e956e3b01f8745a21010055b5d5846",
       "localizations": {
         "zh": {
           "description": "在本机核对 CSV/TSV 键并对照两张表，不改原文件，也不上传。",

@@ -2,10 +2,42 @@
   "version": "1",
   "plugins": [
     {
+      "id": "kiki-output-layer",
+      "tier": "official",
+      "displayName": "Kiki Output Layer",
+      "version": "0.1.2",
+      "description": "Stream translations and plain-language rewrites without changing the conversation.",
+      "keywords": [
+        "translation",
+        "rewrite",
+        "reading"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-output-layer-0.1.2.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-output-layer",
+      "localizations": {
+        "zh": {
+          "description": "流式翻译与说人话，保留原始对话。",
+          "keywords": [
+            "翻译",
+            "说人话",
+            "阅读"
+          ]
+        }
+      },
+      "sha256": "3ecdd27c40b58e77ddc1c8bf29d76a950855db0f72d3ac893e904789e9ab1bb8",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-output-layer/icon-0.1.2.svg",
+      "engines": {
+        "kiki": "^0.4.1"
+      },
+      "inputSha256": "d536df722fdf77b37f1e7eab5562a27767186e798ebc3d71ade17f96ed1487b7"
+    },
+    {
       "id": "kiki-cloudflare",
       "tier": "official",
       "displayName": "Cloudflare Tunnel",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "description": "Connect an existing Cloudflare Tunnel and manage its Kiki-owned connector.",
       "keywords": [
         "cloudflare",
@@ -15,7 +47,7 @@
       ],
       "author": "Kiki",
       "license": "MIT",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-cloudflare-0.1.2.zip",
       "homepage": "https://developers.cloudflare.com/tunnel/",
       "localizations": {
         "zh": {
@@ -28,18 +60,18 @@
           ]
         }
       },
-      "sha256": "bb3b84bc4b46cdef2b1a8db3acdccc8ae91ce120f0aed6fbdb61e65676ed72d3",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.1.svg",
+      "sha256": "6232338d1a2f30b572fc55bd60cbc64b7628af58c413c69207ad35423f958982",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.2.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
-      "inputSha256": "a49a5ae7acdea2400b533360e0446f55cd1f759a3c8d9885f59ca637fd887cfd"
+      "inputSha256": "f8ca9c821ea506dcec803657d25dfda0395682d254d2918cc9a472bb4ecfc8e6"
     },
     {
       "id": "kiki-office",
       "tier": "official",
       "displayName": "Kiki Office Suite",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "description": "Create and edit local Word, Excel and PowerPoint files.",
       "keywords": [
         "office",
@@ -59,7 +91,7 @@
           "officecli"
         ]
       },
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-office-0.1.2.zip",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office",
       "localizations": {
         "zh": {
@@ -76,12 +108,12 @@
           ]
         }
       },
-      "sha256": "12189919fe7b52a6ea9f785126be72bdd6c53cdbc666e2961c9a7dfacf29c7be",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.1.svg",
+      "sha256": "f2a4ff62296bd968585a68be5e4c5942d90f23fbeacf53e72e13ed1a55c01a9c",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.2.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
-      "inputSha256": "239b8faaf85e6eb42b8a990a48956d65a5679cd939568e7975ec7f720d988d07"
+      "inputSha256": "2e7d0829e4e8954e51c3e5d2734c3ff54a27e91f3ef6b1461faedec9cabe12f8"
     },
     {
       "id": "kiki-writing",
@@ -199,7 +231,7 @@
       "id": "kiki-media",
       "tier": "official",
       "displayName": "Kiki Media",
-      "version": "0.2.1",
+      "version": "0.2.3",
       "description": "One media plugin with OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources. Configure or disable each service inside Media, or add your own local script. Requires a Kiki host with grouped media sources and script-source management. Cloud generation requires media API access and can incur charges.",
       "keywords": [
         "media",
@@ -222,7 +254,7 @@
       "author": "Kiki",
       "license": "MIT AND Apache-2.0",
       "group": "media",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-media-0.2.1.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-media-0.2.3.zip",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media",
       "localizations": {
         "zh": {
@@ -246,12 +278,12 @@
           ]
         }
       },
-      "sha256": "2f96944f00d2cacc54ac3979a6264921addea5a57a1c409b51254db998426c93",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.1.svg",
+      "sha256": "036924f07ed25a015db69fde62eaa932d4377ca335a7758bc30ab412daa885cc",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.3.svg",
       "engines": {
-        "kiki": ">=0.4.0"
+        "kiki": ">=0.4.3"
       },
-      "inputSha256": "b0c233fd9620d5ffd9549fa586924a95f05f978f368b563b0c12af6c55bc7587"
+      "inputSha256": "feb72114211360f5b09475d80e76c9c083a8c5e697a0a0afcc9577f1bf098374"
     },
     {
       "id": "kiki-task-board",
@@ -289,7 +321,7 @@
       "id": "kiki-work",
       "tier": "official",
       "displayName": "Kiki Work",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Local table checks for office work: audit CSV keys and reconcile two tables without modifying or uploading them.",
       "keywords": [
         "work",
@@ -299,7 +331,7 @@
       ],
       "author": "Kiki",
       "license": "MIT",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-work-0.1.0.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-work-0.1.1.zip",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work",
       "localizations": {
         "zh": {
@@ -312,17 +344,17 @@
           ]
         }
       },
-      "sha256": "2b2d216e961af4746fa6e51070cc9b7198ac7f7499ee98e9db71a6204a810f16",
+      "sha256": "048fd5b1d621e2806bc2798dfd9e2fcd53e956e3b01f8745a21010055b5d5846",
       "engines": {
         "kiki": "^0.4.0"
       },
-      "inputSha256": "ebcbf4d04e66997074665177ae0372d8115a5f489a39247ee042c75258eb44a8"
+      "inputSha256": "6c2214d7a752c5749bfc1c6b34ec9e0535fa178d4fff165dfb32cf3fa3ffe7ae"
     },
     {
       "id": "kiki-pet",
       "tier": "official",
       "displayName": "Desktop Pet",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "An isolated native desktop companion that reacts to Kiki tasks, imports Codex pets and carries a pet-making skill.",
       "keywords": [
         "pet",
@@ -331,7 +363,7 @@
       ],
       "author": "Kiki",
       "license": "GPL-3.0-or-later",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-pet-0.1.0.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-pet-0.1.1.zip",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet",
       "localizations": {
         "zh": {
@@ -343,17 +375,17 @@
           ]
         }
       },
-      "sha256": "cc6b3766300a6377621c45c902f1eff3f61460b050df680b5fde07ad2b46a280",
+      "sha256": "9fb7cd252008cf28206c6ec70f7db5ab1561f69a0e63dd76e6b58b7d03742217",
       "engines": {
         "kiki": "^0.4.0"
       },
-      "inputSha256": "62b2e1d7bb6e7b41337614ab2ef8163637b525f168c8bf7ea8387f2329446ad4"
+      "inputSha256": "86caece3802e4514555b14a0bdcdec91bbb6b0bcfc2bcb9a6c80a75178b6ede9"
     },
     {
       "id": "kiki-sites",
       "tier": "official",
       "displayName": "Kiki Sites",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Connect code hosting and deploy sites or apps through official service CLIs and APIs.",
       "keywords": [
         "sites",
@@ -363,7 +395,7 @@
       ],
       "author": "Kiki",
       "license": "MIT",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-sites-0.1.0.zip",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-sites-0.1.1.zip",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites",
       "localizations": {
         "zh": {
@@ -375,12 +407,223 @@
           ]
         }
       },
-      "sha256": "68077256d33e602e092811fa30cbbfbb465f2728156f95a4ccbf2b7521745f4d",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.0.svg",
+      "sha256": "4ac3962eaa62c8b9af3aad06810e7d48e31bf2b6a02f83c719f002fc921cc25a",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.1.svg",
       "engines": {
         "kiki": "^0.4.0"
       },
-      "inputSha256": "1cc3cf630bd764f921912b843881506984bb76b44a0e66234647d609a739df1e"
+      "inputSha256": "4df7ed212b1c5fde17f583448b4da0e85cd3d08ef85d7ab7581748b3cb8ab594"
+    },
+    {
+      "id": "kiki-bilibili",
+      "tier": "official",
+      "displayName": "Kiki Bilibili",
+      "version": "0.1.2",
+      "description": "Search and understand Bilibili videos, manage comments and notifications, and publish through bili-agent.",
+      "keywords": [
+        "bilibili",
+        "video",
+        "comments",
+        "publishing"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-bilibili-0.1.2.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-bilibili",
+      "relevance": {
+        "commands": [
+          "bili"
+        ]
+      },
+      "localizations": {
+        "zh": {
+          "description": "搜索与理解 B 站视频、回复评论、处理通知和私信，并通过 bili-agent 投稿。",
+          "keywords": [
+            "B站",
+            "视频",
+            "评论",
+            "投稿"
+          ]
+        }
+      },
+      "sha256": "6aa185f0969c49d2e6f36e7e80fffb8cfab26e7e17ebc075db57a541a8e48ec7",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-bilibili/icon-0.1.2.svg",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "inputSha256": "53012141f45e5e67c312daa669436e02eec02e09b13b2c5b37840b2dc6c56d39"
+    },
+    {
+      "id": "kiki-voice",
+      "tier": "official",
+      "displayName": "Voice",
+      "version": "0.1.2",
+      "description": "Generate playable speech through Kiki Media and send original audio to connected chats.",
+      "keywords": [
+        "voice",
+        "speech",
+        "tts",
+        "media"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-voice-0.1.2.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-voice",
+      "localizations": {
+        "zh": {
+          "description": "通过 Kiki Media 生成可播放语音，并把原始音频发送到已连接的聊天。",
+          "keywords": [
+            "语音",
+            "朗读",
+            "音色",
+            "消息"
+          ]
+        }
+      },
+      "sha256": "e57f81d467d2e38ae1d48f80c3745db46082599b236354d2cad55ba7eea97644",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "inputSha256": "e63f6feaa95bba61199aa770d1ba640907af1564242e032f4fd49d92e38e0f7b"
+    },
+    {
+      "id": "kiki-phone",
+      "tier": "official",
+      "displayName": "Kiki Phone",
+      "version": "0.2.1",
+      "description": "Prepare the runtime, then use Mobilewright semantic scripts or Mobile MCP to operate a connected Android or iOS phone. Rooted Android also supports su commands.",
+      "keywords": [
+        "phone",
+        "android",
+        "ios",
+        "mobile",
+        "mcp",
+        "root"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-phone-0.2.1.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-phone",
+      "localizations": {
+        "zh": {
+          "description": "准备运行环境后，用 Mobilewright 语义脚本或 Mobile MCP 操作已连接的安卓与 iOS 手机；root 安卓还可按需调用 su。",
+          "keywords": [
+            "手机",
+            "安卓",
+            "苹果",
+            "操作手机",
+            "root"
+          ]
+        }
+      },
+      "sha256": "db76e5f7e4dae95f0180852aded72f3eb79ba9ea77b099e66b105118fe3e3ef1",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-phone/icon-0.2.1.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "inputSha256": "c6607a9a791e52649cfb73c60896535de6719d8b6afb4b8e9a258ff8cbc6f0f7"
+    },
+    {
+      "id": "kiki-everything",
+      "tier": "official",
+      "displayName": "Everything Search",
+      "version": "0.1.2",
+      "description": "Find files and folders on Windows by name, path, size or date with the Everything index.",
+      "keywords": [
+        "search",
+        "files",
+        "everything",
+        "windows"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-everything-0.1.2.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-everything",
+      "localizations": {
+        "zh": {
+          "description": "用 Everything 索引按名称、路径、大小或日期查找 Windows 本机文件和文件夹。",
+          "keywords": [
+            "文件搜索",
+            "文件夹",
+            "Everything",
+            "Windows"
+          ]
+        }
+      },
+      "sha256": "18de8a57cc676d6dbaa747af72a9b90c26da82ca18218b3456ac4dd59c1ddf9a",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-everything/icon-0.1.2.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "inputSha256": "71501ff38e0d2ede4e30f7356ec4cc3126ad496e003a3de89a67374b16b9c63f"
+    },
+    {
+      "id": "kiki-qq",
+      "tier": "official",
+      "displayName": "QQ",
+      "version": "0.4.0",
+      "description": "Connect an official QQ Bot or OneBot 11 channel to exchange messages and media in Kiki.",
+      "keywords": [
+        "qq",
+        "onebot",
+        "chat",
+        "messaging"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-qq-0.4.0.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-qq",
+      "localizations": {
+        "zh": {
+          "description": "连接官方 QQ 机器人或 OneBot 11 渠道，在 Kiki 中收发消息与媒体。",
+          "keywords": [
+            "QQ",
+            "OneBot",
+            "聊天",
+            "消息"
+          ]
+        }
+      },
+      "sha256": "1835b4ca4e5382e10b1e9d9d166b4ccc7505651133ed643d78333afee56e82e7",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-qq/icon-0.4.0.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "inputSha256": "f2a76da34e0b3cf6e86a350b7e4a012a7c76e39704c1dc85f6d55ec8a1d8915e"
+    },
+    {
+      "id": "kiki-mail",
+      "tier": "official",
+      "displayName": "Mail",
+      "version": "0.3.0",
+      "description": "Search mail across Open Archiver sources, or read and send through your IMAP and SMTP accounts.",
+      "keywords": [
+        "mail",
+        "archive",
+        "imap",
+        "smtp"
+      ],
+      "author": "Kiki",
+      "license": "MIT",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-mail-0.3.0.zip",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-mail",
+      "localizations": {
+        "zh": {
+          "description": "跨来源搜索 Open Archiver 归档邮件，或用自己的 IMAP 和 SMTP 账号收发邮件。",
+          "keywords": [
+            "邮件",
+            "归档",
+            "IMAP",
+            "SMTP"
+          ]
+        }
+      },
+      "sha256": "8346786e0c6ba43f1e58b9e620f924222abdbe7b3c45cb2466039f5e684650ca",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-mail/icon-0.3.0.svg",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "inputSha256": "8c70cedcd3330bdeb6b33aad0a2f9d3afe1f7fd48dc0caf1d75468839de2a7a6"
     },
     {
       "id": "kimi-datasource",
@@ -558,8 +801,8 @@
       }
     }
   ],
-  "revision": "5b24ceecf81f3c9c778537b86f963d31a7da65db",
-  "releaseTag": "plugins-20261013.1",
+  "revision": "e25c3d6f9ed5b23957c846f85ecdf30fd97e4fa2",
+  "releaseTag": "plugins-20261114.1",
   "packageHistory": {
     "kiki-office": [
       {
@@ -581,6 +824,16 @@
           "kiki": "^0.4.0"
         },
         "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.1.svg"
+      },
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-office-0.1.2.zip",
+        "sha256": "f2a4ff62296bd968585a68be5e4c5942d90f23fbeacf53e72e13ed1a55c01a9c",
+        "inputSha256": "2e7d0829e4e8954e51c3e5d2734c3ff54a27e91f3ef6b1461faedec9cabe12f8",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-office/icon-0.1.2.svg"
       }
     ],
     "kiki-writing": [
@@ -683,6 +936,16 @@
           "kiki": ">=0.4.0"
         },
         "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.1.svg"
+      },
+      {
+        "version": "0.2.3",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-media-0.2.3.zip",
+        "sha256": "036924f07ed25a015db69fde62eaa932d4377ca335a7758bc30ab412daa885cc",
+        "inputSha256": "feb72114211360f5b09475d80e76c9c083a8c5e697a0a0afcc9577f1bf098374",
+        "engines": {
+          "kiki": ">=0.4.3"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.3.svg"
       }
     ],
     "kiki-media-openai": [
@@ -915,6 +1178,16 @@
           "kiki": "^0.4.0"
         },
         "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.1.svg"
+      },
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-cloudflare-0.1.2.zip",
+        "sha256": "6232338d1a2f30b572fc55bd60cbc64b7628af58c413c69207ad35423f958982",
+        "inputSha256": "f8ca9c821ea506dcec803657d25dfda0395682d254d2918cc9a472bb4ecfc8e6",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.2.svg"
       }
     ],
     "kiki-task-board": [
@@ -938,6 +1211,15 @@
         "engines": {
           "kiki": "^0.4.0"
         }
+      },
+      {
+        "version": "0.1.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-work-0.1.1.zip",
+        "sha256": "048fd5b1d621e2806bc2798dfd9e2fcd53e956e3b01f8745a21010055b5d5846",
+        "inputSha256": "6c2214d7a752c5749bfc1c6b34ec9e0535fa178d4fff165dfb32cf3fa3ffe7ae",
+        "engines": {
+          "kiki": "^0.4.0"
+        }
       }
     ],
     "kiki-pet": [
@@ -946,6 +1228,15 @@
         "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-pet-0.1.0.zip",
         "sha256": "cc6b3766300a6377621c45c902f1eff3f61460b050df680b5fde07ad2b46a280",
         "inputSha256": "62b2e1d7bb6e7b41337614ab2ef8163637b525f168c8bf7ea8387f2329446ad4",
+        "engines": {
+          "kiki": "^0.4.0"
+        }
+      },
+      {
+        "version": "0.1.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-pet-0.1.1.zip",
+        "sha256": "9fb7cd252008cf28206c6ec70f7db5ab1561f69a0e63dd76e6b58b7d03742217",
+        "inputSha256": "86caece3802e4514555b14a0bdcdec91bbb6b0bcfc2bcb9a6c80a75178b6ede9",
         "engines": {
           "kiki": "^0.4.0"
         }
@@ -961,6 +1252,128 @@
           "kiki": "^0.4.0"
         },
         "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.0.svg"
+      },
+      {
+        "version": "0.1.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-sites-0.1.1.zip",
+        "sha256": "4ac3962eaa62c8b9af3aad06810e7d48e31bf2b6a02f83c719f002fc921cc25a",
+        "inputSha256": "4df7ed212b1c5fde17f583448b4da0e85cd3d08ef85d7ab7581748b3cb8ab594",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.1.svg"
+      }
+    ],
+    "kiki-output-layer": [
+      {
+        "version": "0.1.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-output-layer-0.1.1.zip",
+        "sha256": "f6bf2c54d80001fa13e42658eb14c83f5bbcceb8989666c693dde54e9b527edf",
+        "inputSha256": "dc822343e997a4fa3f095d39e953925d6f450a92ed4f554631000a2c958c92a4",
+        "engines": {
+          "kiki": "^0.4.1"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-output-layer/icon-0.1.1.svg"
+      },
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-output-layer-0.1.2.zip",
+        "sha256": "3ecdd27c40b58e77ddc1c8bf29d76a950855db0f72d3ac893e904789e9ab1bb8",
+        "inputSha256": "d536df722fdf77b37f1e7eab5562a27767186e798ebc3d71ade17f96ed1487b7",
+        "engines": {
+          "kiki": "^0.4.1"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-output-layer/icon-0.1.2.svg"
+      }
+    ],
+    "kiki-bilibili": [
+      {
+        "version": "0.1.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-bilibili-0.1.1.zip",
+        "sha256": "f3b82e55376fece13da4b69aeaf9ef6b7771bfaa4d3bcc00793d414e897d0f29",
+        "inputSha256": "5d432fe825400cc62f3cb4cfa60802c8fa2a91aadb1b4a41184957f42e3aa878",
+        "engines": {
+          "kiki": ">=0.4.1"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-bilibili/icon-0.1.1.svg"
+      },
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-bilibili-0.1.2.zip",
+        "sha256": "6aa185f0969c49d2e6f36e7e80fffb8cfab26e7e17ebc075db57a541a8e48ec7",
+        "inputSha256": "53012141f45e5e67c312daa669436e02eec02e09b13b2c5b37840b2dc6c56d39",
+        "engines": {
+          "kiki": ">=0.4.1"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-bilibili/icon-0.1.2.svg"
+      }
+    ],
+    "kiki-voice": [
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-voice-0.1.2.zip",
+        "sha256": "e57f81d467d2e38ae1d48f80c3745db46082599b236354d2cad55ba7eea97644",
+        "inputSha256": "e63f6feaa95bba61199aa770d1ba640907af1564242e032f4fd49d92e38e0f7b",
+        "engines": {
+          "kiki": ">=0.4.1"
+        }
+      }
+    ],
+    "kiki-phone": [
+      {
+        "version": "0.1.0",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261027.1/kiki-phone-0.1.0.zip",
+        "sha256": "f30a4b34e18fd8217c971c2526f6b1778fb96a991b4054be347b3e1aba3b7adb",
+        "inputSha256": "9d95354789d7ad77aac59784e58b162e81acb7aba40880fb980c1f4530d2da4b",
+        "engines": {
+          "kiki": "^0.4.0"
+        }
+      },
+      {
+        "version": "0.2.1",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-phone-0.2.1.zip",
+        "sha256": "db76e5f7e4dae95f0180852aded72f3eb79ba9ea77b099e66b105118fe3e3ef1",
+        "inputSha256": "c6607a9a791e52649cfb73c60896535de6719d8b6afb4b8e9a258ff8cbc6f0f7",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-phone/icon-0.2.1.svg"
+      }
+    ],
+    "kiki-everything": [
+      {
+        "version": "0.1.2",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-everything-0.1.2.zip",
+        "sha256": "18de8a57cc676d6dbaa747af72a9b90c26da82ca18218b3456ac4dd59c1ddf9a",
+        "inputSha256": "71501ff38e0d2ede4e30f7356ec4cc3126ad496e003a3de89a67374b16b9c63f",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-everything/icon-0.1.2.svg"
+      }
+    ],
+    "kiki-qq": [
+      {
+        "version": "0.4.0",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-qq-0.4.0.zip",
+        "sha256": "1835b4ca4e5382e10b1e9d9d166b4ccc7505651133ed643d78333afee56e82e7",
+        "inputSha256": "f2a76da34e0b3cf6e86a350b7e4a012a7c76e39704c1dc85f6d55ec8a1d8915e",
+        "engines": {
+          "kiki": "^0.4.0"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-qq/icon-0.4.0.svg"
+      }
+    ],
+    "kiki-mail": [
+      {
+        "version": "0.3.0",
+        "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261114.1/kiki-mail-0.3.0.zip",
+        "sha256": "8346786e0c6ba43f1e58b9e620f924222abdbe7b3c45cb2466039f5e684650ca",
+        "inputSha256": "8c70cedcd3330bdeb6b33aad0a2f9d3afe1f7fd48dc0caf1d75468839de2a7a6",
+        "engines": {
+          "kiki": ">=0.4.1"
+        },
+        "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-mail/icon-0.3.0.svg"
       }
     ]
   }

@@ -152,7 +152,7 @@ describe('default plugin catalog', () => {
     expect(byId.get('superpowers')?.author).toBe('Jesse Vincent');
     expect(byId.get('superpowers')?.author).not.toBe('Kiki');
     expect(byId.get('kimi-datasource')?.license).toBe('License not declared by upstream');
-    expect(byId.get('kiki-media')).toMatchObject({ author: 'Kiki', license: 'MIT AND Apache-2.0', engines: { kiki: '>=0.4.0' } });
+    expect(byId.get('kiki-media')).toMatchObject({ author: 'Kiki', license: 'MIT AND Apache-2.0', engines: { kiki: '>=0.4.3' } });
     expect(byId.get('kiki-notion')?.engines).toBeUndefined();
   });
 
