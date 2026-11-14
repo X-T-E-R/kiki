@@ -31,6 +31,7 @@ export interface InspectedResolvedModel {
   readonly providerName: string;
   readonly baseUrl?: string;
   readonly wireName: string;
+  readonly pricingModel?: string;
   readonly aliases: readonly string[];
   readonly auth: InspectedAuth;
   readonly capabilities: ModelCapability;
@@ -239,6 +240,7 @@ interface ResolvedModelLike {
   readonly providerName: string;
   readonly baseUrl?: string;
   readonly name: string;
+  readonly pricingModel?: string;
   readonly aliases: readonly string[];
   readonly capabilities: ModelCapability;
   readonly maxContextSize: number;
@@ -304,6 +306,7 @@ export function assembleModelInspection(args: {
   ]);
 
   for (const field of [
+    'pricingModel',
     'maxContextSize',
     'maxInputSize',
     'maxOutputSize',
@@ -416,6 +419,7 @@ export function assembleModelInspection(args: {
       providerName: model.providerName,
       baseUrl: model.baseUrl,
       wireName: model.name,
+      pricingModel: model.pricingModel,
       aliases: model.aliases,
       auth,
       capabilities: model.capabilities,

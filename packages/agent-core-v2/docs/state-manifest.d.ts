@@ -3901,6 +3901,10 @@ export interface AgentStateSnapshot {
       enabled?: boolean;
       baseUrl?: string;
       decisionEndpoint?: string;
+      decision?: Partial<Record<'system_one' | 'pair_score' | 'openai_decisions', /* ProviderDecisionCapability — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
+        model?: string;
+        endpoint?: string;
+      }>>;
       customHeaders?: Record<string, string>;
       defaultModel?: string;
       defaults?: /* GenerationParameters — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
