@@ -14,6 +14,7 @@ registerProtocolBase({
     return new AnthropicChatProvider({
       ...(traitProvides(traits) as Partial<ConstructorParameters<typeof AnthropicChatProvider>[0]>),
       model: config.modelName,
+      pricingModel: config.pricingModel,
       ...compactObject({
         apiKey: config.apiKey ?? firstProcessEnv(endpoint?.apiKeyEnv),
         baseUrl:

@@ -382,7 +382,7 @@ Kiki ships six identities. Built-in identities are read-only; **Duplicate and ed
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent, `x-opencode-client: cli`, and the dynamic `x-opencode-session` and `x-opencode-request` |
 | None | `none` / `none` | Sends no Kiki-chosen identity fields: the User-Agent, the reserved identity headers, and the `X-Msh-*` device headers are removed. Fields a provider's authentication protocol requires still go out — OAuth tokens, account headers, the Grok client-version marker — because those belong to the protocol rather than to identity |
 
-Kimi Code defaults to `lineage.session_scope = "agent_session"`. It sends that agent-session identity as `session_<UUID>` in Responses `prompt_cache_key` and Messages `metadata.user_id`. Different sessions and different agents within one session get different values; the same agent keeps its value across retries, later turns, resume, and context compaction. This default also applies when selecting `preset = "kimi_code"` or `profile = "kimi_code"` explicitly.
+Kimi Code defaults to `lineage.session_scope = "agent_session"`. It sends that agent-session identity as `session_<UUID>` in Responses `prompt_cache_key` and Messages `metadata.user_id`. Different sessions and different agents within one session get different values; the same agent keeps its value across retries, later turns, and resume within the same context window. Compaction can rotate an agent-scoped cache key without changing the shared session identity. This default also applies when selecting `preset = "kimi_code"` or `profile = "kimi_code"` explicitly.
 
 ### OpenCode
 
@@ -412,7 +412,7 @@ Later layers override earlier ones (global → provider → model). With no laye
 preset = "opencode_compatible"
 ```
 
-To keep Kimi Code's previous shared identity across all agents in a session, select `shared_session` explicitly. This continues to send the original Kiki session ID as the cache identity:
+For Kimi Code, choose `shared_session` to use the original Kiki session ID as the shared cache identity:
 
 ```toml
 [providers.my-gateway.request_identity]
@@ -421,6 +421,18 @@ profile = "kimi_code"
 [providers.my-gateway.request_identity.overrides.lineage]
 session_scope = "shared_session"
 ```
+
+Set `branch_session_scope` in the same `overrides.lineage` table to control Branch forks without changing ordinary subagents:
+
+| Value | Branch session identity |
+| --- | --- |
+| `follow_session_scope` (default) | Follows `session_scope`, except Gemini branches use `agent_session` |
+| `shared_session` | Uses the shared session, including on Gemini |
+| `agent_session` | Uses a distinct identity for each branch |
+
+Codex branches keep the same shared session and cache key as main, including after compaction, while each branch gets its own thread ID. Gemini detection uses the native `google-genai` protocol, the upstream model name, or `pricing_model`, so it also covers Gemini on a Messages gateway. `session_scope = "none"` always suppresses the session identity.
+
+Native Google GenAI `generateContent` does not send a Request Identity session field; the setting affects the local identity and adapters that emit it.
 
 Valid `config.toml` edits [reload automatically](./config-files.md#applying-configuration-changes). Request identity is frozen for a turn when its first model request is prepared; changes apply from the next turn, without restarting Kiki.
 

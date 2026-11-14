@@ -84,13 +84,21 @@ describe('RequestIdentityCatalog profiles', () => {
     const edited = await catalog.updateProfile(copy.id, {
       ...draftOf(copy),
       label: 'Codex desktop',
+      overrides: { lineage: { branch_session_scope: 'agent_session' } },
       version: { mode: 'fixed', value: '26.1.0' },
       user_agent: 'Codex Desktop/{version} ({os_type}; {arch})',
       headers: [{ name: 'originator', value: 'Codex Desktop' }],
     });
     expect(edited.updated_at).toBeDefined();
+    expect(edited.overrides?.lineage?.branch_session_scope).toBe('agent_session');
     const reloaded = createCatalog({ store }).catalog;
-    expect((await reloaded.listProfiles()).find((profile) => profile.id === copy.id)?.label).toBe('Codex desktop');
+    const reloadedProfile = (await reloaded.listProfiles()).find((profile) => profile.id === copy.id);
+    expect(reloadedProfile).toMatchObject({
+      label: 'Codex desktop',
+      overrides: { lineage: { branch_session_scope: 'agent_session' } },
+    });
+    expect(reloaded.resolveLayers().lineage.branchSessionScope).toBe('follow_session_scope');
+    expect(reloaded.resolveLayers({ profile: copy.id }).lineage.branchSessionScope).toBe('agent_session');
     expect((await reloaded.duplicateProfile('codex')).id).toBe('custom:codex-2');
   });
 

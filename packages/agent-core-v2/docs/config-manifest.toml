@@ -679,6 +679,7 @@ merge_all_available_skills = true
       # lineage: object
         # format: "codex" | "claude_code" | "grok_build" | "opencode" | "kimi_code" | "none"
         # session_scope: "shared_session" | "agent_session" | "none"
+        # branch_session_scope: "follow_session_scope" | "shared_session" | "agent_session"
         # thread_identity: "agent" | "none"
         # parent_thread: "immediate_agent" | "none"
         # subagent_marker: "enabled" | "none"
@@ -863,6 +864,7 @@ enter_approval_timeout_ms = 60000
       # lineage: object
         # format: "codex" | "claude_code" | "grok_build" | "opencode" | "kimi_code" | "none"
         # session_scope: "shared_session" | "agent_session" | "none"
+        # branch_session_scope: "follow_session_scope" | "shared_session" | "agent_session"
         # thread_identity: "agent" | "none"
         # parent_thread: "immediate_agent" | "none"
         # subagent_marker: "enabled" | "none"
@@ -959,6 +961,7 @@ rules = []
   # lineage: object
     # format: "codex" | "claude_code" | "grok_build" | "opencode" | "kimi_code" | "none"
     # session_scope: "shared_session" | "agent_session" | "none"
+    # branch_session_scope: "follow_session_scope" | "shared_session" | "agent_session"
     # thread_identity: "agent" | "none"
     # parent_thread: "immediate_agent" | "none"
     # subagent_marker: "enabled" | "none"

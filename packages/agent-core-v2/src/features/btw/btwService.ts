@@ -429,6 +429,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       }));
       await this.metadata.updateAgent(branchId, (current) => ({
         ...current,
+        completedAt: current?.completedAt ?? Date.now(),
         labels: {
           ...current.labels,
           branchSealed: 'true',

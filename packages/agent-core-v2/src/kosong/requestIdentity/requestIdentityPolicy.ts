@@ -63,6 +63,7 @@ export type RequestIdentityOverrides = {
   lineage?: {
     format?: RequestIdentityLineageFormat;
     sessionScope?: 'shared_session' | 'agent_session' | 'none';
+    branchSessionScope?: 'follow_session_scope' | 'shared_session' | 'agent_session';
     threadIdentity?: 'agent' | 'none';
     parentThread?: 'immediate_agent' | 'none';
     subagentMarker?: 'enabled' | 'none';
@@ -114,6 +115,7 @@ const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
       .object({
         format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+        branchSessionScope: z.enum(['follow_session_scope', 'shared_session', 'agent_session']).optional(),
         threadIdentity: z.enum(['agent', 'none']).optional(),
         parentThread: z.enum(['immediate_agent', 'none']).optional(),
         subagentMarker: z.enum(['enabled', 'none']).optional(),
@@ -163,6 +165,7 @@ const RequestIdentityOverridesWireSchema = z
       .object({
         format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+        branch_session_scope: z.enum(['follow_session_scope', 'shared_session', 'agent_session']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
         subagent_marker: z.enum(['enabled', 'none']).optional(),
@@ -226,6 +229,7 @@ export function requestIdentityToWire(
                 : {
                     format: overrides.lineage.format,
                     session_scope: overrides.lineage.sessionScope,
+                    branch_session_scope: overrides.lineage.branchSessionScope,
                     thread_identity: overrides.lineage.threadIdentity,
                     parent_thread: overrides.lineage.parentThread,
                     subagent_marker: overrides.lineage.subagentMarker,
@@ -269,6 +273,7 @@ export function requestIdentityFromWire(
                 : {
                     format: overrides.lineage.format,
                     sessionScope: overrides.lineage.session_scope,
+                    branchSessionScope: overrides.lineage.branch_session_scope,
                     threadIdentity: overrides.lineage.thread_identity,
                     parentThread: overrides.lineage.parent_thread,
                     subagentMarker: overrides.lineage.subagent_marker,
@@ -299,6 +304,7 @@ export type ResolvedRequestIdentityPolicy = {
   lineage: {
     format: RequestIdentityLineageFormat;
     sessionScope: 'shared_session' | 'agent_session' | 'none';
+    branchSessionScope: 'follow_session_scope' | 'shared_session' | 'agent_session';
     threadIdentity: 'agent' | 'none';
     parentThread: 'immediate_agent' | 'none';
     subagentMarker: 'enabled' | 'none';
@@ -332,6 +338,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'codex',
       sessionScope: 'shared_session',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'agent',
       parentThread: 'immediate_agent',
       subagentMarker: 'enabled',
@@ -350,6 +357,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'grok_build',
       sessionScope: 'agent_session',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',
@@ -368,6 +376,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'claude_code',
       sessionScope: 'shared_session',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',
@@ -386,6 +395,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'opencode',
       sessionScope: 'agent_session',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',
@@ -404,6 +414,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'kimi_code',
       sessionScope: 'agent_session',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',
@@ -422,6 +433,7 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     lineage: {
       format: 'none',
       sessionScope: 'none',
+      branchSessionScope: 'follow_session_scope',
       threadIdentity: 'none',
       parentThread: 'none',
       subagentMarker: 'none',

@@ -392,7 +392,7 @@ describe('thinking-only continuation', () => {
     }
   });
 
-  it.each(['antigravity_empty_response', 'antigravity_missing_terminal', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_function_call', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
+  it.each(['antigravity_empty_response', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
     const create = scriptedCreate([gatewayNoUsableAnswerStream(code), textStream('should not run')]);
     const local = anthropicAgent(create);
     try {
@@ -403,6 +403,104 @@ describe('thinking-only continuation', () => {
     } finally {
       await local.dispose();
     }
+  });
+
+  it('retries a missing terminal without continuing signed thinking', async () => {
+    const create = scriptedCreate([gatewayNoUsableAnswerStream('antigravity_missing_terminal'), textStream('Recovered answer')]);
+    const local = anthropicAgent(create, { initialConfig: { retry: { policies: [{ match: 'ChatProviderError', backoff: 1 }] } } });
+    try {
+      expect(await (await prompt(local)).completion).toMatchObject({ state: 'completed', result: { steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(continued(local)).toBe(false);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+      expect(storedThinking(local)).toEqual([]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('discards a malformed function-call attempt instead of continuing signed thinking', async () => {
+    const create = scriptedCreate([gatewayNoUsableAnswerStream('antigravity_malformed_function_call'), toolStream(), textStream('Work saved.')]);
+    const local = anthropicAgent(create, { permission: 'yolo', initialConfig: { retry: { policies: [{ match: 'ChatProviderError', backoff: 1 }] } } });
+    let toolRuns = 0;
+    local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => {
+        toolRuns++;
+        return { output: 'work saved' };
+      } }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('completed');
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(toolRuns).toBe(1);
+      expect(storedThinking(local)).toEqual([]);
+      expect(continued(local)).toBe(false);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  describe.each([true, false])('malformed tool SSE with upstream retryable=%s', (retryable) => {
+    it.each(['recover', 'exhaust', 'lower-budget'] as const)('discards three uncommitted tools and respects %s', async (mode) => {
+      const bodies: unknown[] = [];
+      const executedAtRequest: number[] = [];
+      let toolRuns = 0;
+      const malformed = async function* () {
+        yield { type: 'message_start', message: { id: 'malformed-tools', usage: { input_tokens: 6, output_tokens: 0 } } };
+        for (let index = 0; index < 3; index++) {
+          yield { type: 'content_block_start', index, content_block: {
+            type: 'tool_use', id: `discarded-${index}`, name: 'FinishWork', input: {}, signature: 'discarded-signature',
+          } };
+          yield { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: '{}' } };
+          yield { type: 'content_block_stop', index };
+        }
+        yield { type: 'error', error: { type: 'api_error', code: 'antigravity_malformed_function_call', retryable, message: 'malformed function call' } };
+      };
+      const sdkFetch: typeof fetch = async (input, init) => {
+        bodies.push(JSON.parse(await new Request(input, init).text()));
+        executedAtRequest.push(toolRuns);
+        const stream = mode !== 'recover' || bodies.length === 1 ? malformed
+          : bodies.length === 2 ? toolStream('accepted-signature') : textStream('Work saved.');
+        const events: string[] = [];
+        for await (const event of stream()) events.push(`event: ${String(event['type'])}\ndata: ${JSON.stringify(event)}\n\n`);
+        return new Response(events.join(''), { headers: { 'content-type': 'text/event-stream' } });
+      };
+      const local = anthropicAgent(undefined, { model: 'gemini-4-carbon', permission: 'yolo', sdkFetch,
+        initialConfig: { retry: { maxAttempts: mode === 'lower-budget' ? 2 : 5, policies: [{ match: '.*', retry: true, backoff: 1 }] } },
+      });
+      local.get(IAgentToolRegistryService).register({ name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => { toolRuns++; return { output: 'work saved' }; } }),
+      });
+      local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+      try {
+        const terminal = await (await prompt(local)).completion;
+        expect(terminal.state).toBe(mode === 'recover' ? 'completed' : 'failed');
+        expect(toolRuns).toBe(mode === 'recover' ? 1 : 0);
+        const attempts = mode === 'lower-budget' ? 2 : 3;
+        expect(bodies).toHaveLength(attempts);
+        expect(executedAtRequest).toEqual(mode === 'recover' ? [0, 0, 1] : Array.from({ length: attempts }, () => 0));
+        expect(bodies[1]).toEqual(bodies[0]);
+        const discarded = local.allEvents.filter(event => event.type === '[rpc]' && event.event === 'response.attempt.discarded')
+          .map(event => event.args as { toolCallIds: string[] });
+        expect(discarded).toHaveLength(mode === 'recover' ? 1 : attempts - 1);
+        expect(discarded.every(event => event.toolCallIds.length === 3)).toBe(true);
+        expect(continued(local)).toBe(false);
+        if (mode === 'recover') {
+          const calls = local.contextData().history.flatMap(message => message.toolCalls);
+          expect(calls).toHaveLength(1);
+          expect(calls[0]?.extras).toEqual({ anthropic_tool_signature: 'accepted-signature' });
+        }
+        await local.expectResumeMatches();
+      } finally { await local.dispose(); }
+    });
   });
 
   it.each(['normal', 'classified'] as const)('does not obtain a third call after a second %s thinking-only response', async (second) => {
@@ -1031,10 +1129,10 @@ function textStream(text: string): () => AsyncGenerator<Record<string, unknown>>
   };
 }
 
-function toolStream(): () => AsyncGenerator<Record<string, unknown>> {
+function toolStream(signature?: string): () => AsyncGenerator<Record<string, unknown>> {
   return async function* tool() {
     yield { type: 'message_start', message: { id: 'tool-1', usage: { input_tokens: 6, output_tokens: 0 } } };
-    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call-work', name: 'FinishWork' } };
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call-work', name: 'FinishWork', signature } };
     yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } };
     yield { type: 'content_block_stop', index: 0 };
     yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } };

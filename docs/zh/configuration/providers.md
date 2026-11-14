@@ -382,7 +382,7 @@ Kiki 内置六种身份。内置身份只读，用「复制并编辑」得到的
 | OpenCode | `opencode_compatible` / `opencode` | `opencode/{version}` User-Agent、`x-opencode-client: cli`，以及动态的 `x-opencode-session`、`x-opencode-request` |
 | 无 | `none` / `none` | 不发送 Kiki 自选的身份字段：User-Agent、保留身份请求头与 `X-Msh-*` 设备头都会被移除。供应商认证协议要求的字段仍会发出——OAuth token、账号请求头、Grok 客户端版本标记——因为那些属于协议本身，不属于身份 |
 
-Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 会话身份以 `session_<UUID>` 的形式写入 Responses 的 `prompt_cache_key` 和 Messages 的 `metadata.user_id`。不同会话、同一会话内的不同 Agent 使用不同值；同一个 Agent 在重试、后续轮次、续跑和上下文压缩后保持原值。显式选择 `preset = "kimi_code"` 或 `profile = "kimi_code"` 时也使用这一默认值。
+Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 会话身份以 `session_<UUID>` 的形式写入 Responses 的 `prompt_cache_key` 和 Messages 的 `metadata.user_id`。不同会话、同一会话内的不同 Agent 使用不同值；同一个 Agent 在同一上下文窗口内重试、开始新轮次或续跑时保持原值。上下文压缩可轮换 Agent 专属的缓存键，但不改变共享会话身份。显式选择 `preset = "kimi_code"` 或 `profile = "kimi_code"` 时也使用这一默认值。
 
 ### OpenCode
 
@@ -412,7 +412,7 @@ Kimi Code 默认使用 `lineage.session_scope = "agent_session"`，将该 Agent 
 preset = "opencode_compatible"
 ```
 
-如果需要保留 Kimi Code 原先在同一会话所有 Agent 间共享身份的行为，可显式选择 `shared_session`。此时仍使用原始 Kiki 会话 ID 作为缓存身份：
+对 Kimi Code，选择 `shared_session` 可将原始 Kiki 会话 ID 用作共享缓存身份：
 
 ```toml
 [providers.my-gateway.request_identity]
@@ -421,6 +421,18 @@ profile = "kimi_code"
 [providers.my-gateway.request_identity.overrides.lineage]
 session_scope = "shared_session"
 ```
+
+在同一个 `overrides.lineage` 表中设置 `branch_session_scope`，可单独控制 Branch 分叉，不改变普通 subagent：
+
+| 值 | 分叉的会话身份 |
+| --- | --- |
+| `follow_session_scope`（默认） | 跟随 `session_scope`，但 Gemini 分叉使用 `agent_session` |
+| `shared_session` | 使用共享会话，Gemini 也不例外 |
+| `agent_session` | 每个分叉使用独立身份 |
+
+Codex 分叉保留与 main 相同的共享会话和缓存键，上下文压缩后也不改变，同时各有独立的线程 ID。Gemini 通过原生 `google-genai` 协议、上游模型名或 `pricing_model` 识别，因此也覆盖 Messages 网关上的 Gemini。若 `session_scope = "none"`，始终不发送会话身份。
+
+原生 Google GenAI `generateContent` 不发送 Request Identity 会话字段，设置会作用于本地身份及实际发送该字段的适配器。
 
 有效的 `config.toml` 修改会[自动热载](./config-files.md#配置修改如何生效)。每个轮次准备第一次模型请求时会冻结该轮的请求身份；修改从下一轮生效，无需重启 Kiki。
 

@@ -373,7 +373,6 @@ export function noteConfirmedRequestExecution(error: unknown): void {
 const NON_CONTINUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'antigravity_thinking_only',
   'antigravity_safety',
-  'antigravity_malformed_function_call',
   'antigravity_malformed_response',
   'antigravity_upstream_terminal_error',
 ]);
@@ -396,6 +395,35 @@ export function hasExplicitRetryVeto(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
+}
+
+export function isRetryableMalformedFunctionCallError(error: unknown): boolean {
+  return isRetryableUncommittedProviderError(error, (cause, code) =>
+    code === 'antigravity_malformed_function_call' || code === 'MALFORMED_FUNCTION_CALL' ||
+    (cause instanceof APIEmptyResponseError && cause.rawFinishReason === 'MALFORMED_FUNCTION_CALL'));
+}
+
+export function isRetryableMissingTerminalError(error: unknown): boolean {
+  return isRetryableUncommittedProviderError(error, (_cause, code) => code === 'antigravity_missing_terminal');
+}
+
+function isRetryableUncommittedProviderError(error: unknown, matches: (cause: object, code: unknown) => boolean): boolean {
+  if (isAbortError(error)) return false;
+  const visited = new Set<object>();
+  let current = error;
+  let matched = false;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = providerErrorMetadata(current);
+    if (details['execution'] === 'executed' || details['retry'] === false ||
+      (current instanceof Error2 && current.details?.['retry'] === false)) return false;
+    const code = details['upstreamErrorCode'];
+    const matchesCause = matches(current, code);
+    if (typeof code === 'string' && !matchesCause && details['upstream_retryable'] === false) return false;
+    matched ||= matchesCause;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return matched;
 }
 
 export function isRetryableGenerateError(error: unknown): boolean {

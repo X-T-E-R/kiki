@@ -930,6 +930,17 @@ describe('ModelRequesterImpl extension request guards', () => {
     expect(provider.calls).toHaveLength(0);
   });
 
+  it.each(['thought_signature_b64', 'anthropic_tool_signature'])('protects signed tool history carried in %s', async (key) => {
+    const provider = new FakeChatProvider();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider));
+    const messages: Message[] = [{ role: 'assistant', content: [], toolCalls: [{
+      type: 'function', id: 'call-fixture', name: 'SaveWork', arguments: '{}', extras: { [key]: 'signature-fixture' },
+    }] }];
+    await expect(collect(requester.request({ ...INPUT, messages }, undefined, { preBaselinePatch: { thinkingEffort: 'off' } })))
+      .rejects.toMatchObject({ code: 'THINKING_DISABLE_WITH_SIGNED_HISTORY' });
+    expect(provider.calls).toHaveLength(0);
+  });
+
   it.each([
     { name: 'reserved headers', patch: { extraHeaders: { 'X-Kiki-Agent-Id': 'spoofed' } }, code: 'RESERVED_HEADER_FORBIDDEN' },
     { name: 'history replacement', patch: { messages: [] }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },
@@ -937,6 +948,7 @@ describe('ModelRequesterImpl extension request guards', () => {
     { name: 'encrypted thinking replacement', patch: { encrypted: 'changed' }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
     { name: 'redacted thinking replacement', patch: { redacted: 'changed' }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
     { name: 'tool extras replacement', patch: { extras: { thought_signature_b64: 'changed' } }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
+    { name: 'vendor Anthropic tool signature replacement', patch: { deterministicVendorFields: { extension: { anthropic_tool_signature: 'changed' } } }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
     { name: 'vendor Gemini signature replacement', patch: { deterministicVendorFields: { extension: { thought_signature_b64: 'changed' } } }, code: 'THINKING_SIGNATURE_MUTATION_FORBIDDEN' },
     { name: 'vendor native input replacement', patch: { deterministicVendorFields: { input: [] } }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },
     { name: 'vendor nested transport headers', patch: { deterministicVendorFields: { httpOptions: { headers: { 'X-Client-Request-Id': 'changed' } } } }, code: 'MESSAGE_HISTORY_MUTATION_FORBIDDEN' },

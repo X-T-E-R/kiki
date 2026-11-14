@@ -677,12 +677,14 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 `retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数与固定退避时间。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
-`retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前符合条件的失败仍按原有重试预算处理。网关明确标记为终态的流式错误会直接结束请求，即使还没有输出首个 token，重试设置也不会重新发送。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。其它协议会撤掉部分输出。Google GenAI 暂时保留可见文本和思考摘要，只复用完全一致的可见前缀，并撤回分歧或提前终止的块。它只在后续输出尚未越过检查点时使用完整的 continuation token；否则重试原始请求快照。工具只在完整响应后执行，重试可能产生额外计费。
+`retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前符合条件的失败仍按原有重试预算处理。网关标记为 `gateway_stream_terminal_error` 的错误会直接结束请求，即使还没有输出首个 token，重试设置也不会重新发送。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。其它协议会撤掉部分输出。Google GenAI 暂时保留可见文本和思考摘要，只复用完全一致的可见前缀，并撤回分歧或提前终止的块。它只在后续输出尚未越过检查点时使用完整的 continuation token；否则重试原始请求快照。工具只在完整响应后执行，重试可能产生额外计费。
+
+原生 Agent 轮次中尚未提交的单步，若遇到畸形函数调用（`antigravity_malformed_function_call` 或 `MALFORMED_FUNCTION_CALL`），或尚无回答、媒体及工具调用时遇到 `antigravity_missing_terminal`，最多尝试 3 次（含首发）。缺少终态时的重试会丢弃思考，包括空思考上的签名；已有可见部分回答则保留，交由正常失败处理。这两类明确错误可越过网关的 `retryable: false`，但仍遵守更小的尝试预算、显式重试禁令、取消，以及已有输出时的 `retry_partial_responses = false`。重试不追加 `Continue.` 消息，也不重放已完成的工具。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_attempts` | `integer` | — | 最大总尝试次数（含首次尝试）；用于 Agent 单步时优先于 `loop_control.max_attempts_per_step` |
-| `retry_partial_responses` | `boolean` | `true` | 是否允许符合条件、已有部分输出的原生 Agent 轮次重试；已有输出后的连接重试最多 5 次（含首发），`false` 只关闭这类重试 |
+| `retry_partial_responses` | `boolean` | `true` | 原生 Agent 轮次已有部分输出时，是否允许重试符合条件的失败 |
 | `policies` | `array<table>` | — | 用 `[[retry.policies]]` 编写的有序逐错误策略；首个命中的策略生效 |
 
 每条 `[[retry.policies]]` 包含以下字段：
@@ -709,7 +711,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功。已有部分输出时，只有符合条件的连接中断可以重试；已有输出后的 HTTP 429 或 500–599 失败及其他 provider 失败不会因本设置变得可重试。其它协议会撤掉失败尝试的输出；Google GenAI 按上述检查点和严格前缀规则处理可见输出，并撤回分歧或提前终止的块。原生工具只在完整响应后执行，失败生成可能产生额外计费。该策略不会让 HTTP 400、额度耗尽或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功。已有部分输出时，仍按上文的有限恢复路径处理；这条策略不会为已有输出后的 HTTP 429 或 500–599 失败及其他不符合条件的 provider 失败增加重试。其它协议会撤掉失败尝试的输出；Google GenAI 按上述检查点和严格前缀规则处理可见输出，并撤回分歧或提前终止的块。原生工具只在完整响应后执行，失败生成可能产生额外计费。该策略不会让 HTTP 400、额度耗尽或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `session_residency`
 

@@ -94,6 +94,78 @@ function textMessage(
   };
 }
 
+function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: AgentMeta) {
+  const branchId = 'branch-1';
+  let branchMeta = initialMeta;
+  let branchSealed = initialMeta.labels?.['branchSealed'] === 'true';
+  const updateAgent = vi.fn(async (_agentId: string, update: (current: AgentMeta) => AgentMeta) => {
+    branchMeta = update(branchMeta);
+  });
+  const branchHandle = {
+    id: branchId,
+    accessor: {
+      get: (token: unknown) => {
+        if (token === IAgentStateService) {
+          return {
+            get: (key: unknown) => {
+              if (key === branchSealedKey) return branchSealed;
+              if (key === turnKey) return { nextTurnId: 0 };
+              return undefined;
+            },
+          };
+        }
+        if (token === IEventDispatcher) {
+          return {
+            dispatch: vi.fn(async (event: unknown) => {
+              if (event instanceof AgentBranchSealed) branchSealed = event.sealed;
+            }),
+          };
+        }
+        if (token === IAgentPromptService) {
+          return { list: () => ({ active: undefined, launching: undefined, pending: [] }) };
+        }
+        return undefined;
+      },
+    },
+  };
+  const mainHandle = {
+    id: 'main',
+    accessor: {
+      get: (token: unknown) => {
+        if (token === IAgentLoopService) {
+          return { status: () => ({ state: 'idle', pendingTurnIds: [] }) };
+        }
+        if (token === IAgentPromptService) {
+          return { list: () => ({ active: undefined, launching: undefined, pending: [] }) };
+        }
+        if (token === IAgentContextMemoryService) {
+          return { appendObservable: vi.fn() };
+        }
+        return undefined;
+      },
+    },
+  };
+  const lifecycle = {
+    get: (agentId: string) => agentId === branchId ? branchHandle : agentId === 'main' ? mainHandle : undefined,
+  } as unknown as IAgentLifecycleService;
+  const metadata = {
+    read: async () => ({
+      id: 'session-1',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+      agents: { [branchId]: branchMeta },
+    }),
+    updateAgent,
+  } as unknown as ISessionMetadata;
+  ix.stub(IAgentLifecycleService, lifecycle);
+  ix.stub(ISessionMetadata, metadata);
+  ix.stub(ISessionContext, { sessionId: 'session-1', workspaceId: 'workspace-1' });
+  ix.stub(IConfigService, {});
+  ix.set(ISessionBranchService, new SyncDescriptor(SessionBranchService));
+  return { service: ix.get(ISessionBranchService), updateAgent, getBranchMeta: () => branchMeta };
+}
+
 describe('SessionBtwService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -179,6 +251,68 @@ describe('SessionBtwService', () => {
       },
     });
     expect(formatDenyMessage).toHaveBeenCalledWith(TOOL_CALL_DISABLED_MESSAGE);
+  });
+});
+
+describe('SessionBranchService completion metadata', () => {
+  let ix: TestInstantiationService;
+  beforeEach(() => { ix = new TestInstantiationService(); });
+  afterEach(() => { ix.dispose(); });
+
+  it('records the sealing timestamp without changing task outcome fields', async () => {
+    const completedAt = 1_234_567;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(completedAt);
+    try {
+      const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
+      const result = await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Completed work', done: true });
+
+      expect(result).toMatchObject({ status: 'merged', done: true, sealed: true });
+      expect(harness.getBranchMeta()).toHaveProperty('completedAt', completedAt);
+      expect(harness.getBranchMeta().status).toBeUndefined();
+      expect(harness.getBranchMeta().taskId).toBeUndefined();
+      expect(harness.getBranchMeta().labels?.['branchSealed']).toBe('true');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('preserves an existing completedAt value when sealing', async () => {
+    const previousCompletedAt = 987_654;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_234_567);
+    try {
+      const harness = createBranchFoldHarness(ix, {
+        parentAgentId: 'main',
+        status: 'completed',
+        taskId: 'task-1',
+        completedAt: previousCompletedAt,
+        resultSummary: 'Existing terminal result',
+      });
+      await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Fold branch', done: true });
+
+      expect(harness.getBranchMeta()).toHaveProperty('completedAt', previousCompletedAt);
+      expect(harness.getBranchMeta()).toMatchObject({
+        status: 'completed',
+        taskId: 'task-1',
+        resultSummary: 'Existing terminal result',
+      });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not complete branches on nonterminal merges', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_234_567);
+    try {
+      const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
+      const result = await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Interim update', done: false });
+
+      expect(result).toMatchObject({ status: 'merged', done: false, sealed: false });
+      expect(harness.getBranchMeta()).not.toHaveProperty('completedAt');
+      expect(harness.getBranchMeta().status).toBeUndefined();
+      expect(harness.updateAgent).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
@@ -366,18 +500,19 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
     }
   });
 
-  it('isolates provider request cache identity per branch and rotates on compaction window epoch', () => {
+  it('isolates Gemini gateway branch cache identity across compaction while keeping the shared session stable', () => {
     const policy = resolveAuthoredRequestIdentity({ preset: 'claude_code_compatible' });
     const baseInput = {
       policy,
       protocol: 'anthropic' as const,
-      model: 'claude-sonnet-4-5',
+      model: 'gemini-4-carbon',
       rawSessionId: 'sess-alpha',
       parentAgentId: 'main',
       isKimiProvider: false,
       snapshot: {
         installationId: 'inst-1',
         sharedSessionId: '00000000-0000-4000-8000-000000000001',
+        agentSessionId: '00000000-0000-4000-8000-000000000002',
         setTurnState: () => {},
       },
       runtimeVersion: '0.5.1',
@@ -413,7 +548,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
     expect(mainEpoch0.cacheKey).toBeDefined();
     expect(branchEpoch0.cacheKey).toBeDefined();
     expect(branchEpoch0.cacheKey).not.toBe(mainEpoch0.cacheKey);
-    expect(mainEpoch1.cacheKey).not.toBe(mainEpoch0.cacheKey);
+    expect(mainEpoch1.cacheKey).toBe(mainEpoch0.cacheKey);
     expect(branchEpoch1.cacheKey).not.toBe(branchEpoch0.cacheKey);
     expect(branchEpoch1.cacheKey).not.toBe(mainEpoch1.cacheKey);
   });

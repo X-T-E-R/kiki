@@ -53,6 +53,7 @@ export class StaticAuthProvider implements AuthProvider {
 export interface Model {
   readonly id: string;
   readonly name: string;
+  readonly pricingModel?: string;
   readonly aliases: readonly string[];
   readonly protocol: Protocol;
   readonly protocolSource?: 'model' | 'provider' | 'vendor';

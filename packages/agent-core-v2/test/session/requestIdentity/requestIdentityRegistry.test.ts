@@ -124,7 +124,8 @@ describe('request identity registry', () => {
       rawSessionId: 'session-internal-key',
       rawAgentId: agentId,
       parentAgentId,
-      subagentKind: parentAgentId === undefined ? undefined : 'agent',
+      subagentKind: parentAgentId === undefined || agentId === 'branch' ? undefined : 'agent',
+      isBranch: agentId === 'branch',
       isKimiProvider: false,
       snapshot: await identities.snapshot({
         agentId, parentAgentId, turnKey, compactionWindow: 0, logicalIdKind: 'uuidv7', dimensions,
@@ -136,15 +137,16 @@ describe('request identity registry', () => {
     const root = await project(registry, 'main');
     const child = await project(registry, 'agent-0', 'main');
     const sibling = await project(registry, 'agent-1', 'main');
+    const branch = await project(registry, 'branch', 'main');
     const retry = await project(registry, 'agent-0', 'main');
     const next = await project(registry, 'agent-0', 'main', 'turn:1');
     const resumed = await project(createRegistry(store), 'agent-0', 'main');
     const sessionId = root.wire?.responsesClientMetadata?.['session_id'];
-    const threadIds = [root, child, sibling].map((projection) => projection.headers?.['thread-id']);
+    const threadIds = [root, child, sibling, branch].map((projection) => projection.headers?.['thread-id']);
 
     expect(sessionId).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(new Set(threadIds).size).toBe(3);
-    for (const projection of [root, child, sibling, retry, next, resumed]) {
+    expect(new Set(threadIds).size).toBe(4);
+    for (const projection of [root, child, sibling, branch, retry, next, resumed]) {
       const metadata = projection.wire?.responsesClientMetadata;
       const canonical = JSON.parse(metadata?.['x-codex-turn-metadata'] ?? '{}') as Record<string, string>;
       expect(projection.headers?.['session-id']).toBe(sessionId);

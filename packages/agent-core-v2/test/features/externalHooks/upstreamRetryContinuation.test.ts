@@ -67,6 +67,24 @@ const missingTerminalHttp = Buffer.concat([
   missingTerminalWire,
 ]);
 
+const encryptedEmptyMissingTerminal = sse([
+  ...Array.from({ length: 7 }, () => ['ping', { type: 'ping' }] as const),
+  ['message_start', {
+    type: 'message_start',
+    message: {
+      id: 'msg_encrypted_empty', type: 'message', role: 'assistant', model: 'example-model', content: [],
+      stop_reason: null, stop_sequence: null, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 },
+    },
+  }],
+  ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'EosDCkYICxgCKkA=' } }],
+  ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+  ['message_delta', { type: 'message_delta', delta: { stop_reason: null, stop_sequence: null }, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 } }],
+  ['error', { type: 'error', error: {
+    type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+  } }],
+]);
+
 function sse(events: ReadonlyArray<readonly [string, unknown]>): string {
   return events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
 }
@@ -133,6 +151,7 @@ interface Replay {
   readonly requests: { readonly url: string | undefined; readonly body: Record<string, unknown> }[];
   readonly responseBodies: Buffer[];
   readonly retryEvents: unknown[];
+  readonly discards: unknown[];
   readonly local: TestAgentContext;
   readonly trigger: MockInstance<ExternalHooksRunnerService['trigger']>;
   readonly tools: number;
@@ -152,6 +171,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   const requests: Replay['requests'] = [];
   const responseBodies: Buffer[] = [];
   const retryEvents: unknown[] = [];
+  const discards: unknown[] = [];
   let continued = false;
   let tools = 0;
   const respond = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -221,9 +241,10 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   }
   local.get(IEventBus).subscribe((event) => {
     if (event.type === 'turn.step.retrying') retryEvents.push(event);
+    if (event.type === 'response.attempt.discarded') discards.push(event);
   });
   return {
-    requests, responseBodies, retryEvents, local, trigger, get tools() { return tools; },
+    requests, responseBodies, retryEvents, discards, local, trigger, get tools() { return tools; },
     async close() {
       vi.stubGlobal('fetch', originalFetch);
       await local.dispose();
@@ -265,8 +286,67 @@ describe('provider failures through the real Messages SDK', () => {
     await Promise.all(pending.map(async (replayed) => replayed.close()));
   });
 
-  it('retries a missing-terminal wire without changing the user messages', async () => {
-    const replayed = await replay((requestNumber) => requestNumber === 2 ? terminalSse('Recovered answer.') : missingTerminalHttp);
+  it.each([1, 2])('natively discards %s empty encrypted missing-terminal attempts without the plugin', async (failures) => {
+    const replayed = await replay((requestNumber) => requestNumber <= failures ? encryptedEmptyMissingTerminal : terminalSse('Recovered answer.'),
+      { pluginEnabled: false, modelAlias: 'axon-message/gemini-4-carbon' });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed', result: { steps: 1 } });
+    expect(replayed.requests).toHaveLength(failures + 1);
+    expect(replayed.retryEvents).toEqual(Array.from({ length: failures }, (_, index) => expect.objectContaining({
+      step: 1, failedAttempt: index + 1, nextAttempt: index + 2, maxAttempts: 3,
+    })));
+    expect(replayed.discards).toHaveLength(failures);
+    expect(replayed.discards).toEqual(Array.from({ length: failures }, () => expect.objectContaining({ partIds: [expect.any(String)], toolCallIds: [] })));
+    expect(stops(replayed)).toEqual([]);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(replayed.tools).toBe(0);
+    for (const request of replayed.requests.slice(1)) expect(request.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
+    expect(replayed.local.contextData().history.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ content: [{ type: 'text', text: 'Recovered answer.' }], toolCalls: [] }),
+    ]);
+    expect(JSON.stringify(replayed.local.contextData().history)).not.toContain('EosDCkYICxgCKkA=');
+    expect(JSON.stringify(await replayed.local.persistedWireRecords())).not.toContain('EosDCkYICxgCKkA=');
+    await replayed.local.expectResumeMatches();
+  });
+
+  it.each([1, 2, 5])('caps native missing-terminal attempts at the smaller of three and %s', async (maxAttempts) => {
+    const replayed = await replay(() => encryptedEmptyMissingTerminal, { maxAttempts, pluginEnabled: false });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
+    const attempts = Math.min(3, maxAttempts);
+    expect(replayed.requests).toHaveLength(attempts);
+    expect(replayed.retryEvents).toHaveLength(attempts - 1);
+    expect(replayed.discards).toHaveLength(attempts - 1);
+    expect(continuations(replayed.local)).toEqual([]);
+    expect(stops(replayed)).toHaveLength(1);
+    expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
+      hasPartialOutput: false, recoverable: true,
+      errorDetails: { retry: false, retry_exhausted: true, retry_attempts: attempts, retry_max_attempts: attempts },
+    });
+  });
+
+  it('retains visible partial text before a missing terminal without native discard', async () => {
+    const replayed = await replay(() => sse([
+      messageStart('msg_partial'),
+      ...textBlock('Visible partial answer'),
+      ['error', { type: 'error', error: {
+        type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
+      } }],
+    ]), { pluginEnabled: false });
+    open.push(replayed);
+    expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
+    expect(replayed.requests).toHaveLength(1);
+    expect(replayed.retryEvents).toEqual([]);
+    expect(replayed.discards).toEqual([]);
+    expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({ hasPartialOutput: true, recoverable: true });
+    expect(replayed.local.contextData().history.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({ content: [{ type: 'text', text: 'Visible partial answer' }] }),
+    ]);
+    await replayed.local.expectResumeMatches();
+  });
+
+  it('retries a missing-terminal wire through the hook after the native budget', async () => {
+    const replayed = await replay((requestNumber) => requestNumber === 2 ? terminalSse('Recovered answer.') : missingTerminalHttp, { maxAttempts: 1 });
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
@@ -285,12 +365,14 @@ describe('provider failures through the real Messages SDK', () => {
       upstreamErrorCode: 'antigravity_missing_terminal',
       error: { details: { upstream_retryable: false, upstreamErrorCode: 'antigravity_missing_terminal' } },
     });
-    expect((call?.['error'] as { details?: Record<string, unknown> }).details).not.toHaveProperty('retry');
+    expect((call?.['error'] as { details?: Record<string, unknown> }).details).toMatchObject({
+      retry: false, retry_exhausted: true, retry_attempts: 1, retry_max_attempts: 1,
+    });
     expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
   }, 60_000);
 
   it('does not send a third request when the silent retry fails with the same wire', async () => {
-    const replayed = await replay(() => missingTerminalHttp);
+    const replayed = await replay(() => missingTerminalHttp, { maxAttempts: 1 });
     open.push(replayed);
     const completion = await (await replayed.local.get(IAgentPromptService).enqueue({
       message: { role: 'user', content: [{ type: 'text', text: 'Complete the task.' }], toolCalls: [] },
@@ -311,33 +393,13 @@ describe('provider failures through the real Messages SDK', () => {
   }, 60_000);
 
   it('silently retries missing-terminal failures across completed tool calls while preserving the consecutive streak cap', async () => {
-    const encryptedEmptyMissingTerminal = Buffer.concat([
-      Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n'),
-      Buffer.from(sse([
-        ...Array.from({ length: 7 }, () => ['ping', { type: 'ping' }] as const),
-        ['message_start', {
-          type: 'message_start',
-          message: {
-            id: 'msg_encrypted_empty', type: 'message', role: 'assistant', model: 'example-model', content: [],
-            stop_reason: null, stop_sequence: null, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 },
-          },
-        }],
-        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }],
-        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'EosDCkYICxgCKkA=' } }],
-        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
-        ['message_delta', { type: 'message_delta', delta: { stop_reason: null, stop_sequence: null }, usage: { input_tokens: 2049, output_tokens: 0, cache_read_input_tokens: 277448 } }],
-        ['error', { type: 'error', error: {
-          type: 'api_error', code: 'antigravity_missing_terminal', message: 'Upstream completed without a usable answer.', retryable: false,
-        } }],
-      ])),
-    ]);
     const replayed = await replay((requestNumber) => {
       if (requestNumber === 1) return encryptedEmptyMissingTerminal;
       if (requestNumber === 2) return toolSse();
       if (requestNumber === 3) return encryptedEmptyMissingTerminal;
       if (requestNumber === 4) return terminalSse('Completed after recovering two separate failure streaks.');
       return encryptedEmptyMissingTerminal;
-    }, { tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
+    }, { maxAttempts: 1, tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
     try {
       expect(replayed.local.get(IAgentScopeContext)).toMatchObject({ agentId: 'agent-314', parentAgentId: 'main' });
       expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'completed' });
@@ -363,7 +425,7 @@ describe('provider failures through the real Messages SDK', () => {
       if (requestNumber === 1) return encryptedEmptyMissingTerminal;
       if (requestNumber === 2) return toolSse();
       return encryptedEmptyMissingTerminal;
-    }, { tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
+    }, { maxAttempts: 1, tool: true, modelAlias: argonModel, agentId: 'agent-314', parentAgentId: 'main', profileName: 'implementer-argon' });
     open.push(repeatedAfterReset);
     expect(await (await prompt(repeatedAfterReset)).completion).toMatchObject({ state: 'failed' });
     expect(repeatedAfterReset.requests).toHaveLength(4);
@@ -394,7 +456,7 @@ describe('provider failures through the real Messages SDK', () => {
       if (requestNumber === 1) return toolSse();
       if (requestNumber === 2) return missingTerminalHttp;
       return partialAfterHeartbeat;
-    }, { tool: true, modelAlias: argonModel });
+    }, { maxAttempts: 1, tool: true, modelAlias: argonModel });
     open.push(replayed);
     expect(await (await prompt(replayed)).completion).toMatchObject({ state: 'failed' });
     expect(replayed.tools).toBe(1);

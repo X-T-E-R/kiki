@@ -72,6 +72,7 @@ export class ModelRequesterImpl implements ModelRequester {
       providerType: model.providerType,
       baseUrl: model.baseUrl,
       modelName: model.name,
+      pricingModel: model.pricingModel,
       apiKey: '',
       defaultHeaders: model.headers,
       requestCompression: model.requestCompression,

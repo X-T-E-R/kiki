@@ -39,6 +39,7 @@ import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting'
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
@@ -500,6 +501,7 @@ function createService(
   });
   ix.stub(IAgentScopeContext, { agentId, scope: () => `agents/${agentId}` });
   registerTestEventDispatcher(ix);
+  ix.get(IAgentStateService).contributeState(contextWindowEpochKey);
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
   ix.stub(IAppendLogStore, { append: () => {}, flush: async () => {} });
 
@@ -1170,11 +1172,12 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       const compacted: ContextMessage = { role: 'assistant', content: [{ type: 'text', text: 'Summary' }], toolCalls: [],
         origin: { kind: 'compaction_summary' } };
       await child.service.request({ source: { type: 'operation', requestKind: 'full_compaction' }, messages: [compacted, ...history] });
-      expect(sent.at(-1)?.key).toBe(childKey);
+      const compactedKey = sent.at(-1)?.key;
+      expect(compactedKey).not.toBe(childKey);
       const resumed = makeService('agent-0', 'session-test', createRequestIdentityRegistry());
       await resumed.service.request({ source: { type: 'turn', turnId: 3, step: 1 }, messages: [compacted, ...history] });
-      expect(sent.at(-1)?.key).toBe(childKey);
-      expect(child.identityCatalog.observations()[0]).toMatchObject({ profile: 'kimi_code', cache_key: childKey });
+      expect(sent.at(-1)?.key).toBe(compactedKey);
+      expect(child.identityCatalog.observations()[0]).toMatchObject({ profile: 'kimi_code', cache_key: compactedKey });
       for (const entry of sent) {
         expect(entry.headers.get('x-msh-device-id')).toBe('00000000-0000-4000-8000-000000000009');
         expect(entry.headers.has('x-kiki-agent-id')).toBe(false);
@@ -1192,6 +1195,40 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       expect(sent.at(-1)?.headers.has('x-msh-device-id')).toBe(false);
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { protocol: 'openai_responses', name: 'gpt-example', preset: 'codex_compatible', isolated: false },
+    { protocol: 'anthropic', name: 'claude-example', preset: 'claude_code_compatible', isolated: false },
+    { protocol: 'anthropic', name: 'gemini/gemini-4-carbon', preset: 'claude_code_compatible', isolated: true },
+    { protocol: 'anthropic', name: 'opaque-model', pricingModel: 'google/gemini-4-argon', preset: 'claude_code_compatible', isolated: true },
+    { protocol: 'google-genai', name: 'opaque-model', preset: 'kimi_code', isolated: true },
+  ] as const)('allocates and projects effective branch identities for $protocol $name', async ({ protocol, name, preset, isolated, ...fields }) => {
+    const identities = createRequestIdentityRegistry();
+    const projections: ModelRequestParams[] = [];
+    for (const agentId of ['main', 'subagent', 'branch']) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, { protocol, name, ...fields });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, {
+        agentId, identityRegistry: identities,
+        agentMeta: agentId === 'main' ? { type: 'main' } : { type: 'sub', labels: { parentAgentId: 'main', branch: String(agentId === 'branch') } },
+        providers: { p: { requestIdentity: { preset } } },
+      });
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      projections.push(captured[0]!);
+    }
+    if (preset === 'kimi_code') {
+      expect(new Set(projections.map(projection => projection.cacheKey)).size).toBe(3);
+    } else {
+      expect(projections[1]?.cacheKey).toBe(projections[0]?.cacheKey);
+      if (isolated) expect(projections[2]?.cacheKey).not.toBe(projections[0]?.cacheKey);
+      else expect(projections[2]?.cacheKey).toBe(projections[0]?.cacheKey);
+    }
+    if (preset === 'codex_compatible') {
+      expect(new Set(projections.map(projection => projection.headers?.['thread-id'])).size).toBe(3);
+      expect(projections[2]?.headers?.['x-codex-parent-thread-id']).toBe(projections[0]?.headers?.['thread-id']);
+      expect(projections[2]?.headers?.['session-id']).toBe(projections[0]?.headers?.['session-id']);
     }
   });
 
@@ -2021,6 +2058,87 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(onAttemptRetry).not.toHaveBeenCalled();
   });
 
+  it.each(['local', 'executed', 'policy', 'never', 'operation', 'no-retraction'] as const)('honors %s for a malformed function-call failure', async (mode) => {
+    const error = markProviderEventError(new ChatProviderError('malformed function call'), 'antigravity_malformed_function_call');
+    attachErrorDetails(error, { upstream_retryable: false });
+    if (mode === 'local') attachErrorDetails(error, { retry: false });
+    if (mode === 'executed') attachErrorDetails(error, { execution: 'executed' });
+    if (mode === 'no-retraction') noteExecutedRequestDelivery(error);
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, error), undefined, {
+      retryConfig: mode === 'policy' ? { policies: [{ match: 'ChatProviderError', retry: false }] } : undefined,
+    });
+    const onAttemptRetry = vi.fn();
+    await expect(service.request({
+      source: mode === 'operation' ? { type: 'operation', requestKind: 'full_compaction' } : { type: 'turn', turnId: 1, step: 1 },
+      retry: mode === 'never' ? 'never' : undefined,
+      onAttemptRetry: mode === 'no-retraction' ? undefined : onAttemptRetry,
+    })).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+    expect(onAttemptRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('uses the partial-response preference only when a malformed attempt streamed output: %s', async (partial) => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const base = requester.request.bind(requester);
+    requester.request = async function* (input, signal, params) {
+      if (calls.value === 0) {
+        calls.value++;
+        if (partial) yield { type: 'part', part: { type: 'think', think: 'discarded thought' } };
+        const error = markProviderEventError(new ChatProviderError('malformed function call'), 'antigravity_malformed_function_call');
+        attachErrorDetails(error, { upstream_retryable: false });
+        throw error;
+      }
+      yield* base(input, signal, params);
+    };
+    const { service } = createService(requester, undefined, { retryConfig: { retryPartialResponses: false } });
+    const onAttemptRetry = vi.fn();
+    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
+    const result = pending.then(value => ({ value }), error => ({ error }));
+    await vi.runAllTimersAsync();
+    expect(await result).toHaveProperty(partial ? 'error' : 'value');
+    expect(calls.value).toBe(partial ? 1 : 2);
+    expect(onAttemptRetry.mock.calls).toEqual(partial ? [] : [['discard']]);
+  });
+
+  it.each(['signature', 'thinking', 'text', 'tool', 'discarded-text', 'discarded-tool'] as const)('retries a missing terminal only before substantive output: %s', async (kind) => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const base = requester.request.bind(requester);
+    const error = markProviderEventError(new ChatProviderError('Missing terminal'), 'antigravity_missing_terminal');
+    attachErrorDetails(error, { upstream_retryable: false });
+    const parts: Record<typeof kind, StreamedMessagePart> = {
+      signature: { type: 'think', think: '', encrypted: 'discarded-signature' },
+      thinking: { type: 'think', think: 'discarded thought' },
+      text: { type: 'text', text: 'Retained partial answer' },
+      tool: { type: 'function', id: 'uncommitted-tool', name: 'SaveWork', arguments: '{}' },
+      'discarded-text': { type: 'text', text: 'Earlier response' },
+      'discarded-tool': { type: 'function', id: 'earlier-tool', name: 'SaveWork', arguments: '{}' },
+    };
+    requester.request = async function* (input, signal, params) {
+      if (calls.value === 0) {
+        calls.value++;
+        yield { type: 'part', part: parts[kind] };
+        if (kind.startsWith('discarded-')) yield { type: 'attempt.discarded', responseInstanceId: 'discarded-response' };
+        throw error;
+      }
+      yield* base(input, signal, params);
+    };
+    const { service, events } = createService(requester, undefined);
+    const onAttemptRetry = vi.fn();
+    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
+    const result = pending.then(value => ({ value }), error => ({ error }));
+    await vi.runAllTimersAsync();
+    const retryable = kind !== 'text' && kind !== 'tool';
+    expect(await result).toHaveProperty(retryable ? 'value' : 'error');
+    expect(calls.value).toBe(retryable ? 2 : 1);
+    expect(onAttemptRetry.mock.calls).toEqual(retryable ? Array.from({ length: kind.startsWith('discarded-') ? 2 : 1 }, () => ['discard']) : []);
+    expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(retryable ? 1 : 0);
+  });
+
   it('cancels during interrupted response backoff without resending', async () => {
     vi.useFakeTimers();
     const calls = { value: 0 };
@@ -2414,10 +2532,10 @@ describe('AgentLLMRequesterService combined recovery projections', () => {
 
     expect(calls.value).toBe(4);
     expect(policies).toEqual([
-      undefined,
-      { structure: 'strict' },
-      { structure: 'strict', media: 'degraded' },
-      { structure: 'strict', media: { strip: expect.anything() } },
+      { audio: 'omit_unsupported' },
+      { audio: 'omit_unsupported', structure: 'strict' },
+      { audio: 'omit_unsupported', structure: 'strict', media: 'degraded' },
+      { audio: 'omit_unsupported', structure: 'strict', media: { strip: expect.anything() } },
     ]);
     await dispatcher.flush();
     expect(
@@ -2452,9 +2570,9 @@ describe('AgentLLMRequesterService combined recovery projections', () => {
 
     expect(calls.value).toBe(3);
     expect(policies).toEqual([
-      undefined,
-      { media: 'degraded' },
-      { structure: 'strict', media: 'degraded' },
+      { audio: 'omit_unsupported' },
+      { audio: 'omit_unsupported', media: 'degraded' },
+      { audio: 'omit_unsupported', structure: 'strict', media: 'degraded' },
     ]);
   });
 });
@@ -2950,6 +3068,72 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  });
+});
+
+describe.each(['anthropic', 'google-genai'] as const)('%s malformed function-call retry', protocol => {
+  it.each(['recover', 'tool', 'exhaust', 'never'] as const)('discards the failed step with retry mode %s', async mode => {
+    const bodies: string[] = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(body);
+        const recovered = (mode === 'recover' || mode === 'tool') && bodies.length > 1;
+        const events = protocol === 'google-genai'
+          ? (recovered ? [{ candidates: [{ content: { role: 'model', parts: [{ text: 'recovered' }] }, finishReason: 'STOP' }] }]
+            : [{ candidates: [{ content: { role: 'model', parts: [{ thought: true, text: 'discarded thought' },
+              ...(mode === 'tool' ? [{ functionCall: { name: 'SaveWork', args: {} } }] : [])] } }] },
+              { candidates: [{ finishReason: 'MALFORMED_FUNCTION_CALL' }] }])
+          : [
+            { type: 'message_start', message: { id: 'fixture', usage: { input_tokens: 1, output_tokens: 0 } } },
+            ...(recovered ? [{ type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'recovered' } },
+              { type: 'message_delta', delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' }]
+              : [{ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: 'discarded thought' } },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'error', error: { type: 'api_error', code: 'antigravity_malformed_function_call', message: 'malformed function call', retryable: false } }]),
+          ];
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `${'type' in event ? `event: ${event.type}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const options = { model: model.name, baseUrl, apiKey: 'YOUR_API_KEY' };
+    const provider = protocol === 'google-genai' ? new GoogleGenAIChatProvider(options) : new AnthropicChatProvider(options);
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service, events } = createService(requester, undefined, {
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' }, retryConfig: { maxAttempts: 5, policies: [{ match: '.*', retry: true, backoff: 1 }] },
+    });
+    const visible: StreamedMessagePart[] = [];
+    const onAttemptRetry = vi.fn(() => {
+      expect(visible).toContainEqual(expect.objectContaining({ type: 'think', think: 'discarded thought' }));
+      visible.length = 0;
+    });
+    try {
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry,
+        retry: mode === 'never' ? 'never' : undefined }, part => { visible.push(part); }, AbortSignal.timeout(3500));
+      if (mode === 'recover' || mode === 'tool') {
+        expect((await pending).message).toMatchObject({ content: [{ type: 'text', text: 'recovered' }], toolCalls: [] });
+        expect(visible).toEqual([expect.objectContaining({ type: 'text', text: 'recovered' })]);
+      } else {
+        const error = await pending.catch((failure: unknown) => failure);
+        const details = toErrorPayload(error).details;
+        if (mode === 'exhaust') expect(details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 3, retry_max_attempts: 3 });
+        else expect(details?.['retry_exhausted']).toBeUndefined();
+        if (protocol === 'anthropic') expect(details).toMatchObject({ upstream_retryable: false });
+      }
+      const expectedAttempts = mode === 'recover' || mode === 'tool' ? 2 : mode === 'exhaust' ? 3 : 1;
+      expect(bodies).toHaveLength(expectedAttempts);
+      expect(new Set(bodies).size).toBe(1);
+      expect(onAttemptRetry.mock.calls).toEqual(Array.from({ length: expectedAttempts - 1 }, () => ['discard']));
+      expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(expectedAttempts - 1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 });

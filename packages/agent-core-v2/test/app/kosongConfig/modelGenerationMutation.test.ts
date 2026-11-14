@@ -12,7 +12,7 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubLog } from '../../_base/log/stubs';
-import { MODELS_SECTION, PROVIDERS_SECTION } from '#/app/kosongConfig/configSection';
+import { MODELS_SECTION, PROVIDERS_SECTION, REQUEST_IDENTITY_SECTION } from '#/app/kosongConfig/configSection';
 import { IModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutation';
 import { ModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutationService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
@@ -161,6 +161,8 @@ describe('generation parameter entity mutations', () => {
     const store = new TomlAtomicDocumentStore(storage);
     await store.setText('', 'config.toml', `default_model="fast"
 default_provider="edge"
+[request_identity.overrides.lineage]
+branch_session_scope="shared_session"
 [providers.edge]
 type="openai"
 api_key="fixture-key"
@@ -168,6 +170,8 @@ base_url="https://example.test/v1"
 default_model="fast"
 [providers.edge.request_identity]
 preset="none"
+[providers.edge.request_identity.overrides.lineage]
+branch_session_scope="agent_session"
 [models.fast]
 provider="edge"
 model="remote-fast"
@@ -182,6 +186,8 @@ thinking_effort="high"
 thinking_effort="off"
 [models.fast.request_identity]
 preset="none"
+[models.fast.request_identity.overrides.lineage]
+branch_session_scope="shared_session"
 [models.sibling]
 provider="edge"
 model="remote-other"
@@ -203,6 +209,16 @@ max_context_size=8192
       const sibling = await catalog.readModel('sibling');
       expect(original.protocol).toBeUndefined();
       expect(original.effective_protocol).toBe('openai');
+      expect(original.request_identity).toEqual({
+        preset: 'none',
+        overrides: { lineage: { branch_session_scope: 'shared_session' } },
+      });
+      expect(providers).toMatchObject({ edge: {
+        requestIdentity: { preset: 'none', overrides: { lineage: { branchSessionScope: 'agent_session' } } },
+      } });
+      expect(config.get(REQUEST_IDENTITY_SECTION)).toEqual({
+        overrides: { lineage: { branchSessionScope: 'shared_session' } },
+      });
       expect(original.recipe_options).toEqual({ research: false });
       const changed = await catalog.updateModel('fast', { base_revision: original.revision, protocol: 'openai_responses' });
       expect(changed).toMatchObject({ protocol: 'openai_responses', effective_protocol: 'openai_responses', provider_id: 'edge', remote_id: 'remote-fast', recipe: 'recipe-example', recipe_options: { research: false } });
@@ -229,6 +245,19 @@ max_context_size=8192
     const cold = host();
     try {
       const catalog = cold.get(IModelCatalogMutationService);
+      const coldConfig = cold.get(IConfigService);
+      await coldConfig.ready;
+      expect(coldConfig.get(REQUEST_IDENTITY_SECTION)).toEqual({
+        overrides: { lineage: { branchSessionScope: 'shared_session' } },
+      });
+      expect((await catalog.readProvider('edge')).request_identity).toEqual({
+        preset: 'none',
+        overrides: { lineage: { branch_session_scope: 'agent_session' } },
+      });
+      expect((await catalog.readModel('fast')).request_identity).toEqual({
+        preset: 'none',
+        overrides: { lineage: { branch_session_scope: 'shared_session' } },
+      });
       expect((await catalog.readModel('fast')).effective_protocol).toBe('openai_responses');
       const cleared = await catalog.updateModel('fast', { protocol: null });
       expect(cleared.protocol).toBeUndefined();

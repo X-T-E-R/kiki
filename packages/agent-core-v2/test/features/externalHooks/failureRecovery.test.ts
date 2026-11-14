@@ -110,7 +110,10 @@ describe('StopFailure continuation recovery', () => {
   }
 
   it.each(['retry', 'auto', 'plugin'] as const)('retries thinking/signature-only failed steps without synthetic user input (%s)', async (mode) => {
-    const f = await fixture({ hooks: mode === 'plugin' ? undefined : [recoveryHook(mode === 'retry' ? { action: mode } : { action: mode, userMessage: '继续' })] });
+    const f = await fixture({
+      hooks: mode === 'plugin' ? undefined : [recoveryHook(mode === 'retry' ? { action: mode } : { action: mode, userMessage: '继续' })],
+      config: { retry: { maxAttempts: 1 } },
+    });
     try {
       f.local.mockNextProviderResponse({ parts: [{ type: 'think', think: 'private reasoning', encrypted: 'failed-signature' }], error: missingTerminal() });
       f.local.mockNextResponse({ type: 'text', text: 'Recovered cleanly' });
@@ -144,7 +147,10 @@ describe('StopFailure continuation recovery', () => {
     { partial: true, second: { action: 'retry' }, succeeds: false },
     { partial: true, second: { action: 'continue', userMessage: 'Different instruction' }, succeeds: false },
   ])('compares effective recoveries from multiple hooks ($partial, $second.action)', async ({ partial, second, succeeds }) => {
-    const f = await fixture({ hooks: [recoveryHook({ action: 'auto', userMessage: '继续' }), recoveryHook(second)] });
+    const f = await fixture({
+      hooks: [recoveryHook({ action: 'auto', userMessage: '继续' }), recoveryHook(second)],
+      config: { retry: { maxAttempts: 1 } },
+    });
     try {
       f.local.mockNextProviderResponse({ parts: partial ? [{ type: 'text', text: 'Partial' }] : [], error: deniedMissingTerminal() });
       f.local.mockNextResponse({ type: 'text', text: 'Recovered' });
@@ -289,7 +295,7 @@ describe('StopFailure continuation recovery', () => {
   });
 
   it('honors a legacy continue hook after an explicit same-request denial and stops at the streak cap', async () => {
-    const f = await fixture({ hooks: [alwaysContinue] });
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { maxAttempts: 1 } } });
     try {
       f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
       f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
@@ -304,7 +310,7 @@ describe('StopFailure continuation recovery', () => {
   });
 
   it('does not replay a completed tool after an explicit same-request denial', async () => {
-    const f = await fixture();
+    const f = await fixture({ config: { retry: { maxAttempts: 1 } } });
     try {
       let tools = 0;
       f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
