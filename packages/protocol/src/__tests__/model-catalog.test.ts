@@ -22,6 +22,7 @@ import {
   probeProviderResponseSchema,
   refreshProviderRequestSchema,
   requestIdentityPolicySchema,
+  requestIdentityProfileDraftSchema,
   setDefaultModelResponseSchema,
   type ModelCatalogItem,
   type ProviderCatalogItem,
@@ -301,6 +302,34 @@ describe('model catalog schemas', () => {
   it('accepts kimi_code and rejects the removed kiki preset name', () => {
     expect(requestIdentityPolicySchema.safeParse({ preset: 'kimi_code' }).success).toBe(true);
     expect(requestIdentityPolicySchema.safeParse({ preset: 'kiki' }).success).toBe(false);
+  });
+
+  it('round-trips branch session scope for model, provider, and global request identities', () => {
+    const modelIdentity = {
+      overrides: { lineage: { branch_session_scope: 'agent_session' as const } },
+    };
+    const providerIdentity = {
+      overrides: { lineage: { branch_session_scope: 'shared_session' as const } },
+    };
+    const globalIdentity = {
+      overrides: { lineage: { branch_session_scope: 'follow_session_scope' as const } },
+    };
+
+    expect(modelCatalogItemSchema.parse({ ...model, request_identity: modelIdentity }).request_identity).toEqual(modelIdentity);
+    expect(providerCatalogItemSchema.parse({ ...provider, request_identity: providerIdentity }).request_identity).toEqual(providerIdentity);
+    expect(configResponseSchema.parse({ request_identity: globalIdentity }).request_identity).toEqual(globalIdentity);
+    expect(patchConfigRequestSchema.parse({ request_identity: globalIdentity })).toEqual({ request_identity: globalIdentity });
+    const profile = requestIdentityProfileDraftSchema.parse({
+      label: 'Custom identity',
+      base_preset: 'none',
+      overrides: { lineage: { branch_session_scope: 'shared_session' } },
+      track: null,
+      version: { mode: 'kiki' },
+      user_agent: '',
+      headers: [],
+      params: [],
+    });
+    expect(profile.overrides?.lineage?.branch_session_scope).toBe('shared_session');
   });
 
   it('accepts an object to replace global request identity', () => {

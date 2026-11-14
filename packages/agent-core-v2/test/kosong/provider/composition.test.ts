@@ -2565,6 +2565,30 @@ describe('Anthropic request tail structure', () => {
   const toolCall: Message = { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'call-fixture', name: 'Read', arguments: '{}' }] };
   const toolResult: Message = { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCallId: 'call-fixture', toolCalls: [] };
 
+  it.each(['claude-sonnet-4-5', 'gemini-4-carbon', 'gemini/gemini-4-argon', 'GeMiNi-4-hydrogen', 'opaque-gemini'])('keeps tool results separate from steering only for Gemini: %s', async (model) => {
+    let sent: { messages: Array<{ role: string; content: Array<{ type: string; text?: string }> }> } | undefined;
+    const provider = new AnthropicChatProvider({
+      model, pricingModel: model === 'opaque-gemini' ? 'google/gemini-4-carbon' : undefined,
+      apiKey: 'YOUR_API_KEY', stream: false,
+      clientFactory: () => new Anthropic({ apiKey: 'YOUR_API_KEY', maxRetries: 0,
+        fetch: async (input, init) => {
+          sent = JSON.parse(await new Request(input, init).text());
+          return new Response(JSON.stringify(anthropicMessageResponse()), { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      }),
+    });
+    const history: Message[] = [user, {
+      ...toolCall, toolCalls: [...toolCall.toolCalls, { type: 'function', id: 'call-second', name: 'Read', arguments: '{}' }],
+    }, toolResult, { ...toolResult, toolCallId: 'call-second' },
+    { role: 'user', content: [{ type: 'text', text: 'steered user message' }], toolCalls: [] },
+    { role: 'system', content: [{ type: 'text', text: 'model steering' }], toolCalls: [] }];
+    await drain(await provider.generate('', [], history, { maxCompletionTokens: 1024 }));
+    const gemini = model !== 'claude-sonnet-4-5';
+    expect(sent?.messages.map(message => message.role)).toEqual(gemini ? ['user', 'assistant', 'user', 'user'] : ['user', 'assistant', 'user']);
+    expect(sent?.messages[2]?.content.map(part => part.type)).toEqual(gemini ? ['tool_result', 'tool_result'] : ['tool_result', 'tool_result', 'text', 'text']);
+    expect(sent?.messages.at(-1)?.content.filter(part => part.type === 'text').map(part => part.text)).toEqual(['steered user message', '<system>model steering</system>']);
+  });
+
   it.each([
     { shape: 'thinking-only assistant', history: [user, thinking], roles: ['user', 'assistant'], tailTypes: ['thinking'] },
     { shape: 'nonempty assistant prefill', history: [user, prefill], roles: ['user', 'assistant'], tailTypes: ['text'] },

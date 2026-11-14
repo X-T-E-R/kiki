@@ -69,10 +69,13 @@ describe('server-v2 /api/request-identity', () => {
 
     const edited = await call<RequestIdentityCatalog>('PUT', '/request-identity/profiles/custom:claude_code-1', {
       ...draft,
+      overrides: { lineage: { branch_session_scope: 'shared_session' } },
       version: { mode: 'fixed', value: '2.0.0' },
       user_agent: 'claude-cli/{version} (external, sdk-cli)',
     });
     expect(edited.code).toBe(0);
+    expect(edited.data.profiles.find((profile) => profile.id === 'custom:claude_code-1')?.overrides)
+      .toEqual({ lineage: { branch_session_scope: 'shared_session' } });
 
     const preview = await call<RequestIdentityPreview>('POST', '/request-identity/preview', {
       profile: 'custom:claude_code-1', protocol: 'anthropic', model: 'claude-example',
@@ -80,11 +83,31 @@ describe('server-v2 /api/request-identity', () => {
     expect(preview.data.headers).toContainEqual(expect.objectContaining({ name: 'User-Agent', value: 'claude-cli/2.0.0 (external, sdk-cli)' }));
     expect(preview.data.params['metadata.user_id']).toContain('session_id');
 
-    const assigned = await call('POST', '/config', { request_identity: { profile: 'custom:claude_code-1' } });
+    const globalIdentity = {
+      profile: 'custom:claude_code-1',
+      overrides: { lineage: { branch_session_scope: 'agent_session' as const } },
+    };
+    const assigned = await call('POST', '/config', { request_identity: globalIdentity });
     expect(assigned.code).toBe(0);
+    expect((await call<{ request_identity: unknown }>('GET', '/config')).data.request_identity).toEqual(globalIdentity);
+
+    await server!.close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const reloaded = await call<RequestIdentityCatalog>('GET', '/request-identity');
+    expect(reloaded.data.profiles.find((profile) => profile.id === 'custom:claude_code-1')?.overrides)
+      .toEqual({ lineage: { branch_session_scope: 'shared_session' } });
+    expect((await call<{ request_identity: unknown }>('GET', '/config')).data.request_identity).toEqual(globalIdentity);
     const inUse = await call('DELETE', '/request-identity/profiles/custom:claude_code-1');
     expect(inUse.code).toBe(ErrorCode.REQUEST_IDENTITY_CONFLICT);
-    expect((await call<RequestIdentityCatalog>('GET', '/request-identity')).data.usage[0]).toMatchObject({ effective_profile: 'custom:claude_code-1' });
+    expect(reloaded.data.usage[0]).toMatchObject({ effective_profile: 'custom:claude_code-1' });
 
     await call('POST', '/config', { request_identity: null });
     const deleted = await call<RequestIdentityCatalog>('DELETE', '/request-identity/profiles/custom:claude_code-1');

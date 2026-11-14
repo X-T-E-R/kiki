@@ -337,6 +337,45 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(ping).toHaveBeenCalledOnce();
   });
 
+  it('round-trips provider and model branch session scopes across restart', async () => {
+    await boot(CATALOG_TOML);
+    const provider = (await getJson<Record<string, unknown>>('/api/providers/kimi')).body.data;
+    const model = (await getJson<Record<string, unknown>>('/api/models/k2')).body.data;
+    const providerIdentity = { overrides: { lineage: { branch_session_scope: 'shared_session' } } };
+    const modelIdentity = { overrides: { lineage: { branch_session_scope: 'agent_session' } } };
+    const patch = async (path: string, body: unknown) => {
+      const response = await fetch(`${base}${path}`, {
+        method: 'PATCH',
+        headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body),
+      } as never);
+      return await response.json() as Envelope<unknown>;
+    };
+
+    const providerPatched = await patch('/api/providers/kimi', {
+      base_revision: provider['revision'],
+      request_identity: providerIdentity,
+    });
+    expect(providerPatched.code).toBe(0);
+    expect((providerPatched.data as { provider: Record<string, unknown> }).provider['request_identity']).toEqual(providerIdentity);
+    const modelPatched = await patch('/api/models/k2', {
+      base_revision: model['revision'],
+      request_identity: modelIdentity,
+    });
+    expect(modelPatched.code).toBe(0);
+    expect((modelPatched.data as Record<string, unknown>)['request_identity']).toEqual(modelIdentity);
+
+    const persisted = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect(persisted).toContain('branch_session_scope = "shared_session"');
+    expect(persisted).toContain('branch_session_scope = "agent_session"');
+    await server!.close();
+    server = undefined;
+    await boot();
+
+    expect((await getJson<Record<string, unknown>>('/api/providers/kimi')).body.data['request_identity']).toEqual(providerIdentity);
+    expect((await getJson<Record<string, unknown>>('/api/models/k2')).body.data['request_identity']).toEqual(modelIdentity);
+  });
+
   it('lists configured models as selectable aliases', async () => {
     await boot(CATALOG_TOML);
     const { status, body } = await getJson<{ items: unknown[] }>('/api/models');

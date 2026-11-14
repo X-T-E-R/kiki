@@ -492,6 +492,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       model: {
         id,
         name: wireName,
+        pricingModel: configuredModel.pricingModel,
         aliases: model.aliases ?? [],
         protocol,
         protocolSource: resolvedProtocol.source,

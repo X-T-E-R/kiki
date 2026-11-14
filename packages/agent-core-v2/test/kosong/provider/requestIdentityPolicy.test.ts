@@ -12,7 +12,7 @@ import {
   RequestIdentityPolicyWireSchema,
   type RequestIdentityPolicy,
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
-import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
+import { projectRequestIdentity, resolveRequestIdentitySessionScope } from '#/kosong/requestIdentity/requestIdentityProjector';
 
 const SNAPSHOT = {
   installationId: '00000000-0000-4000-8000-000000000001',
@@ -32,7 +32,10 @@ function project(
   policy: RequestIdentityPolicy,
   options: {
     isKimiProvider?: boolean;
-    protocol?: 'openai_responses' | 'anthropic';
+    protocol?: 'openai_responses' | 'anthropic' | 'google-genai';
+    model?: string;
+    pricingModel?: string;
+    isBranch?: boolean;
     hostRequestHeaders?: Readonly<Record<string, string>>;
     snapshot?: typeof SNAPSHOT;
   } = {},
@@ -40,7 +43,9 @@ function project(
   return projectRequestIdentity({
     policy: resolveAuthoredRequestIdentity(policy),
     protocol: options.protocol ?? 'openai_responses',
-    model: 'wire-model',
+    model: options.model ?? 'wire-model',
+    pricingModel: options.pricingModel,
+    isBranch: options.isBranch,
     rawSessionId: 'raw-session',
     rawAgentId: 'child',
     parentAgentId: 'main',
@@ -66,7 +71,57 @@ describe('request identity policy', () => {
     const resolved = resolveAuthoredRequestIdentity({ preset });
     expect(resolved.lineage.format).toBe(format);
     expect(resolved.lineage.sessionScope).toBe(scope);
+    expect(resolved.lineage.branchSessionScope).toBe('follow_session_scope');
     expect(resolved.client.userAgent).toBe(userAgent);
+  });
+
+  it.each([
+    ['openai_responses', 'gpt-example', undefined, 'shared_session'],
+    ['anthropic', 'claude-example', undefined, 'shared_session'],
+    ['google-genai', 'opaque-model', undefined, 'agent_session'],
+    ['anthropic', 'GeMiNi-4-carbon', undefined, 'agent_session'],
+    ['anthropic', 'gemini/gemini-4-argon', undefined, 'agent_session'],
+    ['anthropic', 'opaque-model', 'google/gemini_4', 'agent_session'],
+    ['anthropic', 'not-gemini-4', undefined, 'shared_session'],
+  ] as const)('resolves branch isolation from %s model %s pricing %s', (protocol, model, pricingModel, expected) => {
+    const policy = resolveAuthoredRequestIdentity({ preset: 'claude_code_compatible' });
+    const input = { policy, protocol, model, pricingModel, isBranch: true };
+    expect(resolveRequestIdentitySessionScope(input)).toBe(expected);
+    expect(resolveRequestIdentitySessionScope({ ...input, isBranch: false })).toBe('shared_session');
+    for (const branchSessionScope of ['shared_session', 'agent_session'] as const) {
+      const explicit = resolveAuthoredRequestIdentity({ preset: 'claude_code_compatible', overrides: { lineage: { branchSessionScope } } });
+      expect(resolveRequestIdentitySessionScope({ ...input, policy: explicit })).toBe(branchSessionScope);
+      expect(resolveRequestIdentitySessionScope({ ...input, policy: resolveAuthoredRequestIdentity({ preset: 'none', overrides: { lineage: { branchSessionScope } } }) })).toBe('none');
+    }
+  });
+
+  it.each(['shared_session', 'agent_session'] as const)('uses the same effective %s scope in Codex headers, cache key and turn metadata', (branchSessionScope) => {
+    const projection = project({ preset: 'codex_compatible', overrides: { lineage: { branchSessionScope } } }, { isBranch: true });
+    const id = branchSessionScope === 'shared_session' ? SNAPSHOT.sharedSessionId : SNAPSHOT.agentSessionId;
+    expect(projection.cacheKey).toBe(id);
+    expect(projection.headers?.['session-id']).toBe(id);
+    expect(projection.headers?.['thread-id']).toBe(SNAPSHOT.threadId);
+    expect(projection.headers?.['x-codex-parent-thread-id']).toBe(SNAPSHOT.parentThreadId);
+    expect(JSON.parse(projection.headers?.['x-codex-turn-metadata'] ?? '{}')).toMatchObject({ session_id: id, thread_id: SNAPSHOT.threadId });
+    expect(projection.wire?.responsesClientMetadata).toMatchObject({ session_id: id, thread_id: SNAPSHOT.threadId });
+  });
+
+  it('shares Codex branch big ids by default and isolates Gemini gateway metadata ids', () => {
+    expect(project({ preset: 'codex_compatible' }, { isBranch: true }).cacheKey).toBe(SNAPSHOT.sharedSessionId);
+    const compactedBranch = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'codex_compatible' }), protocol: 'openai_responses', model: 'gpt-example',
+      rawSessionId: 'raw-session', rawAgentId: 'branch', isBranch: true, compactionWindow: 2,
+      isKimiProvider: false, snapshot: SNAPSHOT, runtimeVersion: '1.0.0', platform: 'linux', arch: 'x64',
+    });
+    expect(compactedBranch.cacheKey).toBe(SNAPSHOT.sharedSessionId);
+    expect(compactedBranch.headers?.['session-id']).toBe(SNAPSHOT.sharedSessionId);
+    const policy = { preset: 'claude_code_compatible' } as const;
+    for (const isBranch of [false, true]) {
+      const projection = project(policy, { protocol: 'anthropic', model: 'gemini-4-hydrogen', isBranch });
+      const id = isBranch ? SNAPSHOT.agentSessionId : SNAPSHOT.sharedSessionId;
+      expect(projection.headers?.['X-Claude-Code-Session-Id']).toBe(id);
+      expect(JSON.parse(projection.cacheKey ?? '{}')).toMatchObject({ session_id: id });
+    }
   });
 
   it('projects OpenCode session and logical request ids without unrelated client lineage', () => {

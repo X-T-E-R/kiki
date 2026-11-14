@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, readAttachedErrorDetails, unwrapErrorCause } from '#/errors';
 
 import {
   APIConnectionError,
@@ -20,6 +20,11 @@ import {
   ambiguousRequestDelivery,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
+  isRetryableMalformedFunctionCallError,
+  markProviderEventError,
+  markProviderHttpError,
+  noteExplicitUpstreamRetryDenial,
+  sameRequestRetryProhibition,
   normalizeAPIStatusError,
   noteConfirmedRequestExecution,
   noteExecutedRequestDelivery,
@@ -107,6 +112,37 @@ describe('throwIfAbortError', () => {
     expect(caught).toBeInstanceOf(DOMException);
     expect((caught as DOMException).name).toBe('AbortError');
     expect(isRetryableGenerateError(caught)).toBe(false);
+  });
+});
+
+describe('isRetryableMalformedFunctionCallError', () => {
+  it.each(['antigravity_malformed_function_call', 'MALFORMED_FUNCTION_CALL'])('accepts only the exact provider code %s through causes', (code) => {
+    for (const mark of [markProviderEventError, markProviderHttpError]) {
+      const cause = mark(new ChatProviderError('malformed function call'), code);
+      noteExplicitUpstreamRetryDenial(cause, { error: { retryable: false } });
+      noteExecutedRequestDelivery(cause);
+      expect(isRetryableMalformedFunctionCallError(new Error('wrapped', { cause }))).toBe(true);
+      expect(sameRequestRetryProhibition({ ...cause.details, ...readAttachedErrorDetails(cause) })).toBe('upstream');
+    }
+  });
+
+  it('accepts native malformed completion after thinking, but rejects confirmed execution and local vetoes', () => {
+    const error = new APIEmptyResponseError('malformed', { rawFinishReason: 'MALFORMED_FUNCTION_CALL' });
+    noteExecutedRequestDelivery(error);
+    expect(isRetryableMalformedFunctionCallError(new Error('wrapped', { cause: error }))).toBe(true);
+    for (const details of [{ execution: 'executed' }, { retry: false }, { retry: false, retry_exhausted: true }]) {
+      const wrapped = new Error('wrapped', { cause: error });
+      attachErrorDetails(wrapped, details);
+      expect(isRetryableMalformedFunctionCallError(wrapped)).toBe(false);
+    }
+    noteConfirmedRequestExecution(error);
+    expect(isRetryableMalformedFunctionCallError(error)).toBe(false);
+  });
+
+  it('does not accept unrelated gateway failures, finish reasons or message text', () => {
+    expect(isRetryableMalformedFunctionCallError(markProviderEventError(new ChatProviderError('MALFORMED_FUNCTION_CALL'), 'antigravity_missing_terminal'))).toBe(false);
+    expect(isRetryableMalformedFunctionCallError(new APIEmptyResponseError('MALFORMED_FUNCTION_CALL', { rawFinishReason: 'STOP' }))).toBe(false);
+    expect(isRetryableMalformedFunctionCallError(createAbortError())).toBe(false);
   });
 });
 

@@ -33,6 +33,7 @@ export interface ProtocolAdapterConfig {
   readonly providerType?: string;
   readonly baseUrl?: string;
   readonly modelName: string;
+  readonly pricingModel?: string;
   readonly apiKey?: string;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly requestCompression?: RequestCompression;

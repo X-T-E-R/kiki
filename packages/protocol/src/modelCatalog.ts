@@ -30,6 +30,7 @@ export const requestIdentityOverridesSchema = z
       .object({
         format: z.enum(['codex', 'claude_code', 'grok_build', 'opencode', 'kimi_code', 'none']).optional(),
         session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+        branch_session_scope: z.enum(['follow_session_scope', 'shared_session', 'agent_session']).optional(),
         thread_identity: z.enum(['agent', 'none']).optional(),
         parent_thread: z.enum(['immediate_agent', 'none']).optional(),
         subagent_marker: z.enum(['enabled', 'none']).optional(),

@@ -373,7 +373,6 @@ export function noteConfirmedRequestExecution(error: unknown): void {
 const NON_CONTINUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'antigravity_thinking_only',
   'antigravity_safety',
-  'antigravity_malformed_function_call',
   'antigravity_malformed_response',
   'antigravity_upstream_terminal_error',
 ]);
@@ -396,6 +395,25 @@ export function hasExplicitRetryVeto(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
+}
+
+export function isRetryableMalformedFunctionCallError(error: unknown): boolean {
+  if (isAbortError(error)) return false;
+  const visited = new Set<object>();
+  let current = error;
+  let malformed = false;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = providerErrorMetadata(current);
+    if (details['execution'] === 'executed' || details['retry'] === false ||
+      (current instanceof Error2 && current.details?.['retry'] === false)) return false;
+    const code = details['upstreamErrorCode'];
+    const namedMalformed = code === 'antigravity_malformed_function_call' || code === 'MALFORMED_FUNCTION_CALL';
+    if (typeof code === 'string' && !namedMalformed && details['upstream_retryable'] === false) return false;
+    malformed ||= namedMalformed || (current instanceof APIEmptyResponseError && current.rawFinishReason === 'MALFORMED_FUNCTION_CALL');
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return malformed;
 }
 
 export function isRetryableGenerateError(error: unknown): boolean {

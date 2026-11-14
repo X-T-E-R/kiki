@@ -76,6 +76,7 @@ import {
   type AnthropicModelVersion,
 } from './anthropic-profile';
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
+import { isGeminiModel } from '#/kosong/contract/modelFamily';
 import {
   mergeProviderRequestAuth,
   requestIdentityFetchForAuth,
@@ -138,6 +139,7 @@ export interface AnthropicOptions {
   apiKey?: string | undefined;
   baseUrl?: string | undefined;
   model: string;
+  pricingModel?: string;
   defaultMaxTokens?: number | undefined;
   betaFeatures?: string[] | undefined;
   defaultHeaders?: Record<string, string>;
@@ -954,6 +956,7 @@ export class AnthropicChatProvider implements ChatProvider {
   readonly name: string = 'anthropic';
 
   private readonly _model: string;
+  private readonly _isGemini: boolean;
   private readonly _stream: boolean;
   private readonly _client: Anthropic | undefined;
   private readonly _generationKwargs: AnthropicGenerationKwargs;
@@ -974,6 +977,7 @@ export class AnthropicChatProvider implements ChatProvider {
 
   constructor(options: AnthropicOptions) {
     this._model = options.model;
+    this._isGemini = isGeminiModel(options.model) || (options.pricingModel !== undefined && isGeminiModel(options.pricingModel));
     this._stream = options.stream ?? true;
     this._metadata = options.metadata;
     this._adaptiveThinking = options.adaptiveThinking;
@@ -1047,6 +1051,9 @@ export class AnthropicChatProvider implements ChatProvider {
       {
         isUser: (message) => message.role === 'user',
         isToolResultOnly,
+        canMerge: this._isGemini
+          ? (last, next) => isToolResultOnly(last) === isToolResultOnly(next)
+          : undefined,
         merge: (last, next) => ({
           ...last,
           content: [

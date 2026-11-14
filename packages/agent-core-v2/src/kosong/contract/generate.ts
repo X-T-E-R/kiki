@@ -222,6 +222,12 @@ export async function generate(
     );
 
     flushPending();
+    if (stream.rawFinishReason === 'MALFORMED_FUNCTION_CALL') {
+      throw new APIEmptyResponseError('The provider returned a malformed function call.', {
+        finishReason: stream.finishReason,
+        rawFinishReason: stream.rawFinishReason,
+      });
+    }
     const diagnostics = stream.diagnostics;
     const normallyCompleted = stream.finishReason === 'completed' && (
       diagnostics === undefined || (

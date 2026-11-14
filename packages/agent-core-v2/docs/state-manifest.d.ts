@@ -3922,6 +3922,7 @@ export interface AgentStateSnapshot {
           lineage?: {
             format?: 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
             sessionScope?: 'none' | 'shared_session' | 'agent_session';
+            branchSessionScope?: 'shared_session' | 'agent_session' | 'follow_session_scope';
             threadIdentity?: 'agent' | 'none';
             parentThread?: 'none' | 'immediate_agent';
             subagentMarker?: 'none' | 'enabled';
@@ -3990,6 +3991,7 @@ export interface AgentStateSnapshot {
       lineage: {
         format: /* RequestIdentityLineageFormat — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'kimi_code' | 'codex' | 'claude_code' | 'grok_build' | 'opencode';
         sessionScope: 'none' | 'shared_session' | 'agent_session';
+        branchSessionScope: 'shared_session' | 'agent_session' | 'follow_session_scope';
         threadIdentity: 'agent' | 'none';
         parentThread: 'none' | 'immediate_agent';
         subagentMarker: 'none' | 'enabled';

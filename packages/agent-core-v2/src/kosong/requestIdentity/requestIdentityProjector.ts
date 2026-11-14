@@ -5,6 +5,7 @@ import type { Protocol } from '#/kosong/protocol/protocol';
 import type { ResolvedRequestIdentityPolicy } from './requestIdentityPolicy';
 import type { RequestIdentitySnapshot } from '#/session/requestIdentity/requestIdentityRegistry';
 import { Error2 } from '#/_base/errors/errors';
+import { isGeminiModel } from '#/kosong/contract/modelFamily';
 import { RequestIdentityErrors } from './errors';
 import type { RenderedRequestIdentityProfile } from './requestIdentityProfile';
 
@@ -23,6 +24,7 @@ export function projectRequestIdentity(input: {
   readonly policy: ResolvedRequestIdentityPolicy;
   readonly protocol: Protocol;
   readonly model: string;
+  readonly pricingModel?: string;
   readonly rawSessionId: string;
   readonly rawAgentId: string;
   readonly parentAgentId?: string;
@@ -301,27 +303,31 @@ function isTrueNone(policy: ResolvedRequestIdentityPolicy): boolean {
   );
 }
 
+export function resolveRequestIdentitySessionScope(input: {
+  readonly policy: ResolvedRequestIdentityPolicy;
+  readonly protocol: Protocol;
+  readonly model: string;
+  readonly pricingModel?: string;
+  readonly isBranch?: boolean;
+}): ResolvedRequestIdentityPolicy['lineage']['sessionScope'] {
+  const { sessionScope, branchSessionScope } = input.policy.lineage;
+  if (!input.isBranch || sessionScope === 'none') return sessionScope;
+  if (branchSessionScope !== 'follow_session_scope') return branchSessionScope;
+  return input.protocol === 'google-genai' || isGeminiModel(input.model) ||
+    (input.pricingModel !== undefined && isGeminiModel(input.pricingModel))
+    ? 'agent_session' : sessionScope;
+}
+
 function requestSessionIdentity(input: Parameters<typeof projectRequestIdentity>[0]): string {
   const compactionWindow = input.compactionWindow ?? 0;
-  if (input.policy.lineage.sessionScope === 'agent_session') {
+  if (resolveRequestIdentitySessionScope(input) === 'agent_session') {
     const base = requiredSnapshot(input.snapshot.agentSessionId, 'agent-session identity');
     const rotated = compactionWindow > 0 ? deriveWindowUuid(base, compactionWindow) : base;
     return input.policy.lineage.format === 'kimi_code' ? `session_${rotated}` : rotated;
   }
-  if (input.policy.preset === 'kimi_code') {
-    const base = input.isBranch === true
-      ? `${input.rawSessionId}_branch_${input.rawAgentId}`
-      : input.rawSessionId;
-    return compactionWindow > 0 ? `${base}_w${String(compactionWindow)}` : base;
-  }
-  const base = input.isBranch === true
-    ? (input.snapshot.agentSessionId ?? deriveBranchUuid(requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity'), input.rawAgentId))
+  return input.policy.preset === 'kimi_code'
+    ? input.rawSessionId
     : requiredSnapshot(input.snapshot.sharedSessionId, 'shared-session identity');
-  return compactionWindow > 0 ? deriveWindowUuid(base, compactionWindow) : base;
-}
-
-function deriveBranchUuid(baseId: string, agentId: string): string {
-  return deriveUuid(baseId, 'branch', agentId);
 }
 
 function deriveWindowUuid(baseId: string, compactionWindow: number): string {

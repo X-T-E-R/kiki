@@ -55,6 +55,7 @@ import {
   classifyApiError,
   createAbortError,
   hasExplicitRetryVeto,
+  isRetryableMalformedFunctionCallError,
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
@@ -111,6 +112,7 @@ import {
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import {
   preflightRequestIdentityProjection,
+  resolveRequestIdentitySessionScope,
   projectRequestIdentity,
   type RequestIdentityProjection,
 } from '#/kosong/requestIdentity/requestIdentityProjector';
@@ -867,12 +869,14 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         const retryPolicy = findRetryPolicy(retryConfig?.policies, raw, {
           model: request.model.id, provider: request.model.providerName,
         });
-        if (retry === 'never' || retryPolicy?.retry === false || hasExplicitRetryVeto(error) ||
+        const malformedFunctionCall = source?.type === 'turn' && isRetryableMalformedFunctionCallError(error);
+        if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !malformedFunctionCall) ||
           isAbortError(error) || signal?.aborted === true) throw error;
-        if (source?.type === 'turn' && isRetryableRequestInterruption(error)) {
-          const partialOutput = attemptObservedOutput || !isRetryableGenerateError(error);
+        if (source?.type === 'turn' && (malformedFunctionCall || isRetryableRequestInterruption(error))) {
+          const partialOutput = attemptObservedOutput || (malformedFunctionCall
+            ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));
           if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
-          const maxAttempts = Math.min(DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+          const maxAttempts = Math.min(malformedFunctionCall ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           if (interruptionAttempt >= maxAttempts) {
             const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
@@ -885,9 +889,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             throw error;
           }
           if (request.model.protocol === 'google-genai') {
-            params = { ...params, googleContinuationToken: readGenerateContinuationToken(error) };
+            params = { ...params, googleContinuationToken: malformedFunctionCall ? undefined : readGenerateContinuationToken(error) };
           }
-          const retryMode: AgentLLMAttemptRetryMode = request.model.protocol !== 'google-genai'
+          const retryMode: AgentLLMAttemptRetryMode = malformedFunctionCall || request.model.protocol !== 'google-genai'
             ? 'discard'
             : params.googleContinuationToken === undefined ? 'retain' : 'continue';
           const discardedPartialOutput = partialOutput && retryMode === 'discard';
@@ -899,7 +903,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
           const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
           const fields = retryErrorFields(raw);
-          const errorMessage = `Upstream interrupted; ${action}. ${fields.errorMessage}`;
+          const errorMessage = `${malformedFunctionCall ? 'Malformed function call' : 'Upstream interrupted'}; ${action}. ${fields.errorMessage}`;
           this.log.warn(`upstream interrupted; ${action}`, {
             ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
             maxAttempts, delayMs, discardedPartialOutput, retainedPartialOutput, ...fields, ...responseTransportLogFields(error),
@@ -1094,11 +1098,18 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     messages: readonly Message[],
     source: AgentLLMRequestSource | undefined,
   ): Promise<RequestIdentityProjection> {
+    const sessionScope = resolveRequestIdentitySessionScope({
+      policy: identity.policy,
+      protocol: requester.model.protocol,
+      model: requester.model.name,
+      pricingModel: requester.model.pricingModel,
+      isBranch: identity.isBranch,
+    });
     const dimensions = resolveRequestIdentityDimensions(
       identity.policy,
       identity.isKimiProvider,
       identity.hostRequestHeaders,
-      identity.isBranch === true,
+      sessionScope,
     );
     const epoch = this.states.get(contextWindowEpochKey);
     const summaryCount = messages.filter(
@@ -1125,6 +1136,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       policy: identity.policy,
       protocol: requester.model.protocol,
       model: requester.model.name,
+      pricingModel: requester.model.pricingModel,
       rawSessionId: this.sessionContext.sessionId,
       rawAgentId: this.agentContext.agentId,
       parentAgentId: identity.parentAgentId,
@@ -1634,7 +1646,7 @@ function resolveRequestIdentityDimensions(
   policy: ResolvedRequestIdentityPolicy,
   isKimiProvider: boolean,
   hostHeaders: Readonly<Record<string, string>>,
-  isBranch = false,
+  sessionScope: ResolvedRequestIdentityPolicy['lineage']['sessionScope'],
 ): RequestIdentityDimensions {
   const format = policy.lineage.format;
   const hostHasDeviceIdentity = Object.entries(hostHeaders).some(([name, value]) => {
@@ -1650,10 +1662,8 @@ function resolveRequestIdentityDimensions(
         format === 'claude_code' ||
         (format === 'kimi_code' && isKimiProvider && !hostHasDeviceIdentity)),
     sharedSessionIdentity:
-      policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code',
-    agentSessionIdentity:
-      policy.lineage.sessionScope === 'agent_session' ||
-      (isBranch && policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code'),
+      (policy.lineage.sessionScope === 'shared_session' || sessionScope === 'shared_session') && policy.preset !== 'kimi_code',
+    agentSessionIdentity: sessionScope === 'agent_session',
     threadIdentity:
       policy.lineage.threadIdentity === 'agent' ||
       policy.lineage.parentThread === 'immediate_agent',

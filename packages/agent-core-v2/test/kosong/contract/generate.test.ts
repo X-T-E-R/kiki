@@ -299,6 +299,23 @@ describe('generate() stream normalization', () => {
     },
   );
 
+  it.each(['text', 'tool'] as const)('rejects a malformed terminal before committing %s output or executing tools', async (kind) => {
+    class MalformedStream extends FakeStreamedMessage {
+      override readonly finishReason: FinishReason = 'other';
+      override readonly rawFinishReason = 'MALFORMED_FUNCTION_CALL';
+      commitMessage = vi.fn();
+    }
+    const stream = new MalformedStream(kind === 'text' ? [{ type: 'text', text: 'uncommitted answer' }]
+      : [{ type: 'function', id: 'call-fixture', name: 'SaveWork', arguments: '{}' }]);
+    const { provider } = createFakeProvider(stream);
+    const onToolCall = vi.fn();
+    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, { onToolCall })).rejects.toMatchObject({
+      name: 'APIEmptyResponseError', rawFinishReason: 'MALFORMED_FUNCTION_CALL',
+    });
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(stream.commitMessage).not.toHaveBeenCalled();
+  });
+
   it('returns a CONTINUATION thinking partial instead of treating it as an empty response', async () => {
     class ContinuationStream extends FakeStreamedMessage {
       override readonly finishReason: FinishReason | null = 'other';

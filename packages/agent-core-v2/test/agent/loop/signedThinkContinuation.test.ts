@@ -392,13 +392,40 @@ describe('thinking-only continuation', () => {
     }
   });
 
-  it.each(['antigravity_empty_response', 'antigravity_missing_terminal', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_function_call', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
+  it.each(['antigravity_empty_response', 'antigravity_missing_terminal', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
     const create = scriptedCreate([gatewayNoUsableAnswerStream(code), textStream('should not run')]);
     const local = anthropicAgent(create);
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
       expect(storedThinking(local)).toEqual([]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('discards a malformed function-call attempt instead of continuing signed thinking', async () => {
+    const create = scriptedCreate([gatewayNoUsableAnswerStream('antigravity_malformed_function_call'), toolStream(), textStream('Work saved.')]);
+    const local = anthropicAgent(create, { permission: 'yolo', initialConfig: { retry: { policies: [{ match: 'ChatProviderError', backoff: 1 }] } } });
+    let toolRuns = 0;
+    local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => {
+        toolRuns++;
+        return { output: 'work saved' };
+      } }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('completed');
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(toolRuns).toBe(1);
+      expect(storedThinking(local)).toEqual([]);
+      expect(continued(local)).toBe(false);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
