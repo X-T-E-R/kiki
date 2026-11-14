@@ -13,6 +13,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ContextStrategyStatus } from '@kiki/protocol';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 
+import { isPeerConnectionSource } from '../lib/peerAccess';
 import { useConnection } from '../state/connection';
 
 export type ContextStrategy = ContextStrategyStatus['strategy'];
@@ -27,6 +28,8 @@ export interface ContextStrategyHandle {
   readonly status: ContextStrategyStatus | undefined;
   /** The main agent can hold a session override; subagents only read. */
   readonly writable: boolean;
+  /** Saving as the global default requires local-owner config access. */
+  readonly canSaveGlobal?: boolean;
   readonly refresh: () => void;
   /** `null` clears the session override (back to the inherited layer). */
   readonly write: (strategy: ContextStrategy | null) => Promise<ContextStrategyStatus>;
@@ -40,7 +43,8 @@ export function useContextStrategy(input: {
   readonly sessionId: string | undefined;
   readonly agentId: string;
 }): ContextStrategyHandle | undefined {
-  const { client } = useConnection();
+  const { client, connectionSource } = useConnection();
+  const peer = isPeerConnectionSource(connectionSource);
   const queryClient = useQueryClient();
   const { sessionId, agentId } = input;
   const enabled = sessionId !== undefined;
@@ -59,10 +63,17 @@ export function useContextStrategy(input: {
 
   const write = useCallback(async (strategy: ContextStrategy | null) => {
     if (sessionId === undefined) throw new Error('no session');
+    if (peer && client.klient !== undefined) {
+      const agent = client.klient.session(sessionId).agent(agentId);
+      await agent.setContextStrategyOverride(strategy);
+      const status = await agent.getContextStrategy();
+      queryClient.setQueryData(contextStrategyQueryKey(sessionId, agentId), status);
+      return status;
+    }
     const status = await client.setContextStrategy(sessionId, agentId, { strategy });
     queryClient.setQueryData(contextStrategyQueryKey(sessionId, agentId), status);
     return status;
-  }, [agentId, client, queryClient, sessionId]);
+  }, [agentId, client, peer, queryClient, sessionId]);
 
   const saveGlobal = useCallback(async (strategy: ContextStrategy) => {
     if (sessionId === undefined) throw new Error('no session');
@@ -85,6 +96,7 @@ export function useContextStrategy(input: {
   return {
     status: query.data,
     writable: agentId === MAIN_AGENT_ID,
+    canSaveGlobal: !peer,
     refresh,
     write,
     saveGlobal,

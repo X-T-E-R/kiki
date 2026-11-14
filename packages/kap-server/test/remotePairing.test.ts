@@ -11,9 +11,9 @@ import { createServer as createNetServer, type Socket } from 'node:net';
 import { peerFetch } from '../src/services/connections/peerTls';
 import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connections/tlsIdentity';
 import { pairOutbound } from '../src/services/connections/pairing';
-import { formatPairingUri, parsePairingUri } from '@kiki/protocol';
+import { formatPairingUri, matchConnectionOperation, parsePairingUri } from '@kiki/protocol';
 import { ConnectionAdmission } from '../src/services/connections/admission';
-import { ConnectionAudience } from '../src/services/connections/audience';
+import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
 import { RemoteConnectionManager, validateEndpoint } from '../src/services/connections/manager';
 import { directEndpoints, PairingRateLimit } from '../src/services/connections/pairing';
 
@@ -300,4 +300,31 @@ it('cancels a pinned TLS socket while its peer stalls before secureConnect', asy
     await expect(pending).rejects.toThrow('cancel stalled TLS');
     await vi.waitFor(() => expect(sockets.size).toBe(0));
   } finally { for (const socket of sockets) socket.destroy(); await new Promise<void>((resolve) => stalled.close(() => resolve())); }
+});
+
+describe('paired peer surface parity and host boundaries', () => {
+  it('admits safe peer GUI reads/session controls while keeping host-only mutations and surfaces denied', () => {
+    expect(matchConnectionOperation('GET', '/gui/shortcuts')?.operation).toBe('guiShortcuts');
+    expect(matchConnectionOperation('GET', '/sessions/session-1/optional-capabilities')?.operation).toBe('optionalCapabilities');
+    expect(matchConnectionOperation('POST', '/sessions/session-1/optional-capabilities')?.operation).toBe('optionalCapabilitiesSet');
+    expect(matchConnectionOperation('GET', '/sessions/session-1/agents/main/context-strategy')?.operation).toBe('contextStrategy');
+    expect(matchConnectionOperation('GET', '/plugins/gui-slots')?.operation).toBe('pluginGuiSlots');
+    expect(matchConnectionOperation('GET', '/output-layer/configuration')?.operation).toBe('outputLayerConfiguration');
+    expect(matchConnectionOperation('POST', '/output-layer/stream')?.operation).toBe('outputLayerStream');
+
+    for (const method of ['read', 'pause', 'resume', 'cancelPause']) {
+      expect(isPeerProcedureAllowed({ service: 'sessionExecutionControl', method })).toBe(true);
+    }
+
+    expect(matchConnectionOperation('PUT', '/gui/shortcuts')).toBeUndefined();
+    expect(matchConnectionOperation('POST', '/gui/shortcuts/reset')).toBeUndefined();
+    expect(matchConnectionOperation('PATCH', '/sessions/session-1/agents/main/context-strategy')).toBeUndefined();
+    expect(matchConnectionOperation('PUT', '/output-layer/configuration')).toBeUndefined();
+    expect(matchConnectionOperation('GET', '/quotas/harness')).toBeUndefined();
+    expect(matchConnectionOperation('GET', '/ssh/hosts')).toBeUndefined();
+    expect(matchConnectionOperation('GET', '/im/sessions')).toBeUndefined();
+    expect(matchConnectionOperation('POST', '/workspaces:inspect')).toBeUndefined();
+    expect(matchConnectionOperation('GET', '/external-clients')).toBeUndefined();
+    expect(matchConnectionOperation('POST', '/leases')).toBeUndefined();
+  });
 });

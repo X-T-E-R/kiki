@@ -23,6 +23,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['sessionMetadata', new Set(['read', 'getAgentExecutor', 'setTitle', 'update', 'setArchived', 'registerAgent'])],
   ['sessionTitleService', new Set(['generateTitle'])],
   ['sessionManager', new Set(['resume', 'restore', 'close', 'archive', 'fork', 'createChild'])],
+  ['sessionExecutionControl', new Set(['read', 'pause', 'resume', 'cancelPause'])],
   ['sessionActivityView', new Set(['state'])],
   ['sessionInteractionService', new Set(['listPending', 'respond', 'acquireConsumer', 'releaseConsumer', 'hasConsumer', 'isRecentlyResolved'])],
   ['sessionApprovalService', new Set(['listPending', 'decide'])],

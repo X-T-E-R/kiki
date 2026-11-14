@@ -9,7 +9,7 @@
  * storage, logs, or the clipboard.
  */
 
-const LOCAL_HOST = /^(localhost|\[[0-9a-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}|[^.]+|.+\.local)$/i;
+const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 export const PAIRING_URI_PREFIX = 'kiki://pair';
 export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -20,27 +20,143 @@ export const STORE_ORIGIN_KEY = 'kiki.shell.origin';
 export const STORE_SERVERS_KEY = 'kiki.shell.servers';
 export const STORE_DEVICE_KEY = 'kiki.shell.device';
 
+function parseIpv4Octets(hostname) {
+  const parts = String(hostname ?? '').split('.');
+  if (parts.length !== 4) return null;
+  const nums = [];
+  for (const part of parts) {
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(part)) return null;
+    const n = Number(part);
+    if (n < 0 || n > 255) return null;
+    nums.push(n);
+  }
+  return nums;
+}
+
+function isValidIpv6Address(raw) {
+  const value = String(raw ?? '').toLowerCase();
+  if (value === '' || /[^0-9a-f:.]/.test(value)) return false;
+  const doubleColonParts = value.split('::');
+  if (doubleColonParts.length > 2) return false;
+  const parseSide = (side, allowEmbeddedIpv4) => {
+    if (side === '') return { ok: true, groups: 0 };
+    const tokens = side.split(':');
+    let groups = 0;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (allowEmbeddedIpv4 && i === tokens.length - 1 && token.includes('.')) {
+        if (parseIpv4Octets(token) === null) return { ok: false, groups: 0 };
+        groups += 2;
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(token)) return { ok: false, groups: 0 };
+        groups += 1;
+      }
+    }
+    return { ok: true, groups };
+  };
+  if (doubleColonParts.length === 1) {
+    const full = parseSide(doubleColonParts[0], true);
+    return full.ok && full.groups === 8;
+  }
+  const left = parseSide(doubleColonParts[0], false);
+  const right = parseSide(doubleColonParts[1], true);
+  return left.ok && right.ok && left.groups + right.groups < 8;
+}
+
+/** Validates an origin hostname (RFC 1123 domain/LAN label, strict IPv4, or bracketed IPv6). */
+export function isValidTargetHostname(hostname) {
+  const value = String(hostname ?? '');
+  if (value === '' || value.length > 255) return false;
+  if (value.startsWith('[') || value.endsWith(']')) {
+    if (!value.startsWith('[') || !value.endsWith(']')) return false;
+    return isValidIpv6Address(value.slice(1, -1));
+  }
+  if (value.length > 253 || value.startsWith('.') || value.endsWith('.')) return false;
+  if (/^[0-9.]+$/.test(value)) {
+    return parseIpv4Octets(value) !== null;
+  }
+  const labels = value.split('.');
+  for (const label of labels) {
+    if (!DNS_LABEL_PATTERN.test(label)) return false;
+  }
+  const lastLabel = labels[labels.length - 1];
+  if (/^\d+$/.test(lastLabel)) return false;
+  return true;
+}
+
+function parseRawAuthorityHost(authority) {
+  if (authority === '') return null;
+  let host;
+  let port;
+  if (authority.startsWith('[')) {
+    const match = authority.match(/^(\[[^\]]+\])(?::([^/?#]*))?$/);
+    if (!match) return null;
+    host = match[1];
+    port = match[2];
+  } else {
+    const match = authority.match(/^([^:]+)(?::([^/?#]*))?$/);
+    if (!match) return null;
+    host = match[1];
+    port = match[2];
+  }
+  if (port !== undefined) {
+    if (!/^\d{1,5}$/.test(port)) return null;
+    const portNum = Number(port);
+    if (portNum < 1 || portNum > 65535) return null;
+  }
+  if (!host.startsWith('[') && /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*$/i.test(host)) {
+    if (parseIpv4Octets(host) === null) return null;
+  }
+  return host;
+}
+
+function isLocalDefaultHost(host) {
+  if (!isValidTargetHostname(host)) return false;
+  const lower = host.toLowerCase();
+  if (lower.startsWith('[')) return true;
+  if (parseIpv4Octets(lower) !== null) return true;
+  return lower === 'localhost' || !lower.includes('.') || lower.endsWith('.local');
+}
+
 /** @returns {{ ok: true, origin: string, entry: string } | { ok: false, reason: 'empty' | 'invalid' | 'scheme' | 'credentials' }} */
 export function readTarget(raw) {
   const text = String(raw ?? '').trim();
   if (text === '') return { ok: false, reason: 'empty' };
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+  const schemeLower = hasScheme ? text.slice(0, text.indexOf(':')).toLowerCase() : '';
+  if (hasScheme && schemeLower !== 'http' && schemeLower !== 'https') {
+    return { ok: false, reason: 'scheme' };
+  }
+  const withoutScheme = hasScheme ? text.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '') : text;
+  const authority = withoutScheme.split(/[/?#]/, 1)[0];
+  if (authority.includes('@')) {
+    try {
+      const credCheck = new URL(hasScheme ? text : `http://${text}`);
+      if (credCheck.username !== '' || credCheck.password !== '') {
+        return { ok: false, reason: 'credentials' };
+      }
+    } catch {
+      return { ok: false, reason: 'invalid' };
+    }
+    return { ok: false, reason: 'invalid' };
+  }
+  const rawHost = parseRawAuthorityHost(authority);
+  if (rawHost === null) return { ok: false, reason: 'invalid' };
   let url;
   try {
     if (hasScheme) {
       url = new URL(text);
     } else {
-      const host = text.split(/[/?#]/, 1)[0].replace(/:\d+$/, '');
       // A home machine on the LAN rarely has a certificate; a named public
       // host almost always does.
-      url = new URL(`${LOCAL_HOST.test(host) ? 'http' : 'https'}://${text}`);
+      url = new URL(`${isLocalDefaultHost(rawHost) ? 'http' : 'https'}://${text}`);
     }
   } catch {
     return { ok: false, reason: 'invalid' };
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return { ok: false, reason: 'scheme' };
   if (url.username !== '' || url.password !== '') return { ok: false, reason: 'credentials' };
-  if (url.hostname === '') return { ok: false, reason: 'invalid' };
+  if (!isValidTargetHostname(url.hostname)) return { ok: false, reason: 'invalid' };
   const carriesEntry = /(?:^#|&)access=/.test(url.hash) || url.searchParams.has('token');
   return { ok: true, origin: url.origin, entry: carriesEntry ? url.href : `${url.origin}/` };
 }
@@ -77,10 +193,12 @@ export function formatPairingCodeInput(raw) {
 function normalizePairingEndpoint(raw) {
   const trimmed = String(raw ?? '').trim();
   if (!/^https?:\/\//i.test(trimmed)) return null;
+  const target = readTarget(trimmed);
+  if (!target.ok) return null;
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    if (parsed.username !== '' || parsed.password !== '' || parsed.hostname === '') return null;
+    if (parsed.username !== '' || parsed.password !== '' || !isValidTargetHostname(parsed.hostname)) return null;
     const pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
     return `${parsed.origin}${pathname}`;
   } catch {
@@ -236,20 +354,8 @@ export function readConnectInput(rawAddress, rawCode = '') {
   };
 }
 
-function parseIpv4Octets(hostname) {
-  const parts = hostname.split('.');
-  if (parts.length !== 4) return null;
-  const nums = [];
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const n = Number(part);
-    if (n < 0 || n > 255) return null;
-    nums.push(n);
-  }
-  return nums;
-}
-
 function isVpnHost(hostname) {
+  if (!isValidTargetHostname(hostname)) return false;
   const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
   if (lower.endsWith('.ts.net') || lower.endsWith('.tailscale.net')) return true;
   if (lower.startsWith('fd7a:115c:a1e0:')) return true;
@@ -261,9 +367,10 @@ function isVpnHost(hostname) {
 }
 
 function isLanHost(hostname) {
+  if (!isValidTargetHostname(hostname)) return false;
   const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
   if (lower === 'localhost' || lower === '::1' || lower.endsWith('.local') || !lower.includes('.')) {
-    if (!lower.includes(':')) return true;
+    if (!lower.includes(':') && parseIpv4Octets(lower) === null) return true;
   }
   if (lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) {
     return !lower.startsWith('fd7a:115c:a1e0:');
@@ -281,25 +388,23 @@ function isLanHost(hostname) {
 
 /**
  * Classifies a server origin or raw input into its transport layer:
- * `'lan'` (local network), `'vpn'` (Tailscale / CGNAT mesh), `'https'`, or `'http'`.
+ * `'lan'` (local network), `'vpn'` (Tailscale / CGNAT mesh), `'https'`, `'http'`, or `'invalid'`.
  */
 export function classifyOrigin(rawOrOrigin) {
   const target = readTarget(rawOrOrigin);
-  const resolved = target.ok ? target.origin : String(rawOrOrigin ?? '').trim();
-  try {
-    const url = new URL(resolved);
-    const protocol = url.protocol === 'https:' ? 'https' : 'http';
-    const hostname = url.hostname;
-    if (isVpnHost(hostname)) {
-      return { layer: 'vpn', protocol, host: url.host };
-    }
-    if (isLanHost(hostname)) {
-      return { layer: 'lan', protocol, host: url.host };
-    }
-    return { layer: protocol === 'https' ? 'https' : 'http', protocol, host: url.host };
-  } catch {
-    return { layer: 'lan', protocol: 'http', host: resolved };
+  if (!target.ok) {
+    return { layer: 'invalid', protocol: 'http', host: '' };
   }
+  const url = new URL(target.origin);
+  const protocol = url.protocol === 'https:' ? 'https' : 'http';
+  const hostname = url.hostname;
+  if (isVpnHost(hostname)) {
+    return { layer: 'vpn', protocol, host: url.host };
+  }
+  if (isLanHost(hostname)) {
+    return { layer: 'lan', protocol, host: url.host };
+  }
+  return { layer: protocol === 'https' ? 'https' : 'http', protocol, host: url.host };
 }
 
 function randomUuid() {

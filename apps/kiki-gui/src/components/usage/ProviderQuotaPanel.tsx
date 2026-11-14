@@ -25,6 +25,8 @@ import {
   type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource, type ProviderQuotaStatus,
 } from '../../lib/providerQuota';
 
+import { isPeerConnectionSource } from '../../lib/peerAccess';
+
 const ENGINE_HEALTH: Record<EngineHealth, { readonly key: I18nKey; readonly dot: string }> = {
   ready: { key: 'st.engines.statusReady', dot: 'bg-success' },
   warning: { key: 'st.engines.statusWarning', dot: 'bg-amber-ink' },
@@ -45,7 +47,7 @@ const ICON_BUTTON = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 r
  */
 export function ProviderQuotaPanel() {
   const { t, time, locale } = useI18n();
-  const { client, scopeId, meta } = useConnection();
+  const { client, scopeId, meta, connectionSource } = useConnection();
   const queryClient = useQueryClient();
   const { snapshot, loading, isError, stale, refetch, isRefetching, refreshSource, refreshingSourceId, setSourceEnabled } = useProviderQuotas();
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
@@ -55,7 +57,7 @@ export function ProviderQuotaPanel() {
   const harnessQuotaQuery = useQuery({
     queryKey: pluginQuotaKey,
     queryFn: ({ signal }) => readCachedHarnessQuota(client.klient?.rest?.harnessQuota, signal),
-    enabled: client.klient?.rest?.harnessQuota !== undefined,
+    enabled: client.klient?.rest?.harnessQuota !== undefined && !isPeerConnectionSource(connectionSource),
     refetchOnWindowFocus: false,
     retry: false,
   });

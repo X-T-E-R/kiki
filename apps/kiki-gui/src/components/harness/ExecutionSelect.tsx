@@ -30,6 +30,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import { externalClientsFacade } from '../../lib/externalClients';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { mapExecutorCapabilities, type ExecutorCapabilityPresentation } from '../../lib/executorCapabilities';
 import { useNow } from '../RelativeTime';
 import { useOptionalConnection } from '../../state/connection';
@@ -271,7 +272,7 @@ export function ExecutionSelect({
     queryFn: () => extFacade!.list(),
     staleTime: 15_000,
     retry: false,
-    enabled: extFacade !== undefined,
+    enabled: extFacade !== undefined && !isPeerConnectionSource(optConnection?.connectionSource),
   });
   const externalConnections = extClientsQuery.data?.connections ?? [];
 

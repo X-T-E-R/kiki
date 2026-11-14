@@ -341,7 +341,7 @@ function cachePersistedAgentProfile(
 
 function persistedMetadataKey(metadata: AgentMeta | undefined): string {
   return JSON.stringify([
-    subagentProfileName(metadata),
+    metadataProfileName(metadata),
     metadata?.execution,
     metadata?.model,
     metadata?.thinkingEffort,
@@ -351,12 +351,17 @@ function persistedMetadataKey(metadata: AgentMeta | undefined): string {
   ]);
 }
 
+function metadataProfileName(metadata: AgentMeta | undefined): string | undefined {
+  return subagentProfileName(metadata)
+    ?? (metadata?.type === 'main' && metadata.displayName !== '' ? metadata.displayName : undefined);
+}
+
 function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfileSnapshot | undefined {
   if (metadata === undefined) return undefined;
   return {
     source: 'metadata',
     execution: metadata.execution,
-    profileName: subagentProfileName(metadata),
+    profileName: metadataProfileName(metadata),
     modelAlias: metadata.model,
     thinkingLevel: metadata.thinkingEffort,
     thinkingEffortExplicit: metadata.thinkingEffortExplicit,

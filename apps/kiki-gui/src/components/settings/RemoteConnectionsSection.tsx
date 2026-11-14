@@ -16,6 +16,7 @@ import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   browsableRemote, connectionAddress, connectionsApi, fingerprint, hasGuiPurpose,
   remoteConnectionKeys, remoteSummaryView, useRemoteConnections,
@@ -48,10 +49,10 @@ import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
 
 export function RemoteConnectionsSection() {
   const host = useHost();
-  const { client, localClient, connectionId, sshLabel, activateSshProfile } = useConnection();
+  const { client, localClient, connectionId, sshLabel, connectionSource, activateSshProfile } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
   const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const connections = useRemoteConnections(control);
   const threadBridges = useThreadBridges(control);
@@ -144,7 +145,11 @@ export function RemoteConnectionsSection() {
       )}>
       <div className="space-y-4" data-remote-connections>
         {connections.isLoading ? <Hint>{t('st.remote.loading')}</Hint> : null}
-        {connections.isError ? <InlineError error={connections.error} /> : null}
+        {connections.isError ? (
+          isLocalOwnerRequiredError(connections.error)
+            ? <Hint>{t('st.remote.controlUnavailable')}</Hint>
+            : <InlineError error={connections.error} />
+        ) : null}
 
         {connections.isSuccess && records.length === 0 && sshProfiles.length === 0 ? (
           <p className="text-[13px] text-ink-soft" data-remote-empty>{t('st.remote.emptyLine')}</p>
@@ -164,7 +169,7 @@ export function RemoteConnectionsSection() {
                   record={record}
                   busy={busyId === record.id}
                   threadFact={threadFact}
-                  onEnter={() => { enterRemoteSpace(record.id, record.label); }}
+                  onEnter={() => { void enterRemoteSpace(record.id, record.label); }}
                   onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }}
                 />
               );

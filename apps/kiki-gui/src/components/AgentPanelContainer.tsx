@@ -250,13 +250,16 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   }, [controller, agentId, readsTodos]);
   const todoCoverage = agentState?.globalCoverage?.todos;
   const todoEntitiesFailed = agentState?.detailLoads['entities:todo']?.status === 'error';
+  const coldTodoUnchecked = agentState?.todoRead === undefined &&
+    agentState?.historyRead?.source === 'cold' &&
+    agentState.historyRead.readiness !== 'ready';
   useEffect(() => {
     // A failed entity page stays on its retry button. Selecting the agent
     // must not start that read, or the next agent's retry is blamed for it.
-    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore && !todoEntitiesFailed) {
+    if (readsTodos && agentState?.loaded && (todoCoverage?.hasMore || coldTodoUnchecked) && !todoEntitiesFailed) {
       void controller?.loadTranscriptEntities(agentId, 'todo');
     }
-  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, todoEntitiesFailed]);
+  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, coldTodoUnchecked, todoEntitiesFailed]);
   const todoRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
   const todoReadFailed = todoRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
     todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';

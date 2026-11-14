@@ -5,6 +5,7 @@ import type { ImSessionSnapshot } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { useOptionalConnection } from '../../state/connection';
 import { FeedbackLine } from '../controls';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
@@ -75,8 +76,11 @@ function tabLabelKey(tab: NotifySubTab): I18nKey {
  */
 export function NotificationsSection() {
   const { t, locale } = useI18n();
-  const connectionId = useOptionalConnection()?.connectionId;
-  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const optConnection = useOptionalConnection();
+  const connectionId = optConnection?.connectionId;
+  const inPairedSpace =
+    (typeof connectionId === 'string' && connectionId !== '') ||
+    isPeerConnectionSource(optConnection?.connectionSource);
   const queryClient = useQueryClient();
   const { settings, providers } = useNotificationData(!inPairedSpace);
   const { hash, search } = useLocation();

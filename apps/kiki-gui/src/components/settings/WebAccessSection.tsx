@@ -33,6 +33,7 @@ import { useHost } from '../../host';
 import { ExternalLink } from '../../host/ExternalLink';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import { connectionAddress, hasGuiPurpose, useRemoteConnections } from '../../lib/remoteConnections';
 import {
   addressDraftFromStatus,
@@ -143,7 +144,7 @@ export function WebAccessSection() {
   const webGuest = connectionSource === 'web-cookie';
   // Only this machine's own server can hand out an entry link. A remote space
   // has its own; opening it from here would be configuring somebody else's.
-  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel);
+  const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
   const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useWebAccessStatus(control);
   const remoteConnections = useRemoteConnections(control);
@@ -250,7 +251,11 @@ export function WebAccessSection() {
     <SectionCard id="st-card-web-access" title={t('st.web.title')} scope="server" aside={t('st.web.hint')}>
       <div className="space-y-3" data-web-access>
         {control === null ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
-        {status.isError ? <InlineError error={status.error} /> : null}
+        {status.isError ? (
+          isLocalOwnerRequiredError(status.error)
+            ? <Hint>{t('st.remote.controlUnavailable')}</Hint>
+            : <InlineError error={status.error} />
+        ) : null}
 
         {state !== undefined ? (
           state.enabled ? (

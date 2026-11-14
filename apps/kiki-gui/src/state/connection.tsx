@@ -33,6 +33,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen';
 import { useHost } from '../host';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../lib/peerAccess';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
 import { mergeSessionWorkChanged, patchSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
@@ -1132,16 +1133,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const connected = config !== null && meta !== null && client !== null;
 
   useEffect(() => {
-    if (!connected || client === null) return;
+    if (!connected || client === null || isPeerConnectionSource(selection?.source)) return;
+    let interval: number | undefined;
     const renew = () => {
-      void client.renewLease({ clientId: leaseClientIdRef.current, kind: 'gui' }).catch(() => undefined);
+      void client.renewLease({ clientId: leaseClientIdRef.current, kind: 'gui' }).catch((error: unknown) => {
+        if (isLocalOwnerRequiredError(error) && interval !== undefined) {
+          window.clearInterval(interval);
+          interval = undefined;
+        }
+      });
     };
     renew();
-    const interval = window.setInterval(renew, GUI_LEASE_INTERVAL_MS);
+    interval = window.setInterval(renew, GUI_LEASE_INTERVAL_MS);
     return () => {
-      window.clearInterval(interval);
+      if (interval !== undefined) window.clearInterval(interval);
     };
-  }, [client, connected]);
+  }, [client, connected, selection?.source]);
 
   useEffect(() => {
     if (!connected || selection?.source !== 'ssh' || !host.connection.sshTunnelRunning) return;

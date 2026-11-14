@@ -15,8 +15,8 @@ import type { RemoteConnection } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { useHost } from '../../host';
 import { useConnection } from '../../state/connection';
-import { useRemoteConnections } from '../../lib/remoteConnections';
-import { remoteSpaceScope } from '../../lib/remoteConnections';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
+import { remoteSpaceScope, useRemoteConnections } from '../../lib/remoteConnections';
 import { requestScopeNavigation } from '../../lib/navScope';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
@@ -43,7 +43,7 @@ export function browsableSourceSpace(
 export function BridgedOriginRow({ block }: { block: UserBlock }) {
   const { client, localClient, connectionSource } = useConnection();
   const enter = useBridgedSourceEntry();
-  const controlClient = localClient ?? (connectionSource === 'remote' || connectionSource === 'ssh' ? null : client);
+  const controlClient = localClient ?? (isPeerConnectionSource(connectionSource) || connectionSource === 'ssh' ? null : client);
   const records = useRemoteConnections(controlClient).data;
   return <BridgedOriginLine block={block} records={records} onOpen={enter} />;
 }

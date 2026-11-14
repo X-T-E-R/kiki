@@ -31,6 +31,7 @@ import {
 import { shortcutConflictSchema, type ShortcutResponse } from '@kiki/protocol';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   applyShortcutPreferences,
   beginShortcutRecording,
@@ -161,9 +162,10 @@ export function serverConflictText(
 }
 
 export function ShortcutsSection() {
-  const { client, localClient, connectionId } = useConnection();
+  const { client, localClient, connectionId, connectionSource } = useConnection();
   const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
   const targetClient = inPairedSpace ? localClient : client;
+  const readOnlyPeer = !inPairedSpace && isPeerConnectionSource(connectionSource) && localClient === null;
   const { t, locale } = useI18n();
   const host = useHost();
   const desktop = host.kind === 'tauri';
@@ -313,13 +315,17 @@ export function ShortcutsSection() {
               {t('st.shortcuts.otherPlatform', { name: PLATFORM_LABEL[platform] })}
             </p>
           ) : null}
-          {targetClient === null ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
+          {targetClient === null || readOnlyPeer ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
           {targetClient !== null && query.isLoading ? <Hint>{t('st.shortcuts.loading')}</Hint> : null}
           {targetClient !== null && query.isError ? (
-            <div className="space-y-1">
-              <InlineError error={query.error} />
-              <Hint>{t('st.shortcuts.loadFailed')}</Hint>
-            </div>
+            isLocalOwnerRequiredError(query.error) ? (
+              <Hint>{t('st.remote.controlUnavailable')}</Hint>
+            ) : (
+              <div className="space-y-1">
+                <InlineError error={query.error} />
+                <Hint>{t('st.shortcuts.loadFailed')}</Hint>
+              </div>
+            )
           ) : null}
           {bindings !== undefined ? grouped.map((group) => (
             <div key={group.context} data-shortcut-group={group.context}>
@@ -333,22 +339,28 @@ export function ShortcutsSection() {
                     chords={bindings[definition.id] ?? []}
                     overridden={overridden(definition.id)}
                     desktop={desktop}
+                    readOnly={readOnlyPeer}
                     busy={saving}
                     recordingIndex={recording?.action === definition.id ? recording.index : null}
                     issue={issue?.action === definition.id ? issue.text : null}
                     serverConflict={serverConflicts.some((conflict) => conflict.actions.includes(definition.id))}
-                    onRecord={(index) => { setIssue(null); setError(null); setRecording({ action: definition.id, index }); }}
-                    onRecorded={(chord) => { if (recording !== null) record(recording, chord); }}
+                    onRecord={(index) => {
+                      if (readOnlyPeer) return;
+                      setIssue(null);
+                      setError(null);
+                      setRecording({ action: definition.id, index });
+                    }}
+                    onRecorded={(chord) => { if (recording !== null && !readOnlyPeer) record(recording, chord); }}
                     onCancel={() => { setRecording(null); }}
-                    onRemove={(index) => { removeChord(definition.id, index); }}
-                    onReset={() => { resetAction(definition.id); }}
+                    onRemove={(index) => { if (!readOnlyPeer) removeChord(definition.id, index); }}
+                    onReset={() => { if (!readOnlyPeer) resetAction(definition.id); }}
                   />
                 ))}
               </ul>
             </div>
           )) : null}
           <FeedbackLine feedback={error} />
-          {bindings !== undefined ? (
+          {bindings !== undefined && !readOnlyPeer ? (
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <button type="button" data-shortcut-reset-all className={SECONDARY_BUTTON}
                 disabled={saving || !anyOverride} onClick={resetPlatform}>
@@ -377,7 +389,7 @@ function Keycaps({ keys }: { keys: readonly string[] }) {
 }
 
 function ShortcutRow({
-  definition, platform, chords, overridden, desktop, busy, recordingIndex, issue, serverConflict,
+  definition, platform, chords, overridden, desktop, readOnly = false, busy, recordingIndex, issue, serverConflict,
   onRecord, onRecorded, onCancel, onRemove, onReset,
 }: {
   definition: ShortcutDefinition;
@@ -385,6 +397,7 @@ function ShortcutRow({
   chords: readonly ShortcutChord[];
   overridden: boolean;
   desktop: boolean;
+  readOnly?: boolean;
   busy: boolean;
   recordingIndex: number | null;
   issue: string | null;
@@ -399,7 +412,7 @@ function ShortcutRow({
   const label = t(ACTION_LABEL[definition.id] ?? (definition.labelKey as I18nKey));
   const note = ACTION_NOTE[definition.id];
   const issueId = `shortcut-issue-${definition.id}`;
-  const canAdd = chords.length < 4 && recordingIndex === null;
+  const canAdd = !readOnly && chords.length < 4 && recordingIndex === null;
   return (
     <li data-shortcut-row={definition.id} data-shortcut-overridden={overridden ? 'true' : 'false'}
       className="flex flex-col gap-2 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
@@ -427,7 +440,7 @@ function ShortcutRow({
             onRecorded={onRecorded} onCancel={onCancel} onDisable={() => { onCancel(); onRemove(index); }} />
         ) : (
           <button key={`${chord.key}-${chord.modifier}-${index}`} type="button" data-shortcut-chord={index}
-            disabled={busy || recordingIndex !== null}
+            disabled={readOnly || busy || recordingIndex !== null}
             aria-label={t('st.shortcuts.changeAria', { action: label, keys: chordKeys(chord, platform).join('+') })}
             onClick={() => { onRecord(index); }}
             className="inline-flex min-h-8 items-center rounded-md px-1.5 transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11">
@@ -446,7 +459,7 @@ function ShortcutRow({
             <span aria-hidden className="text-[15px] leading-none">+</span>
           </button>
         ) : null}
-        {overridden ? (
+        {overridden && !readOnly ? (
           <button type="button" data-shortcut-reset disabled={busy || recordingIndex !== null} onClick={onReset}
             aria-label={t('st.shortcuts.resetAria', { action: label })}
             className="h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 pointer-coarse:h-11">

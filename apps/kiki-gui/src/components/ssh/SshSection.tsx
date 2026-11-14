@@ -24,6 +24,7 @@ import type { SshHostKeys } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   canWriteBack,
   NATIVE_SSH_FLAG,
@@ -61,8 +62,8 @@ const COPY_BUTTON =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10';
 
 export function SshSection() {
-  const { client, localClient, connectionId } = useConnection();
-  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const { client, localClient, connectionId, connectionSource } = useConnection();
+  const inPairedSpace = (typeof connectionId === 'string' && connectionId !== '') || isPeerConnectionSource(connectionSource);
   const targetClient = inPairedSpace ? localClient : client;
   const { t } = useI18n();
   const flag = useNativeSshEnabled(targetClient, inPairedSpace ? 'local-control' : undefined);

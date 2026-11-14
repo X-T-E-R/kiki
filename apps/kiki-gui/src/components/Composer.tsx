@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
+import { isPeerConnectionSource } from '../lib/peerAccess';
 import { useNavigate } from 'react-router-dom';
 
 import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, PromptSkillActivation, SessionUsageError } from '@kiki/protocol';
@@ -769,7 +770,7 @@ export function Composer({
   const { client, connectionId, connectionSource, scopeId, localClient, meta } = useConnection();
   // In a remote space the message is delivered on another machine's home, so
   // the line above the card names that home. Nothing to say in a local space.
-  const remoteControlClient = localClient ?? (connectionSource === 'remote' || connectionSource === 'ssh' ? null : client);
+  const remoteControlClient = localClient ?? (isPeerConnectionSource(connectionSource) || connectionSource === 'ssh' ? null : client);
   // Only a remote space reads the list, so a local one keeps no 8-second
   // observer on it.
   const remoteRecords = useRemoteConnections(connectionId === null ? null : remoteControlClient);

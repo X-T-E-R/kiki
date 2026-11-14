@@ -8,6 +8,7 @@ import {
 } from '@kiki/protocol';
 
 import { pushUndoToast } from '../../lib/toasts';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { useChannelsI18n as useI18n } from './channelsI18n';
 import { useOptionalConnection } from '../../state/connection';
 import { FOCUS_RING } from '../rail-variants/shell';
@@ -39,7 +40,7 @@ export interface SessionChannelsRailProps {
 
 export const SessionChannelsRail = memo(function SessionChannelsRail(props: SessionChannelsRailProps) {
   const connection = useOptionalConnection();
-  if (connection === null) return null;
+  if (connection === null || isPeerConnectionSource(connection.connectionSource)) return null;
   return <SessionChannelsRailBody key={`${connection.scopeId}:${connection.spaceKey}:${props.sessionId}`} {...props} />;
 });
 

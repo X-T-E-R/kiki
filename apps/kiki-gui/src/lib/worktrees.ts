@@ -11,6 +11,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { WorktreeInspection, WorktreeRecord, WorktreeRemovalOutcome } from '@kiki/protocol';
 
 import type { KikiClient } from './client';
+import { isPeerConnectionSource } from './peerAccess';
+import { useOptionalConnection } from '../state/connection';
 
 export type { WorktreeInspection, WorktreeRecord, WorktreeRemovalOutcome } from '@kiki/protocol';
 
@@ -97,6 +99,7 @@ export function useWorktreeAvailability(
   input: { readonly root: string | undefined; readonly remote: boolean; readonly isGit: boolean | undefined },
 ): WorktreeAvailability {
   const root = input.root;
+  const peer = isPeerConnectionSource(useOptionalConnection()?.connectionSource);
   const inspection = useQuery({
     queryKey: worktreeKeys.workspaceInspect(root ?? ''),
     queryFn: () => {
@@ -104,7 +107,7 @@ export function useWorktreeAvailability(
       if (rest === undefined) throw new Error('Workspace inspection needs an HTTP connection to the server.');
       return rest.workspaces.inspect(root!);
     },
-    enabled: root !== undefined && input.isGit === undefined && !input.remote,
+    enabled: root !== undefined && input.isGit === undefined && !input.remote && !peer,
     staleTime: 30_000,
     retry: false,
   });

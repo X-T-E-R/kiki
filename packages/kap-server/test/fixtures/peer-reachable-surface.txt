@@ -20,7 +20,10 @@ REST compact: POST /sessions/{sessionId}:compact
 REST undo: POST /sessions/{sessionId}:undo
 REST autoCompact: GET /sessions/{sessionId}/agents/{agentId}/auto-compact
 REST autoCompactUpdate: PATCH /sessions/{sessionId}/agents/{agentId}/auto-compact
+REST contextStrategy: GET /sessions/{sessionId}/agents/{agentId}/context-strategy
 REST agentHooks: GET /sessions/{sessionId}/agents/{agentId}/hooks
+REST optionalCapabilities: GET /sessions/{sessionId}/optional-capabilities
+REST optionalCapabilitiesSet: POST /sessions/{sessionId}/optional-capabilities
 REST sessionProfile: POST /sessions/{sessionId}/profile
 REST personaSettings: GET /sessions/{sessionId}/persona-settings
 REST personaSettingsApply: POST /sessions/{sessionId}/persona-settings
@@ -94,11 +97,15 @@ REST plugins: GET /plugins
 REST plugin: GET /plugins/{pluginId}
 REST pluginSettings: GET /plugins/{pluginId}/settings
 REST pluginCommands: GET /plugins/commands
+REST pluginGuiSlots: GET /plugins/gui-slots
 REST pluginPanels: GET /plugins/panels
 REST pluginPanelDocument: GET /plugins/{pluginId}/panels/{panelId}/document
 REST pluginPanelBridge: POST /plugins/{pluginId}/panels/{panelId}/bridge
 REST pluginMarketplace: GET /plugins/marketplace
 REST pluginRecommendations: POST /plugins/recommendations/match
+REST outputLayerConfiguration: GET /output-layer/configuration
+REST outputLayerStream: POST /output-layer/stream
+REST guiShortcuts: GET /gui/shortcuts
 REST skins: GET /skins
 REST skin: GET /skins/{skinId}
 REST appearancePacks: GET /appearance/packs
@@ -274,6 +281,10 @@ PROCEDURE sessionBtwService.start
 PROCEDURE sessionCronService.getNextFireForTask
 PROCEDURE sessionCronService.getNextFireTime
 PROCEDURE sessionCronService.list
+PROCEDURE sessionExecutionControl.cancelPause
+PROCEDURE sessionExecutionControl.pause
+PROCEDURE sessionExecutionControl.read
+PROCEDURE sessionExecutionControl.resume
 PROCEDURE sessionIndex.count
 PROCEDURE sessionIndex.get
 PROCEDURE sessionIndex.listRecent

@@ -3520,6 +3520,11 @@ export class SessionController {
 
   private todoPageWins(agentId: string, current: TranscriptTodo | undefined, todo: TranscriptTodo, read: TranscriptRead | undefined): boolean {
     if (current === undefined) return true;
+    if (todo.todoId === 'todo' && read?.stale === undefined &&
+        current.notes === undefined && current.notesMeta === undefined && current.notesStatus === undefined &&
+        (todo.notes !== undefined || todo.notesMeta !== undefined || todo.notesStatus !== undefined)) {
+      return true;
+    }
     if (todo.todoId !== 'todo' || read?.readiness !== 'ready' || read.stale !== undefined ||
         todo.notesStatus !== undefined || todo.contentRefs?.some((ref) => ref.path[0] !== 'items') === true ||
         todo.notesMeta === undefined || todo.notesMeta.rev <= (current.notesMeta?.rev ?? -1)) return false;
@@ -3591,6 +3596,8 @@ export class SessionController {
         if (applied.accepted.some((op) => op.op === 'todo.upsert' && op.todo.todoId === 'todo')) {
           if (page.read === undefined) this.timeline(agentId).todoRead = undefined;
           else this.timeline(agentId).todoRead = page.read;
+        } else if (page.kind === 'todo' && !page.has_more && page.items.length === 0 && store.getTodo('todo') === undefined && page.read !== undefined) {
+          this.timeline(agentId).todoRead = page.read;
         }
         this.entityPageCursors.set(requestKey, page.has_more ? page.next_cursor ?? null : null);
         const snapshot = store.snapshot();

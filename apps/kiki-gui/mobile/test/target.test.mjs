@@ -23,6 +23,7 @@ import {
   formatPairingCodeInput,
   formatPairingUri,
   isServerOriginVerified,
+  isValidTargetHostname,
   normalizePairingCode,
   openVerifiedServerNavigation,
   parsePairingUri,
@@ -78,10 +79,48 @@ await test('a plain path is not treated as an entry link', () => {
 
 await test('other schemes, credentials and junk are refused', () => {
   assert.deepEqual(readTarget(''), { ok: false, reason: 'empty' });
+  assert.deepEqual(readTarget('   '), { ok: false, reason: 'empty' });
   assert.deepEqual(readTarget('file:///etc/hosts'), { ok: false, reason: 'scheme' });
   assert.deepEqual(readTarget('javascript://x'), { ok: false, reason: 'scheme' });
   assert.deepEqual(readTarget('http://user:pw@example.test'), { ok: false, reason: 'credentials' });
   assert.deepEqual(readTarget('http://'), { ok: false, reason: 'invalid' });
+  for (const invalid of [
+    '*',
+    'http://*',
+    'https://*:5494',
+    '*.example.test',
+    'http://*.example.test:5494',
+    'bad_host',
+    'http://bad_host:5494',
+    'my_pc.local:5494',
+    '-bad.local',
+    'bad-.local',
+    '.example.test',
+    'example.test.',
+    'a..b.test',
+    '999.1.1.1',
+    '999.1.1.1:5494',
+    '192.168.1',
+    '192.168.1:5494',
+    '1.2.3.4.5',
+    '192.168.01.1',
+    '12345',
+    '0x7f.0.0.1',
+    '192.168.1.5:0',
+    '192.168.1.5:70000',
+  ]) {
+    assert.deepEqual(readTarget(invalid), { ok: false, reason: 'invalid' }, `expected invalid target for ${invalid}`);
+    assert.deepEqual(readConnectInput(invalid, ''), { ok: false, reason: 'invalid' }, `expected invalid connect input for ${invalid}`);
+    assert.equal(classifyOrigin(invalid).layer, 'invalid', `expected invalid layer for ${invalid}`);
+  }
+  assert.equal(parsePairingUri('kiki://pair?endpoint=http%3A%2F%2F*&code=2345-6789'), null);
+  assert.throws(() => formatPairingUri({ endpoint: 'http://*', code: '2345-6789' }));
+  for (const validHost of ['localhost', 'my-pc', 'desktop-01', 'studio.local', '192.168.1.5', '[::1]', '[fe80::1]', '[fd7a:115c:a1e0::1]', 'kiki.example.test']) {
+    assert.equal(isValidTargetHostname(validHost), true, `expected valid hostname for ${validHost}`);
+  }
+  assert.deepEqual(readTarget('my-pc:5494'), { ok: true, origin: 'http://my-pc:5494', entry: 'http://my-pc:5494/' });
+  assert.deepEqual(readTarget('[::1]:5494'), { ok: true, origin: 'http://[::1]:5494', entry: 'http://[::1]:5494/' });
+  assert.deepEqual(classifyOrigin('[fd7a:115c:a1e0::1]:5494'), { layer: 'vpn', protocol: 'http', host: '[fd7a:115c:a1e0::1]:5494' });
 });
 
 await test('display text drops the https scheme and marks plain http', () => {
@@ -3356,7 +3395,7 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
             if (method === 'probe') {
               window.__probeCalls.push(payload);
               if (window.__holdProbe) {
-                return await new Promise((resolve) => {
+                return new Promise((resolve) => {
                   window.__pendingProbeResolvers.push(resolve);
                 });
               }
@@ -3378,7 +3417,7 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
             }
             if (method === 'open') {
               if (window.__holdNativeOpen) {
-                return await new Promise((resolve) => {
+                return new Promise((resolve) => {
                   window.__pendingOpenResolvers.push({ payload, resolve });
                 });
               }
@@ -3553,6 +3592,23 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       });
       await unreachablePairedPage.waitForTimeout(200);
       assert.equal(await unreachablePairedPage.evaluate(() => document.querySelector('#view-computers').hidden), false);
+      const chromiumWildcardResult = await unreachablePairedPage.evaluate(async () => {
+        const mod = await import('/target.js');
+        return {
+          star: mod.readTarget('*'),
+          httpStar: mod.readTarget('http://*'),
+          connectStar: mod.readConnectInput('*', ''),
+          classifyStar: mod.classifyOrigin('*'),
+          shortIpv4: mod.readTarget('192.168.1'),
+          lanPc: mod.readTarget('my-pc:5494'),
+        };
+      });
+      assert.deepEqual(chromiumWildcardResult.star, { ok: false, reason: 'invalid' });
+      assert.deepEqual(chromiumWildcardResult.httpStar, { ok: false, reason: 'invalid' });
+      assert.deepEqual(chromiumWildcardResult.connectStar, { ok: false, reason: 'invalid' });
+      assert.deepEqual(chromiumWildcardResult.classifyStar, { layer: 'invalid', protocol: 'http', host: '' });
+      assert.deepEqual(chromiumWildcardResult.shortIpv4, { ok: false, reason: 'invalid' });
+      assert.deepEqual(chromiumWildcardResult.lanPc, { ok: true, origin: 'http://my-pc:5494', entry: 'http://my-pc:5494/' });
       await unreachablePairedPage.close();
     } finally {
       await darkCtx.close();

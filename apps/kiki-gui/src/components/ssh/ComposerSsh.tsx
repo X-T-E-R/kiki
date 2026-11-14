@@ -32,6 +32,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   sshApi,
   sshKeys,
@@ -77,12 +78,13 @@ export interface ComposerSsh {
 }
 
 export function useComposerSsh(sessionId: string | undefined, enabled: boolean): ComposerSsh {
-  const { client } = useConnection();
+  const { client, connectionSource } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const flag = useNativeSshEnabled(client);
-  const available = enabled && flag.enabled === true && client.klient.rest !== undefined;
+  const peer = isPeerConnectionSource(connectionSource);
+  const flag = useNativeSshEnabled(peer ? null : client);
+  const available = enabled && !peer && flag.enabled === true && client.klient.rest !== undefined;
   const hostsQuery = useSshHosts(client, available);
   const sessionQuery = useSessionSshHosts(client, sessionId, available);
   // Join/leave flights keyed by the session that started them. The resident

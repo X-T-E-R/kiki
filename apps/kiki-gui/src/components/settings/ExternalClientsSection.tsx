@@ -37,6 +37,7 @@ import {
   type ExternalMemoryScope,
 } from '../../lib/externalClients';
 import { PERMISSION_MODES, permissionModeDef } from '../../lib/permissionModes';
+import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
@@ -888,8 +889,8 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
 
 export function ExternalClientsSection() {
   const { t, locale } = useI18n();
-  const { client, localClient, connectionId } = useConnection();
-  const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
+  const { client, localClient, connectionId, connectionSource } = useConnection();
+  const inPairedSpace = (typeof connectionId === 'string' && connectionId !== '') || isPeerConnectionSource(connectionSource);
   const targetClient = inPairedSpace ? localClient : client;
   const api = useMemo(() => (targetClient === null ? undefined : externalClientsFacade(targetClient.klient)), [targetClient]);
   const queryClient = useQueryClient();
@@ -932,11 +933,15 @@ export function ExternalClientsSection() {
           </div>
         ) : null}
         {listQuery.isError ? (
-          <div role="alert" data-xc-load-error className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
-            <p className="text-[12px] leading-4 text-ink-soft">
-              {t('st.xc.error.load', { reason: errorText(locale, listQuery.error) })}
-            </p>
-          </div>
+          isLocalOwnerRequiredError(listQuery.error) ? (
+            <Hint>{t('st.remote.controlUnavailable')}</Hint>
+          ) : (
+            <div role="alert" data-xc-load-error className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
+              <p className="text-[12px] leading-4 text-ink-soft">
+                {t('st.xc.error.load', { reason: errorText(locale, listQuery.error) })}
+              </p>
+            </div>
+          )
         ) : null}
         {listQuery.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
         {connections.length > 0 ? (
