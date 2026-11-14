@@ -2103,6 +2103,24 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(onAttemptRetry.mock.calls).toEqual(partial ? [] : [['discard']]);
   });
 
+  it('does not discard visible assistant text when malformed_function_call follows streamed text', async () => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const error = markProviderEventError(new ChatProviderError('malformed function call'), 'antigravity_malformed_function_call');
+    attachErrorDetails(error, { upstream_retryable: false });
+    requester.request = async function* () {
+      calls.value++;
+      yield { type: 'part', part: { type: 'text', text: 'Already visible.' } };
+      throw error;
+    };
+    const { service } = createService(requester, undefined);
+    const onAttemptRetry = vi.fn();
+    await expect(service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry })).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+    expect(onAttemptRetry).not.toHaveBeenCalled();
+  });
+
   it.each(['signature', 'thinking', 'text', 'tool', 'discarded-text', 'discarded-tool'] as const)('retries a missing terminal only before substantive output: %s', async (kind) => {
     vi.useFakeTimers();
     const calls = { value: 0 };

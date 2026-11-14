@@ -6,9 +6,14 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 
 export const RETAINED_USAGE_VERSION = 1 as const;
 export const RETAINED_USAGE_SCOPE = 'store' as const;
+export const DELETED_PRIVACY_DIR = 'deleted-private-sessions' as const;
 export const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
 export const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
 export const OPERATION_USAGE_KEY = 'session-operations-v1.jsonl';
+
+export function deletedPrivacyKey(workspaceId: string, sessionId: string): string {
+  return `${Buffer.from(JSON.stringify([workspaceId, sessionId])).toString('base64url')}.json`;
+}
 
 export type OperationUsageSession = Pick<SessionSummary, 'id' | 'workspaceId' | 'createdAt' | 'updatedAt' | 'archived' | 'private'>;
 

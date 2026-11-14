@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 
 import {
   IHistoryArchive,
+  IRetainedUsageService,
   ISessionIndex,
   IThreadCommunicationService,
   type HistoryHit,
@@ -364,15 +365,20 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       planHistoryQuery(query, mode ?? 'auto');
       const toolOutputScope = includeToolOutput === true || role === 'tool';
       const sessionIndex = getCore().accessor.get(ISessionIndex);
-      if (peer === true && role!=='record') return peerSearch(getCore().accessor.get(IThreadCommunicationService), sessionIndex, {
-        query, mode, workspaceId, sessionId, includeToolOutput: toolOutputScope, role, after, before, pageSize, pageToken, signal,
-      });
+      if (peer === true && role!=='record') {
+        let retainedUsage: IRetainedUsageService | undefined;
+        try { retainedUsage = getCore().accessor.get(IRetainedUsageService); } catch { retainedUsage = undefined; }
+        return peerSearch(getCore().accessor.get(IThreadCommunicationService), sessionIndex, retainedUsage, {
+          query, mode, workspaceId, sessionId, includeToolOutput: toolOutputScope, role, after, before, pageSize, pageToken, signal,
+        });
+      }
       let unavailablePage: HistorySearchPage | undefined;
       const summary=sessionId===undefined?undefined:await sessionIndex.get(sessionId);
       const externalMaterials=summary?.custom?.['externalClient']!==undefined||summary?.custom?.['externalSource']!==undefined;
       const continueTranscript = getNavigation !== undefined && sessionId !== undefined && agentId !== undefined &&
         isTranscriptSearchCursor(pageToken);
-      const useIndex = source !== 'transcript' && role !== 'record' && !externalMaterials && !continueTranscript;
+      const useIndex = source !== 'transcript' && role !== 'record' && !externalMaterials && !continueTranscript &&
+        summary?.private !== true;
       const indexedPhrases = useIndex && sessionId === undefined &&
         (mode === 'auto' || mode === 'all' || mode === 'any');
       if (useIndex && (indexedPhrases || mode === 'terms' || mode === 'literal')) {
@@ -489,11 +495,16 @@ async function withoutPrivateSessions(page: HistorySearchPage, sessions: ISessio
   return items.length === page.items.length ? page : { ...page, items };
 }
 
-async function peerSearch(service: IThreadCommunicationService, sessions: ISessionIndex, input: FallbackInput & {
-  readonly workspaceId: string;
-  readonly pageToken?: string;
-  readonly signal?: AbortSignal;
-}): Promise<HistorySearchPage> {
+async function peerSearch(
+  service: IThreadCommunicationService,
+  sessions: ISessionIndex,
+  retainedUsage: IRetainedUsageService | undefined,
+  input: FallbackInput & {
+    readonly workspaceId: string;
+    readonly pageToken?: string;
+    readonly signal?: AbortSignal;
+  },
+): Promise<HistorySearchPage> {
   const plan = planHistoryQuery(input.query, input.mode ?? 'auto');
   const items: HistoryHit[] = [];
   let cursor = input.pageToken;
@@ -502,13 +513,18 @@ async function peerSearch(service: IThreadCommunicationService, sessions: ISessi
   let more = false;
   let preparing = false;
   const privateEndpoints = new Map<string, boolean>();
+  let deletedPrivate: Set<string> | undefined;
   const isPrivate = async (ref: { readonly hostId: string; readonly workspaceId: string; readonly sessionId: string }): Promise<boolean> => {
     if (ref.hostId !== service.hostId) return false;
     const key = `${ref.workspaceId}\0${ref.sessionId}`;
     const known = privateEndpoints.get(key);
     if (known !== undefined) return known;
     const summary = await sessions.get(ref.sessionId, ref.workspaceId);
-    const value = summary?.private === true;
+    let value = summary?.private === true;
+    if (!value && summary === undefined && retainedUsage !== undefined) {
+      deletedPrivate ??= new Set((await retainedUsage.privateSessions(input.signal)).map((item) => `${item.workspaceId}\0${item.id}`));
+      value = deletedPrivate.has(key);
+    }
     privateEndpoints.set(key, value);
     return value;
   };

@@ -26,6 +26,7 @@ import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { DELETED_PRIVACY_DIR, RETAINED_USAGE_SCOPE, deletedPrivacyKey } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager, type ISessionManager as SessionManager } from '#/app/sessionManager/sessionManager';
 import {
   IThreadCommunicationService,
@@ -1226,12 +1227,18 @@ describe('ThreadCommunicationService', () => {
     expect(own.threads.map((thread) => thread.ref.sessionId)).toContain('private-a');
   });
 
-  it('drops peer message history whenever either local endpoint is private', async () => {
+  it('drops peer message history whenever either local endpoint is private or a deleted private session', async () => {
     ix.stub(ISessionIndex, {
-      get: async (id: string) => ({ ...summary(id, 'workspace-a', 1), private: id.startsWith('private-') }),
+      get: async (id: string) => id === 'deleted-private' ? undefined : ({ ...summary(id, 'workspace-a', 1), private: id.startsWith('private-') }),
     });
+    await ix.get(IAtomicDocumentStore).set(
+      `${RETAINED_USAGE_SCOPE}/${DELETED_PRIVACY_DIR}`,
+      deletedPrivacyKey('workspace-a', 'deleted-private'),
+      { id: 'deleted-private', workspaceId: 'workspace-a' },
+    );
     const service = ix.get(IThreadCommunicationService);
     const source = ref(service.hostId, 'workspace-a', 'private-source');
+    const deletedSource = ref(service.hostId, 'workspace-a', 'deleted-private');
     const target = ref(service.hostId, 'workspace-a', 'private-target');
     const publicSource = ref(service.hostId, 'workspace-a', 'public-source');
     const publicTarget = ref(service.hostId, 'workspace-a', 'public-target');
@@ -1239,10 +1246,11 @@ describe('ThreadCommunicationService', () => {
       producer: { kind: 'peer_thread' as const, source: from }, target: to,
       content: messageId, idempotencyKey: messageId, acceptedAt: 1, targetSeq: 1 });
     const records = [message('private-source-message', source, publicTarget),
+      message('deleted-private-message', deletedSource, publicTarget),
       message('private-target-message', publicSource, target), message('public-pair-message', publicSource, publicTarget)];
     ix.stub(IThreadMailboxStore, 'readMessages', async () => ({
       items: records.map((entry, index) => ({ message: entry, delivery: 'delivered' as const, order: `${index + 1}` })),
-      history: { generation: 'generation', state: 'complete' as const, processedMessages: 3, completedShards: 1, totalShards: 1 },
+      history: { generation: 'generation', state: 'complete' as const, processedMessages: 4, completedShards: 1, totalShards: 1 },
     }));
     const page = await service.listMessages({ workspaceId: 'workspace-a' });
     expect(page.items.map((item) => item.messageId)).toEqual(['public-pair-message']);

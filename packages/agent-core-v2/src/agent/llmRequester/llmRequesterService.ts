@@ -616,6 +616,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     };
     let attemptObservedOutput = false;
     let attemptObservedSubstantiveOutput = false;
+    let attemptObservedVisibleContent = false;
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
     const run = async (
@@ -624,6 +625,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     ): Promise<AgentLLMRequestFinish> => {
       attemptObservedOutput = false;
       attemptObservedSubstantiveOutput = false;
+      attemptObservedVisibleContent = false;
       attemptStartedAt = Date.now();
       attemptTraceId = undefined;
       onRequestTrace(undefined);
@@ -749,6 +751,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             case 'attempt.discarded':
               attemptObservedOutput = false;
               attemptObservedSubstantiveOutput = false;
+              attemptObservedVisibleContent = false;
               toolCallIds.rollback();
               toolCallIds = this.toolCallIdNormalizer.beginResponse();
               onAttemptRetry?.('discard');
@@ -756,6 +759,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             case 'part':
               attemptObservedOutput ||= !isContentPart(event.part) || !isVacuousContentPart(event.part);
               attemptObservedSubstantiveOutput ||= !isContentPart(event.part) || isSubstantiveContentPart(event.part);
+              attemptObservedVisibleContent ||= isContentPart(event.part) && isSubstantiveContentPart(event.part);
               handlingPart = true;
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
               handlingPart = false;
@@ -876,7 +880,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         const retryPolicy = findRetryPolicy(retryConfig?.policies, raw, {
           model: request.model.id, provider: request.model.providerName,
         });
-        const malformedFunctionCall = source?.type === 'turn' && isRetryableMalformedFunctionCallError(error);
+        const malformedFunctionCall = source?.type === 'turn' && !attemptObservedVisibleContent && isRetryableMalformedFunctionCallError(error);
         const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
         const discardRetry = malformedFunctionCall || missingTerminal;
         if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||

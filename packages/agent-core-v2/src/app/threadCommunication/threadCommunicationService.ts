@@ -16,6 +16,7 @@ import { IInstantiationService } from '#/_base/di/instantiation';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { DELETED_PRIVACY_DIR, RETAINED_USAGE_SCOPE, deletedPrivacyKey } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import { type PeerThreadOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
@@ -281,18 +282,25 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, 'Thread not found in the requested workspace.');
       }
     }
-    const summaries = new Map<string, Promise<SessionSummary | undefined>>();
-    const endpoint = async (ref: ThreadRef): Promise<{ readonly value: ThreadMessageEndpoint; readonly private: boolean }> => {
+    const deletedPrivacyScope = `${this.bootstrap.scope(RETAINED_USAGE_SCOPE)}/${DELETED_PRIVACY_DIR}`;
+    const endpoints = new Map<string, Promise<{ readonly value: ThreadMessageEndpoint; readonly private: boolean }>>();
+    const endpoint = (ref: ThreadRef): Promise<{ readonly value: ThreadMessageEndpoint; readonly private: boolean }> => {
       const key = `${ref.hostId}\0${ref.workspaceId}\0${ref.sessionId}`;
-      let pending = summaries.get(key);
+      let pending = endpoints.get(key);
       if (pending === undefined) {
-        pending = this.sessions.get(ref.sessionId, ref.workspaceId);
-        summaries.set(key, pending);
+        pending = (async () => {
+          const summary = await this.sessions.get(ref.sessionId, ref.workspaceId);
+          const exists = ref.hostId === this.hostId && summary?.workspaceId === ref.workspaceId;
+          const deletedPrivate = !exists && ref.hostId === this.hostId &&
+            await this.documents.get(deletedPrivacyScope, deletedPrivacyKey(ref.workspaceId, ref.sessionId)) !== undefined;
+          return {
+            value: { ref, title: exists ? summary.title : undefined, deleted: !exists, archived: exists && summary.archived },
+            private: (exists && summary.private === true) || deletedPrivate,
+          };
+        })();
+        endpoints.set(key, pending);
       }
-      const summary = await pending;
-      const exists = ref.hostId === this.hostId && summary?.workspaceId === ref.workspaceId;
-      return { value: { ref, title: exists ? summary.title : undefined, deleted: !exists, archived: exists && summary.archived },
-        private: exists && summary.private === true };
+      return pending;
     };
     const group = input.sessionId !== undefined ? `session:${input.sessionId}` :
       input.workspaceId !== undefined ? `workspace:${input.workspaceId}` : 'all';

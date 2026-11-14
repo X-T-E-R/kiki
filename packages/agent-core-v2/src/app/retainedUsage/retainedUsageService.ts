@@ -23,6 +23,8 @@ import {
   IRetainedUsageService,
   RETAINED_USAGE_VERSION,
   RETAINED_USAGE_SCOPE,
+  DELETED_PRIVACY_DIR,
+  deletedPrivacyKey,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
   OPERATION_USAGE_KEY,
@@ -39,11 +41,6 @@ import {
 } from './retainedUsage';
 
 const RETAINED_READ_CHUNK_BYTES = 64 * 1024;
-const DELETED_PRIVACY_DIR = 'deleted-private-sessions';
-
-function deletedPrivacyKey(workspaceId: string, sessionId: string): string {
-  return `${Buffer.from(JSON.stringify([workspaceId, sessionId])).toString('base64url')}.json`;
-}
 
 const tokenUsageSchema = z.object({
   inputOther: z.number().finite().nonnegative(),

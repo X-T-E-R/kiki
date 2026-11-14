@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ISessionIndex, IThreadCommunicationService, type HistorySearchPage, type Scope } from '@kiki/agent-core-v2';
+import { IRetainedUsageService, ISessionIndex, IThreadCommunicationService, type HistorySearchPage, type Scope } from '@kiki/agent-core-v2';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 
@@ -53,19 +53,22 @@ describe('history archive', () => {
       indexState: { state: 'building' }, coverage: { complete: false, gaps: ['history_preparing'] } });
     expect(listMessages).toHaveBeenCalledOnce();
   });
-  it('drops peer history when either local endpoint is private', async () => {
+  it('drops peer history when either local endpoint is private or a deleted private session', async () => {
     const ref = (sessionId: string) => ({ hostId: 'local', workspaceId: 'ws-a', sessionId });
     const messages = [
       { messageId: 'private-source', source: { kind: 'thread' as const, thread: { ref: ref('private-source'), deleted: false, archived: false } },
         target: { ref: ref('public-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 1, targetSeq: 1, delivery: 'delivered' as const },
+      { messageId: 'deleted-private-source', source: { kind: 'thread' as const, thread: { ref: ref('deleted-private'), deleted: true, archived: false } },
+        target: { ref: ref('public-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 1, targetSeq: 2, delivery: 'delivered' as const },
       { messageId: 'private-target', source: { kind: 'thread' as const, thread: { ref: ref('public-source'), deleted: false, archived: false } },
         target: { ref: ref('private-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 2, targetSeq: 1, delivery: 'delivered' as const },
       { messageId: 'public-pair', source: { kind: 'thread' as const, thread: { ref: ref('public-source'), deleted: false, archived: false } },
         target: { ref: ref('public-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 3, targetSeq: 1, delivery: 'delivered' as const },
     ];
     const service = { hostId: 'local', listMessages: vi.fn(async () => ({ items: messages, nextCursor: undefined })) };
-    const sessions = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: id.startsWith('private') })) };
-    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? sessions : id === IThreadCommunicationService ? service : undefined } } as unknown as Scope;
+    const sessions = { get: vi.fn(async (id: string) => id === 'deleted-private' ? undefined : ({ id, workspaceId: 'ws-a', private: id.startsWith('private') })) };
+    const retained = { privateSessions: vi.fn(async () => [{ id: 'deleted-private', workspaceId: 'ws-a' }]) };
+    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? sessions : id === IThreadCommunicationService ? service : id === IRetainedUsageService ? retained : undefined } } as unknown as Scope;
     const archive = historyArchiveSeed(() => core, () => ({} as TranscriptService))[0]![1] as {
       search(input: unknown): Promise<HistorySearchPage>;
     };
@@ -73,6 +76,23 @@ describe('history archive', () => {
     expect(page.items.map((item) => item.communication?.messageId)).toEqual(['public-pair']);
     expect(sessions.get).toHaveBeenCalledWith('private-source', 'ws-a');
     expect(sessions.get).toHaveBeenCalledWith('private-target', 'ws-a');
+    expect(retained.privateSessions).toHaveBeenCalledOnce();
+  });
+
+  it('routes private own-session literal and terms search through canonical transcript instead of empty global index', async () => {
+    const { transcript, search, readColdSnapshotBounded } = fixture(true);
+    const sessions = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: true })) };
+    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? sessions : { search } } } as unknown as Scope;
+    const archive = historyArchiveSeed(() => core, () => transcript)[0]![1] as {
+      search(input: unknown): Promise<HistorySearchPage>;
+    };
+    for (const mode of ['literal', 'terms'] as const) {
+      const page = await archive.search({ query: '旧回答', mode, workspaceId: 'ws-a', sessionId: 'private-self', agentId: 'main', pageSize: 5 });
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.snippet).toContain('旧回答');
+    }
+    expect(search).not.toHaveBeenCalled();
+    expect(readColdSnapshotBounded).toHaveBeenCalledTimes(2);
   });
 
   it('recovers the exact user text and tool output from persisted pre-compaction transcript', async () => {
