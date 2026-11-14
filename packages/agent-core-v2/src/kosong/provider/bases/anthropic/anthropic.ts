@@ -445,6 +445,7 @@ function convertMessage(
   message: Message,
   model: string,
   acceptedImageMimes: ReadonlySet<string>,
+  includeToolSignature: boolean,
 ): MessageParam {
   const role = message.role;
 
@@ -515,12 +516,17 @@ function convertMessage(
           throw new ChatProviderError('Tool call arguments must be valid JSON.');
         }
       }
-      blocks.push({
+      const block: ToolUseBlockParam & { signature?: string } = {
         type: 'tool_use',
         id: tc.id,
         name: tc.name,
         input: toolInput,
-      } satisfies ToolUseBlockParam);
+      };
+      const signature = tc.extras?.['anthropic_tool_signature'];
+      if (includeToolSignature && typeof signature === 'string' && signature.length > 0) {
+        block.signature = signature;
+      }
+      blocks.push(block);
     }
   }
 
@@ -741,14 +747,17 @@ class AnthropicStreamedMessage implements StreamedMessage {
             ? { type: 'think' as const, think: '', redacted: block.data }
             : { type: 'think' as const, think: '' };
           break;
-        case 'tool_use':
+        case 'tool_use': {
+          const signature: unknown = block.signature;
           yield {
             type: 'function',
             id: block.id ?? crypto.randomUUID(),
             name: block.name ?? '',
             arguments: block.input !== undefined ? JSON.stringify(block.input) : null,
+            extras: typeof signature === 'string' && signature.length > 0 ? { anthropic_tool_signature: signature } : undefined,
           } satisfies ToolCall;
           break;
+        }
       }
     }
   }
@@ -813,7 +822,8 @@ class AnthropicStreamedMessage implements StreamedMessage {
                 : { type: 'think' as const, think: '' };
               break;
             }
-            case 'tool_use':
+            case 'tool_use': {
+              const signature = (block as { signature?: unknown }).signature;
               streamed.tool = true;
               toolUseBlockIndexes.add(blockIndex);
               yield {
@@ -822,8 +832,10 @@ class AnthropicStreamedMessage implements StreamedMessage {
                 name: block.name,
                 arguments: '',
                 _streamIndex: blockIndex,
+                extras: typeof signature === 'string' && signature.length > 0 ? { anthropic_tool_signature: signature } : undefined,
               } satisfies ToolCall;
               break;
+            }
           }
         } else if (eventType === 'content_block_delta') {
           const deltaEvt = evt as unknown as RawContentBlockDeltaEvent;
@@ -847,6 +859,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
               };
               break;
             case 'signature_delta':
+              if (toolUseBlockIndexes.has(blockIndex)) break;
               if (delta.signature.length > 0) streamed.signed = true;
               yield {
                 type: 'think',
@@ -1046,14 +1059,11 @@ export class AnthropicChatProvider implements ChatProvider {
         ordinaryHistory.filter((msg) => !isToolDeclarationOnlyMessage(msg)),
         ANTHROPIC_TOOL_CALL_ID_POLICY,
       )
-        .map((msg) => convertMessage(msg, this._model, this._acceptedImageMimes))
+        .map((msg) => convertMessage(msg, this._model, this._acceptedImageMimes, this._isGemini))
         .filter(shouldKeepConvertedMessage),
       {
         isUser: (message) => message.role === 'user',
         isToolResultOnly,
-        canMerge: this._isGemini
-          ? (last, next) => isToolResultOnly(last) === isToolResultOnly(next)
-          : undefined,
         merge: (last, next) => ({
           ...last,
           content: [

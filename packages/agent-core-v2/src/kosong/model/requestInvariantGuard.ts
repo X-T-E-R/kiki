@@ -12,7 +12,7 @@ const HISTORY_KEYS = new Set([
   'prompt_cache_key', 'responseFormat', 'response_format', 'httpOptions', 'http_options', 'extraBody', 'extra_body',
   'requestOptions', 'headers', 'baseUrl', 'apiKey', 'abortSignal', 'automaticContinuation', 'continuationToken',
 ]);
-const SIGNATURE_KEYS = new Set(['encrypted', 'redacted', 'encrypted_content', 'signature', 'thoughtSignature', 'thought_signature_b64', 'extras', 'toolCalls', 'tool_calls']);
+const SIGNATURE_KEYS = new Set(['encrypted', 'redacted', 'encrypted_content', 'signature', 'thoughtSignature', 'thought_signature_b64', 'anthropic_tool_signature', 'extras', 'toolCalls', 'tool_calls']);
 const THINKING_KEYS = new Set([
   'thinking', 'reasoning', 'reasoning_effort', 'thinkingConfig', 'thinking_config', 'thinkingBudget', 'thinkingLevel',
   'context_management', 'contextManagement',
@@ -66,7 +66,8 @@ export function verifyAndApplyPreBaselinePatch(
   }
   const signed = snapshot.messages.some((message) => message.content.some((part) =>
     part.type === 'think' && ((part.encrypted?.length ?? 0) > 0 || (part.redacted?.length ?? 0) > 0)) ||
-    message.toolCalls?.some((call) => typeof call.extras?.['thought_signature_b64'] === 'string'));
+    message.toolCalls?.some((call) => typeof call.extras?.['thought_signature_b64'] === 'string' ||
+      typeof call.extras?.['anthropic_tool_signature'] === 'string'));
   const vendorFields = { ...patch.extraRequestParams, ...patch.deterministicVendorFields };
   if (signed && (patch.thinkingEffort === 'off' || (patch.thinkingEffort === undefined && options.thinking?.effort === 'off'))) {
     reject('THINKING_DISABLE_WITH_SIGNED_HISTORY', 'Signed thinking history cannot be replayed with thinking disabled.');

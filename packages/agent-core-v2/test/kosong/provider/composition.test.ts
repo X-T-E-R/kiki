@@ -2558,6 +2558,75 @@ describe('responseFormat wire encoding (per base)', () => {
   });
 });
 
+describe.each([false, true])('Anthropic tool signatures with stream=%s', (stream) => {
+  it.each(['gemini-4-carbon', 'gemini/gemini-4-argon', 'GeMiNi-4-hydrogen', 'opaque-model'])('preserves %s tool signatures through JSON history and omits them on Claude replay', async (model) => {
+    const bodies: Array<{ messages: Array<{ role: string; content: Array<{ type: string; signature?: string }> }> }> = [];
+    const signature = 'tool-signature-fixture';
+    const makeProvider = (target: string) => new AnthropicChatProvider({
+      model: target, pricingModel: target === 'opaque-model' ? 'google/gemini-4-carbon' : undefined,
+      apiKey: 'YOUR_API_KEY', stream, defaultMaxTokens: 1024,
+      clientFactory: () => new Anthropic({ apiKey: 'YOUR_API_KEY', maxRetries: 0,
+        fetch: async (input, init) => {
+          bodies.push(JSON.parse(await new Request(input, init).text()));
+          const block = { type: 'tool_use', id: 'call-signature', name: 'Read', signature, input: { path: 'fixture.txt' } };
+          if (!stream) return new Response(JSON.stringify({ ...anthropicMessageResponse(), stop_reason: 'tool_use', content: [block] }),
+            { headers: { 'content-type': 'application/json' } });
+          const events = [
+            { type: 'message_start', message: { id: 'msg-signature', usage: { input_tokens: 1, output_tokens: 0 } } },
+            { type: 'content_block_start', index: 0, content_block: { ...block, input: {} } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"fixture.txt"}' } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'not-a-thinking-block' } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } },
+            { type: 'message_stop' },
+          ];
+          return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
+            { headers: { 'content-type': 'text/event-stream' } });
+        },
+      }),
+    });
+    const history: Message[] = [{ role: 'user', content: [{ type: 'text', text: 'Read the fixture.' }], toolCalls: [] }];
+    const result = await generate(makeProvider(model), '', [], history);
+    expect(result.message.content).toEqual([]);
+    expect(result.message.toolCalls).toEqual([expect.objectContaining({
+      name: 'Read', arguments: '{"path":"fixture.txt"}', extras: { anthropic_tool_signature: signature },
+    })]);
+    const saved: Message = JSON.parse(JSON.stringify(result.message));
+    const replay = [...history, saved, { role: 'tool' as const, content: [{ type: 'text' as const, text: 'fixture data' }],
+      toolCallId: saved.toolCalls[0]!.id, toolCalls: [] }];
+    for (const target of [model, 'claude-sonnet-4-5']) {
+      await generate(makeProvider(target), '', [], replay);
+      const toolUse = bodies.at(-1)?.messages.flatMap(message => message.content).find(block => block.type === 'tool_use');
+      if (target === model) expect(toolUse?.signature).toBe(signature);
+      else expect(toolUse).not.toHaveProperty('signature');
+    }
+    expect(saved.toolCalls[0]?.extras).toEqual({ anthropic_tool_signature: signature });
+  });
+
+  it.each(['', 42, null])('ignores an invalid tool signature %s on receipt and replay', async (signature) => {
+    const provider = new AnthropicChatProvider({ model: 'gemini-4-carbon', apiKey: 'YOUR_API_KEY', stream, defaultMaxTokens: 1024,
+      clientFactory: () => new Anthropic({ apiKey: 'YOUR_API_KEY', maxRetries: 0,
+        fetch: async (input, init) => {
+          const body = JSON.parse(await new Request(input, init).text()) as { messages: Array<{ content: Array<{ type: string; signature?: unknown }> }> };
+          expect(body.messages.flatMap(message => message.content).find(block => block.type === 'tool_use')).not.toHaveProperty('signature');
+          const block = { type: 'tool_use', id: 'call-fixture', name: 'Read', input: {}, signature };
+          if (!stream) return new Response(JSON.stringify({ ...anthropicMessageResponse(), stop_reason: 'tool_use', content: [block] }),
+            { headers: { 'content-type': 'application/json' } });
+          const events = [{ type: 'message_start', message: { id: 'msg-fixture', usage: { input_tokens: 1, output_tokens: 0 } } },
+            { type: 'content_block_start', index: 0, content_block: block },
+            { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } }, { type: 'message_stop' }];
+          return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
+            { headers: { 'content-type': 'text/event-stream' } });
+        },
+      }),
+    });
+    const result = await generate(provider, '', [], [{ role: 'assistant', content: [], toolCalls: [{
+      type: 'function', id: 'call-fixture', name: 'Read', arguments: '{}', extras: { anthropic_tool_signature: signature },
+    }] }]);
+    expect(result.message.toolCalls[0]?.extras).toBeUndefined();
+  });
+});
+
 describe('Anthropic request tail structure', () => {
   const user: Message = { role: 'user', content: [{ type: 'text', text: 'go' }], toolCalls: [] };
   const thinking: Message = { role: 'assistant', content: [{ type: 'think', think: 'thought', encrypted: 'signature-fixture' }], toolCalls: [] };
@@ -2565,7 +2634,7 @@ describe('Anthropic request tail structure', () => {
   const toolCall: Message = { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'call-fixture', name: 'Read', arguments: '{}' }] };
   const toolResult: Message = { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCallId: 'call-fixture', toolCalls: [] };
 
-  it.each(['claude-sonnet-4-5', 'gemini-4-carbon', 'gemini/gemini-4-argon', 'GeMiNi-4-hydrogen', 'opaque-gemini'])('keeps tool results separate from steering only for Gemini: %s', async (model) => {
+  it.each(['claude-sonnet-4-5', 'gemini-4-carbon', 'gemini/gemini-4-argon', 'GeMiNi-4-hydrogen', 'opaque-gemini'])('merges tool results and following steering into one user turn: %s', async (model) => {
     let sent: { messages: Array<{ role: string; content: Array<{ type: string; text?: string }> }> } | undefined;
     const provider = new AnthropicChatProvider({
       model, pricingModel: model === 'opaque-gemini' ? 'google/gemini-4-carbon' : undefined,
@@ -2583,9 +2652,8 @@ describe('Anthropic request tail structure', () => {
     { role: 'user', content: [{ type: 'text', text: 'steered user message' }], toolCalls: [] },
     { role: 'system', content: [{ type: 'text', text: 'model steering' }], toolCalls: [] }];
     await drain(await provider.generate('', [], history, { maxCompletionTokens: 1024 }));
-    const gemini = model !== 'claude-sonnet-4-5';
-    expect(sent?.messages.map(message => message.role)).toEqual(gemini ? ['user', 'assistant', 'user', 'user'] : ['user', 'assistant', 'user']);
-    expect(sent?.messages[2]?.content.map(part => part.type)).toEqual(gemini ? ['tool_result', 'tool_result'] : ['tool_result', 'tool_result', 'text', 'text']);
+    expect(sent?.messages.map(message => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(sent?.messages[2]?.content.map(part => part.type)).toEqual(['tool_result', 'tool_result', 'text', 'text']);
     expect(sent?.messages.at(-1)?.content.filter(part => part.type === 'text').map(part => part.text)).toEqual(['steered user message', '<system>model steering</system>']);
   });
 
