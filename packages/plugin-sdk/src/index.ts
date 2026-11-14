@@ -1,12 +1,13 @@
+import type { Buffer } from 'node:buffer';
 import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './harness-account.js';
 import type { HarnessQuotaSourceDefinition, HarnessQuotaAdapter, PluginHarnessQuotaApi } from './harness-quota.js';
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 import type { AsrProviderDefinition, AsrProviderAdapter } from './asr.js';
 import type { PluginMessagesApi } from './messages.js';
-import type { PluginModelsApi, PluginCredentialsApi } from './models.js';
-export * from './models.js';
+import type { PluginModelsApi, PluginCredentialsApi, PluginPanelContext } from './models.js';
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
+export * from './models.js';
 
 export type * from './cordis.js';
 export * from './harness-account.js';
@@ -78,7 +79,35 @@ export interface PluginTool {
   readonly execute: (args: unknown, context: PluginExecutionContext) => Promise<{ output: string | readonly PluginContentPart[]; isError?: boolean }>;
 }
 
+export interface PluginPanelStreamSession {
+  readonly signal: AbortSignal;
+  sendBinary(chunk: Uint8Array | ArrayBuffer): boolean;
+  sendText(value: string | Record<string, unknown>): boolean;
+  close(reason?: string): void;
+  onBinary(listener: (chunk: Buffer) => void): () => void;
+  onText(listener: (text: string) => void): () => void;
+  onClose(listener: (reason?: string) => void): () => void;
+  bufferedAmount(): number;
+}
+
+export interface PluginPanelStreamContext extends PluginPanelContext {
+  readonly panelId: string;
+  readonly sessionId?: string;
+  readonly workspaceId?: string;
+  readonly signal: AbortSignal;
+}
+
+export interface PluginPanelStreamOpened {
+  readonly result: unknown;
+  readonly onBinary?: (chunk: Buffer) => void;
+  readonly onText?: (text: string) => void;
+  readonly onClose?: (reason?: string) => void;
+}
+
+export type PluginPanelStreamHandler = (stream: string, args: unknown, session: PluginPanelStreamSession, context: PluginPanelStreamContext) => unknown;
+
 export interface PluginRegistrationApi {
+  registerPanelStream?(handler: PluginPanelStreamHandler): void;
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;

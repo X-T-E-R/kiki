@@ -19,15 +19,21 @@ import type { PluginUsageTarget } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { useHost } from '../../host';
 import { openExternalUrl } from '../../host/external';
-import { bridgeBody, isPanelRequest, panelWebUrl, PANEL_CHANNEL as CHANNEL } from './pluginPanelBridge';
-export { bridgeBody } from './pluginPanelBridge';
-
 import { useI18n } from '../../i18n';
 import * as connectionState from '../../state/connection';
+import {
+  bridgeBody,
+  isPanelRequest,
+  panelWebUrl,
+  PANEL_CHANNEL as CHANNEL,
+  PluginPanelStreamBridge,
+  isPluginPanelStreamName,
+} from './pluginPanelBridge';
+import { scopeKey } from './pluginUsage';
 import { InlineError } from '../controls';
 import { Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
-import { scopeKey } from './pluginUsage';
+export { bridgeBody } from './pluginPanelBridge';
 
 export const MAX_REQUESTS_PER_WINDOW = 150;
 const RATE_WINDOW_MS = 10_000;
@@ -97,6 +103,12 @@ export function PluginPanelHost({
         ? { session_id: sessionId }
         : undefined);
   const targetKey = scopeKey(effectiveTarget);
+  const streamSessionId = sessionId !== undefined && sessionId !== ''
+    ? sessionId
+    : effectiveTarget !== undefined && 'session_id' in effectiveTarget ? effectiveTarget.session_id : undefined;
+  const streamWorkspaceId = effectiveTarget !== undefined && 'workspace_id' in effectiveTarget
+    ? effectiveTarget.workspace_id
+    : undefined;
   const scopeId =
     connection !== null && connection !== undefined && 'scopeId' in connection && typeof connection.scopeId === 'string'
       ? connection.scopeId
@@ -112,6 +124,7 @@ export function PluginPanelHost({
       : '';
   const baseOrigin = client.baseUrl || (typeof window !== 'undefined' ? window.location.origin : '');
   const documentIdentity = `${scopeId}\0${serverId}\0${baseOrigin}\0${pluginId}\0${panelId}\0${targetKey}`;
+  const streamIdentity = `${documentIdentity}\0${streamSessionId ?? ''}`;
   const resolvedClassName =
     className ??
     (variant === 'workspace'
@@ -126,9 +139,23 @@ export function PluginPanelHost({
     retry: false,
   });
 
-  const post = useCallback((message: unknown) => {
-    frameRef.current?.contentWindow?.postMessage(message, '*');
+  const post = useCallback((message: unknown, transfer?: Transferable[]) => {
+    const target = frameRef.current?.contentWindow;
+    if (target === null || target === undefined) return false;
+    if (transfer === undefined) target.postMessage(message, '*');
+    else target.postMessage(message, '*', transfer);
+    return true;
   }, []);
+  const streamBridgeRef = useRef<PluginPanelStreamBridge | null>(null);
+  streamBridgeRef.current ??= new PluginPanelStreamBridge();
+  const streamScopeRef = useRef<{ identity: string; document: object | undefined; version: number }>({
+    identity: streamIdentity,
+    document: undefined,
+    version: 0,
+  });
+  if (streamScopeRef.current.identity !== streamIdentity) {
+    streamScopeRef.current = { ...streamScopeRef.current, identity: streamIdentity, version: streamScopeRef.current.version + 1 };
+  }
 
   // Init once the frame document has loaded, and again when the pinned
   // session changes under an already-loaded panel.
@@ -153,6 +180,28 @@ export function PluginPanelHost({
         return;
       }
       recent.current.push(now);
+      if (request.method === 'plugin.openStream') {
+        if (!isPluginPanelStreamName(request.stream)) {
+          respond(false, { error: 'invalid stream' });
+          return;
+        }
+        const frameWindow = frame.contentWindow;
+        const streamScope = { ...streamScopeRef.current };
+        const isCurrent = () => frameRef.current === frame && frame.contentWindow === frameWindow
+          && streamScopeRef.current.identity === streamScope.identity
+          && streamScopeRef.current.document === streamScope.document
+          && streamScopeRef.current.version === streamScope.version;
+        void streamBridgeRef.current!.open({
+          client,
+          pluginId,
+          panelId,
+          request,
+          context: { session_id: streamSessionId, workspace_id: streamWorkspaceId },
+          isCurrent,
+          respond: (message, transfer) => isCurrent() && post(message, transfer),
+        }).catch((error: unknown) => { if (isCurrent()) respond(false, { error: errorText(locale, error) }); });
+        return;
+      }
       if (request.method === 'plugin.openExternal') {
         try {
           void openExternalUrl(host, panelWebUrl(request.url), t('common.popupBlocked'))
@@ -182,7 +231,7 @@ export function PluginPanelHost({
     };
     window.addEventListener('message', onMessage);
     return () => { window.removeEventListener('message', onMessage); };
-  }, [client, host, pluginId, panelId, sessionId, locale, post, t]);
+  }, [client, host, pluginId, panelId, sessionId, locale, post, t, streamIdentity, streamSessionId, streamWorkspaceId]);
 
   const panelDocument = documentQuery.data;
   if (panelDocument !== undefined) {
@@ -215,6 +264,23 @@ export function PluginPanelHost({
     pinnedRef.current !== null && pinnedRef.current.identity === documentIdentity
       ? pinnedRef.current
       : undefined;
+  if (streamScopeRef.current.document !== activeDocument) {
+    streamScopeRef.current = {
+      ...streamScopeRef.current,
+      document: activeDocument,
+      version: streamScopeRef.current.version + 1,
+    };
+  }
+  useEffect(() => {
+    const scope = { ...streamScopeRef.current };
+    return () => {
+      if (streamScopeRef.current.identity === scope.identity && streamScopeRef.current.document === scope.document
+        && streamScopeRef.current.version === scope.version) {
+        streamScopeRef.current = { ...scope, version: scope.version + 1 };
+      }
+      streamBridgeRef.current?.closeAll();
+    };
+  }, [streamIdentity, activeDocument]);
 
   if (activeDocument === undefined) {
     if (documentQuery.isPending) {
@@ -246,6 +312,8 @@ export function PluginPanelHost({
       referrerPolicy="no-referrer"
       onLoad={() => {
         recent.current = [];
+        streamScopeRef.current = { ...streamScopeRef.current, version: streamScopeRef.current.version + 1 };
+        streamBridgeRef.current?.closeAll();
         setLoadSeq((seq) => seq + 1);
       }}
       data-plugin-panel={`${pluginId}:${panelId}`}
