@@ -13,6 +13,7 @@ export interface SessionWireFields {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly archived: boolean;
+  readonly private?: boolean;
   readonly archivedAt?: number;
   readonly executionPhase?: 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
   readonly custom?: Record<string, unknown>;

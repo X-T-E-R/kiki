@@ -72,7 +72,9 @@ export class SqliteSearchHost {
   private readonly readerLoads = [0];
   private readonly bootSalt = randomUUID();
   private readonly pending = new Map<string, SqliteSessionInput>();
+  private readonly targeted = new Map<string, { revision: number; session?: SqliteSessionInput; sent: boolean }>();
   private inventoryRevision = 0;
+  private targetedRevision = 0;
   private inventoryToSend = false;
   private inventoryInFlight = false;
   private readonly known = new Map<string, SqliteSessionInput>();
@@ -110,13 +112,13 @@ export class SqliteSearchHost {
     const indexedSessions = this.status?.indexedSessions ?? 0;
     const totalSessions = Math.max(indexedSessions, this.known.size);
     return { state: this.reason ? 'unavailable' : this.readonlyWriter ? 'readonly' :
-      this.ready && !this.rebuilding && !this.inventoryInFlight && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
-      reason: this.reason, stale: !!this.reason || this.rebuilding || this.inventoryInFlight || this.pending.size > 0,
+      this.ready && !this.rebuilding && !this.inventoryInFlight && this.pending.size === 0 && this.targeted.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
+      reason: this.reason, stale: !!this.reason || this.rebuilding || this.inventoryInFlight || this.pending.size > 0 || this.targeted.size > 0,
       indexedSessions, totalSessions, documents: this.status?.documents ?? 0,
       retryAfterMs: this.retryAt > Date.now() ? this.retryAt - Date.now() : undefined,
       indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerHeapLimit: this.heapLimit, indexerStatus: this.status,
       dbBytes: this.dbBytes, filesPending: this.filesPending, lastBatchMs: this.lastBatchMs,
-      inflight: this.inflight, pendingSessions: this.pending.size,
+      inflight: this.inflight, pendingSessions: this.pending.size + this.targeted.size,
       queryWorkers: this.readers.length, watchdogTimeouts: this.timeouts };
   }
 
@@ -153,7 +155,34 @@ export class SqliteSearchHost {
     this.inventoryToSend = true;
     this.startIndexer();
     this.flushPending();
+    this.flushTargeted();
     this.options.onStateChange?.(this.snapshot());
+  }
+
+  syncSession(session: SqliteSessionInput): void {
+    if (this.stopped) return;
+    this.known.set(session.id, session);
+    this.pending.set(session.id, session);
+    this.targeted.set(session.id, { revision: ++this.targetedRevision, session, sent: false });
+    this.startIndexer();
+    this.flushTargeted();
+    this.options.onStateChange?.(this.snapshot());
+  }
+
+  retireSession(sessionId: string): void {
+    if (this.stopped) return;
+    this.known.delete(sessionId);
+    this.pending.delete(sessionId);
+    this.targeted.set(sessionId, { revision: ++this.targetedRevision, sent: false });
+    this.startIndexer();
+    this.flushTargeted();
+    this.options.onStateChange?.(this.snapshot());
+  }
+
+  invalidateQueryCache(): void {
+    for (const reader of this.readers) {
+      try { reader.postMessage({ type: 'invalidate' }); } catch {}
+    }
   }
 
   async reindex(sessions: readonly SqliteSessionInput[]): Promise<{ sessions: number; documents: number }> {
@@ -184,6 +213,7 @@ export class SqliteSearchHost {
     if (this.stopped || !this.child || !this.ready) throw new GlobalSearchError('index_unavailable', 'search indexer is unavailable');
     if (this.readonlyWriter) throw new GlobalSearchError('readonly_index', 'another process owns the search index');
     if (this.reindexRequest) throw new GlobalSearchError('index_unavailable', 'search reindex is already running');
+    this.targeted.clear();
     const child = this.child;
     const id = ++this.id;
     this.rebuilding = true;
@@ -209,7 +239,10 @@ export class SqliteSearchHost {
     clearTimeout(request.timer);
     if (error) request.reject(error);
     else request.resolve(result!);
-    if (!error) this.flushPending();
+    if (!error) {
+      this.flushPending();
+      this.flushTargeted();
+    }
   }
 
   private releaseQuerySlot(): void {
@@ -313,6 +346,7 @@ export class SqliteSearchHost {
         if (this.failures === 0) this.reason = undefined;
         this.retryAt = 0;
         this.flushPending();
+        this.flushTargeted();
       } else if (message.type === 'heartbeat') this.lastPong = Date.now();
       else if (message.type === 'release_reader') {
         this.reason = 'corrupt_rebuilding';
@@ -340,6 +374,12 @@ export class SqliteSearchHost {
           this.failures = 0;
           this.memoryFailures = 0;
         }
+      } else if (message.type === 'session_synced') {
+        const targeted = this.targeted.get(message.sessionId);
+        if (targeted?.revision !== message.revision) return;
+        this.targeted.delete(message.sessionId);
+        this.pending.delete(message.sessionId);
+        if (targeted.session === undefined && message.missing) this.known.delete(message.sessionId);
       } else if (message.type === 'synced') {
         if (message.revision !== this.inventoryRevision) return;
         if (this.reason === 'disk_low' || this.reason === 'indexer_backoff' ||
@@ -373,6 +413,7 @@ export class SqliteSearchHost {
         }
       }
       this.inflight = undefined;
+      for (const work of this.targeted.values()) work.sent = false;
       this.ready = false;
       if (this.reason === 'sqlite_unavailable' || this.reason === 'disk_low') {
         this.terminal = true;
@@ -419,6 +460,20 @@ export class SqliteSearchHost {
     for (let i = 0; i < Math.max(1, sessions.length); i += 1000) {
       this.child.send({ type: 'sync', revision: this.inventoryRevision, first: i === 0,
         last: i + 1000 >= sessions.length, sessions: sessions.slice(i, i + 1000) } satisfies IndexerRequest);
+    }
+  }
+
+  private flushTargeted(): void {
+    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding) return;
+    for (const [sessionId, work] of this.targeted) {
+      if (work.sent) continue;
+      const request: IndexerRequest = work.session === undefined
+        ? { type: 'retire_session', revision: work.revision, sessionId }
+        : { type: 'sync_session', revision: work.revision, session: work.session };
+      try {
+        this.child.send(request);
+        work.sent = true;
+      } catch {}
     }
   }
 

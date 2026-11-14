@@ -9,6 +9,7 @@ import { IEventService } from '#/app/event/event';
 import { UsageSettled } from '#/agent/usage/usageEvents';
 import { usageFactTotalsSchema, type UsageFact } from '#/agent/usage/usageFact';
 import { IUsageReadModel, type UsageImportProgress, type UsageReadModelSession } from '#/persistence/interface/usageReadModel';
+import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { readSessionMetadataResult } from '#/app/sessionIndex/sessionIndexSource';
 import { ILogService } from '#/_base/log/log';
@@ -38,6 +39,11 @@ import {
 } from './retainedUsage';
 
 const RETAINED_READ_CHUNK_BYTES = 64 * 1024;
+const DELETED_PRIVACY_DIR = 'deleted-private-sessions';
+
+function deletedPrivacyKey(workspaceId: string, sessionId: string): string {
+  return `${Buffer.from(JSON.stringify([workspaceId, sessionId])).toString('base64url')}.json`;
+}
 
 const tokenUsageSchema = z.object({
   inputOther: z.number().finite().nonnegative(),
@@ -196,12 +202,14 @@ export class RetainedUsageService implements IRetainedUsageService {
   private operationWrites = Promise.resolve();
   private readonly operationQueue: OperationUsageEntry[] = [];
   private operationWriter?: OperationWriter;
+  private deletedPrivacy: ReadonlyMap<string, Pick<SessionSummary, 'id' | 'workspaceId'>> | undefined;
 
   get operationWritesPending(): boolean {
     return this.operationQueue.length > 0 || (this.operationWriter?.appended.length ?? 0) > 0;
   }
 
-  recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void> {
+  async recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void> {
+    if (session.private === true || await this.isPrivateSession(session.workspaceId, session.id)) return;
     this.operationQueue.push(operationUsageSchema.parse({ version: 1, session, record }));
     return this.runOperationWrite(async () => {
       if (this.operationQueue.length === 0 && this.operationWriter === undefined) return;
@@ -211,6 +219,35 @@ export class RetainedUsageService implements IRetainedUsageService {
         this.log.warn('operation usage awaiting persistence recovery', { sessionId: session.id, agentId: record.agentId, error: error.code });
       }
     });
+  }
+
+  async privateSessions(signal?: AbortSignal): Promise<readonly Pick<SessionSummary, 'id' | 'workspaceId'>[]> {
+    const sessions = new Map((await this.model.privateSessions(signal)).map((session) => [deletedPrivacyKey(session.workspaceId, session.id), session]));
+    const scope = `${this.storeScope}/${DELETED_PRIVACY_DIR}`;
+    if (this.deletedPrivacy === undefined) {
+      const deleted = new Map<string, Pick<SessionSummary, 'id' | 'workspaceId'>>();
+      for (const key of await this.documents.list(scope)) {
+        signal?.throwIfAborted();
+        if (!key.endsWith('.json')) continue;
+        const session = await this.documents.get<Pick<SessionSummary, 'id' | 'workspaceId'>>(scope, key);
+        if (session !== undefined) deleted.set(key, session);
+      }
+      this.deletedPrivacy = deleted;
+    }
+    for (const [key, session] of this.deletedPrivacy) {
+      signal?.throwIfAborted();
+      if (!sessions.has(key)) await this.model.setSessionPrivacy(session.workspaceId, session.id, true);
+      sessions.set(key, session);
+    }
+    return [...sessions.values()];
+  }
+
+  private async isPrivateSession(workspaceId: string, sessionId: string): Promise<boolean> {
+    const meta = await readSessionMetadataResult(this.documents, this.bootstrap.scope('sessions'), workspaceId, sessionId, this.log);
+    if (meta.kind === 'error') throw meta.error;
+    if (meta.kind === 'found' && meta.meta['private'] === true) return true;
+    return (meta.kind === 'missing' && await this.documents.get(`${this.storeScope}/${DELETED_PRIVACY_DIR}`, deletedPrivacyKey(workspaceId, sessionId)) !== undefined)
+      || await this.model.isPrivateSession(workspaceId, sessionId);
   }
 
   private runOperationWrite<T>(work: () => Promise<T>): Promise<T> {
@@ -286,6 +323,7 @@ export class RetainedUsageService implements IRetainedUsageService {
   }
 
   async readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery) {
+    if (await this.isPrivateSession(workspaceId, sessionId)) return { totals: undefined, revision: undefined, complete: true };
     const progress = await this.prepareOperations(query);
     const { totals, head } = await this.model.summary(operationUsageSource(workspaceId, sessionId), query.signal);
     return { totals, revision: head?.revision, complete: progress.complete };
@@ -337,7 +375,7 @@ export class RetainedUsageService implements IRetainedUsageService {
       scannedRecords++;
       if (!parsed.success) state.damaged = true;
       const progress: UsageImportProgress = { batchStart: offset, offset, ordinal: parsed.success ? 1 : 0, parser: { ...state } };
-      const value = parsed.success ? parsed.data : undefined;
+      const value = parsed.success && !await this.isPrivateSession(parsed.data.session.workspaceId, parsed.data.session.id) ? parsed.data : undefined;
       const target = value === undefined ? undefined : operationUsageSource(value.session.workspaceId, value.session.id);
       const previous = target === undefined ? undefined : (await this.model.source(target, query.signal))?.checkpoint;
       if (!await this.model.apply({ source, expected, progress, records: value === undefined ? [] : [value.record], reset: true,
@@ -378,6 +416,7 @@ export class RetainedUsageService implements IRetainedUsageService {
 
   prepareReadModel(query: RetainedUsageListQuery, includeEphemeral = true): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
     const next = this.importing.then(async () => {
+      await this.privateSessions(query.signal);
       const deleted = await this.importLedger(RETAINED_USAGE_KEY, false, query);
       if (!deleted.complete) return deleted;
       const ephemeral = includeEphemeral ? await this.importLedger(EPHEMERAL_USAGE_KEY, true, { ...query, recordLimit: query.recordLimit - deleted.scannedRecords }) : { complete: true, scannedRecords: 0 };
@@ -486,6 +525,7 @@ export class RetainedUsageService implements IRetainedUsageService {
   }
 
   async retainEphemeralUsage(sessionScope: string, workspaceId: string): Promise<void> {
+    if ((await this.documents.get<SessionMeta>(sessionScope, 'state.json'))?.private === true) return;
     const sourceId = createHash('sha256').update(sessionScope).digest('hex');
     for await (const event of this.readEphemeralUsage()) {
       if (event.kind === 'commit' && event.sourceId === sourceId) return;
@@ -552,6 +592,14 @@ export class RetainedUsageService implements IRetainedUsageService {
     const sessionsScope = this.bootstrap.scope('sessions');
     const sessionScope = `${sessionsScope}/${summary.workspaceId}/${summary.id}`;
     const metadata = await readSessionMetadataResult(this.documents, sessionsScope, summary.workspaceId, summary.id, this.log);
+    if (metadata.kind === 'error') throw metadata.error;
+    if (summary.private === true || metadata.kind === 'found' && metadata.meta['private'] === true) {
+      const { id, workspaceId } = summary;
+      await this.documents.set(`${this.storeScope}/${DELETED_PRIVACY_DIR}`, deletedPrivacyKey(workspaceId, id), { id, workspaceId });
+      this.deletedPrivacy = undefined;
+      await this.model.setSessionPrivacy(workspaceId, id, true);
+      return { ...summary, version: RETAINED_USAGE_VERSION, deleted: true, deletedAt: Date.now(), records: [], complete: true };
+    }
     const registry = z.object({ agents: z.record(z.string(), z.unknown()) }).safeParse(metadata.kind === 'found' ? metadata.meta : undefined);
     const expectedAgents = registry.success ? Object.keys(registry.data.agents) : undefined;
     const { records, complete } = await this.readSessionRecords(sessionScope, expectedAgents);
@@ -625,8 +673,10 @@ export class RetainedUsageService implements IRetainedUsageService {
       for await (const raw of this.appendLog.read<unknown>(this.storeScope, OPERATION_USAGE_KEY, { signal, endOffset: operations.size, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (end) => { position = end; }, onTruncate: () => { operationDamaged = true; } })) {
         yield { kind: 'progress' };
         const parsed = operationUsageSchema.safeParse(raw);
-        if (parsed.success) yield { kind: 'operation', session: parsed.data.session, record: parsed.data.record, position };
-        else operationDamaged = true;
+        if (!parsed.success) operationDamaged = true;
+        else if (!await this.isPrivateSession(parsed.data.session.workspaceId, parsed.data.session.id)) {
+          yield { kind: 'operation', session: parsed.data.session, record: parsed.data.record, position };
+        }
       }
     }
     const operationsComplete = operations !== undefined && !operationDamaged && position === operations.size && await this.operationSourceUnchanged(operations);

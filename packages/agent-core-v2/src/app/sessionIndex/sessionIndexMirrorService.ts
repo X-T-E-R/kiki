@@ -68,16 +68,18 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     if (this.disposed) return;
     const enabled = this.observeReadModelFlag();
     this.mutationEpochValue += 1;
-    this.changeEmitter.fire({ id: summary.id, workspaceId: summary.workspaceId });
     if (!enabled || this.isDirty()) {
       this.markDirty();
+      this.changeEmitter.fire({ id: summary.id, workspaceId: summary.workspaceId, private: summary.private });
       return;
     }
     if (!this.pendingMap.has(summary.id) && this.pendingMap.size >= MAX_PENDING) {
       this.markDirty();
+      this.changeEmitter.fire({ id: summary.id, workspaceId: summary.workspaceId, private: summary.private });
       return;
     }
     this.pendingMap.set(summary.id, summary);
+    this.changeEmitter.fire({ id: summary.id, workspaceId: summary.workspaceId, private: summary.private });
     if (this.pendingMap.size >= FLUSH_BATCH_SIZE) {
       void this.flush();
     } else if (!this.timer.isSet()) {

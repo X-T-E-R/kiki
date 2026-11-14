@@ -8,14 +8,16 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService,
-  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager,
+  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager, IUsageReadModel,
   IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
+  IRetainedUsageService, ISessionContext, ISessionMetadata, ITelemetryService, IUsageFactStore, agentScopeOf,
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
 import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
 import { CompactionCancelled, CompactionCompleted, CompactionStarted } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
 import { GoalCreate, GoalUpdate } from '@kiki/agent-core-v2/agent/goal/goalOps';
 import { IGlobalSearchService } from '../src/search/searchService';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
 import { NotificationService } from '../src/services/notifications/notificationService';
 import { ImSessionBridge } from '../src/services/imSession/bridge';
@@ -434,6 +436,7 @@ describe('GUI shared client against an isolated KAP host', () => {
   let home: string;
   let endpoint: string;
   let hold = false;
+  let readTool = false;
   const held = new Set<ServerResponse>();
   const requests: ModelRequest[] = [];
   const responseFacts: (() => unknown)[] = [];
@@ -448,9 +451,13 @@ describe('GUI shared client against an isolated KAP host', () => {
         return;
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const tool = readTool && requests.length === 1;
+      const delta = tool ? { tool_calls: [{ index: 0, id: 'private-read', type: 'function', function: {
+        name: 'Read', arguments: JSON.stringify({ path: join(home, 'workspace', 'example.txt') }),
+      } }] } : { content: 'local model completed' };
       response.end(`data: ${JSON.stringify({
         id: 'local-response',
-        choices: [{ index: 0, delta: { content: 'local model completed' }, finish_reason: 'stop' }],
+        choices: [{ index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop' }],
         usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
       })}\n\ndata: [DONE]\n\n`);
     })();
@@ -459,6 +466,7 @@ describe('GUI shared client against an isolated KAP host', () => {
   beforeEach(async () => {
     requests.length = 0;
     hold = false;
+    readTool = false;
     provider.listen(0, '127.0.0.1');
     await once(provider, 'listening');
     const address = provider.address();
@@ -551,6 +559,59 @@ describe('GUI shared client against an isolated KAP host', () => {
     await vi.waitFor(() => expect(requests).toHaveLength(count), { timeout: 10000 });
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
   }
+
+  it('keeps private turns out of telemetry, usage, export and retained ledgers', async () => {
+    const events: string[] = [];
+    const subscription = host.core.accessor.get(ITelemetryService).addAppender({ track: (name) => { events.push(name); } });
+    try {
+      readTool = true;
+      await writeFile(join(home, 'workspace', 'example.txt'), 'Private fixture text');
+      const id = (await client.createSession({ private: true, metadata: { cwd: join(home, 'workspace') }, agent_config: { permission_mode: 'auto' } })).id;
+      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Private turn' }] });
+      await settled(id, 2);
+      expect(requests[1]?.messages.some((message) => message.role === 'tool')).toBe(true);
+      const handle = getLiveSessionById(host.core.accessor, id)!;
+      const context = handle.accessor.get(ISessionContext);
+      const main = handle.accessor.get(IAgentLifecycleService).get('main')!;
+      main.accessor.get(ITelemetryService).track('private_probe');
+      expect(events).not.toEqual(expect.arrayContaining(['private_probe']));
+      for (const event of ['session_started', 'llm_request', 'turn_completed', 'prompt_submitted', 'tool_call']) expect(events).not.toContain(event);
+      expect(handle.accessor.get(ISessionMetadata).snapshot().usage).toBeUndefined();
+      const facts = host.core.accessor.get(IUsageFactStore);
+      const scope = agentScopeOf(context.scope(), 'main');
+      expect(await facts.journalSize(scope)).toBe(0);
+      expect((await facts.read(scope)).records).toEqual([]);
+      const usage = usageRuntime(host.core).service;
+      expect((await usage.query({})).summary).toMatchObject({ session_count: 0, tokens: { input_other: 0, output: 0 } });
+      const exported: number[] = [];
+      await usage.readExportSources(async (source) => { exported.push(source.records.length); });
+      expect(exported.every((count) => count === 0)).toBe(true);
+      const manager = host.core.accessor.get(ISessionManager);
+      const fork = await manager.fork({ sourceSessionId: id });
+      const child = await manager.createChild({ sourceSessionId: id });
+      const publicFork = await manager.fork({ sourceSessionId: id, private: false });
+      expect(fork.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
+      expect(child.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
+      expect(publicFork.accessor.get(ISessionMetadata).snapshot().private).toBe(false);
+      await host.core.accessor.get(IUsageFactStore).setSessionPrivacy((await host.core.accessor.get(ISessionIndex).get(id))!);
+      await manager.close(id);
+      const indexed = await host.core.accessor.get(ISessionIndex).get(id);
+      expect(indexed?.private).toBe(true);
+      const staleIndex = vi.spyOn(host.core.accessor.get(ISessionIndex), 'get').mockResolvedValue({ ...indexed!, private: false });
+      const resumed = await manager.resume(id);
+      staleIndex.mockRestore();
+      expect(resumed?.accessor.get(ISessionContext).isPrivate?.()).toBe(true);
+      expect(resumed?.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
+      expect(await host.core.accessor.get(IUsageReadModel).isPrivateSession(indexed!.workspaceId, id)).toBe(true);
+      expect((await usage.query({})).summary).toMatchObject({ session_count: 0, tokens: { input_other: 0, output: 0 } });
+      await manager.archive(id);
+      expect((await host.core.accessor.get(ISessionIndex).get(id))?.private).toBe(true);
+      await manager.delete(id);
+      const retained = host.core.accessor.get(IRetainedUsageService);
+      expect((await retained.listDeletedSessions({ deadlineAt: Date.now() + 5_000, recordLimit: 100 })).items).toEqual([]);
+      expect((await usage.query({})).summary.session_count).toBe(0);
+    } finally { subscription.dispose(); }
+  });
 
   it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities', 'goal', 'plan', 'context-rebuild'] as const)('keeps main absent after empty session %s reads', async (read) => {
     if (read === 'mcp-capabilities') {

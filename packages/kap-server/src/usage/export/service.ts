@@ -31,6 +31,8 @@ export class UsageExportService {
   private electionTimer: NodeJS.Timeout | undefined;
   private closing = false;
   private started = false;
+  private sourceRevision = 0;
+  private readonly retiredSessions = new Set<string>();
   private recoveryFlight: Promise<void> | undefined;
   readonly vibeAuth: VibeCafeDeviceAuth;
   constructor(readonly store: UsageExportStore, private readonly reader: UsageAggregationService, private readonly pricing: IModelPricingService, private readonly secrets: UsageExportSecretStore, adapters: readonly UsageExportAdapter[], private readonly options: UsageExportServiceOptions = {}) {
@@ -97,7 +99,7 @@ export class UsageExportService {
     this.store.setMeta(`credential-cleanup:${id}`, '');
   }
   async preview(id: string): Promise<UsageExportPreview> {
-    await this.scan(); const preview = await this.store.previewAsync(id); const destination = this.store.get(id);
+    await this.scan(); await this.reconcilePrivacy(); const preview = await this.store.previewAsync(id); const destination = this.store.get(id);
     const disclosures = [
       'Only UTC half-hour model/token/quality/cost buckets are exported; no conversation, title, workspace path, profile or real hostname.',
       'The receiver can observe your IP address and usage timing. Unknown local model aliases use destination-specific opaque identifiers.',
@@ -151,10 +153,13 @@ export class UsageExportService {
   }
   async scan(force = false): Promise<void> {
     if (!this.store.writer || this.closing) return;
-    if (this.scanFlight !== undefined) { await this.scanFlight; if (!force) return; }
+    while (this.scanFlight !== undefined) { await this.scanFlight; if (!force) return; }
     const flight = (async () => {
       await this.pricing.ready;
       if (this.closing) return;
+      await this.reconcilePrivacy();
+      if (this.closing) return;
+      const sourceRevision = this.sourceRevision;
       const revision = this.pricing.pricingRevision?.() ?? null;
       if (this.scanRun !== undefined && this.scanPricingRevision !== revision) {
         await this.reader.resetExportRead();
@@ -167,8 +172,12 @@ export class UsageExportService {
       const run = this.scanRun ?? randomUUID(); this.scanRun = run;
       try {
         const includeEphemeral = this.store.list().some((destination) => destination.scope.include_ephemeral);
-        const result = await this.reader.readExportSources(async (source) => { if (this.closing) throw new Error('export-closing'); this.store.stage(run, projectSource(source, this.pricing)); }, includeEphemeral);
+        const result = await this.reader.readExportSources(async (source) => {
+          if (this.closing || sourceRevision !== this.sourceRevision) throw new Error('export-projection-changed');
+          this.store.stage(run, projectSource(source, this.pricing));
+        }, includeEphemeral);
         if (this.closing) return;
+        if (sourceRevision !== this.sourceRevision) throw new Error('export-projection-changed');
         if (!result.complete) {
           this.store.setMeta('scan-error', result.reason ?? 'scan-incomplete');
           if (result.reason === 'record_budget' || result.reason === 'deadline') {
@@ -197,12 +206,34 @@ export class UsageExportService {
     })();
     this.scanFlight = flight; try { await flight; } finally { if (this.scanFlight === flight) this.scanFlight = undefined; }
   }
+  private async reconcilePrivacy(): Promise<void> {
+    const sessions = await this.reader.privateUsageSessions();
+    if (this.closing) return;
+    if (!this.store.writer && sessions.length > 0) throw new Error('export-writer-unavailable');
+    const privateKeys = new Set(sessions.map(({ workspaceId, id }) => `${workspaceId}\0${id}`));
+    for (const key of this.retiredSessions) if (!privateKeys.has(key)) this.retiredSessions.delete(key);
+    for (const { workspaceId, id } of sessions) if (!this.retiredSessions.has(`${workspaceId}\0${id}`)) this.fenceSession(workspaceId, id);
+  }
+  private fenceSession(workspaceId: string, sessionId: string): void {
+    this.sourceRevision++;
+    for (const id of this.flights.keys()) this.controllers.get(id)?.abort();
+    this.store.retireSession(workspaceId, sessionId);
+    this.retiredSessions.add(`${workspaceId}\0${sessionId}`);
+  }
+  async retireSession(workspaceId: string, sessionId: string): Promise<void> {
+    if (!this.store.writer || this.closing) return;
+    this.fenceSession(workspaceId, sessionId);
+    await this.scan(true);
+  }
   async syncNow(id: string): Promise<UsageExportStatus> { await this.scan(); await this.deliver(id, true); return this.status(); }
   async backfill(id: string, scope: UsageExportScope): Promise<UsageExportPreview> {
     const destination = this.store.get(id); await this.saveDraft({ draft: { id, label: destination.label, target: destination.target, scope: usageExportScopeSchema.parse(scope), schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] } }); return this.preview(id);
   }
   diagnostics(): UsageExportStatus { return this.status(); }
-  exportLocal(id: string): { schema_version: 'kiki.usage.local-export.v1'; items: UsageExportItem[] } { return { schema_version: 'kiki.usage.local-export.v1', items: this.store.exportQueue(id) }; }
+  async exportLocal(id: string): Promise<{ schema_version: 'kiki.usage.local-export.v1'; items: UsageExportItem[] }> {
+    await this.reconcilePrivacy();
+    return { schema_version: 'kiki.usage.local-export.v1', items: this.store.exportQueue(id) };
+  }
   setQueueCapacity(bytes: number): UsageExportStatus { this.store.setCapacity(bytes); return this.status(); }
   clearQueue(id: string, acknowledge: boolean): UsageExportStatus { if (!acknowledge) throw new Error('clear-queue-requires-consent'); this.controllers.get(id)?.abort(); this.store.clearQueue(id); return this.status(); }
   retry(id: string): UsageExportStatus { this.store.retryQuarantined(id); this.store.setMeta(`attempt:${id}`, '0'); this.store.update(id, { state: this.store.get(id).enabled ? 'ready' : 'disabled', error_category: null, next_at: this.now() }); this.scheduleTimer(); return this.status(); }
@@ -288,6 +319,9 @@ export class UsageExportService {
     try { await flight; } finally { this.flights.delete(id); this.scheduleTimer(); }
   }
   private async runDelivery(id: string, manual: boolean): Promise<void> {
+    await this.reconcilePrivacy();
+    if (this.closing) return;
+    const sourceRevision = this.sourceRevision;
     let destination = this.store.get(id); if (!destination.enabled || destination.consent_fingerprint !== this.fingerprint(destination)) return;
     if (!manual && ['needs-auth', 'adapter-unavailable'].includes(destination.state)) return;
     const adapter = this.adapters.get(destination.target.kind); if (adapter === undefined) { this.store.update(id, { state: 'adapter-unavailable', error_category: 'adapter_unavailable' }); return; }
@@ -296,7 +330,7 @@ export class UsageExportService {
       catch (error) { if (this.closing) return; if (error instanceof Error && error.message === 'export-queue-full') this.store.update(id, { state: 'queue-full', error_category: 'queue-full' }); else if (this.store.get(id).enabled) this.store.update(id, { next_at: this.now() + 1000 }); return; }
     }
     const maxItems = Math.min(adapter.maxBatchItems, Number(this.store.meta(`batch-limit:${id}`) ?? adapter.maxBatchItems));
-    for (let i = 0; i < 10 && !this.closing; i++) {
+    for (let i = 0; i < 10 && !this.closing && sourceRevision === this.sourceRevision; i++) {
       destination = this.store.get(id); if (!destination.enabled) return;
       const batch = this.store.take(id, maxItems, adapter.maxBodyBytes); if (batch === undefined) { this.nextNormal(id); return; }
       const controller = new AbortController(); this.controllers.set(id, controller);
@@ -306,11 +340,11 @@ export class UsageExportService {
         const related = adapter.kind === 'vibe' ? this.store.acknowledgedRelated(id, batch) : [];
         const mappingVersion = (item: UsageExportItem): string => vibeAcknowledgedMappingVersion(related.find((entry) => entry.acknowledged.stream_id === item.stream_id && entry.acknowledged.bucket_id === item.bucket_id)?.mappingVersion);
         const identityDiverged = adapter.kind === 'vibe' && related.some((entry) => !entry.sameBucket && entry.current !== null && (entry.current.operation === 'delete' || requiresVibeRemoteRebuild(entry.acknowledged, entry.current, vibeAcknowledgedMappingVersion(entry.mappingVersion))));
-        result = identityDiverged ? { outcome: 'remote-diverged', errorCategory: 'remote_diverged' } : await adapter.send(structuredClone(batch), this.context(destination, controller.signal, batch.batch_id, () => !this.closing && this.store.get(id).enabled && this.store.get(id).consent_fingerprint === this.fingerprint(this.store.get(id)), related.filter((entry) => entry.sameBucket).map((entry) => entry.acknowledged), adapter.kind === 'vibe' ? mappingVersion : undefined));
+        result = identityDiverged ? { outcome: 'remote-diverged', errorCategory: 'remote_diverged' } : await adapter.send(structuredClone(batch), this.context(destination, controller.signal, batch.batch_id, () => !this.closing && sourceRevision === this.sourceRevision && this.store.get(id).enabled && this.store.get(id).consent_fingerprint === this.fingerprint(this.store.get(id)), related.filter((entry) => entry.sameBucket).map((entry) => entry.acknowledged), adapter.kind === 'vibe' ? mappingVersion : undefined));
       }
       catch { result = { outcome: 'retry', errorCategory: 'network' }; }
       finally { clearTimeout(timeout); this.controllers.delete(id); }
-      if (this.closing || !this.store.get(id).enabled) return;
+      if (this.closing || sourceRevision !== this.sourceRevision || !this.store.get(id).enabled) return;
       const category = safeCategory(result);
       if (result.outcome === 'delivered' && result.receipt !== undefined) {
         try {

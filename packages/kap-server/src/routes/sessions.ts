@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, SessionMeta, SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
@@ -66,7 +66,7 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
-import { PROMOTED_FROM_KEY, promotedFromOf, type SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { PROMOTED_FROM_KEY, promotedFromOf } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema, sessionCreationStatusSchema } from '@kiki/protocol';
@@ -175,6 +175,16 @@ const DEFAULT_SESSION_LIST_PAGE_SIZE = 50;
 
 const SESSION_PIN_METADATA_KEY = 'kiki.pinned';
 
+function sessionMatchesPrivacy(
+  isPrivate: boolean | undefined,
+  query: { readonly include_private?: boolean; readonly private_only?: boolean; readonly persona?: string },
+): boolean {
+  const includePrivate = query.private_only === true
+    || query.include_private === true
+    || (query.include_private === undefined && query.persona !== undefined);
+  return (includePrivate || isPrivate !== true) && (query.private_only !== true || isPrivate === true);
+}
+
 const sessionsListQueryCoercion = z
   .object({
     before_id: z.string().min(1).optional(),
@@ -183,8 +193,10 @@ const sessionsListQueryCoercion = z
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
     include_ephemeral: booleanQueryParam,
+    include_private: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
+    private_only: booleanQueryParam,
     pinned: booleanQueryParam,
     q: z.string().max(500).optional(),
     workspace_id: workspaceIdSchema.optional(),
@@ -204,6 +216,14 @@ const sessionsListQueryCoercion = z
         code: 'custom',
         message: 'archived_only and include_archive are mutually exclusive',
         path: ['archived_only'],
+        params: { code: ErrorCode.VALIDATION_FAILED },
+      });
+    }
+    if (value.private_only === true && value.include_private === false) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'private_only and include_private are mutually exclusive',
+        path: ['private_only'],
         params: { code: ErrorCode.VALIDATION_FAILED },
       });
     }
@@ -365,27 +385,30 @@ export function registerSessionsRoutes(
   core.accessor.get(ISessionManager).onDidArchiveSession?.(({ sessionId }) => {
     releaseSessionOverlays(sessionId);
   });
-  const ephemeralSessions = async (query: { workspace_id?: string; persona?: string; before_id?: string; page_size?: number }, budget = 62 * 1024) => {
-    const eligible = core.accessor.get(ISessionManager).listEphemeral().filter((handle) => {
+  const ephemeralSessions = async (query: { workspace_id?: string; persona?: string; before_id?: string; page_size?: number; include_private?: boolean; private_only?: boolean }, budget = 62 * 1024) => {
+    const eligible: { readonly handle: ISessionScopeHandle; readonly meta: SessionMeta }[] = [];
+    for (const handle of core.accessor.get(ISessionManager).listEphemeral()) {
       const persona = handle.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentProfileService).data().personaId;
-      return (query.workspace_id === undefined || handle.accessor.get(ISessionContext).workspaceId === query.workspace_id)
-        && (query.persona === undefined || persona === query.persona);
-    });
-    const anchor = query.before_id === undefined ? -1 : eligible.findIndex((handle) => handle.id === query.before_id);
-    const handles = query.before_id !== undefined && anchor < 0 ? [] : eligible.slice(anchor + 1);
+      const meta = await handle.accessor.get(ISessionMetadata).read();
+      if ((query.workspace_id !== undefined && handle.accessor.get(ISessionContext).workspaceId !== query.workspace_id)
+        || (query.persona !== undefined && persona !== query.persona)
+        || !sessionMatchesPrivacy(meta.private, query)) continue;
+      eligible.push({ handle, meta });
+    }
+    const anchor = query.before_id === undefined ? -1 : eligible.findIndex(({ handle }) => handle.id === query.before_id);
+    const sessions = query.before_id !== undefined && anchor < 0 ? [] : eligible.slice(anchor + 1);
     const items: Session[] = [];
     let bytes = 2;
-    for (const handle of handles) {
+    for (const { handle, meta } of sessions) {
       if (items.length >= (query.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE)) break;
       const ctx = handle.accessor.get(ISessionContext);
-      const meta = await handle.accessor.get(ISessionMetadata).read();
       const session = boundedListPreview(toWireSession({ ...meta, workspaceId: ctx.workspaceId }, ctx.cwd, resolveSessionFacts(core, handle.id), (await broadcaster?.getCursor(handle.id))?.seq, true));
       const size = jsonBytes(session) + 1;
       if (bytes + size > budget) break;
       items.push(session);
       bytes += size;
     }
-    const more = items.length < handles.length;
+    const more = items.length < sessions.length;
     return { items, has_more: more, next_cursor: more ? items.at(-1)?.id : undefined };
   };
   const createRoute = defineRoute(
@@ -461,8 +484,10 @@ export function registerSessionsRoutes(
             }
             externalConnectionId = externalMark.connectionId;
           }
-          const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
-          if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
+          const personaStore = core.accessor.get(IPersonaStore);
+          const persona = body.persona === undefined ? undefined : await personaStore.get(body.persona);
+          const personaState = body.persona === undefined ? undefined : await personaStore.getState(body.persona);
+          if (personaState?.archived === true) {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
           }
           if (workDir === undefined && persona !== undefined) {
@@ -514,6 +539,7 @@ export function registerSessionsRoutes(
             workDir,
             sessionId: createdSessionId,
             ephemeral: body.ephemeral,
+            private: body.private ?? (personaState?.hidden === true ? true : undefined),
             delivery: body.delivery ?? persona?.definition.delivery,
             worktree: worktree === undefined ? undefined : {
               worktreeId: worktree.id, branch: worktree.branch,
@@ -774,6 +800,7 @@ export function registerSessionsRoutes(
               exhausted = true;
               break;
             }
+            if (!sessionMatchesPrivacy(summary.private, raw)) continue;
             const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
             if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
@@ -794,7 +821,12 @@ export function registerSessionsRoutes(
       const pageSize = raw.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE;
       const { visible, hasMore } = await collect(pageSize);
       const projected = await Promise.all(visible.map(async ({ summary, cwd, facts }) => boundedListPreview(await project(summary, cwd, facts))));
-      const ephemeral = raw.include_ephemeral === true ? await ephemeralSessions({ workspace_id: raw.workspace_id, persona: raw.persona }, 24 * 1024) : undefined;
+      const ephemeral = raw.include_ephemeral === true ? await ephemeralSessions({
+        workspace_id: raw.workspace_id,
+        persona: raw.persona,
+        include_private: raw.include_private,
+        private_only: raw.private_only,
+      }, 24 * 1024) : undefined;
       const items: Session[] = [];
       let bytes = 2048 + jsonBytes(ephemeral);
       for (const session of projected) {
@@ -821,7 +853,23 @@ export function registerSessionsRoutes(
     {
       method: 'GET',
       path: '/sessions/ephemeral',
-      querystring: z.object({ before_id: z.string().min(1).optional(), page_size: z.coerce.number().int().min(1).max(100).optional(), workspace_id: workspaceIdSchema.optional(), persona: z.string().min(1).optional() }),
+      querystring: z.object({
+        before_id: z.string().min(1).optional(),
+        page_size: z.coerce.number().int().min(1).max(100).optional(),
+        workspace_id: workspaceIdSchema.optional(),
+        persona: z.string().min(1).optional(),
+        include_private: booleanQueryParam,
+        private_only: booleanQueryParam,
+      }).superRefine((value, ctx) => {
+        if (value.private_only === true && value.include_private === false) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'private_only and include_private are mutually exclusive',
+            path: ['private_only'],
+            params: { code: ErrorCode.VALIDATION_FAILED },
+          });
+        }
+      }),
       success: { data: pageResponseSchema(sessionSchema).extend({ next_cursor: z.string().optional() }) },
       description: 'List live temporary sessions',
       tags: ['sessions'],
@@ -994,14 +1042,19 @@ export function registerSessionsRoutes(
           if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
           const fields = await updateSessionProfile(handle, profileBody);
           if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
-          if (typeof req.body.title === 'string' && req.body.title.trim().length > 0) {
+          const hasCustomTitle = typeof req.body.title === 'string' && req.body.title.trim().length > 0;
+          if (hasCustomTitle || req.body.private !== undefined) {
             core.accessor.get(IEventService).publish(
               new SessionMetaUpdated({
                 payload: {
                   agentId: 'main',
                   sessionId: session_id,
-                  title: fields.title,
-                  patch: { title: fields.title, isCustomTitle: true },
+                  title: hasCustomTitle ? fields.title : undefined,
+                  patch: {
+                    title: hasCustomTitle ? fields.title : undefined,
+                    isCustomTitle: hasCustomTitle ? true : undefined,
+                    private: req.body.private === undefined ? undefined : fields.private,
+                  },
                 },
               }),
             );
@@ -1790,6 +1843,7 @@ export interface SessionWireFields {
   readonly ownUpdatedAt?: number;
   readonly activityUpdatedAt?: number;
   readonly archived: boolean;
+  readonly private?: boolean;
   readonly archivedAt?: number;
   readonly executionPhase?: 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
@@ -1841,6 +1895,7 @@ export function toWireSession(
       facts.lastTurnReason ?? (facts.live === false ? fields.lastTurnReason : undefined),
     execution_phase: fields.executionPhase,
     archived: fields.archived,
+    private: fields.private,
     ephemeral: ephemeral || undefined,
     last_prompt: fields.lastPrompt,
     metadata: buildWireMetadata(fields.custom, cwd),
@@ -1851,8 +1906,8 @@ export function toWireSession(
       base_ref: fields.worktree.baseRef,
     },
     agent_config: facts.agentConfig ?? { model: '' },
-    usage: facts.usage ?? emptySessionUsage(),
-    usage_error: facts.usageError,
+    usage: fields.private === true ? emptySessionUsage() : facts.usage ?? emptySessionUsage(),
+    usage_error: fields.private === true ? undefined : facts.usageError,
     permission_rules: [],
     message_count: 0,
     last_seq: lastSeq ?? 0,

@@ -204,6 +204,28 @@ describe('listSessionsQuerySchema', () => {
     });
   });
 
+  it('parses private list filters to booleans', () => {
+    expect(listSessionsQuerySchema.parse({ include_private: 'true' })).toEqual({
+      include_private: true,
+    });
+    expect(listSessionsQuerySchema.parse({ private_only: '1' })).toEqual({
+      private_only: true,
+    });
+  });
+
+  it('rejects private_only=true with include_private=false', () => {
+    const result = listSessionsQuerySchema.safeParse({ private_only: true, include_private: false });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({
+      path: ['private_only'],
+      message: 'private_only and include_private are mutually exclusive',
+    });
+  });
+
+  it('allows private_only without an explicit include_private value', () => {
+    expect(listSessionsQuerySchema.parse({ private_only: true })).toEqual({ private_only: true });
+  });
+
   it('parses exclude_empty to boolean', () => {
     expect(listSessionsQuerySchema.parse({ exclude_empty: 'true' })).toEqual({
       exclude_empty: true,
@@ -259,6 +281,10 @@ describe('updateSessionProfileRequestSchema', () => {
 
   it('accepts an empty POST body (no-op)', () => {
     expect(updateSessionProfileRequestSchema.parse({})).toEqual({});
+  });
+
+  it('accepts the optional private flag', () => {
+    expect(updateSessionProfileRequestSchema.parse({ private: true })).toEqual({ private: true });
   });
 
   it('accepts agent_config.model', () => {

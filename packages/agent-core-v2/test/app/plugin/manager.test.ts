@@ -50,6 +50,7 @@ describe('PluginManager', () => {
             root,
             source: 'local-path',
             enabled: true,
+            defaultEnabled: true,
             installedAt: '2026-01-01T00:00:00.000Z',
           },
         ],
@@ -729,11 +730,38 @@ describe('PluginManager', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
 
-    expect(manager.get('demo')?.defaultEnabled).toBeUndefined();
+    expect(manager.get('demo')?.defaultEnabled).toBe(false);
     expect(manager.summaries()).toEqual([
-      expect.objectContaining({ id: 'demo', enabled: false, globalEnabled: false }),
+      expect.objectContaining({ id: 'demo', enabled: false, globalEnabled: false, defaultEnabled: false }),
     ]);
     expect(manager.enabledHooks()).toEqual([]);
+  });
+
+  it('keeps a discovered master-enabled plugin out of the global default until explicitly enabled', async () => {
+    await writeFile(
+      join(home, 'plugins', 'installed.json'),
+      JSON.stringify({
+        version: 1,
+        plugins: [{ id: 'demo', root, source: 'local-path', enabled: true, installedAt: '2026-01-01T00:00:00.000Z' }],
+      }),
+    );
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+
+    expect(manager.get('demo')).toMatchObject({ enabled: true, defaultEnabled: false });
+    expect(manager.summaries()).toEqual([
+      expect.objectContaining({ id: 'demo', enabled: true, globalEnabled: false, defaultEnabled: false }),
+    ]);
+
+    await manager.setEnabled('demo', true);
+
+    expect(manager.get('demo')).toMatchObject({ enabled: true, defaultEnabled: true });
+    expect(manager.summaries()).toEqual([
+      expect.objectContaining({ id: 'demo', enabled: true, globalEnabled: true, defaultEnabled: true }),
+    ]);
+    expect((await readInstalled(home)).plugins).toEqual([
+      expect.objectContaining({ id: 'demo', enabled: true, defaultEnabled: true }),
+    ]);
   });
 
   it('persists enabled state changes', async () => {

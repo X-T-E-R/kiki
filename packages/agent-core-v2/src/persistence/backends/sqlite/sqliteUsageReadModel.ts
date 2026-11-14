@@ -79,6 +79,9 @@ export class SqliteUsageReadModel extends Disposable implements IUsageReadModel 
   summary(...[source, signal]: Parameters<IUsageReadModel['summary']>): ReturnType<IUsageReadModel['summary']> { return this.readOperation({ type: 'summary', source }, signal); }
   summaries(...[sources, signal]: Parameters<IUsageReadModel['summaries']>): ReturnType<IUsageReadModel['summaries']> { return this.readOperation({ type: 'summaries', sources }, signal); }
   async catalog(sessions: readonly UsageReadModelSession[], sources: readonly { source: string; workspaceId: string; sessionId: string }[], inventory?: boolean): Promise<void> { await this.writeOperation({ type: 'catalog', sessions, sources, inventory }); }
+  async setSessionPrivacy(workspaceId: string, sessionId: string, isPrivate: boolean): Promise<void> { await this.writeOperation({ type: 'setSessionPrivacy', workspaceId, sessionId, private: isPrivate }); }
+  isPrivateSession(workspaceId: string, sessionId: string, signal?: AbortSignal): Promise<boolean> { return this.readOperation({ type: 'isPrivateSession', workspaceId, sessionId }, signal); }
+  privateSessions(signal?: AbortSignal): ReturnType<IUsageReadModel['privateSessions']> { return this.readOperation({ type: 'privateSessions' }, signal); }
   async settleRetained(ledger: string, generation: string): Promise<void> { await this.writeOperation({ type: 'settleRetained', ledger, generation }); }
   retained(workspaceIds?: readonly string[], signal?: AbortSignal): ReturnType<IUsageReadModel['retained']> { return this.readOperation({ type: 'retained', workspaceIds }, signal); }
   models(signal?: AbortSignal): ReturnType<IUsageReadModel['models']> { return this.readOperation({ type: 'models' }, signal); }

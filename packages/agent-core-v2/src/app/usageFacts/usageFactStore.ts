@@ -5,6 +5,9 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { normalizeUsageFact, type UsageFact, type UsageFactTotals } from '#/agent/usage/usageFact';
 import { UsageJsonStream, type UsageFactJsonObserver } from '#/agent/usage/usageJson';
 import { IAppendLogStore, type AppendLogCommit } from '#/persistence/interface/appendLogStore';
@@ -33,6 +36,7 @@ export interface UsageFactReadOptions { readonly budget?: UsageFactReadBudget; r
 export interface UsageFactRange { readonly startAt?: number; readonly endAt?: number }
 export interface IUsageFactStore {
   readonly _serviceBrand: undefined;
+  setSessionPrivacy(summary: SessionSummary): Promise<void>;
   journalSize(scope: string, signal?: AbortSignal): Promise<number>;
   checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined>;
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<UsageFactSnapshot>;
@@ -54,6 +58,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IUsageReadModel private readonly model: IUsageReadModel,
     @ILogService private readonly log: ILogService,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
   ) {
     super();
     this._register(logs.registerProjection({
@@ -84,6 +89,13 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     await super.dispose();
     while (this.operations.size > 0) await Promise.allSettled(this.operations.values());
   }
+  async setSessionPrivacy(summary: SessionSummary): Promise<void> {
+    await this.model.setSessionPrivacy(summary.workspaceId, summary.id, summary.private === true);
+  }
+  private async isPrivate(scope: string): Promise<boolean> {
+    const session = scope.slice(0, scope.lastIndexOf('/agents/'));
+    return (await this.documents.get<SessionMeta>(session, 'state.json'))?.private === true;
+  }
   private async commitWritten(position: AppendLogCommit, records: readonly UsageFact[], valid: boolean): Promise<void> {
     const mtimeMs = await this.storage.mtime(position.scope, position.key) ?? 0;
     await this.commitBatch(position.scope, position.start, { generation: position.generation, offset: position.end, size: position.end, mtimeMs, boundaryHash: position.boundaryHash, valid }, records);
@@ -92,6 +104,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     return this.exclusive(scope, () => this.commitBatch(scope, start, checkpoint, records));
   }
   private async commitBatch(scope: string, start: number, checkpoint: UsageFactCheckpoint, records: readonly UsageFact[]): Promise<void> {
+    if (await this.isPrivate(scope)) return;
     const directory = factDirectory(scope);
     const owner = this.logs.acquire(directory, LOG);
     try {
@@ -107,11 +120,13 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
   }
   async journalSize(scope: string, signal?: AbortSignal): Promise<number> {
     signal?.throwIfAborted();
+    if (await this.isPrivate(scope)) return 0;
     return await abortable(this.storage.size(factDirectory(scope), LOG), signal) ?? 0;
   }
   checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined> {
     return abortable(this.exclusive(scope, async () => {
       signal?.throwIfAborted();
+      if (await this.isPrivate(scope)) return undefined;
       await abortable(this.logs.flush(factDirectory(scope), LOG), signal);
       const size = await this.storage.size(factDirectory(scope), LOG) ?? 0;
       const head = await this.model.source(scope, signal);
@@ -121,6 +136,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
   }
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options: UsageFactReadOptions = {}): Promise<UsageFactSnapshot> {
     return abortable(this.exclusive(scope, async () => {
+      if (await this.isPrivate(scope)) return { records: [] };
       if (!await this.prepare(scope, signal, options.budget)) return { records: [], readComplete: false, nextCursor: options.cursor };
       const head = await this.model.source(scope, signal);
       if (head?.checkpoint === undefined) return { records: [] };
@@ -158,6 +174,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
   }
   summary(scope: string, signal?: AbortSignal, options: UsageFactReadOptions = {}): ReturnType<IUsageFactStore['summary']> {
     return abortable(this.exclusive(scope, async () => {
+      if (await this.isPrivate(scope)) return {};
       if (!await this.prepare(scope, signal, options.budget)) return { readComplete: false };
       const result = await this.model.summary(scope, signal);
       return { checkpoint: result.head?.checkpoint, totals: result.totals };

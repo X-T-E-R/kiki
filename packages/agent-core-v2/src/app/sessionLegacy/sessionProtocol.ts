@@ -83,6 +83,7 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
 
 export const updateSessionProfileRequestSchema = z.object({
   title: z.string().min(1).optional(),
+  private: z.boolean().optional(),
   metadata: sessionMetadataSchema.partial().optional(),
   agent_config: sessionAgentConfigPartialSchema.optional(),
   permission_rules: z.array(permissionRuleSchema).optional(),

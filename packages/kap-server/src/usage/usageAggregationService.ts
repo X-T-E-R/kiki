@@ -188,6 +188,10 @@ interface NormalizedQuery {
   readonly pageSize: number;
 }
 
+function emptyAgentUsage(agentIds: readonly string[]): Readonly<Record<string, AgentUsageProjection>> {
+  return Object.fromEntries(agentIds.map((id) => [id, { records: [], totals: summarizeUsageFacts([]), complete: true }]));
+}
+
 export class UsagePageTokenMismatchError extends Error {}
 
 /** Usage aggregation reads canonical usage facts through the core SQL-backed read model and fact store. */
@@ -315,6 +319,9 @@ export class UsageAggregationService {
 
   async readSessionAccounting(workspaceId: string, sessionId: string, signal?: AbortSignal): Promise<UsageAccountingSnapshot> {
     signal?.throwIfAborted();
+    if ((await this.core.accessor.get(ISessionIndex).get(sessionId, workspaceId, signal))?.private === true) {
+      return { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: this.now(), complete: true, freshness: 'current', ...this.sessionAccountingTotals([], true) };
+    }
     void this.sourceChanges?.ready;
     const key = `${workspaceId}\0${sessionId}`;
     let saved = this.sessionAccounting.get(key);
@@ -386,6 +393,7 @@ export class UsageAggregationService {
 
   async readPublishedAgentUsage(workspaceId: string, sessionId: string, agentIds: readonly string[], signal?: AbortSignal): Promise<Readonly<Record<string, AgentUsageProjection>>> {
     const session = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+    if ((await this.core.accessor.get(ISessionIndex).get(sessionId, workspaceId, signal))?.private === true) return emptyAgentUsage(agentIds);
     const snapshots = await this.core.accessor.get(IUsageReadModel).summaries(agentIds.map((id) => agentScopeOf(session, id)), signal);
     return Object.fromEntries(agentIds.map((id) => [id, { records: [], totals: snapshots[agentScopeOf(session, id)]?.totals, complete: false }]));
   }
@@ -397,6 +405,7 @@ export class UsageAggregationService {
     options: AgentUsageReadOptions = {},
   ): Promise<Readonly<Record<string, AgentUsageProjection>>> {
     options.signal?.throwIfAborted();
+    if ((await this.core.accessor.get(ISessionIndex).get(sessionId, workspaceId, options.signal))?.private === true) return emptyAgentUsage(agentIds);
     const deadline = new AbortController();
     const duration = (options.deadlineAt ?? Infinity) - this.now();
     const timer = Number.isFinite(duration) ? setTimeout(() => { deadline.abort(new DOMException('Agent usage deadline', 'TimeoutError')); }, Math.max(0, duration)) : undefined;
@@ -543,6 +552,10 @@ export class UsageAggregationService {
     return session;
   }
 
+  privateUsageSessions(): ReturnType<IUsageReadModel['privateSessions']> {
+    return this.core.accessor.get(IRetainedUsageService).privateSessions(this.modelController.signal);
+  }
+
   async readExportSources(
     consume: (source: UsageExportSource) => Promise<void>,
     includeEphemeral = false,
@@ -550,11 +563,21 @@ export class UsageAggregationService {
     const budget: ScanBudget = { remainingRecords: this.limits.wireRecordBudget, deadlineAt: this.now() + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
     const index = this.core.accessor.get(ISessionIndex);
     const active = this.exportActiveKeys; let sources = 0;
+    for (const session of await this.privateUsageSessions()) {
+      const key = sessionKey(session);
+      active.add(key);
+      await consume({ key, workspaceId: session.workspaceId, kind: 'session', records: [] });
+    }
     while (!this.exportAtRetained) {
       const page = await index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before: this.exportCursor });
       for (const summary of page.items) {
         if (this.now() >= budget.deadlineAt) return { complete: false, reason: 'deadline', sources };
         const key = sessionKey(summary); active.add(key);
+        if (summary.private === true) {
+          await consume({ key, workspaceId: summary.workspaceId, kind: 'session', records: [] });
+          this.exportCursor = summary.id;
+          continue;
+        }
         const session = await this.readExportSession(summary, budget);
         if (session === undefined || !session.complete) {
           if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') return { complete: false, reason: budget.incompleteReason, sources };
@@ -804,6 +827,7 @@ export class UsageAggregationService {
       do {
         const page = await waitForSource(index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before }), signal);
         for (const summary of page.items) {
+          if (summary.private === true) continue;
           const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
           const agents = await waitForSource(this.agentsOf(summary), signal);
           for (let offset = 0; offset < agents.length; offset += 32) {
@@ -900,7 +924,7 @@ export class UsageAggregationService {
               const key = sessionKey(summary);
               const version = this.dirtySessions.get(key);
               const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-              const agents = await this.agentsOf(summary);
+              const agents = summary.private === true ? [] : await this.agentsOf(summary);
               return { key, summary, agents, version, sources: agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id })) };
             })), signal);
             await model.catalog(page.items.map((summary) => ({ ...summary, deleted: false })), prepared.flatMap((item) => item.sources));
@@ -931,7 +955,7 @@ export class UsageAggregationService {
           const prepared = inventory.prepared.get(key);
           const observedVersion = inventory.full ? prepared === undefined ? this.dirtySessions.get(key) : prepared.version : version;
           const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-          const agents = prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
+          const agents = summary.private === true ? [] : prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
           const accountedAgents = this.sessionAccounting.get(key)?.agents;
           if (accountedAgents !== undefined && (accountedAgents.length !== agents.length || accountedAgents.some((agent) => !agents.includes(agent)))) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
           const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));

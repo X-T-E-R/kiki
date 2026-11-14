@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, type IBootstrapService as Bootstrap, type IConfigService, type ModelRecord, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
+import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, ISessionIndexMirror, type IBootstrapService as Bootstrap, type IConfigService, type ModelRecord, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
 import { JsonAtomicDocumentStore, TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
@@ -17,6 +17,7 @@ import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/s
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
 import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
+import { stubSessionIndexMirror } from '../../agent-core-v2/test/app/sessionIndex/stubs';
 import { EventService } from '@kiki/agent-core-v2/app/event/eventService';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
@@ -66,8 +67,8 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
   const model = ix.get(IUsageReadModel); cleanup.push(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); });
   const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
-  const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
-  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, pricing], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
+  const index = { get: async (id: string) => sessions.find((session) => session.id === id), listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
+  const services = new Map<unknown, unknown>([[ISessionIndexMirror, stubSessionIndexMirror()], [IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, pricing], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
   const reader = new UsageAggregationService(core, aggregationNow, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
   const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
@@ -90,6 +91,88 @@ async function destination(service: UsageExportService, endpoint = 'https://exam
   return service.saveDraft({ draft: { label: 'Example receiver', target: { kind: 'webhook', endpoint, gzip: true, authentication: 'none', private_grant: port === undefined ? undefined : { host: '127.0.0.1', ip: '127.0.0.1', protocol: 'http:', port } }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
 }
 async function enable(service: UsageExportService, id: string) { const preview = await service.preview(id); await service.enable(id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); return preview; }
+
+describe('private usage export isolation', () => {
+  it('removes previously exported session and operation contributions after privacy toggles and deletion', async () => {
+    const f = await fixture();
+    const session = f.add('private-toggle');
+    await f.write(session.id, 'main', [record(T, 100)]);
+    await f.retained.recordOperation(session, { time: T, model: 'gpt-5', agentId: 'main', requestKind: 'output_layer', usageKnown: true,
+      usage: { inputOther: 50, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } });
+    const target = await destination(f.service);
+    expect((await f.service.preview(target.id)).total_buckets).toBeGreaterThan(0);
+    await enable(f.service, target.id);
+    const staleBatch = f.store.take(target.id, 100, 1_048_576);
+    expect(staleBatch?.items.some((item) => item.operation === 'replace')).toBe(true);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const readSources = f.reader.readExportSources.bind(f.reader);
+    vi.spyOn(f.reader, 'readExportSources').mockImplementationOnce((consume, ephemeral) => readSources(async (source) => {
+      entered();
+      await blocked;
+      await consume(source);
+    }, ephemeral));
+    const staleScan = f.service.scan(true);
+    await started;
+    const privateSession = { ...session, private: true };
+    f.sessions[0] = privateSession;
+    await f.core.accessor.get(IUsageFactStore).setSessionPrivacy(privateSession);
+    const retire = f.service.retireSession(session.workspaceId, session.id);
+    expect(f.store.exportQueue(target.id).every((item) => item.operation === 'delete')).toBe(true);
+    release();
+    await Promise.all([staleScan, retire]);
+    expect((await f.service.preview(target.id)).total_buckets).toBe(0);
+    expect(f.store.take(target.id, 100, 1_048_576)?.batch_id).not.toBe(staleBatch?.batch_id);
+    expect(f.store.exportQueue(target.id).every((item) => item.operation === 'delete')).toBe(true);
+    await f.retained.retainDeletedSession(privateSession);
+    f.sessions.length = 0;
+    const restarted = await f.restart();
+    expect((await restarted.preview(target.id)).total_buckets).toBe(0);
+  });
+
+  it('invalidates a partial receipt batch even when its private item was already acknowledged', async () => {
+    const f = await fixture();
+    const session = f.add('private-partial');
+    f.add('public-partial');
+    await f.write(session.id, 'main', [record(T, 100)]);
+    await f.write('public-partial', 'main', [record(T + 1_800_000, 10)]);
+    const target = await destination(f.service);
+    await enable(f.service, target.id);
+    const batch = f.store.take(target.id, 100, 1_048_576)!;
+    const item = batch.items.find((entry) => entry.bucket?.start_at === new Date(T).toISOString())!;
+    expect(item).toBeDefined();
+    f.store.acknowledge(target.id, { schema_version: 'kiki.usage.receipt.v1', batch_id: batch.batch_id,
+      items: [{ stream_id: item.stream_id, bucket_id: item.bucket_id, revision: item.revision, payload_hash: item.payload_hash, status: 'applied' }] }, T);
+    const privateSession = { ...session, private: true };
+    f.sessions[0] = privateSession;
+    await f.core.accessor.get(IUsageFactStore).setSessionPrivacy(privateSession);
+    await f.service.retireSession(session.workspaceId, session.id);
+    const next = f.store.take(target.id, 100, 1_048_576)!;
+    expect(next.batch_id).not.toBe(batch.batch_id);
+    expect(next.items.find((entry) => entry.bucket_id === item.bucket_id)?.operation).toBe('delete');
+    expect(next.items.filter((entry) => entry.operation === 'replace').every((entry) => entry.bucket?.tokens.input_other === 10)).toBe(true);
+  });
+
+  it('fences saved batches after restart before a scan or delivery can expose private usage', async () => {
+    const f = await fixture();
+    const session = f.add('private-restart');
+    await f.write(session.id, 'main', [record(T, 100)]);
+    const target = await destination(f.service);
+    await enable(f.service, target.id);
+    await f.service.scan();
+    expect(f.store.take(target.id, 100, 1_048_576)?.items[0]?.operation).toBe('replace');
+    const privateSession = { ...session, private: true };
+    f.sessions[0] = privateSession;
+    await f.core.accessor.get(IUsageFactStore).setSessionPrivacy(privateSession);
+    await f.restart();
+    const exported = await f.service.exportLocal(target.id);
+    expect(exported.items.length).toBeGreaterThan(0);
+    expect(exported.items.every((item) => item.operation === 'delete')).toBe(true);
+    expect(f.store.take(target.id, 100, 1_048_576)?.items.every((item) => item.operation === 'delete')).toBe(true);
+  });
+});
 
 describe('usage export explicit save consent and automatic upload', () => {
   it('records consent on save, schedules every 120 minutes and reuses it across edits and restart', async () => {
@@ -365,7 +448,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     await f.retained.retainDeletedSession(s); f.sessions.splice(f.sessions.indexOf(s), 1); await f.service.syncNow(d.id); expect(r.requests).toBe(requestCount);
     const updated = await f.service.backfill(d.id, { ...d.scope, include_ephemeral: true }); expect(updated.destination.enabled).toBe(false); await enable(f.service, d.id); await f.service.syncNow(d.id);
     expect(f.store.preview(d.id).items.reduce((n, item) => n + item.bucket!.tokens.input_other, 0)).toBe(167);
-    expect(r.observed.join('\n')).not.toContain(SENTINEL); expect(JSON.stringify(f.service.exportLocal(d.id))).not.toContain(SENTINEL);
+    expect(r.observed.join('\n')).not.toContain(SENTINEL); expect(JSON.stringify(await f.service.exportLocal(d.id))).not.toContain(SENTINEL);
   });
 
   it('publishes a complete source transaction before yielding through bounded staging cleanup', async () => {

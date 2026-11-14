@@ -1090,6 +1090,7 @@ describe('ACP external executor', () => {
       [IWireService, wire],
       [IAgentContextMemoryService, contextMemory],
       [IAgentUsageService, usage],
+      [ISessionContext, { sessionId: 'generic-session', isPrivate: () => false }],
     ]);
     const recorder = new ExternalTurnRecorder(
       {
@@ -1163,6 +1164,7 @@ describe('ACP external executor', () => {
     const services = new Map<unknown, unknown>([
       [IEventDispatcher, dispatcher], [IWireService, wire],
       [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+      [ISessionContext, { sessionId: 'media-session', isPrivate: () => false }],
       [ISessionMediaStore, mediaStore],
     ]);
     const recorder = new ExternalTurnRecorder(
@@ -1303,6 +1305,7 @@ describe('ACP external executor', () => {
     const services = new Map<unknown, unknown>([
       [IEventDispatcher, dispatcher], [IWireService, wire],
       [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+      [ISessionContext, { sessionId: 'terminal-session', isPrivate: () => false }],
     ]);
     const recorder = new ExternalTurnRecorder(
       { id: 'terminal-agent', accessor: { get: (id) => services.get(id) as never } },
@@ -1343,6 +1346,7 @@ describe('ACP external executor', () => {
     const services = new Map<unknown, unknown>([
       [IEventDispatcher, dispatcher], [IWireService, wire],
       [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+      [ISessionContext, { sessionId: 'steer-session', isPrivate: () => false }],
     ]);
     const recorder = new ExternalTurnRecorder(
       { id: 'steer-agent', accessor: { get: (id) => services.get(id) as never } },
@@ -1686,6 +1690,7 @@ describe('ACP external executor', () => {
     const services = new Map<unknown, unknown>([
       [IEventDispatcher, dispatcher], [IWireService, wire],
       [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+      [ISessionContext, { sessionId: 'boundary-session', isPrivate: () => false }],
     ]);
     const outbound = '[Kiki memory]\nremember this\n\n[Kiki goal_state]\nGoal (active): land\n\nwork';
     const recorder = new ExternalTurnRecorder(
@@ -1740,6 +1745,7 @@ describe('ACP external executor', () => {
         appendLoopEvent: (event: { type?: string }) => timeline.push(event.type ?? 'loop'),
       }],
       [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+      [ISessionContext, { sessionId: 'continue-session', isPrivate: () => false }],
     ]);
     const recorder = new ExternalTurnRecorder(
       { id: 'continue-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
@@ -1779,6 +1785,7 @@ describe('ACP external executor', () => {
         appendLoopEvent: () => {},
       }],
       [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+      [ISessionContext, { sessionId: 'split-session', isPrivate: () => false }],
     ]);
     const outbound = '[Kiki memory]\nremember this\n\nwork';
     const recorder = new ExternalTurnRecorder(

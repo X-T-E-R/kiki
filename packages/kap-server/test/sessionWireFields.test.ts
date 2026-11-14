@@ -34,6 +34,37 @@ const coldFacts: SessionFacts = {
   live: false,
 };
 
+describe('toWireSession privacy', () => {
+  it('projects privacy and replaces measured or failed usage with the empty wire shape', () => {
+    const wire = toWireSession({ ...fields, private: true }, '/example', {
+      ...coldFacts,
+      usage: {
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_read_tokens: 5,
+        cache_creation_tokens: 6,
+        total_cost_usd: 0.42,
+        context_tokens: 70,
+        context_limit: 100,
+        turn_count: 2,
+      },
+      usageError: 'read-failed',
+    });
+    expect(wire.private).toBe(true);
+    expect(wire.usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost_usd: 0,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+    });
+    expect(wire.usage_error).toBeUndefined();
+  });
+});
+
 describe('toWireSession execution activity', () => {
   it.each([true, false, undefined])('preserves executing=%s separately from unfinished work', (executing) => {
     const wire = toWireSession(fields, '/example', { ...coldFacts, busy: true, executing });

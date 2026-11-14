@@ -18,6 +18,7 @@ export const createSessionOptionsSchema = z.object({
     externalId: z.string(), home: z.string() }).optional(),
   workDir: z.string(),
   ephemeral: z.boolean().optional(),
+  private: z.boolean().optional(),
   delivery: z.enum(['reply', 'message']).optional(),
   additionalDirs: z.array(z.string()).optional(),
   waitForSessionMs: z.number().nonnegative().finite().optional(),
@@ -54,6 +55,7 @@ export const sessionSeedCarryWireSchema = z.union([
 export const forkSessionOptionsSchema = z.object({
   sourceSessionId: z.string(),
   newSessionId: z.string().optional(),
+  private: z.boolean().optional(),
   title: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   turnIndex: z.number().optional(),

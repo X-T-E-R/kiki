@@ -593,6 +593,7 @@ interface FullCompactionCancelPayload {
  */
 interface FullCompactionCompletePayload {
   _name: 'full_compaction.complete';
+  countForPanel?: boolean;
 }
 
 /**

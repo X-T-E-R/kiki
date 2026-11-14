@@ -1175,8 +1175,12 @@ describe('history navigation source rows', () => {
       await writeFile(wirePath, Array.from({ length: 9 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
         input: [{ type: 'text', text: filler }], origin: { kind: 'user' } })).join('') +
         line({ type: 'context.apply_compaction', history: [] }) + target);
-      const transcript = { historyWireLocation: async (_session: string, agent: string) =>
-        agent === 'missing' ? undefined : { workspaceId: 'ws', wirePath } } as unknown as TranscriptService;
+      const transcript = {
+        historyWireLocation: async (_session: string, agent: string) =>
+          agent === 'missing' ? undefined : { workspaceId: 'ws', wirePath },
+        forSessionLive: () => undefined,
+        readColdRoster: async () => [],
+      } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
       const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;

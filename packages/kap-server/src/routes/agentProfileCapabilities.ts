@@ -268,15 +268,17 @@ async function readAgentCapabilities(
 ): Promise<AgentCapabilitiesProducerResponse | 'workspace-not-found' | 'profile-not-found'> {
   if ('session_id' in query) {
     const session = core.accessor.get(ISessionManager).get(query.session_id);
-    const workspaceId = session?.accessor.get(ISessionContext).workspaceId
-      ?? (await core.accessor.get(ISessionIndex).get(query.session_id))?.workspaceId;
+    const context = session?.accessor.get(ISessionContext);
+    const summary = context === undefined ? await core.accessor.get(ISessionIndex).get(query.session_id) : undefined;
+    const workspaceId = context?.workspaceId ?? summary?.workspaceId;
+    const isPrivate = context?.isPrivate?.() === true || summary?.private === true;
     const lifecycle = session?.accessor.get(IAgentLifecycleService);
     const agent = lifecycle?.get(query.agent_id);
     const pricing = core.accessor.get(IModelPricingService);
     const skipAgentIds: string[] = [];
     const mutableAgentIds: string[] = [];
     const mutableUsageRecords: Record<string, number> = Object.create(null);
-    for (const handle of lifecycle?.list() ?? []) {
+    for (const handle of isPrivate ? [] : lifecycle?.list() ?? []) {
       const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
       if (accounting.incomplete && (accounting.knownRecords === undefined || accounting.knownByModel === undefined)) {
         mutableAgentIds.push(handle.id);
@@ -285,7 +287,7 @@ async function readAgentCapabilities(
       else skipAgentIds.push(handle.id);
     }
     const metricAgentIds = persistedPanelMetricAgentIds(query);
-    const persisted = workspaceId === undefined ? {} : await readPersistedAgentPanelMetrics(
+    const persisted = workspaceId === undefined || isPrivate ? {} : await readPersistedAgentPanelMetrics(
       core,
       workspaceId,
       query.session_id,
@@ -304,7 +306,7 @@ async function readAgentCapabilities(
       const metrics = { ...persisted };
       for (const handle of lifecycle?.list() ?? []) {
         if (!metricAgentIds.includes(handle.id)) continue;
-        metrics[handle.id] = mergeAgentPanelMetrics(persisted[handle.id], readAgentPanelMetrics(handle, pricing));
+        metrics[handle.id] = mergeAgentPanelMetrics(persisted[handle.id], readAgentPanelMetrics(handle, pricing, isPrivate));
       }
       return {
         context: 'live', live: agent !== undefined, owner: { agent_id: query.agent_id },
@@ -421,7 +423,7 @@ async function readAgentCapabilities(
     const metricIdSet = new Set(metricAgentIds);
     const liveMetrics = Object.fromEntries(session!.accessor.get(IAgentLifecycleService).list()
       .filter((handle) => agent.id === 'main' || handle.id === agent.id || metricIdSet.has(handle.id))
-      .map((handle) => [handle.id, readAgentPanelMetrics(handle, pricing)]));
+      .map((handle) => [handle.id, readAgentPanelMetrics(handle, pricing, isPrivate)]));
     const metrics = { ...persisted };
     for (const [id, value] of Object.entries(liveMetrics)) {
       metrics[id] = mergeAgentPanelMetrics(persisted[id], value);

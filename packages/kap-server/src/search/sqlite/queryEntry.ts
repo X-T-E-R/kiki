@@ -24,6 +24,10 @@ const handleMessage = async (message: QueryRequest): Promise<void> => {
     port.close();
     return;
   }
+  if (message.type === 'invalidate') {
+    queries?.clear();
+    return;
+  }
   try {
     if (!reader) for (let attempt = 0; attempt < 4 && !reader; attempt++) {
       try { reader = SqliteSearchIndex.openReader(source.database, source.bootSalt); }

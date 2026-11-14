@@ -375,6 +375,13 @@ export class SqliteSearchIndex {
     return task;
   }
 
+  retireSession(sessionId: string): Promise<boolean> {
+    this.pendingSessions.delete(sessionId);
+    const task = this.syncQueue.catch(() => {}).then(() => this.removeSession(sessionId));
+    this.syncQueue = task;
+    return task;
+  }
+
   private async syncSessionInner(session: SqliteSessionInput): Promise<void> {
     if (this.closed) throw new Error('search index is closed');
     if (this.options.isStopped?.()) return;

@@ -95,6 +95,7 @@ const v2SessionsListQuerySchema = z
     'meta.updated_after': z.coerce.number().int().nonnegative().optional(),
     'meta.updated_before': z.coerce.number().int().nonnegative().optional(),
     'meta.archived': z.enum(['true', 'false', 'all']).optional(),
+    'meta.private': z.enum(['true', 'false', 'all']).optional(),
     sort: v2SortSchema.optional(),
     include: z.string().optional(),
     fields: z.string().optional(),
@@ -173,6 +174,7 @@ interface NormalizedQuery {
   readonly updatedAfter?: number;
   readonly updatedBefore?: number;
   readonly archived: 'true' | 'false' | 'all';
+  readonly private: 'true' | 'false' | 'all';
   readonly sort: V2Sort;
   readonly includeGit: boolean;
   readonly pageSize: number;
@@ -199,6 +201,7 @@ const v2SessionSchema = z.object({
     created_at: z.number().int(),
     updated_at: z.number().int(),
     archived: z.boolean(),
+    private: z.boolean(),
     archived_at: z.number().int().nullable(),
     execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   }),
@@ -302,6 +305,7 @@ function queryFingerprint(query: NormalizedQuery): string {
     query.updatedAfter ?? null,
     query.updatedBefore ?? null,
     query.archived,
+    query.private,
     query.sort,
     query.includeGit,
     query.pageSize,
@@ -475,6 +479,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         updatedAfter: raw['meta.updated_after'],
         updatedBefore: raw['meta.updated_before'],
         archived: raw['meta.archived'] ?? 'false',
+        private: raw['meta.private'] ?? 'false',
         sort: raw.sort ?? 'meta.updated_at_desc',
         includeGit: includeDomains(raw.include).includes('git'),
         pageSize: raw.page_size ?? DEFAULT_PAGE_SIZE,
@@ -513,7 +518,8 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         id: cursor[1], updatedAt: cursor[0], createdAt: cursor[0],
       } as SessionSummary;
       const canonical = query.sort === 'meta.updated_at_desc' && query.archived !== 'true' &&
-        query.updatedAfter === undefined && query.updatedBefore === undefined && query.statuses === undefined;
+        query.private === 'all' && query.updatedAfter === undefined &&
+        query.updatedBefore === undefined && query.statuses === undefined;
       let total: number;
       let candidates: SessionSummary[];
       if (canonical) {
@@ -543,6 +549,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
           const page = await index.listRecent({ ...baseQuery, beforePosition, limit: 500 });
           const matched = page.items.filter((summary) =>
             (query.archived !== 'true' || summary.archived) &&
+            (query.private === 'all' || (summary.private === true) === (query.private === 'true')) &&
             (query.updatedAfter === undefined || summary.updatedAt >= query.updatedAfter) &&
             (query.updatedBefore === undefined || summary.updatedAt <= query.updatedBefore) &&
             (query.statuses === undefined || query.statuses.includes(mapActivityStatus(factsOf(summary.id), summary.lastTurnReason))),
@@ -613,6 +620,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
             created_at: summary.createdAt,
             updated_at: summary.updatedAt,
             archived: summary.archived,
+            private: summary.private === true,
             archived_at: summary.archivedAt ?? null,
             execution_phase: summary.executionPhase,
           },

@@ -30,6 +30,7 @@ export class UsageDatabase {
       if (app === 0 && this.db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized Usage database');
       if (writable) {
         this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;
+          CREATE TABLE IF NOT EXISTS private_session(workspace TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(workspace,id)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS meta(id INTEGER PRIMARY KEY CHECK(id=1),epoch TEXT NOT NULL,revision INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS session(workspace TEXT NOT NULL,id TEXT NOT NULL,title TEXT,created REAL NOT NULL,updated REAL NOT NULL,archived INTEGER NOT NULL,deleted INTEGER NOT NULL,ephemeral INTEGER NOT NULL DEFAULT 0,present INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(workspace,id)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS source(id TEXT PRIMARY KEY,workspace TEXT,session_id TEXT,generation TEXT NOT NULL,checkpoint TEXT,journal_offset INTEGER NOT NULL DEFAULT 0,journal_size INTEGER NOT NULL DEFAULT 0,ordinal INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0,present INTEGER NOT NULL DEFAULT 1,kind TEXT NOT NULL DEFAULT 'wire',retained_meta TEXT,building_generation TEXT,building_checkpoint TEXT,building_ordinal INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
@@ -96,9 +97,15 @@ export class UsageDatabase {
       });
       case 'summary': return this.snapshot(() => this.summary(operation.source));
       case 'summaries': return this.snapshot(() => Object.fromEntries(operation.sources.map((source) => { this.check(); return [source, this.summary(source)]; })));
+      case 'setSessionPrivacy': return this.transaction(() => {
+        const sql = operation.private ? 'INSERT OR IGNORE INTO private_session VALUES(?,?)' : 'DELETE FROM private_session WHERE workspace=? AND id=?';
+        if (this.db.prepare(sql).run(operation.workspaceId, operation.sessionId).changes > 0) this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
+      });
+      case 'privateSessions': return this.db.prepare('SELECT workspace,id FROM private_session').all().map((row) => ({ workspaceId: String(row['workspace']), id: String(row['id']) }));
+      case 'isPrivateSession': return this.db.prepare('SELECT 1 FROM private_session WHERE workspace=? AND id=?').get(operation.workspaceId, operation.sessionId) !== undefined;
       case 'catalog': return this.transaction(() => this.catalog(operation.sessions, operation.sources, operation.inventory));
-      case 'models': return this.db.prepare('SELECT DISTINCT t.model FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.present=1').all().map((row) => String(row['model']));
-      case 'retained': return this.db.prepare("SELECT id,retained_meta FROM source WHERE kind='retained' AND present=1 AND retained_meta IS NOT NULL").all().map((row) => ({ source: String(row['id']), session: JSON.parse(String(row['retained_meta'])) as UsageReadModelSession })).filter((row) => operation.workspaceIds === undefined || operation.workspaceIds.includes(row.session.workspaceId));
+      case 'models': return this.db.prepare('SELECT DISTINCT t.model FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.present=1 AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=s.workspace AND p.id=s.session_id)').all().map((row) => String(row['model']));
+      case 'retained': return this.db.prepare("SELECT id,retained_meta FROM source WHERE kind='retained' AND present=1 AND retained_meta IS NOT NULL AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=source.workspace AND p.id=source.session_id)").all().map((row) => ({ source: String(row['id']), session: JSON.parse(String(row['retained_meta'])) as UsageReadModelSession })).filter((row) => operation.workspaceIds === undefined || operation.workspaceIds.includes(row.session.workspaceId));
       case 'settleRetained': return this.transaction(() => {
         const changed = this.db.prepare("UPDATE source SET present=0 WHERE kind IN ('retained','operation') AND present=1 AND id IN (SELECT target FROM retained_publication WHERE ledger=? AND generation!=?)").run(operation.ledger, operation.generation).changes;
         this.db.exec("UPDATE session SET present=0 WHERE deleted=1 AND present=1 AND NOT EXISTS(SELECT 1 FROM source s WHERE s.workspace=session.workspace AND s.session_id=session.id AND s.kind='retained' AND s.present=1)");
@@ -122,7 +129,7 @@ export class UsageDatabase {
     try { const value = work(); this.db.exec('COMMIT'); return value; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   private source(source: string): UsageSourceHead | undefined {
-    const row = this.db.prepare('SELECT * FROM source WHERE id=?').get(source);
+    const row = this.db.prepare('SELECT * FROM source s WHERE id=? AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=s.workspace AND p.id=s.session_id)').get(source);
     return row === undefined ? undefined : sourceHeadOf(row);
   }
   private summary(source: string) {
@@ -170,11 +177,15 @@ export class UsageDatabase {
     const { start, checkpoint, journalSize, session } = page.publish;
     const target = page.publish.source ?? page.source;
     this.db.prepare('INSERT OR IGNORE INTO source(id,generation) VALUES(?,?)').run(target, randomUUID());
-    const head = this.source(target)!;
     const current = this.db.prepare('SELECT * FROM source WHERE id=?').get(target)!;
+    const head = sourceHeadOf(current);
     const previous = head.pendingCheckpoint ?? head.checkpoint;
     const replace = start === 0;
-    const accepted = !isDeepStrictEqual(previous, checkpoint) && (replace || previous?.generation === checkpoint.generation && start === previous.offset);
+    const workspace = session?.workspaceId ?? current['workspace'];
+    const sessionId = session?.id ?? current['session_id'];
+    const privateSource = typeof workspace === 'string' && typeof sessionId === 'string' &&
+      this.db.prepare('SELECT 1 FROM private_session WHERE workspace=? AND id=?').get(workspace, sessionId) !== undefined;
+    const accepted = !privateSource && !isDeepStrictEqual(previous, checkpoint) && (replace || previous?.generation === checkpoint.generation && start === previous.offset);
     if (accepted) {
       const generation = replace ? randomUUID() : String(current['building_generation'] ?? current['generation']);
       const ordinal = replace ? 0 : Number(current['building_generation'] === null ? current['ordinal'] : current['building_ordinal']);
@@ -241,6 +252,7 @@ export class UsageDatabase {
   }
   private catalog(sessions: readonly UsageReadModelSession[], sources: readonly { source: string; workspaceId: string; sessionId: string }[], inventory?: boolean): void {
     let changed = 0;
+    sessions = sessions.filter((session) => session.private !== true);
     if (inventory) {
       this.db.exec('CREATE TEMP TABLE IF NOT EXISTS inventory_session(workspace TEXT,id TEXT,PRIMARY KEY(workspace,id)) WITHOUT ROWID; DELETE FROM inventory_session; CREATE TEMP TABLE IF NOT EXISTS inventory_source(id TEXT PRIMARY KEY) WITHOUT ROWID; DELETE FROM inventory_source');
       const session = this.db.prepare('INSERT INTO inventory_session VALUES(?,?)');
@@ -272,7 +284,7 @@ export class UsageDatabase {
     const exclude = this.db.prepare('INSERT OR IGNORE INTO excluded_source VALUES(?)');
     for (const source of query.excludedSources ?? []) exclude.run(source);
     const parameters: SQLInputValue[] = [];
-    const clauses = ['s.present=1', 'u.present=1', "((s.kind='wire' AND u.deleted=0) OR (s.kind='retained' AND u.deleted=1) OR s.kind='operation')", 'f.generation=s.generation', 'f.state!=3', 'usage_check()=1'];
+    const clauses = ['s.present=1', 'u.present=1', 'NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=u.workspace AND p.id=u.id)', "((s.kind='wire' AND u.deleted=0) OR (s.kind='retained' AND u.deleted=1) OR s.kind='operation')", 'f.generation=s.generation', 'f.state!=3', 'usage_check()=1'];
     if (!query.includeArchived) clauses.push('u.archived=0');
     if (query.startAt !== undefined) { clauses.push('f.time>=?'); parameters.push(query.startAt); }
     if (query.endAt !== undefined) { clauses.push('f.time<?'); parameters.push(query.endAt); }
@@ -341,7 +353,7 @@ export class UsageDatabase {
       const missing = all('SELECT DISTINCT model FROM priced WHERE workspace=? AND session_id=? AND price_unknown ORDER BY model', [workspace, id]).map((item) => String(item['model']));
       return { ...aggregateOf(row), session: sessionOf(session), primaryModel: model === undefined ? undefined : String(model['model']), profileNames: profiles, unknownPriceModels: missing };
     });
-    const selection: string[] = ['s.present=1', 'u.present=1'];
+    const selection: string[] = ['s.present=1', 'u.present=1', 'NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=u.workspace AND p.id=u.id)'];
     const selectedArgs: SQLInputValue[] = [];
     if (!query.includeArchived) selection.push('u.archived=0');
     if (query.workspaceIds.length > 0) { selection.push(`s.workspace IN (${query.workspaceIds.map(() => '?').join(',')})`); selectedArgs.push(...query.workspaceIds); }

@@ -126,6 +126,11 @@ describe('sessionSchema', () => {
     const parsed = sessionSchema.parse(fullSession);
     expect(parsed.last_prompt).toBeUndefined();
   });
+
+  it('accepts the optional private flag', () => {
+    expect(sessionSchema.parse({ ...fullSession, private: true }).private).toBe(true);
+    expect(sessionSchema.parse(fullSession).private).toBeUndefined();
+  });
 });
 
 describe('sessionCreateSchema', () => {
@@ -176,6 +181,10 @@ describe('sessionCreateSchema', () => {
       model: 'moonshot-v1-128k',
       profile: 'reviewer',
     });
+  });
+
+  it('accepts the optional private flag', () => {
+    expect(sessionCreateSchema.parse({ private: true }).private).toBe(true);
   });
 
   it('accepts an entirely empty body (route layer rejects when neither workspace_id nor metadata.cwd is present)', () => {
@@ -297,6 +306,10 @@ describe('sessionUpdateSchema', () => {
 
   it('parses an empty update (no-op)', () => {
     expect(sessionUpdateSchema.parse({})).toEqual({});
+  });
+
+  it('accepts the optional private flag', () => {
+    expect(sessionUpdateSchema.parse({ private: true })).toEqual({ private: true });
   });
 });
 

@@ -1016,6 +1016,16 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
     const plan = await pluginService.previewPlugin({ source });
     await pluginService.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
 
+    const installedInfoRes = await app.inject({
+      method: 'GET',
+      url: '/api/plugins/kiki-phone',
+      headers: authHeaders(),
+    });
+    expect(installedInfoRes.json()).toMatchObject({
+      code: 0,
+      data: { id: 'kiki-phone', enabled: true, globalEnabled: false, defaultEnabled: false },
+    });
+
     const blockedSlotsRes = await app.inject({
       method: 'GET',
       url: '/api/plugins/gui-slots?workspace_id=ws-a',
@@ -1091,6 +1101,22 @@ describe('plugin HTTP/WS broker routes and topic ACL', () => {
         tapped: { ping: true },
         workspaceId: 'ws-a',
       },
+    });
+
+    const explicitlyGlobalRes = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/kiki-phone:enable',
+      headers: authHeaders(),
+    });
+    expect(explicitlyGlobalRes.json()).toMatchObject({ code: 0 });
+    const enabledInfoRes = await app.inject({
+      method: 'GET',
+      url: '/api/plugins/kiki-phone',
+      headers: authHeaders(),
+    });
+    expect(enabledInfoRes.json()).toMatchObject({
+      code: 0,
+      data: { globalEnabled: true, defaultEnabled: true },
     });
   });
 });

@@ -10,9 +10,11 @@ export type UsageStoreOperation =
   | { readonly type: 'read'; readonly source: string; readonly range?: UsageFactRange; readonly offset?: number; readonly limit?: number; readonly until?: number }
   | { readonly type: 'catalog'; readonly sessions: readonly UsageReadModelSession[]; readonly sources: readonly { readonly source: string; readonly workspaceId: string; readonly sessionId: string }[]; readonly inventory?: boolean }
   | { readonly type: 'query'; readonly query: UsageReadModelQuery }
+  | { readonly type: 'isPrivateSession'; readonly workspaceId: string; readonly sessionId: string }
+  | { readonly type: 'setSessionPrivacy'; readonly workspaceId: string; readonly sessionId: string; readonly private: boolean }
   | { readonly type: 'retained'; readonly workspaceIds?: readonly string[] }
   | { readonly type: 'settleRetained'; readonly ledger: string; readonly generation: string }
-  | { readonly type: 'models' | 'sources' | 'maintain' | 'close' };
+  | { readonly type: 'models' | 'sources' | 'maintain' | 'close' | 'privateSessions' };
 
 export interface UsageStoreRequest {
   readonly id: number;

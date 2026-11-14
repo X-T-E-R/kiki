@@ -9,6 +9,10 @@ export class SqliteSearchQueries {
 
   constructor(private readonly reader: SqliteSearchIndex, private readonly cacheMs = 500) {}
 
+  clear(): void {
+    this.recent.clear();
+  }
+
   async search(query: NormalizedQuery, pageToken?: string, budgets: SearchBudgets = DEFAULT_SEARCH_BUDGETS,
     deadlineAt = Date.now() + budgets.queryDeadlineMs): Promise<SqliteSearchResult> {
     const budget = queryBudget(budgets, deadlineAt);

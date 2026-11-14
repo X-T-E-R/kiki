@@ -38,6 +38,7 @@ export interface UsageReadModelSession {
   readonly archived: boolean;
   readonly deleted: boolean;
   readonly ephemeral?: boolean;
+  readonly private?: boolean;
   readonly deletedAt?: number;
   readonly complete?: boolean;
 }
@@ -118,6 +119,9 @@ export interface IUsageReadModel {
   summary(source: string, signal?: AbortSignal): Promise<{ readonly head?: UsageSourceHead; readonly totals?: UsageFactTotals }>;
   summaries(sources: readonly string[], signal?: AbortSignal): Promise<Readonly<Record<string, { readonly head?: UsageSourceHead; readonly totals?: UsageFactTotals }>>>;
   catalog(sessions: readonly UsageReadModelSession[], sources: readonly { readonly source: string; readonly workspaceId: string; readonly sessionId: string }[], inventory?: boolean): Promise<void>;
+  setSessionPrivacy(workspaceId: string, sessionId: string, isPrivate: boolean): Promise<void>;
+  isPrivateSession(workspaceId: string, sessionId: string, signal?: AbortSignal): Promise<boolean>;
+  privateSessions(signal?: AbortSignal): Promise<readonly { readonly workspaceId: string; readonly id: string }[]>;
   settleRetained(ledger: string, generation: string): Promise<void>;
   retained(workspaceIds?: readonly string[], signal?: AbortSignal): Promise<readonly { readonly source: string; readonly session: UsageReadModelSession }[]>;
   models(signal?: AbortSignal): Promise<readonly string[]>;

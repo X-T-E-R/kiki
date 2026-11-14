@@ -134,6 +134,7 @@ function installedFile(id: string, root: string, enabled = true): InstalledFile 
         root,
         source: 'local-path',
         enabled,
+        defaultEnabled: enabled,
         installedAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         originalSource: root,
@@ -678,6 +679,32 @@ describe('PluginService (plugin boundary)', () => {
       expect(workspaceB.rules).toEqual([
         expect.objectContaining({ namespace: 'plugin/plugin-b' }),
       ]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('keeps an installed plugin out of the global default until explicitly enabled', async () => {
+    const home = await makeHome();
+    const pluginRoot = await makePluginDir('kiki-phone', { description: 'fixture phone plugin' });
+    createdDirs.push(pluginRoot);
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await installWithConsent(svc, pluginRoot);
+
+      await expect(svc.getPluginInfo({ id: 'kiki-phone' })).resolves.toMatchObject({
+        id: 'kiki-phone', enabled: true, globalEnabled: false, defaultEnabled: false,
+      });
+      await expect(svc.listPlugins()).resolves.toEqual([
+        expect.objectContaining({ id: 'kiki-phone', enabled: true, globalEnabled: false, defaultEnabled: false }),
+      ]);
+
+      await svc.setPluginEnabled({ id: 'kiki-phone', enabled: true, defaultEnabled: false });
+      await expect(svc.getPluginInfo({ id: 'kiki-phone' })).resolves.toMatchObject({ globalEnabled: false, defaultEnabled: false });
+
+      await svc.setPluginEnabled({ id: 'kiki-phone', enabled: true });
+      await expect(svc.getPluginInfo({ id: 'kiki-phone' })).resolves.toMatchObject({ globalEnabled: true, defaultEnabled: true });
     } finally {
       await host.dispose();
     }

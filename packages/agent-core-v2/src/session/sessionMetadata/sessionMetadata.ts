@@ -95,6 +95,7 @@ export interface SessionMeta {
   readonly activityUpdatedAt?: number;
   readonly executionPhase?: SessionExecutionPhase;
   readonly archived: boolean;
+  readonly private?: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;
   readonly delivery?: 'reply' | 'message';

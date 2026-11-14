@@ -10,6 +10,7 @@ import {
   CREATED_BY_SESSION_ID_KEY,
   ISessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndex';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
@@ -72,6 +73,7 @@ describe('SessionMetadata', () => {
     ix.stub(ILogService, stubLog());
     ix.stub(ISessionContext, makeContext());
     ix.stub(ISessionIndexMirror, mirror);
+    ix.stub(IUsageFactStore, { setSessionPrivacy: vi.fn(async () => {}) });
     ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
     ix.set(IFileSystemStorageService, new SyncDescriptor(InMemoryStorageService));
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
@@ -422,6 +424,35 @@ describe('SessionMetadata', () => {
     expect(await meta.read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000, title: 'Custom title', lastPrompt: 'Main prompt' });
     expect(mirror.recorded.at(-1)?.updatedAt).toBe(5_000);
     expect(await createFreshMetadata(ix).read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000 });
+  });
+
+  it('clears private session and agent usage metadata and mirrors the privacy state', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const usage = { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 };
+    await meta.update({
+      usage: { total: usage, byModel: { 'example-model': usage } },
+      agents: { main: { model: 'example-model', usage, toolCallCount: 4 } },
+    });
+    const changes: (readonly string[])[] = [];
+    disposables.add(meta.onDidChangeMetadata((event) => changes.push(event.changed.map(String))));
+
+    await meta.update({ private: true });
+
+    const current = await meta.read();
+    expect(current.private).toBe(true);
+    expect(current.usage).toBeUndefined();
+    expect(current.agents?.['main']?.usage).toBeUndefined();
+    expect(current.agents?.['main']?.toolCallCount).toBeUndefined();
+    expect(changes.at(-1)).toEqual(expect.arrayContaining(['private', 'usage', 'agents']));
+    expect(mirror.recorded.at(-1)).toMatchObject({ id: 's1', private: true });
+    expect(mirror.recorded.at(-1)?.usage).toBeUndefined();
+    expect(await ix.get(IAtomicDocumentStore).get<{ usage?: unknown; agents?: { main?: { usage?: unknown; toolCallCount?: number } } }>(META_SCOPE, 'state.json'))
+      .toMatchObject({ private: true });
+    const persisted = await ix.get(IAtomicDocumentStore)
+      .get<{ usage?: unknown; agents?: { main?: { usage?: unknown; toolCallCount?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage).toBeUndefined();
+    expect(persisted?.agents?.['main']).not.toHaveProperty('usage');
+    expect(persisted?.agents?.['main']).not.toHaveProperty('toolCallCount');
   });
 
   it('persists creator metadata and mirrors it for session-list reads', async () => {

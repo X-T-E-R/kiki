@@ -6,7 +6,7 @@ import {
   resetUnexpectedErrorHandler,
   setUnexpectedErrorHandler,
 } from '#/_base/errors/unexpectedError';
-import { type ITelemetryAppender, type TelemetryProperties, ITelemetryService } from '#/app/telemetry/telemetry';
+import { type ITelemetryAppender, type TelemetryProperties, ITelemetryService, privateSessionTelemetry } from '#/app/telemetry/telemetry';
 import { TelemetryService } from '#/app/telemetry/telemetryService';
 
 class CapturingAppender implements ITelemetryAppender {
@@ -120,6 +120,25 @@ describe('TelemetryService (unit)', () => {
     svc.setEnabled(true);
     svc.track('sent');
     expect(appender.events).toEqual([{ event: 'sent', properties: {} }]);
+  });
+
+  it('dynamically suppresses private-session events through nested telemetry views', () => {
+    const appender = new CapturingAppender();
+    const root = telemetryWithAppenders(appender);
+    let isPrivate = false;
+    const view = privateSessionTelemetry(root, () => isPrivate).withContext({ agent_id: 'main' });
+
+    view.track('visible');
+    isPrivate = true;
+    view.track('private');
+    view.withContext({ turn_id: 'turn-1' }).track('private-nested');
+    isPrivate = false;
+    view.track('visible-again');
+
+    expect(appender.events).toEqual([
+      { event: 'visible', properties: { agent_id: 'main' } },
+      { event: 'visible-again', properties: { agent_id: 'main' } },
+    ]);
   });
 
   it('withContext view follows root enablement changes', () => {

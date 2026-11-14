@@ -85,12 +85,22 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
     busy: booleanQueryParam,
     include_archive: booleanQueryParam,
     include_ephemeral: booleanQueryParam,
+    include_private: booleanQueryParam,
     archived_only: booleanQueryParam,
+    private_only: booleanQueryParam,
     q: z.string().max(500).optional(),
     exclude_empty: booleanQueryParam,
     pinned: booleanQueryParam,
   }),
-);
+).superRefine((value, ctx) => {
+  if (value.private_only === true && value.include_private === false) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'private_only and include_private are mutually exclusive',
+      path: ['private_only'],
+    });
+  }
+});
 export type ListSessionsQuery = z.infer<typeof listSessionsQuerySchema>;
 
 export const getSessionResponseSchema = sessionSchema;

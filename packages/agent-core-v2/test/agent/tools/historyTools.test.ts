@@ -346,6 +346,37 @@ describe('history tools', () => {
     }]);
   });
 
+  it('keeps a private session readable only from its own scope and rejects private targets from cursors and refs', async () => {
+    const source = archive();
+    const index = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: id === 'private' })) } as unknown as ISessionIndex;
+    const search = new HistorySearchTool(source, session, workspaces, caller, index);
+    const reader = new HistoryReadTool(source, session, workspaces, index, caller);
+    const deniedSearch = await run(search, { query: 'needle', session_id: 'private' });
+    expect(deniedSearch.data.error).toMatchObject({ code: 'history_target_unavailable', target_kind: 'session' });
+    expect(JSON.stringify(deniedSearch.data.error)).not.toContain('private');
+    expect(source.search).not.toHaveBeenCalled();
+
+    const privateCursor = Buffer.from(JSON.stringify({ v: 1, session: 'private', agent: 'main', turn: 3,
+      offset: 0, hash: 'source-hash' })).toString('base64url');
+    const deniedCursor = await run(reader, { cursor: privateCursor });
+    expect(deniedCursor.data.error).toMatchObject({ code: 'history_target_unavailable', target_kind: 'cursor' });
+    expect(JSON.stringify(deniedCursor.data.error)).not.toContain('private');
+    expect(source.readTurn).not.toHaveBeenCalled();
+
+    const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'private', agent: 'main', kind: 'frame' })).toString('base64url')}`;
+    source.readRef = vi.fn(async () => ({ status: 'ok' as const, text: 'private body', turn: 1, ref }));
+    const deniedRef = await run(reader, { ref });
+    expect(deniedRef.data.error).toMatchObject({ code: 'history_target_unavailable', target_kind: 'ref' });
+    expect(JSON.stringify(deniedRef.data.error)).not.toContain('private');
+    expect(source.readRef).not.toHaveBeenCalled();
+
+    const ownSession = { ...session, isPrivate: () => true } as ISessionContext;
+    const ownIndex = { get: async (id: string) => ({ id, workspaceId: 'ws-a', private: true }) } as unknown as ISessionIndex;
+    const own = new HistorySearchTool(source, ownSession, workspaces, caller, ownIndex);
+    const ownExecution = await own.resolveExecution({ query: 'needle' });
+    expect('execute' in ownExecution).toBe(true);
+  });
+
   it('follows unknown and stale recovery to a real target without another session or a loop', async () => {
     const source = archive();
     const known: Record<string, string> = { current: 'ws-a', older: 'ws-a', foreign: 'ws-b' };

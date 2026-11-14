@@ -4,6 +4,7 @@ import type { WireRecord } from '#/wire/record';
 /** What the source workspace hands the target workspace when a subagent becomes its own thread. */
 export interface PromotionSource {
   readonly sourceSessionId: string;
+  readonly private?: boolean;
   readonly agentId: string;
   readonly agentMeta: AgentMeta;
   readonly records: readonly WireRecord[];

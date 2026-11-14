@@ -134,6 +134,35 @@ export class UsageExportStore {
     this.db.prepare('INSERT INTO staging VALUES(?,?,?,?,?,?) ON CONFLICT(run,id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid').run(run, source.key, source.workspaceId, source.kind, JSON.stringify(source.buckets.map((bucket) => contributionSchema.parse(bucket))), source.invalidRecords);
   }
   discardStage(run: string): void { this.assertWriter(); this.db.prepare('DELETE FROM staging WHERE run=?').run(run); }
+  retireSession(workspaceId: string, sessionId: string): void {
+    const key = `${workspaceId}\0${sessionId}`;
+    const operationPrefix = `operation\0${key}\0`;
+    this.transaction(() => {
+      const match = 'id=? OR substr(CAST(id AS BLOB),1,?)=CAST(? AS BLOB)';
+      const identity = [key, Buffer.byteLength(operationPrefix), operationPrefix] as const;
+      this.db.prepare(`DELETE FROM sources WHERE ${match}`).run(...identity);
+      this.db.prepare(`DELETE FROM staging WHERE ${match}`).run(...identity);
+      const affectedBatches = this.db.prepare(`SELECT DISTINCT b.dest,b.batch FROM batches b, json_each(b.data,'$.items') i
+        LEFT JOIN outbox o ON o.dest=b.dest AND o.bucket=json_extract(i.value,'$.bucket_id') AND o.revision=json_extract(i.value,'$.revision')
+        LEFT JOIN acknowledgements a ON a.dest=b.dest AND a.bucket=json_extract(i.value,'$.bucket_id') AND a.revision=json_extract(i.value,'$.revision')
+        WHERE json_extract(i.value,'$.operation')='replace' AND EXISTS (
+          SELECT 1 FROM json_each(coalesce(o.origins,a.origins)) WHERE value=? OR substr(CAST(value AS BLOB),1,?)=CAST(? AS BLOB)
+        )`).all(key, Buffer.byteLength(operationPrefix), operationPrefix) as Row[];
+      for (const { dest, batch } of affectedBatches) {
+        this.db.prepare("UPDATE outbox SET state='pending',batch=NULL WHERE dest=? AND batch=? AND state='inflight'").run(dest!, batch!);
+        this.db.prepare('DELETE FROM batches WHERE dest=? AND batch=?').run(dest!, batch!);
+      }
+      this.db.prepare(`DELETE FROM outbox WHERE json_extract(item,'$.operation')='replace' AND EXISTS (
+        SELECT 1 FROM json_each(origins) WHERE value=? OR substr(CAST(value AS BLOB),1,?)=CAST(? AS BLOB)
+      )`).run(key, Buffer.byteLength(operationPrefix), operationPrefix);
+      const affected = this.db.prepare(`SELECT dest,bucket FROM versions WHERE EXISTS (
+        SELECT 1 FROM json_each(origins) WHERE value=? OR substr(CAST(value AS BLOB),1,?)=CAST(? AS BLOB)
+      )`).all(key, Buffer.byteLength(operationPrefix), operationPrefix) as Row[];
+      this.projectedOrigins.clear();
+      for (const row of affected) this.version(String(row['dest']), String(row['bucket']), 'delete', null);
+      this.setMeta('source-generation', randomUUID());
+    });
+  }
   async publishStageAsync(run: string, complete = true, incompleteReason: string | null = null, operationsComplete = false): Promise<void> {
     return this.withProjection(async () => {
       if (!operationsComplete) this.db.prepare("DELETE FROM staging WHERE run=? AND kind='operation'").run(run);

@@ -585,6 +585,7 @@ export interface SessionStateSnapshot {
     readonly activityUpdatedAt?: number;
     readonly executionPhase?: 'failed' | 'running' | 'pausing' | 'paused' | 'resuming';
     readonly archived: boolean;
+    readonly private?: boolean;
     readonly archivedAt?: number;
     readonly cwd?: string;
     readonly delivery?: 'message' | 'reply';

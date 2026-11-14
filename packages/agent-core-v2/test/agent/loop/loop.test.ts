@@ -2695,7 +2695,12 @@ describe('llm requester attempt retry', () => {
 });
 
 describe('native empty provider completion', () => {
-  it.each([true, false])('classifies raw Messages output=0 with subagent=%s without retrying', async (subagent) => {
+  it.each([
+    { subagent: true, privateSession: false },
+    { subagent: true, privateSession: true },
+    { subagent: false, privateSession: false },
+    { subagent: false, privateSession: true },
+  ])('classifies raw Messages output=0 with subagent=$subagent and private=$privateSession without retrying', async ({ subagent, privateSession }) => {
     const create = vi.fn().mockImplementation(async () => (async function* () {
       yield { type: 'message_start', message: { id: 'example-empty', usage: { input_tokens: 30189, output_tokens: 0, cache_read_input_tokens: 20677 } } };
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
@@ -2712,6 +2717,7 @@ describe('native empty provider completion', () => {
     }
     const local = createTestAgent(permissionModeServices('manual'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
     if (subagent) Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    Reflect.set(local.get(ISessionContext), 'isPrivate', () => privateSession);
     try {
       const handle = await local.get(IAgentPromptService).enqueue({
         id: 'example-empty-prompt',
@@ -2719,11 +2725,20 @@ describe('native empty provider completion', () => {
       });
       const terminal = await handle.completion;
       expect(terminal).toMatchObject({ state: subagent ? 'failed' : 'completed', result: { type: subagent ? 'failed' : 'completed' } });
-      if (subagent) expect(terminal.result).toMatchObject({ error: { code: 'loop.empty_completion', details: {
-        providerFinishReason: 'completed', rawFinishReason: 'end_turn', messageId: 'example-empty',
-        usage: { output: 0, inputOther: 30189, inputCacheRead: 20677 },
-      } } });
+      if (subagent) {
+        const terminalError = (terminal.result as { type?: string; error?: { details?: Record<string, unknown> } } | undefined)?.error;
+        expect(terminalError).toMatchObject({ code: 'loop.empty_completion',
+          details: privateSession
+            ? { providerFinishReason: 'completed', rawFinishReason: 'end_turn', messageId: 'example-empty' }
+            : { providerFinishReason: 'completed', rawFinishReason: 'end_turn', messageId: 'example-empty', usage: { output: 0, inputOther: 30189, inputCacheRead: 20677 } },
+        });
+        expect(Object.hasOwn(terminalError?.details ?? {}, 'usage')).toBe(!privateSession);
+      }
       const records = await local.persistedWireRecords();
+      const stepEnd = records.find((record) => record.type === 'context.append_loop_event' &&
+        (record['event'] as { type?: string } | undefined)?.type === 'step.end')?.['event'] as Record<string, unknown> | undefined;
+      expect(stepEnd).toMatchObject({ finishReason: subagent ? 'error' : 'end_turn' });
+      expect(Object.hasOwn(stepEnd ?? {}, 'usage')).toBe(!privateSession);
       expect(records.find((record) => record.type === 'turn.ended')).toMatchObject({ reason: subagent ? 'failed' : 'completed' });
       expect(records.find((record) => record.type === 'prompt.outcome_committed')).toMatchObject({ terminal: { state: subagent ? 'failed' : 'completed' } });
       expect(create).toHaveBeenCalledTimes(1);
@@ -2778,23 +2793,33 @@ describe('native empty provider completion', () => {
 });
 
 describe('step timing split propagation', () => {
-  it('carries the split from the llmRequester timing event to the turn.step.completed protocol event', async () => {
+  it.each([false, true])('keeps live timing while suppressing private durable metrics (private=%s)', async (privateSession) => {
     const ctx = createTestAgent(agentService(IAgentLLMRequesterService, createTimingRequester()));
+    Reflect.set(ctx.get(ISessionContext), 'isPrivate', () => privateSession);
     try {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello' }] });
       await ctx.untilTurnEnd();
 
-      const stepCompleted = ctx.allEvents.find(
-        (event) => event.type === '[rpc]' && event.event === 'turn.step.completed',
-      );
-      expect(stepCompleted?.args).toMatchObject({
+      const timing = {
         llmFirstTokenLatencyMs: 100,
         llmStreamDurationMs: 200,
         llmRequestBuildMs: 30,
         llmServerFirstTokenMs: 70,
         llmServerDecodeMs: 150,
         llmClientConsumeMs: 50,
-      });
+      };
+      const stepCompleted = ctx.allEvents.find(
+        (event) => event.type === '[rpc]' && event.event === 'turn.step.completed',
+      );
+      expect(stepCompleted?.args).toMatchObject(timing);
+      const stepEnd = wireLoopEvents(ctx, 'step.end')[0];
+      expect(stepEnd).toMatchObject({ finishReason: 'end_turn' });
+      if (privateSession) {
+        expect(stepEnd).not.toHaveProperty('usage');
+        for (const metric of Object.keys(timing)) expect(stepEnd).not.toHaveProperty(metric);
+      } else {
+        expect(stepEnd).toMatchObject({ ...timing, usage: emptyUsage() });
+      }
     } finally {
       await ctx.dispose();
     }

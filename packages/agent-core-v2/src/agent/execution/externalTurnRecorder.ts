@@ -42,6 +42,7 @@ import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 import { acpToolDisplay, acpToolOutput, mergeAcpToolState, type AcpToolState } from './acpToolDisplay';
@@ -149,6 +150,7 @@ export class ExternalTurnRecorder {
   readonly #wire: IWireService;
   readonly #context: IAgentContextMemoryService;
   readonly #usage: IAgentUsageService;
+  readonly #session: ISessionContext;
   readonly #mediaStore: ISessionMediaStore | undefined;
   #segment: Segment | undefined;
   #prompt = '';
@@ -178,6 +180,7 @@ export class ExternalTurnRecorder {
     this.#wire = agent.accessor.get(IWireService);
     this.#context = agent.accessor.get(IAgentContextMemoryService);
     this.#usage = agent.accessor.get(IAgentUsageService);
+    this.#session = agent.accessor.get(ISessionContext);
     try {
       this.#mediaStore = agent.accessor.get(ISessionMediaStore);
     } catch {
@@ -946,15 +949,24 @@ export class ExternalTurnRecorder {
       );
     }
     await this.#wire.flush();
-    this.#context.appendLoopEvent({
-      type: 'step.end',
-      uuid: this.stepId,
-      turnId: String(this.turnId),
-      step: 1,
-      finishReason,
-      usage,
-      rawFinishReason: finishReason,
-    });
+    this.#context.appendLoopEvent(this.#session.isPrivate?.() === true
+      ? {
+          type: 'step.end',
+          uuid: this.stepId,
+          turnId: String(this.turnId),
+          step: 1,
+          finishReason,
+          rawFinishReason: finishReason,
+        }
+      : {
+          type: 'step.end',
+          uuid: this.stepId,
+          turnId: String(this.turnId),
+          step: 1,
+          finishReason,
+          usage,
+          rawFinishReason: finishReason,
+        });
     if (reason === 'completed') {
       await this.#dispatcher.dispatch(
         new TurnStepCompleted({

@@ -123,4 +123,21 @@ describe('HistoryListTool', () => {
     await run(tool, { kind: 'agents' });
     expect(source.list).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'agents', agentId: undefined }));
   });
+
+  it('rejects private sessions outside the current scope before directory discovery', async () => {
+    const source = directory();
+    const privateSessions = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: id === 'private' })) } as unknown as ISessionIndex;
+    const tool = new HistoryListTool(source, session, workspaces, privateSessions, caller);
+    const execution = await tool.resolveExecution({ session_id: 'private', kind: 'agents' });
+    if ('execute' in execution) throw new Error('Expected private target rejection.');
+    expect(JSON.parse(execution.output as string)).toMatchObject({ error: {
+      code: 'history_target_unavailable', target_kind: 'session', retryable: true,
+    } });
+    expect(source.list).not.toHaveBeenCalled();
+
+    const own = new HistoryListTool({ ...source, list: vi.fn(source.list) },
+      { ...session, isPrivate: () => true } as ISessionContext, workspaces, privateSessions, caller);
+    const ownExecution = await own.resolveExecution({ kind: 'agents' });
+    expect('execute' in ownExecution).toBe(true);
+  });
 });

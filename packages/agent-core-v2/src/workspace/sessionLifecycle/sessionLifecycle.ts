@@ -15,6 +15,7 @@ export interface CreateSessionOptions {
   readonly workDir: string;
   readonly worktree?: SessionWorktree;
   readonly ephemeral?: boolean;
+  readonly private?: boolean;
   readonly additionalDirs?: readonly string[];
   readonly delivery?: 'reply' | 'message';
   readonly mainAgentBinding?: BindAgentInput;
@@ -32,6 +33,7 @@ export interface CreateSessionOptions {
 export interface ForkSessionOptions {
   readonly sourceSessionId: string;
   readonly newSessionId?: string;
+  readonly private?: boolean;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
   /**
@@ -61,6 +63,7 @@ export interface ResumeSessionOptions {
 export interface CreateChildSessionOptions {
   readonly sourceSessionId: string;
   readonly newSessionId?: string;
+  readonly private?: boolean;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
 }
@@ -74,6 +77,7 @@ export interface PromoteAgentOptions {
   readonly sourceSessionId: string;
   readonly agentId: string;
   readonly newSessionId?: string;
+  readonly private?: boolean;
   readonly title?: string;
   /** Main-agent profile for the new thread; defaults to the subagent's profile when it may run as main. */
   readonly profile?: string;

@@ -70,6 +70,22 @@ export const noopTelemetryService: ITelemetryService = {
   shutdown: async () => {},
 };
 
+export function privateSessionTelemetry(service: ITelemetryService, isPrivate: () => boolean): ITelemetryService {
+  return {
+    _serviceBrand: undefined,
+    track: (event, properties) => { if (!isPrivate()) service.track(event, properties); },
+    track2: (event, properties) => { if (!isPrivate()) service.track2(event, properties); },
+    withContext: (patch) => privateSessionTelemetry(service.withContext(patch), isPrivate),
+    setContext: (patch) => service.setContext(patch),
+    addAppender: (appender) => service.addAppender(appender),
+    removeAppender: (appender) => service.removeAppender(appender),
+    setAppender: (appender) => service.setAppender(appender),
+    setEnabled: (enabled) => service.setEnabled(enabled),
+    flush: () => service.flush(),
+    shutdown: () => service.shutdown(),
+  };
+}
+
 export const ITelemetryService = createDecorator<ITelemetryService>(
   'agentTelemetryService',
 );

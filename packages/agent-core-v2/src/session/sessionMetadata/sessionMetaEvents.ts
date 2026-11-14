@@ -8,6 +8,7 @@ export interface SessionMetaUpdatedPayload {
   readonly patch: {
     readonly title?: string;
     readonly isCustomTitle?: boolean;
+    readonly private?: boolean;
     readonly lastPrompt?: string;
   };
 }

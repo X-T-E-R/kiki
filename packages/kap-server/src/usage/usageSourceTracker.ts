@@ -7,6 +7,7 @@ import {
   IBootstrapService,
   IFileSystemStorageService,
   ILogService,
+  ISessionIndexMirror,
   RETAINED_USAGE_SCOPE,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
@@ -61,6 +62,9 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
     const invalidate = (change?: UsageSourceChange): void => {
       for (const listener of this.listeners) listener(change);
     };
+    this._register(core.accessor.get(ISessionIndexMirror).onDidChange(({ id, workspaceId }) => {
+      invalidate(workspaceId === undefined ? undefined : `${workspaceId}\0${id}`);
+    }));
     this._register(core.accessor.get(IAppendLogStore).registerProjection({
       key: OPERATION_USAGE_KEY,
       prepare: (scope, records) => scope !== retainedScope ? [] : records.flatMap((value) => {

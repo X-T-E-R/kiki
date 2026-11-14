@@ -96,6 +96,7 @@ export const sessionSchema = z.object({
   execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   archived: z.boolean().optional(),
   ephemeral: z.boolean().optional(),
+  private: z.boolean().optional(),
   delivery: z.enum(['reply', 'message']).optional(),
   archived_at: isoDateTimeSchema.optional(),
   current_prompt_id: z.string().min(1).optional(),
@@ -121,6 +122,7 @@ export const sessionCreateSchema = z.object({
   agent_config: wireSessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
   ephemeral: z.boolean().optional(),
+  private: z.boolean().optional(),
   delivery: z.enum(['reply', 'message']).optional(),
   isolation: worktreeIsolationSchema.optional(),
 });

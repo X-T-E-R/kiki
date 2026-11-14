@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { HistorySearchPage, Scope } from '@kiki/agent-core-v2';
+import { ISessionIndex, IThreadCommunicationService, type HistorySearchPage, type Scope } from '@kiki/agent-core-v2';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 
@@ -53,6 +53,28 @@ describe('history archive', () => {
       indexState: { state: 'building' }, coverage: { complete: false, gaps: ['history_preparing'] } });
     expect(listMessages).toHaveBeenCalledOnce();
   });
+  it('drops peer history when either local endpoint is private', async () => {
+    const ref = (sessionId: string) => ({ hostId: 'local', workspaceId: 'ws-a', sessionId });
+    const messages = [
+      { messageId: 'private-source', source: { kind: 'thread' as const, thread: { ref: ref('private-source'), deleted: false, archived: false } },
+        target: { ref: ref('public-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 1, targetSeq: 1, delivery: 'delivered' as const },
+      { messageId: 'private-target', source: { kind: 'thread' as const, thread: { ref: ref('public-source'), deleted: false, archived: false } },
+        target: { ref: ref('private-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 2, targetSeq: 1, delivery: 'delivered' as const },
+      { messageId: 'public-pair', source: { kind: 'thread' as const, thread: { ref: ref('public-source'), deleted: false, archived: false } },
+        target: { ref: ref('public-target'), deleted: false, archived: false }, content: 'needle', acceptedAt: 3, targetSeq: 1, delivery: 'delivered' as const },
+    ];
+    const service = { hostId: 'local', listMessages: vi.fn(async () => ({ items: messages, nextCursor: undefined })) };
+    const sessions = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: id.startsWith('private') })) };
+    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? sessions : id === IThreadCommunicationService ? service : undefined } } as unknown as Scope;
+    const archive = historyArchiveSeed(() => core, () => ({} as TranscriptService))[0]![1] as {
+      search(input: unknown): Promise<HistorySearchPage>;
+    };
+    const page = await archive.search({ peer: true, query: 'needle', workspaceId: 'ws-a', pageSize: 5 });
+    expect(page.items.map((item) => item.communication?.messageId)).toEqual(['public-pair']);
+    expect(sessions.get).toHaveBeenCalledWith('private-source', 'ws-a');
+    expect(sessions.get).toHaveBeenCalledWith('private-target', 'ws-a');
+  });
+
   it('recovers the exact user text and tool output from persisted pre-compaction transcript', async () => {
     const { archive, transcript, search } = fixture(true);
     const turn = await archive.readTurn('current', 'main', 4);
@@ -66,6 +88,26 @@ describe('history archive', () => {
     expect(step.steps[0].frames[0].output).toBe('工具原始结果');
     expect(await archive.readTurn('current', 'main', 4, 't4.9')).toBeUndefined();
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it('filters private session hits from workspace history search without exposing their ids', async () => {
+    const globalSearch = { search: vi.fn(async () => ({
+      items: [
+        { sessionId: 'private-session', workspaceId: 'ws-a', sessionTitle: 'Private', agentId: 'main',
+          role: 'user' as const, snippet: 'needle', time: 1, score: 1 },
+        { sessionId: 'public-session', workspaceId: 'ws-a', sessionTitle: 'Public', agentId: 'main',
+          role: 'user' as const, snippet: 'needle', time: 2, score: 1 },
+      ], hasMore: true, pageToken: 'next-page', indexState: { state: 'ready' as const }, source: 'index' as const,
+    })) };
+    const sessions = { get: vi.fn(async (id: string) => ({ id, workspaceId: 'ws-a', private: id === 'private-session' })) };
+    const core = { accessor: { get: (id: unknown) => id === ISessionIndex ? sessions : globalSearch } } as unknown as Scope;
+    const archive = historyArchiveSeed(() => core, () => ({} as TranscriptService))[0]![1] as {
+      search(input: unknown): Promise<HistorySearchPage>;
+    };
+    const page = await archive.search({ query: 'needle', mode: 'literal', workspaceId: 'ws-a', pageSize: 5 });
+    expect(page.items.map((item) => item.sessionId)).toEqual(['public-session']);
+    expect(page).toMatchObject({ hasMore: true, pageToken: 'next-page' });
+    expect(sessions.get).toHaveBeenCalledWith('private-session', 'ws-a');
   });
 
   it('delegates workspace-constrained search to the existing global index', async () => {

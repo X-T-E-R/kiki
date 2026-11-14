@@ -10,7 +10,7 @@ export const RETAINED_USAGE_KEY = 'deleted-sessions-v2.jsonl';
 export const EPHEMERAL_USAGE_KEY = 'ephemeral-totals-v1.jsonl';
 export const OPERATION_USAGE_KEY = 'session-operations-v1.jsonl';
 
-export type OperationUsageSession = Pick<SessionSummary, 'id' | 'workspaceId' | 'createdAt' | 'updatedAt' | 'archived'>;
+export type OperationUsageSession = Pick<SessionSummary, 'id' | 'workspaceId' | 'createdAt' | 'updatedAt' | 'archived' | 'private'>;
 
 export interface OperationUsageRecord extends Omit<RetainedUsageRecord, 'turnId' | 'usageScope' | 'agentId' | 'usageKnown'> {
   readonly agentId: string;
@@ -79,6 +79,7 @@ export type RetainedUsageExportEvent =
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
   readonly operationWritesPending?: boolean;
+  privateSessions(signal?: AbortSignal): Promise<readonly Pick<SessionSummary, 'id' | 'workspaceId'>[]>;
   recordOperation(session: OperationUsageSession, record: OperationUsageRecord): Promise<void>;
   readOperationSummary(workspaceId: string, sessionId: string, query: RetainedUsageListQuery): Promise<{ readonly totals?: UsageFactTotals; readonly revision?: number; readonly complete: boolean }>;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;

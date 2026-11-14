@@ -39,7 +39,7 @@ import {
   type SessionUsageSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
-import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ITelemetryService, privateSessionTelemetry } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '#/persistence/backends/node-fs/fileLock';
@@ -195,6 +195,7 @@ function isPersistenceFailure(error: unknown): boolean {
 }
 
 function aggregateSessionUsage(handle: ISessionScopeHandle): SessionUsageSummary | undefined {
+  if (handle.accessor.get(ISessionContext).isPrivate?.() === true) return undefined;
   let total: TokenUsage | undefined;
   const byModel: Record<string, TokenUsage> = {};
   for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
@@ -450,12 +451,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await phase('materialize_config', () => Promise.all([this.config.ready, this.models.ready, this.providers.ready]));
     await phase('materialize_directories', () => this.workspaceDirs.ready);
     await phase('materialize_additional_directories', () => this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []));
+    let metadata: ISessionMetadata | undefined;
+    const isPrivate = () => metadata === undefined ? opts.private === true : metadata.snapshot().private === true;
     const ctx: ISessionContext = {
       _serviceBrand: undefined,
       sessionId: opts.sessionId,
       workspaceId,
       sessionDir,
       ephemeral: this.ephemeralSessions.has(opts.sessionId),
+      isPrivate,
       metaScope,
       cwd: opts.workDir,
       scope: (subKey?: string): string =>
@@ -485,7 +489,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         {
           seeds: [
             ...sessionContextSeed(ctx),
-            [ITelemetryService, this.telemetry.withContext({ sessionId: opts.sessionId })],
+            [ITelemetryService, privateSessionTelemetry(this.telemetry.withContext({ sessionId: opts.sessionId }), isPrivate)],
             ...sessionAgentProfileCatalogSeed({
               _serviceBrand: undefined,
               workspaceKey: workspaceId,
@@ -572,7 +576,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       throw error;
     }
     try {
-      await phase('materialize_metadata', () => handle.accessor.get(ISessionMetadata).ready);
+      const sessionMetadata = handle.accessor.get(ISessionMetadata);
+      await phase('materialize_metadata', () => sessionMetadata.ready);
+      metadata = sessionMetadata;
+      if (opts.private !== undefined && metadata.snapshot().private !== opts.private) {
+        await metadata.update({ private: opts.private }, { touchUpdatedAt: false });
+      }
       await phase('materialize_tool_policy', () => handle.accessor.get(ISessionToolPolicy).ready);
       await Promise.all([
         phase('materialize_workspace_profiles', () => this.workspaceAgentProfileLoader.ready),
@@ -1076,6 +1085,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       updatedAt: Math.max(meta.updatedAt, meta.activityUpdatedAt ?? 0),
       ownUpdatedAt: meta.updatedAt,
       archived: meta.archived,
+      private: meta.private,
       archivedAt: meta.archivedAt,
       custom: meta.custom,
       lastTurnReason: meta.lastTurnReason,
@@ -1167,6 +1177,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     fallback: SessionUsageSummary | undefined,
   ): Promise<void> {
     const metadata = handle.accessor.get(ISessionMetadata);
+    if (metadata.snapshot().private === true) return;
     const current = metadata.usage();
     const usage = current?.wireComplete === true ? current : fallback ?? current;
     if (usage === undefined) return;
@@ -1345,6 +1356,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       target = await this.materializeSession({
         sessionId: targetId,
         workDir: this.workspaceContext.cwd,
+        private: opts.private ?? sourceMeta?.private,
       });
       const targetCtx = target.accessor.get(ISessionContext);
       const targetMeta = target.accessor.get(ISessionMetadata);
@@ -1489,6 +1501,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return this.fork({
       sourceSessionId: opts.sourceSessionId,
       newSessionId: opts.newSessionId,
+      private: opts.private,
       title,
       metadata,
     });
@@ -1550,6 +1563,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const ownRoots = roots !== undefined && await this.directoryExists(roots.workDir) ? roots : undefined;
     return {
       sourceSessionId: sourceId,
+      private: sourceMeta?.private,
       agentId: opts.agentId,
       agentMeta,
       records: settled.records,
@@ -1626,6 +1640,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       target = await this.materializeSession({
         sessionId: targetId,
         workDir: source.workDir,
+        private: opts.private ?? source.private,
         additionalDirs: source.additionalDirs,
       });
       const catalog = target.accessor.get(ISessionAgentProfileCatalog);

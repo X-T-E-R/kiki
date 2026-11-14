@@ -7,12 +7,16 @@ import type { SessionWireFields } from '@kiki/agent-core-v2/app/sessionLegacy/se
 import type { UpdateSessionProfileRequest } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 export async function updateSessionProfile(
   session: ISessionScopeHandle,
-  body: Pick<UpdateSessionProfileRequest, 'title' | 'metadata'>,
+  body: Pick<UpdateSessionProfileRequest, 'title' | 'private' | 'metadata'>,
 ): Promise<SessionWireFields> {
   const metadata = session.accessor.get(ISessionMetadata);
 
   if (typeof body.title === 'string') {
     await metadata.setTitle(body.title);
+  }
+
+  if (body.private !== undefined) {
+    await metadata.update({ private: body.private });
   }
 
   const metadataPatch = body.metadata;
@@ -31,6 +35,7 @@ export async function updateSessionProfile(
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     archived: meta.archived,
+    private: meta.private,
     archivedAt: meta.archivedAt,
     executionPhase: meta.executionPhase,
     custom: meta.custom,

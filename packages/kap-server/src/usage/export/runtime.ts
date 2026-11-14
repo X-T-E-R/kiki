@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { IBootstrapService, IConfigService, IInstantiationService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IConfigService, IInstantiationService, ISessionIndexMirror, ILogService, type Scope } from '@kiki/agent-core-v2';
 import { parseBooleanEnv } from '@kiki/agent-core-v2/_base/utils/env';
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { UsageAggregationService } from '../usageAggregationService';
@@ -24,6 +24,17 @@ export class UsageExportRuntime {
     const aggregation = new UsageAggregationService(core, Date.now, { cacheMaxBytes: 4 * 1024 * 1024, cacheMaxRecords: 5_000, cacheMaxEntries: 20 });
     core.accessor.get(IInstantiationService).onWillDispose(() => { aggregation.dispose(); });
     this.service = new UsageExportService(store, aggregation, core.accessor.get(IModelPricingService), secrets, [createWebhookUsageAdapter(), createVibeUsageAdapter(), createScriptUsageAdapter()], { sourceHome: homeDir });
+    const privateSessions = new Set<string>();
+    const privacy = core.accessor.get(ISessionIndexMirror).onDidChange(({ id, workspaceId, private: isPrivate }) => {
+      if (isPrivate !== true || workspaceId === undefined) { privateSessions.delete(id); return; }
+      if (privateSessions.has(id)) return;
+      privateSessions.add(id);
+      void this.service.retireSession(workspaceId, id).catch((error: unknown) => {
+        privateSessions.delete(id);
+        core.accessor.get(ILogService).warn('usage export privacy refresh failed', error);
+      });
+    });
+    core.accessor.get(IInstantiationService).onWillDispose(() => { privacy.dispose(); });
   }
   registerAdapter(adapter: UsageExportAdapter): void { this.service.registerAdapter(adapter); }
   start(): void { this.service.start(); }

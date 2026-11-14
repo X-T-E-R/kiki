@@ -24,6 +24,8 @@ import {
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentUsageService,
+  IConfigService,
+  IPersonaStore,
   IAppendLogStore,
   IAtomicDocumentStore,
   IEventBus,
@@ -91,6 +93,7 @@ interface SessionWire {
   pending_interaction: 'none' | 'approval' | 'question';
   last_turn_reason?: 'completed' | 'cancelled' | 'failed';
   archived?: boolean;
+  private?: boolean;
   ephemeral?: boolean;
   metadata: { cwd: string } & Record<string, unknown>;
   agent_config: { model: string; profile?: string };
@@ -191,6 +194,15 @@ describe('server-v2 /api/sessions', () => {
   async function getJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
     const res = await fetch(`${base}${path}`, {
       headers: authHeaders(server as RunningServer),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  async function patchJson<T>(path: string, body: unknown): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'PATCH',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(body),
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
@@ -2814,6 +2826,113 @@ describe('server-v2 /api/sessions', () => {
   it('returns 40401 for warnings of a missing session', async () => {
     const { body } = await getJson<null>('/api/sessions/sess_missing_warnings/warnings');
     expect(body.code).toBe(40401);
+  });
+
+  it('defaults hidden-persona sessions to private and filters private sessions before list pagination', async () => {
+    const core = server!.core.accessor;
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"', '[search]', 'enabled = false',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"', 'api_key = "YOUR_API_KEY"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 4000',
+      'default_effort = "medium"', 'support_efforts = ["low", "medium", "high"]', 'capabilities = ["thinking"]',
+    ].join('\n'));
+    await core.get(IConfigService).reload();
+    const personaId = 'hidden-session-persona';
+    await core.get(IPersonaStore).put({ id: personaId, name: 'Hidden session persona', description: 'A test persona.' });
+    const hidden = await patchJson(`/api/personas/${personaId}/state`, { hidden: true });
+    expect(hidden.body.code).toBe(0);
+
+    const hiddenOlder = await postJson<SessionWire>('/api/sessions', { persona: personaId, metadata: { cwd: home } });
+    const hiddenNewer = await postJson<SessionWire>('/api/sessions', { persona: personaId, metadata: { cwd: home } });
+    const visibleOverride = await postJson<SessionWire>('/api/sessions', { persona: personaId, private: false, metadata: { cwd: home } });
+    const ordinary = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(hiddenOlder.body.code, hiddenOlder.body.msg).toBe(0);
+    expect(hiddenNewer.body.code, hiddenNewer.body.msg).toBe(0);
+    expect(visibleOverride.body.code, visibleOverride.body.msg).toBe(0);
+    expect(ordinary.body.code, ordinary.body.msg).toBe(0);
+    expect(hiddenOlder.body.data.private).toBe(true);
+    expect(hiddenNewer.body.data.private).toBe(true);
+    expect(visibleOverride.body.data.private).toBe(false);
+    expect(ordinary.body.data.private).toBe(false);
+
+    const defaultList = await getJson<PageWire>('/api/sessions');
+    expect(defaultList.body.data.items.map((session) => session.id)).toContain(ordinary.body.data.id);
+    expect(defaultList.body.data.items.map((session) => session.id)).toContain(visibleOverride.body.data.id);
+    expect(defaultList.body.data.items.map((session) => session.id)).not.toContain(hiddenOlder.body.data.id);
+    expect(defaultList.body.data.items.map((session) => session.id)).not.toContain(hiddenNewer.body.data.id);
+
+    const personaList = await getJson<PageWire>(`/api/sessions?persona=${personaId}`);
+    expect(personaList.body.data.items.map((session) => session.id).toSorted()).toEqual([
+      hiddenOlder.body.data.id, hiddenNewer.body.data.id, visibleOverride.body.data.id,
+    ].toSorted());
+    const personaPublic = await getJson<PageWire>(`/api/sessions?persona=${personaId}&include_private=false`);
+    expect(personaPublic.body.data.items.map((session) => session.id)).toEqual([visibleOverride.body.data.id]);
+
+    const firstPrivate = await getJson<PageWire>(`/api/sessions?persona=${personaId}&private_only=true&page_size=1`);
+    expect(firstPrivate.body.code).toBe(0);
+    expect(firstPrivate.body.data.items).toHaveLength(1);
+    expect(firstPrivate.body.data.items[0]?.private).toBe(true);
+    expect(firstPrivate.body.data.has_more).toBe(true);
+    const secondPrivate = await getJson<PageWire>(
+      `/api/sessions?persona=${personaId}&private_only=true&page_size=1&before_id=${firstPrivate.body.data.items[0]!.id}`,
+    );
+    expect(secondPrivate.body.data.items).toHaveLength(1);
+    expect(secondPrivate.body.data.items[0]?.private).toBe(true);
+    expect(secondPrivate.body.data.items[0]?.id).not.toBe(firstPrivate.body.data.items[0]?.id);
+    expect(secondPrivate.body.data.has_more).toBe(false);
+
+    const conflict = await getJson<null>(`/api/sessions?private_only=true&include_private=false`);
+    expect(conflict.body.code).toBe(40001);
+    const includeAll = await getJson<PageWire>('/api/sessions?include_private=true');
+    expect(includeAll.body.data.items.map((session) => session.id)).toContain(hiddenOlder.body.data.id);
+
+    const ephemeralPrivate = await postJson<SessionWire>('/api/sessions', {
+      persona: personaId, ephemeral: true, metadata: { cwd: home },
+    });
+    const ephemeralPrivate2 = await postJson<SessionWire>('/api/sessions', {
+      persona: personaId, ephemeral: true, metadata: { cwd: home },
+    });
+    const ephemeralPublic = await postJson<SessionWire>('/api/sessions', {
+      persona: personaId, ephemeral: true, private: false, metadata: { cwd: home },
+    });
+    expect(ephemeralPrivate.body.data.private).toBe(true);
+    expect(ephemeralPrivate2.body.data.private).toBe(true);
+    expect(ephemeralPublic.body.data.private).toBe(false);
+    const normalEphemeral = await getJson<PageWire>('/api/sessions/ephemeral');
+    expect(normalEphemeral.body.data.items.map((session) => session.id)).toEqual([ephemeralPublic.body.data.id]);
+    const onlyPrivateEphemeral = await getJson<PageWire>('/api/sessions/ephemeral?private_only=true&page_size=1');
+    expect(onlyPrivateEphemeral.body.data.items).toHaveLength(1);
+    expect(onlyPrivateEphemeral.body.data.items[0]?.private).toBe(true);
+    expect(onlyPrivateEphemeral.body.data.has_more).toBe(true);
+    const secondPrivateEphemeral = await getJson<PageWire>(
+      `/api/sessions/ephemeral?private_only=true&page_size=1&before_id=${onlyPrivateEphemeral.body.data.items[0]!.id}`,
+    );
+    expect(secondPrivateEphemeral.body.data.items).toHaveLength(1);
+    expect(secondPrivateEphemeral.body.data.items[0]?.private).toBe(true);
+    expect(secondPrivateEphemeral.body.data.has_more).toBe(false);
+    const ephemeralConflict = await getJson<null>('/api/sessions/ephemeral?private_only=true&include_private=false');
+    expect(ephemeralConflict.body.code).toBe(40001);
+    const personaEphemeral = await getJson<PageWire>(`/api/sessions/ephemeral?persona=${personaId}`);
+    expect(personaEphemeral.body.data.items.map((session) => session.id).toSorted()).toEqual([
+      ephemeralPrivate.body.data.id, ephemeralPrivate2.body.data.id, ephemeralPublic.body.data.id,
+    ].toSorted());
+    const mergedEphemeral = await getJson<PageWire>('/api/sessions?include_ephemeral=true&private_only=true');
+    expect(mergedEphemeral.body.data.ephemeral?.map((session) => session.id).toSorted()).toEqual([
+      ephemeralPrivate.body.data.id, ephemeralPrivate2.body.data.id,
+    ].toSorted());
+
+    const events: { type: string; payload: unknown }[] = [];
+    const subscription = core.get(IEventService).subscribe((event) => events.push(event as unknown as { type: string; payload: unknown }));
+    const updated = await postJson<SessionWire>(`/api/sessions/${visibleOverride.body.data.id}/profile`, { private: true });
+    await subscription.dispose();
+    expect(updated.body.code).toBe(0);
+    expect(updated.body.data.private).toBe(true);
+    expect(updated.body.data.usage).toMatchObject({ input_tokens: 0, output_tokens: 0, turn_count: 0 });
+    const updatedHandle = core.get(ISessionManager).get(visibleOverride.body.data.id);
+    expect(updatedHandle).toBeDefined();
+    expect((await updatedHandle!.accessor.get(ISessionMetadata).read()).private).toBe(true);
+    const meta = events.find((event) => event.type === 'session.meta.updated');
+    expect(meta?.payload).toMatchObject({ patch: { private: true } });
   });
 
   it('lists only archived sessions with archived_only', async () => {

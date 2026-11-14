@@ -8,9 +8,11 @@ import type {
   IFlagService,
   ILogService,
   ISessionIndex,
+  ISessionIndexMirror,
+  SessionIndexMutation,
   SessionSummary,
 } from '@kiki/agent-core-v2';
-import { Event } from '@kiki/agent-core-v2/_base/event';
+import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -121,15 +123,15 @@ const noLiveSource: LiveTranscriptSource = {
   ensureAgentHistory: async () => undefined,
 };
 
-function makeInlineService(home: string, index: ISessionIndex): GlobalSearchService {
-  const service = new GlobalSearchService(index, makeBootstrap(home), noopLog, makeFlags());
+function makeInlineService(home: string, index: ISessionIndex, mirror?: ISessionIndexMirror): GlobalSearchService {
+  const service = new GlobalSearchService(index, makeBootstrap(home), noopLog, makeFlags(), undefined, undefined, mirror);
   service.syncDebounceMs = 0;
   service.setLiveTranscriptSource(noLiveSource);
   return service;
 }
 
-function makeService(home: string, index: ISessionIndex): GlobalSearchService {
-  return makeInlineService(home, index);
+function makeService(home: string, index: ISessionIndex, mirror?: ISessionIndexMirror): GlobalSearchService {
+  return makeInlineService(home, index, mirror);
 }
 
 describe('GlobalSearchService', () => {
@@ -1125,7 +1127,114 @@ describe('GlobalSearchService', () => {
       ).rejects.toMatchObject({ reason: 'invalid_page_token' });
     });
 
-    it('returns identical literal results on both routes for equivalent data', async () => {
+    it('keeps private sessions out of the SQLite index, retires and restores only the toggled session, and serves no live hits', { timeout: 30_000 }, async () => {
+    const initial = summary('s1', 'privacy search title');
+    const initiallyPrivate = { ...summary('s2', 'hidden title'), private: true };
+    const records = new Map<string, SessionSummary>([[initial.id, initial], [initiallyPrivate.id, initiallyPrivate]]);
+    const index = {
+      _serviceBrand: undefined,
+      prepare: async () => ({ source: 'authoritative', state: 'ready', degradedCount: 0 }),
+      onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+      status: () => ({ source: 'authoritative', state: 'ready', degradedCount: 0 }),
+      listRecent: async () => ({ items: [...records.values()], nextCursor: undefined }),
+      get: async (id: string) => records.get(id),
+      archiveFamily: async () => [],
+      count: async () => records.size,
+      remove: async () => {},
+    } as unknown as ISessionIndex;
+    const changes = new Emitter<SessionIndexMutation>();
+    const mirror = { _serviceBrand: undefined, onDidChange: changes.event } as unknown as ISessionIndexMirror;
+    const path = await writeWire(home!, 's1', 'main', [userLine('privacyneedle conversation', T1)]);
+    await writeWire(home!, 's2', 'main', [userLine('hiddenprivacyneedle conversation', T1)]);
+    const service = track(makeService(home!, index, mirror));
+    await service.reindex();
+    const query = { query: 'privacyneedle', mode: 'literal' as const, indexOnly: true };
+    expect((await service.search(query)).items).toHaveLength(1);
+    expect((await service.search({ query: 'hiddenprivacyneedle', mode: 'literal', indexOnly: true })).items).toEqual([]);
+
+    const publicStore = new TranscriptStore('s1');
+    publicStore.ensureAgent('main', { agentId: 'main', type: 'main' });
+    publicStore.getAgent('main')!.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'privacyneedle first', startedAt: new Date(T1).toISOString() } },
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'privacyneedle second', startedAt: new Date(T2).toISOString() } },
+    ]);
+    service.setLiveTranscriptSource({ forSessionLive: () => publicStore, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
+    const publicLive = await service.search({ query: 'privacyneedle', mode: 'literal', container: { sessionId: 's1' }, pageSize: 1 });
+    expect(publicLive.pageToken).toBeDefined();
+
+    records.set('s1', { ...initial, private: true });
+    changes.fire({ id: 's1', workspaceId: WS, private: true });
+    expect((await service.search(query)).items).toEqual([]);
+    await expect.poll(async () => (await service.status()).indexer?.indexerStatus?.indexedSessions, { timeout: 10_000 }).toBe(0);
+    const db = new DatabaseSync(join(home!, 'search-index-v2', 'index.sqlite'), { readOnly: true });
+    try {
+      expect((db.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n).toBe(0);
+      expect((db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n).toBe(0);
+    } finally { db.close(); }
+
+    const store = new TranscriptStore('s1');
+    store.ensureAgent('main', { agentId: 'main', type: 'main' });
+    service.setLiveTranscriptSource({ forSessionLive: () => store, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
+    const privateLive = await service.search({ query: 'privacyneedle', mode: 'literal', container: { sessionId: 's1' }, pageToken: publicLive.pageToken });
+    expect(privateLive).toMatchObject({ source: 'live', items: [], hasMore: false, pageToken: undefined });
+
+    records.set('s1', { ...initial, private: false });
+    changes.fire({ id: 's1', workspaceId: WS, private: false });
+    await expect.poll(async () => (await service.search(query)).items.length, { timeout: 10_000 }).toBe(1);
+    expect((await stat(path)).isFile()).toBe(true);
+    const publicStatus = await service.status();
+    expect(publicStatus.indexer?.indexerStatus?.indexedSessions).toBe(1);
+  });
+
+  it('keeps a newer synchronous privacy fence when an older mirror read resolves late', { timeout: 30_000 }, async () => {
+    const initial = summary('s1', 'privacy race title');
+    const records = new Map<string, SessionSummary>([['s1', initial]]);
+    const pendingGets: Array<(value: SessionSummary | undefined) => void> = [];
+    let deferGets = false;
+    const index = {
+      _serviceBrand: undefined,
+      prepare: async () => ({ source: 'authoritative', state: 'ready', degradedCount: 0 }),
+      onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+      status: () => ({ source: 'authoritative', state: 'ready', degradedCount: 0 }),
+      listRecent: async () => ({ items: [...records.values()], nextCursor: undefined }),
+      get: async (id: string) => deferGets
+        ? await new Promise<SessionSummary | undefined>((resolve) => { pendingGets.push(resolve); })
+        : records.get(id),
+      archiveFamily: async () => [],
+      count: async () => records.size,
+      remove: async () => {},
+    } as unknown as ISessionIndex;
+    const changes = new Emitter<SessionIndexMutation>();
+    const mirror = { _serviceBrand: undefined, onDidChange: changes.event } as unknown as ISessionIndexMirror;
+    await writeWire(home!, 's1', 'main', [userLine('privacyrace', T1)]);
+    const service = track(new GlobalSearchService(index, makeBootstrap(home!), noopLog, makeFlags(), undefined, undefined, mirror));
+    service.syncDebounceMs = 60_000;
+    await service.reindex();
+    const query = { query: 'privacyrace', mode: 'literal' as const, indexOnly: true };
+    expect((await service.search(query)).items).toHaveLength(1);
+    const store = new TranscriptStore('s1');
+    store.ensureAgent('main', { agentId: 'main', type: 'main' });
+    store.getAgent('main')!.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'privacyrace live', startedAt: new Date(T1).toISOString() } },
+    ]);
+    service.setLiveTranscriptSource({ forSessionLive: () => store, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
+    expect((await service.search({ query: 'privacyrace', mode: 'literal', container: { sessionId: 's1' } })).items).toHaveLength(1);
+
+    deferGets = true;
+    changes.fire({ id: 's1' });
+    changes.fire({ id: 's1', private: true });
+    await expect.poll(() => pendingGets.length).toBe(2);
+    records.set('s1', { ...initial, private: true });
+    pendingGets[0]!(initial);
+    deferGets = false;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    records.delete('s1');
+    const privateLive = await service.search({ query: 'privacyrace', mode: 'literal', container: { sessionId: 's1' } });
+    expect(privateLive).toMatchObject({ source: 'live', items: [], hasMore: false });
+    pendingGets[1]!({ ...initial, private: true });
+  });
+
+  it('returns identical literal results on both routes for equivalent data', async () => {
       const s1 = summary('s1', '无关标题', T1);
       await writeWire(home!, 's1', 'main', [
         userLine('帮我看看苹果怎么挑', T1),

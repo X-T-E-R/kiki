@@ -56,7 +56,7 @@ import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ITelemetryService, privateSessionTelemetry } from '#/app/telemetry/telemetry';
 import {
   type AgentCallerOutcome,
   type AgentCleanupOutcome,
@@ -232,7 +232,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const d = handle.accessor
       .get(IAgentUsageService)
       .onDidRecord(({ model, usage, usageKnown }) => {
-        this.sessionMetadata.recordUsage(model, usage, usageKnown);
+        if (this.sessionMetadata.snapshot().private !== true) this.sessionMetadata.recordUsage(model, usage, usageKnown);
       });
     this.usageDisposables.set(handle.id, d);
   }
@@ -384,7 +384,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       {
         seeds: [
           [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, parentAgentId, isBranch })],
-          [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
+          [ITelemetryService, privateSessionTelemetry(this.telemetry.withContext({ agent_id: agentId }), () => this.sessionMetadata.snapshot().private === true)],
           [IAgentRuntimeBindingSeed, {
             _serviceBrand: undefined,
             binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },

@@ -71,6 +71,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   }
   let index: SqliteSearchIndex | undefined;
   let pending = new Map<string, { session: SqliteSessionInput; revision: number }>();
+  let targeted = new Map<string, { readonly revision: number; readonly session?: SqliteSessionInput }>();
   let staging: { revision: number; sessions: Map<string, SqliteSessionInput> } | undefined;
   let inventory: { revision: number; ids: ReadonlySet<string> } | undefined;
   let activeRevision = 0;
@@ -113,7 +114,20 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     syncing = true;
     lastDrainError = undefined;
     try {
-      while ((pending.size || inventory) && !stopped) {
+      while ((targeted.size || pending.size || inventory) && !stopped) {
+        if (targeted.size) {
+          const entry = targeted.entries().next().value as [string, { readonly revision: number; readonly session?: SqliteSessionInput }] | undefined;
+          if (entry === undefined) break;
+          const [id, work] = entry;
+          if (work.session === undefined) {
+            if (!await index.retireSession(id)) break;
+          } else await index.syncSession(work.session);
+          if (targeted.get(id) === work) targeted.delete(id);
+          const missing = !index.db.prepare('SELECT 1 FROM sessions WHERE id=?').get(id);
+          report({ type: 'session_synced', sessionId: id, revision: work.revision, missing });
+          status();
+          continue;
+        }
         if (inventory) {
           const current = inventory;
           if (!await index.reconcileSessions(current.ids)) break;
@@ -136,9 +150,9 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         const missing = !index.db.prepare('SELECT 1 FROM sessions WHERE id=?').get(id);
         report({ type: 'synced', sessionId: id, revision: work.revision, missing });
         status();
-        if (pending.size) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (pending.size || targeted.size) await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      if (!pending.size && !inventory && activeRevision > completedRevision) {
+      if (!targeted.size && !pending.size && !inventory && activeRevision > completedRevision) {
         completedRevision = activeRevision;
         report({ type: 'inventory_synced', revision: completedRevision });
       }
@@ -255,7 +269,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       process.exit(87);
     }
     status();
-    if ((pending.size || inventory) && !syncing && !rebuilding) void drain();
+    if ((targeted.size || pending.size || inventory) && !syncing && !rebuilding) void drain();
   }, 1000);
   process.on('disconnect', () => process.exit(0));
   await new Promise<void>((resolve) => {
@@ -275,6 +289,18 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         pending = new Map([...staging.sessions].map(([id, session]) => [id, { session, revision: activeRevision }]));
         staging = undefined;
         if (!rebuilding) void drain();
+      } else if (message.type === 'sync_session') {
+        const current = targeted.get(message.session.id);
+        if (current === undefined || current.revision <= message.revision) {
+          targeted.set(message.session.id, { revision: message.revision, session: message.session });
+          if (!rebuilding) void drain();
+        }
+      } else if (message.type === 'retire_session') {
+        const current = targeted.get(message.sessionId);
+        if (current === undefined || current.revision <= message.revision) {
+          targeted.set(message.sessionId, { revision: message.revision });
+          if (!rebuilding) void drain();
+        }
       } else if (message.type === 'reindex') {
         if (rebuilding) {
           report({ type: 'reindexed', id: message.id, sessions: 0, documents: 0, error: 'reindex already running' });
@@ -284,16 +310,17 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
             while (syncing) await new Promise((done) => setTimeout(done, 25));
             if (!index || stopped) throw new Error('indexer stopped during reindex');
             await index.reindex();
+            targeted.clear();
             if (activeRevision <= message.revision) {
               activeRevision = message.revision;
               inventory = undefined;
               pending = new Map(message.sessions.map((session) => [session.id, { session, revision: message.revision }]));
             }
-            while ((pending.size || inventory) && !stopped) {
+            while ((targeted.size || pending.size || inventory) && !stopped) {
               await drain();
               if (lastDrainError || index.syncStatus.state === 'wal_stuck')
                 throw new Error(lastDrainError ?? 'reindex paused at WAL checkpoint');
-              if (pending.size) await new Promise((done) => setTimeout(done, 100));
+              if (pending.size || targeted.size) await new Promise((done) => setTimeout(done, 100));
             }
             if (stopped) throw new Error('indexer stopped during reindex');
             completedRevision = activeRevision;
@@ -303,7 +330,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
               documents: result.documents ?? 0 });
           })().catch((error: unknown) => report({ type: 'reindexed', id: message.id, sessions: 0,
             documents: 0, error: error instanceof Error ? error.message : String(error) }))
-            .finally(() => { rebuilding = false; if (pending.size && !syncing) void drain(); });
+            .finally(() => { rebuilding = false; if ((targeted.size || pending.size) && !syncing) void drain(); });
         }
       } else if (message.type === 'close') {
         stopped = true;

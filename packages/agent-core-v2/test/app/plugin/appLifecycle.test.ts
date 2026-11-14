@@ -74,8 +74,8 @@ it('keeps a real resident App host alive when one workspace closes its contribut
   await hosts.ready;
   const plan = await plugins.previewPlugin({ source });
   await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
-  expect((await plugins.listPlugins())[0]).toMatchObject({ enabled: true, globalEnabled: false });
-  expect(hosts.running('fixture-resident')).toBe(true);
+  expect((await plugins.listPlugins())[0]).toMatchObject({ enabled: true, globalEnabled: false, defaultEnabled: false });
+  expect(hosts.running('fixture-resident')).toBe(false);
   expect(await usage.allows('workspace-a', 'fixture-resident')).toBe(false);
   await usage.set({ workspaceId: 'workspace-a', pluginId: 'fixture-resident', override: 'on' });
   await vi.waitFor(async () => expect((await usage.read('workspace-a')).applyState).toBe('applied'));
@@ -95,6 +95,11 @@ it('keeps a real resident App host alive when one workspace closes its contribut
   await plugins.setPluginEnabled({ id: 'fixture-resident', enabled: false });
   expect(hosts.running('fixture-resident')).toBe(false);
   expect(() => process.kill(after.pid, 0)).toThrow();
+  await plugins.setPluginEnabled({ id: 'fixture-resident', enabled: true });
+  expect((await plugins.listPlugins())[0]).toMatchObject({ enabled: true, globalEnabled: true, defaultEnabled: true });
+  await vi.waitFor(() => {
+    expect(hosts.running('fixture-resident')).toBe(true);
+  });
 });
 
 const accountPluginId = 'fixture-harness-accounts';

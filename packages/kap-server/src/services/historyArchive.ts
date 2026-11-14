@@ -363,11 +363,12 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
       const toolOutputScope = includeToolOutput === true || role === 'tool';
-      if (peer === true && role!=='record') return peerSearch(getCore().accessor.get(IThreadCommunicationService), {
+      const sessionIndex = getCore().accessor.get(ISessionIndex);
+      if (peer === true && role!=='record') return peerSearch(getCore().accessor.get(IThreadCommunicationService), sessionIndex, {
         query, mode, workspaceId, sessionId, includeToolOutput: toolOutputScope, role, after, before, pageSize, pageToken, signal,
       });
       let unavailablePage: HistorySearchPage | undefined;
-      const summary=sessionId===undefined?undefined:await getCore().accessor.get(ISessionIndex).get(sessionId);
+      const summary=sessionId===undefined?undefined:await sessionIndex.get(sessionId);
       const externalMaterials=summary?.custom?.['externalClient']!==undefined||summary?.custom?.['externalSource']!==undefined;
       const continueTranscript = getNavigation !== undefined && sessionId !== undefined && agentId !== undefined &&
         isTranscriptSearchCursor(pageToken);
@@ -386,15 +387,18 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
             sort: sort === 'oldest' ? 'time_asc' : sort === 'newest' ? 'time_desc' : 'score',
           });
           signal?.throwIfAborted();
-          if (page.indexState.state !== 'unavailable' || page.items.length > 0) return indexedPhrases ? {
-            ...page, coverage: { complete: page.indexState.state === 'ready' &&
-              page.indexState.stale !== true && page.incomplete === undefined && includeSubagents !== true,
-            domain: 'indexed_text', gaps: [
-              'tool_tail_not_indexed', 'refs_unavailable',
-              includeSubagents ? 'subagents_may_be_unindexed' : undefined,
-              page.incomplete, page.indexState.state === 'ready' ? undefined : 'index_not_ready',
-            ].filter((gap): gap is string => gap !== undefined) },
-          } : page;
+          if (page.indexState.state !== 'unavailable' || page.items.length > 0) {
+            const projected: HistorySearchPage = indexedPhrases ? {
+              ...page, coverage: { complete: page.indexState.state === 'ready' &&
+                page.indexState.stale !== true && page.incomplete === undefined && includeSubagents !== true,
+              domain: 'indexed_text' as const, gaps: [
+                'tool_tail_not_indexed', 'refs_unavailable',
+                includeSubagents ? 'subagents_may_be_unindexed' : undefined,
+                page.incomplete, page.indexState.state === 'ready' ? undefined : 'index_not_ready',
+              ].filter((gap): gap is string => gap !== undefined) },
+            } : page;
+            return sessionId === undefined ? withoutPrivateSessions(projected, sessionIndex, workspaceId) : projected;
+          }
           unavailablePage = page;
         } catch (error) {
           if (error instanceof GlobalSearchError && error.reason === 'invalid_page_token' && pageToken !== undefined) throw new Error('stale_scan_cursor');
@@ -411,8 +415,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         };
       }
       const fallback = { workspaceId, query, mode, includeToolOutput: toolOutputScope, role, after, before, sort, pageSize, sessionId, agentId };
-      return getNavigation === undefined ? fallbackSearch(getTranscript(), fallback) :
-        navigationSearch(getTranscript(), getNavigation(), fallback, pageToken, signal);
+      const page = await (getNavigation === undefined ? fallbackSearch(getTranscript(), fallback) :
+        navigationSearch(getTranscript(), getNavigation(), fallback, pageToken, signal));
+      return sessionId === undefined ? withoutPrivateSessions(page, sessionIndex, workspaceId) : page;
     },
     async readTurn(sessionId, agentId, ordinal, stepId) {
       if (!isPlainAgentId(agentId)) throw new Error('Invalid agent id.');
@@ -467,7 +472,24 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
   return [[IHistoryArchive, archive]];
 }
 
-async function peerSearch(service: IThreadCommunicationService, input: FallbackInput & {
+async function withoutPrivateSessions(page: HistorySearchPage, sessions: ISessionIndex, workspaceId?: string): Promise<HistorySearchPage> {
+  const privateBySession = new Map<string, boolean>();
+  const items: HistorySearchPage['items'][number][] = [];
+  for (const item of page.items) {
+    const itemWorkspace = 'workspaceId' in item && typeof item.workspaceId === 'string' ? item.workspaceId : workspaceId;
+    const key = `${itemWorkspace ?? ''}\0${item.sessionId}`;
+    let isPrivate = privateBySession.get(key);
+    if (isPrivate === undefined) {
+      const summary = await sessions.get(item.sessionId, itemWorkspace);
+      isPrivate = summary === undefined || summary.private === true;
+      privateBySession.set(key, isPrivate);
+    }
+    if (!isPrivate) items.push(item);
+  }
+  return items.length === page.items.length ? page : { ...page, items };
+}
+
+async function peerSearch(service: IThreadCommunicationService, sessions: ISessionIndex, input: FallbackInput & {
   readonly workspaceId: string;
   readonly pageToken?: string;
   readonly signal?: AbortSignal;
@@ -479,6 +501,17 @@ async function peerSearch(service: IThreadCommunicationService, input: FallbackI
   let bytes = 0;
   let more = false;
   let preparing = false;
+  const privateEndpoints = new Map<string, boolean>();
+  const isPrivate = async (ref: { readonly hostId: string; readonly workspaceId: string; readonly sessionId: string }): Promise<boolean> => {
+    if (ref.hostId !== service.hostId) return false;
+    const key = `${ref.workspaceId}\0${ref.sessionId}`;
+    const known = privateEndpoints.get(key);
+    if (known !== undefined) return known;
+    const summary = await sessions.get(ref.sessionId, ref.workspaceId);
+    const value = summary?.private === true;
+    privateEndpoints.set(key, value);
+    return value;
+  };
   while (items.length < input.pageSize && scanned < 200 && bytes < (2 << 20)) {
     input.signal?.throwIfAborted();
     const page = await service.listMessages({ workspaceId: input.workspaceId, sessionId: input.sessionId, cursor, limit: 1 });
@@ -488,6 +521,8 @@ async function peerSearch(service: IThreadCommunicationService, input: FallbackI
     preparing = page.incomplete === 'history_preparing';
     for (const message of page.items) {
       bytes += Buffer.byteLength(message.content);
+      const refs = message.source.kind === 'thread' ? [message.source.thread.ref, message.target.ref] : [message.target.ref];
+      if (await Promise.all(refs.map(isPrivate)).then((values) => values.some(Boolean))) continue;
       if (input.role !== undefined && input.role !== 'user' ||
           input.after !== undefined && message.acceptedAt < input.after ||
           input.before !== undefined && message.acceptedAt >= input.before) continue;

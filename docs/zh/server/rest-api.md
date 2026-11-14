@@ -394,7 +394,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 和标题、工作区搜索 `q` |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
-| `POST /api/sessions/{session_id}/profile` | 更新标题、元数据、agent 配置 |
+| `POST /api/sessions/{session_id}/profile` | 更新标题、私密状态、元数据或 Agent 配置 |
 | `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
 | `POST /api/sessions/{session_id}/agents/{agent_id}:promote` | 把子智能体复制成新的顶层会话 |
 | `POST /api/sessions/{session_id}:delete-archived` | 永久删除已归档对话及仍附属的归档对话 |
@@ -406,6 +406,12 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/warnings` | 会话级告警 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
+
+向 `POST /api/sessions` 发送 `"private": true`，可创建持久保存的私密会话。为已隐藏的 Persona 新建会话时，默认设为私密；显式传入 `private: false` 可覆盖默认值。要更改现有会话，向该会话的档案接口发送 `{"private": true}` 或 `{"private": false}`。
+
+`GET /api/sessions` 默认排除私密会话。传入 `include_private=true` 可一并列出，传入 `private_only=true` 则只列出私密会话。按 `persona` 筛选时，默认包含该 Persona 的私密会话，除非显式传入 `include_private=false`。`private_only=true` 与 `include_private=false` 不可同时使用。
+
+私密会话仍可恢复，也可读取本会话的历史。全局搜索、跨会话历史、用量统计和用量导出均排除私密会话。此设置不会加密磁盘上的会话，也不会更改直接访问该会话的接口权限。
 
 冷会话的目标读取保留已保存历史中的 `goalId`、`controlRevision` 和预算状态。没有可用检查点时，请求会等待分片准备完成并返回完整快照，无需重复 GET；各分片之间会让出事件循环。
 
@@ -1127,6 +1133,7 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 | `meta.updated_after` | 只看该时间（epoch 毫秒）之后更新过的会话 |
 | `meta.updated_before` | 只看该时间（epoch 毫秒）之前更新过的会话 |
 | `meta.archived` | `true` / `false`（默认）/ `all` |
+| `meta.private` | `true` 仅列出私密会话；`false`（默认）仅列出非私密会话；`all` 全部列出 |
 | `sort` | `meta.updated_at_desc`（默认）/ `meta.updated_at_asc` / `meta.created_at_desc` |
 | `include` | 逗号分隔的附加字段组；目前支持 `git`（分支与 PR 信息，按目录去重并缓存 60 秒） |
 | `fields` | 逗号分隔的字段投影；目前仅支持 `id,archived`，每项裁剪为 `{ id, archived }`（用于全选匹配场景）。不可与 `include=git` 同传（`40001`） |
@@ -1134,7 +1141,7 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 | `page_token` | 上一页返回的翻页令牌 |
 | `page` | 无状态的 1 起始页码；与 `page_token` 互斥（同传返回 `40001`） |
 
-响应每项固定包含 `workspace`、`meta`、`activity` 三组，`include=git` 时附加 `git` 组；`fields=id,archived` 时仅返回 `{ id, archived }`。每页额外携带 `total`，即过滤后的集合大小。翻页令牌绑定首页查询条件（含投影），中途改条件返回 `40922`。`page` 模式是跳页用的无状态替代：每次请求都是独立快照，不签发令牌，`next_page_token` 恒为 `null`。
+响应每项固定包含 `workspace`、`meta`（含布尔值 `private`）、`activity` 三组，`include=git` 时附加 `git` 组；`fields=id,archived` 时仅返回 `{ id, archived }`。每页额外携带 `total`，即过滤后的集合大小。翻页令牌绑定首页查询条件（含投影），中途改条件返回 `40922`。`page` 模式是跳页用的无状态替代：每次请求都是独立快照，不签发令牌，`next_page_token` 恒为 `null`。
 
 ### `POST /api/sessions:archive` 与 `POST /api/sessions:restore`
 

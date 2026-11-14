@@ -40,6 +40,7 @@ import { drainSessionMetadataWrites, SessionMetadata, trackSessionMetadataWork }
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { ILogService } from '#/_base/log/log';
 import { stubLog } from '../../_base/log/stubs';
@@ -126,6 +127,10 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
     },
   };
   const sessionAccessor = accessor([
+    [ISessionContext, makeSessionContext({
+      sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/session-1',
+      sessionScope: 'sessions/workspace-1/session-1', cwd: '/workspace',
+    })],
     [
       ISessionActivityView,
       { state: () => activity },
@@ -139,7 +144,14 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
       },
     }],
     [ISessionTerminalService, terminalService ?? { countLiveTerminals: () => terminals.live }],
-    [ISessionMetadata, { drain: () => metadata.gate, read: async () => ({ agents: {} }), usage: () => undefined, update: async () => {}, setArchived: async () => {} }],
+    [ISessionMetadata, {
+      drain: () => metadata.gate,
+      read: async () => ({ agents: {} }),
+      snapshot: () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false }),
+      usage: () => undefined,
+      update: async () => {},
+      setArchived: async () => {},
+    }],
   ]);
   const handle = {
     id: 'session-1',
@@ -389,6 +401,11 @@ describe('SessionLifecycleService factory ownership', () => {
         get: async () => undefined, set: async () => { throw failure; }, update: async () => undefined,
         delete: async () => {}, list: async () => [], watch: () => Event.None as Event<void>, acquire: () => ({ dispose: () => {} }),
       });
+      collection.set(ISessionContext, makeSessionContext({
+        sessionId: 'failed-initial-write', workspaceId: 'workspace-1', sessionDir: '/home/failed-initial-write',
+        sessionScope: 'sessions/workspace-1/failed-initial-write', cwd: '/workspace',
+      }));
+      collection.set(IUsageFactStore, { _serviceBrand: undefined, setSessionPrivacy: async () => {} } as unknown as IUsageFactStore);
       for (const entry of getScopedServiceDescriptors('session')) {
         if (collection.get(entry.id) !== undefined) continue;
         collection.set(entry.id, { ready: Promise.resolve(), list: () => [],
@@ -449,11 +466,19 @@ describe('SessionLifecycleService factory ownership', () => {
       const childSpy = vi.spyOn(parent, 'createChild').mockImplementation((collection, store) => {
         for (const entry of getScopedServiceDescriptors('session')) {
           if (collection.get(entry.id) !== undefined) continue;
+          if (entry.id === ISessionContext) {
+            collection.set(entry.id, makeSessionContext({
+              sessionId: 'factory-session', workspaceId: 'workspace-1', sessionDir: '/home/factory-session',
+              sessionScope: 'sessions/workspace-1/factory-session', cwd: '/workspace',
+            }));
+            continue;
+          }
           collection.set(entry.id, {
             get ready() {
               return entry.id === ISessionMetadata && (phase === 'materialization-error' || phase === 'rollback')
                 ? Promise.reject(failure) : Promise.resolve();
             },
+            snapshot: () => ({ id: 'factory-session', createdAt: 0, updatedAt: 0, archived: false }),
             usage: () => undefined,
             drain: async () => {},
             update: async () => {},
@@ -1745,6 +1770,10 @@ describe('SessionLifecycleService archive transcript certification', () => {
       id: 'session-1',
       dispose: vi.fn(async () => { order.push('dispose'); }),
       accessor: accessor([
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/session-1',
+          sessionScope: 'sessions/workspace-1/session-1', cwd: '/workspace',
+        })],
         [ISessionActivityView, { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) }],
         [IAgentLifecycleService, {
           countPendingBackgroundTasks: () => 0,
@@ -1757,6 +1786,7 @@ describe('SessionLifecycleService archive transcript certification', () => {
         [ISessionTerminalService, { countLiveTerminals: () => 0 }],
         [ISessionMetadata, {
           drain: async () => { order.push('metadata'); },
+          snapshot: () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false }),
           usage: () => undefined,
           update: async () => {},
           setArchived: async (value: boolean) => { archived.value = value; order.push('meta'); },

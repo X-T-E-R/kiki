@@ -36,6 +36,7 @@ export interface SessionSummary {
   readonly updatedAt: number;
   readonly ownUpdatedAt?: number;
   readonly archived: boolean;
+  readonly private?: boolean;
   /** Archive time (epoch ms); absent for sessions archived before the field
    *  existed — callers fall back to `updatedAt` for display. */
   readonly archivedAt?: number;
@@ -119,6 +120,7 @@ export const ISessionIndex: ServiceIdentifier<ISessionIndex> =
 export interface SessionIndexMutation {
   readonly id: string;
   readonly workspaceId?: string;
+  readonly private?: boolean;
 }
 
 export interface ISessionIndexMirror {

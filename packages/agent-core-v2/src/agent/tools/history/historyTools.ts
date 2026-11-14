@@ -192,6 +192,16 @@ export function historyTargetError(options: {
   } }) };
 }
 
+export function privateHistoryTargetError(options: {
+  readonly scope: string;
+  readonly targetKind: HistoryTargetKind;
+  readonly nextCall: HistoryRecoveryCall;
+}): ExecutableToolErrorResult {
+  return historyTargetError({ code: 'history_target_unavailable',
+    message: 'The requested session is not available in this scope. Browse the current session instead.',
+    retryable: true, scope: options.scope, targetKind: options.targetKind, nextCall: options.nextCall });
+}
+
 export async function classifyHistorySession(
   sessions: ISessionIndex,
   current: { readonly sessionId: string; readonly workspaceId: string },
@@ -200,6 +210,7 @@ export async function classifyHistorySession(
 ): Promise<
   | { readonly kind: 'ready'; readonly workspaceId: string }
   | { readonly kind: 'mismatch'; readonly summary: SessionSummary }
+  | { readonly kind: 'private'; readonly summary: SessionSummary }
   | { readonly kind: 'unknown' }
 > {
   const summary = await sessions.get(sessionId);
@@ -208,6 +219,7 @@ export async function classifyHistorySession(
   if (summary === undefined) {
     return liveHere ? { kind: 'ready', workspaceId: current.workspaceId } : { kind: 'unknown' };
   }
+  if (summary.private === true && !liveHere) return { kind: 'private', summary };
   if (explicitWorkspaceId !== undefined && explicitWorkspaceId !== summary.workspaceId) {
     return { kind: 'mismatch', summary };
   }
@@ -390,6 +402,33 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
     @ISessionMetadata metadata?: ISessionMetadata,
   ) { super(archive, session, workspaces, metadata); }
 
+  private async visibleItems(items: readonly HistoryHit[], scope: string, workspaceId: string): Promise<readonly HistoryHit[]> {
+    if (scope !== 'workspace' && scope !== 'peer') return items;
+    const privateSessions = new Map<string, boolean>();
+    const isPrivate = async (sessionId: string, targetWorkspace: string): Promise<boolean> => {
+      const key = `${targetWorkspace}\0${sessionId}`;
+      const known = privateSessions.get(key);
+      if (known !== undefined) return known;
+      const summary = await this.sessions.get(sessionId, targetWorkspace);
+      const value = summary?.private === true;
+      privateSessions.set(key, value);
+      return value;
+    };
+    const visible: HistoryHit[] = [];
+    for (const item of items) {
+      if (scope === 'workspace' && await isPrivate(item.sessionId, workspaceId)) continue;
+      if (scope === 'peer') {
+        const refs = item.communication === undefined ? [] : [
+          ...(item.communication.source.kind === 'thread' ? [item.communication.source.thread.ref] : []),
+          item.communication.target.ref,
+        ];
+        if (await Promise.all(refs.map((ref) => isPrivate(ref.sessionId, ref.workspaceId))).then((values) => values.some(Boolean))) continue;
+      }
+      visible.push(item);
+    }
+    return visible;
+  }
+
   async resolveExecution(input: SearchInput): Promise<ToolExecution> {
     const cursor = input.cursor === undefined ? undefined : input.query === undefined
       ? decodeSearchCursor(input.cursor) : (() => { try { return decodeSearchCursor(input.cursor); } catch { return undefined; } })();
@@ -416,12 +455,15 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
     const sessionId = scope === 'workspace' ? undefined : scope === 'peer' ? request.session_id : request.session_id ?? this.session.sessionId;
     const rawAgentId = scope === 'peer' ? 'main' : request.include_subagents ? undefined : request.agent_id ??
       (sessionId === this.session.sessionId && scope !== 'workspace' ? this.caller.agentId : 'main');
-    const agentId = await this.resolveAgentSelector(sessionId, rawAgentId);
     const classified = sessionId === undefined ? undefined : await classifyHistorySession(
       this.sessions, { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, request.workspace_id);
     const discovered = request.query !== undefined
       ? { tool: 'HistorySearch', arguments: { query: request.query, scope: scope === 'peer' ? 'peer' : 'workspace' } }
       : { tool: 'HistoryList', arguments: { kind: 'turns' } };
+    if (classified?.kind === 'private') {
+      return privateHistoryTargetError({ scope, targetKind: cursor === undefined ? 'session' : 'cursor', nextCall: discovered });
+    }
+    const agentId = await this.resolveAgentSelector(sessionId, rawAgentId);
     if (classified?.kind === 'mismatch') {
       return historyTargetError({ code: 'history_target_unavailable', message: 'The session is indexed in a different workspace. Retry that workspace and session; this call does not read it.', retryable: true,
         scope, targetKind: cursor === undefined ? 'session' : 'cursor', nextCall: { tool: 'HistorySearch', arguments: {
@@ -487,7 +529,8 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
         const next = page.pageToken === undefined ? undefined : Buffer.from(JSON.stringify({
           v: 2, request: { ...request, cursor: undefined }, page: page.pageToken,
         } satisfies SearchCursor)).toString('base64url');
-        const hits = page.items.filter((hit) => (hit.turn !== undefined || scope === 'peer' && hit.communication !== undefined) && hit.role !== 'title');
+        const hits = (await this.visibleItems(page.items, scope, target.id)).filter(
+          (hit) => (hit.turn !== undefined || scope === 'peer' && hit.communication !== undefined) && hit.role !== 'title');
         const expandedMode = request.mode === 'literal' || request.mode === 'terms' ? request.mode : 'terms';
         return { output: JSON.stringify({
           schema_version: 2, status: page.incomplete !== undefined ||
@@ -597,16 +640,20 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
   }): Promise<{ readonly ok: true; readonly target: { id: string; externalRoot?: string } } |
     { readonly ok: false; readonly error: ExecutableToolErrorResult }> {
     const summary = await this.sessions.get(source.session);
-    const resolvedInputAgent = input.agent_id === undefined ? undefined : await this.resolveAgentSelector(source.session, input.agent_id);
-    const conflicts = input.workspace_id !== undefined && input.workspace_id !== source.workspace ||
-      input.session_id !== undefined && input.session_id !== source.session ||
-      resolvedInputAgent !== undefined && resolvedInputAgent !== source.agent;
+    if (summary !== undefined && summary.private === true && source.session !== this.session.sessionId) {
+      return { ok: false, error: privateHistoryTargetError({ scope: 'ref', targetKind: 'ref',
+        nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } }) };
+    }
     if (summary !== undefined && summary.workspaceId !== source.workspace) {
       return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref session is indexed in a different workspace. List that session there; this call does not read the ref.', retryable: true,
         scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryList', arguments: {
           kind: 'turns', session_id: summary.id, workspace_id: summary.workspaceId, agent_id: source.agent,
         } } }) };
     }
+    const resolvedInputAgent = input.agent_id === undefined ? undefined : await this.resolveAgentSelector(source.session, input.agent_id);
+    const conflicts = input.workspace_id !== undefined && input.workspace_id !== source.workspace ||
+      input.session_id !== undefined && input.session_id !== source.session ||
+      resolvedInputAgent !== undefined && resolvedInputAgent !== source.agent;
     if (summary !== undefined && conflicts) {
       return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref stays bound to its original workspace, session, and agent. Retry with the ref alone.', retryable: true,
         scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryRead', arguments: { ref } } }) };
@@ -755,6 +802,10 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
           ...(selectorAgent !== undefined ? { agent_id: selectorAgent } : {}),
           ...(selectorStep !== undefined ? { step_id: selectorStep } : {}),
         } } });
+    }
+    if (classified.kind === 'private') {
+      return privateHistoryTargetError({ scope: 'selector', targetKind: selector === undefined ? 'session' : 'cursor',
+        nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } });
     }
     if (classified.kind === 'unknown') {
       if (selector !== undefined && input.cursor !== undefined) {

@@ -356,6 +356,8 @@ describe('SqliteQueryStore', () => {
       import { ILogService } from ${module('../../../../src/_base/log/log.ts')};
       import { IQueryStore } from ${module('../../../../src/persistence/interface/queryStore.ts')};
       import { IFileSystemStorageService } from ${module('../../../../src/persistence/interface/storage.ts')};
+      import { IAtomicDocumentStore } from ${module('../../../../src/persistence/interface/atomicDocumentStore.ts')};
+      import { JsonAtomicDocumentStore } from ${module('../../../../src/persistence/backends/node-fs/atomicDocumentStore.ts')};
       import { IAppendLogStore } from ${module('../../../../src/persistence/interface/appendLogStore.ts')};
       import { FileStorageService } from ${module('../../../../src/persistence/backends/node-fs/fileStorageService.ts')};
       import { AppendLogStore } from ${module('../../../../src/persistence/backends/node-fs/appendLogStore.ts')};
@@ -370,7 +372,7 @@ describe('SqliteQueryStore', () => {
       const ix = new TestInstantiationService();
       const storage = new FileStorageService(process.argv[2]);
       ix.stub(IBootstrapService, stubBootstrap(process.argv[2])); ix.stub(ILogService, stubLog()); ix.stub(IFileSystemStorageService, storage);
-      ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+      ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore)); ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
       const model = ix.get(IUsageReadModel), facts = ix.get(IUsageFactStore), logs = ix.get(IAppendLogStore), query = ix.get(IQueryStore);
       const staging = await query.createStaging!(scope);
       if (process.argv[3] === 'seed') await facts.commit(scope, 0, { generation:'legacy', offset:800, size:800, mtimeMs:1, boundaryHash:'', valid:true }, Array.from({length:800}, (_,time) => ({time,model:'example',usageKnown:true,usage:{inputOther:1,output:2,inputCacheRead:0,inputCacheCreation:0}})));

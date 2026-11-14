@@ -166,6 +166,7 @@ function manager(
     indexMirror: undefined,
     retainedUsage: {
       _serviceBrand: undefined,
+      privateSessions: async () => [],
       recordOperation: async () => {},
       readOperationSummary: async () => ({ complete: true }),
       retainDeletedSession: async () => { throw new Error('retained usage is not used'); },

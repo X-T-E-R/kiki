@@ -36,6 +36,7 @@ interface SessionWireV2 {
     created_at: number;
     updated_at: number;
     archived: boolean;
+    private: boolean;
   };
   activity: { status: 'running' | 'approval' | 'question' | 'cleanup_pending' | 'failed' | 'idle' };
   git?: {
@@ -226,7 +227,7 @@ describe('server /api/sessions/query', () => {
     return body;
   }
 
-  it('pushes the default page limit and keyset into the index instead of draining all sessions', async () => {
+  it('walks the bounded index window for the default non-private filter', async () => {
     const index = server!.core.accessor.get(ISessionIndex);
     const list = vi.spyOn(index, 'listRecent');
     const count = vi.spyOn(index, 'count');
@@ -235,16 +236,16 @@ describe('server /api/sessions/query', () => {
       expect(first.total).toBe(3);
       expect(first.items.map((item) => item.id)).toEqual(['s1']);
       const firstReads = list.mock.calls.filter(([query]) => query.includeArchived === false);
-      expect(firstReads).toHaveLength(1);
-      expect(firstReads[0]?.[0].limit).toBe(2);
-      expect(count.mock.calls.filter(([query]) => query.includeArchived === false)).toHaveLength(1);
+      expect(firstReads.length).toBeGreaterThan(0);
+      expect(firstReads.every(([query]) => query.limit !== undefined && query.limit <= 500)).toBe(true);
+      expect(count.mock.calls.filter(([query]) => query.includeArchived === false)).toHaveLength(0);
       list.mockClear();
       const second = await getData(`?page_size=1&page_token=${first.next_page_token}`);
       expect(second.total).toBe(3);
       expect(second.items.map((item) => item.id)).toEqual(['s2']);
       const nextReads = list.mock.calls.filter(([query]) => query.includeArchived === false);
-      expect(nextReads).toHaveLength(1);
-      expect(nextReads[0]?.[0]).toMatchObject({ limit: 2, beforePosition: { updatedAt: 5_000, id: 's1' } });
+      expect(nextReads.length).toBeGreaterThan(0);
+      expect(nextReads.every(([query]) => query.limit !== undefined && query.limit <= 500)).toBe(true);
     } finally {
       list.mockRestore();
       count.mockRestore();
@@ -344,6 +345,7 @@ describe('server /api/sessions/query', () => {
       created_at: 3_000,
       updated_at: 5_000,
       archived: false,
+      private: false,
       archived_at: null,
     });
     expect(first.activity).toEqual({ status: 'idle' });
@@ -419,6 +421,55 @@ describe('server /api/sessions/query', () => {
 
     const bogus = await getError('?meta.archived=yes');
     expect(bogus.code).toBe(40001);
+  });
+
+  it('filters private sessions by meta.private across full and ids-projection pages', async () => {
+    const privateSummary: SessionSummary = {
+      id: 's5',
+      workspaceId: WS_B,
+      cwd: '/repo/private',
+      title: 'Private',
+      createdAt: 1_500,
+      updatedAt: 2_500,
+      archived: false,
+      private: true,
+    };
+    SUMMARIES.push(privateSummary);
+    try {
+      const defaults = await getData();
+      expect(defaults.items.map((item) => item.id)).toEqual(['s1', 's2', 's3']);
+      expect(defaults.items.every((item) => (item as SessionWireV2).meta.private === false)).toBe(true);
+
+      const privateOnly = await getData('?meta.private=true');
+      expect(privateOnly.items.map((item) => item.id)).toEqual(['s5']);
+      expect((privateOnly.items[0] as SessionWireV2).meta.private).toBe(true);
+
+      const nonPrivate = await getData('?meta.private=false');
+      expect(nonPrivate.items.map((item) => item.id)).toEqual(['s1', 's2', 's3']);
+
+      const all = await getData('?meta.private=all');
+      expect(all.items.map((item) => item.id)).toEqual(['s1', 's2', 's3', 's5']);
+
+      const projectedPrivate = await getData('?meta.private=true&fields=id,archived');
+      expect(projectedPrivate.items).toEqual([{ id: 's5', archived: false }]);
+      const projectedAll = await getData('?meta.private=all&fields=id,archived');
+      expect(projectedAll.items.map((item) => item.id)).toEqual(['s1', 's2', 's3', 's5']);
+
+      const first = await getData('?meta.private=all&fields=id,archived&page_size=2');
+      const second = await getData(
+        `?meta.private=all&fields=id,archived&page_size=2&page_token=${first.next_page_token}`,
+      );
+      expect(second.items.map((item) => item.id)).toEqual(['s3', 's5']);
+      expect(
+        (await getError(
+          `?meta.private=false&fields=id,archived&page_size=2&page_token=${first.next_page_token}`,
+        )).code,
+      ).toBe(40922);
+
+      expect((await getError('?meta.private=yes')).code).toBe(40001);
+    } finally {
+      SUMMARIES.splice(SUMMARIES.indexOf(privateSummary), 1);
+    }
   });
 
   it('sorts by meta.updated_at_asc and meta.created_at_desc', async () => {

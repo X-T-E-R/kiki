@@ -179,6 +179,19 @@ it('reuses the reserved session and prompt after a lost create acknowledgement a
   } finally { creating.mockRestore(); }
 }, 60000);
 
+it('hides a private bridged target from ThreadList while preserving explicit ThreadRead', async () => {
+  const f = await fixture();
+  const link = await linkFor(f, 'network');
+  const manager = f.b.core.accessor.get(ISessionManager);
+  const target = await manager.resume(f.target.sessionId);
+  if (target === undefined) throw new Error('target session did not resume');
+  await target.accessor.get(ISessionMetadata).update({ private: true });
+  await manager.close(f.target.sessionId);
+  expect(await f.b.core.accessor.get(ISessionIndex).get(f.target.sessionId)).toMatchObject({ private: true });
+  const threads = f.a.core.accessor.get(IThreadCommunicationService);
+  await expect(threads.listThreads({ caller: f.source, bridgeId: link.grant.id })).resolves.toEqual({ threads: [] });
+}, 60_000);
+
 describe.each(['tls', 'peer_socket'] as const)('paired cross-space create (%s)', (transport) => {
   it('creates with and without a prompt and immediately reads, sends and waits using its reference', async () => {
     const f = await fixture();

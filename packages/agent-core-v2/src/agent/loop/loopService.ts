@@ -56,6 +56,7 @@ import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } 
 import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
@@ -1085,7 +1086,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
                 step.response, step.trace, runtime.job?.steerController.signal, runtime, step);
               this.finishStep(runtime.turnId, runtime.turnSignal, step.step, step.stepId, step.response, reason, () => {});
             } catch (error) {
-              if (!this.parkedForExit) this.context.appendLoopEvent({ type: 'step.end', uuid: step.stepId,
+              if (!this.parkedForExit) this.appendStepEnd({ type: 'step.end', uuid: step.stepId,
                 turnId: String(runtime.turnId), step: step.step, finishReason: isAbortError(error) || runtime.turnSignal.aborted ? 'interrupted' : 'error' });
               throw error;
             }
@@ -1504,7 +1505,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           continuationBudget.thinkingOnlyContinuations < 1
         ) {
           const usage = facts.usage ?? undefined;
-          this.context.appendLoopEvent({
+          this.appendStepEnd({
             type: 'step.end',
             uuid: stepUuid,
             turnId: String(turnId),
@@ -1530,7 +1531,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         ) {
           const usage = readGenerateFailureUsage(error);
           markStepStarted();
-          this.context.appendLoopEvent({
+          this.appendStepEnd({
             type: 'step.end',
             uuid: stepUuid,
             turnId: String(turnId),
@@ -1632,7 +1633,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         !(this.zeroOutputContinuationEnabled() && isZeroOutputCompletion(response))
       ) {
         markStepStarted();
-        this.context.appendLoopEvent({
+        this.appendStepEnd({
           type: 'step.end',
           uuid: stepUuid,
           turnId: String(turnId),
@@ -1644,16 +1645,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           rawFinishReason: response.rawFinishReason,
         });
         stepEndAppended = true;
+        const details = {
+          turnId,
+          step: currentStep,
+          messageId: response.providerMessageId,
+          providerFinishReason: response.providerFinishReason,
+          rawFinishReason: response.rawFinishReason,
+        };
         throw new Error2(ErrorCodes.LOOP_EMPTY_COMPLETION,
           'The subagent provider completed without content or tool calls; no task receipt was produced. Inspect preserved work before resuming with a new prompt ID.',
-          { details: {
-            turnId,
-            step: currentStep,
-            messageId: response.providerMessageId,
-            providerFinishReason: response.providerFinishReason,
-            rawFinishReason: response.rawFinishReason,
-            usage: response.usage,
-          } });
+          { details: this.isPrivateSession() ? details : { ...details, usage: response.usage } });
       }
       const finishReason = await this.executeStepTools(
         turnId,
@@ -1705,7 +1706,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
       if (!stepEndAppended && !this.parkedForExit) {
-        this.context.appendLoopEvent({
+        this.appendStepEnd({
           type: 'step.end',
           uuid: stepUuid,
           turnId: String(turnId),
@@ -1894,6 +1895,27 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return stopTurn || forcedStopTurn ? 'completed' : 'tool_calls';
   }
 
+  private isPrivateSession(): boolean {
+    return this.instantiation.invokeFunction(accessor => accessor.get(ISessionContext).isPrivate?.() === true);
+  }
+
+  private appendStepEnd(event: Extract<LoopRecordedEvent, { type: 'step.end' }>): void {
+    if (!this.isPrivateSession()) {
+      this.context.appendLoopEvent(event);
+      return;
+    }
+    this.context.appendLoopEvent({
+      type: 'step.end',
+      uuid: event.uuid,
+      turnId: event.turnId,
+      step: event.step,
+      finishReason: event.finishReason,
+      messageId: event.messageId,
+      providerFinishReason: event.providerFinishReason,
+      rawFinishReason: event.rawFinishReason,
+    });
+  }
+
   private sealGoogleProtocolStep(
     turnId: number,
     currentStep: number,
@@ -1903,7 +1925,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ): void {
     markStepStarted();
     const timing = response.timing;
-    this.context.appendLoopEvent({
+    this.appendStepEnd({
       type: 'step.end',
       uuid: stepUuid,
       turnId: String(turnId),
@@ -1935,7 +1957,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     markStepStarted();
     const timing = response.timing;
     const stepFinishReason = normalizeFinishReason(finishReason);
-    this.context.appendLoopEvent({
+    this.appendStepEnd({
       type: 'step.end',
       uuid: stepUuid,
       turnId: String(turnId),

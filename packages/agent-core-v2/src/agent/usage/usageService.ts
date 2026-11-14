@@ -82,7 +82,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
     const usageScope: UsageRecordScope = source?.type === 'turn' ? 'turn' : 'session';
     const turnId = source?.turnId;
     const profile = this.profile.data();
-    void this.dispatcher.dispatchDurably(new UsageRecord({
+    if (this.session.isPrivate?.() !== true) void this.dispatcher.dispatchDurably(new UsageRecord({
       model,
       usage,
       usageScope,
@@ -96,7 +96,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
       executorId: context?.executorId ?? profile.executorId ?? 'native',
       usageKnown: context?.usageKnown ?? true,
     })).then(() => {
-      if (this.session.ephemeral === true) return;
+      if (this.session.ephemeral === true || this.session.isPrivate?.() === true) return;
       this.events.publish(new UsageSettled({ payload: {
         sessionId: this.session.sessionId, agentId: this.scope.agentId,
       } }));
@@ -123,7 +123,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
   }
 
   status(): UsageStatus {
-    return usageStatusFromState(this.states.get(usageKey), this.currentTurn);
+    return usageStatusFromState(this.session.isPrivate?.() === true ? { byModel: {} } : this.states.get(usageKey), this.currentTurn);
   }
 }
 

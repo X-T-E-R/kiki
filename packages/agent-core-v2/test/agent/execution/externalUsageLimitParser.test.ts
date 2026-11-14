@@ -8,7 +8,7 @@ import {
   normalizeExternalExecutorError,
   parseExternalUsageLimit,
 } from '#/agent/execution/externalUsageLimitParser';
-import { AssistantDelta, ThinkingDelta } from '#/agent/loop/turnEvents';
+import { AssistantDelta, ThinkingDelta, TurnStepCompleted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { isQuotaExhaustedTurnError } from '#/app/agentExecutor/executorSchedule';
@@ -16,10 +16,11 @@ import type { Event2 } from '#/app/event/event2';
 import { Error2, ErrorCodes, toKimiErrorPayload } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 const FIXED_NOW_MS = Date.parse('2026-11-12T12:00:00.000Z');
 
-function createTestRecorder() {
+function createTestRecorder(privateSession = false) {
   const dispatched: Event2[] = [];
   const loopEvents: unknown[] = [];
   const dispatcher = {
@@ -46,6 +47,7 @@ function createTestRecorder() {
     [IWireService, wire],
     [IAgentContextMemoryService, context],
     [IAgentUsageService, usage],
+    [ISessionContext, { isPrivate: () => privateSession }],
   ]);
   const recorder = new ExternalTurnRecorder(
     {
@@ -384,6 +386,18 @@ describe('ExternalTurnRecorder streaming coalescing and rate-limit capture', () 
         resetAt: expectedIso,
       }),
     });
+  });
+
+  it('suppresses private usage from the durable step record while retaining live completion usage', async () => {
+    const { recorder, dispatched, loopEvents } = createTestRecorder(true);
+    const usage = { inputOther: 10, output: 20, inputCacheRead: 30, inputCacheCreation: 40 };
+    await recorder.begin('hello', { kind: 'user' });
+    await recorder.complete('end_turn', usage);
+
+    const stepEnd = loopEvents.find((item) => (item as { type?: string }).type === 'step.end') as Record<string, unknown>;
+    expect(stepEnd).toMatchObject({ finishReason: 'end_turn', rawFinishReason: 'end_turn' });
+    expect(stepEnd).not.toHaveProperty('usage');
+    expect(dispatched.find((event) => event instanceof TurnStepCompleted)).toMatchObject({ usage, finishReason: 'end_turn' });
   });
 
   it('persists accumulated Claude session.info windows and reset timing on an ordinary 429', async () => {

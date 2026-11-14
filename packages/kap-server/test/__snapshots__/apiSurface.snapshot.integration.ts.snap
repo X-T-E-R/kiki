@@ -98,6 +98,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/plugins/{pluginId}/routes/{*}",
+    ],
+    [
+      "DELETE",
       "/api/providers/{provider_id}",
     ],
     [
@@ -246,6 +250,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/cron/scripts",
+    ],
+    [
+      "GET",
       "/api/debug/{service}/{method}",
     ],
     [
@@ -295,6 +303,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/executors/{id}",
+    ],
+    [
+      "GET",
+      "/api/executors/{id}/account-sources",
+    ],
+    [
+      "GET",
+      "/api/executors/{id}/accounts",
     ],
     [
       "GET",
@@ -383,6 +399,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/gui/store/length",
+    ],
+    [
+      "GET",
+      "/api/harness-quota",
     ],
     [
       "GET",
@@ -590,11 +610,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/plugins/{pluginId}/routes/{*}",
+    ],
+    [
+      "GET",
       "/api/plugins/commands",
     ],
     [
       "GET",
+      "/api/plugins/gui-slots",
+    ],
+    [
+      "GET",
       "/api/plugins/marketplace",
+    ],
+    [
+      "GET",
+      "/api/plugins/models",
     ],
     [
       "GET",
@@ -1314,6 +1346,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/harness-quota/read",
+    ],
+    [
+      "POST",
       "/api/homes",
     ],
     [
@@ -1562,6 +1598,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/plugins/{pluginId}/routes/{*}",
+    ],
+    [
+      "POST",
       "/api/plugins/{tail}",
     ],
     [
@@ -1654,7 +1694,31 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/remote-connections/inbound/pair-code",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/inbound/peer-grant",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/pair",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/pair/cancel",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/pair/claim",
+    ],
+    [
+      "POST",
       "/api/remote-connections/provision",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/ssh/connect",
     ],
     [
       "POST",
@@ -1759,6 +1823,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/{tail}",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/agents/{agent_id}",
     ],
     [
       "POST",
@@ -1930,6 +1998,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/thread-bridge/create",
+    ],
+    [
+      "POST",
       "/api/thread-bridge/list",
     ],
     [
@@ -1959,6 +2031,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/thread-bridges/outbound",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/peer/outbound",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/peer/outbound/{id}/revoke",
     ],
     [
       "POST",
@@ -2163,6 +2243,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/personas/{id}/home",
+    ],
+    [
+      "PUT",
+      "/api/plugins/{pluginId}/routes/{*}",
     ],
     [
       "PUT",

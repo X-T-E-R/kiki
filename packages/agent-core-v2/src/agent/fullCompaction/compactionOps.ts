@@ -31,7 +31,9 @@ export class FullCompactionCancel extends Event2<z.infer<typeof fullCompactionCa
 }
 export interface FullCompactionCancel extends z.infer<typeof fullCompactionCancelSchema> {}
 
-const fullCompactionCompleteSchema = z.object({});
+const fullCompactionCompleteSchema = z.object({
+  countForPanel: z.boolean().optional(),
+});
 
 export class FullCompactionComplete extends Event2<z.infer<typeof fullCompactionCompleteSchema>> {
   static override readonly type = 'full_compaction.complete';

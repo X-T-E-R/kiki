@@ -1195,6 +1195,59 @@ describe('ThreadCommunicationService', () => {
     expect(second.nextCursor).toBeUndefined();
   });
 
+  it('excludes private sessions from ThreadList inventory and keeps private ids out of cursors', async () => {
+    const rows = [
+      summary('visible-a', 'workspace-a', 5),
+      { ...summary('private-a', 'workspace-a', 4), private: true },
+      summary('visible-b', 'workspace-a', 3),
+      { ...summary('private-b', 'workspace-a', 2), private: true },
+      summary('visible-c', 'workspace-a', 1),
+    ];
+    ix.stub(ISessionIndex, {
+      get: async (id: string) => rows.find((row) => row.id === id),
+      listRecent: async (query) => {
+        const start = query.before === undefined ? 0 : Math.max(0, rows.findIndex((row) => row.id === query.before) + 1);
+        const items = rows.slice(start, start + (query.limit ?? rows.length));
+        return { items, nextCursor: start + items.length < rows.length ? items.at(-1)?.id : undefined };
+      },
+    });
+    const service = ix.get(IThreadCommunicationService);
+    const first = await service.listThreads({ limit: 1 });
+    expect(first.threads.map((thread) => thread.ref.sessionId)).toEqual(['visible-a']);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    expect(Buffer.from(first.nextCursor!, 'base64url').toString('utf8')).toContain('visible-a');
+    expect(Buffer.from(first.nextCursor!, 'base64url').toString('utf8')).not.toContain('private');
+    const second = await service.listThreads({ limit: 1, cursor: first.nextCursor });
+    expect(second.threads.map((thread) => thread.ref.sessionId)).toEqual(['visible-b']);
+    const third = await service.listThreads({ limit: 1, cursor: second.nextCursor });
+    expect(third.threads.map((thread) => thread.ref.sessionId)).toEqual(['visible-c']);
+    expect(third.nextCursor).toBeUndefined();
+    const own = await service.listThreads({ caller: { sessionId: 'private-a', workspaceId: 'workspace-a' } });
+    expect(own.threads.map((thread) => thread.ref.sessionId)).toContain('private-a');
+  });
+
+  it('drops peer message history whenever either local endpoint is private', async () => {
+    ix.stub(ISessionIndex, {
+      get: async (id: string) => ({ ...summary(id, 'workspace-a', 1), private: id.startsWith('private-') }),
+    });
+    const service = ix.get(IThreadCommunicationService);
+    const source = ref(service.hostId, 'workspace-a', 'private-source');
+    const target = ref(service.hostId, 'workspace-a', 'private-target');
+    const publicSource = ref(service.hostId, 'workspace-a', 'public-source');
+    const publicTarget = ref(service.hostId, 'workspace-a', 'public-target');
+    const message = (messageId: string, from: ThreadRef, to: ThreadRef) => ({ messageId,
+      producer: { kind: 'peer_thread' as const, source: from }, target: to,
+      content: messageId, idempotencyKey: messageId, acceptedAt: 1, targetSeq: 1 });
+    const records = [message('private-source-message', source, publicTarget),
+      message('private-target-message', publicSource, target), message('public-pair-message', publicSource, publicTarget)];
+    ix.stub(IThreadMailboxStore, 'readMessages', async () => ({
+      items: records.map((entry, index) => ({ message: entry, delivery: 'delivered' as const, order: `${index + 1}` })),
+      history: { generation: 'generation', state: 'complete' as const, processedMessages: 3, completedShards: 1, totalShards: 1 },
+    }));
+    const page = await service.listMessages({ workspaceId: 'workspace-a' });
+    expect(page.items.map((item) => item.messageId)).toEqual(['public-pair-message']);
+  });
+
   it('reads only completed displayable main turns from a cold thread', async () => {
     const service = ix.get(IThreadCommunicationService);
     const peerSource = ref(service.hostId, 'workspace-a', 'source');

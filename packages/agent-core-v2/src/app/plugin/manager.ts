@@ -316,7 +316,7 @@ export class PluginManager {
       const managedParsed = await parseManifest(normalizedRoot);
       assertInstallable(managedParsed);
       const existing = this.records.get(id);
-      const defaultEnabled = existing === undefined ? options.defaultEnabled ?? false : existing.defaultEnabled;
+      const defaultEnabled = existing === undefined ? options.defaultEnabled ?? false : existing.defaultEnabled ?? false;
       const now = new Date().toISOString();
       const record = await recordFrom({
         id,
@@ -706,7 +706,7 @@ export class PluginManager {
       id: entry.id,
       root: entry.root,
       enabled: entry.enabled,
-      defaultEnabled: entry.defaultEnabled,
+      defaultEnabled: entry.defaultEnabled ?? false,
       installedAt: entry.installedAt,
       updatedAt: entry.updatedAt,
       originalSource: entry.originalSource,
@@ -1050,8 +1050,8 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     version: record.manifest?.version,
     icon: record.manifest?.icon,
     enabled: record.enabled,
-    globalEnabled: record.enabled && (record.defaultEnabled ?? record.enabled),
-    defaultEnabled: record.defaultEnabled ?? record.enabled,
+    globalEnabled: record.enabled && (record.defaultEnabled ?? false),
+    defaultEnabled: record.defaultEnabled ?? false,
     state: record.state,
     skillCount: record.skillCount,
     mcpServerCount: Object.keys(record.manifest?.mcpServers ?? {}).length,

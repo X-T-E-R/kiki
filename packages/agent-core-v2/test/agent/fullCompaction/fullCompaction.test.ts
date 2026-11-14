@@ -8,6 +8,8 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { join } from 'pathe';
 
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
+import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import {
   APIConnectionError,
   APIContextOverflowError,
@@ -121,6 +123,37 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  it('keeps private compaction durable for structural replay without incrementing the panel count', async () => {
+    const ctx = testAgent();
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      await ctx.ready;
+      ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      Reflect.set(ctx.get(ISessionContext), 'isPrivate', () => true);
+
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+      await service.compacting!.promise;
+
+      const records = await ctx.persistedWireRecords();
+      expect(records.find((record) => record.type === 'full_compaction.complete')).toMatchObject({ countForPanel: false });
+      expect(ctx.get(IAgentStateService).get(panelAccountingKey).successfulCompactions).toBe(0);
+      expect(ctx.get(IAgentStateService).get(fullCompactionKey).phase).toBe('idle');
+      const replay = testAgent();
+      try {
+        Reflect.set(replay.get(ISessionContext), 'isPrivate', () => true);
+        await replay.restore(records);
+        expect(replay.get(IAgentStateService).get(panelAccountingKey).successfulCompactions).toBe(0);
+        expect(replay.get(IAgentStateService).get(fullCompactionKey).phase).toBe('idle');
+      } finally {
+        await replay.dispose();
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
   it.each(['relay', 'summarize'] as const)('carries folded Read result notes through %s compaction and replay', async (strategy) => {
     const ctx = testAgent();
     try {
@@ -914,6 +947,7 @@ describe('FullCompaction', () => {
         ],
         { cwd: dir },
       ),
+      cwd: dir,
     });
     ctx.configure({
       provider: CATALOGUED_PROVIDER,

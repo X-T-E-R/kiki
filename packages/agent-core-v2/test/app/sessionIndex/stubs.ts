@@ -24,7 +24,7 @@ export function stubSessionIndexMirror(): ISessionIndexMirror & {
     recorded,
     record: (summary) => {
       mutationEpoch += 1;
-      changes.fire({ id: summary.id, workspaceId: summary.workspaceId });
+      changes.fire({ id: summary.id, workspaceId: summary.workspaceId, private: summary.private });
       recorded.push(summary);
     },
     epoch: () => mutationEpoch,

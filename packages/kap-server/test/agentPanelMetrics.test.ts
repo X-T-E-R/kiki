@@ -11,6 +11,7 @@ import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryS
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
 import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
+import { stubSessionIndexMirror } from '../../agent-core-v2/test/app/sessionIndex/stubs';
 import {
   IAgentProfileService,
   IAgentStateService,
@@ -24,6 +25,8 @@ import {
   IFileSystemStorageService,
   ILogService,
   IInstantiationService,
+  ISessionIndex,
+  ISessionIndexMirror,
   RETAINED_USAGE_KEY,
   RETAINED_USAGE_SCOPE,
   type IAgentScopeHandle,
@@ -38,6 +41,8 @@ import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { usageRuntime } from '../src/usage/usageRuntime';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 
 const ZERO_USAGE: TokenUsage = {
   inputOther: 0,
@@ -218,6 +223,7 @@ function persistedFixture(
     },
   }) as unknown as IFileSystemStorageService;
   ix.stub(IFileSystemStorageService, storage);
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
@@ -236,10 +242,13 @@ function persistedFixture(
     },
   }) as unknown as IAppendLogStore;
   const facts = ix.get(IUsageFactStore);
+  const sessionIndexMirror = stubSessionIndexMirror();
   persistedFixtures.push({ home, ix, model });
   const core = {
     accessor: {
       get: (identifier: unknown) => {
+        if (identifier === ISessionIndexMirror) return sessionIndexMirror;
+        if (identifier === ISessionIndex) return { get: async () => undefined };
         if (identifier === IUsageFactStore) return facts;
         if (identifier === IUsageReadModel) return model;
         if (identifier === IFileSystemStorageService) return storage;

@@ -27,6 +27,7 @@ interface ResidentAgent {
 }
 interface LiveSearchState {
   readonly id: string;
+  readonly sessionId: string;
   readonly fingerprint: string;
   readonly store: WeakRef<TranscriptStore>;
   readonly agents: Map<string, ResidentAgent>;
@@ -80,6 +81,13 @@ export class LiveSearch {
 
   clear(): void { for (const id of this.states.keys()) this.evict(id); }
 
+  clearSession(sessionId: string): void {
+    for (const [id, state] of this.states) {
+      if (state.sessionId !== sessionId) continue;
+      this.evict(id);
+    }
+  }
+
   /**
    * A continuation searches the transcript as captured on its first page. Appends, text streaming onto
    * captured text, and older history loaded in front keep that capture valid; a store that drops,
@@ -113,7 +121,7 @@ export class LiveSearch {
     let sequence = 0;
     if (input.pageToken === undefined) {
       while (this.states.size >= 8) this.evict(this.states.keys().next().value!);
-      state = { id: randomUUID(), fingerprint, store: new WeakRef(input.store), agents: new Map(), verified: new WeakSet(), historical: new Map(),
+      state = { id: randomUUID(), sessionId: input.sessionId, fingerprint, store: new WeakRef(input.store), agents: new Map(), verified: new WeakSet(), historical: new Map(),
         gaps: new Set(), rows: [], touchedAt: Date.now(), sequence: 0, residentDone: false,
         emitted: 0, documents: 0, bytes: 0, records: 0 };
       this.states.set(state.id, state);

@@ -16,6 +16,7 @@ import {
   RETAINED_USAGE_VERSION,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
+  OPERATION_USAGE_KEY,
   type RetainedDeletedSessionUsage,
   type RetainedUsageListQuery,
   type RetainedUsageRecord,
@@ -147,6 +148,8 @@ describe('RetainedUsageService', () => {
     readonly appendLog: IAppendLogStore;
     readonly events: IEventService;
     readonly model: IUsageReadModel;
+    readonly documents: IAtomicDocumentStore;
+    readonly storage: IFileSystemStorageService;
   } {
     const disposables = new DisposableStore();
     stores.push(disposables);
@@ -166,6 +169,8 @@ describe('RetainedUsageService', () => {
       appendLog: ix.get(IAppendLogStore),
       events: ix.get(IEventService),
       model,
+      documents: ix.get(IAtomicDocumentStore),
+      storage,
     };
   }
 
@@ -176,6 +181,46 @@ describe('RetainedUsageService', () => {
       `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
     );
   }
+
+  it('skips operation, deleted-session and ephemeral retention for a privately marked session', async () => {
+    const { service, appendLog, documents, storage } = build();
+    const session = { ...summary, id: 'private-session' };
+    const sessionScope = `sessions/${session.workspaceId}/${session.id}`;
+    await documents.set(sessionScope, 'state.json', { ...session, private: true, agents: { main: { type: 'main' } } });
+    await storage.write(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, Buffer.from(`${JSON.stringify({
+      type: 'usage.record', time: 150, model: 'model-a', usage, agentId: 'main',
+    })}\n`));
+    const reads = vi.spyOn(appendLog, 'read');
+
+    await service.recordOperation(session, { time: 160, model: 'model-a', usage, agentId: 'main', usageKnown: true, requestKind: 'output_layer' });
+    await expect(service.retainDeletedSession(session)).resolves.toMatchObject({ deleted: true, records: [], complete: true });
+    await service.retainEphemeralUsage!(sessionScope, session.workspaceId);
+
+    expect(reads).not.toHaveBeenCalled();
+    await expect(storage.size('store', OPERATION_USAGE_KEY)).resolves.toBeUndefined();
+    await expect(storage.size('store', RETAINED_USAGE_KEY)).resolves.toBeUndefined();
+    await expect(storage.size('store', EPHEMERAL_USAGE_KEY)).resolves.toBeUndefined();
+  });
+
+  it('restores deleted privacy exclusions after rebuilding the Usage cache', async () => {
+    const first = build();
+    await first.service.recordOperation(summary, { time: 160, model: 'model-a', usage, agentId: 'main', usageKnown: true, requestKind: 'output_layer' });
+    const sessionScope = `sessions/${summary.workspaceId}/${summary.id}`;
+    await first.documents.set(sessionScope, 'state.json', { ...summary, private: true });
+    await first.service.retainDeletedSession({ ...summary, private: true });
+    await first.documents.delete(sessionScope, 'state.json');
+    await first.model.close();
+    await fsp.rm(join(homeDir, 'cache', 'usage-read-model-v2'), { recursive: true, force: true });
+
+    const restarted = build();
+    await expect(restarted.service.privateSessions()).resolves.toEqual([{ id: summary.id, workspaceId: summary.workspaceId }]);
+    await expect(restarted.model.isPrivateSession(summary.workspaceId, summary.id)).resolves.toBe(true);
+    await expect(restarted.service.readOperationSummary(summary.workspaceId, summary.id, listQuery())).resolves.toMatchObject({ totals: undefined, complete: true });
+    const exported = [];
+    for await (const event of restarted.service.readExportUsage!(false)) if (event.kind === 'operation' || event.kind === 'session') exported.push(event);
+    expect(exported).toEqual([]);
+    await expect(listItems(restarted.service)).resolves.toEqual([]);
+  });
 
   it('retains deleted session aggregates and attributed records across restart', async () => {
     const first = build();

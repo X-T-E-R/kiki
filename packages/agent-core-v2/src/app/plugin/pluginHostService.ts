@@ -770,8 +770,8 @@ export class PluginHostService extends Service implements IPluginHostService {
     if (this.closing) return;
     const installed = await this.plugins.listPlugins();
     if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
-    const matched = installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
-      (affected === undefined || affected.includes(plugin.id)));
+    const matched = installed.filter((plugin) => plugin.enabled && (plugin.globalEnabled || this.hosts.has(plugin.id)) &&
+      plugin.state === 'ok' && (affected === undefined || affected.includes(plugin.id)));
     const prepared = (await Promise.all(matched.map(async (plugin) => {
       if (this.closing) return undefined;
       const info = await this.plugins.getPluginInfo({ id: plugin.id });

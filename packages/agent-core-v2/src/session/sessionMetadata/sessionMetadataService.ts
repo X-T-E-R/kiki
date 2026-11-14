@@ -7,6 +7,7 @@ import { BugIndicatingError } from '#/_base/errors/errors';
 import { defineState } from '#/state/state';
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { addSessionUsage } from '#/app/sessionIndex/sessionUsageSummary';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -182,6 +183,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
+    @IUsageFactStore private readonly usageFacts: IUsageFactStore,
   ) {
     super();
     this._register({
@@ -268,7 +270,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void {
-    if (this.disposed || this.disposing) return;
+    if (this.disposed || this.disposing || this.data.private === true) return;
     this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage, usageKnown) };
     this.deferChanges(['usage']);
   }
@@ -277,7 +279,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     patch: SessionMetadataWrite,
     opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean },
   ): Promise<void> {
-    if (opts?.deferPersistence === true) {
+    if (opts?.deferPersistence === true && patch.private === undefined) {
       const work = this.ready.then(() => {
         if (this.disposed || this.disposing) return;
         if (patch.agents !== undefined) throw new BugIndicatingError('Agent metadata requires an immediate durable update');
@@ -302,18 +304,28 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         return [agentId, existing === undefined || existing.createdAt === meta.createdAt ? meta : { ...meta, createdAt: existing.createdAt }];
       }),
     );
-    this.data = { ...this.data, ...patch, agents, updatedAt, activityUpdatedAt };
+    const isPrivate = patch.private ?? this.data.private;
+    const nextAgents = isPrivate === true && (agents !== this.data.agents || this.data.private !== true)
+      ? withoutAgentStatistics(agents) : agents;
+    this.data = { ...this.data, ...patch, private: isPrivate, agents: nextAgents, updatedAt, activityUpdatedAt };
+    if (isPrivate === true && this.data.usage !== undefined) this.data = { ...this.data, usage: undefined };
   }
 
   private async applyUpdate(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean }): Promise<boolean> {
     await this.ready;
     if (this.disposed) return false;
     this.mergePatch(patch, opts);
+    if (patch.private === true && this.ctx.ephemeral !== true) {
+      await this.usageFacts.setSessionPrivacy(buildSessionSummary({ ...this.data, workspaceId: this.ctx.workspaceId }));
+    }
     const { absorbed, encoded } = await this.persistAbsorbingDeferred();
     if (this.disposed) return false;
+    if (patch.private === false && this.ctx.ephemeral !== true) {
+      await this.usageFacts.setSessionPrivacy(buildSessionSummary({ ...encoded, workspaceId: this.ctx.workspaceId }));
+    }
     this.mirrorToReadModel(encoded);
     this._onDidChangeMetadata.fire({
-      changed: [...new Set([...Object.keys(patch) as (keyof SessionMeta)[], ...absorbed])],
+      changed: [...new Set<keyof SessionMeta>([...Object.keys(patch) as (keyof SessionMeta)[], ...absorbed, ...(patch.private === true ? ['usage', 'agents'] as const : [])])],
     });
     return true;
   }
@@ -345,7 +357,8 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   registerAgent(agentId: string, meta: AgentMeta): Promise<void> {
     return this.enqueueAgentUpdate((agents) => {
       const existing = agents[agentId];
-      const next = existing === undefined ? structuredClone(meta) : { ...structuredClone(meta), createdAt: existing.createdAt };
+      const copy = structuredClone(meta);
+      const next = this.agentStatisticsPolicy(existing === undefined ? copy : { ...copy, createdAt: existing.createdAt });
       if (existing !== undefined && agentMetaEquals(existing, next)) return false;
       agents[agentId] = next;
       return true;
@@ -357,11 +370,15 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       const current = agents[agentId];
       if (current === undefined) return false;
       const updated = updater(structuredClone(current));
-      const next = { ...updated, createdAt: current.createdAt };
+      const next = this.agentStatisticsPolicy({ ...updated, createdAt: current.createdAt });
       if (agentMetaEquals(current, next)) return false;
       agents[agentId] = next;
       return true;
     });
+  }
+
+  private agentStatisticsPolicy(agent: AgentMeta): AgentMeta {
+    return this.data.private === true ? { ...agent, usage: undefined, toolCallCount: undefined } : agent;
   }
 
   unregisterAgent(agentId: string): Promise<void> {
@@ -467,6 +484,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           updatedAt: source.updatedAt,
           activityUpdatedAt: source.activityUpdatedAt,
           archived: source.archived === true,
+          private: source.private,
           archivedAt: source.archivedAt,
           executionPhase: source.executionPhase,
           custom: source.custom,
@@ -513,6 +531,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       createdAt: now,
       updatedAt: now,
       archived: false,
+      private: this.ctx.isPrivate?.(),
       agents: {},
       custom: {},
     };
@@ -521,6 +540,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this.mirrorToReadModel(encoded);
     this.log.debug('session metadata created', { sessionId: this.ctx.sessionId });
   }
+}
+
+function withoutAgentStatistics(agents: SessionMeta['agents']): SessionMeta['agents'] {
+  return agents === undefined ? undefined : Object.fromEntries(Object.entries(agents).map(([id, agent]) => [
+    id, { ...agent, usage: undefined, toolCallCount: undefined },
+  ]));
 }
 
 function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
@@ -600,6 +625,8 @@ export function normalizeSessionMeta(raw: SessionMeta, sessionId: string): Sessi
     createdAt: toEpochMs(legacyCreatedAt),
     updatedAt: toEpochMs(legacyUpdatedAt),
     archived: clean.archived === true,
+    usage: clean.private === true ? undefined : clean.usage,
+    agents: clean.private === true ? withoutAgentStatistics(clean.agents) : clean.agents,
   };
 }
 

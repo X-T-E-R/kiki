@@ -10,8 +10,11 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IUsageFactStore, UsageFactStore, type UsageFactCheckpoint } from '#/app/usageFacts/usageFactStore';
 import { normalizeUsageFact } from '#/agent/usage/usageFact';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { IUsageReadModel } from '#/persistence/interface/usageReadModel';
+import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { IUsageReadModel, type UsageReadModelQuery } from '#/persistence/interface/usageReadModel';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { SqliteUsageReadModel } from '#/persistence/backends/sqlite/sqliteUsageReadModel';
@@ -24,6 +27,11 @@ const KEY = 'wire.jsonl';
 const DIRECTORY = `cache/usage-facts-v1/${createHash('sha256').update(SCOPE).digest('hex')}`;
 const fact = (time = 1, known = true) => ({ type: 'usage.record', time, model: 'example', usageKnown: known, usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 } });
 const checkpoint = (offset: number): UsageFactCheckpoint => ({ generation: 'legacy', offset, size: offset, mtimeMs: 1, boundaryHash: '', valid: true });
+const session: SessionSummary = { id: 'session', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false };
+const query: UsageReadModelQuery = {
+  granularity: 'day', dimension: 'model', models: [], providers: [], profiles: [], agentIds: [], workspaceIds: [],
+  includeArchived: true, timezoneOffsetMinutes: 0, pageSize: 25, quotes: [], drilldownSessionLimit: 100, drilldownTurnLimit: 100,
+};
 
 describe('UsageFactStore', () => {
   let home: string;
@@ -37,6 +45,7 @@ describe('UsageFactStore', () => {
     ix.stub(IBootstrapService, stubBootstrap(home));
     ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
@@ -48,6 +57,39 @@ describe('UsageFactStore', () => {
   }
   beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'usage-facts-')); storage = new InMemoryStorageService(); open(); });
   afterEach(async () => { await close(); await rm(home, { recursive: true, force: true, maxRetries: 5 }); });
+
+  it('suppresses canonical projections when private metadata is present in the atomic store', async () => {
+    const documents = ix.get(IAtomicDocumentStore);
+    await documents.set('sessions/example/session', 'state.json', { id: 'session', private: true, agents: {} });
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush();
+
+    await expect(facts.read(SCOPE)).resolves.toEqual({ records: [] });
+    await expect(facts.summary(SCOPE)).resolves.toEqual({});
+    expect((await model.summary(SCOPE)).totals).toBeUndefined();
+  });
+
+  it('hides existing fact rows and totals after the session document becomes private', async () => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush();
+    expect((await facts.read(SCOPE)).records).toHaveLength(1);
+    await ix.get(IAtomicDocumentStore).set('sessions/example/session', 'state.json', { id: 'session', private: true, agents: {} });
+
+    await expect(facts.read(SCOPE)).resolves.toEqual({ records: [] });
+    await expect(facts.summary(SCOPE)).resolves.toEqual({});
+  });
+
+  it('hides SQL totals through privacy cataloging and restores them when privacy is cleared', async () => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush();
+    await facts.summary(SCOPE);
+    await model.catalog([{ ...session, deleted: false }], [{ source: SCOPE, workspaceId: session.workspaceId, sessionId: session.id }]);
+    expect((await model.query(query)).total).toMatchObject({ usage: fact().usage, knownRecords: 1 });
+    await facts.setSessionPrivacy({ ...session, private: true });
+    expect((await model.query(query)).total).toMatchObject({ usage: { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 }, knownRecords: 0 });
+    await facts.setSessionPrivacy({ ...session, private: false });
+    expect((await model.query(query)).total).toMatchObject({ usage: fact().usage, knownRecords: 1 });
+  });
 
   it('reads aligned checkpoint metadata without reading fact rows and rejects stale generation or journal length', async () => {
     logs.append(SCOPE, KEY, fact()); await logs.flush();

@@ -394,7 +394,7 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
-| `POST /api/sessions/{session_id}/profile` | Update title, metadata, agent config |
+| `POST /api/sessions/{session_id}/profile` | Update title, privacy, metadata, or agent config |
 | `POST /api/sessions/{session_id}:{action}` | Session actions: `fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
 | `POST /api/sessions/{session_id}/agents/{agent_id}:promote` | Copy a subagent into a new top-level session |
 | `POST /api/sessions/{session_id}:delete-archived` | Permanently delete an archived conversation and its attached archived family |
@@ -406,6 +406,12 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `GET /api/sessions/{session_id}/warnings` | Session-level warnings |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
+
+To create a persistent private session, send `"private": true` to `POST /api/sessions`. New sessions for a hidden persona default to private unless the request explicitly sets `private` to `false`. To change an existing session, send `{"private": true}` or `{"private": false}` to its profile endpoint.
+
+`GET /api/sessions` excludes private sessions by default. Use `include_private=true` to include them or `private_only=true` to list only private sessions. A `persona` filter includes that persona's private sessions unless `include_private=false` is explicit. `private_only=true` cannot be combined with `include_private=false`.
+
+Private sessions can be resumed and can read their own history. They are excluded from global search, cross-session history, and usage accounting and exports. Privacy does not encrypt the session on disk or change who can read it through an authorized direct session endpoint.
 
 A cold goal read preserves `goalId`, `controlRevision`, and budget state from saved history. When a checkpoint is unavailable, the request waits across cooperative history-preparation slices and returns the complete snapshot without requiring repeated GETs.
 
@@ -1144,6 +1150,7 @@ A next-generation session query for list views — filtering, sorting, and field
 | `meta.updated_after` | Only sessions updated after this time (epoch milliseconds) |
 | `meta.updated_before` | Only sessions updated before this time (epoch milliseconds) |
 | `meta.archived` | `true` / `false` (default) / `all` |
+| `meta.private` | `true` for private sessions, `false` for non-private sessions (default), or `all` |
 | `sort` | `meta.updated_at_desc` (default) / `meta.updated_at_asc` / `meta.created_at_desc` |
 | `include` | Comma-separated extra field groups; currently only `git` (branch and PR info, deduplicated per directory and cached for 60 seconds) |
 | `fields` | Comma-separated item projection; currently only `id,archived`, trimming each item to `{ id, archived }` (select-all-matching flows). Not combinable with `include=git` (`40001`) |
@@ -1151,7 +1158,7 @@ A next-generation session query for list views — filtering, sorting, and field
 | `page_token` | Pagination token from the previous page |
 | `page` | Stateless 1-based page number; mutually exclusive with `page_token` (`40001` when combined) |
 
-Every response item carries the `workspace`, `meta`, and `activity` groups, plus `git` when `include=git` — or just `{ id, archived }` under `fields=id,archived`. Every page additionally carries `total`, the size of the filtered set. The page token binds the first page's query conditions (including the projection); changing them mid-pagination returns `40922`. `page` mode is a stateless alternative for jumping to arbitrary pages: every request is an independent snapshot, no token is minted, and `next_page_token` is always `null`.
+Every response item carries the `workspace`, `meta` (including the boolean `private`), and `activity` groups, plus `git` when `include=git` — or just `{ id, archived }` under `fields=id,archived`. Every page additionally carries `total`, the size of the filtered set. The page token binds the first page's query conditions (including the projection); changing them mid-pagination returns `40922`. `page` mode is a stateless alternative for jumping to arbitrary pages: every request is an independent snapshot, no token is minted, and `next_page_token` is always `null`.
 
 ### `POST /api/sessions:archive` and `POST /api/sessions:restore`
 

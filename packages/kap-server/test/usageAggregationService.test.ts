@@ -13,6 +13,7 @@ import type { UsageFact } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { UsageReadModelSession } from '@kiki/agent-core-v2/persistence/interface/usageReadModel';
 import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
 import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
+import { stubSessionIndexMirror } from '../../agent-core-v2/test/app/sessionIndex/stubs';
 
 import {
   AppendLogStore,
@@ -25,6 +26,7 @@ import {
   IFileSystemStorageService,
   IRetainedUsageService,
   ISessionIndex,
+  ISessionIndexMirror,
   RETAINED_USAGE_VERSION,
   RETAINED_USAGE_KEY,
   EPHEMERAL_USAGE_KEY,
@@ -47,6 +49,8 @@ import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { UsageSourceTracker, type UsageSourceChange, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 import { UsageRecoveryPool } from '../src/usage/usageRecovery';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 
 const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore; model?: IUsageReadModel }[] = [];
 afterEach(async () => {
@@ -253,6 +257,7 @@ function fixture(
     },
   }) as unknown as IFileSystemStorageService;
   ix.stub(IFileSystemStorageService, storage);
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
@@ -320,6 +325,7 @@ function fixture(
     _serviceBrand: undefined,
     recordOperation: async () => {},
     readOperationSummary: async () => ({ complete: true }),
+    privateSessions: async (signal) => model.privateSessions(signal),
     retainDeletedSession: async () => { throw new Error('retain is not used'); },
     prepareReadModel: async (_query, includeEphemeral = true) => {
       await publishRows(includeEphemeral);
@@ -347,9 +353,11 @@ function fixture(
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
+  const sessionIndexMirror = stubSessionIndexMirror();
   const core = {
     accessor: {
       get: (identifier: unknown) => {
+        if (identifier === ISessionIndexMirror) return sessionIndexMirror;
         if (identifier === ISessionIndex) return index;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IRetainedUsageService) return retainedUsage;
@@ -397,6 +405,7 @@ async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Re
   ix.stub(ILogService, stubLog());
   ix.stub(IFileSystemStorageService, storage);
   ix.set(IQueryStore, new SyncDescriptor<IQueryStore>(sqlite ? SqliteQueryStore : MiniDbQueryStore));
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
@@ -1818,6 +1827,7 @@ describe('UsageSourceTracker', () => {
     const core = { accessor: { get: (id: unknown) => {
       if (id === IFileSystemStorageService) return storage;
       if (id === IAppendLogStore) return logs;
+      if (id === ISessionIndexMirror) return stubSessionIndexMirror();
       if (id === IBootstrapService) return { scope: () => 'store' };
       if (id === ILogService) return { warn: () => {} };
       throw new Error('unexpected service');
@@ -1878,6 +1888,7 @@ describe('UsageSourceTracker', () => {
     const core = { accessor: { get: (id: unknown) => {
       if (id === IFileSystemStorageService) return storage;
       if (id === IAppendLogStore) return logs;
+      if (id === ISessionIndexMirror) return stubSessionIndexMirror();
       if (id === IBootstrapService) return { scope: () => 'retained-store' };
       throw new Error('unexpected service');
     } } } as unknown as Scope;
@@ -1920,6 +1931,7 @@ describe('UsageSourceTracker', () => {
     const core = { accessor: { get: (id: unknown) => {
       if (id === IFileSystemStorageService) return storage;
       if (id === IAppendLogStore) return logs;
+      if (id === ISessionIndexMirror) return stubSessionIndexMirror();
       if (id === IBootstrapService) return { scope: () => 'retained-store' };
       throw new Error('unexpected service');
     } } } as unknown as Scope;
@@ -1955,6 +1967,7 @@ describe('UsageSourceTracker', () => {
       const core = { accessor: { get: (id: unknown) => {
         if (id === IFileSystemStorageService) return { pathFor: () => root, watch: () => Event.None };
         if (id === IAppendLogStore) return { registerProjection: () => ({ dispose() {} }), onDidWrite: writes.event };
+        if (id === ISessionIndexMirror) return stubSessionIndexMirror();
         if (id === IBootstrapService) return { scope: () => 'store' };
         if (id === ILogService) return { warn: () => { warnings++; } };
         throw new Error('unexpected service');

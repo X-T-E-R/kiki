@@ -8,7 +8,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
-import { classifyHistorySession, historyTargetError, resolveAgentSelectorFromMeta } from './historyTools';
+import { classifyHistorySession, historyTargetError, privateHistoryTargetError, resolveAgentSelectorFromMeta } from './historyTools';
 
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
 const AgentSelectorSchema = z.string().trim().min(1).max(128).refine((id) => id !== '.' && id !== '..');
@@ -259,6 +259,12 @@ export class HistoryListTool implements IHistoryListTool {
     const cursor = input.cursor === undefined ? undefined : decodeHistoryDirectoryCursor(input.cursor);
     if (cursor !== undefined) {
       const sessionForCursor = input.session_id ?? cursor.request.sessionId;
+      const cursorTarget = await classifyHistorySession(this.sessions,
+        { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionForCursor, cursor.request.workspaceId);
+      if (cursorTarget.kind === 'private') {
+        return privateHistoryTargetError({ scope: 'session', targetKind: 'cursor',
+          nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } });
+      }
       const resolvedInputAgent = input.agent_id === undefined ? undefined : await this.resolveAgentSelector(sessionForCursor, input.agent_id);
       if (cursorInputMismatch({ ...input, agent_id: resolvedInputAgent }, cursor)) {
         throw new Error('HistoryList cursor conflicts with the supplied filters. Pass only cursor to continue.');
@@ -271,7 +277,6 @@ export class HistoryListTool implements IHistoryListTool {
     const rawAgentId = kind === 'turns'
       ? source?.agentId ?? input.agent_id ?? (sessionId === this.session.sessionId ? this.caller.agentId : 'main')
       : undefined;
-    const agentId = rawAgentId === undefined ? undefined : await this.resolveAgentSelector(sessionId, rawAgentId);
     if (kind === 'agents' && input.agent_id !== undefined) throw new Error('agent_id is only valid with kind=turns.');
     const beforeTurn = source?.beforeTurn ?? input.before_turn;
     const afterTurn = source?.afterTurn ?? input.after_turn;
@@ -291,6 +296,10 @@ export class HistoryListTool implements IHistoryListTool {
     }
     const classified = await classifyHistorySession(this.sessions,
       { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, explicitWorkspace);
+    if (classified.kind === 'private') {
+      return privateHistoryTargetError({ scope: 'session', targetKind: input.cursor === undefined ? 'session' : 'cursor',
+        nextCall: { tool: 'HistoryList', arguments: { kind } } });
+    }
     if (classified.kind === 'unknown') {
       if (input.cursor !== undefined) {
         return historyTargetError({ code: 'history_target_unavailable', message: 'The cursor session is not in the session index. Retry without the cursor and do not repeat a missing session.', retryable: true,
@@ -299,6 +308,7 @@ export class HistoryListTool implements IHistoryListTool {
       return historyTargetError({ code: 'history_target_unavailable', message: 'The requested session is not in the session index. Browse this session without that session_id.', retryable: true,
         scope: 'session', targetKind: 'session', nextCall: { tool: 'HistoryList', arguments: { kind } } });
     }
+    const agentId = rawAgentId === undefined ? undefined : await this.resolveAgentSelector(sessionId, rawAgentId);
     if (classified.kind === 'mismatch') {
       return historyTargetError({ code: 'history_target_unavailable', message: 'The session is indexed in a different workspace. Retry that workspace and session; this call does not read it.', retryable: true,
         scope: 'session', targetKind: 'session', nextCall: { tool: 'HistoryList', arguments: {

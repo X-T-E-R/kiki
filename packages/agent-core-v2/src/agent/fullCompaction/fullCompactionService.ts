@@ -614,7 +614,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (active.appliedResult === undefined) active.appliedResult = this.context.applyCompaction(input);
       await this.flushDurable(active);
       if (!active.completeDispatched) {
-        await this.dispatcher.dispatch(new FullCompactionComplete({}));
+        await this.dispatcher.dispatch(new FullCompactionComplete({
+          countForPanel: this.session.isPrivate?.() === true ? false : undefined,
+        }));
         active.completeDispatched = true;
       }
       await this.flushDurable(active);

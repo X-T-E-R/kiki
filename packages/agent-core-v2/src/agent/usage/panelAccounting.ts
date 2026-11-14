@@ -60,4 +60,7 @@ export const panelAccountingKey = defineState('usage.panelAccounting', (): Panel
     masks[mask] = masks[mask] === undefined ? { ...record.usage } : addUsage(masks[mask], record.usage);
     state.knownByModelMask[record.model] = masks;
   })
-  .on(FullCompactionComplete, (state) => { state.successfulCompactions += 1; });
+  .on(FullCompactionComplete, (state, event) => {
+    if (event.countForPanel === false) return;
+    state.successfulCompactions += 1;
+  });

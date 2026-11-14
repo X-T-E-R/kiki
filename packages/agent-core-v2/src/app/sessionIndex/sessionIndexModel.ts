@@ -1,9 +1,9 @@
 import type { IQueryStore } from '#/persistence/interface/queryStore';
 import type { SessionSummary } from './sessionIndex';
 
-export const SESSION_INDEX_STORAGE_VERSION = 4;
+export const SESSION_INDEX_STORAGE_VERSION = 5;
 export const SESSION_INDEX_MANIFEST = `sessionIndex:v${SESSION_INDEX_STORAGE_VERSION}`;
-export const LEGACY_SESSION_INDEX_MANIFEST = 'sessionIndex:v3';
+export const LEGACY_SESSION_INDEX_MANIFEST = 'sessionIndex:v4';
 export const SESSION_INDEX_REVISION = `${SESSION_INDEX_MANIFEST}:revision`;
 
 /** Advance under the shared publication lock before modifying the derived index. */
@@ -39,27 +39,27 @@ export interface SessionSourceRoot {
 }
 
 export function sessionCollection(generation: number): string {
-  return `session:v4:g${generation}`;
+  return `session:v5:g${generation}`;
 }
 
 export function sessionCountersCollection(generation: number): string {
-  return `sessionCounters:v4:g${generation}`;
+  return `sessionCounters:v5:g${generation}`;
 }
 
 export function sessionSourcesCollection(generation: number): string {
-  return `sessionSources:v4:g${generation}`;
+  return `sessionSources:v5:g${generation}`;
 }
 
 export function sessionWorkspaceSourcesCollection(generation: number): string {
-  return `sessionWorkspaceSources:v4:g${generation}`;
+  return `sessionWorkspaceSources:v5:g${generation}`;
 }
 
 export function legacySessionCollection(generation: number): string {
-  return `session:v2:g${generation}`;
+  return `session:v4:g${generation}`;
 }
 
 export function legacySessionCountersCollection(generation: number): string {
-  return `sessionCounters:v2:g${generation}`;
+  return `sessionCounters:v4:g${generation}`;
 }
 
 /**
@@ -72,7 +72,7 @@ export function legacySessionCountersCollection(generation: number): string {
  * index strips it again on every read.
  */
 export function recencyColumn(generation: number): string {
-  return `v4:g${generation}:updatedAt`;
+  return `v5:g${generation}:updatedAt`;
 }
 
 /** Attach the generation's recency field to a summary for storage. */

@@ -117,6 +117,7 @@ export function buildSessionSummary(fields: {
   activityUpdatedAt?: number;
   executionPhase?: SessionSummary['executionPhase'];
   archived: boolean;
+  private?: boolean;
   archivedAt?: number;
   custom?: Record<string, unknown>;
   lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -136,11 +137,12 @@ export function buildSessionSummary(fields: {
     updatedAt: Math.max(fields.updatedAt, parseTime(fields.activityUpdatedAt)),
     ownUpdatedAt: fields.updatedAt,
     archived: fields.archived,
+    private: fields.private,
     archivedAt: fields.archivedAt,
     executionPhase: fields.executionPhase,
     custom: fields.custom,
     lastTurnReason: fields.lastTurnReason,
-    usage: fields.usage,
+    usage: fields.private === true ? undefined : fields.usage,
     executorId: fields.agents?.['main']?.executor,
     negotiated: fields.agents?.['main']?.negotiated,
     allowKikiSubagents: fields.agents?.['main']?.allowKikiSubagents,
@@ -177,6 +179,7 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.updatedAt === b.updatedAt &&
     a.ownUpdatedAt === b.ownUpdatedAt &&
     a.archived === b.archived &&
+    a.private === b.private &&
     a.archivedAt === b.archivedAt &&
     a.executionPhase === b.executionPhase &&
     a.lastTurnReason === b.lastTurnReason &&
@@ -339,6 +342,7 @@ function summaryFromMetadata(
     updatedAt: parseTime(meta['updatedAt']),
     activityUpdatedAt: parseTime(meta['activityUpdatedAt']),
     archived: meta['archived'] === true,
+    private: typeof meta['private'] === 'boolean' ? meta['private'] : undefined,
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     executionPhase: parseSessionExecutionPhase(meta['executionPhase']),
     custom,

@@ -407,9 +407,13 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     if (grant.targetScope.sessionId !== undefined) {
       const ref = { hostId: grant.target.hostId, workspaceId: grant.targetScope.workspaceId, sessionId: grant.targetScope.sessionId };
       await this.requireTarget(ref); const summary = await this.sessions.get(ref.sessionId);
+      const sameSession = sameIdentity(grant.source, grant.target) &&
+        grant.sourceScope.workspaceId === grant.targetScope.workspaceId &&
+        grant.sourceScope.sessionId !== undefined && grant.sourceScope.sessionId === grant.targetScope.sessionId;
+      if (summary === undefined || summary.private === true && !sameSession) return { threads: [] };
       const live = this.core.accessor.get(ISessionManager).get(ref.sessionId);
       const state = live === undefined ? 'cold' : live.accessor.get(ISessionActivityView).state().busy ? 'running' : 'idle';
-      return { threads: summary === undefined ? [] : [{ ref, title: summary.title, createdAt: summary.createdAt, updatedAt: summary.updatedAt, state }] };
+      return { threads: [{ ref, title: summary.title, createdAt: summary.createdAt, updatedAt: summary.updatedAt, state }] };
     }
     return this.threads.listThreads({ workspaceId: grant.targetScope.workspaceId, cursor: input.cursor, limit: input.limit });
   }

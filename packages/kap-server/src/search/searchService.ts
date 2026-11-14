@@ -10,6 +10,7 @@ import {
   IFlagService,
   ILogService,
   ISessionIndex,
+  ISessionIndexMirror,
   LifecycleScope,
   ScopeActivation,
   registerFlagDefinition,
@@ -216,11 +217,16 @@ export class GlobalSearchService implements IGlobalSearchService {
   private lastFullSessionScanAt = 0;
   private lastSourceScanAt = 0;
   private summaries = new Map<string, SessionSummary>();
+  private allSummaries = new Map<string, SessionSummary>();
+  private readonly privateSessions = new Set<string>();
+  private readonly sessionMirrorRevisions = new Map<string, { revision: number; pending: number }>();
+  private privateRevision = 0;
   private sessionSourceMtimes = new Map<string, number>();
   private readonly dirtySessions = new Map<string, number>();
   private readonly forceSessionSyncs = new Set<string>();
   private watchRevision = 0;
   private sourceWatcher: FSWatcher | null = null;
+  private readonly mirrorSubscription: IDisposable | undefined;
   private nextWatchRetryAt = 0;
   private disposed = false;
   private resolveSyncStop!: () => void;
@@ -249,6 +255,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     @IFlagService private readonly flags: IFlagService,
     @IConfigService private readonly config?: IConfigService,
     @IEventService private readonly events?: IEventService,
+    @ISessionIndexMirror private readonly mirror?: ISessionIndexMirror,
   ) {
     const search = this.config?.get<SearchConfig>('search');
     const backend = process.env['KIKI_SEARCH_BACKEND'] ?? this.config?.get<string>(SEARCH_BACKEND_SECTION) ?? 'sqlite';
@@ -273,6 +280,7 @@ export class GlobalSearchService implements IGlobalSearchService {
         this.events?.publish(new SearchIndexStateChanged({ payload: state }));
       },
     });
+    this.mirrorSubscription = this.mirror?.onDidChange(({ id, private: isPrivate }) => { this.handleSessionMirrorChange(id, isPrivate); });
   }
 
   private readonly liveSearch = new LiveSearch();
@@ -318,6 +326,84 @@ export class GlobalSearchService implements IGlobalSearchService {
     }
   }
 
+  private handleSessionMirrorChange(sessionId: string, isPrivate?: boolean): void {
+    this.privateRevision += 1;
+    const state = this.sessionMirrorRevisions.get(sessionId) ?? { revision: 0, pending: 0 };
+    state.revision += 1;
+    state.pending += 1;
+    this.sessionMirrorRevisions.set(sessionId, state);
+    if (isPrivate === true && !this.privateSessions.has(sessionId)) {
+      this.privateSessions.add(sessionId);
+      this.retirePrivateSession(sessionId);
+    }
+    const revision = state.revision;
+    const settled = (): void => {
+      state.pending -= 1;
+      if (state.pending === 0 && this.sessionMirrorRevisions.get(sessionId) === state) this.sessionMirrorRevisions.delete(sessionId);
+    };
+    void this.refreshSessionMirror(sessionId, revision, isPrivate).then(settled, (error: unknown) => {
+      if (!this.disposed) this.log.warn('global search: session mirror refresh failed', { sessionId, error: errorMessage(error) });
+      settled();
+    });
+  }
+
+  private async refreshSessionMirror(sessionId: string, revision: number, hintedPrivate?: boolean): Promise<void> {
+    if (this.disposed) return;
+    const summary = await this.sessionIndex.get(sessionId);
+    if (this.disposed || this.sessionMirrorRevisions.get(sessionId)?.revision !== revision) return;
+    const previous = this.allSummaries.get(sessionId);
+    if (summary === undefined) {
+      if (previous === undefined && !this.privateSessions.has(sessionId)) return;
+      this.allSummaries.delete(sessionId);
+      this.summaries.delete(sessionId);
+      if (hintedPrivate !== true) this.privateSessions.delete(sessionId);
+      this.sessionSourceMtimes.delete(sessionId);
+      this.liveSearch.clearSession(sessionId);
+      if (!this.sqliteDisabled) {
+        this.sqliteHost.invalidateQueryCache();
+        this.sqliteHost.retireSession(sessionId);
+        this.requestSync();
+      }
+      return;
+    }
+    const currentSummary = hintedPrivate === undefined || summary.private === hintedPrivate
+      ? summary : { ...summary, private: hintedPrivate };
+    this.allSummaries.set(sessionId, currentSummary);
+    const previouslyPrivate = previous?.private === true || this.privateSessions.has(sessionId);
+    const isPrivate = currentSummary.private === true;
+    if (isPrivate) {
+      this.privateSessions.add(sessionId);
+      this.summaries.delete(sessionId);
+    } else {
+      this.privateSessions.delete(sessionId);
+      this.summaries.set(sessionId, currentSummary);
+    }
+    if (previouslyPrivate === isPrivate) return;
+    if (isPrivate) {
+      this.retirePrivateSession(sessionId);
+    } else {
+      this.sessionSourceMtimes.delete(sessionId);
+      this.dirtySessions.set(sessionId, ++this.watchRevision);
+      if (!this.sqliteDisabled) {
+        this.sqliteHost.invalidateQueryCache();
+        this.sqliteHost.syncSession(this.toSyncInput(currentSummary));
+        this.requestSync();
+      }
+    }
+  }
+
+  private retirePrivateSession(sessionId: string): void {
+    this.summaries.delete(sessionId);
+    this.sessionSourceMtimes.delete(sessionId);
+    this.dirtySessions.set(sessionId, ++this.watchRevision);
+    this.liveSearch.clearSession(sessionId);
+    if (!this.sqliteDisabled) {
+      this.sqliteHost.invalidateQueryCache();
+      this.sqliteHost.retireSession(sessionId);
+      this.requestSync();
+    }
+  }
+
   private toSyncInput(summary: SessionSummary): SqliteSessionInput {
     return {
       id: summary.id,
@@ -334,11 +420,16 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   dispose(): void {
     this.disposed = true;
+    this.mirrorSubscription?.dispose();
     this.liveSearch.clear();
     this.resolveSyncStop();
     this.clearSessionIndexStatusWaiter();
     this.sourceWatcher?.close();
     this.sourceWatcher = null;
+    this.privateSessions.clear();
+    this.sessionMirrorRevisions.clear();
+    this.summaries.clear();
+    this.allSummaries.clear();
     if (this.syncTimer !== null) {
       clearTimeout(this.syncTimer);
       this.syncTimer = null;
@@ -441,11 +532,18 @@ export class GlobalSearchService implements IGlobalSearchService {
     }
     this.clearSessionIndexStatusWaiter();
     const dirtyAtStart = new Map(this.dirtySessions);
+    const privateRevisionAtStart = this.privateRevision;
     const sessions = await this.listSessionsForSync();
     if (this.disposed) return;
-    this.summaries = new Map(sessions.map((s) => [s.id, s]));
+    this.allSummaries = new Map(sessions.map((s) => [s.id, s]));
+    if (privateRevisionAtStart === this.privateRevision) {
+      this.privateSessions.clear();
+      for (const summary of sessions) if (summary.private === true) this.privateSessions.add(summary.id);
+    }
+    const indexable = sessions.filter((summary) => summary.private !== true && !this.privateSessions.has(summary.id));
+    this.summaries = new Map(indexable.map((summary) => [summary.id, summary]));
     this.lastSyncStartedAt = Date.now();
-    this.sqliteHost.sync(sessions.map((s) => this.toSyncInput(s)));
+    this.sqliteHost.sync(indexable.map((summary) => this.toSyncInput(summary)));
     this.ensureSourceWatcher();
     for (const [id, revision] of dirtyAtStart) {
       if (this.dirtySessions.get(id) === revision) {
@@ -457,27 +555,27 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   private async listSessionsForSync(): Promise<SessionSummary[]> {
     if (
-      this.summaries.size === 0 ||
+      this.allSummaries.size === 0 ||
       Date.now() - this.lastFullSessionScanAt >= this.fullSessionScanIntervalMs
     ) {
       return this.refreshFullSessionInventory();
     }
     const count = await this.sessionIndex.count({});
-    if (count !== this.summaries.size) return this.refreshFullSessionInventory();
+    if (count !== this.allSummaries.size) return this.refreshFullSessionInventory();
     const fullStat = Date.now() - this.lastSourceScanAt >= this.sourceStatIntervalMs;
-    const candidates = [...this.summaries.values()].filter(
+    const candidates = [...this.allSummaries.values()].filter(
       (summary) => fullStat || this.dirtySessions.has(summary.id),
     );
     const sampled = await this.readSessionSourceMtimes(candidates);
     if (sampled === undefined) return this.refreshFullSessionInventory();
-    const merged = new Map(this.summaries);
+    const merged = new Map(this.allSummaries);
     for (const [id, mtimeMs] of sampled) {
       if (this.sessionSourceMtimes.get(id) === mtimeMs && !this.dirtySessions.has(id)) continue;
       const summary = await this.sessionIndex.get(id);
       if (summary === undefined) return this.refreshFullSessionInventory();
       merged.set(id, summary);
     }
-    const newest = [...this.summaries.values()].reduce((current, summary) =>
+    const newest = [...this.allSummaries.values()].reduce((current, summary) =>
       compareSessionRecency(summary, current) > 0 ? summary : current,
     );
     let cursor: string | undefined;
@@ -550,9 +648,37 @@ export class GlobalSearchService implements IGlobalSearchService {
     const liveStore = sessionId !== undefined && input.indexOnly !== true
       ? this.liveSource?.forSessionLive(sessionId) : undefined;
     if (liveStore !== undefined && sessionId !== undefined) {
-      return this.searchLive(q, sessionId, liveStore, input.pageToken, deadlineAt, input.signal);
+      const summary = await this.sessionSummary(sessionId, input.signal);
+      if (summary?.private === true || this.privateSessions.has(sessionId)) return this.privateLivePage();
+      const page = await this.searchLive(q, sessionId, liveStore, input.pageToken, deadlineAt, input.signal);
+      return this.privateSessions.has(sessionId) ? this.privateLivePage() : page;
     }
-    return this.searchIndex(q, input.pageToken);
+    return this.searchIndex(q, input.pageToken, input.signal);
+  }
+
+  private async sessionSummary(sessionId: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {
+    return await this.sessionIndex.get(sessionId, undefined, signal) ?? this.allSummaries.get(sessionId);
+  }
+
+  private async filterPrivateRows(rows: readonly MatchedRow[], signal?: AbortSignal): Promise<MatchedRow[]> {
+    signal?.throwIfAborted();
+    const sessionIds = [...new Set(rows.map((row) => row.value.sessionId))];
+    const summaries = await Promise.all(sessionIds.map(async (sessionId) => [sessionId, await this.sessionSummary(sessionId, signal)] as const));
+    signal?.throwIfAborted();
+    const privateIds = new Set(summaries.filter(([, summary]) => summary === undefined || summary.private === true).map(([sessionId]) => sessionId));
+    for (const sessionId of this.privateSessions) privateIds.add(sessionId);
+    return rows.filter((row) => !privateIds.has(row.value.sessionId));
+  }
+
+  private privateLivePage(): GlobalSearchPage {
+    return {
+      items: [],
+      hasMore: false,
+      pageToken: undefined,
+      incomplete: undefined,
+      indexState: { state: 'ready', indexedSessions: 0, totalSessions: 0, documents: 0 },
+      source: 'live',
+    };
   }
 
   private async searchLive(
@@ -584,6 +710,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   private async searchIndex(
     q: NormalizedQuery,
     pageToken: string | undefined,
+    signal?: AbortSignal,
   ): Promise<GlobalSearchPage> {
     if (q.mode === 'literal') {
       const literalLength = Array.from(q.literalQuery ?? '').length;
@@ -601,10 +728,10 @@ export class GlobalSearchService implements IGlobalSearchService {
       }
     }
 
-    return this.searchSqlite(q, pageToken);
+    return this.searchSqlite(q, pageToken, signal);
   }
 
-  private async searchSqlite(q: NormalizedQuery, pageToken?: string): Promise<GlobalSearchPage> {
+  private async searchSqlite(q: NormalizedQuery, pageToken?: string, signal?: AbortSignal): Promise<GlobalSearchPage> {
     if (pageToken !== undefined) decodePageToken(q, 'index', pageToken, undefined);
     if (this.sqliteDisabled) return this.unavailablePage('disabled');
     const host = this.sqliteHost!;
@@ -617,8 +744,9 @@ export class GlobalSearchService implements IGlobalSearchService {
     try {
       const result = await host.search(q, pageToken, this.budgets());
       const snapshot = host.snapshot();
+      const rows = await this.filterPrivateRows(result.rows, signal);
       return {
-        items: result.rows.map((row) => this.projectHit(q, row)),
+        items: rows.map((row) => this.projectHit(q, row)),
         hasMore: result.hasMore,
         pageToken: result.pageToken,
         incomplete: result.incomplete,
@@ -629,6 +757,7 @@ export class GlobalSearchService implements IGlobalSearchService {
         source: 'index',
       };
     } catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof GlobalSearchError && error.reason === 'invalid_page_token') throw error;
       const snapshot = host.snapshot();
       if (snapshot.reason === 'corrupt_rebuilding' || snapshot.state === 'building') return this.sqliteBuildingPage(snapshot);
@@ -699,7 +828,12 @@ export class GlobalSearchService implements IGlobalSearchService {
     try {
       await this.syncPromise?.catch(() => {});
       const sessions = await this.listAllSessions();
-      const stats = await this.sqliteHost.reindex(sessions.map((summary) => this.toSyncInput(summary)));
+      this.allSummaries = new Map(sessions.map((summary) => [summary.id, summary]));
+      this.privateSessions.clear();
+      for (const summary of sessions) if (summary.private === true) this.privateSessions.add(summary.id);
+      const indexable = sessions.filter((summary) => summary.private !== true);
+      this.summaries = new Map(indexable.map((summary) => [summary.id, summary]));
+      const stats = await this.sqliteHost.reindex(indexable.map((summary) => this.toSyncInput(summary)));
       this.lastRefreshError = null;
       return stats;
     } catch (error) {

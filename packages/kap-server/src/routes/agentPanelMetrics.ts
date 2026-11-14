@@ -87,10 +87,18 @@ const PERSISTED_METRICS_SCAN_WALL_TIME_MS = 5_000;
 const PERSISTED_METRICS_CACHE_MAX_ENTRIES = 1024;
 const persistedMetricsStates = new WeakMap<Scope, PersistedMetricsState>();
 
-export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService): AgentPanelMetrics {
+export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService, isPrivate = false): AgentPanelMetrics {
   const usage = agent.accessor.get(IAgentUsageService).status();
   const accounting = agent.accessor.get(IAgentStateService).get(panelAccountingKey);
   const profile = agent.accessor.get(IAgentProfileService).data();
+  const native = profile.executorId === undefined || profile.executorId === 'native';
+  const context = {
+    contextTokens: native ? agent.accessor.get(IAgentTokenCountingService).statusSize() : null,
+    contextLimit: (profile.modelCapabilities.max_input_tokens ?? profile.modelCapabilities.max_context_tokens) || null,
+  };
+  if (isPrivate) {
+    return { ...toPersistedMetrics(emptyPersistedUsage(false), pricing), ...context, usageSource: 'live' };
+  }
   const hasKnownProvenance = accounting.knownRecords !== undefined &&
     accounting.knownByModel !== undefined;
   const knownRecords = hasKnownProvenance
@@ -113,10 +121,8 @@ export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelP
     cacheWriteTokens: total?.inputCacheCreation ?? null,
     totalTokens: input === null || total === undefined ? null : input + total.output,
     totalCostUsd: cost,
-    contextTokens: profile.executorId !== undefined && profile.executorId !== 'native'
-      ? null : agent.accessor.get(IAgentTokenCountingService).statusSize(),
-    contextLimit: (profile.modelCapabilities.max_input_tokens ?? profile.modelCapabilities.max_context_tokens) || null,
-    compactionCount: profile.executorId !== undefined && profile.executorId !== 'native' ? null : accounting.successfulCompactions,
+    ...context,
+    compactionCount: native ? accounting.successfulCompactions : null,
     usagePartial: accounting.incomplete,
     usageComplete: hasKnownProvenance || !accounting.incomplete,
     costPartial: accounting.incomplete || !hasKnownUsage || costSummary.partial,

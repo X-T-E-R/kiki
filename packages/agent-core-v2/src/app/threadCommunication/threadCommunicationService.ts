@@ -282,15 +282,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       }
     }
     const summaries = new Map<string, Promise<SessionSummary | undefined>>();
-    const endpoint = async (ref: ThreadRef): Promise<ThreadMessageEndpoint> => {
-      let pending = summaries.get(ref.sessionId);
+    const endpoint = async (ref: ThreadRef): Promise<{ readonly value: ThreadMessageEndpoint; readonly private: boolean }> => {
+      const key = `${ref.hostId}\0${ref.workspaceId}\0${ref.sessionId}`;
+      let pending = summaries.get(key);
       if (pending === undefined) {
-        pending = this.sessions.get(ref.sessionId);
-        summaries.set(ref.sessionId, pending);
+        pending = this.sessions.get(ref.sessionId, ref.workspaceId);
+        summaries.set(key, pending);
       }
       const summary = await pending;
       const exists = ref.hostId === this.hostId && summary?.workspaceId === ref.workspaceId;
-      return { ref, title: exists ? summary.title : undefined, deleted: !exists, archived: exists && summary.archived };
+      return { value: { ref, title: exists ? summary.title : undefined, deleted: !exists, archived: exists && summary.archived },
+        private: exists && summary.private === true };
     };
     const group = input.sessionId !== undefined ? `session:${input.sessionId}` :
       input.workspaceId !== undefined ? `workspace:${input.workspaceId}` : 'all';
@@ -315,7 +317,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         if (message.target.hostId !== this.hostId || message.producer.kind === 'external_client') continue;
         if (message.producer.kind === 'room') {
           if (input.peerSessionId !== undefined) continue;
-          const target = await endpoint(message.target);
+          const targetResult = await endpoint(message.target);
+          if (targetResult.private) continue;
+          const target = targetResult.value;
           if (target.deleted || input.workspaceId !== undefined && target.ref.workspaceId !== input.workspaceId) continue;
           items.push({ messageId: message.messageId, source: { kind: 'room', roomId: message.producer.roomId }, target,
             content: message.content, acceptedAt: message.acceptedAt, targetSeq: message.targetSeq, delivery: record.delivery,
@@ -323,7 +327,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             reasonCode: record.delivery === 'undeliverable' ? record.reasonCode ?? 'delivery_failed' : undefined });
           continue;
         }
-        const [source, target] = await Promise.all([endpoint(message.producer.source), endpoint(message.target)]);
+        const [sourceResult, targetResult] = await Promise.all([endpoint(message.producer.source), endpoint(message.target)]);
+        if (sourceResult.private || targetResult.private) continue;
+        const source = sourceResult.value;
+        const target = targetResult.value;
         if (source.deleted && target.deleted) continue;
         if (input.workspaceId !== undefined && ![source, target].some((side) => !side.deleted && side.ref.workspaceId === input.workspaceId)) continue;
         if (input.peerSessionId !== undefined && ![source, target].some((side) => side.ref.sessionId === input.peerSessionId)) continue;
@@ -372,9 +379,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const workspaceAdmission = new Map<string, boolean>();
     let before = decoded?.before;
     let terminal = false;
-    let lastScanned: string | undefined;
-    let hasMore = false;
-    while (threads.length < limit && !terminal) {
+    while (threads.length <= limit && !terminal) {
       const page = await this.sessions.listRecent({
         workspaceIds: input.workspaceId === undefined ? undefined : [input.workspaceId],
         includeArchived: false,
@@ -382,31 +387,32 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         limit: MAX_LIST_LIMIT,
       });
       if (page.items.length === 0) break;
-      for (const [index, summary] of page.items.entries()) {
+      let lastScanned: string | undefined;
+      for (const summary of page.items) {
         lastScanned = summary.id;
         let enabled = workspaceAdmission.get(summary.workspaceId);
         if (enabled === undefined) {
           enabled = await this.workspaceEnabled(summary.workspaceId);
           workspaceAdmission.set(summary.workspaceId, enabled);
         }
-        if (!enabled) continue;
+        const ownPrivateSession = summary.id === input.caller?.sessionId && summary.workspaceId === input.caller?.workspaceId;
+        if (!enabled || summary.private === true && !ownPrivateSession) continue;
         threads.push(this.toThreadSummary(summary));
-        if (threads.length >= limit) {
-          hasMore = index < page.items.length - 1 || page.nextCursor !== undefined;
-          break;
-        }
+        if (threads.length > limit) break;
       }
-      if (threads.length >= limit) break;
+      if (threads.length > limit) break;
       terminal = page.nextCursor === undefined;
       before = lastScanned ?? page.nextCursor;
     }
 
+    const hasMore = threads.length > limit;
+    const visible = threads.slice(0, limit);
+    const lastVisible = visible.at(-1);
     return {
-      threads,
-      nextCursor:
-        hasMore && lastScanned !== undefined
-          ? encodeCursor({ v: 1, kind: 'list', before: lastScanned, workspaceId: input.workspaceId })
-          : undefined,
+      threads: visible,
+      nextCursor: hasMore && lastVisible !== undefined
+        ? encodeCursor({ v: 1, kind: 'list', before: lastVisible.ref.sessionId, workspaceId: input.workspaceId })
+        : undefined,
     };
   }
 
