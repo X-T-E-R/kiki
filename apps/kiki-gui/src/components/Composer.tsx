@@ -3700,20 +3700,24 @@ export function Composer({
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
                       ? 'ml-auto shrink-0 pl-1'
-                      : segment.key === 'plugin-capsules' || segment.key === 'output-layer'
-                        ? 'shrink-0 pl-1'
+                      : segment.key === 'plugin-capsules'
+                        ? 'min-w-0 shrink overflow-hidden pl-0.5 @max-[32rem]/toolbar:hidden'
+                      : segment.key === 'output-layer'
+                        ? 'shrink-0 pl-0.5'
+                      : segment.key === 'recipe-binding'
+                        ? 'min-w-0 shrink overflow-hidden @max-[36rem]/toolbar:hidden'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
-                        : segment.key === 'agent'
-                          ? 'min-w-[2.75rem] @max-[24rem]/toolbar:min-w-0 @max-[24rem]/toolbar:shrink-0'
-                          : 'min-w-[3.5rem] @max-[24rem]/toolbar:min-w-[2.5rem]'
+                      : segment.key === 'profile' || segment.key === 'agent'
+                        ? 'min-w-0 shrink @max-[24rem]/toolbar:shrink-0'
+                      : 'min-w-0 shrink'
                   }`}
                 >
                   {segment.node}
                 </div>
               ))}
             </div>
-            <div className="ml-1 flex shrink-0 items-center gap-1 self-start">
+            <div className="ml-1 flex shrink-0 items-center gap-1">
               {contextUsage !== undefined ? (
                 <ContextMeter
                   used={contextUsage.used}

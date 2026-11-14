@@ -86,7 +86,8 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
 export function useCapabilityWorkspace() {
   const { client } = useConnection();
   const [params, setParams] = useSearchParams();
-  const requested = params.get('workspace') ?? undefined;
+  const rawWorkspace = params.get('workspace');
+  const requested = rawWorkspace !== null && rawWorkspace !== '' ? rawWorkspace : undefined;
   const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
   const workspace = pickWorkspace(sorted, requested);
@@ -144,8 +145,9 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const [install, setInstall] = useState<InstallRequest | null>(null);
   const panel = params.get('panel');
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
-  const sessionId = params.get('session') ?? readLastSessionId();
-  const panelScope = panelScopeFrom(params);
+  const rawSession = params.get('session');
+  const sessionId = (rawSession !== null && rawSession !== '' ? rawSession : undefined) ?? readLastSessionId();
+  const panelScope = panelScopeFrom(params, { workspaceId, sessionId });
 
   // Import history moved to the sessions route, where it belongs: bringing an
   // old conversation in is a way of working with sessions, and reading it as a
@@ -198,6 +200,12 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const openPanel = (pluginId: string, id: string) => {
     const updated = new URLSearchParams(params);
     updated.set('panel', `${pluginId}:${id}`);
+    const existingWorkspace = updated.get('workspace');
+    const existingSession = updated.get('session');
+    if ((existingWorkspace === null || existingWorkspace === '') && (existingSession === null || existingSession === '')) {
+      if (workspaceId !== '') updated.set('workspace', workspaceId);
+      else if (sessionId !== undefined && sessionId !== '') updated.set('session', sessionId);
+    }
     setParams(updated);
   };
   const closePanel = () => {

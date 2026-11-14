@@ -44,7 +44,7 @@ import { isModelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
-  mediaFromTextPresentation,
+  mergeMediaWithPresentation,
   originFromRecord,
   producerFromOrigin,
   projectMessageContent,
@@ -447,7 +447,9 @@ function mediaFromAttachmentIds(
       ? 'video'
       : attachment.mediaType.startsWith('image/')
         ? 'image'
-        : 'file';
+        : attachment.mediaType.startsWith('audio/')
+          ? 'audio'
+          : 'file';
     // `image/*` is the adapter's placeholder, not a real type.
     const mime = attachment.mediaType.endsWith('/*') ? undefined : attachment.mediaType;
     const extra = { name: attachment.name, mime, size: attachment.size };
@@ -480,7 +482,7 @@ function mediaWithPresentation(
   media: readonly MediaRef[] | undefined,
   presentation: UserBlock['presentation'],
 ): readonly MediaRef[] | undefined {
-  const refs = [...(media ?? []), ...mediaFromTextPresentation(presentation)];
+  const refs = mergeMediaWithPresentation(media, presentation);
   return refs.length > 0 ? refs : undefined;
 }
 

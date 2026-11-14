@@ -141,7 +141,7 @@ describe('on-demand transcript detail', () => {
     expect(readOnly.querySelector('pre')?.textContent).toBe('…last line');
   });
 
-  it('defers a windowed attachment until the reader asks for it', async () => {
+  it('defers a windowed attachment until the reader asks for it, and auto-requests once visible even for omitted file placeholders', async () => {
     const item: MediaRef = { kind: 'image', name: 'screenshot.png', size: 912_000, mime: 'image/png', detail: { agentId: 'main', attachmentId: 'att-1' } };
     const load = vi.fn(async () => true);
     const container = await render(
@@ -154,6 +154,16 @@ describe('on-demand transcript detail', () => {
     expect(load).not.toHaveBeenCalled();
     await click(chip);
     expect(load).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal('IntersectionObserver', undefined);
+    try {
+      const autoLoad = vi.fn(async () => true);
+      const omittedFile: MediaRef = { kind: 'file', detail: { agentId: 'main', attachmentId: 'att-omitted' } };
+      await render(<Harness load={autoLoad}><MediaPartList media={[omittedFile]} /></Harness>);
+      expect(autoLoad).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.stubGlobal('IntersectionObserver', NeverVisibleIntersectionObserver);
+    }
   });
 
   it('reads main loading and error states when a detail row in a child timeline references main content', async () => {

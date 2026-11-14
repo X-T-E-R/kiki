@@ -67,11 +67,20 @@ function renderComponent(sessionId = 'test-session') {
 }
 
 describe('OutputLayerSelect', () => {
-  it('renders trigger button in Composer status line', () => {
+  it('renders icon-only trigger when idle and shows active preset label with narrow sr-only class when enabled', () => {
     renderComponent();
     const button = container.querySelector('button[aria-haspopup="listbox"]');
     expect(button).not.toBeNull();
     expect(button?.textContent).toContain('输出层');
+    const idleLabel = button?.querySelector('span');
+    expect(idleLabel?.className).toBe('sr-only');
+
+    outputLayerStore.setActivePreset('local::test-session', 'translate');
+    renderComponent();
+    const activeButton = container.querySelector('button[aria-haspopup="listbox"]');
+    const activeLabel = activeButton?.querySelector('span');
+    expect(activeLabel?.textContent).toBe('流式翻译');
+    expect(activeLabel?.className).toContain('@max-[30rem]/toolbar:sr-only');
   });
 
   it('opens popover panel when trigger is clicked and allows selecting preset', () => {

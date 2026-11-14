@@ -176,10 +176,13 @@ describe('E12 declarative plugin GUI slot components', () => {
       'en',
     );
 
+    const group = container.querySelector('[data-plugin-status-capsules]');
+    expect(group?.className).toContain('@max-[32rem]/toolbar:hidden');
     const capsule = container.querySelector<HTMLButtonElement>('[data-plugin-status-capsule="cordis-lsp:tsserver"]');
     expect(capsule).not.toBeNull();
     expect(capsule?.textContent).toContain('TS Server');
     expect(capsule?.textContent).toContain('14ms');
+    expect(capsule?.querySelector('[data-plugin-capsule-value]')?.className).toContain('@max-[38rem]/toolbar:hidden');
     expect(container.querySelector('[data-plugin-capsule-dot="ok"]')).not.toBeNull();
 
     act(() => {

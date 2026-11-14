@@ -2201,6 +2201,168 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(users.map((block) => block.media)).toEqual([[{ kind: 'file', ...attachment }], [{ kind: 'file', ...attachment }]]);
   });
 
+  it('deduplicates attachment presentation spans against structured image media across direct, compressed, inline, and deferred forms', () => {
+    const notice = {
+      path: 'C:\\Users\\example\\.kiki\\sessions\\s1\\attachments\\f_123-image.png',
+      name: 'image.png',
+      mime: 'image/png',
+      size: 157622,
+    };
+    const noticeText = `Attached file "image.png" (image/png, 157622 bytes): ${notice.path} — open it with the Read tool`;
+    const presentation = {
+      spans: [{ start: 0, end: noticeText.length, kind: 'attachment' as const, attachment: notice }],
+    };
+
+    const contentProjection = projectMessageContent([
+      { type: 'text', text: noticeText, presentation },
+      { type: 'image', name: 'image.png', source: { kind: 'url', url: 'kimi-file://f_123' } },
+    ]);
+    expect(contentProjection.media).toEqual([
+      { kind: 'image', fileId: 'f_123', name: 'image.png', mime: 'image/png', size: 157622 },
+    ]);
+
+    const compressedProjection = projectMessageContent([
+      { type: 'text', text: noticeText, presentation },
+      { type: 'image', name: 'image.jpg', source: { kind: 'url', url: 'kimi-file://f_compressed' } },
+    ]);
+    expect(compressedProjection.media).toEqual([
+      { kind: 'image', fileId: 'f_compressed', name: 'image.jpg', mime: 'image/png', size: 157622 },
+    ]);
+
+    const inlineFileId = `inline:main:dDEuYXR0MQ:${'a'.repeat(64)}`;
+    const inlineView = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't-inline',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: noticeText,
+        presentation,
+        attachmentIds: ['t-inline.att1'],
+        steps: [],
+      }],
+      attachments: [{
+        attachmentId: 't-inline.att1',
+        mediaType: 'image/*',
+        name: 'image.png',
+        source: { kind: 'session_media', fileId: inlineFileId },
+      }],
+    }));
+    const inlineUser = inlineView.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(inlineUser?.media).toEqual([
+      { kind: 'image', fileId: inlineFileId, name: 'image.png', mime: 'image/png', size: 157622 },
+    ]);
+
+    const deferredView = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't-deferred',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: noticeText,
+        presentation,
+        attachmentIds: ['t-deferred.att1'],
+        steps: [],
+      }],
+    }));
+    const deferredUser = deferredView.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(deferredUser?.media).toEqual([
+      { kind: 'image', name: 'image.png', mime: 'image/png', size: 157622, detail: { agentId: 'main', attachmentId: 't-deferred.att1' } },
+    ]);
+  });
+
+  it('preserves multiple distinct images and standalone PDF uploads alongside images in the same message', () => {
+    const firstNotice = { path: '/sessions/s1/attachments/f_1-shot.png', name: 'shot.png', mime: 'image/png', size: 100 };
+    const secondNotice = { path: '/sessions/s1/attachments/f_2-shot.png', name: 'shot.png', mime: 'image/png', size: 200 };
+    const pdfNotice = { path: '/sessions/s1/attachments/f_3-spec.pdf', name: 'spec.pdf', mime: 'application/pdf', size: 4096 };
+    const text = 'notice1\nnotice2\nnotice3';
+    const presentation = {
+      spans: [
+        { start: 0, end: 7, kind: 'attachment' as const, attachment: firstNotice },
+        { start: 8, end: 15, kind: 'attachment' as const, attachment: secondNotice },
+        { start: 16, end: 23, kind: 'attachment' as const, attachment: pdfNotice },
+      ],
+    };
+    const projected = projectMessageContent([
+      { type: 'text', text: 'notice1', presentation: { spans: [{ start: 0, end: 7, kind: 'attachment', attachment: firstNotice }] } },
+      { type: 'image', name: 'shot.png', source: { kind: 'url', url: 'kimi-file://f_1' } },
+      { type: 'text', text: 'notice2', presentation: { spans: [{ start: 0, end: 7, kind: 'attachment', attachment: secondNotice }] } },
+      { type: 'image', name: 'shot.png', source: { kind: 'url', url: 'kimi-file://f_2' } },
+      { type: 'text', text: 'notice3', presentation: { spans: [{ start: 0, end: 7, kind: 'attachment', attachment: pdfNotice }] } },
+    ]);
+    expect(projected.media).toEqual([
+      { kind: 'image', fileId: 'f_1', name: 'shot.png', mime: 'image/png', size: 100 },
+      { kind: 'image', fileId: 'f_2', name: 'shot.png', mime: 'image/png', size: 200 },
+      { kind: 'file', ...pdfNotice },
+    ]);
+
+    const turnProjected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't-multi',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: text,
+        presentation,
+        attachmentIds: ['att-1', 'att-2'],
+        steps: [],
+      }],
+      attachments: [
+        { attachmentId: 'att-1', mediaType: 'image/png', name: 'shot.png', source: { kind: 'session_media', fileId: 'f_comp_1' } },
+        { attachmentId: 'att-2', mediaType: 'image/png', name: 'shot.png', source: { kind: 'session_media', fileId: 'f_comp_2' } },
+      ],
+    }));
+    const user = turnProjected.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user?.media).toEqual([
+      { kind: 'image', fileId: 'f_comp_1', name: 'shot.png', mime: 'image/png', size: 100 },
+      { kind: 'image', fileId: 'f_comp_2', name: 'shot.png', mime: 'image/png', size: 200 },
+      { kind: 'file', ...pdfNotice },
+    ]);
+  });
+
+  it('folds both original audio and converted wav attachment spans onto a single audio MediaRef', () => {
+    const opusNotice = { path: '/sessions/s1/attachments/f_audio-voice.opus', name: 'voice.opus', mime: 'audio/ogg', size: 8192 };
+    const wavNotice = { path: '/sessions/s1/attachments/f_audio.wav', name: 'voice.wav', mime: 'audio/wav', size: 65536 };
+    const presentation = {
+      spans: [
+        { start: 0, end: 10, kind: 'attachment' as const, attachment: opusNotice },
+        { start: 11, end: 21, kind: 'attachment' as const, attachment: wavNotice },
+      ],
+    };
+    const projected = projectMessageContent([
+      { type: 'text', text: '0123456789', presentation: { spans: [{ start: 0, end: 10, kind: 'attachment', attachment: opusNotice }] } },
+      { type: 'text', text: '0123456789', presentation: { spans: [{ start: 0, end: 10, kind: 'attachment', attachment: wavNotice }] } },
+      { type: 'audio', name: 'voice.opus', source: { kind: 'session_media', file_id: 'f_audio' } },
+    ]);
+    expect(projected.media).toEqual([
+      { kind: 'audio', fileId: 'f_audio', name: 'voice.opus', mime: 'audio/ogg', size: 8192 },
+    ]);
+
+    const turnView = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't-audio',
+        ordinal: 0,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: '0123456789\n0123456789',
+        presentation,
+        attachmentIds: ['att-audio'],
+        steps: [],
+      }],
+      attachments: [
+        { attachmentId: 'att-audio', mediaType: 'audio/*', name: 'voice.opus', source: { kind: 'session_media', fileId: 'f_audio' } },
+      ],
+    }));
+    const user = turnView.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user?.media).toEqual([
+      { kind: 'audio', fileId: 'f_audio', name: 'voice.opus', mime: 'audio/ogg', size: 8192 },
+    ]);
+  });
+
   it('updates an optimistic prompt when only its media changes', () => {
     const initial = appendLocalUserMessage(createViewState('session_test'), {
       userMessageId: 'um-media',

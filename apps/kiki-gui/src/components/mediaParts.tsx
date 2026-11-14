@@ -71,7 +71,8 @@ export function useSessionMedia(
 
   useEffect(() => {
     if (!enabled) { setLoad({ status: 'loading' }); return; }
-    if (client === undefined || (hostPath === undefined && (sessionId === undefined || item.fileId === undefined)) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
+    const hasSessionMedia = sessionId !== undefined && item.fileId !== undefined;
+    if (client === undefined || (!hasSessionMedia && hostPath === undefined) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
       setLoad({ status: 'failed' });
       return;
     }
@@ -79,13 +80,27 @@ export function useSessionMedia(
     let objectUrl: string | undefined;
     setLoad({ status: 'loading' });
     const options = { ...client.readingOptions(), signal: controller.signal, mediaType: item.mime };
-    const read: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = hostPath !== undefined
-      ? previewOnly ? client.readHostMediaPreviewBytes(hostPath, options) : client.readHostFileBytes(hostPath, options)
-      : previewOnly ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
-    const resolved: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = read.catch((error: unknown) => {
-      if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
-      return hostPath !== undefined ? client.readHostFileBytes(hostPath, options) : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
-    });
+    const readSession = (): Promise<{ bytes: Uint8Array; mime: string; name?: string }> => {
+      const primary = previewOnly
+        ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options)
+        : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
+      return primary.catch((error: unknown) => {
+        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+        return client.readSessionMediaBytes(sessionId!, item.fileId!, options);
+      });
+    };
+    const readHost = (): Promise<{ bytes: Uint8Array; mime: string; name?: string }> => {
+      const primary = previewOnly
+        ? client.readHostMediaPreviewBytes(hostPath!, options)
+        : client.readHostFileBytes(hostPath!, options);
+      return primary.catch((error: unknown) => {
+        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+        return client.readHostFileBytes(hostPath!, options);
+      });
+    };
+    const resolved: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = hasSessionMedia
+      ? readSession()
+      : readHost();
     resolved.then(({ bytes, mime, name }) => {
       if (controller.signal.aborted) return;
       if (bytes.byteLength === 0) { setLoad({ status: 'failed' }); return; }
@@ -581,11 +596,12 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   const target = useMemo(() => ({ client, sessionId: preview?.sessionId, agentId: item.detail.agentId, id: item.detail.attachmentId }), [client, preview?.sessionId, item.detail.agentId, item.detail.attachmentId]);
   const attempted = useRef<typeof target | undefined>(undefined);
   const status = detail.status?.status;
+  const isOmittedPlaceholder = item.kind === 'file' && item.name === undefined && item.mime === undefined && item.size === undefined;
   useEffect(() => {
-    if (!visible || item.kind === 'file' || detail.request === undefined || attempted.current === target || status === 'error') return;
+    if (!visible || (item.kind === 'file' && !isOmittedPlaceholder) || detail.request === undefined || attempted.current === target || status === 'error') return;
     attempted.current = target;
     detail.request();
-  }, [visible, item.kind, detail.request, target, status]);
+  }, [visible, item.kind, isOmittedPlaceholder, detail.request, target, status]);
   if (detail.request === undefined) return <FileChip item={item} />;
   const label = status === 'loading' ? t('media.detail.loading', { name }) : status === 'error' ? t('media.detail.failed', { name }) : t('media.detail.open', { name });
   const meta = item.size !== undefined ? formatBytes(item.size) : item.mime;
@@ -645,7 +661,13 @@ export function MediaPart(props: MediaPartProps) {
 function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: MediaPartProps) {
   const order = useMediaGalleryOrder();
   const openImage = useGalleryImage(item, galleryIndex, agentId);
-  if (item.detail !== undefined) return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
+  const hasLoadableMedia =
+    item.blobHash !== undefined ||
+    item.fileId !== undefined ||
+    (item.url !== undefined && LOADABLE_MEDIA_URL.test(item.url));
+  if (item.detail !== undefined && !hasLoadableMedia) {
+    return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
+  }
   if (item.blobHash !== undefined) {
     const savedItem = canonicalGalleryItem({ ...item, name: item.name ?? safeImagePreviewName({ path: item.path }) }, order?.agentId ?? agentId ?? 'main');
     return <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} />;

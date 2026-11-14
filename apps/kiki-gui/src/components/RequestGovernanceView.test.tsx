@@ -6,7 +6,6 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { CONCURRENCY_RULES_SETTINGS_HREF, RequestGovernanceBadge, RequestGovernanceView } from './RequestGovernanceView';
-import { ConcurrencyCard } from './settings/ModelsSection';
 import { clearToasts, getToasts } from '../lib/toasts';
 import type { RequestGovernanceSnapshot } from '@kiki/protocol';
 
@@ -80,10 +79,10 @@ function mount(view: 'realtime' | 'limits', withBadge = false, seed?: (queryClie
   const render = () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[view === 'limits' ? CONCURRENCY_RULES_SETTINGS_HREF : '/usage?panel=realtime']}>
+        <MemoryRouter initialEntries={[`/usage?panel=${view}`]}>
           <I18nProvider>
             {withBadge ? <RequestGovernanceBadge /> : null}
-            {view === 'limits' ? <ConcurrencyCard /> : <RequestGovernanceView />}
+            <RequestGovernanceView view={view} />
             <LocationProbe />
           </I18nProvider>
         </MemoryRouter>
@@ -101,11 +100,13 @@ async function settle(render: () => void, ms = 10) {
 }
 
 describe('live request governance', () => {
-  it('reports the rules in one line under the live summary and links Manage rules to Settings › Models › Defaults', async () => {
+  it('shows existing concurrency rules directly inline under the live summary and edits them without leaving /usage', async () => {
+    expect(CONCURRENCY_RULES_SETTINGS_HREF).toBe('/settings/ai?tab=defaults#st-card-concurrency');
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
     connection.client.getRequestGovernance.mockResolvedValue({ ...snapshot, rules: [RULE, { ...RULE, id: 'paused-cap', enabled: false }] });
+    connection.client.setRequestGovernanceRules.mockResolvedValue({});
     const { container, render } = mount('realtime');
     await settle(render);
     const live = container.querySelector<HTMLElement>('[data-governance-live]')!;
@@ -114,11 +115,40 @@ describe('live request governance', () => {
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
     expect(summary.textContent).toContain('Limited by 1 concurrency rule');
-    expect(container.querySelector('[data-governance-rules]')).toBeNull();
-    const manage = container.querySelector<HTMLAnchorElement>('[data-governance-manage]')!;
-    expect(manage.getAttribute('href')).toBe(CONCURRENCY_RULES_SETTINGS_HREF);
+    const manage = container.querySelector<HTMLButtonElement>('[data-governance-manage]')!;
+    expect(manage.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-governance-rules]')?.textContent).toContain('Concurrency limits');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
+    expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
+    await act(async () => {
+      container.querySelector('[data-governance-rule="provider-cap"]')!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+    });
+    expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'provider-cap', enabled: false }),
+      expect.objectContaining({ id: 'paused-cap', enabled: false }),
+    ]);
+    expect(container.querySelector('[data-full-location]')?.getAttribute('data-full-location')).toBe('/usage?panel=realtime');
     await act(async () => { manage.click(); });
-    expect(container.querySelector('[data-full-location]')?.getAttribute('data-full-location')).toBe(CONCURRENCY_RULES_SETTINGS_HREF);
+    expect(manage.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+  });
+
+  it('keeps the inline editor folded when no rules exist and expands it inline on Manage rules click', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue({ ...snapshot, rules: [] });
+    connection.client.setRequestGovernanceRules.mockResolvedValue({});
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const manage = container.querySelector<HTMLButtonElement>('[data-governance-manage]')!;
+    expect(manage.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+    await act(async () => { manage.click(); });
+    expect(manage.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-governance-empty]')?.textContent).toContain('No limit rules yet');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-add]')!.click(); });
+    expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
   });
 
   it('shows one dimension at a time instead of stacking the cuts into one table', async () => {

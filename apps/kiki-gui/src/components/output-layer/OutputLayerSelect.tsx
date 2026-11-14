@@ -103,10 +103,10 @@ export function OutputLayerSelect({
           title={isEnabled ? `输出层：${activePreset.label}` : '输出层 (流式翻译/说人话)'}
           onClick={() => setOpen(!open)}
           data-segment-set={isEnabled ? '' : undefined}
-          className={`${STATUS_SEGMENT_CLASS} max-w-44 ${isEnabled ? STATUS_SEGMENT_SET : ''}`}
+          className={`${STATUS_SEGMENT_CLASS} ${isEnabled ? `max-w-40 ${STATUS_SEGMENT_SET}` : 'px-1.5'}`}
         >
           <Icon name="sliders" size={14} className={isEnabled ? 'text-accent' : STATUS_SEGMENT_ICON_CLASS} />
-          <span className="min-w-0 truncate">{triggerLabel}</span>
+          <span className={isEnabled ? 'min-w-0 truncate @max-[30rem]/toolbar:sr-only' : 'sr-only'}>{triggerLabel}</span>
         </button>
 
         {open ? (
