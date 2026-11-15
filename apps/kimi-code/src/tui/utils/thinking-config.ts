@@ -5,6 +5,21 @@ export function isThinkingOn(effort: ThinkingEffort): boolean {
   return effort !== 'off';
 }
 
+export function thinkingEffortForModel(preferred: string, model: {
+  readonly support_efforts?: readonly string[];
+  readonly default_effort?: string;
+  readonly capabilities?: readonly string[];
+  readonly effective_capabilities?: readonly string[];
+}): string {
+  const capabilities = model.effective_capabilities ?? model.capabilities ?? [];
+  if (preferred === 'off' && !capabilities.includes('always_thinking')) return 'off';
+  const efforts = model.support_efforts;
+  if (efforts !== undefined && efforts.length > 0) {
+    return efforts.includes(preferred) ? preferred : model.default_effort ?? efforts[0]!;
+  }
+  return capabilities.includes('thinking') || capabilities.includes('always_thinking') ? 'on' : 'off';
+}
+
 /**
  * Project a thinking effort to the `[thinking]` config patch persisted to
  * config.toml. `'off'` disables thinking; `'on'` is the boolean-model

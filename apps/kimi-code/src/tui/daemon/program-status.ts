@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { ApiError } from '@kiki/session-core/transport';
 import type { SessionViewState } from '@kiki/session-core/session/transcript/types';
 import { ProgramStatusReporter, type ProgramStatusReport } from '#/tui/utils/program-status';
 import { TERMINAL_FOCUS_IN, TERMINAL_FOCUS_OUT } from '#/tui/constant/terminal';
@@ -10,7 +11,8 @@ const holderId = randomBytes(16).toString('base64url');
 
 export class DaemonProgramStatus {
   readonly reporter: ProgramStatusReporter;
-  private readonly port: string | undefined;
+  private port: string | undefined;
+  private attachedTurn = false;
   private config: SessionAccessConfig | undefined;
   private presence: SessionAccessPresence | undefined;
   private presenceUsed = false;
@@ -32,13 +34,27 @@ export class DaemonProgramStatus {
     write: (sequence: string) => void,
     private readonly focused: () => boolean,
     private readonly ephemeral: (sessionId: string) => boolean,
-    env: NodeJS.ProcessEnv = process.env,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    reporter?: ProgramStatusReporter,
   ) {
+    this.setConnection(connection);
+    this.reporter = reporter ?? new ProgramStatusReporter(write, (challenge) => this.ticket(challenge), Date.now, () => this.canRequestTicket());
+    this.reporter.setTicketHandler((challenge) => this.ticket(challenge), () => this.canRequestTicket());
+  }
+
+  private setConnection(connection: DaemonConnection): void {
     const url = new URL(connection.url);
-    if (connection.localOwner === true && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !env['SSH_CONNECTION'] && !env['SSH_TTY'] && !env['SSH_CLIENT']) {
-      this.port = url.port || (url.protocol === 'https:' ? '443' : '80');
-    }
-    this.reporter = new ProgramStatusReporter(write, (challenge) => this.ticket(challenge), Date.now, () => this.canRequestTicket());
+    const local = connection.localOwner === true && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      && !this.env['SSH_CONNECTION'] && !this.env['SSH_TTY'] && !this.env['SSH_CLIENT'];
+    this.port = local ? url.port || (url.protocol === 'https:' ? '443' : '80') : undefined;
+  }
+
+  async reconnect(connection: DaemonConnection): Promise<void> {
+    this.sessionGeneration += 1;
+    this.reporter.discardQueuedTicket();
+    this.closePresence();
+    this.setConnection(connection);
+    await this.refreshConfig();
   }
 
   start(): void {
@@ -72,6 +88,7 @@ export class DaemonProgramStatus {
       }
       this.sessionId = sessionId;
       this.view = undefined;
+      this.attachedTurn = false;
       this.done = false;
       this.authRequired = undefined;
     }).finally(() => { this.pendingSwitches -= 1; });
@@ -83,6 +100,7 @@ export class DaemonProgramStatus {
     if (this.pendingSwitches > 0 || (this.sessionId !== undefined && view.sessionId !== this.sessionId)) return;
     const wasBusy = this.view?.busy === true;
     const completed = view.turnTail?.state === 'completed' && view.turnTail.turnId !== this.view?.turnTail?.turnId;
+    if (view.busy || (this.view?.transcriptReady === true && view.turnTail !== undefined && view.turnTail.turnId !== this.view.turnTail?.turnId)) this.attachedTurn = true;
     if (wasBusy && !view.busy) this.done = completed && !this.focused();
     if (view.busy) {
       this.done = false;
@@ -145,14 +163,14 @@ export class DaemonProgramStatus {
     const question = view?.blocks.find((block) => block.kind === 'question' && block.outcome === undefined);
     let status: ProgramStatusReport;
     if (approval?.kind === 'approval' || view?.pendingInteraction === 'approval') {
-      status = { state: 'blocked', kind: 'permission', msg: approval?.kind === 'approval' ? `${approval.request.tool_name}: ${approval.request.action}` : 'Permission approval required' };
+      status = { state: 'blocked', kind: 'permission', msg: approval?.kind === 'approval' ? `${approval.request.tool_name} · ${approval.request.action.replace(/^Running:\s*/iu, '')}` : 'Permission approval required' };
     } else if (question?.kind === 'question' || view?.pendingInteraction === 'question') {
       status = { state: 'blocked', kind: 'question', msg: question?.kind === 'question' ? question.request.questions.map((item) => item.question).join(' ') : 'Answer a question to continue' };
     } else if (this.authRequired !== undefined) {
       status = { state: 'blocked', kind: 'auth', msg: this.authRequired };
-    } else if (view?.busy || view?.session?.main_turn_active) {
+    } else if (view?.busy) {
       status = { state: 'working' };
-    } else if (view?.turnTail?.state === 'failed' || view?.session?.last_turn_reason === 'failed') {
+    } else if (this.attachedTurn && view?.turnTail?.state === 'failed') {
       status = { state: 'error', msg: view.turnTail?.error ?? 'Turn failed' };
     } else {
       status = { state: this.done ? 'done' : 'idle' };
@@ -160,6 +178,7 @@ export class DaemonProgramStatus {
     this.reporter.update({
       ...status,
       title: view?.session?.title ?? undefined,
+      ephemeral: this.sessionId !== undefined && (this.ephemeral(this.sessionId) || view?.session?.ephemeral === true),
       handoff: this.enabled() ? {
         session: this.sessionId !== undefined && !this.ephemeral(this.sessionId) && view?.session?.ephemeral !== true ? this.sessionId : undefined,
         port: this.port!,
@@ -201,7 +220,13 @@ export class DaemonProgramStatus {
     const presence = this.presence ?? this.openPresence();
     await presence.ready;
     if (this.stopped || this.sessionGeneration !== generation || !this.enabled()) return undefined;
-    const { ticket } = await this.client.requestSessionAccessTicket(sessionId, challenge, holderId);
+    let ticket: string;
+    try {
+      ({ ticket } = await this.client.requestSessionAccessTicket(sessionId, challenge, holderId));
+    } catch (error) {
+      if (error instanceof ApiError && error.reason === 'session_access_disabled') await this.refreshConfig();
+      throw error;
+    }
     if (this.stopped || this.sessionGeneration !== generation || !this.enabled()) {
       await this.client.releaseSessionAccess(holderId, sessionId, AbortSignal.timeout(500)).catch(() => {});
       return undefined;

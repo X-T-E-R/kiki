@@ -70,6 +70,8 @@ import { parseGoalCommand } from '#/tui/commands/goal-parse';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
 import { formatErrorMessage } from '#/tui/utils/event-payload';
 import { setMarkdownRenderLatex } from '#/tui/utils/markdown-options';
+import type { ProgramStatusReporter } from '#/tui/utils/program-status';
+import { thinkingEffortForModel } from '#/tui/utils/thinking-config';
 import { installTerminalFocusTracking } from '#/tui/utils/terminal-focus';
 import { notifyTerminalOnce } from '#/tui/utils/terminal-notification';
 import { buildExportMarkdown } from '#/tui/utils/export-markdown';
@@ -107,7 +109,7 @@ import {
   validateDaemonCommandArgs,
   type DaemonSkillCommand,
 } from './commands';
-import { resolveDaemonHome, type DaemonConnection } from './discovery';
+import { discoverDaemon, resolveDaemonHome, type DaemonConnection } from './discovery';
 import { DaemonProgramStatus } from './program-status';
 import { DaemonTranscriptRenderer, TranscriptNoteComponent } from './transcript-renderer';
 import {
@@ -141,6 +143,7 @@ export interface DaemonTUIStartupInput {
   readonly version: string;
   readonly workDir: string;
   readonly startupNotice?: string;
+  readonly programStatus?: ProgramStatusReporter;
 }
 
 type SessionSummary = Awaited<ReturnType<DaemonClient['listSessions']>>['items'][number];
@@ -201,6 +204,10 @@ export class DaemonTUI {
     | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape' | 'draft-cleared'; readonly timer: ReturnType<typeof setTimeout> }
     | undefined;
   private startupOverridesPending = true;
+  private runModel: string | undefined;
+  private preferredThinking: string | undefined;
+  private rediscovery: Promise<void> | undefined;
+  private disposeConfigEvents: (() => void) | undefined;
   private todoExpanded = false;
   private sourceOverlayLeaseId: string | undefined;
   private sourceOverlayLeaseExpiresAt: number | undefined;
@@ -242,17 +249,23 @@ export class DaemonTUI {
   private sessionReady: Promise<void> | undefined;
   private readonly transcriptBody = new Container();
 
-  constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput, terminal?: Terminal) {
+  constructor(private connection: DaemonConnection, startup: DaemonTUIStartupInput, terminal?: Terminal) {
     this.startup = startup;
     this.currentTuiConfig = { ...startup.tuiConfig };
     this.state = createTUIState(createOptions(startup), terminal);
-    this.client = new DaemonClient(connection);
+    this.runModel = startup.cliOptions.model;
+    this.preferredThinking = startup.cliOptions.thinking;
+    this.client = new DaemonClient({ ...connection, onSocketDiagnostic: (event) => {
+      if (event.kind === 'retry' || (event.kind === 'close' && event.cause !== 'connection_rebound')) void this.rediscoverDaemon();
+    } });
     this.programStatus = new DaemonProgramStatus(
       this.client,
       connection,
       (sequence) => this.state.terminal.write(sequence),
       () => this.state.terminalState.focused,
       (sessionId) => this.temporarySessionIds.has(sessionId) || this.startup.cliOptions.ephemeral === true,
+      process.env,
+      startup.programStatus,
     );
     this.state.ui.addInputListener((data) => this.programStatus.input(data));
     this.state.transcriptContainer.addChild(this.transcriptBody);
@@ -274,6 +287,10 @@ export class DaemonTUI {
     this.inputHistory = this.loadInputHistory();
     this.state.ui.start();
     this.programStatus.start();
+    const configEvents = ['config.changed', 'config.sectionChanged'] as const;
+    const subscriptions = configEvents.map((event) => this.client.klient.events.on(event, () => { void this.programStatus.refreshConfig(); }));
+    for (const subscription of subscriptions) void subscription.ready.catch((error) => { this.showStatus(formatErrorMessage(error), 'error'); });
+    this.disposeConfigEvents = () => { for (const subscription of subscriptions) subscription.dispose(); };
     // Focus reports let `[notifications] notification_condition = "unfocused"`
     // stay quiet while the user is looking at this terminal.
     this.disposeFocusTracking = installTerminalFocusTracking(this.state);
@@ -296,6 +313,18 @@ export class DaemonTUI {
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
     this.sessionReady = this.refreshAgentCommands().then(() => this.initializeSession());
     await this.sessionReady;
+  }
+
+  private rediscoverDaemon(): Promise<void> {
+    if (this.stopped || this.connection.localOwner !== true) return Promise.resolve();
+    this.rediscovery ??= (async () => {
+      const next = await discoverDaemon(resolveDaemonHome(), this.startup.workDir);
+      if (this.stopped || next === null || (next.url === this.connection.url && next.serverId === this.connection.serverId)) return;
+      this.connection = next;
+      this.client.rebind(next);
+      await this.programStatus.reconnect(next);
+    })().catch((error) => { this.showStatus(formatErrorMessage(error), 'error'); }).finally(() => { this.rediscovery = undefined; });
+    return this.rediscovery;
   }
 
   close(): Promise<void> {
@@ -336,6 +365,9 @@ export class DaemonTUI {
     };
     clearTimeout(this.authFlowTimer);
     this.authFlowTimer = undefined;
+    this.disposeConfigEvents?.();
+    this.disposeConfigEvents = undefined;
+    await cleanup(() => this.rediscovery);
     await cleanup(() => this.clearProgramStatus());
     await cleanup(() => {
       this.clearPendingConfirm();
@@ -1067,6 +1099,10 @@ export class DaemonTUI {
       persona,
     });
     if (this.startup.cliOptions.ephemeral === true) this.temporarySessionIds.add(session.id);
+    if (!this.startupOverridesPending && this.runModel !== undefined) {
+      const model = (await this.client.listModels()).items.find((item) => item.id === this.runModel);
+      await this.client.setModel(session.id, this.runModel, model === undefined ? undefined : thinkingEffortForModel(this.preferredThinking ?? this.state.appState.thinkingEffort, model));
+    }
     await this.openSession(session.id);
   }
 
@@ -1078,6 +1114,7 @@ export class DaemonTUI {
     this.turnActivityTracker.reset();
     this.lastActivityKind = 'idle';
     this.wasBusy = false;
+    (this.state.footer as unknown as { advanceTip?: () => void }).advanceTip?.();
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
       this.state.editor.setText('');
@@ -1184,6 +1221,7 @@ export class DaemonTUI {
     // An armed Esc has nothing left to interrupt once the turn ends.
     if (!view.busy && this.pendingConfirm?.kind === 'escape') this.clearPendingConfirm();
     if (this.wasBusy && !view.busy) {
+      (this.state.footer as unknown as { advanceTip?: () => void }).advanceTip?.();
       this.completedTurns += 1;
       notifyTerminalOnce(this.state, `turn-complete:${String(this.completedTurns)}`, {
         title: 'Kiki task complete',
@@ -1192,19 +1230,18 @@ export class DaemonTUI {
     }
     this.wasBusy = view.busy;
     if (this.focusedAgentId === 'main') this.renderTranscript(view);
+    const model = view.model ?? this.state.appState.model;
+    const maxContextTokens = view.maxContextTokens ?? this.state.appState.availableModels[model]?.maxContextSize ?? 0;
     this.setAppState({
       sessionId: view.sessionId,
-      model: view.model ?? this.state.appState.model,
+      model,
       agentProfile: view.profile ?? this.state.appState.agentProfile,
       permissionMode: view.permissionMode ?? this.state.appState.permissionMode,
       planMode: view.planMode,
       thinkingEffort: view.thinkingEffort ?? this.state.appState.thinkingEffort,
       contextTokens: view.contextTokens ?? 0,
-      maxContextTokens: view.maxContextTokens ?? 0,
-      contextUsage:
-        view.contextTokens !== undefined && view.maxContextTokens !== undefined
-          ? view.contextTokens / view.maxContextTokens
-          : 0,
+      maxContextTokens,
+      contextUsage: maxContextTokens > 0 ? (view.contextTokens ?? 0) / maxContextTokens : 0,
       streamingPhase: view.busy ? 'waiting' : 'idle',
       stepRetry:
         view.turnRetry === undefined
@@ -2305,9 +2342,14 @@ export class DaemonTUI {
     const choice = models.find((item) => item.id === model);
     if (choice === undefined) throw new Error(`Model "${model}" was not found.`);
     const controller = await this.ensureSession();
-    const session = await this.client.setModel(controller.sessionId, model);
+    this.preferredThinking ??= this.state.appState.thinkingEffort;
+    const thinkingEffort = thinkingEffortForModel(this.preferredThinking, choice);
+    const session = await this.client.setModel(controller.sessionId, model, thinkingEffort);
+    this.runModel = model;
     controller.handleSessionRecord(session);
-    this.setAppState({ model, thinkingEffort: controller.getState().thinkingEffort ?? choice.default_effort ?? 'off' });
+    const contextTokens = this.state.appState.contextTokens;
+    this.setAppState({ model, thinkingEffort, maxContextTokens: choice.max_context_size,
+      contextUsage: choice.max_context_size > 0 ? contextTokens / choice.max_context_size : 0 });
     const { config, kosong } = this.client.klient.global;
     if (!(await config.get<string | undefined>('defaultModel'))) await kosong.setDefaultModel(model);
   }
@@ -2316,6 +2358,7 @@ export class DaemonTUI {
     const controller = await this.ensureSession();
     const session = await this.client.setThinking(controller.sessionId, thinking);
     controller.handleSessionRecord(session);
+    this.preferredThinking = thinking;
     this.setAppState({ thinkingEffort: thinking });
   }
 

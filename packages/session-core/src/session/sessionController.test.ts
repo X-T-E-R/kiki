@@ -2080,6 +2080,7 @@ describe('SessionController message closure', () => {
 describe('SessionController transcript authority', () => {
   async function openTranscriptController(options: { rewriteResetTimeoutMs?: number } = {}) {
     const client = {
+      getSession: vi.fn(async () => session),
       snapshot: vi.fn(async () => snapshot()),
       listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
       listTasks: vi.fn(async () => ({ items: [] })),
@@ -2133,6 +2134,26 @@ describe('SessionController transcript authority', () => {
     await controller.open();
     return { controller, client, socket, view, flushAll };
   }
+
+  it('refreshes session metadata when an externally submitted turn finishes', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    try {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      flushAll();
+      expect(controller.getState().busy).toBe(true);
+      const updated = { ...session, title: 'Updated externally', agent_config: { model: 'large' }, updated_at: '2026-02-01T00:00:00Z' };
+      client.getSession.mockResolvedValueOnce(updated);
+      controller.handleTranscript(opsEvent('main', [{ op: 'turn.upsert', turn: {
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, endedAt: '2026-01-01T00:00:02Z',
+      } }, { op: 'meta.merge', meta: { activity: 'idle', agent: { phase: { kind: 'ended', turnId: 1, reason: 'completed', at: 2000 } } } }], 2));
+      flushAll();
+      await waitFor(() => controller.getState().session?.title === 'Updated externally');
+      expect(client.getSession).toHaveBeenCalledWith('session_test');
+      expect(controller.getState()).toMatchObject({ busy: false, model: 'large', session: { title: 'Updated externally' } });
+    } finally {
+      controller.close();
+    }
+  });
 
   it('waits for a pending resync before starting an older read', async () => {
     const { controller, client } = await openTranscriptController();

@@ -190,6 +190,7 @@ function classifiedTextToBlocks(input: {
           contentPending: input.contentPending,
           promptTextParts: input.promptTextParts,
           sourceOrigin: classified.origin,
+          via: (classified.origin as { via?: UserBlock['via'] } | undefined)?.via,
           text: classified.text,
           presentation: classified.presentation ?? input.presentation,
           media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
@@ -563,6 +564,9 @@ export function interactionToBlock(interaction: AgentTranscriptInteraction, agen
       interaction.toolCallId ?? recordString(request, 'toolCallId', 'tool_call_id') ?? interaction.interactionId;
     const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
     const expiresAt = recordString(request, 'expiresAt', 'expires_at') ?? createdAt;
+    const display = request['display'] ?? request['toolInputDisplay'] ?? request['tool_input_display'];
+    const summary = typeof display === 'string' ? display : typeof display === 'object' && display !== null
+      ? recordString(display as Record<string, unknown>, 'summary', 'command') : undefined;
     return {
       kind: 'approval',
       id: `approval-${interaction.interactionId}`,
@@ -571,9 +575,9 @@ export function interactionToBlock(interaction: AgentTranscriptInteraction, agen
         session_id: recordString(request, 'sessionId', 'session_id') ?? '',
         turn_id: turnId,
         tool_call_id: toolCallId,
-        tool_name: recordString(request, 'toolName', 'tool_name') ?? 'tool',
-        action: recordString(request, 'action') ?? 'Approve the action',
-        tool_input_display: request['display'] ?? request['toolInputDisplay'] ?? request['tool_input_display'],
+        tool_name: recordString(request, 'toolName', 'tool_name', 'sender') ?? 'tool',
+        action: recordString(request, 'action', 'description') ?? summary ?? recordString(request, 'command') ?? 'Approve the action',
+        tool_input_display: display,
         approval_rule: recordString(request, 'approvalRule', 'approval_rule'),
         // Non-secret SSH card fields (login / host_key); absent on other approvals.
         ...(typeof request['ssh'] === 'object' && request['ssh'] !== null
@@ -3452,6 +3456,7 @@ interface CachedStepProjection {
   readonly blocks: readonly Block[];
   readonly frameTimes: readonly (readonly [string, number])[];
   readonly shellFrameTaskIds: readonly string[];
+  readonly openingVia?: UserBlock['via'];
 }
 
 const settledStepProjectionCache = new WeakMap<object, Map<string, CachedStepProjection>>();
@@ -3697,6 +3702,8 @@ export function agentTranscriptToBlocks(
     ), turnPresentation);
     const promptPending = (item as ContentWindow).contentRefs?.some((ref) => ['prompt', 'presentation', 'origin', 'attachmentIds'].includes(String(ref.path[0]))) === true;
     let projectedTurnPrompt = false;
+    let openingPromptIndex: number | undefined;
+    let openingVia: UserBlock['via'];
     const hasNonEmptyTurnPrompt = Boolean(item.prompt?.trim());
     const needsFrameOwnershipCheck = !hasNonEmptyTurnPrompt && turnUserMessageId !== undefined && ((turnMedia?.length ?? 0) > 0 || promptPending);
     const frameOwnsMessage = needsFrameOwnershipCheck && item.steps.some((step) => step.frames.some((frame) =>
@@ -3719,7 +3726,9 @@ export function agentTranscriptToBlocks(
         userMessageId: turnUserMessageId,
         media: turnMedia,
       });
-      projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
+      const promptIndex = promptBlocks.findIndex((block) => block.kind === 'user');
+      projectedTurnPrompt = promptIndex >= 0;
+      if (projectedTurnPrompt) openingPromptIndex = blocks.length + promptIndex;
       blocks.push(...promptBlocks);
     }
     const isCancelledTurn = 'state' in item && item.state === 'cancelled';
@@ -3736,6 +3745,7 @@ export function agentTranscriptToBlocks(
         const cachedStep = settledStepProjectionCache.get(step)?.get(stepCacheContextKey);
         if (cachedStep !== undefined) {
           blocks.push(...cachedStep.blocks);
+          openingVia ??= cachedStep.openingVia;
           for (const entry of cachedStep.frameTimes) {
             frameTimes.set(entry[0], entry[1]);
             turnFrameTimes.push([entry[0], entry[1]]);
@@ -3749,6 +3759,7 @@ export function agentTranscriptToBlocks(
       }
       const stepBlockStart = blocks.length;
       const stepFrameTimes: [string, number][] = [];
+      let stepOpeningVia: UserBlock['via'];
       const stepShellTaskIds: string[] = [];
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
@@ -3792,6 +3803,7 @@ export function agentTranscriptToBlocks(
                 turnUserMessageId !== undefined &&
                 userMessageId === turnUserMessageId
               ) {
+                stepOpeningVia ??= (frameOrigin as { via?: UserBlock['via'] } | undefined)?.via;
                 break;
               }
               blocks.push(
@@ -3962,13 +3974,19 @@ export function agentTranscriptToBlocks(
             break;
         }
       }
+      openingVia ??= stepOpeningVia;
       if (stepCacheContextKey !== undefined && isSettledCacheableStep(step)) {
         cacheSettledStepProjection(step, stepCacheContextKey, {
           blocks: blocks.slice(stepBlockStart),
           frameTimes: stepFrameTimes,
           shellFrameTaskIds: stepShellTaskIds,
+          openingVia: stepOpeningVia,
         });
       }
+    }
+    if (openingPromptIndex !== undefined && openingVia !== undefined) {
+      const prompt = blocks[openingPromptIndex];
+      if (prompt?.kind === 'user' && prompt.via === undefined) blocks[openingPromptIndex] = { ...prompt, via: openingVia };
     }
     const outcome = subagentPromptAsUser ? turnOutcomeFromItem(item) : undefined;
     if (outcome !== undefined) {
@@ -4910,7 +4928,16 @@ export function projectAgentTranscriptView(
     if (interaction.interactionKind === 'question') pendingInteraction = 'question';
   }
   const goal = snapshot.meta.goal;
-  const turnTail = lastTurn === undefined ? undefined : turnTailFromItem(lastTurn);
+  const phase = meta?.phase;
+  const failedPhase = phase?.kind === 'ended' && phase.reason === 'failed'
+    || phase?.kind === 'interrupted' && phase.reason === 'error';
+  const turnTail = lastTurn === undefined ? undefined : turnTailFromItem(lastTurn) ?? (
+    failedPhase && phase.turnId === lastTurn.ordinal
+      ? turnTailFromItem({ ...lastTurn, state: 'failed', endedAt: new Date(phase.at).toISOString(),
+        error: phase.kind === 'interrupted' ? phase.message : undefined,
+        durationMs: phase.kind === 'ended' ? phase.durationMs : undefined })
+      : undefined
+  );
   const gapOf = options.gapOf ?? ((turn: TranscriptTurn) => turnGapOf(turn, false, undefined));
   const turnGaps: Record<string, TurnGap> = {};
   for (const item of snapshot.items) {
@@ -4960,10 +4987,8 @@ export function projectAgentTranscriptView(
     turnGaps: keepEqual(previous.turnGaps ?? {}, turnGaps),
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
-    // A running last turn has no tail yet; never carry another turn's.
-    turnTail: lastTurn !== undefined && 'state' in lastTurn && lastTurn.state === 'running'
-      ? undefined
-      : turnTail ?? (lastTurn !== undefined && sameTurnId(previous.turnTail?.turnId, lastTurn.turnId) ? previous.turnTail : undefined),
+    // Only this turn's terminal header or failed phase supplies its tail.
+    turnTail: turnTail ?? (lastTurn !== undefined && lastTurn.state !== 'running' && sameTurnId(previous.turnTail?.turnId, lastTurn.turnId) ? previous.turnTail : undefined),
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),
@@ -5001,7 +5026,7 @@ export function applyTranscriptShell(
     version: base.version + 1,
     session,
     cursor,
-    busy: snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
+    busy: base.transcriptReady ? base.busy : snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
     abortablePromptId: snapshot.in_flight_turn?.current_prompt_id,
     abortableTurnId: snapshot.in_flight_turn?.turn_id,
     model: snapshot.session.agent_config.model !== '' ? snapshot.session.agent_config.model : base.model,

@@ -304,6 +304,7 @@ describe('plugin slash command integration', () => {
       'action',
       'action',
       'action',
+      'action',
     ]);
     expect(items[2]?.name).toBe('example-plugin:review');
     expect(items[3]?.name).toBe('run');

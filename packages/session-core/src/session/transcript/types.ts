@@ -41,6 +41,7 @@ export interface UserBlock {
   readonly media?: readonly MediaRef[];
   readonly queuedContent?: Message['content'];
   readonly sourceOrigin?: unknown;
+  readonly via?: { readonly client: string; readonly channel: 'owner' | 'terminal' };
   readonly createdAt: string;
   readonly turnId?: string;
   readonly promptId?: string;

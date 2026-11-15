@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ProcessTerminal, type Terminal } from '@kiki/pi-tui';
 
 import { isTerminalOutputError, runShell } from '#/cli/run-shell';
 
@@ -256,14 +257,28 @@ describe('runShell daemon startup', () => {
     expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'ensure', 'daemon', 'start']);
   });
 
-  it('does not discover or start a daemon when trust is declined', async () => {
-    mocks.trust.mockResolvedValue(false);
+  it('probes before trust and clears a declined trust prompt without discovering a daemon', async () => {
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
+      const text = String(data);
+      writes.push(text);
+      if (text === '\x1b]7501;?\x1b\\\x1b[c') process.stdin.emit('data', '\x1b]7501;?version=0.4\x1b\\');
+      return true;
+    });
+    vi.spyOn(ProcessTerminal.prototype, 'start').mockImplementation(() => {});
+    mocks.trust.mockImplementation(async ({ terminal }: { terminal: Terminal }) => {
+      expect(writes[0]).toBe('\x1b]7501;?\x1b\\\x1b[c');
+      terminal.start(() => {}, () => {});
+      expect(writes.at(-1)).toMatch(/^\x1b\]7501;state=blocked:kind=permission:app=kiki:msg=/u);
+      return false;
+    });
 
     await runShell(options, '1.0.0');
 
     expect(mocks.order).toEqual(['trust']);
     expect(mocks.discover).not.toHaveBeenCalled();
     expect(mocks.daemonConstructor).not.toHaveBeenCalled();
+    expect(writes.at(-1)).toBe('\x1b]7501;state=clear:app=kiki\x1b\\');
   });
 
   it('preserves the startup error when close also fails and restores terminal modes', async () => {

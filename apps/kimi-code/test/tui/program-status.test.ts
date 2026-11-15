@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PassThrough } from 'node:stream';
 import { encodeProgramStatus, ProgramStatusReporter, truncateProgramText } from '#/tui/utils/program-status';
 import { DaemonProgramStatus } from '#/tui/daemon/program-status';
-import { createViewState } from '@kiki/session-core/session/transcript/types';
+import { createViewState, type SessionViewState } from '@kiki/session-core/session/transcript/types';
+import { ApiError } from '@kiki/session-core/transport';
 
 const osc = (body: string, end = '\x1b\\') => `\x1b]7501;${body}${end}`;
 const challenge = (char = 'a') => char.repeat(43);
-const loadedViewState = (sessionId: string) => ({ ...createViewState(sessionId), loaded: true });
+const loadedViewState = (sessionId: string) => ({ ...createViewState(sessionId), loaded: true, transcriptReady: true });
 const flush = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
 const fields = (report: string) => Object.fromEntries(report.slice(7, -2).split(':').map((field) => {
   const separator = field.indexOf('=');
@@ -72,6 +74,27 @@ describe('OSC 7501 negotiation and coalescing', () => {
     reporter.clear();
     expect(writes.at(-1)).toBe(osc('state=clear:app=kiki'));
     expect(writes).toHaveLength(4);
+  });
+
+  it('frames raw probe bytes before negotiation and preserves user input', async () => {
+    const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
+    const writes: string[] = [];
+    const reporter = new ProgramStatusReporter((data) => {
+      writes.push(data);
+      if (!data.endsWith('\x1b[c')) return;
+      input.emit('data', 'x');
+      input.emit('data', '\x1b');
+      input.emit('data', ']7501;?version=0.4\x1b\\');
+      input.emit('data', '\x1b[?62c');
+    }, async () => undefined);
+    await reporter.probe(input as unknown as NodeJS.ReadStream);
+    expect(reporter.supported).toBe(true);
+    expect(input.read()?.toString()).toBe('x');
+    expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
+    expect(input.listenerCount('data')).toBe(0);
+    reporter.start();
+    expect(writes.filter((data) => data.endsWith('\x1b[c'))).toHaveLength(1);
+    input.destroy();
   });
 
   it('locks out late support after DA1 arrives first and ignores ticket replies before support', async () => {
@@ -425,4 +448,89 @@ it('refuses ticket arrivals throughout release and until the next session view i
   expect(client.requestSessionAccessTicket).toHaveBeenCalledTimes(2);
   expect(fields(writes.at(-1)!)).toMatchObject({ session: 'second', challenge: challenge('d') });
   await status.dispose();
+});
+
+
+describe('live attach status regressions', () => {
+  const tail = (turnId: string, state: string): SessionViewState['turnTail'] => ({
+    turnId, state, error: state === 'failed' ? 'Provider unavailable' : undefined,
+    endedAt: '2026-01-01T00:00:00Z', durationMs: 1, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+  });
+
+  it('baselines historical failure, ignores frozen session activity, and reports only attached turn failures', async () => {
+    const { status, writes } = handoffFixture();
+    await status.switchSession('first');
+    const base = { ...loadedViewState('first'), session: { main_turn_active: true, last_turn_reason: 'failed' } as SessionViewState['session'] };
+    status.update({ ...base, turnTail: tail('t1', 'failed') });
+    expect(fields(writes.at(-1)!)['state']).toBe('idle');
+    status.update({ ...base, busy: true, turnTail: undefined });
+    expect(fields(writes.at(-1)!)['state']).toBe('working');
+    const before = writes.length;
+    status.update({ ...base, turnTail: tail('t2', 'failed') });
+    expect(writes.slice(before).map((report) => fields(report)['state'])).toEqual(['error']);
+    status.update({ ...base, busy: true, turnTail: tail('t2', 'failed') });
+    expect(fields(writes.at(-1)!)['state']).toBe('working');
+    status.update({ ...base, turnTail: tail('t3', 'completed') });
+    expect(fields(writes.at(-1)!)['state']).toBe('idle');
+    await status.switchSession('second');
+    status.update({ ...loadedViewState('second'), turnTail: tail('t9', 'failed') });
+    expect(fields(writes.at(-1)!)['state']).toBe('idle');
+    await status.dispose();
+  });
+
+  it('reports a fast externally submitted failure after the attach baseline', async () => {
+    const { status, writes } = handoffFixture();
+    await status.switchSession('first');
+    status.update({ ...loadedViewState('first'), turnTail: tail('t1', 'completed') });
+    status.update({ ...loadedViewState('first'), turnTail: tail('t2', 'failed') });
+    expect(fields(writes.at(-1)!)['state']).toBe('error');
+    await status.dispose();
+  });
+
+  it('distinguishes a temporary open session from a session-less picker even without hand-off', async () => {
+    const { status, writes } = handoffFixture({ ephemeral: true, localOwner: false });
+    expect(fields(writes.at(-1)!)).not.toHaveProperty('ephemeral');
+    await status.switchSession('temporary');
+    status.update(loadedViewState('temporary'));
+    expect(fields(writes.at(-1)!)).toMatchObject({ ephemeral: '1' });
+    expect(fields(writes.at(-1)!)).not.toHaveProperty('session');
+    await status.dispose();
+  });
+
+  it('refreshes config on a disabled ticket refusal and removes every hand-off field', async () => {
+    const { status, client, markReady, writes } = handoffFixture();
+    await status.refreshConfig();
+    await status.switchSession('first');
+    status.update(loadedViewState('first'));
+    markReady();
+    client.requestSessionAccessTicket.mockRejectedValueOnce(new ApiError({ code: 40101, msg: 'session_access_disabled', reason: 'session_access_disabled', data: null }));
+    client.getSessionAccess.mockResolvedValueOnce({ enabled: false, terminal_handoff: false, server_id: 'server-one' });
+    status.input(osc(`?ticket=${challenge()}`));
+    await vi.waitFor(() => expect(client.getSessionAccess).toHaveBeenCalledTimes(2));
+    for (const key of ['handoff', 'session', 'port', 'server']) expect(fields(writes.at(-1)!)).not.toHaveProperty(key);
+    await status.dispose();
+  });
+
+  it('reuses the pre-start probe without sending a second query', async () => {
+    const writes: string[] = [];
+    const reporter = new ProgramStatusReporter((data) => writes.push(data), async () => undefined);
+    reporter.start();
+    reporter.handleInput(osc('?'));
+    const { client } = handoffFixture();
+    const status = new DaemonProgramStatus(client, { url: 'http://127.0.0.1:57580', token: 'owner' }, (data) => writes.push(data), () => true, () => false, {}, reporter);
+    status.start();
+    expect(writes.filter((data) => data.includes(osc('?')))).toHaveLength(1);
+    await status.dispose();
+  });
+
+  it('updates the port and server identity together after replacement', async () => {
+    const { status, client, writes } = handoffFixture();
+    await status.refreshConfig();
+    await status.switchSession('first');
+    status.update(loadedViewState('first'));
+    client.getSessionAccess.mockResolvedValueOnce({ enabled: true, terminal_handoff: true, server_id: 'server-two' });
+    await status.reconnect({ url: 'http://127.0.0.1:57581', token: 'owner', localOwner: true });
+    expect(fields(writes.at(-1)!)).toMatchObject({ port: '57581', server: 'server-two', session: 'first' });
+    await status.dispose();
+  });
 });

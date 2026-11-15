@@ -2,7 +2,9 @@
 
 桌面版和浏览器界面是同一套 UI，一个会话由三块组成：对话视图、输入框、右侧栏。本页就是这三块的导览；看板、草稿和恢复见[工作区与会话管理](/zh/guides/sessions)，同样的概念在终端里的操作见[交互与输入](/zh/guides/interaction)。
 
-只有终端在启动探测中确认支持后，交互式 TUI 会话才会通过 OSC 7501 发送状态报告。只有使用本机所有者凭据经 `loopback`（回环地址）连接本机服务，且 `[session_access].enabled` 和 `[session_access].terminal_handoff` 都为 `true` 时，报告才会包含 `handoff=1`（交接版本 1）、`session`（当前会话 ID）、`port`（本机服务端口）和 `server`（服务 ID）；配置详情见[会话访问配置](../configuration/config-files.md#session-access)。远程或 SSH 连接不包含这些交接字段；使用 `--ephemeral` 创建的会话会省略 `session`，TUI 也不会为其签发交接票据。
+只有终端在启动探测中确认支持后，交互式 TUI 会话才会通过 OSC 7501 发送状态报告。本地终端探测先于工作区信任检查和服务发现；信任提示会报告 `state=blocked:kind=permission`，不带交接字段，取消时会清除报告。重新打开空闲会话时报告 `idle`，只有本次 TUI 连接期间观察到的轮次才会报告 `error`。
+
+只有使用本机所有者凭据经 `loopback`（回环地址）连接本机服务，且 `[session_access].enabled` 和 `[session_access].terminal_handoff` 都为 `true` 时，报告才会包含 `handoff=1`（交接版本 1）、`session`（当前会话 ID）、`port`（本机服务端口）和 `server`（服务 ID）；配置详情见[会话访问配置](../configuration/config-files.md#session-access)。这两项设置的修改会在 TUI 运行期间生效。远程或 SSH 连接不包含这些交接字段。打开的 `--ephemeral` 会话会报告 `ephemeral=1`，省略 `session`，也不会签发交接票据。未打开会话时，例如启动时的会话选择器，`session` 和 `ephemeral` 都不会出现。
 
 ## 对话视图
 

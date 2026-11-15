@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { clearLine, cursorTo } from 'node:readline';
 
 import { flushDiagnosticLogsSync, log } from '@kiki/node-sdk';
+import { ProcessTerminal } from '@kiki/pi-tui';
 
 import { CLI_UI_MODE } from '#/constant/app';
 import type { TuiConfig } from '#/tui/config';
@@ -11,8 +12,9 @@ import { DAEMON_STARTING_MESSAGE } from '#/tui/constant/kimi-tui';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { DISABLE_TERMINAL_FOCUS_REPORTING } from '#/tui/constant/terminal';
 import { DaemonTUI } from '#/tui/daemon/daemon-tui';
-import { discoverDaemon, ensureDaemon, resolveDaemonHome } from '#/tui/daemon/discovery';
+import { discoverDaemon, ensureDaemon, resolveDaemonHome, type DaemonConnection } from '#/tui/daemon/discovery';
 import { runWorkspaceTrustGate } from '#/tui/daemon/workspace-trust';
+import { ProgramStatusReporter } from '#/tui/utils/program-status';
 import { startupTrace } from '#/utils/startup-trace';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { restoreTerminalModes } from '#/utils/terminal-restore';
@@ -42,19 +44,42 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
 
   const workDir = process.cwd();
   const homeDir = resolveDaemonHome();
-  if (!(await runWorkspaceTrustGate({ homeDir, workDir }))) return;
-  const agentProfile = await resolveAgentProfileSelection(opts, workDir);
-  let connection = await discoverDaemon(homeDir, workDir);
-  if (connection === null) {
-    // Spawning the daemon can take seconds; without this line the terminal
-    // stays blank. It is erased before the TUI draws its first frame.
-    process.stdout.write(`${' '.repeat(CHROME_GUTTER)}${DAEMON_STARTING_MESSAGE}`);
-    try {
-      connection = await ensureDaemon({ homeDir, workspacePath: workDir });
-    } finally {
-      clearLine(process.stdout, 0);
-      cursorTo(process.stdout, 0);
+  const programStatus = new ProgramStatusReporter((sequence) => { process.stdout.write(sequence); }, async () => undefined);
+  await programStatus.probe(process.stdin);
+  const trustTerminal = new class extends ProcessTerminal {
+    override start(onInput: (data: string) => void, onResize: () => void): void {
+      programStatus.update({ state: 'blocked', kind: 'permission', msg: 'Trust this folder?' });
+      super.start((data) => {
+        const result = programStatus.handleInput(data);
+        if (result === undefined) onInput(data);
+        else if ('data' in result) onInput(result.data);
+      }, onResize);
     }
+  }();
+  let agentProfile: string | undefined;
+  let connection: DaemonConnection | null;
+  try {
+    if (!(await runWorkspaceTrustGate({ homeDir, workDir, terminal: trustTerminal }))) {
+      programStatus.clear();
+      return;
+    }
+    programStatus.update({ state: 'idle' });
+    agentProfile = await resolveAgentProfileSelection(opts, workDir);
+    connection = await discoverDaemon(homeDir, workDir);
+    if (connection === null) {
+      // Spawning the daemon can take seconds; without this line the terminal
+      // stays blank. It is erased before the TUI draws its first frame.
+      process.stdout.write(`${' '.repeat(CHROME_GUTTER)}${DAEMON_STARTING_MESSAGE}`);
+      try {
+        connection = await ensureDaemon({ homeDir, workspacePath: workDir });
+      } finally {
+        clearLine(process.stdout, 0);
+        cursorTo(process.stdout, 0);
+      }
+    }
+  } catch (error) {
+    programStatus.clear();
+    throw error;
   }
   startupTrace('daemon:connected');
   log.info('kiki starting', { version, uiMode: CLI_UI_MODE, nodeVersion: process.version, platform: `${process.platform}/${process.arch}`, workDir });
@@ -67,6 +92,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     version,
     workDir,
     startupNotice: configWarning,
+    programStatus,
   });
 
   let savedStty: string | undefined;

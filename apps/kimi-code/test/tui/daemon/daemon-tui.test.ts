@@ -10,6 +10,7 @@ import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/pro
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
 import type { TranscriptOpsCatchupResponse, TranscriptResponse } from '@kiki/transcript';
 import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
+import { createViewState } from '@kiki/session-core/session/transcript/types';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import { DEFAULT_TUI_CONFIG } from '#/tui/config';
@@ -1045,12 +1046,54 @@ describe('DaemonTUI commands', () => {
     await internal.handleSlash('/model model-b');
     await internal.handleInput('hello');
 
-    expect(internal.client.setModel).toHaveBeenCalledWith('session-1', 'model-b');
+    expect(internal.client.setModel).toHaveBeenCalledWith('session-1', 'model-b', 'off');
     expect(providerFacade.setDefaultModel).toHaveBeenCalledWith('model-b');
     expect(tui.state.appState.model).toBe('model-b');
     expect(controller.sendPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'hello', model: 'model-b' }),
     );
+  });
+
+  it('preserves the explicit model across /new, then carries the model selected in the TUI', async () => {
+    const { internal } = driver();
+    internal.startupOverridesPending = false;
+    const open = vi.spyOn(internal, 'openSession').mockResolvedValue();
+    await internal.handleSlash('/new');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-created', 'model-a', undefined);
+    expect(open).toHaveBeenLastCalledWith('session-created');
+    await internal.handleSlash('/model model-b');
+    await internal.handleSlash('/new');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-created', 'model-b', 'off');
+  });
+
+  it('shows the new context denominator immediately and restores effort on the next compatible model', async () => {
+    const { tui, internal } = driver();
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, support_efforts: ['low', 'high'], default_effort: 'low' },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat'] },
+    ] });
+    await internal.handleSlash('/thinking high');
+    tui.state.appState.contextTokens = 1000;
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+    expect(tui.state.appState).toMatchObject({ model: 'model-b', thinkingEffort: 'off', maxContextTokens: 8000, contextUsage: 0.125 });
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'high');
+    expect(tui.state.appState).toMatchObject({ model: 'model-a', thinkingEffort: 'high', maxContextTokens: 4000, contextUsage: 0.25 });
+  });
+
+  it('uses a mandatory-thinking model default while remembering the preferred off setting', async () => {
+    const { tui, internal } = driver();
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 6000, support_efforts: ['low', 'high'], default_effort: 'low', effective_capabilities: ['always_thinking'] },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat'] },
+    ] });
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'low');
+    internal.renderSession({ ...createViewState('session-1'), model: 'model-a', maxContextTokens: 1200, contextTokens: 600 });
+    expect(tui.state.appState).toMatchObject({ maxContextTokens: 1200, contextUsage: 0.5 });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
   });
 
   it('does not replace an existing configured default when a model is selected', async () => {
@@ -2384,6 +2427,23 @@ describe('DaemonTUI commands', () => {
     klientClose.mockResolvedValue(undefined);
 
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('advances the footer tip at session and turn boundaries, not typing or repeated redraws', async () => {
+    const { tui, internal } = driver();
+    internal.startupOverridesPending = false;
+    const advanceTip = vi.fn();
+    Object.assign(tui.state.footer, { advanceTip });
+    await internal.openSession('session-2');
+    expect(advanceTip).toHaveBeenCalledOnce();
+    const view = createViewState('session-2');
+    internal.renderSession({ ...view, busy: true });
+    tui.state.editor.handleInput('x');
+    internal.renderSession({ ...view, busy: true });
+    expect(advanceTip).toHaveBeenCalledOnce();
+    internal.renderSession(view);
+    internal.renderSession(view);
+    expect(advanceTip).toHaveBeenCalledTimes(2);
   });
 
   it('projects retry, todo, task, and context state into TUI chrome', () => {

@@ -4347,6 +4347,8 @@ export class SessionController {
       this.setShell({ ...this.shell, version: this.shell.version + 1, loaded: true, loadError: undefined }, false);
     }
     this.publishView(agentId, withCoverage);
+    if (agentId === MAIN_AGENT_ID && (previous.transcriptReady || previous.busy) && !next.busy && next.turnTail !== undefined
+        && (previous.busy || next.turnTail.turnId !== previous.turnTail?.turnId)) void this.refreshSession();
     if (this.contentReaders.size > 0) void this.pumpContentReads();
     // The forest is session-level: a change another agent's projection made
     // is published with the shell, which `subscribe` listeners hear (main's
