@@ -858,6 +858,87 @@ describe('SendMessage completion guidance', () => {
     await ctx.expectResumeMatches();
   });
 
+  it.each([
+    { sameStep: true, kind: 'classified' }, { sameStep: false, kind: 'classified' },
+    { sameStep: true, kind: 'normal' }, { sameStep: false, kind: 'normal' },
+    { sameStep: true, kind: 'empty' }, { sameStep: false, kind: 'empty' },
+  ] as const)('continues after progress delivery and Read instead of silently accepting $kind output (sameStep=$sameStep)', async ({ sameStep, kind }) => {
+    await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    declareNormalCompletions();
+    const read = ctx.get(IAgentToolRegistryService).register({
+      name: 'Read', description: 'Read required fixture evidence.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'Read', execute: async () => ({ output: 'Evidence still needs a final answer.' }) }),
+    });
+    try {
+      const progress = { type: 'function' as const, id: 'progress-send', name: 'SendMessage', arguments: '{"text":"Checking..."}' };
+      const call = { type: 'function' as const, id: 'read-after-progress', name: 'Read', arguments: '{}' };
+      if (sameStep) ctx.mockNextResponse(progress, call);
+      else {
+        ctx.mockNextResponse(progress);
+        ctx.mockNextResponse(call);
+      }
+      ctx.mockNextProviderResponse({
+        parts: kind === 'empty' ? [] : [{ type: 'think', think: 'I must use the new evidence.', encrypted: 'sig-after-read' }],
+        finishReason: 'completed',
+        error: kind === 'classified' ? markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only') : undefined,
+      });
+      ctx.mockNextResponse({ type: 'function', id: 'final-send', name: 'SendMessage', arguments: '{"text":"The final answer uses the evidence.","end_turn":true}' });
+      const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Inspect the evidence and answer.' }] });
+      expect(outcome.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(sameStep ? 3 : 4);
+      expect(historyText(sameStep ? 2 : 3)).toContain('Continue.');
+      expect(sendCalls()).toEqual(['progress-send', 'final-send']);
+      await ctx.expectResumeMatches();
+    } finally { await read.dispose(); }
+  });
+
+  it('continues thinking-only recovery after a failed SendMessage invalidates an earlier delivery', async () => {
+    await messageAgent();
+    declareNormalCompletions();
+    const rejected = ctx.get(IAgentToolExecutorService).onBeforeExecuteTool(event => {
+      if (event.toolCall.id === 'failed-send') event.veto({ output: 'Delivery failed.', isError: true });
+    });
+    try {
+      ctx.mockNextResponse(
+        { type: 'function', id: 'progress-send', name: 'SendMessage', arguments: '{"text":"Checking..."}' },
+        { type: 'function', id: 'failed-send', name: 'SendMessage', arguments: '{"text":"Unsent answer."}' },
+      );
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'The final answer still needs delivery.', encrypted: 'sig-after-failure' }],
+        error: markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only'),
+      });
+      ctx.mockNextResponse({ type: 'function', id: 'final-send', name: 'SendMessage', arguments: '{"text":"Delivered final answer.","end_turn":true}' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer completely.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(3);
+      expect(historyText(2)).toContain('Continue.');
+      expect(sendCalls()).toEqual(['progress-send', 'failed-send', 'final-send']);
+      await ctx.expectResumeMatches();
+    } finally { await rejected.dispose(); }
+  });
+
+  it.each(['normal', 'classified'] as const)('still silently accepts %s thinking after delivery paired only with compatible tools', async kind => {
+    await messageAgent();
+    declareNormalCompletions();
+    const compatible = ctx.get(IAgentToolRegistryService).register({
+      name: 'DetachedWork', description: 'Record detached work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'DetachedWork', execute: async () => ({ output: 'Detached receipt.', allowsTurnEndWithSendMessage: true }) }),
+    });
+    try {
+      ctx.mockNextResponse(
+        { type: 'function', id: 'delivered-send', name: 'SendMessage', arguments: '{"text":"Final answer delivered."}' },
+        { type: 'function', id: 'detached-receipt', name: 'DetachedWork', arguments: '{}' },
+      );
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Wait for the detached work.', encrypted: 'sig-detached' }],
+        finishReason: 'completed',
+        error: kind === 'classified' ? markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only') : undefined,
+      });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer and dispatch.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(2);
+      await ctx.expectResumeMatches();
+    } finally { await compatible.dispose(); }
+  });
+
   it.each([false, true])('silently ends a classified thinking-only stop after delivery with a prior continuation budget of %s', async (usedBudget) => {
     await messageAgent();
     declareNormalCompletions();

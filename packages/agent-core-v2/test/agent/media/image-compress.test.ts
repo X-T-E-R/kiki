@@ -217,6 +217,43 @@ describe('PNG ancillary recovery', () => {
     expect(await decodeImageVerdict(png, 'image/png')).toBe(true);
   });
 
+  it.each([
+    { depth: 8, width: 4096, height: 8193 },
+    { depth: 16, width: 4096, height: 4097 },
+  ])('recovers $depth-bit RGBA scanlines larger than 128 MiB', ({ depth, width, height }) => {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(width, 0);
+    header.writeUInt32BE(height, 4);
+    header[8] = depth;
+    header[9] = 6;
+    const pixelBytes = height * (1 + width * 4 * depth / 8);
+    expect(pixelBytes).toBeGreaterThan(128 * 1024 * 1024);
+    const source = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', header), pngChunk('IDAT', deflateSync(Buffer.alloc(pixelBytes), { level: 1 })),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    const recovered = pngWithoutAncillaryChunks(withPngChunk(source, 'gAMA', Buffer.from([1])));
+    expect(recovered).toEqual(source);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([0, 1])('reaches exact pixel validation at the 100 MP 16-bit RGBA limit (interlace=%s)', interlace => {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1, 0);
+    header.writeUInt32BE(100_000_000, 4);
+    header[8] = 16;
+    header[9] = 6;
+    header[12] = interlace;
+    const png = () => Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', header), pngChunk('gAMA', Buffer.from([1])),
+      pngChunk('IDAT', deflateSync(Buffer.from([0]))), pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    expect(() => pngWithoutAncillaryChunks(png())).toThrow('Incomplete PNG pixel data');
+    header.writeUInt32BE(100_000_001, 4);
+    expect(pngWithoutAncillaryChunks(png())).toBeUndefined();
+  });
+
   it('decodes legal 16-bit RGBA data without stripping pixel information', async () => {
     const header = Buffer.alloc(13);
     header.writeUInt32BE(1, 0);

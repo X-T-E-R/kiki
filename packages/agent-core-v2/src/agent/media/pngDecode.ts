@@ -3,7 +3,7 @@ import { crc32, inflateSync } from 'node:zlib';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PIXEL_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
 const MAX_RECOVERY_PIXELS = 100_000_000;
-const MAX_RECOVERY_PIXEL_BYTES = 128 * 1024 * 1024;
+const MAX_RECOVERY_PIXEL_BYTES = MAX_RECOVERY_PIXELS * 9;
 const COLOR_TYPES: Readonly<Record<number, { readonly depths: readonly number[]; readonly channels: number }>> = {
   0: { depths: [1, 2, 4, 8, 16], channels: 1 },
   2: { depths: [8, 16], channels: 3 },

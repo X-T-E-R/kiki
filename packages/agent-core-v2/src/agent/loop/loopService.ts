@@ -1897,7 +1897,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     signal.throwIfAborted();
     for (const reminder of systemReminders) this.appendExtensionReminder(reminder.text, reminder.variant);
-    if (sendMessageCompletionBlocked) stopTurn = false;
+    if (sendMessageCompletionBlocked) {
+      stopTurn = false;
+      runtime.userDeliveryConfirmed = false;
+    }
     return stopTurn || forcedStopTurn ? 'completed' : 'tool_calls';
   }
 
