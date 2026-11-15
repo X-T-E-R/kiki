@@ -27,7 +27,8 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { ISessionCronService } from '#/session/cron/sessionCronService';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -173,15 +174,11 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       getModel: () => 'removed-model',
       getModelCapabilities: () => UNKNOWN_CAPABILITY,
       getEffectiveThinkingLevel: () => 'high',
-      resolveModelContext: () => {
-        throw new Error('removed-model cannot be resolved');
-      },
     } as unknown as IAgentProfileService;
     const agent: IAgentScopeHandle = {
       id: 'main',
       kind: LifecycleScope.Agent,
       accessor: accessor([
-        [IAgentLifecycleService, { main: () => Promise.resolve(agent) }],
         [IAgentProfileService, profile],
         [IAgentTokenCountingService, { get: () => ({ size: 25, measured: 20, estimated: 5 }), statusSize: () => 25 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
@@ -194,8 +191,8 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       dispose: () => {},
     };
     const agents = {
-      create: () => Promise.resolve(agent),
-      whenReady: () => Promise.resolve(agent),
+      create: vi.fn(async () => agent),
+      get: (id: string) => id === agent.id ? agent : undefined,
       list: () => [agent],
     } as unknown as IAgentLifecycleService;
     const session: ISessionScopeHandle = {
@@ -203,7 +200,8 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       kind: LifecycleScope.Session,
       accessor: accessor([
         [IAgentLifecycleService, agents],
-        [ISessionCronService, { _serviceBrand: undefined }],
+        [IModelService, { ready: Promise.resolve(), resolveId: () => undefined }],
+        [IModelCatalog, { get: () => { throw new Error('removed-model cannot be resolved'); } }],
       ]),
       dispose: () => {},
     };
@@ -211,10 +209,12 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
 
     const status = await ix.get(ISessionLegacyService).status('session-test');
+    expect(agents.create).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       busy: false,
       model: 'removed-model',
+      model_name: null,
       thinking_level: 'high',
     });
     expect(status.max_context_tokens).toBeUndefined();
@@ -238,12 +238,10 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       id: 'main',
       kind: LifecycleScope.Agent,
       accessor: accessor([
-        [IAgentLifecycleService, { main: () => Promise.resolve(agent) }],
         [IAgentProfileService, profile],
         [IAgentTokenCountingService, { get: () => ({ size: 0, measured: 0, estimated: 0 }), statusSize: () => 0 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IModelService, { getDefaultModel: () => undefined }],
         [
           IAgentActivityView,
           { state: () => ({ lifecycle: 'ready', background: [] }) },
@@ -252,8 +250,8 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       dispose: () => {},
     };
     const agents = {
-      create: () => Promise.resolve(agent),
-      whenReady: () => Promise.resolve(agent),
+      create: vi.fn(async () => agent),
+      get: (id: string) => id === agent.id ? agent : undefined,
       list: () => [agent],
     } as unknown as IAgentLifecycleService;
     const session: ISessionScopeHandle = {
@@ -261,7 +259,9 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       kind: LifecycleScope.Session,
       accessor: accessor([
         [IAgentLifecycleService, agents],
-        [ISessionCronService, { _serviceBrand: undefined }],
+        [ISessionMetadata, { read: async () => ({ agents: {} }) }],
+        [ISessionAgentProfileCatalog, { ready: Promise.resolve(), getDefault: () => ({ modelAlias: undefined }) }],
+        [IModelService, { ready: Promise.resolve(), getDefaultModel: () => undefined }],
       ]),
       dispose: () => {},
     };
@@ -269,10 +269,12 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
 
     const status = await ix.get(ISessionLegacyService).status('session-unbound');
+    expect(agents.create).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       busy: false,
       model: undefined,
+      model_name: null,
       thinking_level: '',
     });
     expect(status.max_context_tokens).toBeUndefined();
@@ -296,21 +298,10 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       id: 'main',
       kind: LifecycleScope.Agent,
       accessor: accessor([
-        [IAgentLifecycleService, { main: () => Promise.resolve(agent) }],
         [IAgentProfileService, profile],
         [IAgentTokenCountingService, { get: () => ({ size: 0, measured: 0, estimated: 0 }), statusSize: () => 0 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
         [IAgentPlanService, { status: () => Promise.resolve(null) }],
-        [IModelService, { getDefaultModel: () => 'default-model' }],
-        [
-          IModelCatalog,
-          {
-            get: (id: string) => {
-              if (id !== 'default-model') throw new Error(`unknown model ${id}`);
-              return { capabilities: { max_context_tokens: 200_000 } };
-            },
-          },
-        ],
         [
           IAgentActivityView,
           { state: () => ({ lifecycle: 'ready', background: [] }) },
@@ -319,8 +310,8 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       dispose: () => {},
     };
     const agents = {
-      create: () => Promise.resolve(agent),
-      whenReady: () => Promise.resolve(agent),
+      create: vi.fn(async () => agent),
+      get: (id: string) => id === agent.id ? agent : undefined,
       list: () => [agent],
     } as unknown as IAgentLifecycleService;
     const session: ISessionScopeHandle = {
@@ -328,7 +319,15 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       kind: LifecycleScope.Session,
       accessor: accessor([
         [IAgentLifecycleService, agents],
-        [ISessionCronService, { _serviceBrand: undefined }],
+        [ISessionMetadata, { read: async () => ({ agents: {} }) }],
+        [ISessionAgentProfileCatalog, { ready: Promise.resolve(), getDefault: () => ({ modelAlias: undefined }) }],
+        [IModelService, { ready: Promise.resolve(), getDefaultModel: () => 'default-model' }],
+        [IModelCatalog, {
+          get: (id: string) => {
+            if (id !== 'default-model') throw new Error(`unknown model ${id}`);
+            return { displayName: 'Example Default Model', capabilities: { max_context_tokens: 200_000 } };
+          },
+        }],
       ]),
       dispose: () => {},
     };
@@ -336,9 +335,12 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
 
     const status = await ix.get(ISessionLegacyService).status('session-draft');
+    expect(agents.create).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
-      model: undefined,
+      model: 'default-model',
+      model_name: 'Example Default Model',
+      thinking_level: '',
       max_context_tokens: 200_000,
     });
   });
@@ -348,7 +350,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       _serviceBrand: undefined,
       data: () => ({
         cwd: '/workspace',
-        modelAlias: 'gpt-5',
+        modelAlias: 'example-model',
         modelCapabilities: {
           image_in: false,
           video_in: false,
@@ -362,7 +364,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
         thinkingLevel: 'medium',
         systemPrompt: '',
       }),
-      getModel: () => 'gpt-5',
+      getModel: () => 'example-model',
       getModelCapabilities: () => ({
         image_in: false,
         video_in: false,
@@ -379,7 +381,6 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       id: 'main',
       kind: LifecycleScope.Agent,
       accessor: accessor([
-        [IAgentLifecycleService, { main: () => Promise.resolve(agent) }],
         [IAgentProfileService, profile],
         [IAgentTokenCountingService, { get: () => ({ size: 120_000, measured: 110_000, estimated: 10_000 }), statusSize: () => 120_000 }],
         [IAgentPermissionModeService, { mode: 'manual' }],
@@ -392,8 +393,8 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       dispose: () => {},
     };
     const agents = {
-      create: () => Promise.resolve(agent),
-      whenReady: () => Promise.resolve(agent),
+      create: vi.fn(async () => agent),
+      get: (id: string) => id === agent.id ? agent : undefined,
       list: () => [agent],
     } as unknown as IAgentLifecycleService;
     const session: ISessionScopeHandle = {
@@ -401,7 +402,10 @@ describe('Session legacy reads (best-effort runtime state)', () => {
       kind: LifecycleScope.Session,
       accessor: accessor([
         [IAgentLifecycleService, agents],
-        [ISessionCronService, { _serviceBrand: undefined }],
+        [IModelService, { ready: Promise.resolve(), resolveId: (id: string) => id }],
+        [IModelCatalog, {
+          get: () => ({ displayName: 'Example Model', capabilities: { max_context_tokens: 200_000, max_input_tokens: 150_000 } }),
+        }],
       ]),
       dispose: () => {},
     };
@@ -409,8 +413,12 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     ix.set(ISessionLegacyService, new SyncDescriptor(SessionLegacyService));
 
     const status = await ix.get(ISessionLegacyService).status('session-capped');
+    expect(agents.create).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
+      model: 'example-model',
+      model_name: 'Example Model',
+      thinking_level: 'medium',
       max_context_tokens: 100_000,
       context_usage: 1,
     });
