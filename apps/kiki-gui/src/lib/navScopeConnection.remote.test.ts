@@ -71,8 +71,7 @@ describe('remote scope identity gate', () => {
     await prepared.commit();
     expect(test.commit).toHaveBeenCalledWith({ config: original.config, persist: false, source: 'remote', scopeId: scope.scopeId,
       connectionId: id, serverHomeId: targetHome }, test.created[0], identity(targetHome));
-    expect(test.reload).toHaveBeenCalledOnce();
-    expect(test.commit.mock.invocationCallOrder[0]).toBeLessThan(test.reload.mock.invocationCallOrder[0]!);
+    expect(test.reload).not.toHaveBeenCalled();
     expect(test.fetchMock.mock.calls.map(([input]) => (input instanceof Request ? input.url : input.toString()))).toEqual([
       'http://source.example.test/api/remote-connections', `http://source.example.test/api/remote-connections/${id}/call`,
     ]);
@@ -131,8 +130,9 @@ describe('remote scope identity gate', () => {
       local: () => local, control: () => local, commit, reload });
     const prepared = await adapter.prepare({ homeId: 'main', scopeId: controlSelection.scopeId! }, new AbortController().signal);
     await prepared.commit();
-    expect(nativePrepare).not.toHaveBeenCalled(); expect(reload).toHaveBeenCalledOnce();
-    expect(commit).not.toHaveBeenCalled();
+    expect(nativePrepare).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledWith(controlSelection, control, identity('source-home'));
   });
 
   it('closes a cancelled prepared candidate once and leaves the source unchanged', async () => {

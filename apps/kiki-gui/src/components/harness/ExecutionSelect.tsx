@@ -588,9 +588,10 @@ export function ExecutionSelect({
   ) : undefined;
 
   return (
-    <div ref={rootRef} className="relative min-w-0" data-execution-select>
+    <div ref={rootRef} className="relative flex min-w-0 max-w-full" data-execution-select>
       <ModelPicker
         id="composer-execution-select"
+        rootClassName="relative flex min-w-0 max-w-full"
         options={pickerOptions}
         value={pickerValue}
         disabled={disabled}
@@ -616,7 +617,7 @@ export function ExecutionSelect({
           <Icon
             name={isExternalClient ? 'external' : isNative ? 'agent' : 'terminal'}
             size={14}
-            className={STATUS_SEGMENT_ICON_CLASS}
+            className={`shrink-0 ${STATUS_SEGMENT_ICON_CLASS}`}
           />
         )}
         triggerLabel={triggerLabel}
@@ -626,7 +627,7 @@ export function ExecutionSelect({
             <span className="sr-only">{domainNote}</span>
           </span>
         ) : undefined}
-        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-64 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
         panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
         panelHeader={panelHeader}
         panelFooter={panelFooter}

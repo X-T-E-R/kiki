@@ -67,11 +67,13 @@ function TerminalCanvas({
   manager,
   tabId,
   active,
+  dragging,
   copyLabel,
 }: {
   manager: TerminalManager;
   tabId: string;
   active: boolean;
+  dragging: boolean;
   copyLabel: string;
 }) {
   const hostAdapter = useHost();
@@ -79,6 +81,9 @@ function TerminalCanvas({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const lastSizeRef = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
+  const draggingRef = useRef(dragging);
+  draggingRef.current = dragging;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -143,8 +148,26 @@ function TerminalCanvas({
       return true;
     });
 
+    const sendResize = () => {
+      if (term.cols <= 0 || term.rows <= 0) return;
+      if (lastSizeRef.current.cols === term.cols && lastSizeRef.current.rows === term.rows) return;
+      lastSizeRef.current = { cols: term.cols, rows: term.rows };
+      manager.resize(tabId, term.cols, term.rows);
+    };
+    let fitFrame: number | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const observer = new ResizeObserver(() => {
+      if (fitFrame === undefined) {
+        fitFrame = requestAnimationFrame(() => {
+          fitFrame = undefined;
+          if (host.offsetParent === null) return;
+          try {
+            fit.fit();
+          } catch {
+            // not measurable yet
+          }
+        });
+      }
       if (resizeTimer !== undefined) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         resizeTimer = undefined;
@@ -154,8 +177,8 @@ function TerminalCanvas({
         } catch {
           return; // not measurable yet
         }
-        manager.resize(tabId, term.cols, term.rows);
-      }, 60);
+        sendResize();
+      }, draggingRef.current ? 120 : 60);
     });
     observer.observe(host);
 
@@ -174,14 +197,16 @@ function TerminalCanvas({
       } catch {
         return;
       }
-      manager.resize(tabId, term.cols, term.rows);
+      sendResize();
     });
 
     return () => {
       observer.disconnect();
       stopThemeFollow();
       stopSettingsFollow();
+      if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
       if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+      lastSizeRef.current = { cols: 0, rows: 0 };
       dataSub.dispose();
       unbind();
       term.dispose();
@@ -200,7 +225,10 @@ function TerminalCanvas({
       if (term === null || fit === null) return;
       try {
         fit.fit();
-        manager.resize(tabId, term.cols, term.rows);
+        if (term.cols > 0 && term.rows > 0 && (lastSizeRef.current.cols !== term.cols || lastSizeRef.current.rows !== term.rows)) {
+          lastSizeRef.current = { cols: term.cols, rows: term.rows };
+          manager.resize(tabId, term.cols, term.rows);
+        }
       } catch {
         // host not laid out yet — the observer catches the next change
       }
@@ -210,6 +238,23 @@ function TerminalCanvas({
       cancelAnimationFrame(frame);
     };
   }, [active, manager, tabId]);
+
+  useEffect(() => {
+    if (dragging || !active) return;
+    const term = termRef.current;
+    const fit = fitRef.current;
+    const host = hostRef.current;
+    if (term === null || fit === null || host === null || host.offsetParent === null) return;
+    try {
+      fit.fit();
+      if (term.cols > 0 && term.rows > 0 && (lastSizeRef.current.cols !== term.cols || lastSizeRef.current.rows !== term.rows)) {
+        lastSizeRef.current = { cols: term.cols, rows: term.rows };
+        manager.resize(tabId, term.cols, term.rows);
+      }
+    } catch {
+      // ignore unmeasured host
+    }
+  }, [dragging, active, manager, tabId]);
 
   return (
     <div
@@ -249,6 +294,7 @@ export function TerminalPanel({
   const { t } = useI18n();
   const [confirmKillId, setConfirmKillId] = useState<string | undefined>(undefined);
   const [mirror, setMirror] = useState('');
+  const [dragging, setDragging] = useState(false);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   // The store publishes on tab/status changes; output itself bypasses React
@@ -280,6 +326,7 @@ export function TerminalPanel({
   const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     dragRef.current = { startY: event.clientY, startHeight: height };
+    setDragging(true);
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
   };
@@ -292,6 +339,7 @@ export function TerminalPanel({
     const drag = dragRef.current;
     if (drag === null) return;
     dragRef.current = null;
+    setDragging(false);
     onHeightChange(clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY)), true);
   };
 
@@ -401,6 +449,7 @@ export function TerminalPanel({
             manager={manager}
             tabId={tab.id}
             active={tab.id === activeId}
+            dragging={dragging}
             copyLabel={t('contextMenu.copy')}
           />
         ))}

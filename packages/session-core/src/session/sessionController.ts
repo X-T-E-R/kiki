@@ -1003,7 +1003,7 @@ export class SessionController {
 
   private attachView(sessionCursor: SessionCursor, bootstrap = false): void {
     const attachment = ++this.viewAttachment;
-    this.droppedWithLiveWork = false;
+    this.droppedLiveAgents.clear();
     const previous = this.viewHandle;
     this.viewHandle = undefined;
     previous?.close();
@@ -1715,10 +1715,10 @@ export class SessionController {
     this.recoverRewriteHold(hold.token);
   }
 
-  /** Volatile deltas are never journaled or replayed, so a turn that was
+  /** Volatile deltas are never journaled or replayed, so an agent that was
    * live when the socket dropped has holes the durable replay cannot fill.
-   * Remember the drop; the next post-reconnect subscribe ack resyncs. */
-  private droppedWithLiveWork = false;
+   * Track only the live agents so idle siblings skip redundant HTTP catch-up. */
+  private readonly droppedLiveAgents = new Set<string>();
 
   /**
    * Any agent this view receives counts, not only main: a drop while only a
@@ -1734,22 +1734,29 @@ export class SessionController {
         (block) => (block.kind === 'assistant' || block.kind === 'thinking') && block.streaming,
       );
       if (view.busy || streaming) {
-        this.droppedWithLiveWork = true;
-        return;
+        this.droppedLiveAgents.add(agentId);
       }
+    }
+    if (this.shell.session?.busy === true && gradeFor(this.transcriptGrades, 'main') !== 'off') {
+      this.droppedLiveAgents.add('main');
     }
   }
 
   handleReconnectAck(): void {
-    if (this.closed || !this.droppedWithLiveWork || this.shell.resyncError?.retryable === false) return;
-    this.droppedWithLiveWork = false;
+    if (this.closed || this.droppedLiveAgents.size === 0 || this.shell.resyncError?.retryable === false) return;
+    const liveAgents = new Set(this.droppedLiveAgents);
+    this.droppedLiveAgents.clear();
     void this.refreshDurableIngress();
-    const agents = [...this.storeTimelines].map(({ agentId }) => agentId);
-    if (agents.length === 0) {
+    const storeAgentIds = [...this.storeTimelines].map(({ agentId }) => agentId);
+    if (storeAgentIds.length === 0) {
       void this.resync();
       return;
     }
-    for (const agentId of agents) void this.catchUpAgent(agentId);
+    for (const agentId of storeAgentIds) {
+      if (liveAgents.has(agentId) || !this.hasTranscriptBaseline(agentId)) {
+        void this.catchUpAgent(agentId);
+      }
+    }
   }
 
   /** Rewrite resyncs requested while another resync was in flight — the

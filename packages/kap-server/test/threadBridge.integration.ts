@@ -110,6 +110,8 @@ it('creates workspace-pinned threads over HTTP and shares the send rate budget',
   expect(created).toMatchObject({ title: 'Initial bridge prompt.', profile: 'agent', prompt_started: true,
     thread: toolRef({ ...f.target, sessionId: created.id }, link) });
   await expect(execute(tool, { ...input, title: 'Changed' })).rejects.toThrow('bridge_idempotency_conflict');
+  const listed = await execute<{ threads: Array<{ ref: { sessionId: string } }> }>(f.main.accessor.get(IListThreadsTool), {});
+  expect(listed.threads.some((entry) => entry.ref.sessionId === f.target.sessionId)).toBe(true);
   const createdSession = f.b.core.accessor.get(ISessionManager).get(created.id)!;
   const createdMain = await ensureMainAgent(createdSession);
   expect(createdSession.accessor.get(ISessionContext)).toMatchObject({ cwd: join(f.root, 'workspace'), workspaceId: f.target.workspaceId });
@@ -140,6 +142,12 @@ it('creates workspace-pinned threads over HTTP and shares the send rate budget',
   await expect(execute(tool, { bridge_id: link.grant.id, idempotency_key: 'over-limit' })).rejects.toThrow('bridge_rate_limit');
   expect(await execute(tool, input)).toEqual(created);
   expect(await f.b.core.accessor.get(ISessionIndex).get(created.id)).toMatchObject(workspace);
+  const sentWithoutBridgeId = await execute<SendThreadMessageResult>(f.main.accessor.get(ISendMessageToThreadTool), {
+    thread: { host_id: f.target.hostId, workspace_id: f.target.workspaceId, session_id: f.target.sessionId },
+    content: 'Disambiguated send across overlapping grants.',
+    idempotency_key: 'disambiguated-send',
+  });
+  expect(['pending', 'delivered']).toContain(sentWithoutBridgeId.delivery);
 }, 60000);
 
 it('reuses the reserved session and prompt after a lost create acknowledgement and server reload', async () => {

@@ -34,7 +34,7 @@ export function AppConnectionBanner({
 }) {
   const { t } = useI18n();
   const [details, setDetails] = useState(false);
-  const bannerVisible = !((wsStatus === 'open' || (wsStatus === 'connecting' && suppressInitialConnecting === true)) && recovery === undefined);
+  const bannerVisible = !((wsStatus === 'open' || ((wsStatus === 'connecting' || wsStatus === 'closed') && suppressInitialConnecting === true)) && recovery === undefined);
   const location = useSpaceLocation({ enabled: bannerVisible });
   const conn = useOptionalConnection();
   const log = useSyncExternalStore(subscribeConnectionLog, connectionLog, connectionLog);
@@ -71,19 +71,21 @@ export function AppConnectionBanner({
   }
 
   const reconnectLabel = repeatedRemoteFailure ? t('app.retryNow') : t('app.reconnectNow');
-  const buttonClass = 'shrink-0 rounded-sm border border-amber-ink/40 px-1.5 py-px font-semibold transition-colors hover:bg-amber-ink/10 disabled:opacity-50';
+  const buttonClass = 'shrink-0 rounded-full border border-amber-ink/35 px-2 py-0.5 text-[11.5px] font-semibold transition-colors hover:bg-amber-ink/10 disabled:opacity-50';
   return <>
-    <div data-app-banner data-recovery-state={blocked ? 'blocked' : retrying ? 'retrying' : 'closed'} role="status"
-      className="flex h-16 shrink-0 flex-wrap content-center items-center justify-center gap-x-3 gap-y-1 border-b border-amber-rule/40 bg-amber-card px-3 text-center text-[12px] font-medium text-amber-ink sm:h-10">
-      <span>{label}</span>
-      {blocked && onOpenConnectionSettings ? <button type="button" className={buttonClass} onClick={onOpenConnectionSettings}>{t('app.connectionSettings')}</button> : null}
-      {canReconnect ? <button type="button" data-banner-reconnect onClick={onReconnect} className={buttonClass}>{reconnectLabel}</button> : null}
-      {repeatedRemoteFailure && backAction !== undefined ? (
-        <button type="button" data-banner-back-local onClick={backAction} className={buttonClass}>
-          {t('app.backToSpace', { space: location.localSpaceName })}
-        </button>
-      ) : null}
-      {recovery ? <button type="button" className={buttonClass} disabled={!failure} onClick={() => { setDetails(true); }}>{t('app.connectionDetails')}</button> : null}
+    <div className="pointer-events-none fixed inset-x-0 top-2.5 z-40 flex justify-center px-3">
+      <div data-app-banner data-recovery-state={blocked ? 'blocked' : retrying ? 'retrying' : 'closed'} role="status"
+        className="pointer-events-auto flex min-h-8 max-w-[min(calc(100vw-1.5rem),42rem)] flex-wrap content-center items-center justify-center gap-x-2.5 gap-y-1 rounded-full border border-amber-rule/50 bg-amber-card/95 px-3.5 py-1 text-center text-[12px] leading-4 font-medium text-amber-ink shadow-sm backdrop-blur-xs">
+        <span>{label}</span>
+        {blocked && onOpenConnectionSettings ? <button type="button" className={buttonClass} onClick={onOpenConnectionSettings}>{t('app.connectionSettings')}</button> : null}
+        {canReconnect ? <button type="button" data-banner-reconnect onClick={onReconnect} className={buttonClass}>{reconnectLabel}</button> : null}
+        {repeatedRemoteFailure && backAction !== undefined ? (
+          <button type="button" data-banner-back-local onClick={backAction} className={buttonClass}>
+            {t('app.backToSpace', { space: location.localSpaceName })}
+          </button>
+        ) : null}
+        {recovery ? <button type="button" className={buttonClass} disabled={!failure} onClick={() => { setDetails(true); }}>{t('app.connectionDetails')}</button> : null}
+      </div>
     </div>
     {details && failure ? <Dialog onClose={() => { setDetails(false); }} ariaLabel={t('app.connectionDetails')} overlayId="connection-failure-details" stacked>
       <h2 className="font-display text-lg text-ink">{t('app.connectionDetails')}</h2>

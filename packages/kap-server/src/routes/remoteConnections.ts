@@ -14,7 +14,7 @@ import { isPeerFrameAllowed, peerAudience } from '../services/connections/audien
 import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
 import { directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
-import { pinnedAgent, requirePinnedTls } from '../services/connections/peerTls';
+import { pooledPinnedAgent, requirePinnedTls } from '../services/connections/peerTls';
 import type { MintPluginPanelDocument } from './pluginPanelDocuments';
 
 export const CONNECTION_BROKER_WS = /^\/api\/remote-connections\/([0-9a-f-]{36})\/events(?:\?.*)?$/;
@@ -263,48 +263,107 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     if (record === undefined || !isWebSharedRecord(record, web)) { local.close(1008, 'connection not shared'); return; }
   }
   const epoch = manager.credentialEpoch(id);
-  const lease = manager.lease(id); let remote: WebSocket | undefined; let detachWeb = () => {};
-  const cleanup = () => { detachWeb(); lease.signal.removeEventListener('abort', stop); lease.release(); };
+  const lease = manager.lease(id);
+  let remote: WebSocket | undefined;
+  let detachWeb = () => {};
+  let pingTimer: ReturnType<typeof setInterval> | undefined;
+  let localClosed = false;
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    if (pingTimer !== undefined) {
+      clearInterval(pingTimer);
+      pingTimer = undefined;
+    }
+    detachWeb();
+    lease.signal.removeEventListener('abort', stop);
+    lease.release();
+  };
   const stop = () => { remote?.terminate(); local.close(4001, 'connection stopped'); cleanup(); };
   if (webPrincipal(request) !== undefined) detachWeb = web!.attachConnection(id, stop);
   lease.signal.addEventListener('abort', stop, { once: true });
-  local.once('close', (code, reason) => { if (remote !== undefined) forwardSocketClose(remote, code, reason); cleanup(); });
-  local.once('error', stop);
+  local.once('close', (code, reason) => { localClosed = true; if (remote !== undefined) forwardSocketClose(remote, code, reason); cleanup(); });
+  local.once('error', () => { localClosed = true; stop(); });
   local.pause();
   try {
     const { record, transport, credential } = await manager.connect(id, lease.signal);
     if (local.readyState !== WebSocket.OPEN || lease.signal.aborted || manager.credentialEpoch(id) !== epoch) return;
     const url = new URL('/api/klient/events', transport.endpoint); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     requirePinnedTls(url, record.pinnedFingerprint);
-    const agent = record.pinnedFingerprint === undefined ? undefined : pinnedAgent(record.pinnedFingerprint, undefined, lease.signal);
+    const agent = record.pinnedFingerprint === undefined ? undefined : pooledPinnedAgent(transport.endpoint, record.pinnedFingerprint);
     remote = new WebSocket(url, [`kimi-code.bearer.${credential.ownerToken}`], { agent, headers: { 'x-kiki-connection-grant': credential.grant }, maxPayload: 0, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 15000 });
     const target = remote;
+    let lastPeerAliveAt = Date.now();
+    let awaitingPong = false;
     const send = (to: WebSocket, data: RawData) => {
       const bytes = Array.isArray(data) ? data.reduce((size, chunk) => size + chunk.byteLength, 0) : data.byteLength;
-      if (to.readyState !== WebSocket.OPEN || to.bufferedAmount + bytes > BROKER_WS_BUFFER_BYTES) { local.close(4008, 'slow consumer; reload current window'); target.terminate(); lease.release(); return; }
+      if (to.readyState !== WebSocket.OPEN || to.bufferedAmount + bytes > BROKER_WS_BUFFER_BYTES) { local.close(4008, 'slow consumer; reload current window'); target.terminate(); cleanup(); return; }
       to.send(data, { binary: false });
     };
-    target.once('open', () => local.resume());
+    target.once('open', () => {
+      lastPeerAliveAt = Date.now();
+      awaitingPong = false;
+      manager.notePeerSuccess(id, epoch);
+      local.resume();
+      pingTimer = setInterval(() => {
+        if (target.readyState !== WebSocket.OPEN || lease.signal.aborted) return;
+        if (awaitingPong && Date.now() - lastPeerAliveAt > 25_000) {
+          manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_timeout'), epoch);
+          target.terminate();
+          local.close(1012, 'upstream heartbeat timeout');
+          cleanup();
+          return;
+        }
+        awaitingPong = true;
+        try { target.ping(); } catch {}
+      }, 15_000);
+      pingTimer.unref();
+    });
+    target.on('pong', () => {
+      lastPeerAliveAt = Date.now();
+      awaitingPong = false;
+      manager.notePeerSuccess(id, epoch);
+    });
     local.on('message', (data) => {
       const frame = decodeJsonFrame((Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString());
-      if (frame === undefined || !isPeerFrameAllowed(frame)) { local.close(1008, 'operation not allowed'); target.terminate(); return; }
+      if (frame === undefined || !isPeerFrameAllowed(frame)) { localClosed = true; local.close(1008, 'operation not allowed'); target.terminate(); cleanup(); return; }
       send(target, data);
     });
     let pendingResponses = 0;
     target.on('message', (data) => {
+      lastPeerAliveAt = Date.now();
+      awaitingPong = false;
       if (local.readyState !== WebSocket.OPEN || lease.signal.aborted) return;
       pendingResponses += 1;
       target.pause();
       local.send(data, { binary: false }, (error) => {
         pendingResponses -= 1;
-        if (error) { stop(); return; }
+        if (error) { localClosed = true; stop(); return; }
         if (pendingResponses === 0 && !lease.signal.aborted && target.readyState === WebSocket.OPEN) target.resume();
       });
     });
-    target.on('unexpected-response', (_request, response) => { response.resume(); manager.failed(id, new AdmissionError(response.statusCode ?? 502, response.statusCode === 401 ? 'connection_not_approved' : 'event_transport_rejected'), epoch); stop(); });
-    target.on('close', (code, reason) => { if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch); forwardSocketClose(local, code, reason); cleanup(); });
-    target.on('error', (error) => { manager.failed(id, error instanceof AdmissionError ? error : new AdmissionError(502, 'event_transport_failed'), epoch); stop(); });
-  } catch (error) { manager.failed(id, error, epoch); stop(); }
+    target.on('unexpected-response', (_request, response) => {
+      response.resume();
+      const err = new AdmissionError(response.statusCode ?? 502, response.statusCode === 401 ? 'connection_not_approved' : 'event_transport_rejected');
+      if (response.statusCode === 401) manager.failed(id, err, epoch);
+      else if (!localClosed) manager.recordTransportStrike(id, err, epoch);
+      stop();
+    });
+    target.on('close', (code, reason) => {
+      if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch);
+      else if (!localClosed && code !== 1000 && code !== 1001) manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_closed'), epoch);
+      forwardSocketClose(local, code, reason);
+      cleanup();
+    });
+    target.on('error', (error) => {
+      if (!localClosed) manager.recordTransportStrike(id, error instanceof AdmissionError ? error : new AdmissionError(502, 'event_transport_failed'), epoch);
+      stop();
+    });
+  } catch (error) {
+    if (!localClosed && !lease.signal.aborted) manager.recordTransportStrike(id, error, epoch);
+    stop();
+  }
 }
 
 function forwardSocketClose(socket: WebSocket, code: number, reason: Buffer): void {

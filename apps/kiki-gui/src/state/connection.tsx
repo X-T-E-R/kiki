@@ -72,7 +72,7 @@ import {
 import { watchPageLifecycle } from './connectionDiagnostics';
 import { createScopeConnectionAdapter } from '../lib/navScopeConnection';
 import { pendingScopeReloadScope, requestScopeNavigation, type ScopeConnectionAdapter } from '../lib/navScope';
-import { activeSpace, parseActiveSpacePayload } from '../lib/spaceStorage';
+import { activeSpace, configureSpaceStorage, parseActiveSpacePayload, type ActiveSpace } from '../lib/spaceStorage';
 import {
   claimWebCookie as askForWebCookie,
   resetWebAccessBootstrap,
@@ -514,6 +514,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const scopesRef = useRef(new Map<string, QueryClient>());
   const bootScope = pendingScopeReloadScope();
   const remoteBootRef = useRef(bootScope?.scopeId.startsWith('remote:') ? bootScope : null);
+  const bootLocalSpaceRef = useRef<ActiveSpace | null>((() => {
+    const initial = activeSpace();
+    return initial !== null && initial.homeId.startsWith('remote:') ? null : initial;
+  })());
   const localSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -1019,7 +1023,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => {
       // The local-control owner retains this client through endpoint handoff
       // and while an SSH/remote selection is active.
-      if (instance === selectedLocalClient) return;
+      if (instance === selectedLocalClient || instance === localClientRef.current) return;
       if (verifiedDesktopRef.current?.client === instance) verifiedDesktopRef.current = null;
       if (desktopRecoveryRef.current?.client === instance) desktopRecoveryRef.current = null;
       controllers.evictScope(instance);
@@ -1196,8 +1200,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (socket === null || klient === null) return;
     let active = true;
+    let everOpened = false;
     socketSettledRef.current = false;
     setWsBannerSuppressed(true);
+    let transientGraceTimer: ReturnType<typeof setTimeout> | undefined;
     let initialGraceTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
       initialGraceTimer = undefined;
       if (!active || socketSettledRef.current) return;
@@ -1231,13 +1237,41 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
       socketStatusRef.current = status;
-      if (status === 'open' || status === 'closed') {
+      const recovery = desktopRecoveryRef.current?.client === client ? desktopRecoveryRef.current : null;
+      if (status === 'open') {
+        everOpened = true;
         socketSettledRef.current = true;
-        setWsBannerSuppressed(false);
         if (initialGraceTimer !== undefined) {
           clearTimeout(initialGraceTimer);
           initialGraceTimer = undefined;
         }
+        if (transientGraceTimer !== undefined) {
+          clearTimeout(transientGraceTimer);
+          transientGraceTimer = undefined;
+        }
+        setWsBannerSuppressed(true);
+      } else if (!everOpened) {
+        if (status === 'closed') {
+          socketSettledRef.current = true;
+          if (initialGraceTimer !== undefined) {
+            clearTimeout(initialGraceTimer);
+            initialGraceTimer = undefined;
+          }
+          setWsBannerSuppressed(false);
+        }
+      } else if (recovery?.phase === 'blocked' || recovery?.phase === 'failed') {
+        if (transientGraceTimer !== undefined) {
+          clearTimeout(transientGraceTimer);
+          transientGraceTimer = undefined;
+        }
+        setWsBannerSuppressed(false);
+      } else if (transientGraceTimer === undefined) {
+        transientGraceTimer = setTimeout(() => {
+          transientGraceTimer = undefined;
+          if (active && socketStatusRef.current !== 'open') {
+            setWsBannerSuppressed(false);
+          }
+        }, 1_500);
       }
       // Socket loss is not proof of a backend replacement. Keep the view while
       // discovery and /meta establish whether this is still the same instance.
@@ -1245,15 +1279,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         if (client !== null && verifiedDesktopRef.current?.client === client && desktopRecoveryRef.current === null) desktopRecoveryRef.current = { client, phase: 'checking' };
         rediscoverRef.current?.();
       }
-      const recovery = desktopRecoveryRef.current?.client === client ? desktopRecoveryRef.current : null;
+      const nextRecovery = desktopRecoveryRef.current?.client === client ? desktopRecoveryRef.current : null;
       const effectiveStatus: WsStatus =
-        recovery?.phase === 'blocked' || recovery?.phase === 'failed'
+        nextRecovery?.phase === 'blocked' || nextRecovery?.phase === 'failed'
           ? 'closed'
-          : recovery !== null && status === 'open'
+          : nextRecovery !== null && status === 'open'
             ? 'connecting'
             : status;
       setWsStatus(effectiveStatus);
-      if (status === 'open' && recovery?.phase === 'failed') rediscoverRef.current?.();
+      if (status === 'open' && nextRecovery?.phase === 'failed') rediscoverRef.current?.();
       if (status === 'open') {
         searchIndex.dispose();
         searchIndex = subscribeSearchIndex();
@@ -1269,6 +1303,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
       if (initialGraceTimer !== undefined) clearTimeout(initialGraceTimer);
+      if (transientGraceTimer !== undefined) clearTimeout(transientGraceTimer);
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
@@ -1291,20 +1326,34 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }, [socket, queryClient]);
 
-  // Browser recovery events nudge a parked socket without adding periodic work.
+  // Browser recovery events coalesce rapid handoff bursts (~150ms) and skip
+  // wake work while the browser explicitly reports offline.
   useEffect(() => {
     if (socket === null) return;
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') nudgeConnection();
+    let wakeTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleWake = (forceOnline = false) => {
+      if (!forceOnline && typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      if (wakeTimer !== undefined) clearTimeout(wakeTimer);
+      wakeTimer = setTimeout(() => {
+        wakeTimer = undefined;
+        if (!forceOnline && typeof navigator !== 'undefined' && navigator.onLine === false) return;
+        nudgeConnection();
+      }, 150);
     };
-    window.addEventListener('online', nudgeConnection);
-    window.addEventListener('focus', nudgeConnection);
-    window.addEventListener('pageshow', nudgeConnection);
+    const onOnline = () => { scheduleWake(true); };
+    const onWake = () => { scheduleWake(false); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') scheduleWake(false);
+    };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('focus', onWake);
+    window.addEventListener('pageshow', onWake);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      window.removeEventListener('online', nudgeConnection);
-      window.removeEventListener('focus', nudgeConnection);
-      window.removeEventListener('pageshow', nudgeConnection);
+      if (wakeTimer !== undefined) clearTimeout(wakeTimer);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('pageshow', onWake);
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [socket, nudgeConnection]);
@@ -1364,6 +1413,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         return;
       }
       const sourceSelection = adapterActiveRef.current.selection;
+      if (next.source !== 'remote') {
+        const currentLocal = activeSpace();
+        if (currentLocal !== null && !currentLocal.homeId.startsWith('remote:')) {
+          bootLocalSpaceRef.current = currentLocal;
+        }
+        configureSpaceStorage(bootLocalSpaceRef.current);
+      } else if (typeof next.scopeId === 'string' && next.scopeId.startsWith('remote:')) {
+        const currentLocal = activeSpace();
+        if (currentLocal !== null && !currentLocal.homeId.startsWith('remote:')) {
+          bootLocalSpaceRef.current = currentLocal;
+        }
+        configureSpaceStorage({ homeId: next.scopeId });
+      }
       if (next.source === 'remote' && !desktopRuntime && sourceSelection !== null && sourceSelection.source !== 'remote' && sourceSelection.source !== 'ssh') {
         updateLocalSelection({ ...sourceSelection, scopeId: adapterActiveRef.current.scope.scopeId });
       } else if (!desktopRuntime && next.source !== 'remote' && next.source !== 'ssh' && localSelectionRef.current !== null) {

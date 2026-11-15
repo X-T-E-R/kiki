@@ -387,4 +387,64 @@ describe('paired peer surface parity and host boundaries', () => {
     expect(matchConnectionOperation('GET', '/external-clients')).toBeUndefined();
     expect(matchConnectionOperation('POST', '/leases')).toBeUndefined();
   });
+
+  it('reuses a pooled pinned TLS socket across forwarded calls and survives a single transient socket reset without flipping offline', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-tls-pool-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let tlsSockets = 0;
+    let handshakes = 0;
+    let dropNextMeta = false;
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          handshakes += 1;
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+          return;
+        }
+        if (dropNextMeta && req.url === '/api/meta') {
+          dropNextMeta = false;
+          req.socket.destroy();
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { server_home_id: admission.identity.homeId } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.on('secureConnection', () => { tlsSockets += 1; });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      tlsSockets = 0; handshakes = 0;
+      const lease = manager.lease(paired.id);
+      try {
+        for (let i = 0; i < 4; i += 1) {
+          const response = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+          expect(response.status).toBe(200);
+          await response.json();
+        }
+        expect(tlsSockets).toBe(1);
+        expect(handshakes).toBe(1);
+        dropNextMeta = true;
+        const recovered = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(recovered.status).toBe(200);
+        await recovered.json();
+        expect(manager.get(paired.id).state).toBe('online');
+      } finally { lease.release(); }
+    } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
+  });
 });

@@ -359,15 +359,35 @@ export class HttpChannel implements KlientChannel {
         request_id: requestId,
       });
       let response: Response;
+      const method = options.method ?? 'GET';
+      const input = path === '/api/klient/call' ? url.toString() : url;
+      const sendOnce = () => this.fetchImpl(input, {
+        method,
+        body: body as never,
+        headers: Object.fromEntries(headers),
+        signal: controller.signal,
+        redirect: 'error',
+      });
       try {
-        const input = path === '/api/klient/call' ? url.toString() : url;
-        response = await this.fetchImpl(input, {
-          method: options.method ?? 'GET',
-          body: body as never,
-          headers: Object.fromEntries(headers),
-          signal: controller.signal,
-          redirect: 'error',
-        });
+        try {
+          response = await sendOnce();
+        } catch (firstError) {
+          const canRetryGet =
+            method === 'GET'
+            && timedOutPhase === undefined
+            && !this.closed
+            && !this.suspended
+            && connection === this.connection
+            && sourceSignal?.aborted !== true
+            && !controller.signal.aborted
+            && !(firstError instanceof RPCError)
+            && firstError instanceof Error
+            && /(?:econnreset|epipe|socket hang up|fetch failed|premature close|und_err_socket|networkerror)/i.test(firstError.message);
+          if (!canRetryGet) throw firstError;
+          await abortableSleep(120 + Math.floor(Math.random() * 130), controller.signal);
+          ensureCurrent();
+          response = await sendOnce();
+        }
       } catch (error) {
         ensureCurrent();
         if (timedOutPhase !== undefined) throw timeoutError();
@@ -536,6 +556,7 @@ class HttpEventSocket {
   private readonly listens = new Map<string, ActiveListen>();
   private readonly streams = new Map<string, PendingStream>();
   private ws: WebSocket | undefined;
+  private socketGeneration = 0;
   private state: SocketState = 'idle';
   private closed = false;
   private suspended = false;
@@ -543,6 +564,9 @@ class HttpEventSocket {
   private fatalRetriesLeft: number | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private establishmentTimer: ReturnType<typeof setTimeout> | undefined;
+  private watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+  private probeTimer: ReturnType<typeof setTimeout> | undefined;
+  private probeSentAt = 0;
   private lastInboundAt = 0;
   private openedAt = 0;
   private connectStartedAt = 0;
@@ -580,10 +604,59 @@ class HttpEventSocket {
     this.restart();
   }
 
+  private clearLivenessTimers(): void {
+    if (this.watchdogTimer !== undefined) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
+    if (this.probeTimer !== undefined) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = undefined;
+    }
+    this.probeSentAt = 0;
+  }
+
+  private armWatchdog(): void {
+    if (this.watchdogTimer !== undefined) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
+    if (this.closed || this.state !== 'open' || this.heartbeatMs === undefined) return;
+    const generation = this.socketGeneration;
+    const silenceBudgetMs = Math.max(15_000, Math.round(this.heartbeatMs * 1.5));
+    this.watchdogTimer = setTimeout(() => {
+      this.watchdogTimer = undefined;
+      if (this.closed || this.state !== 'open' || generation !== this.socketGeneration) return;
+      this.sendLivenessProbe(4_000);
+    }, silenceBudgetMs);
+  }
+
+  private sendLivenessProbe(ackDeadlineMs: number): void {
+    if (this.closed || this.state !== 'open' || this.ws === undefined) return;
+    if (this.probeTimer !== undefined) return;
+    const generation = this.socketGeneration;
+    const sentAt = Date.now();
+    this.probeSentAt = sentAt;
+    this.send({ type: 'ping', data: { nonce: `c_${sentAt}` } });
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = undefined;
+      if (this.closed || this.state !== 'open' || generation !== this.socketGeneration) return;
+      if (this.lastInboundAt >= sentAt) {
+        this.probeSentAt = 0;
+        this.armWatchdog();
+        return;
+      }
+      this.probeSentAt = 0;
+      this.restart('stale_heartbeat');
+    }, ackDeadlineMs);
+  }
+
   private restart(cause: HttpSocketCloseCause = 'view_restart'): void {
     if (this.closed) return;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    this.clearLivenessTimers();
+    this.socketGeneration += 1;
     const ws = this.ws;
     this.ws = undefined;
     this.state = 'idle';
@@ -600,11 +673,16 @@ class HttpEventSocket {
   private nudge(): void {
     if (this.closed) return;
     if (this.state === 'open') {
-      if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(45_000, this.heartbeatMs * 3)) this.restart('stale_heartbeat');
+      if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(25_000, this.heartbeatMs * 2.5)) {
+        this.restart('stale_heartbeat');
+        return;
+      }
+      this.sendLivenessProbe(2_000);
       return;
     }
     if (this.ws !== undefined) {
-      if (this.connectStartedAt > 0 && Date.now() - this.connectStartedAt >= 1_500) {
+      if (this.connectStartedAt > 0 && Date.now() - this.connectStartedAt >= 1_000) {
+        this.socketGeneration += 1;
         const ws = this.ws;
         this.ws = undefined;
         clearTimeout(this.establishmentTimer);
@@ -800,8 +878,10 @@ class HttpEventSocket {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.socketGeneration += 1;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    this.clearLivenessTimers();
     this.state = 'closed';
     this.ws?.close(1000, 'klient closed');
     this.ws = undefined;
@@ -831,6 +911,14 @@ class HttpEventSocket {
 
   private connect(): void {
     const WebSocketCtor = this.requireWebSocket();
+    const generation = ++this.socketGeneration;
+    let closeHandled = false;
+    const handleGenerationDrop = () => {
+      if (closeHandled || generation !== this.socketGeneration) return;
+      closeHandled = true;
+      this.clearLivenessTimers();
+      this.onClose();
+    };
     this.state = 'connecting';
     const protocols =
       this.token !== undefined && this.token.length > 0
@@ -849,20 +937,23 @@ class HttpEventSocket {
     this.heartbeatMs = undefined;
     this.lastInboundAt = 0;
     this.openedAt = 0;
+    this.clearLivenessTimers();
     clearTimeout(this.establishmentTimer);
     this.establishmentTimer = setTimeout(() => {
-      if (this.ws !== ws || this.closed) return;
+      if (generation !== this.socketGeneration || this.ws !== ws || this.closed) return;
       this.ws = undefined;
       this.reportClose('establish_timeout');
       ws.close(4000, 'WebSocket establishment timed out');
-      this.onClose();
+      handleGenerationDrop();
     }, 12_000);
     ws.addEventListener('open', () => {
-      if (this.ws !== ws || this.closed) return;
+      if (generation !== this.socketGeneration || this.ws !== ws || this.closed) return;
       clearTimeout(this.establishmentTimer);
       this.connectStartedAt = 0;
       this.diagnose({ kind: 'open', attempt: this.reconnectAttempt });
-      this.openedAt = Date.now();
+      const now = Date.now();
+      this.openedAt = now;
+      this.lastInboundAt = now;
       this.reconnectAttempt = 0;
       this.state = 'open';
       for (const listen of this.listens.values()) this.send(listen.frame);
@@ -871,16 +962,24 @@ class HttpEventSocket {
       this.terminals.opened();
     });
     ws.addEventListener('message', (event) => {
-      if (this.ws !== ws || typeof event.data !== 'string') return;
+      if (generation !== this.socketGeneration || this.ws !== ws || typeof event.data !== 'string') return;
       this.lastInboundAt = Date.now();
+      if (this.probeTimer !== undefined) {
+        clearTimeout(this.probeTimer);
+        this.probeTimer = undefined;
+        this.probeSentAt = 0;
+      }
       this.onFrame(decodeJsonFrame(event.data));
+      if (generation === this.socketGeneration && this.state === 'open') {
+        this.armWatchdog();
+      }
     });
     ws.addEventListener('close', (event) => {
-      if (this.ws !== ws) return;
+      if (generation !== this.socketGeneration || this.ws !== ws) return;
       this.ws = undefined;
       if (!this.closed) this.reportClose('server', event as { code?: number; reason?: string; wasClean?: boolean });
       if ([4001, 1008].includes(event.code)) this.fatalRetriesLeft = 0;
-      this.onClose();
+      handleGenerationDrop();
     });
     ws.addEventListener('error', () => {
     });
@@ -890,6 +989,8 @@ class HttpEventSocket {
     if (frame === undefined) return;
     if (frame.type === 'error' && (frame.data as { fatal?: unknown } | undefined)?.fatal === true) {
       this.fatalRetriesLeft ??= 4;
+      this.socketGeneration += 1;
+      this.clearLivenessTimers();
       const ws = this.ws;
       this.ws = undefined;
       this.state = 'closed';
@@ -900,6 +1001,9 @@ class HttpEventSocket {
     }
     if (frame.type !== 'error') this.fatalRetriesLeft = undefined;
     if (this.sessionViews.receive(frame) || this.terminals.receive(frame)) return;
+    if (frame.type === 'pong') {
+      return;
+    }
     if (frame.type === 'ping') {
       const data = frame.data as { nonce?: unknown; heartbeatMs?: unknown } | undefined;
       if (typeof data?.heartbeatMs === 'number' && data.heartbeatMs > 0) this.heartbeatMs = data.heartbeatMs;
@@ -964,18 +1068,24 @@ class HttpEventSocket {
       this.state = this.closed ? 'closed' : 'idle';
       return;
     }
-    if (this.fatalRetriesLeft !== undefined) {
+    const offline = isNavigatorOffline();
+    if (!offline && this.fatalRetriesLeft !== undefined) {
       if (this.fatalRetriesLeft <= 0) { this.state = 'closed'; return; }
       this.fatalRetriesLeft -= 1;
     }
-    this.reconnectAttempt += 1;
+    if (!offline) {
+      this.reconnectAttempt += 1;
+    }
     this.state = 'connecting';
     this.sessionViews.connecting();
     this.terminals.connecting();
-    const delay = Math.min(
-      DEFAULT_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
-      10_000,
-    );
+    const attempt = Math.max(1, this.reconnectAttempt);
+    const baseDelay = offline
+      ? 2_000
+      : Math.min(DEFAULT_RECONNECT_DELAY_MS * 2 ** (attempt - 1), 10_000);
+    const delay = offline || attempt === 1
+      ? baseDelay
+      : Math.round(baseDelay * (0.7 + Math.random() * 0.3));
     this.diagnose({ kind: 'retry', attempt: this.reconnectAttempt, delayMs: delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
@@ -1004,6 +1114,26 @@ class HttpEventSocket {
     this.seq += 1;
     return `${this.idPrefix}_${this.seq}`;
   }
+}
+
+function isNavigatorOffline(): boolean {
+  const nav = (globalThis as { readonly navigator?: { readonly onLine?: boolean } }).navigator;
+  return nav?.onLine === false;
+}
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function frameError(frame: KlientFrame): RPCError {

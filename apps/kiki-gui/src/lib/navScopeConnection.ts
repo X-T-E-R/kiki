@@ -45,6 +45,22 @@ function remoteScopeFailure(error: unknown): unknown {
   return new ScopeRestoreError(reason ?? 'remote-unreachable');
 }
 
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
 function acceptsTypedToken(source: ConnectionSelection['source'] | undefined): boolean {
   return source !== 'web-cookie' && source !== 'app-shell' && source !== 'remote';
 }
@@ -108,11 +124,11 @@ export async function validateScopeRoute(
   const roomId = /^\/(?:rooms|r)\/([^/]+)$/.exec(pathname)?.[1];
   try {
     if (sessionId !== undefined) {
-      await client.getSession(decodeURIComponent(sessionId));
+      await withAbort(client.getSession(decodeURIComponent(sessionId)), signal);
       signal.throwIfAborted();
       const agentId = /^\/s\/[^/]+\/agent\/([^/]+)$/.exec(pathname)?.[1];
       if (agentId !== undefined && decodeURIComponent(agentId) !== 'main') {
-        const agents = await client.klient.session(decodeURIComponent(sessionId)).agents();
+        const agents = await withAbort(client.klient.session(decodeURIComponent(sessionId)).agents(), signal);
         if (!Object.hasOwn(agents, decodeURIComponent(agentId))) throw new ScopeRestoreError('target-missing');
       }
     }
@@ -121,7 +137,7 @@ export async function validateScopeRoute(
       // React connection hook back into ConnectionProvider's adapter.
       const rest = client.klient.rest;
       if (rest === undefined) throw new ScopeRestoreError('offline');
-      if ((await rest.rooms.get(decodeURIComponent(roomId))) === undefined) throw new ScopeRestoreError('target-missing');
+      if ((await withAbort(rest.rooms.get(decodeURIComponent(roomId)), signal)) === undefined) throw new ScopeRestoreError('target-missing');
     }
   } catch (error) {
     if (sessionId !== undefined && error instanceof ApiError && isSessionNotFoundMessage(error.message)) throw new ScopeRestoreError('target-missing');
@@ -147,7 +163,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
       if (!crossHome && scope.scopeId === source.scope.scopeId && token === undefined) {
         const fastAuthFailure = authFailureFor(source.selection);
         let meta: MetaResponse;
-        try { meta = await source.client.meta(); }
+        try { meta = await withAbort(source.client.meta(), signal); }
         catch (error) {
           if (remote) throw remoteScopeFailure(error);
           if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError(fastAuthFailure);
@@ -172,7 +188,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
       options.preparing?.(true);
       const dispose = async () => {
         try {
-          if (ownsClient && instance !== undefined) { ownsClient = false; await instance.klient.close(); }
+          if (ownsClient && instance !== undefined) { ownsClient = false; void instance.klient.close().catch(() => {}); }
           if (tunnel !== undefined) { const created = tunnel; tunnel = undefined; await options.host.connection.disconnectSshProfile?.(created.id, created.tunnelId); }
           if (switchedHome) { switchedHome = false; await options.host.prepareSpace?.(sourceHomeId); }
         } finally { options.preparing?.(false); }
@@ -186,7 +202,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           if (control === null || control.selection.source === 'remote' || control.selection.source === 'ssh') throw new ScopeRestoreError('offline');
           const connections = control.client.klient.rest?.connections;
           if (connections === undefined) throw new ScopeRestoreError('offline');
-          const records = await connections.list();
+          const records = await withAbort(connections.list(), signal);
           signal.throwIfAborted();
           const record = records.find((entry) => entry.id === id);
           if (record === undefined) throw new ScopeRestoreError('scope-invalid');
@@ -202,7 +218,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
             token: selection.config.token, connectionId: record.id });
           ownsClient = true;
           let meta: MetaResponse;
-          try { meta = await instance.meta(); }
+          try { meta = await withAbort(instance.meta(), signal); }
           catch (error) { throw remoteScopeFailure(error); }
           signal.throwIfAborted();
           if (meta.server_home_id !== record.target.homeId ||
@@ -215,7 +231,6 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
             commit: () => {
               signal.throwIfAborted();
               options.commit(selection, verified, meta);
-              options.reload();
               ownsClient = false;
               options.preparing?.(false);
             },
@@ -309,7 +324,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
           instance = options.createClient?.(selection) ?? new KikiClient({ baseUrl: selection.config.url, token: selection.config.token });
           ownsClient = true;
         }
-        const meta = await instance.meta();
+        const meta = await withAbort(instance.meta(), signal);
         signal.throwIfAborted();
         if (scope.serverHomeId !== undefined && meta.server_home_id !== scope.serverHomeId) throw new ScopeRestoreError('identity-mismatch');
         if (selection.source === 'ssh' && (meta.server_home_id !== selection.serverHomeId || meta.server_id !== selection.serverInstanceId ||
@@ -330,7 +345,7 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
               signal.throwIfAborted();
             }
             if (token !== undefined) persistSelectionToken(selection);
-            if (crossHome) {
+            if (crossHome && !returningControl) {
               if (ownsClient) await verified.klient.close();
               signal.throwIfAborted();
               options.reload();

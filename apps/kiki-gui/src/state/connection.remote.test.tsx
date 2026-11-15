@@ -85,7 +85,7 @@ describe('remote ConnectionProvider consumption', () => {
     expect(mocks.remote).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'http://source.example.test', token: 'source-token', connectionId: first }));
     expect(current.connectionId).toBe(first); expect(current.spaceKey).toBe(`remote:${first}`);
     expect(current.localClient?.baseUrl).toBe('http://source.example.test');
-    expect(current.client).not.toBe(current.localClient); expect(current.needsScopeReload).toBe(true);
+    expect(current.client).not.toBe(current.localClient); expect(current.needsScopeReload).toBe(false);
     expect(queries).not.toBe(sourceQueries); expect(queries.getQueryData(['session', 'same-session'])).toBeUndefined();
     const firstQueries = queries; queries.setQueryData(['session', 'same-session'], 'first');
     prepared = await current.scopeAdapter.prepare(remoteScope(second), new AbortController().signal);

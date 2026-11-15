@@ -167,6 +167,11 @@ class KlientHttpConnection {
     if (this.sessionViews.receive(frame) || this.terminals.receive(frame) || this.peerBridge.receive(frame)) return;
     const id = typeof frame.id === 'string' ? frame.id : '';
     switch (frame.type) {
+      case 'ping':
+        this.send({ type: 'pong', data: { nonce: (frame.data as { nonce?: unknown } | undefined)?.nonce } });
+        return;
+      case 'pong':
+        return;
       case 'subscribe':
         this.subscribe(id, frame);
         return;

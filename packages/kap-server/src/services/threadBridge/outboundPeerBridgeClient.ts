@@ -14,7 +14,7 @@ import {
 import { okEnvelope, errEnvelope } from '../../envelope';
 import { AdmissionError } from '../connections/admission';
 import type { ConnectionLease, RemoteConnectionManager } from '../connections/manager';
-import { peerFetch, pinnedAgent, requirePinnedTls } from '../connections/peerTls';
+import { peerFetch, pooledPinnedAgent, requirePinnedTls } from '../connections/peerTls';
 import { machineLabel } from '../connections/pairing';
 import { ContentChangedError } from '../../transport/klient/boundedContent';
 import { WS_BEARER_PROTOCOL_PREFIX } from '../../transport/ws/bearerProtocol';
@@ -432,7 +432,7 @@ export class OutboundPeerBridgeClient {
         wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
         requirePinnedTls(wsUrl, record.pinnedFingerprint);
         const ws = new WebSocket(wsUrl, [`${WS_BEARER_PROTOCOL_PREFIX}${credential.ownerToken}`], {
-          agent: record.pinnedFingerprint === undefined ? undefined : pinnedAgent(record.pinnedFingerprint, undefined, lease.signal),
+          agent: record.pinnedFingerprint === undefined ? undefined : pooledPinnedAgent(transport.endpoint, record.pinnedFingerprint),
           headers: { 'x-kiki-connection-grant': credential.grant },
           maxPayload: 1024 * 1024,
           perMessageDeflate: false,

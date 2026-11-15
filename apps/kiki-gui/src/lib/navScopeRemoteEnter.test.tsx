@@ -295,7 +295,12 @@ describe('a failed entry says why', () => {
           return { scope: overrides.local.scope, selection: overrides.local.selection, client: localClient };
         })()
       : source;
-    const commit = vi.fn();
+    const commit = vi.fn((next: ConnectionSelection, _instance: KikiClient, nextMeta: { server_home_id?: string }) => {
+      connection.spaceKey = next.source === 'remote' ? (next.scopeId ?? 'main') : 'main';
+      connection.scopeId = next.scopeId ?? 'local';
+      connection.connectionId = next.source === 'remote' ? (next.connectionId ?? null) : null;
+      connection.meta = { server_home_id: nextMeta.server_home_id ?? '' };
+    });
     const reload = vi.fn(() => { mocks.reload = true; });
     const adapter = createScopeConnectionAdapter({ host: { connection: {} } as unknown as HostAdapter,
       active: () => source, local: () => localSource, control: () => localSource, commit, reload,
@@ -373,7 +378,7 @@ describe('a failed entry says why', () => {
     });
   });
 
-  it('persists the accepted typed token before reloading when returning from a remote space to a saved hand-entered address', async () => {
+  it('persists the accepted typed token and commits in place when returning from a remote space to a saved hand-entered address', async () => {
     await act(async () => { root?.unmount(); });
     router?.dispose();
     container.remove();
@@ -393,7 +398,7 @@ describe('a failed entry says why', () => {
       source: 'stored',
       scopeId: direct.scopeId,
     };
-    const { seenHeaders, reload } = stubRealAdapter(remoteActive, (input, init) => {
+    const { seenHeaders, commit, reload } = stubRealAdapter(remoteActive, (input, init) => {
       const url = input instanceof Request ? input.url : input.toString();
       const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
       if (headers.get('authorization') !== 'Bearer rotated-token') {
@@ -418,7 +423,9 @@ describe('a failed entry says why', () => {
     await act(async () => { retryButton!.click(); });
 
     expect(seenHeaders).toContain(`${ADDRESS}/api/meta -> Bearer rotated-token`);
-    expect(reload).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(surface()).toBeNull();
     expect(JSON.parse(localStorage.getItem('kiki.connection') ?? '{}')).toEqual({
       url: ADDRESS,
       token: 'rotated-token',

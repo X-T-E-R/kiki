@@ -3710,8 +3710,8 @@ export function Composer({
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                       : segment.key === 'profile' || segment.key === 'agent'
-                        ? 'min-w-0 shrink @max-[24rem]/toolbar:shrink-0'
-                      : 'min-w-0 shrink'
+                        ? 'min-w-0 shrink overflow-hidden'
+                      : 'min-w-0 shrink overflow-hidden'
                   }`}
                 >
                   {segment.node}
@@ -4503,9 +4503,10 @@ function ModelChip({
   }
 
   return (
-    <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
+    <ComposerPanelOrigin className="flex min-w-0 max-w-full [&>div]:min-w-0">
     <ModelPicker
       id="composer-model-select"
+      rootClassName="relative flex min-w-0 max-w-full"
       options={hasCatalog ? modelOptions : []}
       allowCustomValue={false}
       hideFilter={!hasCatalog}

@@ -19,7 +19,7 @@ import { okEnvelope, errEnvelope } from '../../envelope';
 import { AdmissionError, sameIdentity, type ConnectionAdmission } from '../connections/admission';
 import { peerAudience } from '../connections/audience';
 import type { RemoteConnectionManager } from '../connections/manager';
-import { peerFetch } from '../connections/peerTls';
+import { evictPinnedAgent, isRetryableTransportError, peerFetch } from '../connections/peerTls';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import type { TranscriptService } from '../transcript/transcriptService';
 import type { PeerBridgeRegistry } from '../../transport/klient/peerBridgeSocket';
@@ -456,28 +456,66 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
   async inboundWait(grant: BridgeGrant, input: ReturnType<typeof bridgeWaitSchema.parse>, signal: AbortSignal): Promise<WaitThreadsResult> {
     this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
     let threads = [{ thread: input.target, cursor: input.cursor }]; const deadline = Date.now() + (input.timeoutMs ?? 30000);
-    for (;;) { signal.throwIfAborted(); this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
-      const result = await this.threads.waitThreads({ threads, timeoutMs: 0 });
+    for (;;) {
+      signal.throwIfAborted(); this.checkInbound(grant, input, 'wait', input.target); await this.requireTarget(input.target);
+      const sliceMs = Math.min(2000, Math.max(0, deadline - Date.now()));
+      const result = await this.threads.waitThreads({ threads, timeoutMs: sliceMs, signal });
       if (!result.timedOut || Date.now() >= deadline) return result;
-      threads = result.threads.map((entry) => ({ thread: entry.thread, cursor: entry.cursor })); await pause(200, signal);
+      threads = result.threads.map((entry) => ({ thread: entry.thread, cursor: entry.cursor }));
     }
   }
   private link(id: string): BridgeLink { const link = this.state.outbound.find((entry) => entry.grant.id === id); if (link === undefined) throw new AdmissionError(404, 'bridge_not_found'); return link; }
-  private choose(ref: { bridgeId?: string; connectionId?: string; workspaceId?: string }, source?: { workspaceId: string; sessionId: string }, target?: ThreadRef, operation: BridgeOperation = 'read'): BridgeLink {
+  private verifyLinkIdentity(link: BridgeLink): BridgeLink {
+    const descriptor = this.connections.resolveTransport(link.connectionId);
+    if (!sameIdentity(link.grant.source, this.admission.identity) || !sameIdentity(link.grant.target, descriptor.target)) denied('bridge_identity_mismatch');
+    return link;
+  }
+  private rankCandidates(candidates: readonly BridgeLink[], source?: { workspaceId: string; sessionId: string }, target?: ThreadRef): BridgeLink[] {
+    const specificity = (entry: BridgeLink): number => {
+      let score = 0;
+      if (target !== undefined && entry.grant.targetScope.sessionId === target.sessionId) score += 4;
+      if (source !== undefined && entry.grant.sourceScope.sessionId === source.sessionId) score += 2;
+      if (entry.grant.targetScope.workspaceId !== undefined) score += 1;
+      return score;
+    };
+    return [...candidates].sort((a, b) => {
+      const specDiff = specificity(b) - specificity(a);
+      if (specDiff !== 0) return specDiff;
+      const opDiff = b.grant.operations.length - a.grant.operations.length;
+      if (opDiff !== 0) return opDiff;
+      const revDiff = b.grant.revision - a.grant.revision;
+      if (revDiff !== 0) return revDiff;
+      return b.grant.createdAt - a.grant.createdAt;
+    });
+  }
+  private matchPermittedCandidates(ref: { bridgeId?: string; connectionId?: string; workspaceId?: string }, source?: { workspaceId: string; sessionId: string }, target?: ThreadRef, operation: BridgeOperation = 'read'): BridgeLink[] {
+    const now = Date.now();
     const links = this.state.outbound.filter((entry) => (ref.bridgeId === undefined ? !entry.grant.revoked : entry.grant.id === ref.bridgeId) && (ref.connectionId === undefined || entry.connectionId === ref.connectionId) &&
       source !== undefined && inScope(entry.grant.sourceScope, { ...source, hostId: this.admission.identity.hostId }) &&
       (operation !== 'create' || entry.grant.targetScope.sessionId === undefined && (ref.workspaceId === undefined || ref.workspaceId === entry.grant.targetScope.workspaceId)) &&
       (target === undefined || target.hostId === entry.grant.target.hostId && inScope(entry.grant.targetScope, target)));
     if (links.length === 0) denied('bridge_not_authorized');
-    const permitted = (entry: BridgeLink) => entry.enabled && !entry.grant.revoked && entry.grant.enabled && entry.grant.expiresAt > Date.now() && entry.grant.operations.includes(operation);
-    const candidates = operation === 'create' ? links.filter(permitted) : links;
-    if (candidates.length === 0) denied('bridge_operation_denied');
-    if (candidates.length !== 1) denied('bridge_ambiguous');
-    const link = candidates[0]!;
-    if (!permitted(link)) denied('bridge_operation_denied');
-    const descriptor = this.connections.resolveTransport(link.connectionId);
-    if (!sameIdentity(link.grant.source, this.admission.identity) || !sameIdentity(link.grant.target, descriptor.target)) denied('bridge_identity_mismatch');
-    return link;
+    const permitted = (entry: BridgeLink) => entry.enabled && !entry.grant.revoked && entry.grant.enabled && entry.grant.expiresAt > now && entry.grant.operations.includes(operation);
+    const active = links.filter(permitted);
+    if (active.length === 0) denied('bridge_operation_denied');
+    if (active.length === 1) return [this.verifyLinkIdentity(active[0]!)];
+    const ranked = this.rankCandidates(active, source, target);
+    const byTargetScope = new Map<string, BridgeLink>();
+    for (const candidate of ranked) {
+      const scopeKey = `${candidate.grant.target.homeId}|${candidate.grant.target.hostId}|${candidate.grant.targetScope.workspaceId ?? '*'}|${candidate.grant.targetScope.sessionId ?? '*'}`;
+      if (!byTargetScope.has(scopeKey)) byTargetScope.set(scopeKey, candidate);
+    }
+    return [...byTargetScope.values()];
+  }
+  private choose(ref: { bridgeId?: string; connectionId?: string; workspaceId?: string }, source?: { workspaceId: string; sessionId: string }, target?: ThreadRef, operation: BridgeOperation = 'read'): BridgeLink {
+    const deduped = this.matchPermittedCandidates(ref, source, target, operation);
+    if (deduped.length === 1) return this.verifyLinkIdentity(deduped[0]!);
+    if (target !== undefined) {
+      const first = deduped[0]!;
+      const sameTargetPeer = deduped.every((entry) => sameIdentity(entry.grant.target, first.grant.target));
+      if (sameTargetPeer) return this.verifyLinkIdentity(first);
+    }
+    denied('bridge_ambiguous');
   }
   private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return plainRef({ hostId: this.admission.identity.hostId, ...source }); }
   async create(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
@@ -491,7 +529,34 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     return { ...result, ref: { ...result.ref, bridgeId: link.grant.id, connectionId: link.connectionId } };
   }
   async list(input: ListThreadsInput): Promise<ListThreadsResult> {
-    const link = this.choose(input, input.caller);
+    const candidates = this.matchPermittedCandidates(input, input.caller, undefined, 'read');
+    if (candidates.length > 1) {
+      const first = candidates[0]!;
+      const canMerge = input.bridgeId === undefined && input.cursor === undefined
+        && candidates.every((entry) => sameIdentity(entry.grant.target, first.grant.target));
+      if (!canMerge) denied('bridge_ambiguous');
+      const verified = candidates.map((entry) => this.verifyLinkIdentity(entry));
+      const pages = await Promise.all(verified.map(async (link) => {
+        const result = await this.remote<ListThreadsResult>(link, 'list', {
+          bridgeId: link.grant.id,
+          revision: link.grant.revision,
+          source: this.source(input.caller),
+          workspaceId: input.workspaceId,
+          limit: input.limit,
+        }, input.signal);
+        return result.threads.map((entry) => ({ ...entry, ref: { ...entry.ref, bridgeId: link.grant.id, connectionId: link.connectionId } }));
+      }));
+      const merged = new Map<string, ListThreadsResult['threads'][number]>();
+      for (const page of pages) {
+        for (const entry of page) {
+          const threadKey = `${entry.ref.hostId}|${entry.ref.workspaceId}|${entry.ref.sessionId}`;
+          if (!merged.has(threadKey)) merged.set(threadKey, entry);
+        }
+      }
+      const limit = input.limit ?? 50;
+      return { threads: [...merged.values()].slice(0, limit) };
+    }
+    const link = this.verifyLinkIdentity(candidates[0]!);
     const result = await this.remote<ListThreadsResult>(link, 'list', { bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller), workspaceId: input.workspaceId, cursor: input.cursor, limit: input.limit }, input.signal);
     return { ...result, threads: result.threads.map((entry) => ({ ...entry, ref: { ...entry.ref, bridgeId: link.grant.id, connectionId: link.connectionId } })) };
   }
@@ -531,17 +596,53 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
   async wait(input: WaitThreadsInput): Promise<WaitThreadsResult> {
     const signal = input.signal === undefined ? this.lifetime.signal : AbortSignal.any([input.signal, this.lifetime.signal]);
     const deadline = Date.now() + (input.timeoutMs ?? 30000); let threads = input.threads;
-    for (;;) { signal.throwIfAborted(); const results = [];
-      for (const item of threads) {
+    for (;;) {
+      signal.throwIfAborted();
+      const sliceMs = Math.min(10000, Math.max(0, deadline - Date.now()));
+      const race = new AbortController();
+      const itemSignal = AbortSignal.any([signal, race.signal]);
+      let transientError = false;
+      const perItem = await Promise.all(threads.map(async (item) => {
         if (['local', '', this.threads.hostId].includes(item.thread.hostId) && item.thread.bridgeId === undefined && item.thread.connectionId === undefined) {
-          results.push(...(await this.threads.waitThreads({ caller: input.caller, threads: [item], timeoutMs: 0 })).threads); continue;
+          try {
+            const localResult = await this.threads.waitThreads({ caller: input.caller, threads: [item], timeoutMs: sliceMs, signal: itemSignal });
+            if (localResult.threads.some((entry) => entry.activities.length > 0)) race.abort();
+            return localResult.threads;
+          } catch (error) {
+            if (signal.aborted) signal.throwIfAborted();
+            if (race.signal.aborted) return [{ thread: item.thread, cursor: item.cursor ?? '', activities: [] }];
+            throw error;
+          }
         }
         const link = this.choose(item.thread, input.caller, item.thread, 'wait');
-        const result = await this.remote<WaitThreadsResult>(link, 'wait', { bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller), target: plainRef(item.thread), cursor: item.cursor, timeoutMs: 0 }, signal);
-        results.push(...result.threads.map((entry) => ({ ...entry, thread: item.thread })));
+        try {
+          const result = await this.remote<WaitThreadsResult>(link, 'wait', {
+            bridgeId: link.grant.id,
+            revision: link.grant.revision,
+            source: this.source(input.caller),
+            target: plainRef(item.thread),
+            cursor: item.cursor,
+            timeoutMs: sliceMs,
+          }, itemSignal);
+          const mapped = result.threads.map((entry) => ({ ...entry, thread: item.thread }));
+          if (mapped.some((entry) => entry.activities.length > 0)) race.abort();
+          return mapped;
+        } catch (error) {
+          if (signal.aborted) signal.throwIfAborted();
+          if (race.signal.aborted) return [{ thread: item.thread, cursor: item.cursor ?? '', activities: [] }];
+          if (isRetryableTransportError(error) && Date.now() + 300 < deadline) {
+            transientError = true;
+            return [{ thread: item.thread, cursor: item.cursor ?? '', activities: [] }];
+          }
+          throw error;
+        }
+      }));
+      const results = perItem.flat();
+      if (results.some((entry) => entry.activities.length > 0) || Date.now() >= deadline) {
+        return { threads: results, timedOut: results.every((entry) => entry.activities.length === 0) };
       }
-      if (results.some((entry) => entry.activities.length > 0) || Date.now() >= deadline) return { threads: results, timedOut: results.every((entry) => entry.activities.length === 0) };
-      threads = results.map((entry) => ({ thread: entry.thread, cursor: entry.cursor })); await pause(200, signal);
+      threads = results.map((entry) => ({ thread: entry.thread, cursor: entry.cursor }));
+      if (transientError) await pause(Math.min(400, Math.max(50, deadline - Date.now())), signal);
     }
   }
   retry(): Promise<void> {
@@ -634,17 +735,39 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
         if (envelope.data === null || typeof envelope.data !== 'object' || !sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
         return envelope.data.result;
       }
-      if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
-        const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
-        await this.connections.provePeer(transport.endpoint, record.target, { grant, grantId }, lease.signal, record.pinnedFingerprint);
+      const serializedBody = JSON.stringify(body);
+      const responseLimit = operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'list' ? 128 * 1024 : 16 * 1024;
+      const sendOverHttp = async (): Promise<T> => {
+        if (record.purposes.includes('gui') && record.pinnedFingerprint === undefined) {
+          const { grant, grantId } = await this.connections.secrets.read<{ grant: string; grantId: string }>({ connectionId: record.credentialRef, purpose: 'gui' });
+          await this.connections.provePeer(transport.endpoint, record.target, { grant, grantId }, lease.signal, record.pinnedFingerprint);
+        }
+        lease.signal.throwIfAborted();
+        const response = await peerFetch(
+          new URL(`/api/thread-bridge/${operation}`, transport.endpoint),
+          {
+            method: 'POST',
+            signal: lease.signal,
+            headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
+            body: serializedBody,
+          },
+          record.pinnedFingerprint,
+        );
+        const envelope = await readBoundedJsonBody(response, responseLimit, lease.signal) as RemoteEnvelope<T>;
+        if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, envelope.msg ?? 'bridge_request_rejected');
+        if (!sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
+        return envelope.data.result;
+      };
+      try {
+        return await sendOverHttp();
+      } catch (firstError) {
+        if (parent?.aborted || this.lifetime.signal.aborted || lease.signal.aborted || !isRetryableTransportError(firstError)) {
+          throw firstError;
+        }
+        evictPinnedAgent(transport.endpoint, record.pinnedFingerprint);
+        await pause(150 + Math.floor(Math.random() * 180), lease.signal);
+        return await sendOverHttp();
       }
-      lease.signal.throwIfAborted();
-      const response = await peerFetch(new URL(`/api/thread-bridge/${operation}`, transport.endpoint), { method: 'POST', signal: lease.signal,
-        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }, record.pinnedFingerprint);
-      const envelope = await readBoundedJsonBody(response, operation === 'read' ? SESSION_READ_BODY_BYTES : operation === 'list' ? 128 * 1024 : 16 * 1024, lease.signal) as RemoteEnvelope<T>;
-      if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, envelope.msg ?? 'bridge_request_rejected');
-      if (!sameIdentity(envelope.data.identity, descriptor.target)) denied('bridge_identity_mismatch');
-      return envelope.data.result;
     } finally { lease.release(); controllers.delete(controller); if (controllers.size === 0) this.outgoing.delete(link.grant.id); }
   }
   private cancelOutgoing(id: string): void { for (const controller of this.outgoing.get(id) ?? []) controller.abort(); this.outgoing.delete(id); }

@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { peerFetch, requirePinnedTls } from './peerTls';
+import { closePinnedAgents, evictPinnedAgent, isRetryableTransportError, peerFetch, requirePinnedTls } from './peerTls';
 import { z } from 'zod';
 import { ConnectionSecretStore } from './secrets';
 import { join } from 'node:path';
@@ -14,6 +14,53 @@ import { isPeerProcedureAllowed } from './audience';
 import { parseKlientCallRequest } from '@kiki/klient/host';
 
 interface Credential { ownerToken: string; grant: string; grantId: string; revision: number }
+interface VerifiedGuiSession {
+  epoch: number;
+  endpoint: string;
+  pinnedFingerprint?: string;
+  credential: Credential;
+  verifiedAt: number;
+}
+const VERIFIED_HANDSHAKE_TTL_MS = 60_000;
+const TRANSPORT_OFFLINE_STRIKES = 3;
+
+function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function isImmediateFailureError(error: unknown): boolean {
+  if (!(error instanceof AdmissionError)) return false;
+  return error.status === 401 || ['identity_changed', 'inbound_disabled', 'connection_not_approved', 'handshake_failed'].includes(error.reason);
+}
 export class PairingBridgeRetirementError extends AdmissionError {
   constructor() { super(500, 'connection_stored_bridge_retirement_failed'); }
 }
@@ -44,6 +91,10 @@ export class RemoteConnectionManager {
   private readonly summaryLeases = new Map<string, ConnectionLease>();
   private readonly epochs = new Map<string, number>();
   private readonly replacing = new Set<string>();
+  private readonly verified = new Map<string, VerifiedGuiSession>();
+  private readonly proveFlights = new Map<string, Promise<Credential>>();
+  private readonly failureStrikes = new Map<string, number>();
+  private readonly healthProbes = new Map<string, Promise<void>>();
   private retirePairingBridges?: (id: string, grantId: string) => Promise<void>;
   credentialEpoch(id: string): number { return this.epochs.get(id) ?? 0; }
   setPairingBridgeRetirement(retire: (id: string, grantId: string) => Promise<void>): void { this.retirePairingBridges = retire; }
@@ -80,8 +131,9 @@ export class RemoteConnectionManager {
             this.requireEpoch(record.id, epoch);
             lease.signal.throwIfAborted();
             record.summary = { value: spaceSummarySchema.parse(envelope.data), lastSeen: Date.now(), stale: false };
+            this.notePeerSuccess(record.id, epoch);
             await this.change(async () => undefined);
-          } catch (error) { this.failed(record.id, error, epoch); }
+          } catch (error) { this.recordTransportStrike(record.id, error, epoch); }
         }));
       }
     } finally { this.summaryPolling = false; }
@@ -290,38 +342,145 @@ export class RemoteConnectionManager {
   activeCount(): number {
     return [...this.active.values(), ...this.bridgeActive.values()].reduce((sum, set) => sum + set.size, 0) + this.records.filter((r) => r.enabled && r.backgroundSummary && !['authentication_required', 'identity_changed'].includes(r.state)).length;
   }
-  async close(): Promise<void> { this.stopped = true; if (this.summaryTimer !== undefined) clearInterval(this.summaryTimer); for (const id of [...this.active.keys(), ...this.bridgeActive.keys()]) this.stop(id); await this.ssh?.close(); await this.tail; }
+  async close(): Promise<void> {
+    this.stopped = true;
+    if (this.summaryTimer !== undefined) clearInterval(this.summaryTimer);
+    for (const id of [...this.active.keys(), ...this.bridgeActive.keys()]) this.stop(id);
+    this.verified.clear();
+    this.failureStrikes.clear();
+    closePinnedAgents();
+    await this.ssh?.close();
+    await this.tail;
+  }
   stop(id: string, purpose?: 'gui' | 'bridge'): void {
-    if (purpose !== 'bridge') this.stopSummary(id);
+    const record = this.records.find((entry) => entry.id === id);
+    if (purpose !== 'bridge') {
+      this.stopSummary(id);
+      this.verified.delete(id);
+      this.failureStrikes.delete(id);
+    }
+    if (purpose === undefined && record?.pinnedFingerprint !== undefined) {
+      evictPinnedAgent(record.endpoint, record.pinnedFingerprint);
+    }
     for (const leases of purpose === 'gui' ? [this.active] : purpose === 'bridge' ? [this.bridgeActive] : [this.active, this.bridgeActive]) {
       const set = leases.get(id); leases.delete(id); for (const controller of set ?? []) controller.abort(new AdmissionError(409, 'connection_stopped'));
     }
     this.ssh?.stop(id, purpose);
   }
-  async connect(id: string, signal: AbortSignal): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport }> {
+  notePeerSuccess(id: string, epoch = this.credentialEpoch(id)): void {
+    if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || this.stopped) return;
+    this.failureStrikes.delete(id);
+    const record = this.records.find((entry) => entry.id === id);
+    if (record !== undefined && record.enabled && record.state === 'offline') {
+      record.state = 'online';
+      record.lastConnectedAt = Date.now();
+      delete record.lastError;
+      void this.change(async () => undefined).catch(() => {});
+    }
+  }
+  recordTransportStrike(id: string, error: unknown, epoch = this.credentialEpoch(id)): void {
+    const record = this.records.find((entry) => entry.id === id);
+    if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || record === undefined || !record.enabled || this.stopped || record.state === 'identity_changed') return;
+    if (isImmediateFailureError(error) || record.state !== 'online') {
+      this.failed(id, error, epoch);
+      return;
+    }
+    const strikes = (this.failureStrikes.get(id) ?? 0) + 1;
+    this.failureStrikes.set(id, strikes);
+    if (strikes >= TRANSPORT_OFFLINE_STRIKES) {
+      this.failed(id, error, epoch);
+      return;
+    }
+    if (this.healthProbes.has(id)) return;
+    const probe = (async () => {
+      try {
+        const cached = this.verified.get(id);
+        const credential = cached?.epoch === epoch
+          ? cached.credential
+          : await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
+        const endpoint = cached?.epoch === epoch ? cached.endpoint : record.endpoint;
+        if (!endpoint.startsWith('http://') && !endpoint.startsWith('https://')) return;
+        await this.provePeer(endpoint, record.target, credential, AbortSignal.timeout(5000), record.pinnedFingerprint);
+        if (this.credentialEpoch(id) === epoch && !this.replacing.has(id) && !this.stopped) {
+          this.verified.set(id, { epoch, endpoint, pinnedFingerprint: record.pinnedFingerprint, credential, verifiedAt: Date.now() });
+          this.notePeerSuccess(id, epoch);
+        }
+      } catch (probeError) {
+        if (isImmediateFailureError(probeError) || (this.failureStrikes.get(id) ?? 0) >= 2) {
+          this.failed(id, probeError, epoch);
+        }
+      } finally {
+        this.healthProbes.delete(id);
+      }
+    })();
+    this.healthProbes.set(id, probe);
+  }
+  async connect(id: string, signal: AbortSignal, forceProve = false, deadlineSignal = signal): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport; fromCache: boolean }> {
     const record = this.get(id); const epoch = this.credentialEpoch(id);
     this.requireEpoch(id, epoch);
     if (!record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
     if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
     try {
-      const credential = await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
       const transport = await this.acquireTransport(id, signal, 'gui');
       this.requireEpoch(id, epoch);
-      await this.provePeer(transport.endpoint, record.target, credential, signal, record.pinnedFingerprint);
-      signal.throwIfAborted(); this.requireEpoch(id, epoch);
+      const cached = forceProve ? undefined : this.verified.get(id);
+      if (
+        cached !== undefined
+        && record.state === 'online'
+        && cached.epoch === epoch
+        && cached.endpoint === transport.endpoint
+        && cached.pinnedFingerprint === record.pinnedFingerprint
+        && Date.now() - cached.verifiedAt < VERIFIED_HANDSHAKE_TTL_MS
+      ) {
+        return { record, credential: cached.credential, transport, fromCache: true };
+      }
+      const flightKey = `${id}:${epoch}:${transport.endpoint}:${record.pinnedFingerprint ?? ''}`;
+      let flight = forceProve ? undefined : this.proveFlights.get(flightKey);
+      if (flight === undefined) {
+        flight = (async () => {
+          const loaded = await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
+          await this.provePeer(transport.endpoint, record.target, loaded, AbortSignal.timeout(15_000), record.pinnedFingerprint);
+          return loaded;
+        })();
+        this.proveFlights.set(flightKey, flight);
+        void flight.finally(() => {
+          if (this.proveFlights.get(flightKey) === flight) this.proveFlights.delete(flightKey);
+        }).catch(() => {});
+      }
+      const credential = await raceSignal(flight, deadlineSignal);
+      deadlineSignal.throwIfAborted(); this.requireEpoch(id, epoch);
+      this.verified.set(id, {
+        epoch,
+        endpoint: transport.endpoint,
+        pinnedFingerprint: record.pinnedFingerprint,
+        credential,
+        verifiedAt: Date.now(),
+      });
+      this.failureStrikes.delete(id);
       record.state = 'online'; record.lastConnectedAt = Date.now(); delete record.lastError;
-      return { record, credential, transport };
-    } catch (error) { if (!signal.aborted) this.failed(id, error, epoch); throw error; }
+      return { record, credential, transport, fromCache: false };
+    } catch (error) {
+      if (!signal.aborted) {
+        this.verified.delete(id);
+        this.recordTransportStrike(id, error, epoch);
+      }
+      throw error;
+    }
   }
   failed(id: string, error: unknown, epoch = this.credentialEpoch(id)): void {
     const record = this.records.find((entry) => entry.id === id);
     if (epoch !== this.credentialEpoch(id) || this.replacing.has(id) || record === undefined || !record.enabled || this.stopped || record.state === 'identity_changed') return;
+    this.verified.delete(id);
+    this.failureStrikes.delete(id);
     this.stopSummary(id);
     if (record.summary !== undefined) record.summary.stale = true;
     const reason = error instanceof Error ? error.message : 'connection_failed'; record.lastError = reason;
     record.state = error instanceof AdmissionError && error.reason === 'identity_changed' ? 'identity_changed'
       : error instanceof AdmissionError && error.status === 401 ? 'authentication_required' : 'offline';
-    if (record.state !== 'offline') this.stop(id, record.state === 'identity_changed' ? undefined : 'gui');
+    if (record.state !== 'offline') {
+      evictPinnedAgent(record.endpoint, record.pinnedFingerprint);
+      this.stop(id, record.state === 'identity_changed' ? undefined : 'gui');
+    }
     void this.change(async () => undefined).catch(() => {});
   }
   async forward(id: string, input: ConnectionBrokerInput, signal: AbortSignal, rawBody?: NonNullable<RequestInit['body']>, contentType?: string): Promise<Response> {
@@ -333,32 +492,59 @@ export class RemoteConnectionManager {
       if (!isPeerProcedureAllowed(procedure)) throw new AdmissionError(403, 'local_owner_required');
     }
     const epoch = this.credentialEpoch(id);
-    const { record, transport, credential } = await this.connect(id, signal);
-    this.requireEpoch(id, epoch); signal.throwIfAborted();
-    const url = new URL(connectionOperationPath(operation, input.params), transport.endpoint);
-    if (operation === 'spaceSummary') signal = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
-    for (const [key, value] of Object.entries(input.query ?? {})) for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, String(item));
+    const callSignal = operation === 'spaceSummary' ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : signal;
     const method = CONNECTION_OPERATIONS[operation][0];
-    const headers = new Headers({ authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant,
-      ...input.headers?.ifNoneMatch === undefined ? {} : { 'if-none-match': input.headers.ifNoneMatch },
-      ...input.headers?.range === undefined ? {} : { range: input.headers.range } });
-    if (operation !== 'htmlPreviewClose' || rawBody !== undefined || input.body !== undefined) headers.set('content-type', contentType ?? 'application/json');
-    try {
-      const response = await peerFetch(url, { method, headers, body: rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)), signal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit, record.pinnedFingerprint);
-      if (signal.aborted || this.credentialEpoch(id) !== epoch) {
-        await response.body?.cancel(); signal.throwIfAborted(); this.requireEpoch(id, epoch);
+    const serializedBody = rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body));
+    const executeAttempt = async (forceProve: boolean): Promise<Response> => {
+      const { record, transport, credential, fromCache } = await this.connect(id, signal, forceProve, callSignal);
+      this.requireEpoch(id, epoch); callSignal.throwIfAborted();
+      const url = new URL(connectionOperationPath(operation, input.params), transport.endpoint);
+      for (const [key, value] of Object.entries(input.query ?? {})) for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, String(item));
+      const headers = new Headers({ authorization: `Bearer ${credential.ownerToken}`, 'x-kiki-connection-grant': credential.grant });
+      if (input.headers?.ifNoneMatch !== undefined) headers.set('if-none-match', input.headers.ifNoneMatch);
+      if (input.headers?.range !== undefined) headers.set('range', input.headers.range);
+      if (operation !== 'htmlPreviewClose' || rawBody !== undefined || input.body !== undefined) headers.set('content-type', contentType ?? 'application/json');
+      const response = await peerFetch(url, { method, headers, body: serializedBody, signal: callSignal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit, record.pinnedFingerprint);
+      if (callSignal.aborted || this.credentialEpoch(id) !== epoch) {
+        await response.body?.cancel(); callSignal.throwIfAborted(); this.requireEpoch(id, epoch);
       }
       if (response.status === 401 || response.status === 403) {
-        const refusal = await readConnectionRefusal(response, signal);
+        const refusal = await readConnectionRefusal(response, callSignal);
         if (refusal?.code === 40301 && typeof refusal.msg === 'string' && (
           (['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg))
           || (['sessionCreate', 'fsSearch', 'draftFsSearch'].includes(operation) && refusal.msg === 'peer_workspace_not_registered')
-        )) return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        )) {
+          this.notePeerSuccess(id, epoch);
+          return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        }
         void response.body?.cancel().catch(() => {});
+        this.verified.delete(id);
+        if (fromCache) {
+          await this.provePeer(transport.endpoint, record.target, credential, callSignal, record.pinnedFingerprint);
+        }
         throw new AdmissionError(response.status, refusal?.code === 40301 && refusal.msg === 'inbound_disabled' ? 'inbound_disabled' : 'connection_not_approved');
       }
+      this.notePeerSuccess(id, epoch);
       return response;
-    } catch (error) { if (!signal.aborted) this.failed(id, error, epoch); throw error; }
+    };
+    try {
+      return await executeAttempt(false);
+    } catch (firstError) {
+      if (!callSignal.aborted && rawBody === undefined && isRetryableTransportError(firstError)) {
+        const current = this.records.find((entry) => entry.id === id);
+        this.verified.delete(id);
+        if (current !== undefined) evictPinnedAgent(current.endpoint, current.pinnedFingerprint);
+        try {
+          await abortableDelay(120 + Math.floor(Math.random() * 140), callSignal);
+          return await executeAttempt(true);
+        } catch (retryError) {
+          if (!signal.aborted) this.recordTransportStrike(id, retryError, epoch);
+          throw retryError;
+        }
+      }
+      if (!signal.aborted) this.recordTransportStrike(id, firstError, epoch);
+      throw firstError;
+    }
   }
   async provePeer(endpoint: string, target: ConnectionIdentity, credential: { grant: string; grantId?: string }, signal?: AbortSignal, fingerprint?: string, expectedStatus: 'approved' | 'invited' = 'approved'): Promise<void> {
     requirePinnedTls(endpoint, fingerprint);

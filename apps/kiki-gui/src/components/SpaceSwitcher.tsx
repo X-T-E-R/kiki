@@ -73,7 +73,7 @@ export function SpaceSwitcher() {
   // Remote pairings live in the local control home, never inside a remote space.
   const remoteClient = desktop ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const hasRemoteConnectionsApi = remoteClient?.klient.rest?.connections !== undefined;
-  const remoteConnections = useRemoteConnections(hasRemoteConnectionsApi ? remoteClient : null);
+  const remoteConnections = useRemoteConnections(hasRemoteConnectionsApi ? remoteClient : null, { poll: open });
   const enterRemoteSpace = useRemoteSpaceEntry();
   const returnToLocal = useReturnToLocalSpace();
 

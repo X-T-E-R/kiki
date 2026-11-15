@@ -290,7 +290,7 @@ describe('http transport', () => {
     } finally { await klient.close(); vi.useRealTimers(); }
   });
 
-  it('only treats silence as stale after an advertised heartbeat and times out unanswered attaches', async () => {
+  it('only treats silence as stale after an advertised heartbeat, probes on nudge/watchdog, and times out unanswered attaches', async () => {
     vi.useFakeTimers();
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
@@ -302,10 +302,14 @@ describe('http transport', () => {
       server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'hello' } });
       await vi.advanceTimersByTimeAsync(0);
       expect(server.frames.at(-1)).toMatchObject({ type: 'pong', data: { nonce: 'hello' } });
-      await vi.advanceTimersByTimeAsync(45_001);
+      await vi.advanceTimersByTimeAsync(600);
       klient.terminal.nudge();
-      await vi.advanceTimersByTimeAsync(0);
+      expect(server.frames.at(-1)).toMatchObject({ type: 'ping' });
+      await vi.advanceTimersByTimeAsync(2_000);
       expect(server.sockets).toHaveLength(2);
+      server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'watch' } });
+      await vi.advanceTimersByTimeAsync(19_001);
+      expect(server.sockets).toHaveLength(3);
       const attached = klient.terminal.terminalAttach('s1', 't1');
       const rejection = expect(attached).rejects.toThrow('terminal attach timed out');
       await vi.advanceTimersByTimeAsync(8_000);
@@ -332,10 +336,30 @@ describe('http transport', () => {
       ]);
       await vi.advanceTimersByTimeAsync(500);
       server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'm' } });
-      await vi.advanceTimersByTimeAsync(45_001);
-      klient.terminal.nudge();
-      expect(events.at(-1)).toMatchObject({ kind: 'close', cause: 'stale_heartbeat', heartbeatMs: 10_000, sinceInboundMs: 45_001 });
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'close', cause: 'stale_heartbeat', heartbeatMs: 10_000, sinceInboundMs: 19_000 }));
     } finally { await klient.close(); vi.useRealTimers(); }
+  });
+  it('retries a transient pre-response GET reset once without retrying POST mutations', async () => {
+    let metaCalls = 0;
+    let callAttempts = 0;
+    const fetcher = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.endsWith('/api/meta')) {
+        metaCalls += 1;
+        if (metaCalls === 1) throw new TypeError('fetch failed: socket hang up');
+        return new Response(JSON.stringify({ code: 0, msg: 'ok', data: { version: '1.0.0' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      callAttempts += 1;
+      throw new TypeError('fetch failed: socket hang up');
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetcher as unknown as typeof fetch });
+    try {
+      await expect(klient.rest!.meta()).resolves.toMatchObject({ version: '1.0.0' });
+      expect(metaCalls).toBe(2);
+      await expect(klient.session('s1').resume()).rejects.toMatchObject({ reason: 'transport.network' });
+      expect(callAttempts).toBe(1);
+    } finally { await klient.close(); }
   });
   it('shares one socket for PTY, ordered views and typed global events, replaying only unseen output', async () => {
     const server = new FakeWebSocketServer();

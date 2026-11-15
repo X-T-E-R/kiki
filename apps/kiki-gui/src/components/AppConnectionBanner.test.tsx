@@ -158,13 +158,17 @@ describe('AppConnectionBanner', () => {
     expect(remoteHarness.activateLocal).toHaveBeenCalledOnce();
   });
 
-  it('renders nothing while connected or during the initial connecting grace window', async () => {
+  it('renders nothing while connected or during the initial and transient grace windows, and mounts out of normal document flow', async () => {
     const { container, render } = await mount('open');
     expect(container.querySelector('[data-app-banner]')).toBeNull();
     await render('connecting', undefined, true);
     expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('closed', undefined, true);
+    expect(container.querySelector('[data-app-banner]')).toBeNull();
     await render('connecting', undefined, false);
-    expect(container.querySelector('[data-app-banner]')).not.toBeNull();
+    const banner = container.querySelector('[data-app-banner]');
+    expect(banner).not.toBeNull();
+    expect(banner?.parentElement?.className).toContain('fixed');
   });
 
   it.each(['en', 'zh'])('keeps a short stable %s strip through repeated backoff and preserves the raw diagnostic in details', async (locale) => {

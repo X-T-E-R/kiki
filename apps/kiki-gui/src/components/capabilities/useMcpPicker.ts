@@ -32,6 +32,7 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { useConnection } from '../../state/connection';
 import {
   currentPendingCapabilityScope,
@@ -162,7 +163,7 @@ interface McpPickFailureNotice extends McpPickFailure {
 }
 
 export function useMcpPicker(sessionId: string | undefined) {
-  const { client, scopeId, spaceKey, connectionId } = useConnection();
+  const { client, scopeId, spaceKey, connectionId, connectionSource } = useConnection();
   const { locale } = useI18n();
   const queryClient = useQueryClient();
   const [failure, setFailure] = useState<McpPickFailureNotice | undefined>(undefined);
@@ -195,11 +196,12 @@ export function useMcpPicker(sessionId: string | undefined) {
     [connectionKey, sessionId],
   );
 
+  const peerConnection = isPeerConnectionSource(connectionSource);
   const mcpCatalog = client.klient?.global?.mcp;
   const draftCatalog = useQuery({
     queryKey: ['draft-mcp-catalog', connectionKey] as const,
     queryFn: () => mcpCatalog!.list!(),
-    enabled: !scoped && typeof mcpCatalog?.list === 'function',
+    enabled: !scoped && !peerConnection && typeof mcpCatalog?.list === 'function',
     staleTime: 5_000,
     retry: false,
   });
@@ -215,7 +217,7 @@ export function useMcpPicker(sessionId: string | undefined) {
       // the override metadata, which is why those rows carry no switch.
       const [servers, catalog] = await Promise.all([
         surface.getMcpServers(),
-        client.klient.global.mcp.list(),
+        peerConnection ? Promise.resolve([]) : client.klient.global.mcp.list(),
       ]);
       return { kind: 'reads', rows: mcpFallbackRows({ servers, catalog }) };
     },
