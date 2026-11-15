@@ -472,7 +472,8 @@ describe('sessionStatusResponseSchema', () => {
   it('accepts a full valid shape', () => {
     const parsed = sessionStatusResponseSchema.parse({
       busy: true,
-      model: 'moonshot-v1-128k',
+      model: 'example-model',
+      model_name: null,
       thinking_level: 'on',
       permission: 'ask',
       plan_mode: true,
@@ -481,14 +482,22 @@ describe('sessionStatusResponseSchema', () => {
       context_usage: 0.008,
     });
     expect(parsed.busy).toBe(true);
-    expect(parsed.model).toBe('moonshot-v1-128k');
+    expect(parsed.model).toBe('example-model');
+    expect(parsed.model_name).toBeNull();
     expect(parsed.plan_mode).toBe(true);
     expect(parsed.context_usage).toBe(0.008);
+  });
+
+  it('preserves a configured model display name', () => {
+    const status = { busy: false, model: 'example-model', model_name: 'Example Model', thinking_level: '', permission: 'auto', plan_mode: false, context_tokens: 0, context_usage: 0 };
+    expect(sessionStatusResponseSchema.parse(status).model_name).toBe('Example Model');
+    expect(sessionStatusResponseSchema.safeParse({ ...status, model_name: 42 }).success).toBe(false);
   });
 
   it('accepts minimal shape without model', () => {
     const parsed = sessionStatusResponseSchema.parse({
       busy: false,
+      model_name: null,
       thinking_level: 'off',
       permission: 'auto',
       plan_mode: false,
@@ -503,6 +512,7 @@ describe('sessionStatusResponseSchema', () => {
   it('accepts an omitted max_context_tokens (unknown context limit)', () => {
     const parsed = sessionStatusResponseSchema.parse({
       busy: false,
+      model_name: null,
       thinking_level: 'off',
       permission: 'auto',
       plan_mode: false,
@@ -515,6 +525,7 @@ describe('sessionStatusResponseSchema', () => {
   it('rejects missing busy', () => {
     expect(
       sessionStatusResponseSchema.safeParse({
+        model_name: null,
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
@@ -529,6 +540,7 @@ describe('sessionStatusResponseSchema', () => {
     expect(
       sessionStatusResponseSchema.safeParse({
         busy: 'unknown',
+        model_name: null,
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
@@ -543,6 +555,7 @@ describe('sessionStatusResponseSchema', () => {
     expect(
       sessionStatusResponseSchema.safeParse({
         busy: true,
+        model_name: null,
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
@@ -557,6 +570,7 @@ describe('sessionStatusResponseSchema', () => {
     expect(
       sessionStatusResponseSchema.safeParse({
         busy: true,
+        model_name: null,
         thinking_level: 'off',
         permission: 'auto',
         plan_mode: false,
@@ -638,6 +652,7 @@ describe('undoSessionResponseSchema', () => {
       status: {
         busy: true,
         model: 'kimi-k2',
+        model_name: null,
         thinking_level: 'auto',
         permission: 'manual',
         plan_mode: false,

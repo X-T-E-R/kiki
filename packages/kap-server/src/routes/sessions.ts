@@ -6,6 +6,8 @@ import type { AgentMeta, SessionMeta, SessionPromotedFrom } from '@kiki/agent-co
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
+import { resolveSessionModel } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
+import { acquireDraftProfileListCatalog } from './agentProfileCapabilities';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -27,6 +29,7 @@ import {
   IAtomicDocumentStore,
   IAuthSummaryService,
   ILogService,
+  IModelService,
   ISessionActivityView,
   ISessionAgentProfileCatalog,
   SessionAgentProfileCatalogService,
@@ -1967,6 +1970,10 @@ export async function resolveSessionBindingFacts(
   options: { readonly includeAccounting?: boolean } = {},
 ): Promise<SessionFacts> {
   let facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  if (facts.live && !facts.agentConfig?.model) {
+    const model = await resolveSessionModel(getLiveSessionById(core.accessor, sessionId)!);
+    facts = { ...facts, agentConfig: { ...facts.agentConfig, model: model ?? '' } };
+  }
   if (facts.live && facts.usage?.accounting?.complete) return facts;
   if (options.includeAccounting !== false) {
     try {
@@ -1984,7 +1991,16 @@ export async function resolveSessionBindingFacts(
   ))?.agents?.[MAIN_AGENT_ID];
   const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined,
     { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
-  if (profile === undefined) return facts;
+  if (profile === undefined) {
+    const preview = await acquireDraftProfileListCatalog(core, { workspace_id: workspaceId });
+    try {
+      const models = core.accessor.get(IModelService);
+      await models.ready;
+      const selected = preview?.catalog.getDefault().modelAlias;
+      const model = selected ? models.resolveId(selected) ?? selected : models.getDefaultModel();
+      return { ...facts, agentConfig: { model: model ?? '' } };
+    } finally { await preview?.dispose(); }
+  }
   const persona = profile.persona?.definition;
   return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
     execution: profile.execution, model: profile.modelAlias ?? '', profile: profile.profileName,

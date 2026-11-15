@@ -93,6 +93,7 @@ export type UpdateSessionProfileRequest = z.infer<typeof updateSessionProfileReq
 export const sessionStatusResponseSchema = z.object({
   busy: z.boolean(),
   model: z.string().optional(),
+  model_name: z.string().nullable(),
   thinking_level: z.string(),
   permission: z.string(),
   plan_mode: z.boolean(),

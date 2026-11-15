@@ -251,6 +251,7 @@ export const sessionStatusResponseSchema = z.object({
    *  status enum; awaiting states ride the approval/question channels. */
   busy: z.boolean(),
   model: z.string().optional(),
+  model_name: z.string().nullable(),
   thinking_level: z.string(),
   permission: z.string(),
   plan_mode: z.boolean(),

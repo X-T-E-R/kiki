@@ -5,11 +5,13 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IConfigService } from '#/app/config/config';
 
 import type { SessionStatusResponse } from './sessionProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import {
-  type IAgentScopeHandle,
   type ISessionScopeHandle,
   ScopeActivation,
   registerScopedService,
@@ -30,7 +32,6 @@ import {
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { ErrorCodes, Error2 } from '#/errors';
-import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 
@@ -51,43 +52,41 @@ export class SessionLegacyService implements ISessionLegacyService {
     return resumeSessionById(this.services, sessionId);
   }
 
-  private async resolveMainAgent(sessionId: string): Promise<IAgentScopeHandle> {
-    const session = await this.resume(sessionId);
-    if (session === undefined) {
-      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-    }
-    return ensureMainAgent(session);
-  }
-
   async status(sessionId: string): Promise<SessionStatusResponse> {
-    const agent = await this.resolveMainAgent(sessionId);
-    return this.assembleStatus(sessionId, agent);
+    const session = await this.resume(sessionId);
+    if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    return this.assembleStatus(sessionId, session);
   }
 
   private async assembleStatus(
     sessionId: string,
-    agent: IAgentScopeHandle,
+    session: ISessionScopeHandle,
   ): Promise<SessionStatusResponse> {
-    const profile = agent.accessor.get(IAgentProfileService);
-    const tokenCounting = agent.accessor.get(IAgentTokenCountingService);
-    const permission = agent.accessor.get(IAgentPermissionModeService);
-    const plan = agent.accessor.get(IAgentPlanService);
-
-    const model = profile.getModel();
-    const capabilities = profile.getModelCapabilities();
-    let maxTokens = capabilities.max_input_tokens ?? capabilities.max_context_tokens;
-    if (maxTokens === 0 && model === '') {
-      maxTokens = resolveDefaultModelContextTokens(agent) ?? 0;
+    const agent = session.accessor.get(IAgentLifecycleService).get('main');
+    const profile = agent?.accessor.get(IAgentProfileService);
+    const model = await resolveSessionModel(session);
+    let modelName: string | null = null;
+    let maxTokens = 0;
+    if (model !== undefined) {
+      try {
+        const configured = session.accessor.get(IModelCatalog).get(model);
+        modelName = configured.displayName ?? null;
+        const capabilities = profile?.getModel() ? profile.getModelCapabilities() : configured.capabilities;
+        maxTokens = capabilities.max_input_tokens ?? capabilities.max_context_tokens;
+      } catch {
+        modelName = null;
+      }
     }
-    const tokens = tokenCounting.statusSize();
-    const planData = await plan.status();
+    const tokens = agent?.accessor.get(IAgentTokenCountingService).statusSize() ?? 0;
+    const planData = await agent?.accessor.get(IAgentPlanService).status();
 
     return {
       busy: this.readBusy(sessionId),
-      model: model === '' ? undefined : model,
-      thinking_level: model === '' ? '' : profile.getEffectiveThinkingLevel(),
-      permission: permission.mode,
-      plan_mode: planData !== null,
+      model,
+      model_name: modelName,
+      thinking_level: profile?.getModel() ? profile.getEffectiveThinkingLevel() : '',
+      permission: agent?.accessor.get(IAgentPermissionModeService).mode ?? session.accessor.get(IConfigService).get<string>('defaultPermissionMode') ?? 'auto',
+      plan_mode: planData != null,
       context_tokens: tokens,
       max_context_tokens: maxTokens > 0 ? maxTokens : undefined,
       context_usage: maxTokens > 0 ? Math.min(1, tokens / maxTokens) : 0,
@@ -122,15 +121,21 @@ export class SessionLegacyService implements ISessionLegacyService {
   }
 }
 
-function resolveDefaultModelContextTokens(agent: IAgentScopeHandle): number | undefined {
-  const defaultModel = agent.accessor.get(IModelService).getDefaultModel();
-  if (defaultModel === undefined || defaultModel.length === 0) return undefined;
-  try {
-    const capabilities = agent.accessor.get(IModelCatalog).get(defaultModel).capabilities;
-    return capabilities.max_input_tokens ?? capabilities.max_context_tokens;
-  } catch {
-    return undefined;
+/** Resolves the effective main model without creating an agent or changing its binding. */
+export async function resolveSessionModel(session: ISessionScopeHandle): Promise<string | undefined> {
+  const profile = session.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentProfileService);
+  const bound = profile?.getModel() || (await session.accessor.get(ISessionMetadata).read()).agents?.['main']?.model;
+  if (!bound && (profile?.data().executorId ?? 'native') !== 'native') return undefined;
+  const models = session.accessor.get(IModelService);
+  await models.ready;
+  if (bound) return models.resolveId(bound) ?? bound;
+  if (profile?.data().profileName === undefined) {
+    const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+    await catalog.ready;
+    const selected = catalog.getDefault().modelAlias;
+    if (selected) return models.resolveId(selected) ?? selected;
   }
+  return models.getDefaultModel();
 }
 
 registerScopedService(

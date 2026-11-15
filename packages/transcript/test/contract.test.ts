@@ -8,6 +8,8 @@ import {
   transcriptDetailResponseSchema,
   transcriptOperationSchema,
   transcriptProvenanceSchema,
+  transcriptUserMessagesResponseSchema,
+  turnOriginSchema,
 } from '#/contract/schema';
 
 describe('windowed transcript global contract', () => {
@@ -43,6 +45,15 @@ describe('windowed transcript global contract', () => {
       session_id: 's1', agent_id: 'main', kind: 'task',
       task: { taskId: 'task-1', kind: 'subagent', state: 'completed', detached: false, outputTail: 'done' },
     })).toMatchObject({ kind: 'task', task: { taskId: 'task-1' } });
+  });
+
+  it('accepts user origin via metadata in turns and user-message responses', () => {
+    const via = { client: 'example-client', channel: 'terminal' as const };
+    expect(turnOriginSchema.parse({ kind: 'user', via })).toEqual({ kind: 'user', via });
+    expect(turnOriginSchema.safeParse({ kind: 'user', via: { client: 'example-client', channel: 'other' } }).success).toBe(false);
+    expect(transcriptUserMessagesResponseSchema.parse({
+      agents: [{ agent_id: 'main', messages: [{ turn_id: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user', via }, prompt: 'hello' }] }],
+    }).agents[0]?.messages[0]?.origin).toEqual({ kind: 'user', via });
   });
 });
 

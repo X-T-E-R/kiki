@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema, promptAdmissionStateSchema, promptDeliveryReasonSchema, promptDeliveryStateSchema } from '@kiki/protocol';
+import { executionSelectionSchema, inlineImagePromptContentSchema, promptAdmissionStateSchema, promptDeliveryReasonSchema, promptDeliveryStateSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
@@ -38,7 +38,7 @@ export const promptSubmissionSchema = z.object({
   execution: executionSelectionSchema.optional(),
   after_model_switch: z.string().min(1).optional(),
   model_switch_mode: z.enum(['direct', 'compact', 'fresh']).optional(),
-  content: z.array(messageContentSchema).min(1),
+  content: z.array(z.union([messageContentSchema, inlineImagePromptContentSchema])).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
   profile: z.string().min(1).optional(),

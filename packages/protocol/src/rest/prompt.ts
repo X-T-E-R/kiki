@@ -36,7 +36,7 @@
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
 
-import { messageContentSchema } from '../message';
+import { messageContentSchema, type ImageContent } from '../message';
 import { executionSelectionSchema } from '../execution';
 import { isoDateTimeSchema } from '../time';
 
@@ -66,10 +66,20 @@ export type GoalFollowUpTiming = z.infer<typeof goalFollowUpTimingSchema>;
 export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
+export const inlineImagePromptContentSchema = z.object({
+  type: z.literal('image_url'),
+  image_url: z.object({
+    url: z.string().regex(/^data:image\/[a-zA-Z0-9.+-]+;base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/).refine(url => !url.endsWith(',')),
+  }),
+}).transform(({ image_url: { url } }): ImageContent => {
+  const separator = url.indexOf(';base64,');
+  return { type: 'image' as const, source: { kind: 'base64' as const, media_type: url.slice(5, separator), data: url.slice(separator + 8) } };
+});
+
 export const promptSubmissionSchema = z.object({
   admission: z.literal('durable').optional(),
   delivery_mode: z.literal('steer').optional(),
-  content: z.array(messageContentSchema).min(1),
+  content: z.array(z.union([messageContentSchema, inlineImagePromptContentSchema])).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
   execution: executionSelectionSchema.optional(),
@@ -102,6 +112,10 @@ export const promptSubmissionSchema = z.object({
   skills: z.array(z.object({ name: z.string().min(1), args: z.string().optional() })).min(1).optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
+export type PromptSubmissionInput = z.input<typeof promptSubmissionSchema>;
+
+export const promptSteerSubmissionRequestSchema = promptSubmissionSchema;
+export type PromptSteerSubmissionRequest = z.input<typeof promptSteerSubmissionRequestSchema>;
 export type PromptSkillActivation = NonNullable<PromptSubmission['skills']>[number];
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({

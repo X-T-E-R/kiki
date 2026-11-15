@@ -15,8 +15,14 @@ export interface TranscriptSkillActivation {
   readonly skillArgs?: string;
 }
 
+export interface TranscriptUserOriginVia {
+  readonly client: string;
+  readonly channel: 'owner' | 'terminal';
+}
+
 export interface TranscriptUserOrigin {
   readonly kind: 'user';
+  readonly via?: TranscriptUserOriginVia;
   readonly skillActivations?: readonly TranscriptSkillActivation[];
   readonly agentRefs?: readonly import('../contract/agentReference').AgentReference[];
 }

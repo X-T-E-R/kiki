@@ -40,10 +40,14 @@ function parseScopes(value: string): SessionAccessScope[] {
 function parseTtlSeconds(value: string | undefined): number {
   if (value === undefined) return 3600;
   let ttlMs: number;
-  try {
-    ttlMs = parseDuration(value);
-  } catch {
-    throw new Error('--ttl must be a duration such as 1h, from 60s through 24h.');
+  if (/^\d+$/.test(value)) {
+    ttlMs = Number(value) * 1_000;
+  } else {
+    try {
+      ttlMs = parseDuration(value);
+    } catch {
+      throw new Error('--ttl must be a duration such as 1h, from 60s through 24h.');
+    }
   }
   if (ttlMs < 60_000 || ttlMs > 86_400_000 || ttlMs % 1_000 !== 0) {
     throw new Error('--ttl must be a whole number of seconds from 60s through 24h.');
@@ -69,7 +73,7 @@ export function registerSessionAccessCommand(program: Command): void {
     .requiredOption('--session <id>', 'Session to grant access to.')
     .requiredOption('--scope <scopes>', 'Comma-separated scopes: read,prompt,abort.', parseScopes)
     .requiredOption('--name <client>', 'Name for the client receiving the token.')
-    .option('--ttl <dur>', 'Token lifetime in whole seconds, from 60s through 24h (default 1h).')
+    .option('--ttl <dur>', 'Token lifetime from 60s through 24h, e.g. 120, 90s, or 1h (default 1h).')
     .description('Issue a session-scoped access token; its secret is printed once.')
     .action(async (options: { session: string; scope: SessionAccessScope[]; name: string; ttl?: string }, command: Command) => {
       if (options.session.trim().length === 0) throw new Error('--session must not be empty.');

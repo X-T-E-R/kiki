@@ -8,7 +8,7 @@ outline: [2, 3]
 
 This record is the canonical contract for two related pieces of work: a credential bound to one session (a **session access token**), and the TUI's state reports to terminals that support the OSC 7501 program-status protocol, which can also hand such a token to the terminal hosting the TUI. Outside programs will be written against this contract, so it is stated here once; the issues that build it refer to it.
 
-The request came from a terminal product that hosts Kiki's TUI and wants to show the TUI's state, show the same conversation in its own view, send prompts to it and stop a turn. The answer is deliberately general. Nothing in Kiki's code, names, configuration or docs is specific to that product or to any client; a client name may appear only as an example value of `client.name` in tests.
+A local client may show a session, submit prompts, steer new content, cancel queued prompts, read session media, and stop a turn. The contract is deliberately client-neutral: no client name or vendor is part of Kiki's code, configuration, or docs; a client name may appear only as an example value of `client.name` in tests.
 
 ## Purpose
 
@@ -50,13 +50,13 @@ interface SessionAccessToken {
 
 ### From this machine only
 
-A request carrying a `ksa_` secret, and every call to `exchange`, is accepted only when it comes from this machine, which means all three of these hold:
+A request carrying a `ksa_` secret, and every call to `exchange`, is accepted only when it comes from this machine, which means all of these hold:
 
 1. The socket address is loopback (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`), the same test as external-client credentials use (`packages/kap-server/src/externalClients/routes.ts`).
-2. The request is neither a web-access request nor a peer request (`webRequests`, `peerRequests` in `packages/kap-server/src/start.ts`).
-3. The request carries no `Origin` header. Web access can share the main loopback port, and a browser's request is otherwise indistinguishable from a local program's.
+2. The request is neither a web-access request nor a peer request or peer-granted request (`webRequests`, `peerRequests`, and peer grants in `packages/kap-server/src/start.ts`).
+3. The request carries neither an `Origin` nor a `Sec-Fetch-Site` header. Web access can share the main loopback port, and a browser's request is otherwise indistinguishable from a local program's.
 
-A `ksa_` bearer that fails this gets HTTP 401 with envelope code `40101`. The limit, documented for users as for external clients: an SSH tunnel or a local reverse proxy still makes a remote caller look local.
+A `ksa_` bearer that fails this gets HTTP 401 with envelope code `40101`. An SSH tunnel or a local reverse proxy can still make a remote caller look local.
 
 ### Scopes and operations
 
@@ -64,13 +64,17 @@ These are the only things a token can do. Everything else is refused, and a rout
 
 | Scope | Operations |
 | --- | --- |
-| `read` | `GET /api/sessions/{id}`, `/status`, `/snapshot`, `/messages`, `/messages/{message_id}`, `/transcript`, `/transcript/ops`, `/transcript/detail`, `/transcript/details`, `/transcript/plan`, `/transcript/user-messages`, `/prompts`, `/approvals`, `/questions`; the large-field read (`POST /api/klient/session-view/{id}/transcript/content`, or an equivalent `POST /api/sessions/{id}/transcript/content` if the klient path cannot be admitted cleanly; the implementation decides and records which); WebSocket `/api/ws` with the frames `client_hello`, `subscribe`, `subscribe_v2`, `unsubscribe`, `unsubscribe_v2`, `ping` and `pong`, limited to the bound session |
-| `prompt` | `POST /api/sessions/{id}/prompts` with the restricted body below; the query `receipt=true` is allowed |
+| `read` | `GET /api/sessions/{id}`, `/status`, `/snapshot`, `/messages`, `/messages/{message_id}`, `/transcript`, `/transcript/ops`, `/transcript/detail`, `/transcript/details`, `/transcript/plan`, `/transcript/user-messages`, `/prompts`, `/prompts/{prompt_id}`, `/approvals`, `/questions`, `/children`, `/tasks`, `/tasks/{task_id}`, `/agent-tasks`, `/goal`, `/warnings`, `/profile`, `/runtime`, `/skills`, `/media/{file_id}`, and `/media/{file_id}/preview`; `GET /api/usage/sessions/{sessionId}/accounting`; `POST /api/klient/session-view/{id}/transcript/content`; and WebSocket `/api/ws` with the frames `client_hello`, `subscribe`, `subscribe_v2`, `unsubscribe`, `unsubscribe_v2`, `ping` and `pong`, limited to the bound session |
+| `prompt` | `POST /api/sessions/{id}/prompts` and `/prompts:steer` with the restricted new-content body below; `POST /api/sessions/{id}/prompts/{prompt_id}:cancel` for queued-only cancellation; `receipt=true` is allowed on submit and steer |
 | `abort` | `POST /api/sessions/{id}:abort` only, matched exactly as `^/api/sessions/([^/:]+):abort$` |
 
-Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); the per-prompt routes (`GET /api/sessions/{id}/prompts/{prompt_id}`, `POST …/prompts/{tail}`, `POST …/prompts:steer`); the per-message action routes (`POST …/messages/{tail}`); every other `:{action}` on a session; answering approvals and questions; `/api/klient/call` and `/api/klient/events`; and every non-session surface.
+Session media reads accept only canonical `f_*` file IDs or validated `blobref:<agentId>:<sha256>` IDs. Keep the colon-delimited blobref literal in the path; percent-encoded paths are refused. These reads never resolve a host filesystem path. Filesystem routes, document previews, media-playback grants, and terminals remain refused. No agent-roster GET is registered.
 
-Because the router decodes parameters after matching, and the session filesystem registers a catch-all `POST /sessions/{session_id}/{tail}` (`packages/kap-server/src/routes/fs.ts`), raw paths are checked before matching for `ksa_` requests: a path containing `%`, `//`, a `.` or `..` segment, or a trailing slash is refused, and so is `HEAD`.
+`GET …/status` resolves an unbound native model from the session's default profile, then the global default, without creating or binding main. A bound model always wins, including a saved alias that no longer resolves. `model_name: string | null` carries the configured catalog display name, or `null` when unavailable. Before Turn 1, `GET …/sessions/{id}` also reports the effective model in `agent_config.model`. An external executor whose harness chooses the model retains an unknown model rather than inheriting the native global default.
+
+Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); prompt action routes other than the read point route, new-content `:steer`, and queued-only `:cancel`; the per-message action routes (`POST …/messages/{tail}`); every other `:{action}` on a session; answering approvals and questions; `/api/klient/call` and `/api/klient/events`; and every non-session surface.
+
+Because the router decodes parameters after matching, and the session filesystem registers a catch-all `POST /sessions/{session_id}/{tail}` (`packages/kap-server/src/routes/fs.ts`), raw paths are checked before admission for `ksa_` requests: a path containing `%`, `//`, a `.` or `..` segment, or a trailing slash is refused, and so is `HEAD`.
 
 ### Errors
 
@@ -85,9 +89,9 @@ The server's auth-failure limiter exists only when it is not bound to loopback (
 
 ### Prompts sent with a token
 
-With a token, `POST …/prompts` accepts only `content` (text blocks only, and a text block may not carry `presentation`), `prompt_id`, `metadata`, and `agent_id` when it is absent or names the main agent. Any other field, in particular `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode` and `admission`, is a validation error naming the field; nothing is silently dropped. Because `promptSubmissionSchema` (`packages/kap-server/src/protocol/rest-prompt.ts`) is a non-strict object that strips unknown keys, this check runs on the raw parsed body in a `preValidation` hook, before the schema.
+With a token, `POST …/prompts` and `POST …/prompts:steer` use the existing submit pipeline and accept only `content`, `prompt_id`, `metadata`, and `agent_id`. `content` may contain text blocks without `presentation`, or `image_url` blocks whose nested `url` is valid base64 in the form `data:image/*;base64,...`; remote URLs, non-image data URLs, malformed base64, audio/video blocks, and `presentation` are rejected. `agent_id` may be omitted, be `main`, or name an existing child or branch in the bound session. Any other field, in particular `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode` and `admission`, is a validation error naming the field; nothing is silently dropped. The existing owner-only `:steer` body with `prompt_ids` remains unchanged, but a session-access token can use only the new-content form. Because `promptSubmissionSchema` (`packages/kap-server/src/protocol/rest-prompt.ts`) is a non-strict object that strips unknown keys, this check runs on the raw parsed body in a `preValidation` hook, before the schema.
 
-A prompt sent with a token is stored with `origin: { kind: 'user', via: { client: <token.client.name>, channel } }`. It remains a user message everywhere (TUI, GUI, search, titles, undo); every consumer that switches on `origin` or compares it structurally must keep treating it so. `via` is read back through `GET …/messages`, which returns `metadata.origin` as stored. The transcript origin projection is not extended in this version, because that would need a projection checkpoint format change. `via` must survive the fenced-outbox fallback and durable ingress replay by being persisted with the stored request; if that cannot be done cleanly, a token request refuses with the fence error instead of entering the fallback. A steer that merges several queued prompts rebuilds a plain origin and drops `via`; this is accepted and documented.
+A prompt sent with a token, including new content sent through `:steer`, is stored with `origin: { kind: 'user', via: { client: <token.client.name>, channel } }`. It remains a user message everywhere (TUI, GUI, search, titles, undo); every consumer that switches on `origin` or compares it structurally must keep treating it so. `via` is read back through `GET …/messages` and is projected by the transcript. It must survive the fenced-outbox fallback and durable ingress replay by being persisted with the stored request; if that cannot be done cleanly, a token request refuses with the fence error instead of entering the fallback. `POST …/prompts/{prompt_id}:cancel` is the token-facing queued-only alias; it never aborts an active turn. The owner-only `:abort` contract, including `?queued_only=true`, remains unchanged.
 
 ### WebSocket
 
@@ -138,7 +142,7 @@ The `[session_access]` section in `config.toml` is registered with `registerConf
 | `enabled` | `true` | Every route except `GET /api/session-access` answers 403 `session_access_disabled`; `exchange` answers its single error; token requests are refused; live tokens are revoked through `IConfigService.onDidSectionChange` when the value flips. |
 | `terminal_handoff` | `true` | `tickets` answers 403 `session_access_disabled` and `exchange` its single error; owner-issued tokens keep working and are not revoked. |
 
-The CLI is `kiki session-access list | issue --session <id> --scope read,prompt,abort --name <client> [--ttl <dur>] | revoke <token_id|--all>`, modelled on `apps/kimi-code/src/kiki/connections.ts` and registered in `apps/kimi-code/src/kiki/register.ts`. It uses a plain `fetch` after `ensureServer`, since no klient facade exists for this surface. `issue` prints the secret once.
+The CLI is `kiki session-access list | issue --session <id> --scope read,prompt,abort --name <client> [--ttl <dur>] | revoke <token_id|--all>`, modelled on `apps/kimi-code/src/kiki/connections.ts` and registered in `apps/kimi-code/src/kiki/register.ts`. `--ttl` accepts a bare whole-second integer from 60 through 86400, or an `s`/`m`/`h` duration in the same range; it defaults to one hour. The command uses a plain `fetch` after `ensureServer`, since no klient facade exists for this surface. `issue` prints the secret once.
 
 A GUI row for listing and revoking tokens belongs in the planned "Spaces & devices" settings group and is not designed yet.
 
@@ -208,13 +212,13 @@ The TUI process has one `holder_id`, base64url of 16 random bytes. It opens its 
 
 ### Versioning
 
-`exchange` returns `session_access: 1` and reports carry `handoff=1`. Both increase together whenever the exchange, the report keys or a token's allowed operations change incompatibly.
+`exchange` returns `session_access: 1` and reports carry `handoff=1`; the exchange payload has no capabilities array. Both version fields increase together whenever the exchange, the report keys or a token's allowed operations change incompatibly.
 
 ## Behaviours token clients rely on
 
 A client holding a token depends on behaviours of prompt submission, turn events and history reads. While `packages/kap-server/test/prompts.integration.ts` already covers same-body replay, conflicting `prompt_id` reuse, and queued receipts, the genuine remaining coverage gaps must be proved by tests against the real server, or their actual behaviour written into the REST docs:
 
-1. A prompt submitted over REST appears as a user message in the transcript projection every TUI and GUI renders.
+1. A prompt submitted over REST appears as a user message in the transcript projection every TUI and GUI renders, with token `via` metadata projected when the request used a session-access token.
 2. `turn.started` carries the `promptId` that started it, and `turn.ended` carries `reason`, one of `completed`, `cancelled`, `failed`, `blocked`.
 3. Durable `/api/ws` events carry `seq` and `epoch`; reconnecting with `subscribe.cursors` replays the gap; a gap that is too large answers `resync_required`, after which the client reads `snapshot`.
 4. A client can read every message after a given one, oldest first. `GET …/messages?after_id=` does not do this (it returns the newest page above the anchor, newest first), and `GET …/transcript/ops?since_seq=` covers only the live journal. If `GET …/transcript?after_turn=` pages strictly forward, it is the documented way; otherwise `messages` gains an ascending option.
@@ -232,7 +236,7 @@ A client holding a token depends on behaviours of prompt submission, turn events
 
 ## What is built
 
-The server exposes owner-token routes and terminal ticket, presence, release, and exchange routes. Their registrations are in `packages/kap-server/src/routes/sessionAccess.ts` and `packages/kap-server/src/routes/sessionAccessHandoff.ts`; kap-server registers `[session_access]`, and the `kiki session-access` CLI is implemented in `apps/kimi-code/src/kiki/connections.ts` and `apps/kimi-code/src/kiki/register.ts`.
+The server exposes owner-token routes and terminal ticket, presence, release, and exchange routes. Their registrations are in `packages/kap-server/src/routes/sessionAccess.ts` and `packages/kap-server/src/routes/sessionAccessHandoff.ts`; kap-server registers `[session_access]`, and the `kiki session-access` CLI is implemented in `apps/kimi-code/src/kiki/sessionAccess.ts` and registered in `apps/kimi-code/src/kiki/register.ts`. Token prompt origins now project their `via` metadata into the transcript. The derived transcript checkpoint format is 23; format 22 and older checkpoints are rebuilt so old projections are not reused.
 
 `ProgramStatusReporter` (`apps/kimi-code/src/tui/utils/program-status.ts`) owns OSC 7501 negotiation, report encoding, input parsing, and ticket replies. `DaemonProgramStatus` (`apps/kimi-code/src/tui/daemon/program-status.ts`) projects session state and owns hand-off eligibility, ticket/presence lifecycle, session-switch release, and presence retry. Hand-off fields and ticket requests require a local-owner loopback connection without SSH and both `[session_access].enabled` and `[session_access].terminal_handoff` set to `true`; ephemeral sessions omit `session` and cannot receive tickets. `DaemonTUI` wires the reporter to early input, session/view updates, reconnect refresh, and disposal; `apps/kimi-code/src/cli/run-shell.ts` clears status on emergency exit. `ProcessTerminal` consumes its first DA1 reply for keyboard negotiation and forwards later reconstructed DA1 replies to TUI input. Its local divergence is recorded in `packages/pi-tui/AGENTS.md`.
 

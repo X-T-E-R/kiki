@@ -1,5 +1,5 @@
 import type { ContentWindow } from '../contract/content';
-import type { MessageDelivery, TranscriptFrame } from './frame';
+import type { MessageDelivery, TranscriptFrame, TranscriptUserOriginVia } from './frame';
 import type { AttachmentId, StepId, TaskId, TurnId } from './ids';
 import type { TranscriptMessageIdentity } from './identity';
 
@@ -8,7 +8,7 @@ import type { TranscriptMessageIdentity } from './identity';
  * union is closed; per-origin detail rides in `payload` (open content).
  */
 export type TurnOrigin =
-  | { kind: 'user'; payload?: unknown }
+  | { kind: 'user'; via?: TranscriptUserOriginVia; payload?: unknown }
   | { kind: 'cron'; taskId?: TaskId; payload?: unknown }
   | { kind: 'task'; taskId: TaskId; payload?: unknown }
   | { kind: 'external'; payload?: unknown }

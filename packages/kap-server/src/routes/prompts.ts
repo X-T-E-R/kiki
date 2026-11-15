@@ -545,6 +545,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.get(ingressRead.path, ingressRead.options, ingressRead.handler as Parameters<PromptRouteHost['get']>[2]);
 
+  const promptSubmissionErrors = {
+    [ErrorCode.VALIDATION_FAILED]: { detailsSchema: validationDetailsSchema },
+    [ErrorCode.SKILL_NOT_FOUND]: {},
+    [ErrorCode.SKILL_NOT_ACTIVATABLE]: {},
+    [ErrorCode.AUTH_PROVISIONING_REQUIRED]: {},
+    [ErrorCode.AUTH_TOKEN_MISSING]: { detailsSchema: authProviderDetailsSchema },
+    [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: { detailsSchema: authProviderDetailsSchema },
+    [ErrorCode.AUTH_MODEL_NOT_RESOLVED]: { detailsSchema: authModelDetailsSchema },
+    [ErrorCode.SESSION_NOT_FOUND]: {},
+    [ErrorCode.PROMPT_ID_CONFLICT]: {},
+    [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
+    [ErrorCode.WORK_ADMISSION_FENCED]: {},
+  };
   const submitRoute = defineRoute(
     {
       method: 'POST',
@@ -553,19 +566,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       params: sessionIdParamSchema,
       querystring: z.object({ receipt: z.literal('true').optional() }),
       success: { data: z.union([promptSubmitResultSchema, promptSubmitReceiptSchema]) },
-      errors: {
-        [ErrorCode.VALIDATION_FAILED]: { detailsSchema: validationDetailsSchema },
-        [ErrorCode.SKILL_NOT_FOUND]: {},
-        [ErrorCode.SKILL_NOT_ACTIVATABLE]: {},
-        [ErrorCode.AUTH_PROVISIONING_REQUIRED]: {},
-        [ErrorCode.AUTH_TOKEN_MISSING]: { detailsSchema: authProviderDetailsSchema },
-        [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: { detailsSchema: authProviderDetailsSchema },
-        [ErrorCode.AUTH_MODEL_NOT_RESOLVED]: { detailsSchema: authModelDetailsSchema },
-        [ErrorCode.SESSION_NOT_FOUND]: {},
-        [ErrorCode.PROMPT_ID_CONFLICT]: {},
-        [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
-        [ErrorCode.WORK_ADMISSION_FENCED]: {},
-      },
+      errors: promptSubmissionErrors,
       description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
       operationId: 'submitPrompt',
@@ -638,6 +639,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
         lease = await phase('prompt_acquire', () => acquireSessionOperation(core, session_id, 'operation', signal));
         const session = requireSession(lease.handle, session_id);
+        if (sessionAccessToken(req) !== undefined && req.body.agent_id !== undefined && req.body.agent_id !== MAIN_AGENT_ID &&
+            (await session.accessor.get(ISessionMetadata).read()).agents?.[req.body.agent_id] === undefined) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid session access prompt field: agent_id');
+        }
         if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
           await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         }
@@ -873,32 +878,35 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     {
       method: 'POST',
       path: '/sessions/{session_id}/prompts::steer',
-      body: promptSteerRequestSchema,
+      body: z.union([promptSubmissionSchema, promptSteerRequestSchema]),
       params: sessionIdParamSchema,
-      success: { data: promptSteerResultSchema },
-      errors: {
-        [ErrorCode.VALIDATION_FAILED]: {},
-        [ErrorCode.SESSION_NOT_FOUND]: {},
-        [ErrorCode.PROMPT_NOT_FOUND]: {},
-        [ErrorCode.WORK_ADMISSION_FENCED]: {},
-      },
-      description: 'Steer queued prompts into the active turn',
+      querystring: z.object({ receipt: z.literal('true').optional() }),
+      success: { data: z.union([promptSteerResultSchema, promptSubmitResultSchema, promptSubmitReceiptSchema]) },
+      errors: { ...promptSubmissionErrors, [ErrorCode.PROMPT_NOT_FOUND]: {} },
+      description: 'Submit new content or steer queued prompts into the active turn',
       tags: ['prompts'],
       operationId: 'steerPrompts',
     },
     async (req, reply) => {
+      if ('content' in req.body) {
+        const submission = req as typeof req & { body: z.infer<typeof promptSubmissionSchema> };
+        submission.body = { ...req.body, delivery_mode: 'steer' };
+        await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], signal => executeSubmit(submission, reply, undefined, signal));
+        return;
+      }
       try {
         const { session_id } = req.params;
+        const promptIds = req.body.prompt_ids;
         await withSessionOperation(core, session_id, async (handle) => {
           const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
-          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, req.body.prompt_ids, resolved.accessor.get(IAgentLoopService).status().activeTurnId), req.id));
+          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, promptIds, resolved.accessor.get(IAgentLoopService).status().activeTurnId), req.id));
         });
       } catch (error) {
         sendMappedError(reply, req, error);
       }
     },
   );
-  app.post(steerManyRoute.path, steerManyRoute.options, steerManyRoute.handler as Parameters<PromptRouteHost['post']>[2]);
+  app.post(steerManyRoute.path, { ...steerManyRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES }, steerManyRoute.handler as Parameters<PromptRouteHost['post']>[2]);
 
   const actionRoute = defineRoute(
     {
@@ -942,7 +950,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'move', 'replace', 'timing', 'hold', 'steer', 'resume'] as const,
+          allowedActions: ['abort', 'cancel', 'move', 'replace', 'timing', 'hold', 'steer', 'resume'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
@@ -961,7 +969,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           const aborted = await ingress.abort(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id);
           if (aborted !== undefined) { reply.send(okEnvelope({ aborted }, req.id)); return; }
         }
-        if (req.query.admission === 'durable' && parsed.action !== 'abort') {
+        if (req.query.admission === 'durable' && parsed.action !== 'abort' && parsed.action !== 'cancel') {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cancel the saved request and send a new request to edit it.');
         }
         if (parsed.action === 'replace') {
@@ -1011,7 +1019,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
         lease = await acquireSessionOperation(core, session_id, 'operation');
         const agentId = (req as { query?: { agent_id?: string } }).query?.agent_id;
-        if (agentId !== undefined && agentId !== MAIN_AGENT_ID && parsed.action !== 'steer' && parsed.action !== 'abort') {
+        if (agentId !== undefined && agentId !== MAIN_AGENT_ID && parsed.action !== 'steer' && parsed.action !== 'abort' && parsed.action !== 'cancel') {
           throw new Error2(ErrorCodes.REQUEST_INVALID, `prompt ${parsed.action} is main-agent only`);
         }
         const resolved = await resolvePromptFromSession(core, requireSession(lease.handle, session_id), agentId);
@@ -1045,8 +1053,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
           resolved.prompt.setEditHold(parsed.id, hold.data.held);
           reply.send(okEnvelope({ prompt_id: parsed.id, held: hold.data.held }, req.id));
-        } else if (parsed.action === 'abort') {
-          if (req.query.queued_only === 'true') {
+        } else if (parsed.action === 'abort' || parsed.action === 'cancel') {
+          if (parsed.action === 'cancel' || req.query.queued_only === 'true') {
             let aborted = await resolved.prompt.abortQueued(parsed.id);
             if (!aborted && resolved.prompt.lookup(parsed.id) === undefined && transcriptService !== undefined) {
               const snapshot = await transcriptService.readColdSnapshot(session_id, agentId ?? MAIN_AGENT_ID);

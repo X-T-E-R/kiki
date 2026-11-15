@@ -2933,7 +2933,10 @@ function legacyOriginKind(origin: unknown): string {
 function mapOrigin(value: unknown): TurnOrigin {
   const origin = objectOf(value);
   const kind = stringOf(origin?.['kind']);
-  if (kind === 'user') return { kind: 'user', payload: value };
+  if (kind === 'user') {
+    const via = projectTranscriptUserOrigin(value)?.via;
+    return via === undefined ? { kind: 'user', payload: value } : { kind: 'user', via, payload: value };
+  }
   if (kind === 'cron_job') return { kind: 'cron', taskId: stringOf(origin?.['jobId']), payload: value };
   if (kind === 'task' || kind === 'background_task') {
     const taskId = stringOf(origin?.['taskId']);

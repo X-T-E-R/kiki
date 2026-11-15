@@ -10,12 +10,22 @@ import {
   promptSubmissionSchema,
   promptSubmitResultSchema,
   promptSteerRequestSchema,
+  promptSteerSubmissionRequestSchema,
   promptSteerResultSchema,
   promptTimingRequestSchema,
   promptTimingResultSchema,
 } from '../rest/prompt';
 
 describe('promptSubmissionSchema', () => {
+  it('normalizes inline image_url data on submission and content steering', () => {
+    const input = { agent_id: 'example-child', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } }] };
+    const normalized = { agent_id: 'example-child', content: [{ type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }] };
+    expect(promptSubmissionSchema.parse(input)).toEqual(normalized);
+    expect(promptSteerSubmissionRequestSchema.parse(input)).toEqual(normalized);
+    for (const url of ['file:///example.png', 'https://example.test/image.png', 'data:image/png;base64,', 'data:image/png;base64,@@', 'data:text/plain;base64,aW1hZ2U=']) {
+      expect(promptSubmissionSchema.safeParse({ content: [{ type: 'image_url', image_url: { url } }] }).success).toBe(false);
+    }
+  });
   it.each(['engine-default', 'specialist', null])('carries native agent %s through the public executor selection without a role file', (nativeAgent) => {
     const input = { content: [{ type: 'text', text: 'Neutral task' }], execution: { executor: 'neutral-harness', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } } };
     expect(promptSubmissionSchema.parse(input)).toEqual(input);

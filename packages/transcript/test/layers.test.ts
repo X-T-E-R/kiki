@@ -671,6 +671,20 @@ describe('TranscriptWireAdapter', () => {
     expect(adapter.checkpoint().recordOrdinal).toBe((indexed ? 100 : 0) + positioned.length);
   });
 
+  it('preserves user origin via metadata on turns and projected user frames', () => {
+    const via = { client: 'example-client', channel: 'owner' as const };
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'prompt' }], origin: { kind: 'user', via }, time: 1_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-0' }, time: 1_100 },
+      { type: 'context.append_message', message: { id: 'm0', role: 'user', origin: { kind: 'user', via }, content: [{ type: 'text', text: 'delivered' }] },
+        delivery: { messageId: 'm0', turnId: 0, stepId: 'step-0', step: 1, origin: 'user' }, time: 1_200 },
+    ]);
+    expect(transcript.getTurn('t0')?.origin).toEqual({ kind: 'user', via, payload: { kind: 'user', via } });
+    expect(transcript.getTurn('t0')?.steps.flatMap(step => step.frames)).toContainEqual(
+      expect.objectContaining({ role: 'user', origin: { kind: 'user', via } }),
+    );
+  });
+
   it('omits hidden reasoning summaries and opaque detail records from cold frames', () => {
     const part = (uuid: string, value: Record<string, unknown>): TranscriptWireRecord => ({
       type: 'context.append_loop_event',

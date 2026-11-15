@@ -3,6 +3,7 @@ import { contentWindowSchema } from './content';
 import { textPresentationSchema } from './presentation';
 import { transcriptReadSchema } from './read';
 import { agentRunSourceSchema } from './agentReference';
+import { transcriptUserOriginViaSchema } from './origin';
 
 export const turnIdSchema = z.string().min(1);
 export const stepIdSchema = z.string().min(1);
@@ -66,7 +67,7 @@ export function isPlainAgentId(agentId: string): boolean {
 }
 
 export const turnOriginSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('user'), payload: z.unknown().optional() }),
+  z.object({ kind: z.literal('user'), via: transcriptUserOriginViaSchema.optional(), payload: z.unknown().optional() }),
   z.object({
     kind: z.literal('cron'),
     taskId: taskIdSchema.optional(),

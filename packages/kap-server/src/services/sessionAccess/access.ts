@@ -1,4 +1,6 @@
 import type { IncomingMessage } from 'node:http';
+import { isFileId } from '@kiki/agent-core-v2/app/file/fileService';
+import { parseMediaBlobRef } from '@kiki/transcript';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { errEnvelope } from '../../envelope';
 import { isSessionAccessExchange } from '../../middleware/auth';
@@ -19,21 +21,28 @@ export function isSessionAccessLoopback(request: IncomingMessage, web: WeakSet<I
 const sessionReadRoutes = new Set([
   '', '/status', '/snapshot', '/messages', '/messages/:message_id', '/transcript', '/transcript/ops',
   '/transcript/detail', '/transcript/details', '/transcript/plan', '/transcript/user-messages',
-  '/prompts', '/approvals', '/questions',
+  '/prompts', '/prompts/:prompt_id', '/approvals', '/questions',
+  '/media/:file_id', '/media/:file_id/preview', '/children', '/tasks', '/tasks/:task_id',
+  '/agent-tasks', '/goal', '/warnings', '/profile', '/runtime', '/skills',
 ].map((suffix) => `/api/sessions/:session_id${suffix}`));
 
 function sessionAccessOperation(token: SessionAccessToken, request: FastifyRequest, rawPath: string): boolean {
   if (rawPath.includes('%') || rawPath.includes('//') || rawPath.endsWith('/') || rawPath.split('/').some((segment) => segment === '.' || segment === '..')) return false;
-  const { method, routeOptions: { url }, params } = request;
+  const { method, routeOptions: { url } } = request;
+  const params = request.params as { session_id?: string; sessionId?: string; tail?: string; file_id?: string };
+  const sessionId = params.session_id ?? params.sessionId;
   if (method === 'GET') {
-    return url !== undefined && sessionReadRoutes.has(url) && (params as { session_id: string }).session_id === token.session_id && token.scopes.includes('read');
+    if ((url === '/api/sessions/:session_id/media/:file_id' || url === '/api/sessions/:session_id/media/:file_id/preview') &&
+        !isFileId(params.file_id!) && parseMediaBlobRef(params.file_id!)?.kind !== 'agent') return false;
+    return url !== undefined && (sessionReadRoutes.has(url) || url === '/api/usage/sessions/:sessionId/accounting') && sessionId === token.session_id && token.scopes.includes('read');
   }
   if (method !== 'POST') return false;
   if (url === '/api/klient/session-view/:sessionId/transcript/content') {
-    return (params as { sessionId: string }).sessionId === token.session_id && token.scopes.includes('read');
+    return sessionId === token.session_id && token.scopes.includes('read');
   }
-  if (url === '/api/sessions/:session_id/prompts') {
-    return (params as { session_id: string }).session_id === token.session_id && token.scopes.includes('prompt');
+  if (url === '/api/sessions/:session_id/prompts' || url === '/api/sessions/:session_id/prompts::steer' ||
+      (url === '/api/sessions/:session_id/prompts/:tail' && /^[^/:]+:cancel$/.test(params.tail ?? ''))) {
+    return sessionId === token.session_id && token.scopes.includes('prompt');
   }
   const abort = /^\/api\/sessions\/([^/:]+):abort$/.exec(rawPath);
   return abort !== null && abort[1] === token.session_id && token.scopes.includes('abort');
@@ -67,7 +76,8 @@ export function registerSessionAccessAdmission(app: FastifyInstance, store: Sess
     }
   });
   app.addHook('preValidation', async (request, reply) => {
-    if (sessionAccessToken(request) === undefined || request.method !== 'POST' || !request.url.split('?', 1)[0]!.endsWith('/prompts')) return;
+    if (sessionAccessToken(request) === undefined || request.method !== 'POST' ||
+        !['/api/sessions/:session_id/prompts', '/api/sessions/:session_id/prompts::steer'].includes(request.routeOptions.url ?? '')) return;
     const field = restrictedPromptField(request);
     if (field !== undefined) return reply.send(errEnvelope(40001, `Invalid session access prompt field: ${field}`, request.id));
   });
@@ -78,12 +88,12 @@ function restrictedPromptField(request: FastifyRequest): string | undefined {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return 'body';
   const input = body as Record<string, unknown>;
   for (const field of Object.keys(input)) if (!['content', 'prompt_id', 'metadata', 'agent_id'].includes(field)) return field;
-  if (input['agent_id'] !== undefined && input['agent_id'] !== 'main') return 'agent_id';
   if (!Array.isArray(input['content'])) return 'content';
   for (let index = 0; index < input['content'].length; index += 1) {
     const block = input['content'][index] as Record<string, unknown> | null;
-    if (block === null || typeof block !== 'object' || block['type'] !== 'text') return `content.${index}.type`;
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) return `content.${index}.type`;
     if (Object.hasOwn(block, 'presentation')) return `content.${index}.presentation`;
+    if (block['type'] !== 'text' && block['type'] !== 'image_url') return `content.${index}.type`;
   }
   return undefined;
 }

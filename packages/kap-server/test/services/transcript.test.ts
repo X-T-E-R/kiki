@@ -4221,7 +4221,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(22);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(23);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4231,14 +4231,16 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
       const sourceRef = { ...ref, messageId: 'message-1' };
+      const ownerVia = { client: 'example-client', channel: 'owner' as const };
+      const terminalVia = { client: 'example-terminal', channel: 'terminal' as const };
       const externalEditInput = { Path: '/workspace/example/file.ts', Target: 'before\n', Replacement: 'after\n' };
       await appendFile(wirePath, `${[
-        { type: 'turn.prompt', turnId: 1, origin: { kind: 'user', agentRefs: [ref] }, input: [{ type: 'text', text: 'typed generated', presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } }], time: 10_000 },
+        { type: 'turn.prompt', turnId: 1, origin: { kind: 'user', via: ownerVia, agentRefs: [ref] }, input: [{ type: 'text', text: 'typed generated', presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } }], time: 10_000 },
         { type: 'task.started', info: { taskId: 'source-task', kind: 'agent', agentId: 'source-child', profile: 'worker', sourceRef, status: 'completed', detached: true, startedAt: 10_000, endedAt: 10_001 }, time: 10_001 },
         { type: 'turn.step.retrying', turnId: 1, step: 1, failedAttempt: 2, nextAttempt: 3,
           maxAttempts: 5, delayMs: 100, errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: 11_000 },
@@ -4260,19 +4262,19 @@ describe('TranscriptService live integration', () => {
         { type: 'goal.update', status: 'active', time: 22_000 },
         { type: 'executor.runtime.update', kind: 'usage', value: { used: 109786, size: 200000 }, time: 23_000 },
         { type: 'subagent.spawned', subagentId: 'external-child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1', time: 24_000 },
-        { type: 'prompt.enqueued', promptId: 'original-request', userMessageId: 'logical-message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'original text' }] }, time: 24_100 },
-        { type: 'turn.prompt', turnId: 3, promptId: 'original-request', managed: true, origin: { kind: 'user' }, input: [{ type: 'text', text: 'original text' }], time: 24_200 },
-        { type: 'context.append_message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'original text' }] }, delivery: { messageId: 'logical-message', turnId: 3, origin: 'user' }, time: 24_300 },
+        { type: 'prompt.enqueued', promptId: 'original-request', userMessageId: 'logical-message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user', via: ownerVia }, content: [{ type: 'text', text: 'original text' }] }, time: 24_100 },
+        { type: 'turn.prompt', turnId: 3, promptId: 'original-request', managed: true, origin: { kind: 'user', via: ownerVia }, input: [{ type: 'text', text: 'original text' }], time: 24_200 },
+        { type: 'context.append_message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user', via: ownerVia }, content: [{ type: 'text', text: 'original text' }] }, delivery: { messageId: 'logical-message', turnId: 3, origin: 'user' }, time: 24_300 },
         { type: 'turn.ended', turnId: 3, reason: 'completed', time: 24_400 },
         { type: 'context.undo', count: 1, time: 25_000, replacementPrompt: { promptId: 'edited-request', userMessageId: 'logical-message', alreadyMaterialized: true,
           message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'accepted edited text' }] } } },
         { type: 'turn.prompt', turnId: 4, promptId: 'edited-request', managed: true, origin: { kind: 'user' }, input: [{ type: 'text', text: 'accepted edited text' }], time: 25_100 },
         { type: 'turn.ended', turnId: 4, reason: 'completed', time: 25_200 },
-        { type: 'turn.prompt', turnId: 5, promptId: 'boundary-prompt', input: [{ type: 'text', text: 'boundary' }], origin: { kind: 'user' }, time: 26_000 },
+        { type: 'turn.prompt', turnId: 5, promptId: 'boundary-prompt', input: [{ type: 'text', text: 'boundary' }], origin: { kind: 'user', via: terminalVia }, time: 26_000 },
         { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 1, uuid: 'step-5a' }, time: 26_100 },
         { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5a', uuid: 'before-boundary', part: { type: 'text', text: 'before' } }, time: 26_200 },
         { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 5, step: 1, uuid: 'step-5a', finishReason: 'stop' }, time: 26_300 },
-        { type: 'context.append_message', time: 26_400, delivery: { deliveryId: 'd-steer-boundary', messageId: 'steer-boundary', turnId: 5, stepId: 'step-5b', step: 2, origin: 'user', deliveredAt: new Date(26_400).toISOString() }, message: { id: 'steer-boundary', role: 'user', content: [{ type: 'text', text: 'anchored user' }], origin: { kind: 'user' } } },
+        { type: 'context.append_message', time: 26_400, delivery: { deliveryId: 'd-steer-boundary', messageId: 'steer-boundary', turnId: 5, stepId: 'step-5b', step: 2, origin: 'user', deliveredAt: new Date(26_400).toISOString() }, message: { id: 'steer-boundary', role: 'user', content: [{ type: 'text', text: 'anchored user' }], origin: { kind: 'user', via: terminalVia } } },
         { type: 'context.append_message', time: 26_500, delivery: { deliveryId: 'd-steer-cue', messageId: 'steer-cue', origin: 'injection', deliveredAt: new Date(26_500).toISOString() }, message: { id: 'steer-cue', role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }], origin: { kind: 'injection', variant: 'model_steering' } } },
         { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 2, uuid: 'step-5b' }, time: 26_600 },
         { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5b', uuid: 'boundary-thought', part: { type: 'think', think: 'next' } }, time: 26_700 },
@@ -4312,7 +4314,7 @@ describe('TranscriptService live integration', () => {
         const key = 'ws\0s1\0main';
         const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot; adapter: TranscriptWireAdapterCheckpoint }>('__transcript_projection_checkpoint__', key);
         const recoveredTurn = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
-        expect(recoveredTurn).toMatchObject({ state: 'cancelled', prompt: 'typed generated', origin: { kind: 'user', payload: { agentRefs: [ref] } }, presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } });
+        expect(recoveredTurn).toMatchObject({ state: 'cancelled', prompt: 'typed generated', origin: { kind: 'user', via: ownerVia, payload: { agentRefs: [ref], via: ownerVia } }, presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } });
         expect(expected?.tasks).toContainEqual(expect.objectContaining({ taskId: 'source-task', sourceRef }));
         expect(recoveredTurn?.kind === 'turn' && recoveredTurn.steps.find((step) => step.retry !== undefined)?.retry)
           .toMatchObject({ failedAttempt: 2, nextAttempt: 3, maxAttempts: 5, delayMs: 100,
@@ -4331,7 +4333,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(22);
+        expect(checkpoint?.format).toBe(23);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',
@@ -4342,6 +4344,10 @@ describe('TranscriptService live integration', () => {
           ['step-5a', ['before-boundary']],
           ['step-5b', ['steer-boundary', 'steer-cue', 'boundary-thought', 'step-5b.external:acp:edit-1', 'step-5b.external:acp:no-input']],
         ]);
+        expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[0] : undefined).toMatchObject({
+          origin: { kind: 'user', via: terminalVia },
+          delivery: { messageId: 'steer-boundary', turnId: 't5', stepId: 'step-5b' },
+        });
         expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[1] : undefined).toMatchObject({
           origin: { kind: 'injection', variant: 'model_steering' },
           delivery: { messageId: 'steer-cue', turnId: 't5', stepId: 'step-5b' },

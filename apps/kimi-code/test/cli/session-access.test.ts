@@ -101,16 +101,33 @@ describe('kiki session-access CLI', () => {
     expect(output.split(SECRET_TOKEN).length - 1).toBe(1);
   });
 
-  it('defaults token lifetime to one hour and rejects lifetimes outside the owner range before connecting', async () => {
+  it('accepts bare whole seconds and the inclusive lifetime boundaries', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(envelope({})));
+    const lifetimes = [
+      ['120', 120], ['60', 60], ['86400', 86400],
+      ['60s', 60], ['90s', 90], ['15m', 900], ['1h', 3600], ['24h', 86400],
+    ] as const;
+    for (const [ttl, expectedSeconds] of lifetimes) {
+      await run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor', '--ttl', ttl]);
+      expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))).toMatchObject({ ttl_seconds: expectedSeconds });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(lifetimes.length);
+  });
+
+  it('defaults token lifetime to one hour and rejects fractions and lifetimes outside the owner range before connecting', async () => {
     await run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor']);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ ttl_seconds: 3600 });
 
     fetchMock.mockClear();
     mocks.ensureServer.mockClear();
-    await expect(run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor', '--ttl', '59s']))
-      .rejects.toThrow('whole number of seconds from 60s through 24h');
-    await expect(run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor', '--ttl', '25h']))
-      .rejects.toThrow('whole number of seconds from 60s through 24h');
+    for (const ttl of ['59s', '86401', '25h']) {
+      await expect(run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor', '--ttl', ttl]))
+        .rejects.toThrow('whole number of seconds from 60s through 24h');
+    }
+    for (const ttl of ['60.5', '1.5h']) {
+      await expect(run(['issue', '--session', 'session-id', '--scope', 'read', '--name', 'editor', '--ttl', ttl]))
+        .rejects.toThrow('--ttl');
+    }
     expect(mocks.ensureServer).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });

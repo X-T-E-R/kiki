@@ -20,14 +20,14 @@
 
 - `OPTIONS` 预检请求
 - `GET /api/healthz`（探活）
-- `POST /api/session-access/exchange`（无需 bearer；只接受 socket 对端为本机回环、请求不来自 Web 访问或 peer 且没有 `Origin` 头的请求；失败统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`，详见 [终端交接](#session-access-terminal-handoff)）
+- `POST /api/session-access/exchange`（无需 bearer；只接受 socket 对端为本机回环、请求不来自 Web 访问、peer 或 peer grant，且没有 `Origin` 或 `Sec-Fetch-Site` 头的请求；失败统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`，详见 [终端交接](#session-access-terminal-handoff)）
 - 静态 web 资源（非 `/api/` 路径）
 
 可信本地客户端使用私有的 `server.local-owner` 凭据。REST 通过 `Authorization: Bearer <token>` 携带；本地 WebSocket 升级接受该请求头或 `kimi-code.bearer.<token>`。远端 GUI peer 则需要有效入站开关及已批准的逐源 grant（HTTP 使用 `X-Kiki-Connection-Grant`），使用短码配对／SSH 连接签发的独立对等凭据，或使用当前 owner 凭据配合旧版邀请 grant。它们连接 `/api/klient/events`，不使用旧 `/api/ws`。连接管理与转发限 local-owner（`POST /api/remote-connections/pair` 接受可选的 `requestBridge?: boolean`，省略时仍默认请求）；`POST /api/remote-connections/pair/claim` 提供带限流的免预置短码兑换，四个 thread-bridge 数据端点使用独立桥凭据。配置与轮换见 [鉴权](./local-server.md#鉴权) 和 [`kiki pair` 与 `kiki connections`](../reference/command.md#kiki-pair)。
 
 鉴权失败返回 HTTP 401，信封 `code` 为 `40101`。在非 loopback 绑定上，同一来源 60 秒内鉴权失败 10 次会被封禁 60 秒，期间一律返回 HTTP 429（`code` 为 `42901`）。
 
-本地所有者签发的会话访问令牌（`ksa_`）是只绑定一个会话的 Bearer 凭据。只有请求的 socket 对端地址是本机回环地址（loopback）、请求不来自 Web 访问或 peer，且没有 `Origin` 请求头时，服务端才接受它。令牌缺失、无效、过期、已撤销或不符合此回环规则时，返回 HTTP 401、信封码 `40101`；令牌有效但权限范围或绑定会话不符时，返回 HTTP 403、信封码 `40101` 和 `msg: "session_access_scope"`。允许路由与错误码见 [会话访问令牌](#会话访问令牌)；回环限制见 [鉴权](./local-server.md#鉴权)。
+本地所有者签发的会话访问令牌（`ksa_`）是只绑定一个会话的 Bearer 凭据。只有请求的 socket 对端地址是本机回环地址（loopback）、请求不来自 Web 访问、peer 或 peer grant，且没有 `Origin` 或 `Sec-Fetch-Site` 请求头时，服务端才接受它。令牌缺失、无效、过期、已撤销或不符合此回环规则时，返回 HTTP 401、信封码 `40101`；令牌有效但权限范围或绑定会话不符时，返回 HTTP 403、信封码 `40101` 和 `msg: "session_access_scope"`。允许路由与错误码见 [会话访问令牌](#会话访问令牌)；回环限制见 [鉴权](./local-server.md#鉴权)。
 
 ### 响应信封
 
@@ -98,11 +98,11 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `DELETE /api/session-access/tokens/{token_id}` | — | `{ revoked: n }` |
 | `DELETE /api/session-access/tokens` | — | `{ revoked: n }` |
 
-会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt` 或 `abort`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 秒。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；使用会话访问令牌的请求返回 HTTP 401、码 `40101`，令牌管理以及票据、presence 和 release 路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`。关闭该开关会撤销所有现有令牌。未鉴权的 `POST /api/session-access/exchange` 路由仍统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。
+会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt` 或 `abort`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 个整数秒。CLI 还接受表示这些秒数的裸整数，或带 `s`、`m`、`h` 的时长。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。兑换契约保持 `session_access: 1`，不返回 capabilities 数组。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；使用会话访问令牌的请求返回 HTTP 401、码 `40101`，令牌管理以及票据、presence 和 release 路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`。关闭该开关会撤销所有现有令牌。未鉴权的 `POST /api/session-access/exchange` 路由仍统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。
 
 #### 终端交接 {#session-access-terminal-handoff}
 
-这组路由实现终端交接的服务端部分；TUI 客户端向终端报告状态属于另一项能力。`tickets`、`presence` 和 `release` 路由要求 local-owner 凭据；只有 `exchange` 无需 bearer。该路由仍只接受 socket 对端为本机回环、请求不经 Web 访问或 peer，且没有 `Origin` 头的调用。
+这组路由实现终端交接的服务端部分；TUI 客户端向终端报告状态属于另一项能力。`tickets`、`presence` 和 `release` 路由要求 local-owner 凭据；只有 `exchange` 无需 bearer。该路由仍只接受 socket 对端为本机回环、请求不经 Web 访问、peer 或 peer grant，且没有 `Origin` 或 `Sec-Fetch-Site` 头的调用。
 
 | 方法与路径 | 请求 | 响应 data |
 | --- | --- | --- |
@@ -115,7 +115,7 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 生成 43–128 个字符的 base64url `verifier`（私密校验串），并计算 `challenge = base64url(SHA-256(verifier 的 base64url 文本的 ASCII 字节))`。签发请求携带 `challenge`；将 `verifier` 保持私密，不要放进终端输出，只有 `ticket` 会经过终端输出传递。票据由 32 个随机字节的 base64url 编码构成，有效 60 秒且只能兑换一次；服务端只保存摘要。每个 holder 最多保留 8 张未过期票据，超出时丢弃最早的一张。
 
-`exchange` 请求体只能含表中三项。请求一旦带上某张已知 `ticket`，服务端会先消耗它，再校验 `verifier`、请求体、调用方地址、`Origin` 和交接开关；失败后不要重试。所有兑换失败都返回相同的 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。成功后令牌的 `channel` 为 `"terminal"`，固定拥有 `read`、`prompt`、`abort` 权限范围，有效期 1 小时且不能续期；presence 流仍打开时可重新申请票据。`client` 字段沿用上方的名称和版本限制，交接开关见 [`[session_access]`](../configuration/config-files.md#session-access)。
+`exchange` 请求体只能含表中三项。请求一旦带上某张已知 `ticket`，服务端会先消耗它，再校验 `verifier`、请求体、调用方地址、`Origin`、`Sec-Fetch-Site` 和交接开关；失败后不要重试。所有兑换失败都返回相同的 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。成功后令牌的 `channel` 为 `"terminal"`，固定拥有 `read`、`prompt`、`abort` 权限范围，有效期 1 小时且不能续期；presence 流仍打开时可重新申请票据。`client` 字段沿用上方的名称和版本限制，交接开关见 [`[session_access]`](../configuration/config-files.md#session-access)。
 
 holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期。在宽限期结束前用同一 `holder_id` 重新连接，可保留该 holder 的票据和令牌；否则两者都会撤销。`release` 带 `session_id` 时只撤销该 holder 在该会话的票据和令牌；省略时撤销该 holder 的全部票据和令牌。`revoked` 计数包括票据与令牌；被撤销令牌的 WebSocket 连接会关闭。票据、holder 和令牌只保存在内存中，服务重启后失效。
 
@@ -123,13 +123,13 @@ holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期�
 
 | 权限范围 | 允许的操作 |
 | --- | --- |
-| `read` | `GET /api/sessions/{session_id}` 及其 `/status`、`/snapshot`、`/messages`、`/messages/{message_id}`、`/transcript`、`/transcript/ops`、`/transcript/detail`、`/transcript/details`、`/transcript/plan`、`/transcript/user-messages`、`/prompts`、`/approvals`、`/questions` 读取；`POST /api/klient/session-view/{session_id}/transcript/content`；以及按下文限制使用 WebSocket `/api/ws` |
-| `prompt` | `POST /api/sessions/{session_id}/prompts`；允许 `?receipt=true`；见 [提示词限制](#session-access-prompts) |
+| `read` | `GET /api/sessions/{session_id}` 及其 `/status`、`/snapshot`、`/messages`、`/messages/{message_id}`、`/transcript`、`/transcript/ops`、`/transcript/detail`、`/transcript/details`、`/transcript/plan`、`/transcript/user-messages`、`/prompts`、`/prompts/{prompt_id}`、`/approvals`、`/questions`、`/children`、`/tasks`、`/tasks/{task_id}`、`/agent-tasks`、`/goal`、`/warnings`、`/profile`、`/runtime`、`/skills`、`/media/{file_id}` 和 `/media/{file_id}/preview` 读取；`GET /api/usage/sessions/{sessionId}/accounting`；`POST /api/klient/session-view/{session_id}/transcript/content`；以及按下文限制使用 WebSocket `/api/ws` |
+| `prompt` | `POST /api/sessions/{session_id}/prompts` 和 `/prompts:steer` 提交新内容；`POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` 只取消排队项；允许 `?receipt=true`；见 [提示词限制](#session-access-prompts) |
 | `abort` | 仅 `POST /api/sessions/{session_id}:abort` |
 
-请求路径中的会话 ID 必须与会话访问令牌绑定的会话一致。大字段转录读取使用 Klient 路由中的 `session_id` 绑定 `contentRef`；该引用不能跨会话读取。在 `/api/ws` 上，令牌只能发送 `client_hello`、`subscribe`、`subscribe_v2`、`unsubscribe`、`unsubscribe_v2` 和 `ping` / `pong` 帧；订阅只覆盖绑定的会话。即时事件仅包括该会话的 `event.session.work_changed`、`event.session.history_rewritten`、`session.meta.updated`、`event.approval.*` 和 `event.question.*`；不会推送 plugin topic 或 room 变更。会话访问令牌连接不能用另一个令牌重新鉴权。
+请求路径中的会话 ID 必须与会话访问令牌绑定的会话一致。使用会话访问令牌读取媒体时，只接受规范的 `f_*` 文件 ID 或已校验的 `blobref:<agentId>:<sha256>` ID；路径中保留 blobref 的冒号，不要百分号编码。它们不会解析本机文件路径，`raw:` 和 `inline-content:` ID 也不在令牌准入范围内。本契约没有 agent-roster GET。大字段转录读取使用 Klient 路由中的 `session_id` 绑定 `contentRef`；该引用不能跨会话读取。在 `/api/ws` 上，令牌只能发送 `client_hello`、`subscribe`、`subscribe_v2`、`unsubscribe`、`unsubscribe_v2` 和 `ping` / `pong` 帧；订阅只覆盖绑定的会话。即时事件仅包括该会话的 `event.session.work_changed`、`event.session.history_rewritten`、`session.meta.updated`、`event.approval.*` 和 `event.question.*`；不会推送 plugin topic 或 room 变更。会话访问令牌连接不能用另一个令牌重新鉴权。
 
-未列出的操作一律拒绝，即使路径看起来属于单个会话。这包括批量会话路由、逐提示词与逐消息动作、其他会话动作、审批和提问答复、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。令牌请求也拒绝 `HEAD`、含百分号的路径、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled` 或服务关闭 / 重启时撤销。
+未列出的操作一律拒绝，即使路径看起来属于单个会话。文件系统路由、文档预览、媒体播放授权和终端仍不可用。这也包括批量会话路由、除新内容 `:steer` 和排队专用 `:cancel` 外的提示词动作、消息动作、其他会话动作、审批和提问答复、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。令牌请求也拒绝 `HEAD`、含百分号的路径、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled` 或服务关闭 / 重启时撤销。
 
 ### 服务与元信息
 
@@ -403,9 +403,12 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions:delete-archived` | 永久删除当前连接 home 中全部归档对话 |
 | `GET /api/sessions/{session_id}/children` | 列出子会话 |
 | `POST /api/sessions/{session_id}/children` | 创建子会话（fork 并打标） |
-| `GET /api/sessions/{session_id}/status` | 实时状态汇总 |
+| `GET /api/sessions/{session_id}/status` | 实时状态汇总；包含必填的 `model_name`（`string \| null`） |
 | `GET /api/sessions/{session_id}/goal` | 当前目标快照（无则 `null`）；不会恢复已保存的会话或创建 main |
 | `GET /api/sessions/{session_id}/warnings` | 会话级告警 |
+| `GET /api/sessions/{session_id}/runtime` | 读取会话运行时状态 |
+| `GET /api/sessions/{session_id}/agent-tasks` | 列出 Agent 任务条目 |
+| `GET /api/sessions/{session_id}/skills` | 读取会话技能目录 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
 
@@ -419,7 +422,9 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 `POST /api/sessions/{session_id}/agents/{agent_id}:promote` 接受可选的 `title` 与 `profile` 字段，profile 必须已启用且可用于主 Agent。该接口把子智能体的对话、待办、笔记、后代子智能体、分支及已保存的任务结果复制到其工作目录里的新顶层会话，返回的会话带有 `promoted_from` 来源信息。原会话、子智能体及仍在执行的工作保持不变。仍在运行的 Agent 只复制到最近一个已完成步骤为止，新会话把这些边界记为 `cancelled`，将未完成任务置为终态、封存未封存的分支，不会自动续跑。显式续跑复制后的 Codex 或 ACP 后代子智能体时，会新建独立的远端对话，并传入有大小限制的历史交接内容。
 
-会话在本进程中不是 live 时，快照从已保存的 main agent wire 和会话元数据读取，不会恢复该会话或其 workspace。`messages` 是压缩、撤销和编辑之后的当前逻辑 context 里最新的 100 条，按从旧到新排列。更早的逻辑条目仍存在时 `has_more` 为 true，`message_count` 等于该逻辑长度。`as_of_seq` 和 `epoch` 是会话 journal 水位。权限模式和 plan mode 来自已保存的 runtime 记录；模型和思考强度来自已保存的 agent 绑定。本进程没有测量过的 context token 总量和 breakdown 会省略。`in_flight_turn`、`pending_approvals` 和 `pending_questions` 只描述本进程里的活动，另一个进程里仍在运行的会话不会在这里被标成本地 active。
+会话在本进程中不是 live 时，快照从已保存的 main agent wire 和会话元数据读取，不会恢复该会话或其 workspace。`messages` 是压缩、撤销和编辑之后的当前逻辑 context 里最新的 100 条，按从旧到新排列。更早的逻辑条目仍存在时 `has_more` 为 true，`message_count` 等于该逻辑长度。`as_of_seq` 和 `epoch` 是会话 journal 水位。权限模式和 plan mode 来自已保存的 runtime 记录；模型和思考强度来自已保存的 Agent 绑定。本进程没有测量过的 context token 总量和 breakdown 会省略。`in_flight_turn`、`pending_approvals` 和 `pending_questions` 只描述本进程里的活动，另一个进程里仍在运行的会话不会在这里被标成本地 active。
+
+`GET /api/sessions/{session_id}/status` 按已绑定模型、会话 profile 默认值、全局默认值的顺序解析原生模型，不会创建或绑定 `main`。首轮之前，`GET /api/sessions/{session_id}` 也会在 `agent_config.model` 中返回这个生效值。状态响应包含 `model_name`，类型为 `string | null`；有配置目录显示名时返回该名称，否则为 `null`。已绑定的外部执行器若未指定模型，则保持模型未知，不使用原生默认值。
 
 会话读取与 `event.session.work_changed` 将 `executing` 与 `busy` 分开提供。`busy` 包含未完成工作、排队提示词和等待投递的已结束任务结果。`executing` 表示当前本地执行或有限生命周期的进程、媒体任务，不包含这些队列、未投递的终态结果、常驻服务，以及没有活动执行器的 Agent 任务条目。冷会话对本进程报告 `executing: false`。旧版服务端省略该字段，省略表示未知。历史子 Agent 条目的 `status: "running"` 不构成当前正在执行的证据。
 
@@ -454,7 +459,7 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 
 选文件前可用 `POST /api/agent-profiles/file-preview`，请求为 `{ path, cwd?, workspace_id? }`，响应为 `{ profile }`，包含普通 profile 元数据、规范绝对路径 `source_file` 和执行器。`cwd` 与 `workspace_id` 最多传一个；相对路径必须指定其中一个，绝对路径或 `~/` 路径则无需指定。路径由当前连接的服务端读取，不是客户端本机路径。缺失或非法文件返回 `40001` 和带路径的诊断，不改变绑定。typed HTTP 客户端对应 `klient.rest.agents.previewFile(body, options?)`。创建会话或发送下一条消息时，把返回的 `source_file` 作为 `execution.profile_file`。
 
-读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
+读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`。原生执行在首轮之前通过 `agent_config.model` 报告生效模型，不创建 `main`，解析顺序见上文。外部执行器的有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型或档位。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
 
 Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的思考强度覆盖，更低优先级的强度因此重新生效：先是 profile，然后是 harness 设置；Kiki 没有钉住强度时，才回到引擎默认。不带 `model` 会保留已保存的模型。空的思考强度字符串会被拒绝；省略 `thinking` 则保持当前强度。Agent 仍在运行时，这次 profile 更新会被拒绝。提示词可以携带同样的 `thinking: null`，Kiki 在该提示词启动时应用它，省略的 `model` 仍保留。
 
@@ -582,8 +587,9 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | --- | --- |
 | `GET /api/sessions/{session_id}/prompts` | 进行中与排队中的提示词 |
 | `POST /api/sessions/{session_id}/prompts` | 提交提示词（内容块数组，可带模型 / 权限模式等覆盖） |
-| `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定提示词；`?queued_only=true` 只移除尚未启动的队列项 |
+| `POST /api/sessions/{session_id}/prompts:steer` | 用 steer 投递新内容；owner-only 请求体仍可立即发送选中的排队提示词 |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` | 只取消一个排队提示词；不会中止活动轮次 |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | owner-only 中止指定提示词；`?queued_only=true` 只移除尚未启动的队列项 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | 读取已保存请求的完整内容，不恢复 Agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | 重试等待确认或失败的已保存请求 |
@@ -592,9 +598,9 @@ REST 提交的提示词与界面输入一样，在转录中显示为普通用户
 
 #### 使用会话访问令牌提交提示词 {#session-access-prompts}
 
-使用会话访问令牌时，`POST /api/sessions/{session_id}/prompts` 只接受 `content`（仅文本块，且不能带 `presentation`）、可选的 `prompt_id` 和 `metadata`，以及省略或设为 `main` 的 `agent_id`。不接受其他顶层字段。特别是 `model`、`thinking`、`permission_mode`、`plan_mode`、`plan_gate`、`profile`、`execution`、`disabled_tools`、`skills`、`goal_*`、`delivery_mode` 和 `admission` 都会返回 HTTP 200、码 `40001`，并指出被拒的字段。会话访问令牌不能携带 `admission` 来请求持久准入；若服务器切换期间准入围栏拒绝该请求，服务端返回 HTTP 200、码 `40950`（`work.admission_fenced`），不会转入等待切换的后备路径。
+使用会话访问令牌时，`POST /api/sessions/{session_id}/prompts` 和 `POST /api/sessions/{session_id}/prompts:steer` 的新内容形式沿用现有 submit pipeline，只接受 `content`、`prompt_id`、`metadata` 和 `agent_id`。`content` 可包含不带 `presentation` 的文本块，或 `image_url` 块；其嵌套的 `url` 必须是合法 base64，格式为 `data:image/*;base64,...`。远程 URL、非 image data URL、错误 base64、audio/video 块和 `presentation` 都会被拒绝。`agent_id` 可以省略、设为 `main`，或指向绑定会话中已有的 child 或 branch。已有 owner-only 的 `:steer` `prompt_ids` 请求体保持不变；会话访问令牌只能使用新内容形式。不接受其他顶层字段。特别是 `model`、`thinking`、`permission_mode`、`plan_mode`、`plan_gate`、`profile`、`execution`、`disabled_tools`、`skills`、`goal_*`、`delivery_mode` 和 `admission` 都会返回 HTTP 200、码 `40001`，并指出被拒的字段。会话访问令牌不能携带 `admission` 来请求持久准入；若服务器切换期间准入围栏拒绝该请求，服务端返回 HTTP 200、码 `40950`（`work.admission_fenced`），不会转入等待切换的后备路径。
 
-令牌提交的提示词仍是普通用户消息，来源记录包含 `metadata.origin.via = { client, channel }`：`channel` 为 `"owner"` 时表示 owner 渠道会话访问令牌，为 `"terminal"` 时表示终端交接渠道会话访问令牌。通过 `GET /api/sessions/{session_id}/messages` 读取 `via`；当前版本不会把该字段加入转录投影。多条排队提示词通过多项 `:steer` 合并时，服务会重建普通用户来源，因此合并消息不保留 `via`。
+令牌提交的提示词（包括通过 `:steer` 提交的新内容）仍是普通用户消息，来源记录包含 `metadata.origin.via = { client, channel }`：`channel` 为 `"owner"` 时表示 owner 渠道会话访问令牌，为 `"terminal"` 时表示终端交接渠道会话访问令牌。通过 `GET /api/sessions/{session_id}/messages` 读取 `via`；转录响应也会投影它。`POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` 是令牌使用的排队专用别名，不会中止活动轮次。owner-only 的 `:abort` 契约（包括 `?queued_only=true`）保持不变。
 
 提示词列表加上 `?observe=true` 时，只读观察当前主 Agent 正在处理和排队的提示词。未激活的已保存会话或尚未创建的主 Agent 返回 `{ active: null, queued: [] }`，不恢复或创建 Agent。此视图不列出已保存的请求；读取这些请求请使用 `admission=durable`。
 
@@ -608,7 +614,7 @@ REST 提交的提示词与界面输入一样，在转录中显示为普通用户
 
 `admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。原生立即发送的 `delivery_state: "accepted"` 确认核心已保存立即发送意图，无需等待当前步骤结束。`"steered"` 表示消息已加入目标轮次，`"started"` 表示已启动独立轮次，`"failed"` 和 `"cancelled"` 表示投递终态。外部执行器延后投递时可返回 `"queued"`。这些回执都不证明模型已消费消息；应以转录中的实际投递帧及后续请求为准。较新的 canonical 提示词状态优先于旧回执。canonical 结果为 `blocked` 时，GUI 结束等待提示并保留被拒绝的消息；旧受理回执晚到也不会恢复等待状态。
 
-可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。`:steer` 响应仅在消息加入轮次后返回 `steered: true`。原生 `delivery_state: "accepted"` 搭配 `steered: false` 表示已成功受理、等待边界，不是拒绝；重试同一 ID 不会创建另一条消息。多 ID 响应在所有选中项状态相同时返回该投递状态。已不在可选队列中的已知提示词返回其原生投递状态或 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。已启动回合及其历史不受影响。普通 `:abort` 仍可停止运行中的提示词。
+可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。`:steer` 响应仅在消息加入轮次后返回 `steered: true`。原生 `delivery_state: "accepted"` 搭配 `steered: false` 表示已成功受理、等待边界，不是拒绝；重试同一 ID 不会创建另一条消息。多 ID 响应在所有选中项状态相同时返回该投递状态。已不在可选队列中的已知提示词返回其原生投递状态或 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。owner-only 的 `:abort?queued_only=true` 在返回 `aborted: true` 时确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。会话访问令牌的 `:cancel` 始终只处理排队项，活动提示词返回 `aborted: false`。已启动回合及其历史不受影响。普通 owner `:abort` 仍可停止运行中的提示词。
 
 | `delivery_reason` | 含义 |
 | --- | --- |
@@ -1239,11 +1245,12 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 | `GET /api/files/{file_id}` | 下载已上传文件 | 支持 | 不支持（会发送 `etag` 头，但不处理 `If-None-Match`） |
 | `GET /api/sessions/{session_id}/fs/{path}:download` | 下载会话工作区文件 | 支持 | 支持 |
 | `GET /api/sessions/{session_id}/media/{file_id}` | 读取会话媒体文件，包括已保存的工具结果 blob | 支持 | 支持 |
+| `GET /api/sessions/{session_id}/media/{file_id}/preview` | 读取规范会话媒体的源生成预览 | 支持 | 支持 |
 | `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） | 支持 | 支持 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
 | `GET /media-preview/{preview_id}` | 读取临时播放链接授权的本机或会话媒体 | 支持；无法满足的 Range 为 416 | 不支持（`private, no-store`） |
 
-已建立索引的会话无需恢复会话即可读取规范媒体文件。暂存上传只有在上传元数据指定该会话时，才能通过该会话的媒体路由读取；规范文件的字节与文件名仍优先于暂存副本。发送前需要会话内预览时，在 `POST /api/files` 中设置 `session_id`，或在 `global.files.save` 中设置 `sessionId`。尚未关联会话的草稿上传仍可通过 `GET /api/files/{file_id}` 读取，附加到提示后才成为会话媒体。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
+已建立索引的会话无需恢复会话即可读取规范媒体文件。暂存上传只有在上传元数据指定该会话时，才能通过该会话的媒体路由读取；规范文件的字节与文件名仍优先于暂存副本。发送前需要会话内预览时，在 `POST /api/files` 中设置 `session_id`，或在 `global.files.save` 中设置 `sessionId`。尚未关联会话的草稿上传仍可通过 `GET /api/files/{file_id}` 读取，附加到提示后才成为会话媒体。使用会话访问令牌时，媒体和 `/preview` 路由只接受规范的 `f_*` 文件 ID 或已校验的 `blobref:<agentId>:<sha256>` ID；路径中的 blobref 冒号保持原样，本机文件路径永远不会被解析。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
 
 错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封）。`/media-preview/{preview_id}` 的链接不存在、已撤销或已过期时，返回 HTTP 404 和 JSON 错误信封。工作区下载、本机原始文件预览和导出的失败仍走标准[响应信封](#响应信封)，客户端须检查其中的 `code`。
 
