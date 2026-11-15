@@ -155,7 +155,11 @@ off = true
 
 网关会在连接上临时保存原生请求和响应项。与 HTTP 请求字典不同，这些状态随生成完成提交，不由字典确认推进。未知输出字段保留在内存中的附属状态里，后续发送完整请求，不用于增量请求。
 
-如果网关确认请求因连接丢失历史而未执行，Kiki 会补发一次完整历史。首次发送或补发的 WebSocket 请求超过网关声明的单帧上限时，Kiki 会改用 HTTP 发送完整请求。网关明确在执行前拒绝上游格式、提示词策略或 `origin_capability_mismatch` 时，也可以改走 HTTP。访问被拒绝或已收到部分响应时，不走这条恢复路径。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
+如果网关确认请求因连接丢失历史而未执行，Kiki 会补发一次完整历史。首次发送或补发的 WebSocket 请求超过网关声明的单帧上限时，Kiki 会改用 HTTP 发送完整请求；省略 `max_frame_bytes` 时，上限为 1 MiB。
+
+发送前的传输故障或 HTTP 408/429/5xx 握手失败会立即改走 HTTP。其它 HTTP 4xx 握手拒绝会保留原始状态码，不再发送 HTTP 请求，包括认证、权限及无效请求错误。
+
+尚未收到任何响应事件时，若网关确认 `execution: not_executed`，上游格式或提示词策略不支持、`origin_capability_mismatch`、`origin_handshake_failed`、`websocket_capacity_exceeded`、可信的 `connection_retiring` 错误或 HTTP 429/502/503/504 也可以改走 HTTP。HTTP 回退保留已配置的请求压缩。已确认执行、明确禁止重试、取消或已收到任何响应事件时，不走这条恢复路径。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
 
 连接中断遵循[请求重试策略](./config-files.md#retry)，包括终止事件到达前以 1000、1001、1006、1012 或无错误码关闭的情况。重试会关闭旧连接，再用新连接发送当前完整历史；`previous_response_id` 不能作为被中断响应的续传游标。`websocket_connection_limit_reached` 事件，或带有符合重试条件关闭码的结构化 `websocket_close_error`，也归为连接中断，即使它由网关通过 HTTP 流（SSE）转发。只有错误文案相似时不会因此重试。连接已使用 55 分钟时，Kiki 会在下一次请求前主动换新，不打断正在生成的响应。
 

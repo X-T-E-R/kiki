@@ -31,7 +31,7 @@ import { TurnStarted } from '#/agent/loop/turnEvents';
 import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
-import { resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
+import { resolveRetryDelay, resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { ILogService } from '#/_base/log/log';
@@ -280,6 +280,26 @@ describe('stepRetry plugin', () => {
         args: expect.objectContaining({ delayMs: 1 }),
       }),
     ]);
+  });
+
+  it.each([1_000, null])('keeps five server-draining attempts spread over at least 30 seconds with Retry-After=%s', async retryAfterMs => {
+    vi.useFakeTimers();
+    const attemptedAt: number[] = [];
+    ctx = createRetryTestAgent(llmGenerateServices(async () => {
+      attemptedAt.push(Date.now());
+      throw new APIStatusError(503, '{"error":"server_draining"}', null, retryAfterMs);
+    }));
+
+    expect((await runTurn(1)).type).toBe('failed');
+    expect(attemptedAt).toHaveLength(5);
+    const delays = rpcEvents('turn.step.retrying').map(event => (event.args as { delayMs: number }).delayMs);
+    expect(delays).toHaveLength(4);
+    for (const [index, delay] of delays.entries()) {
+      expect(delay).toBeGreaterThanOrEqual(2_000 * 2 ** index);
+      expect(delay).toBeLessThanOrEqual(2_500 * 2 ** index);
+      expect(attemptedAt[index + 1]! - attemptedAt[index]!).toBeGreaterThanOrEqual(Math.floor(delay));
+    }
+    expect(attemptedAt[4]! - attemptedAt[0]!).toBeGreaterThanOrEqual(30_000);
   });
 
   it('clamps an excessive relay retry-after to the 60s cap', async () => {
@@ -1357,6 +1377,27 @@ describe('retryBackoffDelays', () => {
     expect(delays[6]).toBeLessThanOrEqual(40_000);
     expect(delays[8]).toBeGreaterThanOrEqual(32_000);
     expect(delays[8]).toBeLessThanOrEqual(40_000);
+  });
+});
+
+describe('resolveRetryDelay', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([502, 503, 504])('uses the larger gateway hint or exponential backoff for %s', status => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const failure = new APIStatusError(status, 'temporary gateway failure', null, 1_000);
+    expect([0, 1, 2, 3].map(attempt => resolveRetryDelay(failure, attempt))).toEqual([2_000, 4_000, 8_000, 16_000]);
+    expect(resolveRetryDelay(new APIStatusError(status, 'maintenance', null, 10_000), 1)).toBe(10_000);
+    expect(resolveRetryDelay(new APIStatusError(status, 'maintenance'), 2)).toBe(8_000);
+  });
+
+  it('preserves explicit short backoffs, rate-limit hints, and executed-response timing', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    expect(resolveRetryDelay(new APIStatusError(503, 'maintenance'), 3, 1)).toBe(1);
+    expect(resolveRetryDelay(new APIStatusError(503, 'maintenance', null, 1), 3, 2)).toBe(1);
+    expect(resolveRetryDelay(new APIProviderRateLimitError('slow down', null, 1), 3)).toBe(1);
+    const executed = attachErrorDetails(new APIStatusError(503, 'after execution', null, 1), { request_delivery: 'executed' });
+    expect(resolveRetryDelay(executed, 3)).toBe(1);
   });
 });
 

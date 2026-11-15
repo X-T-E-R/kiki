@@ -1450,7 +1450,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             anyActiveTurn = true;
           }
         }
-        if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) {
+        if (hasActiveTurnOnSession(sourceHandle, false)) {
           anyActiveTurn = true;
         }
       }

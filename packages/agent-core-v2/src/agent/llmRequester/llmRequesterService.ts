@@ -36,7 +36,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
-import { findRetryPolicy } from '#/agent/stepRetry/retryPolicy';
+import { findRetryPolicy, resolveRetryDelay } from '#/agent/stepRetry/retryPolicy';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -171,8 +171,6 @@ import { parseBooleanEnv } from '#/_base/utils/env';
 import { ErrorCodes, Error2, attachErrorDetails, readAttachedErrorDetails, unwrapErrorCause } from '#/errors';
 import {
   DEFAULT_MAX_RETRY_ATTEMPTS,
-  readRetryAfterMs,
-  retryBackoffDelay,
   retryErrorFields,
   sleepForRetry,
 } from '#/_base/utils/retry';
@@ -923,7 +921,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             : retryMode === 'continue' ? 'continuing with partial output retained' : 'retrying with partial output retained';
           onAttemptRetry?.(retryMode);
           this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
-          const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
+          const delayMs = resolveRetryDelay(error, interruptionAttempt - 1, retryPolicy?.backoff);
           const fields = retryErrorFields(raw);
           const errorMessage = `${malformedFunctionCall ? 'Malformed function call' : 'Upstream interrupted'}; ${action}. ${fields.errorMessage}`;
           this.log.warn(`upstream interrupted; ${action}`, {
@@ -965,9 +963,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           throw error;
         }
         infiniteRetryAttempt += 1;
-        const delayMs =
-          readRetryAfterMs(raw) ??
-          retryBackoffDelay(infiniteRetryAttempt - 1);
+        const delayMs = resolveRetryDelay(error, infiniteRetryAttempt - 1, retryPolicy?.backoff, 500);
         this.log.warn('llm request failed; retrying indefinitely (KIKI_INFINITE_RETRY)', {
           model: request.model.name,
           ...request.logFields,

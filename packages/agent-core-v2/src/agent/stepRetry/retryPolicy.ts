@@ -1,4 +1,5 @@
-import { isRetryableGenerateError } from '#/kosong/contract/errors';
+import { readRetryAfterMs, retryBackoffDelay } from '#/_base/utils/retry';
+import { APIStatusError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { unwrapErrorCause } from '#/errors';
 
 import type { RetryConfig, RetryPolicy } from './configSection';
@@ -69,6 +70,22 @@ export function resolveRetryPolicy(
     maxAttempts: policy?.maxAttempts,
     backoffMs: policy?.backoff,
   };
+}
+
+export function resolveRetryDelay(
+  error: unknown,
+  attemptIndex: number,
+  backoffMs?: number,
+  baseDelayMs = 2_000,
+): number {
+  const raw = unwrapErrorCause(error);
+  const retryAfterMs = readRetryAfterMs(raw);
+  if (backoffMs !== undefined) return retryAfterMs ?? backoffMs;
+  const gatewayUnavailable = raw instanceof APIStatusError &&
+    (raw.statusCode === 502 || raw.statusCode === 503 || raw.statusCode === 504) &&
+    requestDeliveryProvenance(error) !== 'executed';
+  const exponentialDelayMs = retryBackoffDelay(attemptIndex, gatewayUnavailable ? Math.max(baseDelayMs, 2_000) : baseDelayMs);
+  return gatewayUnavailable ? Math.max(retryAfterMs ?? 0, exponentialDelayMs) : retryAfterMs ?? exponentialDelayMs;
 }
 
 function retryErrorCode(error: unknown): string | undefined {

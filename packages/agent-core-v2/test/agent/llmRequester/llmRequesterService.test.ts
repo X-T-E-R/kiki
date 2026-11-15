@@ -2202,6 +2202,27 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     })]);
   });
 
+  it('keeps the gateway delay floor during indefinite retries despite a one-second Retry-After', async () => {
+    vi.useFakeTimers();
+    const attemptedAt: number[] = [];
+    const requester = createRequester({ value: 0 }, null);
+    const base = requester.request.bind(requester);
+    requester.request = async function* (input, signal, params) {
+      attemptedAt.push(Date.now());
+      if (attemptedAt.length < 5) throw new APIStatusError(503, '{"error":"server_draining"}', null, 1_000);
+      yield* base(input, signal, params);
+    };
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
+    await vi.runAllTimersAsync();
+    expect(await result).toMatchObject({ message: { content: [{ type: 'text', text: 'ok' }] } });
+    expect(attemptedAt).toHaveLength(5);
+    expect(attemptedAt[4]! - attemptedAt[0]!).toBeGreaterThanOrEqual(30_000);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(4);
+    for (let index = 0; index < 4; index++) expect(attemptedAt[index + 1]! - attemptedAt[index]!).toBeGreaterThanOrEqual(2_000 * 2 ** index);
+  });
+
   it.each([undefined, 99])('exhausts five attempts without outer or infinite retry when configured budget=%s', async maxAttempts => {
     vi.useFakeTimers();
     let calls = 0;

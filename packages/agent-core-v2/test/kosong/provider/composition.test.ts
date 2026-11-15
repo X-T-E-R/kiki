@@ -17,6 +17,7 @@ import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { projectDynamicToolSchemas } from '#/agent/llmRequester/dynamicToolProjection';
+import { resolveRetryDelay } from '#/agent/stepRetry/retryPolicy';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ITaskService } from '#/app/task/task';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -3013,6 +3014,41 @@ describe('OpenAI reasoning_effort path (issue #1616)', () => {
 
     const explicit = await captureOpenAIBody(provider, { thinking: { effort: 'low' } });
     expect(explicit['reasoning_effort']).toBe('low');
+  });
+});
+
+describe('gateway draining over real HTTP', () => {
+  it.each(['anthropic', 'openai', 'openai_responses', 'google-genai'] as const)('keeps the exponential delay floor after a 503 on %s', async protocol => {
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        requests++;
+        response.writeHead(503, { 'content-type': 'application/json', 'retry-after': '1' });
+        response.end('{"error":"server_draining"}');
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
+    const options = { model: 'fixture-model', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}/v1` };
+    const provider = protocol === 'anthropic' ? new AnthropicChatProvider(options)
+      : protocol === 'openai' ? new OpenAILegacyChatProvider(options)
+        : protocol === 'openai_responses' ? new OpenAIResponsesChatProvider(options) : new GoogleGenAIChatProvider(options);
+    try {
+      const failure = await provider.generate('', [], PROBE_HISTORY).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(APIStatusError);
+      expect(failure).toHaveProperty('statusCode', 503);
+      if (protocol !== 'google-genai') expect(failure).toHaveProperty('retryAfterMs', 1_000);
+      expect(isRetryableGenerateError(failure)).toBe(true);
+      const delays = [0, 1, 2, 3].map(attempt => resolveRetryDelay(failure, attempt));
+      expect(delays.reduce((total, delay) => total + delay, 0)).toBeGreaterThanOrEqual(30_000);
+      expect(delays.reduce((total, delay) => total + delay, 0)).toBeLessThanOrEqual(37_500);
+      expect(requests).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });
 

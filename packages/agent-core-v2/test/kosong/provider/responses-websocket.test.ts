@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { type AddressInfo } from 'node:net';
+import { gunzipSync } from 'node:zlib';
 
 import OpenAI from 'openai';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -97,7 +98,8 @@ async function createGateway(
     request.on('data', (chunk: Buffer) => { chunks.push(chunk); });
     request.on('end', () => {
       httpHeaders.push(request.headers);
-      httpRequests.push(JSON.parse(Buffer.concat(chunks).toString()) as RawObject);
+      const body = Buffer.concat(chunks);
+      httpRequests.push(JSON.parse((request.headers['content-encoding'] === 'gzip' ? gunzipSync(body) : body).toString()) as RawObject);
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_http', status: 'completed', output: responseOutput('HTTP fallback') } })}\n\n`);
     });
@@ -712,12 +714,13 @@ function user(text: string): Message {
 }
 
 describe('production Responses adapter → generate → canonical history → official SDK', () => {
-  it.each(['retire', 'dispose'] as const)('does not send response.create when %s happens during the handshake', async action => {
+  it.each(['retire', 'dispose', 'close'] as const)('does not send response.create when %s happens during the handshake', async action => {
     const transport = new ResponsesWebSocketTransport();
     let retired: Promise<void> | undefined;
     const gateway = await createGateway((_body, socket) => { sendCompleted(socket, 'unexpected', 'unexpected generation'); }, () => {
       if (action === 'retire') retired = transport.retire();
-      else transport.dispose();
+      else if (action === 'dispose') transport.dispose();
+      else transport.close();
       return capabilities;
     });
     try {
@@ -923,36 +926,72 @@ describe('production Responses adapter → generate → canonical history → of
     } finally { transport.dispose(); }
   });
 
-  it('keeps an HTTP Upgrade 502 eligible for retry without sending a response.create', async () => {
+  it.each([400, 401, 403, 404, 422])('preserves an HTTP Upgrade %s denial without an HTTP POST', async status => {
     let upgrades = 0;
-    let httpRequests = 0;
-    const server = createServer((_request, response) => { httpRequests++; response.writeHead(500).end(); });
+    const httpRequests: { method: string | undefined; url: string | undefined }[] = [];
+    const server = createServer((request, response) => {
+      httpRequests.push({ method: request.method, url: request.url });
+      request.resume();
+      response.writeHead(500).end();
+    });
     server.on('upgrade', (_request, socket) => {
       upgrades++;
-      socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+      socket.end(`HTTP/1.1 ${status} Denied\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const transport = new ResponsesWebSocketTransport();
     try {
       const failure = await generate(productionProvider(baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport }).catch((error: unknown) => error);
-      expect(requestDeliveryProvenance(failure)).toBe('unknown');
-      expect(isRetryableGenerateError(failure)).toBe(true);
-      expect(toErrorPayload(failure).details).not.toHaveProperty('request_output');
+      expect(failure).toBeInstanceOf(APIStatusError);
+      expect(failure).toHaveProperty('statusCode', status);
+      expect(failure).toHaveProperty('message', expect.stringContaining(`Unexpected server response: ${status}`));
+      expect(isRetryableGenerateError(failure)).toBe(false);
+      expect(upgrades).toBe(1);
+      expect(httpRequests).toEqual([]);
+    } finally {
+      transport.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it.each([408, 429, 500, 502, 503, 504])('falls back immediately after an HTTP Upgrade %s without sending a response.create', async status => {
+    let upgrades = 0;
+    let httpRequests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        httpRequests++;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_http', status: 'completed', output: responseOutput('HTTP fallback') } })}\n\n`);
+      });
+    });
+    server.on('upgrade', (_request, socket) => {
+      upgrades++;
+      socket.end(`HTTP/1.1 ${status} Gateway Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const result = await generate(productionProvider(baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport });
+      expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
       expect(transport.diagnostics()).toMatchObject({ webSocketCapabilities: false, webSocketConnectionAgeMs: null });
       expect(upgrades).toBe(1);
-      expect(httpRequests).toBe(0);
+      expect(httpRequests).toBe(1);
     } finally {
       transport.dispose();
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 
-  it('does not replay after partial output even if a later error claims not_executed', async () => {
+  it.each(['unsupported_upstream_format', 'origin_handshake_failed'])('does not replay after partial output even if %s claims not_executed', async code => {
     const gateway = await createGateway((_body, socket) => {
       sendCreated(socket, 'resp_partial');
       socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial', item_id: 'm', content_index: 0, output_index: 0 }));
-      sendUnsupportedUpstream(socket);
+      socket.send(JSON.stringify({ type: 'error', status: 503, execution: 'not_executed',
+        error: { type: 'server_error', code, message: 'Synthetic failure' } }));
     });
     const transport = new ResponsesWebSocketTransport();
     let observed = '';
@@ -968,6 +1007,53 @@ describe('production Responses adapter → generate → canonical history → of
 });
 
 describe('production Responses safe HTTP recovery', () => {
+  it.each([
+    { status: 502, code: 'origin_handshake_failed' },
+    { status: 503, code: 'origin_handshake_failed' },
+    { status: 504, code: 'gateway_unavailable' },
+    { status: 429, code: 'websocket_capacity_exceeded' },
+    { status: 503, code: 'websocket_capacity_exceeded' },
+    { status: 429, code: 'too_many_requests' },
+  ])('recovers a not-executed $status/$code once through compressed HTTP SSE', async ({ status, code }) => {
+    const gateway = await createGateway((_body, socket) => socket.send(JSON.stringify({ type: 'error', status, execution: 'not_executed',
+      error: { type: 'server_error', code, message: 'Upstream WebSocket unavailable' } })));
+    const transport = new ResponsesWebSocketTransport();
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'synthetic', apiKey: 'YOUR_API_KEY', baseUrl: gateway.baseUrl,
+      responsesWebSocket: { targets: [gateway.baseUrl] },
+      requestCompression: { encoding: 'gzip', targets: [gateway.baseUrl], minBytes: 0 },
+    });
+    try {
+      const result = await generate(provider, 'full instructions', [], [user('full question')], undefined, { responsesTransport: transport });
+      expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpHeaders[0]?.['content-encoding']).toBe('gzip');
+      expect(gateway.httpRequests[0]?.['input']).toEqual(gateway.frames[0]?.body['input']);
+      expect(gateway.httpRequests[0]?.['instructions']).toBe('full instructions');
+      expect(gateway.httpRequests[0]).not.toHaveProperty('previous_response_id');
+      expect(transport.diagnostics()).toMatchObject({ webSocketFallbackReason: code });
+    } finally { transport.dispose(); }
+  });
+
+  it.each([1, 2])('uses a 1 MiB frame limit when v%i capabilities omit max_frame_bytes', async version => {
+    const advertised = JSON.parse(version === 1 ? capabilities : capabilitiesV2) as RawObject;
+    delete advertised['max_frame_bytes'];
+    const gateway = await createGateway((_body, socket) => sendCompleted(socket, 'resp_small', 'small response'), JSON.stringify(advertised));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const result = await generate(provider, '', [], [user('x'.repeat(1024 * 1024))], undefined, { responsesTransport: transport });
+      expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(transport.capabilities?.max_frame_bytes).toBe(1024 * 1024);
+      expect(gateway.frames).toHaveLength(0);
+      expect(gateway.httpRequests).toHaveLength(1);
+      const small = await generate(provider, '', [], [user('small question')], undefined, { responsesTransport: transport });
+      expect(small.message.content).toEqual([{ type: 'text', text: 'small response' }]);
+      expect(gateway.frames).toHaveLength(1);
+    } finally { transport.dispose(); }
+  });
   it.each([1, 2])('sends an oversized initial v%i request once over HTTP and permits another explicit attempt', async (version) => {
     const limited = JSON.stringify({ ...JSON.parse(version === 1 ? capabilities : capabilitiesV2) as RawObject, max_frame_bytes: 1024 });
     const gateway = await createGateway(() => undefined, limited);

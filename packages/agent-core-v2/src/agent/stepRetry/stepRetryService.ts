@@ -8,8 +8,6 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import {
   DEFAULT_MAX_RETRY_ATTEMPTS,
-  readRetryAfterMs,
-  retryBackoffDelays,
   retryErrorFields,
   sleepForRetry,
 } from '#/_base/utils/retry';
@@ -29,10 +27,8 @@ import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { RETRY_SECTION, type RetryConfig } from './configSection';
-import { resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
+import { resolveRetryDelay, resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
-
-const DEFAULT_STEP_RETRY_BASE_DELAY_MS = 2_000;
 
 export interface TurnStepRetryingPayload {
   readonly turnId: number;
@@ -185,13 +181,7 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
       return false;
     }
 
-    const delayMs =
-      readRetryAfterMs(error) ??
-      decision.backoffMs ??
-      retryBackoffDelays(maxAttempts, DEFAULT_STEP_RETRY_BASE_DELAY_MS)[
-        this.failedAttempts - 1
-      ] ??
-      0;
+    const delayMs = resolveRetryDelay(context.error, this.failedAttempts - 1, decision.backoffMs);
     void this.dispatcher.dispatch(
       new TurnStepRetrying({
         turnId: context.turnId,

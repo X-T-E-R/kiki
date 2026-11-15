@@ -78,6 +78,7 @@ type PrimedResponse = {
 };
 
 const CAPABILITIES_HEADER = 'x-responses-websocket-capabilities';
+const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
 const CODEX_TURN_METADATA_HEADER = 'x-codex-turn-metadata';
 const CODEX_STABLE_TURN_METADATA_FIELDS = [
   'session_id',
@@ -299,8 +300,8 @@ function positiveInteger(value: unknown): value is number {
 }
 
 function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
-  const object = asObject(value);
-  if (object === undefined) {
+  const raw = asObject(value);
+  if (raw === undefined) {
     throw new ResponsesWebSocketError(
       'Responses WebSocket capability header must contain a JSON object.',
       'responses_ws_capabilities_unsupported',
@@ -308,6 +309,7 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     );
   }
 
+  const object: RawObject = { max_frame_bytes: DEFAULT_MAX_FRAME_BYTES, ...raw };
   const version = object['version'];
   if (version !== 1 && version !== 2) {
     throw new ResponsesWebSocketError(
@@ -482,7 +484,9 @@ function readGatewayError(error: unknown): GatewayError {
     readString(event?.['message']) ??
     (error instanceof Error ? error.message : String(error));
   const param = nested?.['param'] === null ? null : readString(nested?.['param']) ?? readString(event?.['param']);
-  const status = readNumber(event?.['status']) ?? readNumber(nested?.['status']);
+  const upgradeStatus = /^Unexpected server response:\s*(\d{3})\b/i.exec(message)?.[1];
+  const status = readNumber(event?.['status']) ?? readNumber(nested?.['status']) ?? readNumber(wrapper?.['status']) ??
+    (upgradeStatus === undefined ? undefined : Number(upgradeStatus));
   const execution = event?.['type'] === 'error' && nested !== undefined &&
     typeof nested['type'] === 'string' && typeof nested['message'] === 'string' &&
     Number.isInteger(event['status'])
@@ -761,9 +765,12 @@ export class ResponsesWebSocketError extends Error {
  * A closed socket loses its previous-response baseline. A verified, bounded
  * native prefix remains available for full input on the next version 2 socket,
  * with the same request identity and an exactly matching canonical prefix.
- * Local retirement before response.create permits HTTP recovery without sending
- * a frame. Peer retirement permits HTTP recovery only before any response event,
- * with integer status, nested error.type/code/message, and top-level execution:not_executed.
+ * Transport failures, HTTP 408/429/5xx handshake failures, and local retirement before
+ * response.create permit HTTP recovery without sending a frame; other HTTP 4xx denials
+ * retain their status without fallback. After sending, unsupported transport capabilities, peer
+ * retirement, and gateway unavailability permit HTTP recovery only before any response
+ * event, with integer status, nested error.type/message, and top-level execution:not_executed.
+ * An omitted max_frame_bytes capability uses a 1 MiB limit; advertised limits take precedence.
  */
 export class ResponsesWebSocketTransport {
   private _socket: ResponsesWS | null = null;
@@ -1162,6 +1169,7 @@ export class ResponsesWebSocketTransport {
 
     const handshakeTurnMetadataRaw = readCaseInsensitiveHeader(headers, CODEX_TURN_METADATA_HEADER);
     const handshakeTurnMetadata = parseCodexTurnMetadataStableIdentity(handshakeTurnMetadataRaw);
+    const interruptionGeneration = this._interruptionGeneration;
     const socket = new ResponsesWS(client, { headers, reconnect: null });
     socket.on('error', () => {
       this._erroredSockets.add(socket);
@@ -1208,6 +1216,7 @@ export class ResponsesWebSocketTransport {
           throw new ResponsesWebSocketError(
             'Responses WebSocket closed before the handshake completed.',
             'responses_websocket_handshake_closed',
+            { safeHttpFallback: true, execution: 'not_executed' },
           );
         }
         const record = rawRecord(next.value);
@@ -1218,13 +1227,13 @@ export class ResponsesWebSocketTransport {
           );
         }
         if (record.type === 'error') {
-          throw this._errorFromSDK(record.error);
+          throw this._errorFromSDK(record.error, 'handshake');
         }
         if (record.type === 'close') {
           throw new ResponsesWebSocketError(
             'Responses WebSocket closed before the handshake completed.',
             'responses_websocket_handshake_closed',
-            { status: record.code },
+            { status: record.code, safeHttpFallback: true, execution: 'not_executed' },
           );
         }
         if (record.type !== 'open') continue;
@@ -1244,7 +1253,7 @@ export class ResponsesWebSocketTransport {
       }
     } catch (error) {
       this._closeCurrent(socket);
-      if (signal?.aborted) throw createAbortError();
+      if (signal?.aborted || this._disposed || this._interruptionGeneration !== interruptionGeneration) throw createAbortError();
       throw error;
     } finally {
       platformSocket.off?.('upgrade', onUpgrade);
@@ -1255,25 +1264,27 @@ export class ResponsesWebSocketTransport {
     }
   }
 
-  private _errorFromSDK(error: unknown, allowSafeHttpFallback = false): ResponsesWebSocketError {
+  private _errorFromSDK(error: unknown, phase: 'handshake' | 'before_response' | 'response'): ResponsesWebSocketError {
     const details = readGatewayError(error);
     const code = details.code ?? 'responses_websocket_error';
-    const safeHttpFallback =
-      allowSafeHttpFallback &&
-      details.execution === 'not_executed' &&
-      (code === 'unsupported_upstream_format' ||
-        code === 'unsupported_prompt_policy' ||
-        code === 'origin_capability_mismatch' ||
-        code === 'origin_handshake_failed' ||
-        code === 'websocket_capacity_exceeded' ||
-        (code === 'connection_retiring' && details.retirementNotExecuted));
+    const safeFallbackCode = code === 'unsupported_upstream_format' ||
+      code === 'unsupported_prompt_policy' ||
+      code === 'origin_capability_mismatch' ||
+      code === 'origin_handshake_failed' ||
+      code === 'websocket_capacity_exceeded';
+    const safeHttpFallback = phase === 'handshake'
+      ? details.status === undefined || details.status === 408 || details.status === 429 || details.status >= 500 ||
+        (details.status < 400 && safeFallbackCode)
+      : phase === 'before_response' && details.execution === 'not_executed' &&
+        (safeFallbackCode || details.status === 429 || details.status === 502 || details.status === 503 || details.status === 504 ||
+          (code === 'connection_retiring' && details.retirementNotExecuted));
     const suffix = details.param === undefined || details.param === null || details.param.trim().length === 0 ? '' : ` (param: ${details.param})`;
     return new ResponsesWebSocketError(`${code}: ${details.message}${suffix}`, code, {
       cause: error,
       safeHttpFallback,
       status: details.status,
       param: details.param,
-      execution: details.execution,
+      execution: phase === 'handshake' ? 'not_executed' : details.execution,
       retryable: details.retryable,
     });
   }
@@ -1313,7 +1324,7 @@ export class ResponsesWebSocketTransport {
         return { record, delta, retriedStateMiss };
       }
       if (record.type === 'error') {
-        const error = this._errorFromSDK(record.error, true);
+        const error = this._errorFromSDK(record.error, 'before_response');
         if (
           delta &&
           !retriedStateMiss &&
@@ -1473,7 +1484,7 @@ export class ResponsesWebSocketTransport {
         }
 
         if (record.type === 'error') {
-          const error = this._errorFromSDK(record.error, !sawResponseEvent);
+          const error = this._errorFromSDK(record.error, sawResponseEvent ? 'response' : 'before_response');
           if (
             delta &&
             !sawResponseEvent &&
