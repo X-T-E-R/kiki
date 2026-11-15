@@ -30,7 +30,7 @@ import { createRoot } from 'react-dom/client';
 import type { NbSearchCapabilities, NbSearchConfigPatch, NbSearchKeyUsageView } from '@kiki/protocol';
 import { nbSearchDraftFromConfig, setNbSearchFetchChain, type NbSearchDraft } from '@kiki/session-core/settings';
 import '../../src/index.css';
-import { I18nProvider } from '../../src/i18n';
+import { I18nProvider, useI18n } from '../../src/i18n';
 import { NbSearchAdvancedTab } from '../../src/components/settings/nbSearch/NbSearchAdvancedTab';
 import { NbSearchFetchTab } from '../../src/components/settings/nbSearch/NbSearchFetchTab';
 import { NbSearchKeyUsagePanel } from '../../src/components/settings/nbSearch/NbSearchKeyUsagePanel';
@@ -168,6 +168,20 @@ const CONFIG = {
 
 /** Offline stand-in for the typed key-usage read; no request leaves the page. */
 const USAGE: Record<string, NbSearchKeyUsageView> = {
+  'zhihu.default': {
+    provider_instance_id: 'zhihu.default', provider_id: 'zhihu', balance_supported: true,
+    keys: [{
+      key_index: 1, state: 'ready',
+      usage: {
+        scope: 'key', unit: 'credits', used: 12, limit: 100, remaining: 88,
+        checked_at: '2026-10-03T09:00:00Z',
+        meters: [
+          { id: 'credits', label: 'Monthly credits', unit: 'credits', used: 12, limit: 100, remaining: 88, reset_at: '2026-10-04T00:00:00Z', reset_timezone: 'Asia/Shanghai' },
+          { id: 'requests', label: 'Daily requests', unit: 'requests', used: 3, limit: 50, remaining: 47, reset_at: '2026-10-03T12:00:00Z', reset_timezone: 'UTC' },
+        ],
+      },
+    }],
+  },
   'tavily.default': {
     provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true,
     keys: [
@@ -186,11 +200,12 @@ const USAGE: Record<string, NbSearchKeyUsageView> = {
 };
 
 function KeyUsageView() {
+  const { t } = useI18n();
   return (
     <div style={{ display: 'grid', gap: 24 }}>
-      {['tavily.default', 'exa.default'].map((id) => (
+      {['zhihu.default', 'tavily.default', 'exa.default'].map((id) => (
         <section key={id} data-harness-panel={id} style={{ borderTop: '1px solid var(--kiki-hairline, rgba(0,0,0,.1))', paddingTop: 16 }}>
-          <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>{id}</h2>
+          <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>{id === 'zhihu.default' ? t('st.nbSearch.provider.zhihu') : id}</h2>
           <NbSearchKeyUsagePanel instanceId={id} readUsage={async () => USAGE[id]!} />
         </section>
       ))}
@@ -412,9 +427,16 @@ async function main() {
         problems.push('the key-status panel read the server before the user asked');
       }
       await shoot(page, '07a-keys-idle-1440-light-zh');
+      await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-load]').click();
       await page.locator('[data-harness-panel="tavily.default"] [data-nb-search-key-usage-load]').click();
       await page.locator('[data-harness-panel="exa.default"] [data-nb-search-key-usage-load]').click();
       await page.waitForSelector('[data-nb-search-key-usage-keys]');
+      const zhihuText = await page.locator('[data-harness-panel="zhihu.default"]').textContent();
+      if (!zhihuText.includes('知乎开放平台')) problems.push('the Zhihu provider label was not localized');
+      if (!zhihuText.includes('Monthly credits') || !zhihuText.includes('Daily requests')) problems.push('the Zhihu multi-meter labels were not rendered');
+      if (!zhihuText.includes('请求') || !zhihuText.includes('Asia/Shanghai')) problems.push('the Zhihu meter units or reset timezone were not rendered');
+      const zhihuMeters = await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-meter]').count();
+      if (zhihuMeters !== 2) problems.push(`the Zhihu panel rendered ${zhihuMeters} meters, expected 2`);
       const exaText = await page.locator('[data-harness-panel="exa.default"]').textContent();
       if (!exaText.includes('不提供额度查询')) problems.push('a provider without a balance was not said to have none');
       await shoot(page, '07-keys-usage-1440-light-zh');
@@ -428,6 +450,15 @@ async function main() {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       if (overflow > 1) problems.push(`${view} overflows at 390 by ${overflow}px`);
       await shoot(page, name);
+      await context.close();
+    }
+    {
+      const { context, page } = await open('keys', { width: 390, height: 844 });
+      await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-load]').click();
+      await page.waitForSelector('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-meter="requests"]');
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (overflow > 1) problems.push(`key usage overflows at 390 by ${overflow}px`);
+      await shoot(page, '14-keys-390-light-zh');
       await context.close();
     }
 

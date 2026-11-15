@@ -46,7 +46,7 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
 import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
-import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
+import { resolveNbSearchConfig, resolveNbSearchCapturedConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
 import { managedBinding, NbSearchManagedCredentials } from '#/app/nbSearch/managedCredentials';
 import { copyNbSearchEnvironment } from '#/app/nbSearch/environment';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -880,6 +880,33 @@ describe('NbSearchService', () => {
     expect(await service.keyUsage('tavily.default', true)).toEqual({ provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true, keys: [] });
     expect(createRuntimeMock).not.toHaveBeenCalled();
     expect(JSON.stringify(sources)).not.toMatch(/api_key|access_token/);
+  });
+
+  it.each([true, false])('preserves generic usage meters and recognizes Zhihu balance support with enabled=%s', async (enabled) => {
+    const resolved = resolveNbSearchCapturedConfig({}, undefined, undefined);
+    const provider_instances = {
+      ...resolved.config.provider_instances,
+      'zhihu.default': { ...resolved.config.provider_instances['tavily.default']!, provider_id: 'zhihu', enabled, credential_slot_id: undefined },
+    };
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({
+      resolved: { ...resolved, config: { ...resolved.config, provider_instances } },
+      env: {}, status: { reuse_local_config: reuse, layers: ['defaults', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] },
+    });
+    const meters = [
+      { id: 'zhihu_search', label: 'Zhihu search', unit: 'requests', used: 0, limit: 100, remaining: 100, reset_at: '2026-11-16T00:00:00+08:00', reset_timezone: 'Asia/Shanghai' },
+      { id: 'global_search', unit: 'requests', used: null, limit: null, remaining: null },
+      { id: 'credits', unit: 'credits', used: 3, limit: 10, remaining: 7 },
+    ];
+    const usage = { scope: 'key', unit: 'credits', used: null, limit: null, remaining: null, checked_at: '2026-11-15T12:00:00Z', meters };
+    const keyUsage = vi.fn(async () => [{ key_index: 1, state: 'ready', usage, api_key: 'YOUR_API_KEY' }]);
+    createRuntimeMock.mockReturnValue({ keyUsage });
+    const view = await ix.get(INbSearchService).keyUsage('zhihu.default', true);
+    expect(view).toEqual({ provider_instance_id: 'zhihu.default', provider_id: 'zhihu', balance_supported: true,
+      keys: enabled ? [{ key_index: 1, state: 'ready', usage }] : [],
+    });
+    expect(JSON.stringify(view)).not.toContain('YOUR_API_KEY');
+    if (enabled) expect(keyUsage).toHaveBeenCalledWith({ provider_instance_id: 'zhihu.default', refresh: true });
+    else expect(createRuntimeMock).not.toHaveBeenCalled();
   });
 
   it.each(['exa.search', null])('executes the native GMA lane through the real donor SSE transport with default=%s', async (defaultLane) => {

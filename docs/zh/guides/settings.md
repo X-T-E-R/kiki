@@ -151,6 +151,8 @@ Recipe 只覆盖自己声明的字段或提示槽，未覆盖的设置保留下�
 
 **设置 → 能力 → 搜索与抓取**打开**概览与配置来源**（`/settings/search`）。旧的 `/settings/environment-tools` 地址会重定向到这一页；其中的 `tab` 值可选择 `overview`、`search`、`fetch`、`providers` 或 `advanced` 搜索标签。这里查看内置搜索与抓取模块（`WebSearch` 和 `FetchURL` 两个工具背后的能力）当前生效的配置来源，并控制服务器是否复用本机的搜索配置。对应的配置位于 `config.toml` —— 见[配置文件](../configuration/config-files.md#nb-search)。
 
+在**搜索**标签页添加**知乎开放平台**服务，并填入从 [developer.zhihu.com](https://developer.zhihu.com) 获取的 API 密钥。其搜索通道为 `zhihu.search`、`zhihu.global` 和 `zhihu.synthesis`；添加服务不会替换已选的默认通道。**查看密钥状态**会分别显示每项能力的官方每日请求额度、重置时间及时区。[Usage → 额度](#usage) 也会显示这些额度。
+
 同一处的**高级与诊断**标签页里有一张**全文索引**卡片，用于搜索你自己的会话历史。首次索引在后台建立，优先处理最近的会话，卡片会显示已完成的数量。如果索引因可处理的原因停下，这张卡片会出现**重启索引程序**按钮；索引被配置关闭或不可用时则没有可重启的对象，卡片直接说明原因。
 
 ## 浏览器控制

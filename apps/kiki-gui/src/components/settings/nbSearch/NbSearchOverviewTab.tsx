@@ -35,7 +35,7 @@ export function NbSearchOverviewTab({
       const labelKey = providerLabelKey(profile.provider_id);
       const provider = labelKey === undefined ? profile.provider_id : t(labelKey);
       const lane = capabilities.search.lanes.find((candidate) => candidate.id === id);
-      if (lane !== undefined) return serviceTitle(provider, operationWord(t, lane, profile.operation_id));
+      if (lane !== undefined) return serviceTitle(provider, operationWord(t, lane, profile.operation_id, profile.provider_id));
       return provider;
     }
     const pipeline = capabilities.fetch.pipelines.find((candidate) => candidate.id === id);

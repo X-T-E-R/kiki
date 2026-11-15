@@ -156,6 +156,7 @@ const PROVIDER_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
   searxng: 'st.nbSearch.provider.searxng',
   tavily: 'st.nbSearch.provider.tavily',
   wayback: 'st.nbSearch.provider.wayback',
+  zhihu: 'st.nbSearch.provider.zhihu',
   zhipu: 'st.nbSearch.provider.zhipu',
 };
 
@@ -174,6 +175,7 @@ const PROVIDER_KEY_URLS: Readonly<Record<string, string>> = {
   firecrawl: 'https://www.firecrawl.dev/app/api-keys',
   'jina-reader': 'https://jina.ai/api-dashboard',
   tavily: 'https://app.tavily.com/home',
+  zhihu: 'https://developer.zhihu.com',
 };
 
 export function providerKeyUrl(providerId: string): string | undefined {
@@ -181,20 +183,29 @@ export function providerKeyUrl(providerId: string): string | undefined {
 }
 
 /**
- * The human word for a lane's operation: results channels are 搜索, a typed
- * channel the dictionary knows gets its own word (documents → 文档), and an
- * unknown operation id stays raw — a future engine operation still renders.
+ * The human word for a lane's operation: known Zhihu templates have distinct
+ * names; otherwise results channels are search, known typed channels get their
+ * own word (documents → 文档), and unknown operation ids stay raw.
  */
 const OPERATION_WORD_KEYS: Readonly<Record<string, I18nKey>> = {
   search: 'st.nbSearch.operation.search',
   documents: 'st.nbSearch.operation.documents',
 };
 
+const NAMED_OPERATION_KEYS: Readonly<Record<string, I18nKey>> = {
+  'zhihu.search': 'st.nbSearch.lane.zhihu.search',
+  'zhihu.global': 'st.nbSearch.lane.zhihu.global',
+  'zhihu.synthesis': 'st.nbSearch.lane.zhihu.synthesis',
+};
+
 export function operationWord(
   t: (key: I18nKey) => string,
   lane: { readonly output: { readonly channel: string } } | undefined,
   operationId: string,
+  providerId?: string,
 ): string {
+  const namedOperationKey = providerId === undefined ? undefined : NAMED_OPERATION_KEYS[`${providerId}.${operationId}`];
+  if (namedOperationKey !== undefined) return t(namedOperationKey);
   if (lane?.output.channel === 'results') return t('st.nbSearch.operation.search');
   const key = OPERATION_WORD_KEYS[operationId];
   return key === undefined ? operationId : t(key);
@@ -239,7 +250,7 @@ function laneCard(
   const profile = lanes[laneId];
   if (profile === undefined) return null;
   const providerLabel = t(providerLabelKey(profile.provider_id) ?? 'st.nbSearch.providerFallback');
-  const operationLabel = operationWord(t, lane, profile.operation_id);
+  const operationLabel = operationWord(t, lane, profile.operation_id, profile.provider_id);
   return {
     id: laneId,
     title: serviceTitle(providerLabel, operationLabel),

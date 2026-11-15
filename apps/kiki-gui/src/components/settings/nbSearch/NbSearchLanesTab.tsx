@@ -82,7 +82,7 @@ export function NbSearchLanesTab({
       if (providerId === undefined) return [];
       const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
       if (descriptor === undefined || descriptor.query_operations.length === 0) return [];
-      const word = operationWord(t, lane, profile.operation_id);
+      const word = operationWord(t, lane, profile.operation_id, profile.provider_id);
       return [{
         id: lane.id,
         title: serviceTitle(labelOf(providerId), word),

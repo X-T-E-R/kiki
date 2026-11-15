@@ -160,7 +160,8 @@ export class NbSearchService implements INbSearchService {
       const effective = capturedSource(source, config).config;
       const instance = effective.provider_instances[instanceId];
       if (instance === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown nb-search provider instance.');
-      if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl', keys: [] };
+      const balanceSupported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';
+      if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: balanceSupported, keys: [] };
       const runtime = await this.#sharedRuntime(source, config, this.#generation);
       if (runtime === undefined) throw configurationError(source.status);
       const local = runtime as import('@nb-corp/nb-search').LocalNbSearchRuntime;
@@ -169,14 +170,11 @@ export class NbSearchService implements INbSearchService {
       const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
       const keys = entries.map((entry) => ({
         key_index: entry.key_index, state: entry.state, cooldown_until: entry.cooldown_until,
-        usage: entry.usage === undefined ? undefined : {
-          scope: entry.usage.scope, unit: entry.usage.unit, used: entry.usage.used,
-          limit: entry.usage.limit, remaining: entry.usage.remaining, checked_at: entry.usage.checked_at,
-        }, usage_error: entry.usage_error,
+        usage: entry.usage, usage_error: entry.usage_error,
       }));
       return nbSearchKeyUsageViewSchema.parse({
         provider_instance_id: instanceId, provider_id: instance.provider_id,
-        balance_supported: instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl',
+        balance_supported: balanceSupported,
         keys: entries.length === 0 ? Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })) : keys,
       });
     });
