@@ -5068,10 +5068,10 @@ boundExecution,
     // prompt held ahead of the send order counts too — otherwise a session
     // waiting only on one would show nothing at all.
     if (queueRowCount === 0) return undefined;
-    const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
+    const idleCount = heldCronItems.filter((item) => !item.steerAccepted && item.cronDeliveryMode === 'idle').length;
     const total = queueRowCount - Math.max(0, idleCount - 1);
     const nextItem =
-      heldCronItems.find((item) => item.cronDeliveryMode === 'steer') ??
+      heldCronItems.find((item) => item.steerAccepted || item.cronDeliveryMode === 'steer') ??
       heldCronItems[0] ??
       ordinaryQueuedItems[0];
     return {
@@ -5084,7 +5084,9 @@ boundExecution,
             presentation: nextItem.presentation,
             media: nextItem.media,
             timing: nextItem.appendTiming ?? 'agent_idle',
-            cronDeliveryMode: nextItem.originKind === 'cron_job' ? nextItem.cronDeliveryMode : undefined,
+            cronDeliveryMode: nextItem.originKind === 'cron_job'
+              ? (nextItem.steerAccepted ? 'steer' : nextItem.cronDeliveryMode)
+              : undefined,
           }}
         />
       ),

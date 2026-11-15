@@ -4118,9 +4118,61 @@ describe('TranscriptWireAdapter', () => {
       queuePosition: undefined,
       content: cronContent,
     });
-    const cronPos = prompts.get('cron-queued')?.queuePosition ?? Number.MAX_SAFE_INTEGER;
-    const laterPos = prompts.get('u-later')?.queuePosition ?? -1;
-    expect(cronPos).toBeLessThan(laterPos);
+    expect(prompts.get('cron-queued')?.queuePosition).toBe(0);
+    expect(prompts.get('u-later')?.queuePosition).toBe(1);
+  });
+
+  it('compacts remaining queuePositions on prompt exit so new prompts and model switches share 0..N-1 order', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyRecord = (record: TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+    applyRecord({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, time: 1_000 });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'B' }] }, queueIndex: 1, time: 1_001 });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'C', userMessageId: 'C', message: { content: [{ type: 'text', text: 'C' }] }, queueIndex: 2, time: 1_002 });
+    applyRecord({ type: 'prompt.launch_committed', promptId: 'A', time: 1_003 });
+    applyRecord({ type: 'prompt.completed', promptId: 'A', reason: 'completed', time: 1_004 });
+    applyRecord({ type: 'prompt.launch_committed', promptId: 'B', time: 1_005 });
+    applyRecord({ type: 'prompt.completed', promptId: 'B', reason: 'completed', time: 1_006 });
+    expect(transcript.getPrompt('C')?.queuePosition).toBe(0);
+
+    applyRecord({ type: 'prompt.enqueued', promptId: 'D', userMessageId: 'D', message: { content: [{ type: 'text', text: 'D' }] }, queueIndex: 1, time: 1_007 });
+    applyRecord({
+      type: 'prompt.model_switch_queued',
+      operationId: 'sw-1',
+      queueIndex: 2,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'sw-1', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_008,
+    });
+
+    expect(transcript.getPrompt('C')?.queuePosition).toBe(0);
+    expect(transcript.getPrompt('D')?.queuePosition).toBe(1);
+    expect(adapter.queueOrder()).toEqual(['C', 'D', '\u0000model-switch:sw-1']);
+
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(transcript.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(resumedAdapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'E',
+      userMessageId: 'E',
+      message: { content: [{ type: 'text', text: 'E' }] },
+      queueIndex: 3,
+      time: 1_009,
+    }));
+    resumedReducer.apply(resumedAdapter.add({
+      type: 'prompt.model_switch_status',
+      operationId: 'sw-1',
+      receipt: { operationId: 'sw-1', state: 'cancelled', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_010,
+    }));
+    expect(resumedAdapter.queueOrder()).toEqual(['C', 'D', 'E']);
+    expect(resumed.snapshot().prompts.find((p) => p.promptId === 'E')?.queuePosition).toBe(2);
   });
 
   it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
@@ -4221,7 +4273,7 @@ describe('TranscriptWireAdapter', () => {
     const transcript = replay(records);
     const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
     expect(prompts.has('cron1')).toBe(false);
-    expect(prompts.get('u1')).toMatchObject({ status: 'queued', queuePosition: 1 });
+    expect(prompts.get('u1')).toMatchObject({ status: 'queued', queuePosition: 0 });
 
     const sourceAdapter = new TranscriptWireAdapter('main');
     const source = new AgentTranscriptDraft('main');

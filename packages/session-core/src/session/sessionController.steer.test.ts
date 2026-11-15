@@ -452,6 +452,59 @@ describe('send now (steer) — main agent', () => {
     reopened.controller.close(); controller.close();
   });
 
+  it('keeps an accepted queue-mode cron_job visible in queuedPromptPreviews until step-boundary delivery', async () => {
+    const { controller, client } = await open();
+    const cronId = 'cron-queue-send-now';
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Hourly health check</prompt></cron-fire>' }];
+    const cronPrompt = {
+      promptId: cronId,
+      userMessageId: cronId,
+      originKind: 'cron_job' as const,
+      originDeliveryMode: 'queue' as const,
+      status: 'queued' as const,
+      queuePosition: 0,
+      createdAt: '2026-01-01T00:00:03.000Z',
+      content: cronContent,
+    };
+    await deliver(controller, resetEvent('main', { ...userTurnSnapshot({ streaming: true }), prompts: [cronPrompt] }, 1));
+    expect(queuedPromptPreviews(controller.getState())).toEqual([
+      expect.objectContaining({ promptId: cronId, originKind: 'cron_job', cronDeliveryMode: 'queue', text: 'Hourly health check' }),
+    ]);
+
+    client.steerPrompt.mockResolvedValue({ steered: false, prompt_ids: [cronId], delivery_state: 'accepted' });
+    expect(await controller.steerQueued(cronId)).toEqual({ outcome: 'accepted' });
+    expect(await controller.steerQueued(cronId)).toEqual({ outcome: 'accepted' });
+    expect(client.steerPrompt).toHaveBeenCalledTimes(1);
+
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(visibleUsers(controller.getState()).some((row) => row.promptId === cronId)).toBe(false);
+    expect(controller.getState().queuedPromptIds).toEqual([cronId]);
+    expect(queuedPromptPreviews(controller.getState())).toEqual([
+      expect.objectContaining({
+        promptId: cronId,
+        originKind: 'cron_job',
+        cronDeliveryMode: 'queue',
+        steerAccepted: true,
+        text: 'Hourly health check',
+      }),
+    ]);
+
+    await deliver(controller, resetEvent('main', {
+      ...userTurnSnapshot({ streaming: true }),
+      prompts: [{ ...cronPrompt, steerAccepted: true }],
+    }, 2));
+    expect(controller.getState().queuedPromptIds).toEqual([cronId]);
+    expect(queuedPromptPreviews(controller.getState())[0]?.steerAccepted).toBe(true);
+
+    await deliver(controller, opsEvent('main', [{
+      op: 'prompt.upsert',
+      prompt: { ...cronPrompt, status: 'completed', queuePosition: undefined, finishedAt: '2026-01-01T00:00:06.000Z', steeredAt: '2026-01-01T00:00:06.000Z' },
+    }], 3));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    expect(queuedPromptPreviews(controller.getState())).toEqual([]);
+    controller.close();
+  });
+
   it('keeps scheduled queue text untouched when Send now is submitted or accepted on the wire', async () => {
     const { controller, client } = await open();
     const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Scheduled backup check</prompt></cron-fire>' }];

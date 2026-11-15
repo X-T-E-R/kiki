@@ -30,6 +30,7 @@ import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
+import { mergeSessionQueueRows } from './modelSwitchQueue';
 
 import {
   agentTranscriptPageFromResponse,
@@ -7607,6 +7608,85 @@ describe('queued prompt scheduling projection', () => {
         text: 'Nightly digest',
       }),
     ]);
+  });
+
+  it('keeps queued prompts in compact 0..N-1 coordinates so mergeSessionQueueRows orders C -> D -> switch', () => {
+    const replayed = replayAgentWire('main', [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'Prompt A' }] }, queueIndex: 0, time: 1_000 },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Prompt B' }] }, queueIndex: 1, time: 1_001 },
+      { type: 'prompt.enqueued', promptId: 'C', userMessageId: 'C', message: { content: [{ type: 'text', text: 'Prompt C' }] }, queueIndex: 2, time: 1_002 },
+      { type: 'prompt.launch_committed', promptId: 'A', time: 1_003 },
+      { type: 'prompt.completed', promptId: 'A', reason: 'completed', time: 1_004 },
+      { type: 'prompt.launch_committed', promptId: 'B', time: 1_005 },
+      { type: 'prompt.completed', promptId: 'B', reason: 'completed', time: 1_006 },
+      { type: 'prompt.enqueued', promptId: 'D', userMessageId: 'D', message: { content: [{ type: 'text', text: 'Prompt D' }] }, queueIndex: 1, time: 1_007 },
+      {
+        type: 'prompt.model_switch_queued',
+        operationId: 'sw-after-d',
+        queueIndex: 2,
+        entry: { placement: 'queued' },
+        receipt: { operationId: 'sw-after-d', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+        time: 1_008,
+      },
+    ]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', replayed);
+    const previews = queuedPromptPreviews(projected);
+    expect(previews.map((item) => ({ promptId: item.promptId, queuePosition: item.queuePosition }))).toEqual([
+      { promptId: 'C', queuePosition: 0 },
+      { promptId: 'D', queuePosition: 1 },
+    ]);
+    const rows = mergeSessionQueueRows(previews, [
+      { operationId: 'sw-after-d', queueIndex: 2 },
+    ]);
+    expect(rows).toEqual([
+      { kind: 'message', promptId: 'C' },
+      { kind: 'message', promptId: 'D' },
+      { kind: 'modelSwitch', operationId: 'sw-after-d' },
+    ]);
+  });
+
+  it('keeps an accepted queue-mode cron_job prompt visible as held while excluding accepted user steers', () => {
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Hourly sync</prompt></cron-fire>' }];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'user-accepted',
+            userMessageId: 'user-accepted',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: [{ type: 'text', text: 'User steer' }],
+          },
+          {
+            promptId: 'cron-accepted',
+            userMessageId: 'cron-accepted',
+            originKind: 'cron_job',
+            originDeliveryMode: 'queue',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: cronContent,
+          },
+        ],
+      }),
+    );
+    expect(projected.queuedPromptIds).toEqual(['cron-accepted']);
+    const previews = queuedPromptPreviews(projected);
+    expect(previews).toEqual([
+      expect.objectContaining({
+        promptId: 'cron-accepted',
+        originKind: 'cron_job',
+        cronDeliveryMode: 'queue',
+        steerAccepted: true,
+        text: 'Hourly sync',
+      }),
+    ]);
+    expect(isOrdinaryQueueItem(previews[0]!)).toBe(false);
   });
 
   it('recovers formal text, annotations, and skill invocations in queuedPromptPreviews when a UserBlock is absent or re-id matched', () => {

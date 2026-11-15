@@ -708,6 +708,53 @@ describe('QueueStrip drawer body', () => {
     expect(quoteRow?.querySelector('[data-quote-chip]')?.textContent).toContain('Quoted line alone');
     expect(mediaRow?.textContent).toContain('(attachment only)');
   });
+
+  it('keeps an accepted queue-mode cron_job row visible as held steer without offering a duplicate Send now', async () => {
+    const onSendNow = vi.fn();
+    const onRemove = vi.fn();
+    const { container } = await renderStrip({
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+      onSendNow,
+      onRemove,
+      items: [
+        {
+          promptId: 'cron-queue-accepted',
+          userMessageId: 'cron-queue-accepted',
+          originKind: 'cron_job',
+          cronDeliveryMode: 'queue',
+          steerAccepted: true,
+          text: 'Hourly health check',
+        },
+        {
+          promptId: 'u-next',
+          userMessageId: 'u-next',
+          text: 'Follow-up user message',
+        },
+      ],
+    });
+    const [acceptedCronRow, userRow] = rows(container);
+    expect(acceptedCronRow?.getAttribute('data-queue-held')).toBe('steer');
+    expect(acceptedCronRow?.textContent).toContain('Hourly health check');
+    expect(acceptedCronRow?.textContent).toContain('Scheduled job');
+    expect(acceptedCronRow?.textContent).toContain('Insert immediately');
+    expect(acceptedCronRow?.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(acceptedCronRow?.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(acceptedCronRow?.querySelector('[data-queue-timing]')).toBeNull();
+    expect(userRow?.querySelector('button[aria-label="Send now"]')).not.toBeNull();
+
+    const removeBtn = acceptedCronRow?.querySelector('button[aria-label="Remove"]') as HTMLButtonElement | null;
+    expect(removeBtn).not.toBeNull();
+    await act(async () => {
+      removeBtn?.click();
+    });
+    const confirmBtn = acceptedCronRow?.querySelector('button[aria-label="Remove?"]') as HTMLButtonElement | null;
+    expect(confirmBtn).not.toBeNull();
+    await act(async () => {
+      confirmBtn?.click();
+    });
+    expect(onRemove).toHaveBeenCalledWith('cron-queue-accepted');
+  });
 });
 
 describe('QueueStrip reorder', () => {

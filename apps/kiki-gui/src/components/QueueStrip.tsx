@@ -370,7 +370,7 @@ export function QueueStrip({
     [items, modelSwitches],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
-  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
+  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && !item.steerAccepted && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
   const sendOrderIndexes = rows.flatMap((row, index) => row.kind === 'message' && idleIds.has(row.promptId) ? [] : [index]);
   const switchById = useMemo(
     () => new Map((modelSwitches ?? []).map((entry) => [entry.input.operationId, entry])),
@@ -638,7 +638,8 @@ export function QueueStrip({
     const held = !isOrdinaryQueueItem(item);
     // Idle timing belongs to the leading region, not to each occurrence row.
     const idle = idleIds.has(item.promptId);
-    const heldMode = held && !idle ? item.cronDeliveryMode : undefined;
+    const effectiveCronMode = item.steerAccepted ? 'steer' : item.cronDeliveryMode;
+    const heldMode = held && !idle ? effectiveCronMode : undefined;
     // A `queue` cron record really is in the user's send order, so it keeps
     // the same drag handle, timing picker and Send now as a typed message.
     const reordering = draggable && !held;
@@ -647,7 +648,7 @@ export function QueueStrip({
         key={item.promptId}
         data-queue-item={item.promptId}
         data-queue-index={index}
-        data-queue-held={held ? item.cronDeliveryMode : undefined}
+        data-queue-held={held ? effectiveCronMode : undefined}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
           isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'

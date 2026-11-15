@@ -34,6 +34,7 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
         promptId,
         userMessageId: block?.userMessageId ?? meta.userMessageId,
         originKind: meta.originKind,
+        steerAccepted: meta.steerAccepted,
         cronDeliveryMode: meta.cronDeliveryMode,
         text: classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
         presentation: scheduled.presentation ?? block?.presentation,
@@ -97,8 +98,10 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
  */
 export function isOrdinaryQueueItem(item: QueuedPromptPreview): boolean {
   return item.originKind !== 'cron_job'
-    || item.cronDeliveryMode === undefined
-    || item.cronDeliveryMode === 'queue';
+    || (
+      !item.steerAccepted
+      && (item.cronDeliveryMode === undefined || item.cronDeliveryMode === 'queue')
+    );
 }
 
 export function pendingApprovalCount(state: SessionViewState): number {

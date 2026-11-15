@@ -4865,9 +4865,15 @@ export function projectAgentTranscriptView(
   const queuedPrompts = prompts
     // Model-switch control items share the drain order under reserved ids;
     // they are not messages and surface through the model-switch event pair,
-    // never as queue rows or transcript blocks. Accepted steers are already
-    // bound to the active turn's next step boundary and render on the timeline.
-    .filter((prompt) => prompt.status === 'queued' && !prompt.steerAccepted && !isModelSwitchQueueId(prompt.promptId))
+    // never as queue rows or transcript blocks. Accepted user steers render on
+    // the timeline; accepted cron_job steers have no user bubble and remain
+    // visible in the queue strip until step-boundary delivery.
+    .filter(
+      (prompt) =>
+        prompt.status === 'queued' &&
+        (!prompt.steerAccepted || prompt.originKind === 'cron_job') &&
+        !isModelSwitchQueueId(prompt.promptId),
+    )
     .toSorted(
       (left, right) =>
         (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
@@ -4885,7 +4891,8 @@ export function projectAgentTranscriptView(
     const userMessageId = prompt.userMessageId ?? existing?.userMessageId;
     const parts = promptContentParts(prompt.content);
     if (prompt.originKind === 'cron_job') {
-      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, userMessageId, originKind: prompt.originKind, content: parts, cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
+      const steerAccepted = prompt.steerAccepted === true ? true : undefined;
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, userMessageId, steerAccepted, originKind: prompt.originKind, content: parts, cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
     } else {
       const content = parts.length > 0 ? parts : existing?.content;
       queuedPromptMeta[prompt.promptId] =

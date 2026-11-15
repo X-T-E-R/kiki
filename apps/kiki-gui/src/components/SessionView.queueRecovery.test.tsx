@@ -1579,4 +1579,26 @@ describe('queue header summary with scheduled tasks and annotations', () => {
     expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Verify edge condition');
     expect(container.textContent).not.toContain('(attachment only)');
   });
+
+  it('keeps an accepted queue-mode cron_job visible in the collapsed queue bar with Insert immediately timing', async () => {
+    stubProjectedController([
+      {
+        promptId: 'cron-queue-accepted',
+        userMessageId: 'cron-queue-accepted',
+        originKind: 'cron_job',
+        originDeliveryMode: 'queue',
+        status: 'queued',
+        steerAccepted: true,
+        queuePosition: 0,
+        content: [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Hourly health check</prompt></cron-fire>' }],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    await mountSession();
+
+    expect(container.querySelector('[data-queue-count]')).toBeNull();
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toContain('scheduled waiting');
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Hourly health check');
+    expect(container.querySelector('[data-queue-first-timing]')?.textContent).toBe('Insert immediately');
+  });
 });

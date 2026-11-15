@@ -4841,6 +4841,9 @@ export class SessionController {
   async steerQueued(promptId: string): Promise<{ readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'unconfirmed' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.shell);
     if (this.findPendingSteer(MAIN_AGENT_ID, promptId)?.phase === 'waiting') return { outcome: 'accepted' };
+    if (this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(promptId)?.steerAccepted === true) {
+      return { outcome: 'accepted' };
+    }
     const view = this.viewOf(MAIN_AGENT_ID);
     const queued = view.blocks.find((block) =>
       block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
@@ -4897,7 +4900,15 @@ export class SessionController {
       if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
     } else this.clearPendingSteer(MAIN_AGENT_ID, promptId);
     if (delivery.delivery_state === 'accepted') {
-      if (this.findPendingSteer(MAIN_AGENT_ID, promptId) === undefined) await this.refreshPrompts();
+      if (this.findPendingSteer(MAIN_AGENT_ID, promptId) === undefined) {
+        const store = this.timelines.get(MAIN_AGENT_ID)?.store;
+        const stored = store?.getPrompt(promptId);
+        if (store !== undefined && stored?.status === 'queued' && !stored.steerAccepted) {
+          store.apply([{ op: 'prompt.upsert', prompt: { ...stored, steerAccepted: true } }]);
+          this.publishProjectedAgent(MAIN_AGENT_ID, store);
+        }
+        await this.refreshPrompts();
+      }
       return { outcome: 'accepted' };
     }
     await this.refreshPrompts();

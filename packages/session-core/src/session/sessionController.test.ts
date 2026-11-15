@@ -5148,7 +5148,13 @@ describe('SessionController transcript authority', () => {
       expected_revision: 3,
     });
     const updatedMeta = controller.getState().queuedPromptMeta['p1'];
-    expect(updatedMeta).toEqual({ appendTiming: 'tasks_done', revision: 4, queuePosition: 2 });
+    expect(updatedMeta).toMatchObject({
+      appendTiming: 'tasks_done',
+      revision: 4,
+      queuePosition: 2,
+      userMessageId: 'm1',
+      content: [{ type: 'text', text: 'parked' }],
+    });
     expect(mergeSessionQueueRows(
       [{ promptId: 'p1', queuePosition: updatedMeta?.queuePosition }],
       [{ operationId: 'switch-0', queueIndex: 0 }, { operationId: 'switch-1', queueIndex: 1 }],

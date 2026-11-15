@@ -44,7 +44,6 @@ export interface TranscriptWireAdapterLookups {
   readonly task?: (taskId: string) => TranscriptTask | undefined;
   readonly todo?: (todoId: string) => TranscriptTodo | undefined;
   readonly prompt?: (promptId: string) => TranscriptPrompt | undefined;
-  readonly prompts?: () => Iterable<TranscriptPrompt>;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -132,6 +131,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly queuedModelSwitchIds?: readonly string[];
   readonly bindingSettingIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
+  readonly queueOrder?: readonly string[];
   readonly hiddenPromptIds?: readonly string[];
   readonly deliveries?: readonly [string, MessageDelivery][];
   readonly messageProjection?: MessageProjectionCheckpoint;
@@ -166,6 +166,7 @@ export class TranscriptWireAdapter {
   readonly #executions = new Map<string, TranscriptTurnExecution>();
   readonly #cancelRequests = new Map<string, TurnCancellation>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
+  readonly #queueOrder: string[] = [];
   readonly #queuedModelSwitchIds = new Set<string>();
   readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
@@ -253,6 +254,7 @@ export class TranscriptWireAdapter {
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       bindingSettingIds: [...this.#bindingSettingIds],
       prompts: [...this.#prompts],
+      queueOrder: [...this.#queueOrder],
       hiddenPromptIds: [...this.#hiddenPromptIds],
       deliveries: [...this.#deliveries],
       messageProjection: {
@@ -335,6 +337,15 @@ export class TranscriptWireAdapter {
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceSet(this.#bindingSettingIds, checkpoint.bindingSettingIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
+    if (checkpoint.queueOrder !== undefined) {
+      this.#queueOrder.splice(0, this.#queueOrder.length, ...checkpoint.queueOrder);
+    } else {
+      const recovered = [...this.#prompts.values()]
+        .filter((prompt) => prompt.status === 'queued')
+        .toSorted((left, right) => (left.queuePosition ?? Number.MAX_SAFE_INTEGER) - (right.queuePosition ?? Number.MAX_SAFE_INTEGER))
+        .map((prompt) => prompt.promptId);
+      this.#queueOrder.splice(0, this.#queueOrder.length, ...recovered);
+    }
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
     this.#openBlockedBatchIds.clear();
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
@@ -445,16 +456,27 @@ export class TranscriptWireAdapter {
       const receipt = objectOf(record['receipt']) ?? objectOf(entry?.['receipt']);
       const operationId = stringOf(record['operationId']) ?? stringOf(receipt?.['operationId']);
       if (operationId === undefined) return [];
+      const switchQueueId = `\u0000model-switch:${operationId}`;
       if (record.type === 'prompt.model_switch_queued') {
         this.#queuedModelSwitchIds.add(operationId);
-        if (entry?.['placement'] === 'setting') this.#bindingSettingIds.add(operationId);
-        else this.#bindingSettingIds.delete(operationId);
+        if (entry?.['placement'] === 'setting') {
+          this.#bindingSettingIds.add(operationId);
+          this.removeQueueSlot(switchQueueId);
+        } else {
+          this.#bindingSettingIds.delete(operationId);
+          this.insertQueueSlot(switchQueueId, numberOf(record['queueIndex']));
+        }
       }
       const setting = this.#bindingSettingIds.has(operationId);
       const committed = record.type === 'agent.model_switch';
       const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
       const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
       const state = committed ? (this.#queuedModelSwitchIds.has(operationId) && !setting ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
+      if (record.type === 'prompt.model_switch_status' && state !== 'pending' && state !== 'preparing') {
+        this.removeQueueSlot(switchQueueId);
+      } else if (committed && state === 'completed') {
+        this.removeQueueSlot(switchQueueId);
+      }
       const mode = committed ? record['mode'] : receipt?.['mode'];
       const thinking = stringOf(committed ? record['thinking'] : objectOf(receipt?.['binding'])?.['thinking']);
       const change = committed && from === to && mode === 'direct' && thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort
@@ -476,12 +498,12 @@ export class TranscriptWireAdapter {
         }
         if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
       }
-      if (setting && (!committed || from === to)) return operations;
+      if (setting && (!committed || from === to)) return [...operations, ...this.compactQueuedPositions()];
       operations.push({ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
         payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
           summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } });
-      return operations;
+      return [...operations, ...this.compactQueuedPositions()];
     }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
       const model = stringOf(record['modelAlias']);
@@ -572,34 +594,18 @@ export class TranscriptWireAdapter {
     const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']) ?? stringOf(terminal?.['promptId']);
     if (promptId === undefined) return [];
     if (record.type === 'prompt.enqueued') {
+      const rawQueuePosition = numberOf(record['queueIndex']);
+      this.insertQueueSlot(promptId, rawQueuePosition);
       const message = objectOf(record['message']);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
       if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
-        return [];
+        return this.compactQueuedPositions();
       }
       this.#hiddenPromptIds.delete(promptId);
       const origin = objectOf(message?.['origin']);
       const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
-      const rawQueuePosition = numberOf(record['queueIndex']);
-      let queuePosition = rawQueuePosition;
-      if (rawQueuePosition !== undefined) {
-        let maxQueuedPosition = -1;
-        for (const [id, candidate] of this.#prompts) {
-          if (id === promptId) continue;
-          const current = this.lookups?.prompt?.(id) ?? candidate;
-          if (current.status === 'queued' && current.queuePosition !== undefined && current.queuePosition > maxQueuedPosition) {
-            maxQueuedPosition = current.queuePosition;
-          }
-        }
-        for (const current of this.lookups?.prompts?.() ?? []) {
-          if (current.promptId === promptId) continue;
-          if (current.status === 'queued' && current.queuePosition !== undefined && current.queuePosition > maxQueuedPosition) {
-            maxQueuedPosition = current.queuePosition;
-          }
-        }
-        queuePosition = Math.max(rawQueuePosition, maxQueuedPosition + 1);
-      }
+      const queuePosition = rawQueuePosition === undefined ? undefined : this.#queueOrder.indexOf(promptId);
       const prompt: TranscriptPrompt = {
         promptId,
         runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
@@ -614,9 +620,20 @@ export class TranscriptWireAdapter {
         appendTiming: promptAppendTimingOf(record['appendTiming']),
         revision: numberOf(record['revision']),
       };
-      return [this.storePrompt(prompt)];
+      return [this.storePrompt(prompt), ...this.compactQueuedPositions(promptId)];
     }
-    if (this.#hiddenPromptIds.has(promptId) && record.type !== 'prompt.steered') return [];
+    if (this.#hiddenPromptIds.has(promptId) && record.type !== 'prompt.steered') {
+      if (
+        record.type === 'prompt.launch_committed' ||
+        record.type === 'prompt.completed' ||
+        record.type === 'prompt.aborted' ||
+        record.type === 'prompt.outcome_committed'
+      ) {
+        this.removeQueueSlot(promptId);
+        return this.compactQueuedPositions();
+      }
+      return [];
+    }
     const previous = this.#prompts.get(promptId);
     if (record.type === 'prompt.replaced') {
       const content = projectPromptContent(record['content']);
@@ -641,6 +658,7 @@ export class TranscriptWireAdapter {
     if (record.type === 'prompt.moved') {
       const ids = stringArrayOf(record['queuedPromptIds']);
       if (ids.length === 0) return [];
+      this.#queueOrder.splice(0, this.#queueOrder.length, ...ids);
       const operations: TranscriptOperation[] = [];
       for (const [queuePosition, id] of ids.entries()) {
         if (this.#hiddenPromptIds.has(id)) continue;
@@ -657,6 +675,7 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'prompt.launch_committed') {
       this.#openBlockedBatchIds.clear();
+      this.removeQueueSlot(promptId);
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
@@ -664,13 +683,14 @@ export class TranscriptWireAdapter {
           queuePosition: undefined,
           revision: numberOf(record['revision']) ?? previous?.revision,
         }),
+        ...this.compactQueuedPositions(),
       ];
     }
     if (record.type === 'prompt.outcome_committed') {
-      const terminal = objectOf(record['terminal']);
       const terminalPromptId = stringOf(terminal?.['promptId']);
       if (terminalPromptId === undefined) return [];
       this.#openBlockedBatchIds.delete(terminalPromptId);
+      this.removeQueueSlot(terminalPromptId);
       const state = stringOf(terminal?.['state']);
       const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
         : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
@@ -687,6 +707,7 @@ export class TranscriptWireAdapter {
           error: projectedError.error ?? prior?.error,
           errorDetails: projectedError.errorDetails ?? prior?.errorDetails,
         }),
+        ...this.compactQueuedPositions(),
       ];
     }
     if (record.type === 'prompt.completed') {
@@ -701,6 +722,7 @@ export class TranscriptWireAdapter {
       } else {
         this.#openBlockedBatchIds.clear();
       }
+      this.removeQueueSlot(promptId);
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
@@ -710,10 +732,12 @@ export class TranscriptWireAdapter {
           error: nextError,
           errorDetails: projectedError.errorDetails ?? previous?.errorDetails,
         }),
+        ...this.compactQueuedPositions(),
       ];
     }
     if (record.type === 'prompt.aborted') {
       this.#openBlockedBatchIds.clear();
+      this.removeQueueSlot(promptId);
       return [
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
@@ -723,11 +747,14 @@ export class TranscriptWireAdapter {
           abortedBeforeStart:
             record['beforeStart'] === true ? true : previous?.abortedBeforeStart,
         }),
+        ...this.compactQueuedPositions(),
       ];
     }
     if (record.type === 'prompt.steered') {
       const activePromptId = stringOf(record['activePromptId']) ?? promptId;
       const steeredAt = promptRecordTime(record, ['steeredAt']) ?? isoOf(record.time) ?? new Date(0).toISOString();
+      this.removeQueueSlot(activePromptId);
+      for (const id of stringArrayOf(record['promptIds'])) this.removeQueueSlot(id);
       const operations: TranscriptOperation[] = [];
       if (!this.#hiddenPromptIds.has(activePromptId)) {
         const content = projectPromptContent(record['content']);
@@ -754,9 +781,52 @@ export class TranscriptWireAdapter {
           this.storePrompt({ ...prior, status: 'completed', queuePosition: undefined, finishedAt: steeredAt, steeredAt }),
         );
       }
-      return operations;
+      return [...operations, ...this.compactQueuedPositions()];
     }
     return [];
+  }
+
+  queueOrder(): readonly string[] {
+    return this.#queueOrder;
+  }
+
+  syncQueueOrder(ids: readonly string[]): void {
+    this.#queueOrder.splice(0, this.#queueOrder.length, ...ids);
+  }
+
+  syncPrompt(prompt: TranscriptPrompt): void {
+    this.#prompts.set(prompt.promptId, prompt);
+    if (prompt.status === 'queued') {
+      if (!this.#queueOrder.includes(prompt.promptId)) {
+        this.insertQueueSlot(prompt.promptId, prompt.queuePosition);
+      }
+    } else {
+      this.removeQueueSlot(prompt.promptId);
+    }
+  }
+
+  private insertQueueSlot(id: string, queueIndex: number | undefined): void {
+    if (this.#queueOrder.includes(id)) return;
+    const slot = queueIndex === undefined
+      ? this.#queueOrder.length
+      : Math.min(Math.max(0, queueIndex), this.#queueOrder.length);
+    this.#queueOrder.splice(slot, 0, id);
+  }
+
+  private removeQueueSlot(id: string): void {
+    const index = this.#queueOrder.indexOf(id);
+    if (index >= 0) this.#queueOrder.splice(index, 1);
+  }
+
+  private compactQueuedPositions(skipPromptId?: string): TranscriptOperation[] {
+    const operations: TranscriptOperation[] = [];
+    for (const [slot, id] of this.#queueOrder.entries()) {
+      if (id === skipPromptId || this.#hiddenPromptIds.has(id) || id.startsWith('\u0000model-switch:')) continue;
+      const prior = this.lookups?.prompt?.(id) ?? this.#prompts.get(id);
+      if (prior?.status !== 'queued' || prior.queuePosition === undefined || prior.queuePosition === slot) continue;
+      operations.push(this.storePrompt({ ...prior, queuePosition: slot }));
+    }
+    return operations;
   }
 
   private storePrompt(prompt: TranscriptPrompt): TranscriptOperation {

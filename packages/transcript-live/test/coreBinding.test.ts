@@ -2233,14 +2233,60 @@ describe('bindSessionTranscript', () => {
     }
     const live = store.getAgent('main')!;
     expect(project(live.snapshot()).queuedPromptIds).toEqual(['later']);
-    expect(live.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 1 });
+    expect(live.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 0 });
     const cold = new AgentTranscript('main');
     const adapter = new TranscriptWireAdapter('main');
     const reducer = new TranscriptFactReducer(cold);
     for (const record of records) reducer.apply(adapter.add(record));
     reducer.apply(adapter.finish());
     expect(project(cold.snapshot()).queuedPromptIds).toEqual(['later']);
-    expect(cold.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 1 });
+    expect(cold.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 0 });
+  });
+
+  it('compacts live and cold queuePositions across completed prompts and queued model switches', async () => {
+    const disposables = new DisposableStore();
+    onTestFinished(() => disposables.dispose());
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('session-compact-order');
+    disposables.add(bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents)));
+    const records: TranscriptWireRecord[] = [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, appendTiming: 'agent_idle', revision: 0, time: 1_000 },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'B' }] }, queueIndex: 1, appendTiming: 'agent_idle', revision: 0, time: 1_001 },
+      { type: 'prompt.enqueued', promptId: 'C', userMessageId: 'C', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'C' }] }, queueIndex: 2, appendTiming: 'agent_idle', revision: 0, time: 1_002 },
+    ];
+    for (const record of records) main.bus.emit(ev(record));
+    for (const [offset, id] of ['A', 'B'].entries()) {
+      const launched = { type: 'prompt.launch_committed', promptId: id, revision: 1, time: 1_010 + offset * 2 };
+      const completed = { type: 'prompt.completed', promptId: id, reason: 'completed', finishedAt: '2026-01-01T00:00:05.000Z', time: 1_011 + offset * 2 };
+      records.push(launched, completed);
+      main.bus.emit(ev({ type: 'prompt.started', promptId: id, time: 1_010 + offset * 2 }));
+      main.bus.emit(ev(completed));
+    }
+    const enqueueD = { type: 'prompt.enqueued', promptId: 'D', userMessageId: 'D', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'D' }] }, queueIndex: 1, appendTiming: 'agent_idle', revision: 0, time: 1_020 };
+    const switchQueued = {
+      type: 'prompt.model_switch_queued',
+      operationId: 'sw-after-d',
+      queueIndex: 2,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'sw-after-d', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_021,
+    };
+    records.push(enqueueD, switchQueued);
+    main.bus.emit(ev(enqueueD));
+    main.bus.emit(ev(switchQueued));
+
+    const live = store.getAgent('main')!;
+    expect(live.getPrompt('C')?.queuePosition).toBe(0);
+    expect(live.getPrompt('D')?.queuePosition).toBe(1);
+
+    const cold = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(cold);
+    for (const record of records) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    expect(cold.getPrompt('C')?.queuePosition).toBe(0);
+    expect(cold.getPrompt('D')?.queuePosition).toBe(1);
   });
 
   it('keeps live prompt-bound controls through submitted and queued events on one message', async () => {
@@ -2445,11 +2491,16 @@ describe('bindSessionTranscript', () => {
     expect(flush).toHaveBeenCalledOnce();
     const ops = changes.slice(beforeOutcome).flatMap((event) => event.ops);
     const status = state === 'cancelled' ? 'aborted' : state;
-    expect(ops).toEqual([expect.objectContaining({
-      op: 'prompt.upsert', prompt: expect.objectContaining({ promptId: 'target', status, queuePosition: undefined }),
-    })]);
+    expect(ops).toEqual([
+      expect.objectContaining({
+        op: 'prompt.upsert', prompt: expect.objectContaining({ promptId: 'target', status, queuePosition: undefined }),
+      }),
+      expect.objectContaining({
+        op: 'prompt.upsert', prompt: expect.objectContaining({ promptId: 'adjacent', status: 'queued', queuePosition: 0 }),
+      }),
+    ]);
     expect(store.getAgent('main')?.getPrompt('target')).toMatchObject({ status, queuePosition: undefined });
-    expect(store.getAgent('main')?.getPrompt('adjacent')).toMatchObject({ status: 'queued', queuePosition: 1 });
+    expect(store.getAgent('main')?.getPrompt('adjacent')).toMatchObject({ status: 'queued', queuePosition: 0 });
   });
 
   it('projects a durable tool-store update through the live bus, the resident snapshot, and a cold replay of that wire', async () => {
