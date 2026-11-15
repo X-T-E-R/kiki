@@ -499,3 +499,20 @@ test('external client plugin grants are retained in owner list reads', async () 
     assert.equal(saved.allowCommands, true);
   } finally { await server.stop(); }
 });
+
+test('session accounting reads return the seeded canonical snapshot without inventing missing totals', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'context-ring' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const headers = { authorization: 'Bearer kiki-fixture-token' };
+  try {
+    const response = await fetch(`${origin}/api/usage/sessions/session_fixture_context_ring/accounting`, { headers });
+    const body = await response.json();
+    assert.equal(body.code, 0);
+    assert.equal(body.data.complete, true);
+    assert.equal(body.data.freshness, 'current');
+    assert.equal(body.data.tokens.input_cache_read, 97000);
+    assert.equal(body.data.cost_usd_estimated, 0.8421);
+    const absent = await fetch(`${origin}/api/usage/sessions/missing/accounting`, { headers });
+    assert.equal((await absent.json()).code, 40404);
+  } finally { await server.stop(); }
+});

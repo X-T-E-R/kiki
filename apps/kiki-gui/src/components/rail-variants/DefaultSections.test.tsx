@@ -951,15 +951,16 @@ describe('ProfileHead inherited external effort', () => {
       );
     });
     await settle();
-    expect(readCapabilities).not.toHaveBeenCalled();
+    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    expect(readCapabilities).toHaveBeenCalledWith({ session_id: 'sess-1', agent_id: 'main' }, expect.any(AbortSignal));
     const line = container.querySelector('[data-rail-profile-model]');
     expect(line?.textContent).toContain('fallback-model');
     expect(line?.textContent).not.toContain('example-model');
-    expect(container.querySelector('[data-rail-profile-name]')?.textContent).toBe('Example');
+    expect(container.querySelector('[data-rail-profile-name]')?.textContent).toBe('example-profile');
 
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-rail-profile-name]')!.click(); });
     await settle();
-    expect(readCapabilities).toHaveBeenCalled();
+    expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(line?.textContent).toContain('fallback-model');
     expect(line?.textContent).not.toContain('example-model');

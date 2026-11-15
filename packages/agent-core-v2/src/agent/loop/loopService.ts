@@ -117,6 +117,8 @@ import {
 } from './turnEvents';
 import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { TurnCancel, TurnEnded, turnKey, TurnPrompt } from './turnOps';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 
 export type LoopInterruptReason = 'aborted' | 'max_steps' | 'error';
 
@@ -967,6 +969,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       return false;
     }
     if (this.finalization !== finalization) return true;
+    const contextTokens = this.instantiation.invokeFunction(accessor => accessor.get(IAgentTokenCountingService).statusSize());
+    void this.instantiation.invokeFunction(accessor => accessor.get(ISessionMetadata))
+      .updateAgent(this.scope.agentId, current => ({ ...current, contextTokens }))
+      .catch(error => this.log.warn('Failed to mirror context tokens', { error }));
     clearTimeout(this.persistenceRecoveryTimer);
     this.persistenceRecoveryTimer = undefined;
     this.finalization = undefined;

@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
+import { persistedAgentContextLimit } from './persistedAgentContext';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
+import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
@@ -2005,12 +2009,12 @@ export async function resolveSessionBindingFacts(
     }
   }
   if (facts.live) return facts;
-  const mainMetadata = metadata ?? (await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
-    `sessions/${workspaceId}/${sessionId}`, 'state.json',
-  ))?.agents?.[MAIN_AGENT_ID];
-  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined,
+  const saved = await readColdSessionMeta(core, workspaceId, sessionId);
+  const mainMetadata = metadata ?? saved?.agents?.[MAIN_AGENT_ID];
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal,
     { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
-  const preview = !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
+  const externallyDriven = profile?.driver === 'external' || saved !== undefined && isExternalClientMain(saved, MAIN_AGENT_ID);
+  const preview = !externallyDriven && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
     ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService),
       (await core.accessor.get(IWorkspaceService).get(workspaceId))?.root, workspaceId, false) : undefined;
   let binding: { model: string | undefined; executorId: string };
@@ -2018,10 +2022,15 @@ export async function resolveSessionBindingFacts(
     await preview?.catalog.ready;
     const models = core.accessor.get(IModelService);
     await models.ready;
-    binding = resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+    binding = externallyDriven ? { model: profile?.modelAlias, executorId: profile?.executorId ?? 'native' }
+      : resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
   } finally { await preview?.dispose(); }
+  const runtime = await readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal);
+  const contextLimit = !externallyDriven && binding.executorId === 'native' ? persistedAgentContextLimit(core, profile, binding.model) : undefined;
+  const usage = { ...(facts.usage ?? emptySessionUsage()), context_tokens: runtime.contextTokens ?? 0,
+    context_limit: contextLimit ?? 0, turn_count: runtime.turnCount ?? 0 };
   const persona = profile?.persona?.definition;
-  return { ...facts, executorId: binding.executorId, agentConfig: {
+  return { ...facts, usage, executorId: binding.executorId, agentConfig: {
     execution: profile?.execution, model: binding.model ?? '', profile: profile?.profileName,
     persona: persona === undefined ? undefined : {
       id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,

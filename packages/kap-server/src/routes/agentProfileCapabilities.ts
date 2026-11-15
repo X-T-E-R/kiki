@@ -360,7 +360,7 @@ async function readAgentCapabilities(
         ? await readColdSessionMeta(core, workspaceId, query.session_id)
         : await session.accessor.get(ISessionMetadata).read();
       const metadata = meta?.agents?.[query.agent_id];
-      const snapshot = await readPersistedAgentProfileSnapshot(
+      let snapshot = await readPersistedAgentProfileSnapshot(
         core,
         workspaceId,
         query.session_id,
@@ -384,6 +384,7 @@ async function readAgentCapabilities(
           (query.agent_id === 'main' ? catalog.snapshot?.().defaultProfile?.name : undefined);
         const resolution = resolvePanelProfile(catalog, profileName, snapshot.profileDefinitionId, {
           bound: snapshot.boundProfile,
+          metadataMain: query.agent_id === 'main' && snapshot.source === 'metadata',
         });
         if (resolution.profile === undefined) return {
           context: 'live', live: false,
@@ -394,6 +395,7 @@ async function readAgentCapabilities(
           targets: [],
           metrics: persisted,
         };
+        if (snapshot.source === 'metadata') snapshot = { ...snapshot, profileName: resolution.profile.name };
         const skillCatalog = session?.accessor.get(ISessionSkillCatalog);
         const sessionPolicy = session?.accessor.get(ISessionToolPolicy);
         await Promise.all([skillCatalog?.ready, sessionPolicy?.ready]);

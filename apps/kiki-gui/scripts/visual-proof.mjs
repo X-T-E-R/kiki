@@ -1608,8 +1608,11 @@ async function scenarioCockpit() {
   if (await overview.locator('[data-cockpit-gauge]').count() !== 2) {
     throw new Error(`expected 2 cockpit gauges, got ${await overview.locator('[data-cockpit-gauge]').count()}`);
   }
-  if (await overview.locator('[data-cockpit-fact]').count() !== 2) {
-    throw new Error(`expected 2 cockpit facts, got ${await overview.locator('[data-cockpit-fact]').count()}`);
+  if (await overview.locator('[data-cockpit-fact]').count() !== 3) {
+    throw new Error(`expected tokens, cost and turns, got ${await overview.locator('[data-cockpit-fact]').count()} cockpit facts`);
+  }
+  if (!(await overview.locator('[data-cockpit-fact="turns"]').innerText()).includes('14')) {
+    throw new Error('cockpit lost the seeded session turn count');
   }
   // The graph draws folded branches first; expanding the API branch reveals
   // its workers as lanes, and one of the two waiting agents has a lane.
@@ -6705,14 +6708,14 @@ async function scenarioContextRing() {
   await page.locator('[data-context-meter]').click();
   await page.waitForSelector('[data-context-details]', { timeout: 5000 });
   await page.locator('[data-context-details] button', { hasText: S.compactOlderContext }).click();
-  await page.waitForSelector(`text=${S.manualCompactionRequested}`, { timeout: 5000 });
+  await page.waitForSelector(`text=${S.compactionRequested}`, { timeout: 5000 });
   await shot('context-ring-compact');
 
   // The input's custom right-click menu.
-  await page.fill('textarea', 'ring menu probe');
-  await page.click('textarea');
-  await page.press('textarea', 'Control+A');
-  await page.click('textarea', { button: 'right' });
+  await page.fill('[data-composer-input]', 'ring menu probe');
+  await page.click('[data-composer-input]');
+  await page.press('[data-composer-input]', 'Control+A');
+  await page.click('[data-composer-input]', { button: 'right' });
   await page.waitForSelector('[data-composer-context-menu]', { timeout: 5000 });
   const menuText = await page.locator('[data-composer-context-menu]').innerText();
   if (!menuText.includes(S.contextMenuCut) || !menuText.includes(S.contextMenuCopy) || !menuText.includes(S.pasteAsPlainText) || !menuText.includes(S.contextMenuSelectAll)) {
@@ -6723,8 +6726,8 @@ async function scenarioContextRing() {
   await page.waitForSelector('[data-composer-context-menu]', { state: 'detached', timeout: 5000 });
 
   // Now prove the ring recolors live during a stream.
-  await page.fill('textarea', 'Push the context over the danger threshold.');
-  await page.press('textarea', 'Control+Enter');
+  await page.fill('[data-composer-input]', 'Push the context over the danger threshold.');
+  await page.press('[data-composer-input]', 'Control+Enter');
   await page.waitForFunction(
     () => document.querySelector('[data-context-meter]')?.getAttribute('data-context-level') === 'danger',
     { timeout: 15_000 },

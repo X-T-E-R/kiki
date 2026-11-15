@@ -19,6 +19,7 @@ export function resolveBoundPanelProfile(
   options: {
     readonly frozen?: AgentProfileCatalogSnapshot;
     readonly bound?: NonNullable<ProfileData['boundProfile']>;
+    readonly metadataMain?: boolean;
   } = {},
 ): PanelProfileResolution {
   if (matchesProfileIdentity(options.bound, profileName, definitionId)) {
@@ -43,7 +44,8 @@ export function resolveBoundPanelProfile(
     };
   }
   if (definitionId !== undefined) return {};
-  const profile = profileName === undefined ? undefined : catalog.get(profileName);
+  const profile = (profileName === undefined ? undefined : catalog.get(profileName))
+    ?? (options.metadataMain === true ? catalog.getDefault() : undefined);
   return {
     profile,
     sourceId: profile === undefined ? undefined : sourceIdForProfile(catalog, profile),

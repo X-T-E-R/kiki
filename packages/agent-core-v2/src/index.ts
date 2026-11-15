@@ -202,6 +202,7 @@ export * from '#/agent/delivery/deliveryReminder';
 import '#/agent/delivery/deliveryReminderService';
 export * from '#/session/sessionMetadata/promptMetadata';
 export * from '#/session/agentProfileSnapshot';
+export * from '#/session/agentRuntimeFacts';
 export * from '#/session/sessionActivity/sessionActivity';
 export * from '#/session/sessionActivity/sessionActivityService';
 export * from '#/session/sessionActivity/sessionOutcomeMirror';

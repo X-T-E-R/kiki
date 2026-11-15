@@ -166,10 +166,13 @@ export async function assembleBrowseSnapshotSource(
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   timing.signal?.throwIfAborted();
   const { subagents, counts } = coldBrowseRoster(sessionId, meta);
+  const facts = await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false });
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
-      await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false }), cursor.seq),
+      facts, cursor.seq),
+    context_tokens: facts.usage?.context_tokens,
+    max_context_tokens: (facts.usage?.context_limit ?? 0) > 0 ? facts.usage?.context_limit : undefined,
     messages: { items: [], has_more: false }, in_flight_turn: null,
     subagents, agent_counts: counts,
     pending_approvals: [], pending_questions: [],
@@ -278,11 +281,12 @@ async function assembleColdSnapshot(
   const workspace = await timeSessionViewPhase('snapshot_workspace', fields,
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   signal?.throwIfAborted();
+  const facts = await timeSessionViewPhase('snapshot_binding', fields,
+    () => resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], signal), timing);
   const session = toWireSession(
     { ...meta, workspaceId: summary.workspaceId },
     workspace?.root ?? meta.cwd ?? '',
-    await timeSessionViewPhase('snapshot_binding', fields,
-      () => resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], signal), timing),
+    facts,
     cursor.seq,
   );
   const subagentCandidates = sessionAgentRoster(sessionId, meta);
@@ -297,6 +301,8 @@ async function assembleColdSnapshot(
   return {
     as_of_seq: cursor.seq,
     epoch: cursor.epoch,
+    context_tokens: facts.usage?.context_tokens,
+    max_context_tokens: (facts.usage?.context_limit ?? 0) > 0 ? facts.usage?.context_limit : undefined,
     session: {
       ...session,
       message_count: aligned.messages.length,

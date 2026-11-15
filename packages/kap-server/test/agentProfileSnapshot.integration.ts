@@ -9,6 +9,7 @@ import {
   IAgentMcpService,
   IAgentProfileRegistry,
   IAgentProfileService,
+  IEventDispatcher,
   IAppendLogStore,
   IConfigService,
   IWorkspaceInstanceManager,
@@ -25,11 +26,19 @@ import {
   sessionScopeOf,
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2';
-import { ConfigUpdate } from '@kiki/agent-core-v2/agent/profile/profileOps';
+import { assembleBrowseSnapshotSource } from '../src/routes/snapshot';
+import { readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
+import { usageRuntime } from '../src/usage/usageRuntime';
+import type { IModelPricingService } from '../src/pricing/modelPricingService';
+import { TokenCountingRebased } from '@kiki/agent-core-v2/agent/tokenCounting/tokenCountingOps';
+import { TurnPrompt } from '@kiki/agent-core-v2/agent/loop/turnOps';
+import { UsageRecord } from '@kiki/agent-core-v2/agent/usage/usageOps';
+import { FullCompactionComplete } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
+import { ConfigUpdate, ProfileBind } from '@kiki/agent-core-v2/agent/profile/profileOps';
 import { LlmRequest } from '@kiki/agent-core-v2/agent/llmRequester/llmRequestOps';
 import { McpConnectionManager } from '@kiki/agent-core-v2/mcpCore/connection-manager';
 import { McpToolsDiscovered } from '@kiki/agent-core-v2/agent/mcp/mcpDiscoveryOps';
-import { agentCapabilitiesResponseSchema, type AgentCapabilitiesResponse } from '@kiki/protocol';
+import { ErrorCode, agentCapabilitiesResponseSchema, type AgentCapabilitiesResponse } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
@@ -333,9 +342,9 @@ describe('disposed agent capability snapshots', () => {
     await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY);
     const refreshed = await readCapabilities(sessionId, child.id);
     expect(refreshed.profile).toMatchObject({ model: 'stub', thinking_effort: 'low' });
-    expect(wireReads()).toHaveLength(2);
+    expect(wireReads()).toHaveLength(5);
     expect((await readCapabilities(sessionId, child.id)).profile).toEqual(refreshed.profile);
-    expect(wireReads()).toHaveLength(2);
+    expect(wireReads()).toHaveLength(5);
   });
 
   it('replays actual request evidence for a disposed agent and keeps legacy anchor evidence unknown', async () => {
@@ -577,6 +586,96 @@ describe('disposed agent capability snapshots', () => {
     expect(getSpy).not.toHaveBeenCalled();
     expect(saveSpy).not.toHaveBeenCalled();
     expect((await workspacePersistence.load())?.workspaces ?? []).toEqual([]);
+    expect(manager.get(sessionId)).toBeUndefined();
+  });
+
+  it('serves large cold checkpoint context, turns, accounting and compactions without restoring main', async () => {
+    await writeStubConfig(home);
+    await start();
+    const sessionId = await createSession();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const session = manager.get(sessionId)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), 'main');
+    const log = server!.core.accessor.get(IAppendLogStore);
+    log.append(scope, AGENT_WIRE_RECORD_KEY, { type: 'fixture.padding', text: 'x'.repeat((8 << 20) + 1), time: 1 });
+    await log.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const dispatcher = main.accessor.get(IEventDispatcher);
+    await dispatcher.dispatchDurably(new TurnPrompt({ input: [], origin: { kind: 'user' }, turnId: 6 }));
+    await dispatcher.dispatchDurably(new TokenCountingRebased({ length: 1, tokens: 234, measured: true }));
+    await dispatcher.dispatchDurably(new UsageRecord({ model: 'stub', usage: { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 }, usageScope: 'turn', turnId: 6, usageKnown: true }));
+    await dispatcher.dispatchDurably(new FullCompactionComplete({}));
+    expect(await dispatcher.saveReplayCheckpoint!()).toBe(true);
+    await manager.close(sessionId);
+    const resume = vi.spyOn(manager, 'resume');
+    const browse = await assembleBrowseSnapshotSource(server!.core, { getCursor: async () => ({ seq: 0, epoch: 'cold-fixture' }) } as never, sessionId);
+    expect(browse).toMatchObject({ context_tokens: 234, max_context_tokens: 1000,
+      session: { usage: { context_tokens: 234, context_limit: 1000, turn_count: 7 } } });
+    const sessionResponse = await authedFetch(server!, base, `/api/sessions/${sessionId}`);
+    expect((await sessionResponse.json() as Envelope<unknown>).data).toMatchObject({ usage: { context_tokens: 234, context_limit: 1000, turn_count: 7 } });
+    const importing = vi.spyOn(usageRuntime(server!.core).service, 'readAgentUsage');
+    const pricing = { calculate: (_model: string, value: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number }) =>
+      value.inputOther * 0.001 + value.output * 0.002 + value.inputCacheRead * 0.0001 + value.inputCacheCreation * 0.001 } as IModelPricingService;
+    for (const settle of [false, true]) {
+      const priced = await readPersistedAgentPanelMetrics(server!.core, workspaceId, sessionId, pricing,
+        { agentIds: ['main'], settle, complete: settle });
+      expect(priced['main']).toMatchObject({ totalTokens: 180, costPartial: false });
+      expect(priced['main']?.totalCostUsd).toBeCloseTo(0.155);
+      const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${sessionId}&agent_id=main&metrics_only=true&metrics_settle=${settle}`);
+      expect((await response.json() as Envelope<AgentCapabilitiesResponse>).data.metrics?.['main']).toMatchObject({
+        contextTokens: 234, contextLimit: 1000, compactionCount: 1,
+        inputTokens: 160, outputTokens: 20, cacheReadTokens: 50, cacheWriteTokens: 10,
+        totalTokens: 180, usageComplete: true, usagePartial: false,
+      });
+    }
+    expect(importing).not.toHaveBeenCalled();
+    const compact = await authedFetch(server!, base, `/api/sessions/${sessionId}/agents/main/auto-compact?observe=true`);
+    expect((await compact.json() as Envelope<unknown>).code).toBe(ErrorCode.SESSION_BUSY);
+    expect(resume).not.toHaveBeenCalled();
+    expect(manager.get(sessionId)).toBeUndefined();
+  });
+
+  it('uses the default main profile for metadata persona labels while missing child profiles remain unavailable', async () => {
+    await writeStubConfig(home);
+    await start();
+    const sessionId = await createSession();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const session = manager.get(sessionId)!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    await session.accessor.get(ISessionMetadata).updateAgent('main', current => ({ ...current, displayName: 'example-persona', contextTokens: 321 }));
+    await session.accessor.get(ISessionMetadata).registerAgent('missing-child', { type: 'sub', model: 'stub', labels: { profileName: 'missing-profile' } });
+    await manager.close(sessionId);
+    const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), 'main');
+    const log = server!.core.accessor.get(IAppendLogStore);
+    log.append(scope, AGENT_WIRE_RECORD_KEY, { type: 'fixture.padding', text: 'x'.repeat((8 << 20) + 1), time: 1 });
+    await log.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const data = await readCapabilities(sessionId, 'main');
+    expect(data).toMatchObject({ live: false, available: true, profile: { name: 'agent' }, metrics: { main: { contextTokens: 321, contextLimit: 1000 } } });
+    const child = await readCapabilities(sessionId, 'missing-child');
+    expect(child.unavailable_reason_code).toBe('persisted_profile_unavailable');
+    expect(manager.get(sessionId)).toBeUndefined();
+  });
+
+  it('keeps a cold external-client main opaque to native default model and context capabilities', async () => {
+    await writeStubConfig(home);
+    await start();
+    const sessionId = await createSession();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const session = manager.get(sessionId)!;
+    const metadata = session.accessor.get(ISessionMetadata);
+    await metadata.update({ executionPhase: metadata.snapshot().executionPhase,
+      custom: { externalClient: { connectionId: 'fixture-connection', clientName: 'Fixture client', sessionRef: 'fixture-session', driver: 'external' } } });
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IEventDispatcher).dispatchDurably(new ProfileBind({ driver: 'external',
+      profileName: 'agent', thinkingEffort: 'off', systemPrompt: '', disallowedTools: [] }));
+    await manager.close(sessionId);
+    const resume = vi.spyOn(manager, 'resume');
+    const response = await authedFetch(server!, base, `/api/sessions/${sessionId}`);
+    expect((await response.json() as Envelope<unknown>).data).toMatchObject({ agent_config: { model: '' }, usage: { context_limit: 0 } });
+    const data = await readCapabilities(sessionId, 'main');
+    expect(data.metrics?.['main']).toMatchObject({ contextLimit: null, compactionCount: null });
+    expect(resume).not.toHaveBeenCalled();
     expect(manager.get(sessionId)).toBeUndefined();
   });
 

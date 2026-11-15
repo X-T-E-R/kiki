@@ -23,6 +23,7 @@ import { retryBackoffDelay, sleepForRetry } from '#/_base/utils/retry';
 import { IAgentLoopService, type LoopErrorContext } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { isAbortError } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -621,6 +622,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       }
       await this.flushDurable(active);
       active.committedResult = active.appliedResult;
+      const contextTokens = this.tokenCounting.statusSize();
+      void this.instantiation.invokeFunction(accessor => accessor.get(ISessionMetadata))
+        .updateAgent(this.scope.agentId, current => ({ ...current, contextTokens }))
+        .catch(error => this.log.warn('Failed to mirror context tokens', { error }));
       active.phase = 'finalizing';
       active.persistBlocked = false;
       return active.appliedResult;

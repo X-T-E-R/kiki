@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { profileKey, profileActiveToolsKey } from '#/agent/profile/profileOps';
+import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
+import { turnKey } from '#/agent/loop/turnOps';
+import { panelAccountingKey } from '#/agent/usage/panelAccounting';
+import { readPersistedAgentRuntimeFacts } from '#/session/agentRuntimeFacts';
+import { encodeReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
 import {
   PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
   readPersistedAgentProfileSnapshot,
@@ -110,4 +118,89 @@ describe('readPersistedAgentProfileSnapshot', () => {
     expect(snapshot).toMatchObject({ source: 'wire', modelAlias: 'from-wire', activeToolsKnown: false });
     expect(snapshot?.promptRequest).toBeUndefined();
   });
+});
+
+function checkpointFixture() {
+  const prefix = Buffer.alloc((8 << 20) + 100, 32);
+  prefix[prefix.length - 1] = 10;
+  const tail = Buffer.from([
+    { type: 'tools.set_active_tools', names: ['Read', 'Grep'], time: 2 },
+    { type: 'token_counting.rebased', length: 4, tokens: 1234, measured: true, time: 2 },
+    { type: 'turn.prompt', input: [], origin: { kind: 'user' }, turnId: 7, time: 2 },
+    { type: 'usage.record', model: 'example-model', usage: { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 }, usageKnown: true, time: 2 },
+    { type: 'full_compaction.complete', time: 2 },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  const bytes = Buffer.concat([prefix, tail]);
+  const states = [
+    { name: profileKey.name, value: { ...profileKey.initial(), profileName: 'research', modelAlias: 'example-model',
+      canSpawnSubagents: true, allowedSubagents: ['explore'], toolAllowPolicies: [['Read', 'Grep']],
+      boundProfile: { name: 'research', tools: ['Read'], mcpOverrides: { example: false } } } },
+    { name: profileActiveToolsKey.name, value: ['Read'] },
+    { name: tokenCountingKey.name, value: tokenCountingKey.initial() },
+    { name: turnKey.name, value: turnKey.initial() },
+    { name: panelAccountingKey.name, value: panelAccountingKey.initial() },
+  ];
+  const checkpoint = { format: 1, replayAbi: REPLAY_ABI_VERSION,
+    wire: { size: prefix.length, mtimeMs: 1, storeGeneration: 'fixture-generation',
+      headHash: createHash('sha256').update(prefix.subarray(0, 65536)).digest('hex').slice(0, 32),
+      boundarySha256: createHash('sha256').update(prefix.subarray(-4096)).digest('hex') },
+    graph: encodeReplayCheckpointGraph({ states }),
+  };
+  const reads: Array<{ start: number; end: number }> = [];
+  const host = {
+    docs: { get: async () => checkpoint },
+    storage: { size: async () => bytes.length, mtime: async () => 2, pathFor: () => undefined,
+      read: async (_scope: string, key: string) => key.endsWith('.generation') ? Buffer.from('fixture-generation') : undefined,
+      readStream: async function* (_scope: string, _key: string, range?: { start: number; end: number }) {
+        if (range === undefined) throw new Error('Unbounded wire read');
+        reads.push(range);
+        yield bytes.subarray(range.start, range.end + 1);
+      } },
+    appendLog: { flush: async () => {} },
+  };
+  return { host, reads, checkpoint, prefix };
+}
+
+it('recovers a large cold profile and runtime facts from a verified checkpoint and bounded tail', async () => {
+  const { host, reads, prefix } = checkpointFixture();
+  const snapshot = await readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined,
+    undefined, { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
+  expect(snapshot).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'],
+    activeToolsKnown: true, canSpawnSubagents: true, allowedSubagents: ['explore'],
+    boundProfile: { name: 'research', mcpOverrides: { example: false } } });
+  const facts = await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main');
+  expect(facts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true,
+    panelAccounting: { records: 1, knownRecords: 1, successfulCompactions: 1,
+      knownByModel: { 'example-model': { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 } } } });
+  expect(reads.some(range => range.start === prefix.length)).toBe(true);
+  expect(reads.reduce((sum, range) => sum + range.end - range.start + 1, 0)).toBeLessThan(160_000);
+});
+
+it('rejects an invalid large checkpoint without scanning its wire and uses mirrored context', async () => {
+  const { host, checkpoint, reads } = checkpointFixture();
+  checkpoint.wire.boundarySha256 = '0'.repeat(64);
+  const facts = await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', { contextTokens: 99 } as never);
+  expect(facts).toEqual({ contextTokens: 99, complete: false });
+  expect(reads.every(range => range.end - range.start < 65536)).toBe(true);
+});
+
+it('uses the context mirror when a small valid wire has no token-counting facts', async () => {
+  const bytes = Buffer.from('{"type":"config.update","modelAlias":"example-model","time":1}\n');
+  const host = { storage: { size: async () => bytes.length, mtime: async () => 1, pathFor: () => undefined,
+    read: async () => undefined, readStream: async function* () { yield bytes; } }, appendLog: { flush: async () => {} } };
+  expect(await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', { contextTokens: 321 } as never))
+    .toMatchObject({ contextTokens: 321, complete: true });
+});
+
+it.each([false, true])('keeps mirrored context through a direct model switch, with explicit zero counting=%s', async counted => {
+  const records = [{ type: 'agent.model_switch', operationId: 'switch', input: { operationId: 'switch', model: 'next', mode: 'direct' },
+    agentId: 'main', fromModel: 'old', toModel: 'next', mode: 'direct', thinking: 'off',
+    config: { modelAlias: 'next', thinkingEffort: 'off' }, contextRevision: 0, oldEpoch: 0, newEpoch: 0,
+    summaryGenerated: false, previousMessageCount: 0, time: 1 },
+    ...(counted ? [{ type: 'token_counting.rebased', length: 0, tokens: 0, measured: true, time: 2 }] : [])];
+  const bytes = Buffer.from(records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const host = { storage: { size: async () => bytes.length, mtime: async () => 1, pathFor: () => undefined,
+    read: async () => undefined, readStream: async function* () { yield bytes; } }, appendLog: { flush: async () => {} } };
+  expect(await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', { contextTokens: 321 } as never))
+    .toMatchObject({ contextTokens: counted ? 0 : 321, complete: true });
 });

@@ -253,6 +253,7 @@ function persistedFixture(
         if (identifier === IUsageReadModel) return model;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
+        if (identifier === IAtomicDocumentStore) return ix.get(IAtomicDocumentStore);
         if (identifier === IRetainedUsageService) return {
           recordOperation: async () => {},
           readOperationSummary: async () => ({ complete: true }),
