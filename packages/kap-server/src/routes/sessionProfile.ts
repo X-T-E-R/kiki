@@ -3,8 +3,21 @@ import {
   ISessionMetadata,
   type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
+import { PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { SessionWireFields } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import type { UpdateSessionProfileRequest } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
+
+function replaceCustomMetadata(
+  existing: Record<string, unknown> | undefined,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const custom = { ...patch };
+  if (!Object.hasOwn(custom, PROMOTED_FROM_KEY) && existing !== undefined && Object.hasOwn(existing, PROMOTED_FROM_KEY)) {
+    custom[PROMOTED_FROM_KEY] = existing[PROMOTED_FROM_KEY];
+  }
+  return custom;
+}
+
 export async function updateSessionProfile(
   session: ISessionScopeHandle,
   body: Pick<UpdateSessionProfileRequest, 'title' | 'private' | 'metadata'>,
@@ -21,7 +34,8 @@ export async function updateSessionProfile(
 
   const metadataPatch = body.metadata;
   if (metadataPatch !== undefined && Object.keys(metadataPatch).length > 0) {
-    await metadata.update({ custom: { ...(metadataPatch as Record<string, unknown>) } });
+    const current = await metadata.read();
+    await metadata.update({ custom: replaceCustomMetadata(current.custom, metadataPatch as Record<string, unknown>) });
   }
 
   const meta = await metadata.read();

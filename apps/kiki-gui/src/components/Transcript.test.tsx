@@ -6366,6 +6366,78 @@ describe('virtualized transcript scrolling', () => {
     expect(cancelableLoaded).toBe(2);
   }, 15_000);
 
+  it('automatically fills a measured underfilled viewport with older pages and stops once scrollable', async () => {
+    const { root, container } = makeRoot();
+    let state = { ...transcriptState(virtualBlocks(1, 'short-tail')), hasMoreHistory: true };
+    const onLoadOlder = vi.fn(async () => {
+      state = { ...state, blocks: [...virtualBlocks(1, `fill-${onLoadOlder.mock.calls.length}`), ...state.blocks] };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
+    await settleReadingFrames();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    expect(onLoadOlder.mock.calls.length).toBeGreaterThan(0);
+    expect(onLoadOlder.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
+    const pages = onLoadOlder.mock.calls.length;
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(pages);
+  });
+
+  it('checks underfill again when virtualized content measurement shrinks after the initial layout', async () => {
+    const { root, container } = makeRoot();
+    const onLoadOlder = vi.fn(async () => false);
+    const state = { ...transcriptState(virtualBlocks(1, 'measured-tail')), hasMoreHistory: true };
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    let height = 1200;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => height });
+    await settleReadingFrames();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    height = scroll.clientHeight;
+    await act(async () => { resizeElement(scroll.querySelector('[data-transcript-virtual-content]')!, height); });
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds underfill pages when older content remains folded into the same short row', async () => {
+    const { root } = makeRoot();
+    const state = { ...transcriptState(virtualBlocks(1, 'folded-tail')), hasMoreHistory: true };
+    const onLoadOlder = vi.fn(async () => true);
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+    await renderSettled(root, virtualTranscript({ ...state, version: state.version + 1 }, onLoadOlder, agentId));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not auto-load an unmeasured viewport and cancels an underfill pass on downward input', async () => {
+    const { root, container } = makeRoot();
+    let finish!: (changed: boolean) => void;
+    let signal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((nextSignal?: AbortSignal) => {
+      signal = nextSignal;
+      return new Promise<boolean>((resolve) => { finish = resolve; });
+    });
+    const state = { ...transcriptState(virtualBlocks(1, 'underfill-cancel')), hasMoreHistory: true };
+    await renderSettled(root, virtualTranscript(state, onLoadOlder, agentId));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 0 });
+    await settleReadingFrames();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 320 });
+    await renderSettled(root, virtualTranscript({ ...state, blocks: [...state.blocks] }, onLoadOlder, agentId));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { finish(true); });
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');
@@ -6609,9 +6681,9 @@ describe('virtualized transcript scrolling', () => {
   });
 
   it.each([
-    { label: 'a transcript reset', resetVersion: 1, nextBlocks: virtualBlocks(2, 'replacement') },
-    { label: 'content shortening', resetVersion: 0, nextBlocks: virtualBlocks(2, 'replacement') },
-  ])('discards an old upward intent when $label moves the viewport to the top', async ({ resetVersion, nextBlocks }) => {
+    { label: 'a transcript reset', resetVersion: 1, nextBlocks: virtualBlocks(6, 'replacement') },
+    { label: 'content shortening', resetVersion: 0, nextBlocks: virtualBlocks(6, 'replacement') },
+  ])('discards an old upward intent after $label while the viewport remains scrollable', async ({ resetVersion, nextBlocks }) => {
     const onLoadOlder = vi.fn(async () => true);
     const initial = { ...transcriptState(virtualBlocks(100, 'history')), hasMoreHistory: true };
     const { root, container } = makeRoot();
@@ -6622,6 +6694,7 @@ describe('virtualized transcript scrolling', () => {
     expect(onLoadOlder).not.toHaveBeenCalled();
 
     await renderSettled(root, virtualTranscript({ ...initial, blocks: nextBlocks, transcriptResetVersion: resetVersion }, onLoadOlder, agentId));
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
     expect(onLoadOlder).not.toHaveBeenCalled();
     await setTranscriptScroll(scroll, 0);
     await settleVirtualizer();

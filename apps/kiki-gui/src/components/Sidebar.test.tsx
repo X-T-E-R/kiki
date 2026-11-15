@@ -354,7 +354,7 @@ async function mount(
   overrides: SidebarOverrides = {},
   host: HostAdapter = browserHost,
   cachedSessions: readonly Session[] = [],
-): Promise<{ container: HTMLDivElement; root: Root; queryClient: QueryClient }> {
+): Promise<{ container: HTMLDivElement; root: Root; queryClient: QueryClient; render: (next: SidebarOverrides) => Promise<void> }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -362,48 +362,51 @@ async function mount(
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
-  const { sessionGroups: rawGroups, initialEntries, guard, ...rest } = overrides;
-  const sessionGroups = (rawGroups ?? []).map((group) => ({
-    ...group,
-    items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
-  }));
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <HostProvider host={host}>
-            <MemoryRouter initialEntries={initialEntries as string[] | undefined}>
-              <MaybeGuard guard={guard}>
-              <Sidebar
-                activeSessionId={undefined}
-                sessions={[]}
-                sessionGroups={sessionGroups}
-                sessionsQuery={{
-                  isLoading: false,
-                  isError: false,
-                  error: null,
-                  hasNextPage: false,
-                  isFetchingNextPage: false,
-                  fetchNextPage: async () => {},
-                }}
-                workspaceOptions={[]}
-                filters={DEFAULT_SESSION_LIST_FILTERS}
-                onFiltersChange={() => {}}
-                onNewSession={() => {}}
-                groupBy="time"
-                onGroupBy={() => {}}
-                sortBy="updated-desc"
-                onSortBy={() => {}}
-                {...rest}
-              />
-              </MaybeGuard>
-            </MemoryRouter>
-          </HostProvider>
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
-  return { container, root, queryClient: client };
+  const render = async (next: SidebarOverrides) => {
+    const { sessionGroups: rawGroups, initialEntries, guard, ...rest } = next;
+    const sessionGroups = (rawGroups ?? []).map((group) => ({
+      ...group,
+      items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
+    }));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <HostProvider host={host}>
+              <MemoryRouter initialEntries={initialEntries as string[] | undefined}>
+                <MaybeGuard guard={guard}>
+                <Sidebar
+                  activeSessionId={undefined}
+                  sessions={[]}
+                  sessionGroups={sessionGroups}
+                  sessionsQuery={{
+                    isLoading: false,
+                    isError: false,
+                    error: null,
+                    hasNextPage: false,
+                    isFetchingNextPage: false,
+                    fetchNextPage: async () => {},
+                  }}
+                  workspaceOptions={[]}
+                  filters={DEFAULT_SESSION_LIST_FILTERS}
+                  onFiltersChange={() => {}}
+                  onNewSession={() => {}}
+                  groupBy="time"
+                  onGroupBy={() => {}}
+                  sortBy="updated-desc"
+                  onSortBy={() => {}}
+                  {...rest}
+                />
+                </MaybeGuard>
+              </MemoryRouter>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+  };
+  await render(overrides);
+  return { container, root, queryClient: client, render };
 }
 
 function workspace(id: string, name: string, pinned = false): Workspace {
@@ -3896,6 +3899,60 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
     });
     return document.body.querySelector<HTMLElement>(`[data-rename-editor="${id}"]`)!;
   };
+
+  it.each([
+    { kind: 'session', confirmed: 'Renamed' },
+    { kind: 'session', confirmed: 'Another client title' },
+    { kind: 'room', confirmed: 'Renamed' },
+    { kind: 'room', confirmed: 'Another client title' },
+  ] as const)('retires a $kind rename override when the server title reaches $confirmed', async ({ kind, confirmed }) => {
+    const id = 'rename-roundtrip';
+    const propsFor = (title: string): SidebarOverrides => {
+      if (kind === 'room') {
+        const room: RoomListItem = {
+          kind: 'room', id, title, workspace: 'ws_test', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+          lastSeq: 0, memberCount: 2, busy: false, needsYou: false, pendingInteraction: 'none', failed: false, pinned: false, archived: false,
+        };
+        return { rooms: [room], sessionGroups: [{ key: 'today', label: 'Today', items: mergeConversationItems([], [room], {}) }] };
+      }
+      const item = { ...session(id), title };
+      return { sessions: [item], sessionGroups: [{ key: 'today', label: 'Today', items: [item] }] };
+    };
+    roomRest.update.mockResolvedValue({});
+    const { container, render } = await mount(propsFor('Original'));
+    const row = () => container.querySelector(`[data-${kind}-row="${id}"]`)!;
+    await act(async () => { row().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 32, clientY: 64 })); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-menu-item="rename"]')!.click(); });
+    const editor = document.body.querySelector<HTMLElement>(`[data-rename-editor="${id}"]`)!;
+    await setInputValue(editor.querySelector<HTMLInputElement>('[data-rename-input]')!, 'Renamed');
+    await act(async () => { editor.querySelector<HTMLButtonElement>('[data-rename-confirm]')!.click(); });
+    await settle();
+    expect(row().textContent).toContain('Renamed');
+    await render(propsFor(confirmed));
+    await render(propsFor('Original'));
+    expect(row().textContent).toContain('Original');
+    expect(row().textContent).not.toContain('Renamed');
+  });
+
+  it('ignores an older rename completion after a later rename for the same session', async () => {
+    const item = session('rename-race');
+    const other = session('other-row');
+    let first!: (value: { id: string; title: string }) => void;
+    updateSessionProfile.mockImplementationOnce(() => new Promise((resolve) => { first = resolve; }));
+    const { container, queryClient } = await mount({ sessions: [item, other], sessionGroups: [{ key: 'today', label: 'Today', items: [item, other] }] }, undefined, [item]);
+    const submit = async (id: string, name: string) => {
+      const editor = await openSessionRename(container, id);
+      await setInputValue(editor.querySelector<HTMLInputElement>('[data-rename-input]')!, name);
+      await act(async () => { editor.querySelector<HTMLButtonElement>('[data-rename-confirm]')!.click(); });
+    };
+    await submit(item.id, 'Older response');
+    await openSessionRename(container, other.id);
+    await submit(item.id, 'Newest name');
+    expect(container.querySelector(`[data-session-row="${item.id}"] [data-session-title]`)?.textContent).toContain('Newest name');
+    await act(async () => { first({ id: item.id, title: 'Older response' }); });
+    expect(container.querySelector(`[data-session-row="${item.id}"] [data-session-title]`)?.textContent).toContain('Newest name');
+    expect(queryClient.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', 'cached'])?.pages[0]?.items[0]?.title).toBe('Newest name');
+  });
 
   it('saves via the inline confirm button, prevents duplicate submits, updates cache synchronously, and flashes saved state', async () => {
     let resolveSave!: (value: Session) => void;

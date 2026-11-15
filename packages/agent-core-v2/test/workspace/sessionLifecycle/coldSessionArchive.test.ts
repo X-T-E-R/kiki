@@ -305,6 +305,55 @@ describe('updateColdSessionProfile', () => {
     ]);
   });
 
+  it('preserves promotion provenance while replacing omitted custom metadata on pin changes', async () => {
+    const promotedFrom = {
+      sessionId: 'source-session',
+      agentId: 'research-agent',
+      agentName: 'Researcher',
+      profile: 'researcher',
+      promotedAt: 123,
+    };
+    let stored: SessionMeta = {
+      id: 's1',
+      cwd: '/deleted/worktree',
+      createdAt: 10,
+      updatedAt: 20,
+      archived: false,
+      custom: { promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 100, retained: 'drop' },
+    };
+    const apply = (metadata: Record<string, unknown>) => updateColdSessionProfile(
+      coldPathAccessor({
+        storeGet: async () => stored,
+        onStoreSet: (_scope, _key, value) => {
+          stored = value as SessionMeta;
+        },
+      }),
+      's1',
+      { metadata },
+    );
+
+    const unpinned = await apply({ 'kiki.pinned': false });
+    expect(unpinned).toMatchObject({
+      kind: 'updated',
+      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': false } },
+    });
+    expect(unpinned.kind === 'updated' ? unpinned.meta.custom : undefined).not.toHaveProperty('pinned_at');
+    expect(unpinned.kind === 'updated' ? unpinned.meta.custom : undefined).not.toHaveProperty('retained');
+
+    const pinned = await apply({ 'kiki.pinned': true, pinned_at: 200 });
+    expect(pinned).toMatchObject({
+      kind: 'updated',
+      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 200 } },
+    });
+
+    const unpinnedAgain = await apply({ 'kiki.pinned': false });
+    expect(unpinnedAgain).toMatchObject({
+      kind: 'updated',
+      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': false } },
+    });
+    expect(unpinnedAgain.kind === 'updated' ? unpinnedAgain.meta.custom : undefined).not.toHaveProperty('pinned_at');
+  });
+
   it('orders usage privacy updates around persistence and strips statistics when marking private', async () => {
     const steps: string[] = [];
     const recorded: SessionSummary[] = [];

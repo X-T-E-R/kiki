@@ -451,6 +451,60 @@ describe('http transport', () => {
     }
   });
 
+  it.each([40901, 'SESSION_BUSY'])('retries a busy ordered-view attachment with backoff and retains its checkpoints (%s)', async (code) => {
+    vi.useFakeTimers();
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const signals: unknown[] = [];
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 7 }, transcriptGrades: { main: 'delta' }, transcriptSince: { main: { seq: 31 } },
+    }, (signal) => signals.push(signal));
+    const attaches = () => server.frames.filter((frame) => frame['type'] === 'view_attach');
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const id = attaches()[0]!['id'];
+      server.push({ type: 'view_error', id, code, msg: 'History read lane busy' });
+      await vi.advanceTimersByTimeAsync(249);
+      expect(attaches()).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(attaches()).toHaveLength(2);
+      expect(attaches()[1]).toMatchObject({ id, data: { input: {
+        sessionCursor: { seq: 7 }, transcriptSince: { main: { seq: 31 } },
+      } } });
+      expect(signals).not.toContainEqual(expect.objectContaining({ type: 'protocolError' }));
+      server.push({ type: 'view_signal', id, data: { type: 'ready', generation: 1, currentSessionCursor: { seq: 7 }, reconnected: false } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(signals).toContainEqual(expect.objectContaining({ type: 'ready' }));
+      server.push({ type: 'view_error', id, code, msg: 'Busy again' });
+      subscription.close();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(attaches()).toHaveLength(2);
+    } finally { subscription.close(); await klient.close(); vi.useRealTimers(); }
+  });
+
+  it('bounds busy attachment retries and reports a terminal error after exhaustion', async () => {
+    vi.useFakeTimers();
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const signals: unknown[] = [];
+    const subscription = klient.session('s1').view.subscribe({ sessionCursor: { seq: 1 }, transcriptGrades: { main: 'delta' } }, (signal) => signals.push(signal));
+    const attaches = () => server.frames.filter((frame) => frame['type'] === 'view_attach');
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const id = attaches()[0]!['id'];
+      for (const delay of [250, 500, 1000, 2000]) {
+        server.push({ type: 'view_error', id, code: 40901, msg: 'Busy' });
+        await vi.advanceTimersByTimeAsync(delay);
+      }
+      expect(attaches()).toHaveLength(5);
+      server.push({ type: 'view_error', id, code: 40901, msg: 'Busy' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(signals).toContainEqual(expect.objectContaining({ type: 'protocolError', recoverable: false, detail: 'Busy' }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(attaches()).toHaveLength(5);
+    } finally { subscription.close(); await klient.close(); vi.useRealTimers(); }
+  });
+
   it('marks an ordered-view attach reconnected only after the socket reopened, until a ready answers it', async () => {
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });

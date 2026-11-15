@@ -1485,3 +1485,53 @@ describe('collectPausedSessionIds over a real keyset index', () => {
     expect(found).toEqual([]);
   });
 });
+
+
+describe('live agent snapshot availability', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    connection.client.session.mockReturnValue({ execution: undefined, events: undefined });
+    connection.client.getSession.mockRejectedValue(new Error('not found'));
+  });
+
+  it('shows initial loading and read failure without inventing zero counts or idle activity', async () => {
+    const refetch = vi.fn();
+    mockLiveAgent.mockReturnValue({ snapshot: undefined, loading: true, isError: false, stale: false, refetch });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const panel = () => container.querySelector<HTMLElement>('[data-governance-live-agents]')!;
+    expect(panel().textContent).toContain('Loading live agent state…');
+    expect(panel().querySelector('[data-governance-main-agents]')).toBeNull();
+    expect(panel().querySelector('[data-governance-agents-empty]')).toBeNull();
+    expect(panel().querySelector('[data-axis="governance-agent-dimension"]')).toBeNull();
+    mockLiveAgent.mockReturnValue({ snapshot: undefined, loading: false, isError: true, stale: true, refetch });
+    await settle(render);
+    expect(panel().textContent).toContain('Live agent state unavailable');
+    expect(panel().querySelector('[data-governance-total-agents]')).toBeNull();
+    expect(panel().querySelector('[data-governance-agents-empty]')).toBeNull();
+    await act(async () => { panel().querySelector<HTMLButtonElement>('[data-governance-agents-retry]')!.click(); });
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps cached agent counts and dimensions on polling failure and marks the snapshot stale', async () => {
+    liveAgentsWith(['session-example']);
+    const cached = mockLiveAgent().snapshot;
+    const refetch = vi.fn();
+    mockLiveAgent.mockReturnValue({ snapshot: cached, loading: false, isError: false, stale: false, refetch });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    expect(container.querySelector('[data-governance-agents-stale]')).toBeNull();
+    mockLiveAgent.mockReturnValue({ snapshot: cached, loading: false, isError: true, stale: true, refetch });
+    await settle(render);
+    expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-governance-agent-row="kiki"]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-agents-stale]')?.textContent).toContain('This view may be out of date');
+    expect(container.querySelector('[data-governance-agents-status]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-agents-retry]')!.click(); });
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+});

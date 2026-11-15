@@ -7,7 +7,7 @@ import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/s
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { PROMOTED_FROM_KEY, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { normalizeSessionMeta, encodeSessionMeta, withoutAgentStatistics } from '#/session/sessionMetadata/sessionMetadataService';
 
 import { sessionScopeOf, legacySessionMetaScopeOf, workspacePersistenceScope } from './internal/addressing';
@@ -26,6 +26,17 @@ function archiveServices(accessor: ServicesAccessor) {
 }
 
 type ArchiveServices = ReturnType<typeof archiveServices>;
+
+function replaceCustomMetadata(
+  existing: Record<string, unknown> | undefined,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const custom = { ...patch };
+  if (!Object.hasOwn(custom, PROMOTED_FROM_KEY) && existing !== undefined && Object.hasOwn(existing, PROMOTED_FROM_KEY)) {
+    custom[PROMOTED_FROM_KEY] = existing[PROMOTED_FROM_KEY];
+  }
+  return custom;
+}
 
 export function setColdSessionArchived(
   accessor: ServicesAccessor,
@@ -134,7 +145,7 @@ async function applyColdProfilePatch(
     private: isPrivate,
     agents: isPrivate === true && persisted.private !== true ? withoutAgentStatistics(persisted.agents) : persisted.agents,
     usage: isPrivate === true ? undefined : persisted.usage,
-    custom: hasCustom ? { ...(patch.metadata as Record<string, unknown>) } : persisted.custom,
+    custom: hasCustom ? replaceCustomMetadata(persisted.custom, patch.metadata) : persisted.custom,
     updatedAt: hasPrivate || hasCustom ? Date.now() : persisted.updatedAt,
   };
   const cwd = nextMeta.cwd ?? summary.cwd;

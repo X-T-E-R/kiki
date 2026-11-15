@@ -5,6 +5,7 @@ import { confirmsTranscriptCoverage, gradeFor, GRADE_RANK, TRANSCRIPT_COVERAGE_V
 import { degradeUnconfirmedTranscriptSignal } from './transcript-coverage.js';
 
 const TURN_GRADE_ATTACH_DEBOUNCE_MS = 250;
+const BUSY_ATTACH_BACKOFF_MS = [250, 500, 1000, 2000] as const;
 
 interface ActiveView {
   readonly id: string;
@@ -21,6 +22,8 @@ interface ActiveView {
    */
   reconnectPending: boolean;
   attachTimer?: ReturnType<typeof setTimeout>;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  attachRetries: number;
 }
 
 function isTurnGradeExpansion(
@@ -57,7 +60,7 @@ export class HttpSessionViews {
 
   subscribe(sessionId: string, input: SessionViewSubscribeInput, handler: (signal: SessionViewSignal) => void): SessionViewChannelSubscription {
     const id = this.host.nextId();
-    const view: ActiveView = { id, sessionId, input, handler, attached: false, reconnectPending: false };
+    const view: ActiveView = { id, sessionId, input, handler, attached: false, reconnectPending: false, attachRetries: 0 };
     this.views.set(id, view);
     try {
       handler({ type: 'status', status: 'connecting', generation: this.generation });
@@ -71,6 +74,8 @@ export class HttpSessionViews {
       updateSessionCursor: (cursor) => { view.input = { ...view.input, sessionCursor: cursor, bootstrap: undefined }; },
       setTranscriptGrades: (grades) => {
         if (!this.views.has(id)) return;
+        this.clearRetryTimer(view);
+        view.attachRetries = 0;
         const previousGrades = view.input.transcriptGrades;
         const transcriptSince = view.input.transcriptSince === undefined ? undefined : Object.fromEntries(
           Object.entries(view.input.transcriptSince).filter(([agentId]) =>
@@ -92,6 +97,7 @@ export class HttpSessionViews {
       close: () => {
         if (!this.views.delete(id)) return;
         this.clearAttachTimer(view);
+        this.clearRetryTimer(view);
         if (this.host.isOpen()) this.host.send({ type: 'view_detach', id });
         handler({ type: 'status', status: 'closed', generation: this.generation });
       },
@@ -102,6 +108,8 @@ export class HttpSessionViews {
     this.generation += 1;
     for (const view of this.views.values()) {
       this.clearAttachTimer(view);
+      this.clearRetryTimer(view);
+      view.attachRetries = 0;
       if (view.attached) view.reconnectPending = true;
       view.handler({ type: 'status', status: 'open', generation: this.generation });
       this.attach(view);
@@ -110,6 +118,7 @@ export class HttpSessionViews {
 
   disconnected(error: Error): void {
     for (const view of this.views.values()) {
+      this.clearRetryTimer(view);
       view.handler({ type: 'status', status: 'closed', detail: error.message, generation: this.generation });
     }
   }
@@ -121,7 +130,10 @@ export class HttpSessionViews {
   }
 
   close(): void {
-    for (const view of this.views.values()) this.clearAttachTimer(view);
+    for (const view of this.views.values()) {
+      this.clearAttachTimer(view);
+      this.clearRetryTimer(view);
+    }
     this.views.clear();
   }
 
@@ -130,14 +142,28 @@ export class HttpSessionViews {
     const view = typeof frame.id === 'string' ? this.views.get(frame.id) : undefined;
     if (view === undefined) return true;
     if (frame.type === 'view_error') {
-      this.views.delete(view.id);
       this.clearAttachTimer(view);
+      this.clearRetryTimer(view);
+      const backoff = BUSY_ATTACH_BACKOFF_MS[view.attachRetries];
+      if ((frame.code === 40901 || String(frame.code) === 'SESSION_BUSY') && backoff !== undefined) {
+        view.attachRetries += 1;
+        view.retryTimer = setTimeout(() => {
+          view.retryTimer = undefined;
+          if (this.views.has(view.id) && this.host.isOpen()) this.attach(view);
+        }, backoff);
+        return true;
+      }
+      this.views.delete(view.id);
       view.handler({ type: 'protocolError', generation: this.generation, recoverable: false, detail: (frame.msg ?? 'Session view subscription failed').slice(0, 512) });
     } else {
       const data = frame.data;
       const generation = data !== null && typeof data === 'object' ? (data as { generation?: unknown }).generation : undefined;
       if (typeof generation === 'number' && generation !== this.generation) return true;
-      if ((data as { type?: unknown } | null)?.type === 'ready') view.reconnectPending = false;
+      if ((data as { type?: unknown } | null)?.type === 'ready') {
+        view.reconnectPending = false;
+        view.attachRetries = 0;
+        this.clearRetryTimer(view);
+      }
       const signal = confirmsTranscriptCoverage(data)
         ? data
         : degradeUnconfirmedTranscriptSignal(data);
@@ -158,6 +184,12 @@ export class HttpSessionViews {
     if (view.attachTimer === undefined) return;
     clearTimeout(view.attachTimer);
     view.attachTimer = undefined;
+  }
+
+  private clearRetryTimer(view: ActiveView): void {
+    if (view.retryTimer === undefined) return;
+    clearTimeout(view.retryTimer);
+    view.retryTimer = undefined;
   }
 
   private attach(view: ActiveView): void {

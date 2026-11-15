@@ -10856,6 +10856,8 @@ export const zh = {
   'archive.restore': '恢复',
   'usage.governance.loading': '正在读取实时请求状态…',
   'usage.governance.unavailable': '实时请求状态不可用',
+  'usage.governance.agentsLoading': '正在读取实时 Agent 状态…',
+  'usage.governance.agentsUnavailable': '实时 Agent 状态不可用',
   'usage.governance.running': '进行中',
   'usage.governance.queued': '排队中',
   'usage.governance.details': '详情',

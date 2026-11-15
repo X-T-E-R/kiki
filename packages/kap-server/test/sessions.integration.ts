@@ -1852,6 +1852,66 @@ describe('server-v2 /api/sessions', () => {
     expect(got.body.data.title).toBe('renamed');
   });
 
+  it('preserves live promotion provenance while replacing omitted custom metadata on pin changes', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    const id = created.body.data.id;
+    const session = (server as RunningServer).core.accessor.get(ISessionManager).get(id);
+    if (session === undefined) throw new Error('expected a live session');
+    const promotedFrom = {
+      sessionId: 'source-session',
+      agentId: 'research-agent',
+      agentName: 'Researcher',
+      profile: 'researcher',
+      promotedAt: 123,
+    };
+    await session.accessor.get(ISessionMetadata).update({
+      custom: { promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 100, retained: 'drop' },
+    });
+
+    const unpinned = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+      metadata: { 'kiki.pinned': false },
+    });
+    expect(unpinned.body.code).toBe(0);
+    expect(unpinned.body.data).toMatchObject({
+      promoted_from: {
+        session_id: 'source-session',
+        agent_id: 'research-agent',
+        agent_name: 'Researcher',
+        profile: 'researcher',
+        promoted_at: new Date(123).toISOString(),
+      },
+      metadata: { 'kiki.pinned': false },
+    });
+    expect(unpinned.body.data.metadata).not.toHaveProperty('pinned_at');
+    expect(unpinned.body.data.metadata).not.toHaveProperty('retained');
+    expect((await session.accessor.get(ISessionMetadata).read()).custom).toEqual({
+      promoted_from: promotedFrom,
+      'kiki.pinned': false,
+    });
+
+    const pinned = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+      metadata: { 'kiki.pinned': true, pinned_at: 200 },
+    });
+    expect(pinned.body.code).toBe(0);
+    expect(pinned.body.data).toMatchObject({
+      promoted_from: {
+        session_id: 'source-session',
+        agent_id: 'research-agent',
+      },
+      metadata: { 'kiki.pinned': true, pinned_at: 200 },
+    });
+
+    const unpinnedAgain = await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
+      metadata: { 'kiki.pinned': false },
+    });
+    expect(unpinnedAgain.body.code).toBe(0);
+    expect(unpinnedAgain.body.data).toMatchObject({
+      promoted_from: { session_id: 'source-session', agent_id: 'research-agent' },
+      metadata: { 'kiki.pinned': false },
+    });
+    expect(unpinnedAgain.body.data.metadata).not.toHaveProperty('pinned_at');
+  });
+
   it('returns title-unavailable when generation cannot run', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
       metadata: { cwd: home as string },
