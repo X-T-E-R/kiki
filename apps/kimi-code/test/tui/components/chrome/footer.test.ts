@@ -1,3 +1,4 @@
+import { parseSgrMouse } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -243,5 +244,60 @@ describe('FooterComponent line-2 hints', () => {
     footer.setWarningHint(null);
 
     expect(stripAnsi(footer.render(120)[1] ?? '')).not.toContain('Goal objective is too long');
+  });
+
+  it('keeps the rotating tip stable across time advances until advanceTip() or setTipIndex() is called', () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(0);
+    try {
+      const footer = new FooterComponent({
+        ...appState,
+        statusLine: { items: ['tips'], command: null },
+      });
+      footer.setTipIndex(0);
+      const initial = stripAnsi(footer.render(200)[0] ?? '').trim();
+      expect(initial.length).toBeGreaterThan(0);
+
+      // Simulate mid-typing redraws across multiple 10s intervals: tip must not jump.
+      nowSpy.mockReturnValue(10_500);
+      expect(stripAnsi(footer.render(200)[0] ?? '').trim()).toBe(initial);
+      nowSpy.mockReturnValue(35_000);
+      expect(stripAnsi(footer.render(200)[0] ?? '').trim()).toBe(initial);
+
+      // Explicit advanceTip() moves to the next rotation slot, and setTipIndex(0) restores it.
+      footer.advanceTip();
+      const advanced = stripAnsi(footer.render(200)[0] ?? '').trim();
+      expect(advanced).not.toBe(initial);
+
+      footer.setTipIndex(0);
+      expect(stripAnsi(footer.render(200)[0] ?? '').trim()).toBe(initial);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('keeps context: inline on line 1 on wide terminals without hints and falls back to 2 lines when narrow', () => {
+    const state: AppState = {
+      ...appState,
+      contextUsage: 0.58,
+      contextTokens: 155_648,
+      maxContextTokens: 262_144,
+    };
+    const footer = new FooterComponent(state);
+    const actions: string[] = [];
+    footer.setOnAction((action) => actions.push(action));
+
+    const wide = footer.render(120).map(stripAnsi);
+    expect(wide).toHaveLength(1);
+    expect(wide[0]).toContain('kimi-k2');
+    expect(wide[0]).toContain('context: 60% (152k/256k)');
+
+    const ctxCol = wide[0]!.indexOf('context:');
+    const click = parseSgrMouse(`\u001B[<0;${String(ctxCol + 3)};1M`)!;
+    expect(footer.routeMouse(click, 0, ctxCol + 2)).toBe(true);
+    expect(actions).toEqual(['usage']);
+
+    const narrow = footer.render(72).map(stripAnsi);
+    expect(narrow).toHaveLength(2);
+    expect(narrow[1]).toContain('context: 60% (152k/256k)');
   });
 });

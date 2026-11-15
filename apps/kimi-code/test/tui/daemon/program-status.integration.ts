@@ -138,12 +138,22 @@ describe('OSC 7501 daemon TUI over a virtual terminal and real server', () => {
     for (let index = 1; index < reports.length; index += 1) expect(reports[index]).not.toBe(reports[index - 1]);
   }, 60_000);
 
+  it.each(['enabled', 'terminal_handoff'])('withdraws hand-off when %s is disabled live', async (setting) => {
+    const { terminal } = await boot();
+    await vi.waitFor(() => expect(terminal.latest()['handoff']).toBe('1'));
+    await writeFile(join(home!, 'config.toml'), `[search]\nenabled = false\n[session_access]\nenabled = ${setting !== 'enabled'}\nterminal_handoff = ${setting !== 'terminal_handoff'}\n`);
+    await vi.waitFor(() => {
+      for (const key of ['handoff', 'session', 'port', 'server']) expect(terminal.latest()).not.toHaveProperty(key);
+    }, { timeout: 10_000 });
+  }, 60_000);
+
   it.each([{ ephemeral: true }, { terminalHandoff: false }])('omits session tickets for %j', async (options) => {
     const { terminal, tui: current } = await boot(options);
     await vi.waitFor(() => expect(terminal.latest()['app']).toBe('kiki'));
     if (options.ephemeral) {
       await vi.waitFor(() => expect(terminal.latest()['handoff']).toBe('1'));
       expect(terminal.latest()).not.toHaveProperty('session');
+      expect(terminal.latest()['ephemeral']).toBe('1');
     } else expect(terminal.latest()).not.toHaveProperty('handoff');
     const count = terminal.reports().length;
     terminal.raw(osc(`?ticket=${'a'.repeat(43)}`));
@@ -208,7 +218,7 @@ describe('OSC 7501 status projection and early virtual-TTY input', () => {
     expect(Buffer.from(terminal.latest()['msg']!, 'base64').toString()).toBe('Provider unavailable');
     internal.renderSession({ ...base, busy: true, blocks: [{ kind: 'approval', id: 'approval', resolution: undefined, request: { approval_id: 'approval', session_id: 'fixture', tool_call_id: 'call', tool_name: 'Bash', action: 'Run tests', tool_input_display: {}, created_at: '2026-01-01T00:00:00Z', expires_at: '2099-01-01T00:00:00Z' } }] });
     expect(terminal.latest()).toMatchObject({ state: 'blocked', kind: 'permission' });
-    expect(Buffer.from(terminal.latest()['msg']!, 'base64').toString()).toBe('Bash: Run tests');
+    expect(Buffer.from(terminal.latest()['msg']!, 'base64').toString()).toBe('Bash · Run tests');
     internal.renderSession({ ...base, busy: true, blocks: [{ kind: 'question', id: 'question', outcome: undefined, request: { question_id: 'question', session_id: 'fixture', created_at: '2026-01-01T00:00:00Z', questions: [{ id: 'q1', question: 'Which branch?', options: [] }] } }] });
     expect(terminal.latest()).toMatchObject({ state: 'blocked', kind: 'question' });
     expect(Buffer.from(terminal.latest()['msg']!, 'base64').toString()).toBe('Which branch?');
@@ -251,19 +261,23 @@ describe('OSC 7501 status projection and early virtual-TTY input', () => {
   });
 });
 
-it('refreshes access metadata and presence after an idle daemon restart', async () => {
-  const { terminal, client, tui: current } = await boot();
+it('rediscovers a replacement daemon on a new port and restores access and presence', async () => {
+  const { terminal, tui: current } = await boot();
   const sessionId = current.getCurrentSessionId();
   const previousServer = terminal.latest()['server'];
   terminal.raw(osc(`?ticket=${'a'.repeat(43)}`));
   await vi.waitFor(() => expect(terminal.reports().some((sequence) => parseReport(sequence)['challenge'] === 'a'.repeat(43))).toBe(true));
   const port = server!.port;
   await server!.close();
-  server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home!, host: '127.0.0.1', port, logLevel: 'silent' });
-  const nextServer = (await client.getSessionAccess()).server_id;
+  server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home!, host: '127.0.0.1', port: 0, logLevel: 'silent' });
+  expect(server.port).not.toBe(port);
+  const replacement = new DaemonClient({ url: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
+  clients.push(replacement);
+  const nextServer = (await replacement.getSessionAccess()).server_id;
   expect(nextServer).not.toBe(previousServer);
   await vi.waitFor(() => expect(terminal.latest()['server']).toBe(nextServer), { timeout: 15_000 });
   expect(terminal.latest()['session']).toBe(sessionId);
+  expect(terminal.latest()['port']).toBe(String(server.port));
   terminal.raw(osc(`?ticket=${'b'.repeat(43)}`));
   await vi.waitFor(() => expect(terminal.reports().some((sequence) => parseReport(sequence)['challenge'] === 'b'.repeat(43))).toBe(true), { timeout: 5000 });
 }, 60_000);

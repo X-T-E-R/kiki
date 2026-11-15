@@ -1055,3 +1055,31 @@ describe("TUI steady-frame processed-line reuse", () => {
 		}
 	});
 });
+
+describe("TuiMainScreen OSC 133 stripping", () => {
+	it("strips BEL and ST terminated OSC 133;A/B/C markers from stdout while reusing steady frames", async () => {
+		const terminal = new LoggingVirtualTerminal(60, 10);
+		const tui = new TuiMainScreen(terminal);
+		const component = new TestComponent();
+		component.lines = [
+			"\x1b]133;A\x07  \x1b]133;B\x07• user prompt",
+			"  \x1b]133;C\x1b\\assistant output",
+		];
+		tui.addChild(component);
+		tui.start();
+		await terminal.waitForRender();
+
+		const initialWrites = terminal.getWrites();
+		assert.ok(!initialWrites.includes("133;"), "main-screen stdout must not contain raw OSC 133 sequences");
+		assert.deepStrictEqual(terminal.getViewport().slice(0, 2), [
+			"  • user prompt",
+			"  assistant output",
+		]);
+
+		terminal.clearWrites();
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.strictEqual(terminal.getWrites().replaceAll("\x1b[?25l", ""), "");
+		tui.stop();
+	});
+});

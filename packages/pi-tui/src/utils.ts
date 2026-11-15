@@ -54,6 +54,17 @@ const widthCache = new Map<string, number>();
 export const cjkBreakRegex =
 	/[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
 
+// CJK kinsoku (禁则): full-width closing/middle punctuation and small kana that must
+// stay attached to the preceding character rather than wrapping to column 0, and
+// full-width opening brackets/quotes that stay attached to the following character.
+const cjkKinsokuStartRegex =
+	/^[：，。；？！）」』】》〉〕〗〙〛｝］、．·—…～〜々ゝゞーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎ]/u;
+const cjkKinsokuEndRegex = /^[（「『【《〈〔〖〘〚｛［]/u;
+
+// Path and URL delimiter break points when splitting an overlong token.
+const pathUrlPrimarySepRegex = /^[/\\?&]$/;
+const pathUrlSepRegex = /^[/\\?_&\-]$/;
+
 function isPrintableAscii(str: string): boolean {
 	for (let i = 0; i < str.length; i++) {
 		const code = str.charCodeAt(i);
@@ -772,7 +783,7 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 	const tokens: string[] = [];
 	let current = "";
 	let pendingAnsi = ""; // ANSI codes waiting to be attached to next visible content
-	let currentKind: "space" | "word" | null = null;
+	let currentKind: "space" | "word" | "kinsokuOpen" | null = null;
 	let i = 0;
 
 	const flushCurrent = (): void => {
@@ -800,7 +811,36 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 
 		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
 			const segmentIsSpace = segment === " ";
+			if (!segmentIsSpace && cjkKinsokuStartRegex.test(segment)) {
+				if (current && currentKind !== "space") {
+					current += pendingAnsi + segment;
+					pendingAnsi = "";
+					continue;
+				}
+				if (!current && tokens.length > 0 && tokens[tokens.length - 1]!.trim() !== "") {
+					tokens[tokens.length - 1] += pendingAnsi + segment;
+					pendingAnsi = "";
+					continue;
+				}
+			}
+			if (!segmentIsSpace && cjkKinsokuEndRegex.test(segment)) {
+				if (current && currentKind !== "kinsokuOpen") {
+					flushCurrent();
+				}
+				current += pendingAnsi + segment;
+				pendingAnsi = "";
+				currentKind = "kinsokuOpen";
+				continue;
+			}
 			if (!segmentIsSpace && cjkBreakRegex.test(segment)) {
+				if (currentKind === "kinsokuOpen") {
+					current += pendingAnsi + segment;
+					pendingAnsi = "";
+					tokens.push(current);
+					current = "";
+					currentKind = null;
+					continue;
+				}
 				flushCurrent();
 				const token = pendingAnsi + segment;
 				pendingAnsi = "";
@@ -809,7 +849,7 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 			}
 
 			const segmentKind = segmentIsSpace ? "space" : "word";
-			if (current && currentKind !== segmentKind) {
+			if (current && currentKind !== segmentKind && !(currentKind === "kinsokuOpen" && segmentKind === "word")) {
 				flushCurrent();
 			}
 
@@ -978,69 +1018,99 @@ export function isPunctuationChar(char: string): boolean {
 }
 
 function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {
-	const lines: string[] = [];
-	let currentLine = tracker.getActiveCodes();
-	let currentWidth = 0;
-
-	// First, separate ANSI codes from visible content
-	// We need to handle ANSI codes specially since they're not graphemes
+	// Separate ANSI codes from visible graphemes so ANSI state only advances for
+	// segments actually emitted on each wrapped line.
 	let i = 0;
-	const segments: Array<{ type: "ansi" | "grapheme"; value: string }> = [];
+	const segments: Array<{ type: "ansi" | "grapheme"; value: string; width: number }> = [];
+	let lastGraphemeIdx = -1;
 
 	while (i < word.length) {
 		const ansiResult = extractAnsiCode(word, i);
 		if (ansiResult) {
-			segments.push({ type: "ansi", value: ansiResult.code });
+			segments.push({ type: "ansi", value: ansiResult.code, width: 0 });
 			i += ansiResult.length;
 		} else {
-			// Find the next ANSI code or end of string
 			let end = i;
 			while (end < word.length) {
 				const nextAnsi = extractAnsiCode(word, end);
 				if (nextAnsi) break;
 				end++;
 			}
-			// Segment this non-ANSI portion into graphemes
 			const textPortion = word.slice(i, end);
 			for (const seg of graphemeSegmenter.segment(textPortion)) {
-				segments.push({ type: "grapheme", value: seg.segment });
+				if (!seg.segment) continue;
+				lastGraphemeIdx = segments.length;
+				segments.push({ type: "grapheme", value: seg.segment, width: visibleWidth(seg.segment) });
 			}
 			i = end;
 		}
 	}
 
-	// Now process segments
-	for (const seg of segments) {
-		if (seg.type === "ansi") {
-			currentLine += seg.value;
-			tracker.process(seg.value);
-			continue;
+	if (segments.length === 0) {
+		return [""];
+	}
+
+	const lines: string[] = [];
+	const minSepPrefix = Math.min(4, width);
+	const primarySepFloor = Math.floor(width / 2);
+	let pos = 0;
+
+	while (pos < segments.length) {
+		let lineWidth = 0;
+		let hasGrapheme = false;
+		let fitEnd = pos - 1;
+		let lastPrimarySepEnd = -1;
+		let lastAnySepEnd = -1;
+
+		for (let k = pos; k < segments.length; k++) {
+			const seg = segments[k]!;
+			if (seg.type === "ansi") {
+				fitEnd = k;
+				continue;
+			}
+			if (hasGrapheme && lineWidth + seg.width > width) {
+				break;
+			}
+			lineWidth += seg.width;
+			hasGrapheme = true;
+			fitEnd = k;
+
+			if (k < lastGraphemeIdx && lineWidth >= minSepPrefix) {
+				if (pathUrlSepRegex.test(seg.value)) {
+					lastAnySepEnd = k;
+				}
+				if (pathUrlPrimarySepRegex.test(seg.value) && lineWidth >= primarySepFloor) {
+					lastPrimarySepEnd = k;
+				}
+			}
 		}
 
-		const grapheme = seg.value;
-		// Skip empty graphemes to avoid issues with string-width calculation
-		if (!grapheme) continue;
+		const isFinalLine = fitEnd >= segments.length - 1;
+		const cutEnd = isFinalLine
+			? segments.length - 1
+			: lastPrimarySepEnd >= pos
+				? lastPrimarySepEnd
+				: lastAnySepEnd >= pos
+					? lastAnySepEnd
+					: Math.max(pos, fitEnd);
 
-		const graphemeWidth = visibleWidth(grapheme);
+		let currentLine = tracker.getActiveCodes();
+		for (let k = pos; k <= cutEnd; k++) {
+			const seg = segments[k]!;
+			currentLine += seg.value;
+			if (seg.type === "ansi") {
+				tracker.process(seg.value);
+			}
+		}
 
-		if (currentWidth + graphemeWidth > width) {
-			// Add specific reset for underline only (preserves background)
+		if (!isFinalLine) {
 			const lineEndReset = tracker.getLineEndReset();
 			if (lineEndReset) {
 				currentLine += lineEndReset;
 			}
-			lines.push(currentLine);
-			currentLine = tracker.getActiveCodes();
-			currentWidth = 0;
 		}
-
-		currentLine += grapheme;
-		currentWidth += graphemeWidth;
-	}
-
-	if (currentLine) {
-		// No reset at end of final segment - caller handles continuation
 		lines.push(currentLine);
+		pos = cutEnd + 1;
 	}
 
 	return lines.length > 0 ? lines : [""];

@@ -1,5 +1,5 @@
 import type { Klient } from '@kiki/klient';
-import { createKlient } from '@kiki/klient/http';
+import { createRebindableKlient, type HttpSocketDiagnostic } from '@kiki/klient/http';
 import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
@@ -69,6 +69,7 @@ export interface DaemonClientOptions extends DaemonConnection {
   readonly fetch?: typeof fetch;
   readonly WebSocket?: typeof WebSocket;
   readonly klient?: Klient;
+  readonly onSocketDiagnostic?: (event: HttpSocketDiagnostic) => void;
 }
 
 export interface DaemonSessionSummary {
@@ -98,22 +99,35 @@ interface PersonaSessionCreateInput {
 export class DaemonClient implements SessionTransport {
   readonly klient: Klient;
   readonly sessions = createSessionTransport({ session: (id) => this.klient.session(id) });
-  private readonly url: string;
-  private readonly token: string;
+  private url: string;
+  private token: string;
+  private readonly rebindKlient?: (connection: { endpoint: string; token: string }) => void;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: DaemonClientOptions) {
     this.url = options.url.replace(/\/$/u, '');
     this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
-    this.klient =
-      options.klient ??
-      createKlient({
+    if (options.klient !== undefined) {
+      this.klient = options.klient;
+    } else {
+      const transport = createRebindableKlient({
         endpoint: this.url,
         token: this.token,
         WebSocket: options.WebSocket,
         fetch: options.fetch,
+        onSocketDiagnostic: options.onSocketDiagnostic,
       });
+      this.klient = transport.klient;
+      this.rebindKlient = transport.rebind;
+    }
+  }
+
+  rebind(connection: DaemonConnection): void {
+    if (this.rebindKlient === undefined) throw new Error('This client does not support daemon replacement');
+    this.url = connection.url.replace(/\/$/u, '');
+    this.token = connection.token;
+    this.rebindKlient({ endpoint: this.url, token: this.token });
   }
 
   async listSessions(limit = 50, before?: string): Promise<DaemonSessionPage> {
@@ -184,8 +198,8 @@ export class DaemonClient implements SessionTransport {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/profile`, body);
   }
 
-  setModel(sessionId: string, model: string): Promise<Session> {
-    return this.updateSessionProfile(sessionId, { agent_config: { model } });
+  setModel(sessionId: string, model: string, thinking?: string): Promise<Session> {
+    return this.updateSessionProfile(sessionId, { agent_config: { model, thinking } });
   }
 
   setPermission(sessionId: string, mode: 'manual' | 'auto' | 'review' | 'yolo'): Promise<Session> {
@@ -249,7 +263,11 @@ export class DaemonClient implements SessionTransport {
         headers: { Accept: 'text/event-stream', Authorization: `Bearer ${this.token}` },
         signal: controller.signal,
       });
-      if (!response.ok || response.body === null) throw new Error('Session hand-off presence refused');
+      if (!response.ok) {
+        const envelope = await response.json() as Envelope<unknown>;
+        throw new ApiError({ ...envelope, reason: response.status === 403 ? envelope.msg : undefined });
+      }
+      if (response.body === null) throw new Error('Session hand-off presence refused');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -405,7 +423,7 @@ export class DaemonClient implements SessionTransport {
       signal,
     });
     const envelope = (await response.json()) as Envelope<T>;
-    if (!okCodes.includes(envelope.code)) throw new ApiError(envelope);
+    if (!okCodes.includes(envelope.code)) throw new ApiError({ ...envelope, reason: response.status === 403 ? envelope.msg : undefined });
     return envelope.data;
   }
 }

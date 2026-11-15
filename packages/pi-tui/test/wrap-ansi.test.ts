@@ -264,3 +264,36 @@ describe("wrapTextWithAnsi with OSC 8 hyperlinks", () => {
 		assert.strictEqual(closeCount, 1);
 	});
 });
+
+describe("wrapTextWithAnsi CJK kinsoku and path/URL breakpoints", () => {
+	it("keeps CJK closing/clause punctuation off column 0 by wrapping with the preceding character", () => {
+		// 5 CJK chars = 10 cols; without kinsoku "：" lands at col 0 of line 2. With kinsoku "话：" wraps together.
+		const lines = wrapTextWithAnsi("这是一段话：内容继续", 10);
+		assert.deepStrictEqual(lines, ["这是一段", "话：内容继", "续"]);
+		for (const line of lines.slice(1)) {
+			assert.doesNotMatch(line, /^[：，。；？！）」』】》、]/u);
+		}
+	});
+
+	it("keeps CJK opening brackets attached to the following character instead of stranding at line end", () => {
+		// 4 CJK chars = 8 cols; at width 10, "（" at col 8-9 pulls onto the next line with "内"
+		const lines = wrapTextWithAnsi("前面四个（内容）", 10);
+		assert.deepStrictEqual(lines, ["前面四个", "（内容）"]);
+	});
+
+	it("breaks long file paths and URLs after separators instead of stranding a 1-char tail", () => {
+		const path = "apps/kimi-code/src/tui/daemon/transcript-renderer.ts";
+		// Length is 52; at width 51 a naive hard cut leaves "s" alone on line 2
+		const lines = wrapTextWithAnsi(path, 51);
+		assert.deepStrictEqual(lines, [
+			"apps/kimi-code/src/tui/daemon/",
+			"transcript-renderer.ts",
+		]);
+
+		const coloredUrl = "\x1b[36mhttps://example.com/api/v1/sessions?cursor=abcdef\x1b[39m";
+		const urlLines = wrapTextWithAnsi(coloredUrl, 44);
+		assert.strictEqual(urlLines.length, 2);
+		assert.ok(urlLines[0].includes("sessions?"), `expected break after '?', got ${JSON.stringify(urlLines)}`);
+		assert.ok(urlLines[1].startsWith("\x1b[36mcursor=abcdef"), `expected SGR carryover on line 2, got ${JSON.stringify(urlLines)}`);
+	});
+});

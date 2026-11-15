@@ -5,6 +5,7 @@
  * separate from the TUI orchestration layer.
  */
 
+import { wrapTextWithAnsi } from '@kiki/pi-tui';
 import {
   effectiveModelAlias,
   type ModelAlias,
@@ -52,6 +53,7 @@ export interface StatusReportOptions {
   readonly statusError?: string;
   readonly managedUsage?: ManagedUsageReport;
   readonly managedUsageError?: string;
+  readonly width?: number;
 }
 
 type Colorize = (text: string) => string;
@@ -76,11 +78,22 @@ function addFieldRows(
   muted: Colorize,
   value: Colorize,
   errorStyle: Colorize,
+  width?: number,
 ): void {
   const labelWidth = Math.max(10, ...rows.map((row) => row.label.length));
+  const prefixCols = 2 + labelWidth + 2;
+  const continuationIndent = ' '.repeat(prefixCols);
   for (const row of rows) {
     const colorize = row.severity === 'error' ? errorStyle : value;
-    lines.push(`  ${muted(row.label.padEnd(labelWidth, ' '))}  ${colorize(row.value)}`);
+    if (width === undefined || width <= 0) {
+      lines.push(`  ${muted(row.label.padEnd(labelWidth, ' '))}  ${colorize(row.value)}`);
+      continue;
+    }
+    const wrapped = wrapTextWithAnsi(row.value, Math.max(12, width - prefixCols));
+    lines.push(`  ${muted(row.label.padEnd(labelWidth, ' '))}  ${colorize(wrapped[0] ?? '')}`);
+    for (let i = 1; i < wrapped.length; i++) {
+      lines.push(`${continuationIndent}${colorize(wrapped[i] ?? '')}`);
+    }
   }
 }
 
@@ -124,7 +137,7 @@ export function buildStatusReportLines(options: StatusReportOptions): string[] {
     `${accent(`>_ ${PRODUCT_NAME}`)} ${muted(`(v${options.version})`)}`,
     '',
   ];
-  addFieldRows(lines, rows, muted, value, errorStyle);
+  addFieldRows(lines, rows, muted, value, errorStyle, options.width);
 
   const { ratio, tokens, maxTokens } = contextValues(options);
   lines.push('');

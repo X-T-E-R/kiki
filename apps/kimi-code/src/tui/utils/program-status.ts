@@ -1,3 +1,5 @@
+import { StdinBuffer } from '@kiki/pi-tui';
+
 import {
   PROGRAM_STATUS_OSC_PREFIX as OSC_PREFIX,
   PROGRAM_STATUS_ST as ST,
@@ -15,6 +17,7 @@ export interface ProgramStatusReport {
   readonly kind?: ProgramBlockKind;
   readonly title?: string;
   readonly msg?: string;
+  readonly ephemeral?: boolean;
   readonly handoff?: {
     readonly session?: string;
     readonly port: string;
@@ -44,6 +47,7 @@ export function encodeProgramStatus(report: ProgramStatusReport, ticket?: Progra
   const fields = [`state=${report.state}`];
   if (report.state === 'blocked' && report.kind !== undefined) fields.push(`kind=${report.kind}`);
   fields.push('app=kiki');
+  if (report.ephemeral === true) fields.push('ephemeral=1');
   const title = truncateProgramText(report.title ?? '', 192);
   if (title !== '') fields.push(`title=${Buffer.from(title).toString('base64')}`);
   const handoff = report.handoff;
@@ -71,17 +75,61 @@ export class ProgramStatusReporter {
   private replyBufferedAt = 0;
   private answering = false;
   private stopped = false;
+  private started = false;
   private readonly ticketTimes: number[] = [];
 
   constructor(
     private readonly write: (sequence: string) => void,
-    private readonly requestTicket: (challenge: string) => Promise<string | undefined>,
+    private requestTicket: (challenge: string) => Promise<string | undefined>,
     private readonly now = Date.now,
-    private readonly admitTicket = () => true,
+    private admitTicket = () => true,
   ) {}
 
   start(): void {
+    if (this.started) return;
+    this.started = true;
     this.write(`${OSC_PREFIX}?${ST}\x1b[c`);
+  }
+
+  setTicketHandler(request: (challenge: string) => Promise<string | undefined>, admit: () => boolean): void {
+    this.requestTicket = request;
+    this.admitTicket = admit;
+  }
+
+  async probe(input: NodeJS.ReadStream): Promise<void> {
+    const raw = input.isRaw;
+    const flowing = input.readableFlowing;
+    const pending: Buffer[] = [];
+    let finish!: () => void;
+    const settled = new Promise<void>((resolve) => { finish = resolve; });
+    const onData = (data: Buffer | string): void => {
+      const text = data.toString();
+      const result = this.handleInput(text);
+      if (result === undefined) pending.push(Buffer.from(text));
+      else if ('data' in result) pending.push(Buffer.from(result.data));
+      if (/^\x1b\[\?[\d;]*c$/u.test(text)) finish();
+    };
+    const buffer = new StdinBuffer({ timeout: PROGRAM_STATUS_FRAGMENT_TIMEOUT_MS, escapeTimeout: PROGRAM_STATUS_FRAGMENT_TIMEOUT_MS });
+    buffer.on('data', onData);
+    buffer.on('paste', (data) => { pending.push(Buffer.from(`\x1b[200~${data}\x1b[201~`)); });
+    const onRawData = (data: Buffer | string): void => { buffer.process(data); };
+    input.setRawMode?.(true);
+    input.on('data', onRawData);
+    input.resume();
+    const timer = setTimeout(finish, PROGRAM_STATUS_FRAGMENT_TIMEOUT_MS);
+    try {
+      this.start();
+      await settled;
+    } finally {
+      clearTimeout(timer);
+      input.pause();
+      input.off('data', onRawData);
+      for (const data of buffer.flush()) onData(data);
+      buffer.destroy();
+      input.setRawMode?.(raw === true);
+      if (pending.length > 0) input.unshift(Buffer.concat(pending));
+      if (flowing === true) input.resume();
+    }
   }
 
   get supported(): boolean {

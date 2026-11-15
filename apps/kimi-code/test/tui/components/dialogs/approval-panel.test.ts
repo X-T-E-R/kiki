@@ -752,4 +752,40 @@ describe('ApprovalPanelComponent external permission options', () => {
     dialog.handleInput('4');
     expect(responses).toEqual([{ response: 'cancelled' }]);
   });
+
+  it('middle-ellipsizes long shell cwd paths onto a single line while preserving root and leaf', () => {
+    const dialog = new ApprovalPanelComponent(
+      {
+        data: {
+          id: 'approval_cwd',
+          tool_call_id: 'tool_cwd',
+          tool_name: 'Bash',
+          action: 'run command',
+          description: '',
+          display: [
+            {
+              type: 'shell',
+              language: 'bash',
+              command: 'pnpm test',
+              cwd: '/var/lib/organization/workspaces/monorepo/apps/kimi-code/src/tui',
+            },
+          ],
+          choices: [
+            { label: 'Approve once', response: 'approved' },
+            { label: 'Reject', response: 'rejected' },
+          ],
+        },
+      },
+      () => {},
+    );
+
+    const lines = dialog.render(48).map(strip);
+    const cwdLines = lines.filter((line) => line.includes('cwd:'));
+    expect(cwdLines).toHaveLength(1);
+    expect(cwdLines[0]).toContain('…');
+    expect(cwdLines[0]).toContain('src/tui');
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(48);
+    }
+  });
 });

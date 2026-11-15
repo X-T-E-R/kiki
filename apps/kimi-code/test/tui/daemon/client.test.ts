@@ -335,6 +335,16 @@ describe('DaemonClient', () => {
     expect(jsonRequestBody(fetch.mock.calls[0]?.[1])).toEqual(body);
   });
 
+  it('preserves a disabled-access 403 reason when presence is refused', async () => {
+    const fake = fakeKlient();
+    const fetch = vi.fn(async () => Response.json({ code: 40101, msg: 'session_access_disabled', data: null }, { status: 403 }));
+    const client = new DaemonClient({ url: 'http://127.0.0.1:57580', token: 'secret', fetch, klient: fake.klient as never });
+    const presence = client.openSessionAccessPresence('holder');
+    await expect(presence.ready).rejects.toMatchObject({ code: 40101, reason: 'session_access_disabled' });
+    await presence.closed;
+    await client.close();
+  });
+
   it('loads transcript snapshots through the authenticated Klient view', async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({
       code: 0, msg: 'ok', data: { as_of_seq: 4, epoch: 'e1' },

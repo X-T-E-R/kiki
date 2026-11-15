@@ -1,4 +1,12 @@
-import { Container, Text, truncateToWidth, type Component, type TUI } from '@kiki/pi-tui';
+import {
+  Container,
+  Text,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+  type Component,
+  type TUI,
+} from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import {
@@ -6,7 +14,14 @@ import {
   readSubagentEndings, type AgentForest, type DisplayNode, type EndingTask,
 } from '@kiki/session-core/session';
 import { projectMessageContent } from '@kiki/session-core/session/transcript';
-import type { Block, MessageBlock, ToolBlock, UserBlock } from '@kiki/session-core/session/transcript/types';
+import type {
+  Block,
+  MessageBlock,
+  NoticeBlock,
+  SystemBlock,
+  ToolBlock,
+  UserBlock,
+} from '@kiki/session-core/session/transcript/types';
 
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
@@ -82,19 +97,31 @@ export class DaemonTranscriptRenderer {
     const receipts: UserBlock[] = ingress.filter((item) =>
       (item.admission === 'failed' || item.admission === 'cancelled' || item.admission === 'held') &&
       !blocks.some((block) => block.kind === 'user' && block.promptId === item.prompt_id),
-    ).map((item) => ({
-      kind: 'user',
-      id: `ingress-${item.prompt_id}`,
-      promptId: item.prompt_id,
-      createdAt: item.created_at,
-      ...projectMessageContent(item.content),
-      steerStatus: item.admission === 'held' ? 'held' : undefined,
-      promptOutcome: item.admission === 'held' ? undefined : {
-        status: item.admission === 'cancelled' ? 'aborted' : 'failed',
-        delivered: false,
-        error: item.admission_error?.message,
-      },
-    }));
+    ).map((item) => {
+      const itemWithOrigin = item as {
+        readonly origin?: unknown;
+        readonly via?: { readonly client?: unknown };
+      };
+      const viaClient =
+        extractViaClientFromOrigin(itemWithOrigin.origin) ??
+        extractViaClientField(itemWithOrigin.via);
+      const receipt: UserBlockWithVia = {
+        kind: 'user',
+        id: `ingress-${item.prompt_id}`,
+        promptId: item.prompt_id,
+        createdAt: item.created_at,
+        ...projectMessageContent(item.content),
+        sourceOrigin: itemWithOrigin.origin,
+        via: viaClient === undefined ? undefined : { client: viaClient },
+        steerStatus: item.admission === 'held' ? 'held' : undefined,
+        promptOutcome: item.admission === 'held' ? undefined : {
+          status: item.admission === 'cancelled' ? 'aborted' : 'failed',
+          delivered: false,
+          error: item.admission_error?.message,
+        },
+      };
+      return receipt;
+    });
     this.lastBlocks = receipts.length === 0 ? blocks : [...blocks, ...receipts];
     this.mountChildren();
     this.ui?.requestRender();
@@ -167,12 +194,20 @@ export class DaemonTranscriptRenderer {
 
   /** Re-mount children only when the component sequence actually changed. */
   private mountChildren(): void {
+    const {
+      displayBlocks: blocks,
+      leadingSuppressedIds,
+      suppressedAfterVisibleId,
+    } = prepareDisplayBlocks(this.lastBlocks ?? [], {
+      expanded: this.expanded,
+      showThinking: this.showThinking,
+    });
     const components = this.notes
-      .filter((note) => note.afterBlockId === undefined)
+      .filter(
+        (note) =>
+          note.afterBlockId === undefined || leadingSuppressedIds.has(note.afterBlockId),
+      )
       .map((note) => note.component);
-    const blocks = (this.lastBlocks ?? []).filter(
-      (block) => this.showThinking || block.kind !== 'thinking',
-    );
     const nodes = this.expanded ? blocks : foldHistory(
       readSubagentEndings(groupBlocks(blocks), this.context.tasks ?? []),
       this.context.liveTurnId,
@@ -181,8 +216,16 @@ export class DaemonTranscriptRenderer {
     const visible = new Set<string>();
     const summaries = new Set<string>();
     const appendNotes = (ids: ReadonlySet<string>) => {
+      const matchIds = new Set(ids);
+      for (const id of ids) {
+        for (const suppressedId of suppressedAfterVisibleId.get(id) ?? []) {
+          matchIds.add(suppressedId);
+        }
+      }
       for (const note of this.notes) {
-        if (note.afterBlockId !== undefined && ids.has(note.afterBlockId)) components.push(note.component);
+        if (note.afterBlockId !== undefined && matchIds.has(note.afterBlockId)) {
+          components.push(note.component);
+        }
       }
     };
     const append = (node: DisplayNode): void => {
@@ -311,8 +354,9 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
     case 'skill':
       return new Text(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`), 2, 0);
     case 'system': {
-      const first = block.text.split(/\r?\n/u, 1)[0]!;
-      return new ProcessDetail(first.trimStart().startsWith('<system-reminder>') ? 'Reminder' : first, block.text);
+      const info = classifySystemBlock(block);
+      const body = info.kind === 'other' ? block.text : `${info.summary}\n${block.text}`;
+      return new ProcessDetail(info.summary, body);
     }
     case 'system-reminder': {
       const label = block.variant === 'steer' ? 'Steer' : 'Reminder';
@@ -320,12 +364,14 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
       const heading = category === undefined ? label : `${label} · ${category}`;
       return new ProcessDetail(heading, `${heading}\n${block.text}`);
     }
-    case 'notice':
+    case 'notice': {
+      const text = formatNoticeText(block);
       return new Text(
-        block.tone === 'danger' ? currentTheme.fg('error', block.text) : currentTheme.dim(block.text),
+        block.tone === 'danger' ? currentTheme.fg('error', text) : currentTheme.dim(text),
         2,
         0,
       );
+    }
   }
 }
 
@@ -399,52 +445,108 @@ class ProcessDetail implements Component {
  * with its Markdown answer. Starts with a blank line like every block.
  */
 export class TranscriptNoteComponent implements Component {
-  private readonly text = new Text('', 0, 0);
   private answer: AssistantMessageComponent | undefined;
+  private textCache: { width: number; lines: string[] } | undefined;
   private renderCache: { width: number; parts: string[][]; lines: string[] } | undefined;
 
-  constructor(private message: string) {
-    this.restyle();
-  }
+  constructor(private message: string) {}
 
   /** Replace the note text, optionally followed by a Markdown answer. */
   update(message: string, answer?: string): void {
     this.message = message;
-    this.restyle();
     if (answer !== undefined) {
       this.answer ??= new AssistantMessageComponent();
       this.answer.updateContent(answer);
     }
+    this.textCache = undefined;
     this.renderCache = undefined;
   }
 
   invalidate(): void {
-    this.restyle();
     this.answer?.invalidate();
+    this.textCache = undefined;
     this.renderCache = undefined;
   }
 
   render(width: number): string[] {
-    const parts = [this.text.render(width), ...(this.answer === undefined ? [] : [this.answer.render(width)])];
+    const safeWidth = Math.max(1, width);
+    const textLines =
+      this.textCache?.width === safeWidth
+        ? this.textCache.lines
+        : renderTranscriptNoteLines(this.message, safeWidth);
+    this.textCache = { width: safeWidth, lines: textLines };
+    const parts = [
+      textLines,
+      ...(this.answer === undefined ? [] : [this.answer.render(safeWidth)]),
+    ];
     const cache = this.renderCache;
     if (
-      cache?.width === width &&
+      cache?.width === safeWidth &&
       cache.parts.length === parts.length &&
       parts.every((lines, index) => lines === cache.parts[index])
     ) {
       return cache.lines;
     }
     const lines = ['', ...parts.flat()];
-    this.renderCache = { width, parts, lines };
+    this.renderCache = { width: safeWidth, parts, lines };
     return lines;
   }
+}
 
-  private restyle(): void {
-    // Indent every line (not only the first) and drop CRs from CRLF output,
-    // which would otherwise blank the line once padded.
-    const styled = currentTheme.fg('textDim', this.message.replaceAll('\r', ''));
-    this.text.setText(styled.split('\n').map((line) => `  ${line}`).join('\n'));
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match ANSI SGR escape sequences
+const NOTE_ANSI_SGR = /\u001B\[[0-9;]*m/g;
+const NOTE_KV_PREFIX = /^(\s*[A-Za-z][A-Za-z0-9 _-]{0,22}:\s+)(?=\S)/u;
+const NOTE_TABLE_PREFIX = /^(\s{2}[A-Za-z][A-Za-z0-9 _-]{1,18}\s{2,})(?=\S)/u;
+
+function renderTranscriptNoteLines(message: string, width: number): string[] {
+  const rawLines = message.replaceAll('\r', '').split('\n');
+  const out: string[] = [];
+  for (const rawLine of rawLines) {
+    const plain = rawLine.replaceAll(NOTE_ANSI_SGR, '');
+    if (plain.length === 0) {
+      out.push('  ');
+      continue;
+    }
+    const styledFull = currentTheme.fg('textDim', `  ${rawLine}`);
+    if (visibleWidth(styledFull) <= width) {
+      out.push(styledFull);
+      continue;
+    }
+    const kvMatch = NOTE_KV_PREFIX.exec(plain) ?? NOTE_TABLE_PREFIX.exec(plain);
+    const baseLeadMatch = /^(\s*)/u.exec(plain);
+    const baseIndentCols = 2 + (baseLeadMatch?.[1]?.length ?? 0);
+    const hangingCols = kvMatch !== null ? 2 + kvMatch[1]!.length : baseIndentCols;
+    const effectiveIndentCols = width - hangingCols >= 14 ? hangingCols : Math.min(baseIndentCols, Math.max(0, width - 4));
+    if (kvMatch !== null && effectiveIndentCols === hangingCols && plain === rawLine) {
+      const labelPart = rawLine.slice(0, kvMatch[1]!.length);
+      const valuePart = rawLine.slice(kvMatch[1]!.length);
+      const wrappedValue = wrapTextWithAnsi(valuePart, Math.max(1, width - hangingCols));
+      out.push(currentTheme.fg('textDim', `  ${labelPart}${wrappedValue[0] ?? ''}`));
+      const contIndent = ' '.repeat(hangingCols);
+      for (let i = 1; i < wrappedValue.length; i++) {
+        out.push(currentTheme.fg('textDim', `${contIndent}${wrappedValue[i] ?? ''}`));
+      }
+      continue;
+    }
+    const firstWrapped = wrapTextWithAnsi(styledFull, width);
+    if (firstWrapped.length <= 1 || effectiveIndentCols <= 0 || width <= effectiveIndentCols + 2) {
+      out.push(...firstWrapped);
+      continue;
+    }
+    // Re-wrap with hanging continuation indent for styled multi-line rows
+    const trimmedContent = `  ${rawLine}`.slice(Math.min(effectiveIndentCols, 2));
+    const rewrapped = wrapTextWithAnsi(
+      currentTheme.fg('textDim', trimmedContent),
+      Math.max(1, width - effectiveIndentCols),
+    );
+    const firstPad = ' '.repeat(Math.min(effectiveIndentCols, 2));
+    const contPad = ' '.repeat(effectiveIndentCols);
+    out.push(`${firstPad}${rewrapped[0] ?? ''}`);
+    for (let i = 1; i < rewrapped.length; i++) {
+      out.push(`${contPad}${rewrapped[i] ?? ''}`);
+    }
   }
+  return out;
 }
 
 /**
@@ -487,7 +589,13 @@ class DaemonUserMessageComponent extends RenderCachedContainer {
 
   constructor(private block: UserBlock) {
     super();
-    this.message = new UserMessageComponent(block.text);
+    this.message = new UserMessageComponent(
+      block.text,
+      undefined,
+      undefined,
+      undefined,
+      readViaClient(block),
+    );
     this.addChild(this.message);
     addMediaLabels(this, block.media);
     this.addChild(this.status);
@@ -497,6 +605,10 @@ class DaemonUserMessageComponent extends RenderCachedContainer {
   update(block: UserBlock): void {
     this.block = block;
     this.message.updateContent(block.text);
+    this.message.setSourceLabel(
+      this.showTimestamp ? formatPromptTimestamp(block.createdAt) : undefined,
+    );
+    this.message.setViaClient(readViaClient(block));
     this.syncStatus();
   }
 
@@ -508,11 +620,9 @@ class DaemonUserMessageComponent extends RenderCachedContainer {
   setShowTimestamp(showTimestamp: boolean): void {
     if (this.showTimestamp === showTimestamp) return;
     this.showTimestamp = showTimestamp;
-    const label = showTimestamp ? formatPromptTimestamp(this.block.createdAt) : undefined;
-    const nextMessage = new UserMessageComponent(this.block.text, undefined, undefined, label);
-    const idx = this.children.indexOf(this.message);
-    if (idx >= 0) this.children[idx] = nextMessage;
-    this.message = nextMessage;
+    this.message.setSourceLabel(
+      showTimestamp ? formatPromptTimestamp(this.block.createdAt) : undefined,
+    );
     this.invalidate();
   }
 
@@ -695,9 +805,13 @@ function updateMountedBlock(component: Component, block: Block): void {
     case 'skill':
       (component as Text).setText(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`));
       return;
-    case 'notice':
-      (component as Text).setText(block.tone === 'danger' ? currentTheme.fg('error', block.text) : currentTheme.dim(block.text));
+    case 'notice': {
+      const text = formatNoticeText(block);
+      (component as Text).setText(
+        block.tone === 'danger' ? currentTheme.fg('error', text) : currentTheme.dim(text),
+      );
       return;
+    }
     case 'system':
     case 'system-reminder':
     case 'message':
@@ -762,4 +876,306 @@ function formatSubagent(block: Extract<Block, { kind: 'subagent' }>): string {
 function disposeComponent(component: Component): void {
   const disposable = component as Component & { dispose?: () => void };
   disposable.dispose?.();
+}
+
+type UserBlockWithVia = UserBlock & { readonly via?: { readonly client?: unknown } };
+
+function extractViaClientField(via: unknown): string | undefined {
+  if (typeof via !== 'object' || via === null) return undefined;
+  const client = (via as { readonly client?: unknown }).client;
+  return typeof client === 'string' && client.length > 0 ? client : undefined;
+}
+
+function extractViaClientFromOrigin(origin: unknown): string | undefined {
+  if (typeof origin !== 'object' || origin === null) return undefined;
+  return extractViaClientField((origin as { readonly via?: unknown }).via);
+}
+
+function readViaClient(block: UserBlock): string | undefined {
+  return (
+    extractViaClientField((block as UserBlockWithVia).via) ??
+    extractViaClientFromOrigin(block.sourceOrigin)
+  );
+}
+
+function readBlockTurnId(block: Block): string | undefined {
+  return 'turnId' in block && typeof block.turnId === 'string' ? block.turnId : undefined;
+}
+
+interface PreparedDisplayBlocks {
+  readonly displayBlocks: Block[];
+  readonly leadingSuppressedIds: Set<string>;
+  readonly suppressedAfterVisibleId: Map<string, string[]>;
+}
+
+function prepareDisplayBlocks(
+  blocks: readonly Block[],
+  options: { readonly expanded: boolean; readonly showThinking: boolean },
+): PreparedDisplayBlocks {
+  const displayBlocks: Block[] = [];
+  const leadingSuppressedIds = new Set<string>();
+  const suppressedAfterVisibleId = new Map<string, string[]>();
+  const seenRecipes = new Set<string>();
+  let lastVisibleId: string | undefined;
+  let currentTurnId: string | undefined;
+  let activeTurnFailure: { readonly turnId: string; readonly normError: string } | undefined;
+  let pendingFrameDanger: { readonly turnId: string; readonly normError: string } | undefined;
+
+  const recordSuppressed = (id: string): void => {
+    if (lastVisibleId === undefined) {
+      leadingSuppressedIds.add(id);
+      return;
+    }
+    let list = suppressedAfterVisibleId.get(lastVisibleId);
+    if (list === undefined) {
+      list = [];
+      suppressedAfterVisibleId.set(lastVisibleId, list);
+    }
+    list.push(id);
+  };
+
+  for (const block of blocks) {
+    const turnId = readBlockTurnId(block);
+    if (turnId !== undefined && currentTurnId !== undefined && turnId !== currentTurnId) {
+      activeTurnFailure = undefined;
+      pendingFrameDanger = undefined;
+    }
+    if (turnId !== undefined) {
+      currentTurnId = turnId;
+    }
+
+    if (block.kind === 'user') {
+      pendingFrameDanger = undefined;
+      const outcome = block.promptOutcome;
+      if (
+        turnId !== undefined &&
+        outcome !== undefined &&
+        (outcome.status === 'failed' || outcome.status === 'aborted') &&
+        outcome.error !== undefined
+      ) {
+        const normError = normalizeFailureText(outcome.error);
+        activeTurnFailure = normError.length > 0 ? { turnId, normError } : undefined;
+      } else {
+        activeTurnFailure = undefined;
+      }
+    } else if (block.kind === 'assistant') {
+      pendingFrameDanger = undefined;
+    }
+
+    if (!options.showThinking && block.kind === 'thinking') {
+      recordSuppressed(block.id);
+      continue;
+    }
+
+    if (!options.expanded && block.kind === 'system-reminder' && block.variant !== 'steer') {
+      recordSuppressed(block.id);
+      continue;
+    }
+
+    if (block.kind === 'system') {
+      const info = classifySystemBlock(block);
+      if (!options.expanded) {
+        if (info.kind === 'internal') {
+          recordSuppressed(block.id);
+          continue;
+        }
+        if (info.kind === 'recipe') {
+          const recipeKey = `${info.summary}\u0000${block.text}`;
+          if (seenRecipes.has(recipeKey)) {
+            recordSuppressed(block.id);
+            continue;
+          }
+          seenRecipes.add(recipeKey);
+        }
+      }
+    }
+
+    if (block.kind === 'notice') {
+      if (isStructuredDomainNotice(block)) {
+        pendingFrameDanger = undefined;
+      }
+      if (!options.expanded && isPlumbingNotice(block)) {
+        recordSuppressed(block.id);
+        continue;
+      }
+      if (!options.expanded && isTurnFailureNotice(block)) {
+        const normNotice = normalizeFailureText(formatNoticeText(block));
+        if (normNotice.length > 0) {
+          const explicitOutcome = isExplicitTurnOutcomeNotice(block);
+          if (
+            turnId !== undefined &&
+            activeTurnFailure !== undefined &&
+            turnId === activeTurnFailure.turnId &&
+            normNotice === activeTurnFailure.normError
+          ) {
+            recordSuppressed(block.id);
+            continue;
+          }
+
+          if (
+            explicitOutcome &&
+            turnId !== undefined &&
+            pendingFrameDanger !== undefined &&
+            turnId === pendingFrameDanger.turnId &&
+            normNotice === pendingFrameDanger.normError
+          ) {
+            pendingFrameDanger = undefined;
+            recordSuppressed(block.id);
+            continue;
+          }
+          if (!explicitOutcome && turnId !== undefined) {
+            pendingFrameDanger = { turnId, normError: normNotice };
+          } else {
+            pendingFrameDanger = undefined;
+          }
+        }
+      }
+    }
+
+    displayBlocks.push(block);
+    lastVisibleId = block.id;
+  }
+
+  return { displayBlocks, leadingSuppressedIds, suppressedAfterVisibleId };
+}
+
+function classifySystemBlock(
+  block: SystemBlock,
+): { readonly kind: 'recipe' | 'internal' | 'other'; readonly summary: string } {
+  const recipeName = extractRecipeName(block);
+  const source = block.source ?? '';
+  const isRecipe =
+    recipeName !== undefined ||
+    source === 'model_steering' ||
+    source === 'recipe' ||
+    /^(?:recipe|model_steering)(?:[:/]|$)/iu.test(source);
+  if (isRecipe) {
+    return {
+      kind: 'recipe',
+      summary: recipeName !== undefined ? `Recipe · ${recipeName}` : 'Recipe',
+    };
+  }
+
+  const trimmed = block.text.trimStart();
+  const isInternalTag =
+    trimmed.startsWith('<system-reminder>') ||
+    trimmed.startsWith('<tools_added>') ||
+    trimmed.startsWith('<tools_removed>') ||
+    trimmed.startsWith('<memory-workset') ||
+    trimmed.startsWith('<cognition') ||
+    trimmed.startsWith('<skill-loaded');
+  if (isInternalTag || block.variant === 'injection') {
+    const label = trimmed.startsWith('<system-reminder>')
+      ? 'Reminder'
+      : source.length > 0
+        ? `System · ${source}`
+        : 'System injection';
+    return { kind: 'internal', summary: label };
+  }
+
+  const first = block.text.split(/\r?\n/u, 1)[0]!.trim() || 'System';
+  return { kind: 'other', summary: first };
+}
+
+function extractRecipeName(block: SystemBlock): string | undefined {
+  const extra = block as SystemBlock & {
+    readonly recipeName?: unknown;
+    readonly recipe?: { readonly name?: unknown };
+  };
+  if (typeof extra.recipe?.name === 'string' && extra.recipe.name.trim().length > 0) {
+    return extra.recipe.name.trim();
+  }
+  if (typeof extra.recipeName === 'string' && extra.recipeName.trim().length > 0) {
+    return extra.recipeName.trim();
+  }
+  if (typeof block.source === 'string') {
+    const sourceMatch = /^(?:recipe|model_steering)[:/](.+)$/iu.exec(block.source.trim());
+    if (sourceMatch?.[1]?.trim()) return sourceMatch[1].trim();
+  }
+  const tagMatch = /^\s*<recipe(?:\s+[^>]*?)?\s+name=["']([^"'\r\n]+)["']/iu.exec(block.text);
+  if (tagMatch?.[1]?.trim()) return tagMatch[1].trim();
+  const bracketMatch = /^\s*\[recipe:\s*([^\r\n\]]+)\]/iu.exec(block.text);
+  if (bracketMatch?.[1]?.trim()) return bracketMatch[1].trim();
+  const firstLine = block.text.split(/\r?\n/u, 1)[0]?.trim() ?? '';
+  const headingMatch = /^(?:#+\s*)?recipe\s*[:·—-]\s*([A-Za-z0-9._/-][^\r\n:]{0,39})$/iu.exec(
+    firstLine,
+  );
+  if (headingMatch?.[1] && !/[.!?。！？，；]/u.test(headingMatch[1])) {
+    return headingMatch[1].trim();
+  }
+  return undefined;
+}
+
+function isPlumbingNotice(block: NoticeBlock): boolean {
+  const key = block.i18n?.key;
+  if (
+    key === 'transcript.marker.interruption' ||
+    key === 'transcript.marker.hook' ||
+    key === 'transcript.marker.skill'
+  ) {
+    return true;
+  }
+  if (block.tone === 'neutral') {
+    const trimmed = block.text.trim();
+    return trimmed === 'interruption' || trimmed === 'hook' || trimmed === 'skill';
+  }
+  return false;
+}
+
+function isStructuredDomainNotice(block: NoticeBlock): boolean {
+  return (
+    block.compactionPhase !== undefined ||
+    block.modelSwitch !== undefined ||
+    block.goalChange !== undefined ||
+    block.branchBase !== undefined ||
+    block.executor !== undefined ||
+    block.externalText !== undefined
+  );
+}
+
+function isExplicitTurnOutcomeNotice(block: NoticeBlock): boolean {
+  const key = block.i18n?.key;
+  return (
+    key === 'notice.turnFailedDetail' ||
+    key === 'notice.turnCancelledDetail' ||
+    block.id.startsWith('agent-turn-outcome-')
+  );
+}
+
+function isTurnFailureNotice(block: NoticeBlock): boolean {
+  if (isStructuredDomainNotice(block)) return false;
+  return block.tone === 'danger' || isExplicitTurnOutcomeNotice(block);
+}
+
+function formatNoticeText(block: NoticeBlock): string {
+  const trimmed = block.text.trim();
+  if (block.compactionPhase !== undefined && trimmed === 'compaction') {
+    if (block.compactionPhase === 'failed' && block.compactionFailure) {
+      return `Context compaction failed · ${block.compactionFailure}`;
+    }
+    const summaryLine = block.summary?.split(/\r?\n/u, 1)[0]?.trim();
+    return summaryLine ? `Context compacted · ${summaryLine}` : `Context compaction · ${block.compactionPhase}`;
+  }
+  if (block.modelSwitch !== undefined && trimmed === 'model.switch') {
+    return block.modelSwitch.to ? `Model switched · ${block.modelSwitch.to}` : 'Model switched';
+  }
+  if (block.goalChange !== undefined && trimmed === 'goal') {
+    return 'Goal updated';
+  }
+  if (block.branchBase !== undefined && trimmed === 'branch.base') {
+    return `Branched from ${block.branchBase.sourceAgentId}`;
+  }
+  if (trimmed === 'interruption') return 'Interrupted';
+  return block.text;
+}
+
+function normalizeFailureText(text: string): string {
+  return text
+    .trim()
+    .replace(
+      /^(?:reply failed|prompt failed(?: before delivery)?|prompt aborted(?: before delivery)?|turn failed|error)\s*[·:—-]\s*/iu,
+      '',
+    )
+    .replaceAll(/\s+/gu, ' ')
+    .toLowerCase();
 }

@@ -887,13 +887,35 @@ export function wrapWithSideBorders(
   paint: (s: string) => string,
   options: { readonly connectedAbove?: boolean; readonly label?: string } = {},
 ): string[] {
+  let firstBorderIdx = -1;
+  let secondBorderIdx = -1;
+  let secondBorderWidth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const plain = stripSgr(lines[i]!);
+    if (plain.length > 0 && plain[0] === '─') {
+      if (firstBorderIdx === -1) {
+        firstBorderIdx = i;
+      } else if (secondBorderIdx === -1) {
+        secondBorderIdx = i;
+        secondBorderWidth = plain.length;
+        break;
+      }
+    }
+  }
+  const hasTrailingRows = secondBorderIdx !== -1 && secondBorderIdx < lines.length - 1;
+
   let seenTop = false;
-  return lines.map((line) => {
+  const wrapped = lines.map((line, index) => {
     const plain = stripSgr(line);
     if (plain.length > 0 && plain[0] === '─') {
       const isTop = !seenTop;
-      const leftCorner = seenTop ? '╰' : options.connectedAbove === true ? '├' : '╭';
-      const rightCorner = seenTop ? '╯' : options.connectedAbove === true ? '┤' : '╮';
+      const connectBelow = index === secondBorderIdx && hasTrailingRows;
+      const leftCorner = seenTop
+        ? connectBelow ? '├' : '╰'
+        : options.connectedAbove === true ? '├' : '╭';
+      const rightCorner = seenTop
+        ? connectBelow ? '┤' : '╯'
+        : options.connectedAbove === true ? '┤' : '╮';
       seenTop = true;
       if (plain.length === 1) return paint(leftCorner);
       const middle = plain.slice(1, -1);
@@ -918,4 +940,14 @@ export function wrapWithSideBorders(
     if (line.length === 1) return head;
     return head + line.slice(1, -1) + tail;
   });
+
+  if (hasTrailingRows && secondBorderWidth > 0) {
+    wrapped.push(
+      secondBorderWidth === 1
+        ? paint('╰')
+        : paint(`╰${'─'.repeat(Math.max(0, secondBorderWidth - 2))}╯`),
+    );
+  }
+
+  return wrapped;
 }

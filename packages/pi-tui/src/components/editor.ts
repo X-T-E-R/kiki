@@ -1372,12 +1372,17 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			}
 		}
 
-		// Split into lines to check for large paste
+		// Split into lines to check for large paste; a trailing newline terminates
+		// the last line rather than starting an extra empty line.
 		const pastedLines = filteredText.split("\n");
+		const logicalLineCount =
+			filteredText.endsWith("\n") && pastedLines.length > 1
+				? pastedLines.length - 1
+				: pastedLines.length;
 
 		// Check if this is a large paste (> 10 lines or > 1000 characters)
 		const totalChars = filteredText.length;
-		if (pastedLines.length > 10 || totalChars > 1000) {
+		if (logicalLineCount > 10 || totalChars > 1000) {
 			// Store the paste and insert a marker
 			this.pasteCounter++;
 			const pasteId = this.pasteCounter;
@@ -1385,8 +1390,8 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 			// Insert marker like "[paste #1 +123 lines]" or "[paste #1 1234 chars]"
 			const marker =
-				pastedLines.length > 10
-					? `[paste #${pasteId} +${pastedLines.length} lines]`
+				logicalLineCount > 10
+					? `[paste #${pasteId} +${logicalLineCount} lines]`
 					: `[paste #${pasteId} ${totalChars} chars]`;
 			this.insertTextAtCursorInternal(marker);
 			return;

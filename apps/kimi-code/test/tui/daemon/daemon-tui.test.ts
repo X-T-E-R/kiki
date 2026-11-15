@@ -10,6 +10,7 @@ import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/pro
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
 import type { TranscriptOpsCatchupResponse, TranscriptResponse } from '@kiki/transcript';
 import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
+import { createViewState } from '@kiki/session-core/session/transcript/types';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
 import { DEFAULT_TUI_CONFIG } from '#/tui/config';
@@ -20,6 +21,7 @@ import {
 import type { DaemonFileAttachment } from '#/tui/daemon/attachments';
 import type { ShowStatusOptions } from '#/tui/daemon/activity-status-helper';
 import { buildLoadedTranscriptMarkdown, DaemonTUI } from '#/tui/daemon/daemon-tui';
+import type { DaemonProgramStatus } from '#/tui/daemon/program-status';
 import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import * as clipboardImage from '#/utils/clipboard/clipboard-image';
 
@@ -148,6 +150,8 @@ function driver(
     readonly continue?: boolean;
     readonly session?: string;
     readonly model?: string | null;
+    readonly thinking?: string | null;
+    readonly ephemeral?: boolean;
   } = {},
 ) {
   // Submitting through the editor persists input history under KIKI_HOME;
@@ -166,7 +170,8 @@ function driver(
         auto: false,
         plan,
         model: sources.model === null ? undefined : sources.model ?? 'model-a',
-        thinking: 'off',
+        thinking: sources.thinking === null ? undefined : sources.thinking ?? 'off',
+        ephemeral: sources.ephemeral,
         agentFiles: sources.agentFiles ?? [],
         skillsDirs: sources.skillsDirs ?? [],
       },
@@ -1045,12 +1050,93 @@ describe('DaemonTUI commands', () => {
     await internal.handleSlash('/model model-b');
     await internal.handleInput('hello');
 
-    expect(internal.client.setModel).toHaveBeenCalledWith('session-1', 'model-b');
+    expect(internal.client.setModel).toHaveBeenCalledWith('session-1', 'model-b', 'off');
     expect(providerFacade.setDefaultModel).toHaveBeenCalledWith('model-b');
     expect(tui.state.appState.model).toBe('model-b');
     expect(controller.sendPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'hello', model: 'model-b' }),
     );
+  });
+
+  it('preserves the explicit model across /new, then carries the model selected in the TUI', async () => {
+    const { internal } = driver();
+    internal.startupOverridesPending = false;
+    const open = vi.spyOn(internal, 'openSession').mockResolvedValue();
+    await internal.handleSlash('/new');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-created', 'model-a', undefined);
+    expect(open).toHaveBeenLastCalledWith('session-created');
+    await internal.handleSlash('/model model-b');
+    await internal.handleSlash('/new');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-created', 'model-b', 'off');
+  });
+
+  it('shows the new context denominator immediately and restores effort on the next compatible model', async () => {
+    const { tui, internal } = driver();
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, support_efforts: ['low', 'high'], default_effort: 'low' },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat'] },
+    ] });
+    await internal.handleSlash('/thinking high');
+    tui.state.appState.contextTokens = 1000;
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+    expect(tui.state.appState).toMatchObject({ model: 'model-b', thinkingEffort: 'off', maxContextTokens: 8000, contextUsage: 0.125 });
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'high');
+    expect(tui.state.appState).toMatchObject({ model: 'model-a', thinkingEffort: 'high', maxContextTokens: 4000, contextUsage: 0.25 });
+  });
+
+  it('uses a mandatory-thinking model default while remembering the preferred off setting', async () => {
+    const { tui, internal } = driver();
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 6000, support_efforts: ['low', 'high'], default_effort: 'low', effective_capabilities: ['always_thinking'] },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat'] },
+    ] });
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'low');
+    internal.renderSession({ ...createViewState('session-1'), model: 'model-a', maxContextTokens: 1200, contextTokens: 600 });
+    expect(tui.state.appState).toMatchObject({ maxContextTokens: 1200, contextUsage: 0.5 });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+  });
+
+  it.each(['model-a', null])('uses the target thinking default from a non-thinking or unbound %s state', async (initialModel) => {
+    const { tui, internal } = driver(false, { model: initialModel, thinking: null });
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, capabilities: ['chat'] },
+      { id: 'model-b', max_context_size: 8000, effective_capabilities: ['chat', 'thinking'], support_efforts: ['low', 'high'], default_effort: 'high' },
+    ] });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'high');
+    expect(tui.state.appState.thinkingEffort).toBe('high');
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'off');
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'high');
+  });
+
+  it('preserves off observed on an optional-thinking model without a CLI effort override', async () => {
+    const { internal } = driver(false, { thinking: null });
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, capabilities: ['chat', 'thinking'], support_efforts: ['low', 'high'], default_effort: 'high' },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat', 'thinking'], support_efforts: ['high'], default_effort: 'high' },
+    ] });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+  });
+
+  it('does not mark a saved session temporary when opened from an ephemeral invocation', async () => {
+    const { tui } = driver(false, { ephemeral: true });
+    const { programStatus, temporarySessionIds } = tui as unknown as { programStatus: DaemonProgramStatus; temporarySessionIds: Set<string> };
+    const report = vi.spyOn(programStatus.reporter, 'update');
+    temporarySessionIds.add('temporary');
+    await programStatus.switchSession('temporary');
+    programStatus.update({ ...createViewState('temporary'), loaded: true });
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ ephemeral: true }));
+    await programStatus.switchSession('saved');
+    programStatus.update({ ...createViewState('saved'), loaded: true });
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ ephemeral: false }));
+    temporarySessionIds.clear();
   });
 
   it('does not replace an existing configured default when a model is selected', async () => {
@@ -2384,6 +2470,23 @@ describe('DaemonTUI commands', () => {
     klientClose.mockResolvedValue(undefined);
 
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('advances the footer tip at session and turn boundaries, not typing or repeated redraws', async () => {
+    const { tui, internal } = driver();
+    internal.startupOverridesPending = false;
+    const advanceTip = vi.fn();
+    Object.assign(tui.state.footer, { advanceTip });
+    await internal.openSession('session-2');
+    expect(advanceTip).toHaveBeenCalledOnce();
+    const view = createViewState('session-2');
+    internal.renderSession({ ...view, busy: true });
+    tui.state.editor.handleInput('x');
+    internal.renderSession({ ...view, busy: true });
+    expect(advanceTip).toHaveBeenCalledOnce();
+    internal.renderSession(view);
+    internal.renderSession(view);
+    expect(advanceTip).toHaveBeenCalledTimes(2);
   });
 
   it('projects retry, todo, task, and context state into TUI chrome', () => {

@@ -826,5 +826,28 @@ describe('FileMentionProvider', () => {
       expect(result.lines[0]).toBe('hello /skill:review ');
       expect(result.cursorCol).toBe('hello /skill:review '.length);
     });
+
+    it('formats skill descriptions compactly without [arguments] or duplicate source tags', async () => {
+      const provider = new FileMentionProvider(
+        [
+          {
+            name: 'skill:audit',
+            kind: 'skill',
+            argumentHint: '[arguments]',
+            description: '[skill] [user] Audit security boundaries and permissions',
+          },
+        ],
+        workDir,
+        NO_FD,
+      );
+
+      const result = await provider.getSuggestions(['/aud'], 0, 4, { signal: ctrl() });
+      expect(result).not.toBeNull();
+      expect(result!.items[0]).toMatchObject({
+        value: 'skill:audit',
+        description: '[skill] Audit security boundaries and permissions',
+        data: { kind: 'skill' },
+      });
+    });
   });
 });

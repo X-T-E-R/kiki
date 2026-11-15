@@ -211,6 +211,7 @@ export class FooterComponent implements Component, MouseRoutable {
   private goalObservedAtMs = Date.now();
   private goalTimer: ReturnType<typeof setInterval> | null = null;
   private statusLineRunner: StatusLineCommandRunner | null = null;
+  private tipIndex = currentTipIndex();
   /**
    * Non-terminal background-task counts split by kind so the footer can
    * render two distinct badges. `bashTasks` covers `bash-*` BPM tasks
@@ -296,6 +297,14 @@ export class FooterComponent implements Component, MouseRoutable {
     this.onAction = onAction;
   }
 
+  advanceTip(): void {
+    this.tipIndex += 1;
+  }
+
+  setTipIndex(index: number): void {
+    this.tipIndex = index;
+  }
+
   routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
     if (!event.leftClick || this.onAction === undefined) return false;
     if (line !== 0 && line !== 1) return false;
@@ -313,6 +322,14 @@ export class FooterComponent implements Component, MouseRoutable {
     const state = this.state;
     const line0Spans: HitSpan[] = [];
     const line1Spans: HitSpan[] = [];
+
+    const contextText = formatContextStatus(
+      state.contextUsage,
+      state.contextTokens,
+      state.maxContextTokens,
+    );
+    const contextWidth = visibleWidth(contextText);
+    const hint = this.transientHint ?? this.warningHint;
 
     // ── Line 1: slots composed per status_line.items, or a user command ──
     let line1: string;
@@ -361,15 +378,40 @@ export class FooterComponent implements Component, MouseRoutable {
 
       const leftLine = leftTexts.join('  ');
       const leftWidth = visibleWidth(leftLine);
+      const tipsInline = order.includes('tips');
+      const showTips = !tipsInline && (configured === null || configured.includes('tips'));
+
+      if (configured === null && !hint && width >= 100 && leftWidth + 2 + contextWidth <= width) {
+        let tipText = '';
+        if (showTips) {
+          const { primary, pair } = tipsForIndex(this.tipIndex);
+          const tipBudget = width - leftWidth - contextWidth - 4;
+          if (pair && visibleWidth(pair) <= tipBudget) {
+            tipText = pair;
+          } else if (primary && visibleWidth(primary) <= tipBudget) {
+            tipText = primary;
+          }
+        }
+        const rightText = tipText
+          ? `${chalk.hex(colors.textMuted)(tipText)}  ${chalk.hex(colors.text)(contextText)}`
+          : chalk.hex(colors.text)(contextText);
+        const rightWidth = (tipText ? visibleWidth(tipText) + 2 : 0) + contextWidth;
+        const pad = Math.max(2, width - leftWidth - rightWidth);
+        line1 = leftLine + ' '.repeat(pad) + rightText;
+        const ctxStart = Math.min(width, Math.max(0, width - contextWidth));
+        if (width > ctxStart) {
+          line0Spans.push({ startCol: ctxStart, endCol: width, action: 'usage' });
+        }
+        this.lineHitSpans = [line0Spans, []];
+        return [truncateToWidth(line1, width)];
+      }
 
       // Rotating hint tips stay on the right unless they were given an
       // inline slot in items (rendered above at their configured position)
       // or the user dropped 'tips' from items.
       let tipText = '';
-      const tipsInline = order.includes('tips');
-      const showTips = !tipsInline && (configured === null || configured.includes('tips'));
       if (showTips) {
-        const { primary, pair } = tipsForIndex(currentTipIndex());
+        const { primary, pair } = tipsForIndex(this.tipIndex);
         const gap = 2;
         const remaining = Math.max(0, width - leftWidth - gap);
         if (pair && visibleWidth(pair) <= remaining) {
@@ -390,15 +432,8 @@ export class FooterComponent implements Component, MouseRoutable {
     }
 
     // ── Line 2: hint (bottom-left) + context (right) ──
-    const contextText = formatContextStatus(
-      state.contextUsage,
-      state.contextTokens,
-      state.maxContextTokens,
-    );
-    const contextWidth = visibleWidth(contextText);
     let line2: string;
     let contextStartCol = 0;
-    const hint = this.transientHint ?? this.warningHint;
     if (hint) {
       const maxHintWidth = Math.max(0, width - contextWidth - 1);
       const shownHint =
@@ -442,7 +477,7 @@ export class FooterComponent implements Component, MouseRoutable {
     };
 
     {
-      const { primary, pair } = tipsForIndex(currentTipIndex());
+      const { primary, pair } = tipsForIndex(this.tipIndex);
       const tip = pair ?? primary;
       if (tip) slots['tips'] = [{ text: chalk.hex(colors.textMuted)(tip) }];
     }

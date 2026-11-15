@@ -121,6 +121,21 @@ describe('one busy signal for a turn opened after a terminal phase', () => {
     expect(agentBusyFromMeta({ agent_id: 'main', ...snapshot })).toBe(false);
   });
 
+  it('publishes a failed tail in the same view that clears busy when phase settles before the turn header', () => {
+    const running = projectAgentTranscriptView(createViewState('session_test'), 'main', replay('main', staleEndedPhaseOps()));
+    const failed = projectAgentTranscriptView(running, 'main', replay('main', [
+      ...staleEndedPhaseOps(),
+      { op: 'meta.merge', meta: { activity: 'idle', agent: { phase: { kind: 'ended', turnId: 314, reason: 'failed', durationMs: 20, at: Date.parse(FIXED_AT_2) } } } },
+    ]));
+    expect(failed.busy).toBe(false);
+    expect(failed.turnTail).toMatchObject({ state: 'failed', turnId: 't314' });
+    const settled = projectAgentTranscriptView(failed, 'main', replay('main', [
+      { op: 'turn.upsert', turn: { ...endedTurn, turnId: 't314', ordinal: 314, state: 'failed', error: 'Provider unavailable' } },
+    ]));
+    expect(settled.busy).toBe(false);
+    expect(settled.turnTail).toMatchObject({ state: 'failed', error: 'Provider unavailable' });
+  });
+
   it('shows a resumed subagent as running before its first message or token arrives', () => {
     const child = replay('child-1', staleEndedPhaseOps({
       origin: { kind: 'other', payload: { kind: 'agent_message', senderAgentId: 'main' } },

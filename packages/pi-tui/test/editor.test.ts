@@ -4627,6 +4627,22 @@ describe("Editor component", () => {
 
 			assert.strictEqual(submitted, pastedText);
 		});
+
+		it("does not overcount a trailing newline in paste markers or inline threshold", () => {
+			const editorWithTrailingNewline = new Editor(createTestTUI(), defaultEditorTheme);
+			const elevenLinesTrailingNewline = `${Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join("\n")}\n`;
+			editorWithTrailingNewline.handleInput(`\x1b[200~${elevenLinesTrailingNewline}\x1b[201~`);
+			assert.strictEqual(editorWithTrailingNewline.getText(), "[paste #1 +11 lines]");
+			assert.strictEqual(editorWithTrailingNewline.getExpandedText(), elevenLinesTrailingNewline);
+
+			const tenLinesTrailingNewline = `${Array.from({ length: 10 }, (_, i) => `row ${i + 1}`).join("\n")}\n`;
+			const inlineEditor = new Editor(createTestTUI(), defaultEditorTheme);
+			inlineEditor.handleInput(`\x1b[200~${tenLinesTrailingNewline}\x1b[201~`);
+			assert.ok(
+				!inlineEditor.getText().includes("[paste #"),
+				"10 logical lines ending in a trailing newline should stay inline",
+			);
+		});
 	});
 });
 

@@ -13,6 +13,15 @@ import { asciiVisibleWidth, normalizeTerminalOutput, sliceByColumn, visibleWidth
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
+/**
+ * Matches `OSC 133;A/B/C` semantic prompt-zone markers (terminated by BEL or ST).
+ * Components emit these so `TuiAltScreen` can jump between prompt zones, while
+ * `TuiMainScreen` strips them before writing to the host terminal so differential
+ * redraws never pollute outer shell-integration prompt navigation.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: terminal escape parser
+const OSC133_ZONE_SEQ = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
+
 /** Shared empty id list for non-image lines in the per-line image-id cache. */
 const EMPTY_IMAGE_IDS: readonly number[] = [];
 
@@ -383,6 +392,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				continue;
 			}
 			let line = rawLine;
+			if (line.includes("\x1b]133;")) {
+				line = line.replace(OSC133_ZONE_SEQ, "");
+			}
 			let imageIds: readonly number[] = EMPTY_IMAGE_IDS;
 			if (isImageLine(line)) {
 				imageIds = extractKittyImageIds(line);

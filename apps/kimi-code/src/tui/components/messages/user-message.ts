@@ -10,20 +10,35 @@ import { currentTheme } from '#/tui/theme';
 import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
 import { markOsc133Zone } from '#/tui/utils/osc133';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
+import { sanitizeShellOutput } from '#/tui/utils/shell-output';
+
+function sanitizeViaClient(viaClient?: string): string | undefined {
+  if (viaClient === undefined) return undefined;
+  const cleaned = sanitizeShellOutput(viaClient).replaceAll(/[\u007F-\u009F\s]+/gu, ' ').trim();
+  return cleaned.length > 0 ? cleaned : undefined;
+}
 
 export class UserMessageComponent implements Component {
   private text: string;
   private readonly bullet?: string;
-  private readonly sourceLabel?: string;
+  private sourceLabel?: string;
+  private viaClient?: string;
   private spacerComponent: Spacer;
   private imageThumbnails: ImageThumbnail[];
 
   private renderCache: { width: number; lines: string[] } | undefined;
 
-  constructor(text: string, images?: ImageAttachment[], bullet?: string, sourceLabel?: string) {
+  constructor(
+    text: string,
+    images?: ImageAttachment[],
+    bullet?: string,
+    sourceLabel?: string,
+    viaClient?: string,
+  ) {
     this.text = text;
     this.bullet = bullet;
     this.sourceLabel = sourceLabel;
+    this.viaClient = sanitizeViaClient(viaClient);
     this.spacerComponent = new Spacer(1);
     this.imageThumbnails = images?.map((img) => new ImageThumbnail(img)) ?? [];
   }
@@ -31,6 +46,19 @@ export class UserMessageComponent implements Component {
   updateContent(text: string): void {
     if (this.text === text) return;
     this.text = text;
+    this.markRenderDirty();
+  }
+
+  setSourceLabel(sourceLabel?: string): void {
+    if (this.sourceLabel === sourceLabel) return;
+    this.sourceLabel = sourceLabel;
+    this.markRenderDirty();
+  }
+
+  setViaClient(viaClient?: string): void {
+    const next = sanitizeViaClient(viaClient);
+    if (this.viaClient === next) return;
+    this.viaClient = next;
     this.markRenderDirty();
   }
 
@@ -81,11 +109,30 @@ export class UserMessageComponent implements Component {
       }
     }
 
-    const coloredText = currentTheme.boldFg('roleUser', this.text);
-    const textLines = new Text(coloredText, 0, 0).render(contentWidth);
+    const hasText = this.text.length > 0;
+    const textLines =
+      hasText || this.viaClient === undefined
+        ? new Text(currentTheme.boldFg('roleUser', this.text), 0, 0).render(contentWidth)
+        : [];
     for (let i = 0; i < textLines.length; i++) {
       const prefix = this.sourceLabel === undefined && i === 0 ? bullet : indent;
       lines.push(prefix + textLines[i]);
+    }
+
+    if (this.viaClient !== undefined) {
+      const viaPlain = `via ${this.viaClient}`;
+      if (hasText && textLines.length > 0) {
+        const trimmedLastText = textLines.at(-1)!.replace(/ +$/u, '');
+        if (visibleWidth(trimmedLastText) + 2 + visibleWidth(viaPlain) <= contentWidth) {
+          const trimmedRenderedLast = lines.at(-1)!.replace(/ +$/u, '');
+          lines[lines.length - 1] = `${trimmedRenderedLast}  ${currentTheme.fg('textDim', viaPlain)}`;
+        } else {
+          lines.push(indent + currentTheme.fg('textDim', truncateToWidth(viaPlain, contentWidth, '…')));
+        }
+      } else {
+        const prefix = this.sourceLabel === undefined ? bullet : indent;
+        lines.push(prefix + currentTheme.fg('textDim', truncateToWidth(viaPlain, contentWidth, '…')));
+      }
     }
 
     // Images — indented to align with text after the bullet

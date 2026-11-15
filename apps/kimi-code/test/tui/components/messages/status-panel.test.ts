@@ -130,4 +130,29 @@ describe('status panel report lines', () => {
     expect(output).toContain('Warning      No active session');
     expect(output).toContain('No context window data available.');
   });
+
+  it('wraps long field values with hanging indentation when width is constrained', () => {
+    const lines = buildStatusReportLines({
+      version: '1.2.3',
+      model: 'k2',
+      workDir: '/var/lib/organization/workspaces/monorepo/apps/kimi-code/src/tui',
+      sessionId: 'ses-1',
+      sessionTitle: null,
+      thinkingEffort: 'off',
+      permissionMode: 'manual',
+      planMode: false,
+      contextUsage: 0.58,
+      contextTokens: 151_100,
+      maxContextTokens: 262_144,
+      availableModels: {},
+      width: 52,
+    }).map(strip);
+
+    const dirIdx = lines.findIndex((line) => line.startsWith('  Directory'));
+    expect(dirIdx).toBeGreaterThanOrEqual(0);
+    expect(lines[dirIdx + 1]).toMatch(/^ {15}\S/);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(52);
+    }
+  });
 });

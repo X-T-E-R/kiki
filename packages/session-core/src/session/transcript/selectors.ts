@@ -165,7 +165,15 @@ export function setLoadError<T extends Pick<SessionViewState, 'version' | 'loade
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
   const lastSeq = Math.max(session.last_seq, state.session?.last_seq ?? 0, state.cursor.seq);
   const nextSession = lastSeq > session.last_seq ? { ...session, last_seq: lastSeq } : session;
-  return bump(state, { session: nextSession, profile: nextSession.agent_config.profile ?? state.profile });
+  const config = nextSession.agent_config;
+  const model = config.model || state.model;
+  return bump(state, {
+    session: nextSession,
+    model,
+    thinkingEffort: config.execution?.effective.thinking ?? state.thinkingEffort,
+    maxContextTokens: model === state.model ? state.maxContextTokens : undefined,
+    profile: config.profile ?? state.profile,
+  });
 }
 
 export function setTasks(state: SessionViewState, tasks: SessionViewState['tasks']): SessionViewState {
