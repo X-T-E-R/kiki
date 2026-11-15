@@ -1114,7 +1114,7 @@ export class DaemonTUI {
     this.turnActivityTracker.reset();
     this.lastActivityKind = 'idle';
     this.wasBusy = false;
-    (this.state.footer as unknown as { advanceTip?: () => void }).advanceTip?.();
+    this.state.footer.advanceTip();
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
       this.state.editor.setText('');
@@ -1221,7 +1221,7 @@ export class DaemonTUI {
     // An armed Esc has nothing left to interrupt once the turn ends.
     if (!view.busy && this.pendingConfirm?.kind === 'escape') this.clearPendingConfirm();
     if (this.wasBusy && !view.busy) {
-      (this.state.footer as unknown as { advanceTip?: () => void }).advanceTip?.();
+      this.state.footer.advanceTip();
       this.completedTurns += 1;
       notifyTerminalOnce(this.state, `turn-complete:${String(this.completedTurns)}`, {
         title: 'Kiki task complete',

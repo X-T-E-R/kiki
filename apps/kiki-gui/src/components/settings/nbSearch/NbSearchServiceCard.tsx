@@ -210,7 +210,7 @@ export function NbSearchServiceCard({
     isKeySavedState,
     instance?.credential.configured,
     instance?.credential.slot_id,
-    capabilities.configuration?.revision,
+    capabilities.revision,
     readCredential,
   ]);
 
