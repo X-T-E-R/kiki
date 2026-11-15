@@ -8,7 +8,8 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { LifecycleScope } from '#/app/scopes';
-import { APIConnectionError } from '#/kosong/contract/errors';
+import { APIConnectionError, APIContextOverflowError, APIStatusError, markProviderEventError, noteConfirmedRequestExecution } from '#/kosong/contract/errors';
+import { attachErrorDetails } from '#/errors';
 import { fileReadLedgerBudget, renderFileReads } from '#/agent/contextMemory/fileReadLedger';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -229,6 +230,58 @@ describe('relay gate fixtures', () => {
     expect(ctx.context.get().find(message => message.origin?.kind === 'compaction_summary')?.origin).toMatchObject({ fileReads: { entries: [expect.objectContaining({ path: '/project/example.ts' })] } });
     await ctx.expectResumeMatches();
     await ctx.dispose();
+  });
+
+  it('rescues an auto-strategy summary after exhausting the bounded terminal-stream retries', async () => {
+    let attempts = 0;
+    let firstFailure!: () => void;
+    const started = new Promise<void>(resolve => { firstFailure = resolve; });
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 3 } }, generate: async (_chat, _system, _tools, _history, callbacks) => {
+      attempts += 1;
+      await callbacks?.onMessagePart?.({ type: 'text', text: 'Discard this failed summary.' });
+      const error = markProviderEventError(new APIStatusError(502, 'stream ended'), 'gateway_stream_terminal_error');
+      noteConfirmedRequestExecution(error);
+      attachErrorDetails(error, { upstream_retryable: false });
+      firstFailure();
+      throw error;
+    } });
+    try {
+      await stalledWindow(ctx);
+      const service = ctx.get(IAgentFullCompactionService);
+      service.setContextStrategyOverride('auto');
+      expect(service.begin({ source: 'manual' })).toBe(true);
+      const task = service.compacting!;
+      await started;
+      vi.useFakeTimers();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await task.promise;
+      expect(attempts).toBe(3);
+      expect(result).toMatchObject({ strategy: 'relay', fallbackFrom: 'summarize', reasonCodes: expect.arrayContaining(['notes_not_advanced', 'summarize_failed_relay_rescue']) });
+      vi.useRealTimers();
+      expect(JSON.stringify(await ctx.persistedWireRecords())).not.toContain('Discard this failed summary.');
+      await ctx.expectResumeMatches();
+    } finally {
+      vi.useRealTimers();
+      await ctx.dispose();
+    }
+  }, 30_000);
+
+  it.each(['transport', 'policy'] as const)('locally rescues overflow with %s replay restrictions without another model request', async (mode) => {
+    let attempts = 0;
+    const error = new APIContextOverflowError(400, 'context too long');
+    if (mode === 'transport') noteConfirmedRequestExecution(error);
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 }, retry: {
+      policies: mode === 'policy' ? [{ match: 'APIContextOverflowError', retry: false }] : [],
+    } }, generate: async () => { attempts += 1; throw error; } });
+    try {
+      await stalledWindow(ctx);
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.begin({ source: 'manual' })).toBe(true);
+      expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay', fallbackFrom: 'summarize', reasonCodes: expect.arrayContaining(['summarize_failed_relay_rescue']) });
+      expect(attempts).toBe(1);
+      expect(wireCounts(ctx, ['context.apply_compaction'])['context.apply_compaction']).toBe(1);
+      await ctx.expectResumeMatches();
+    } finally { await ctx.dispose(); }
   });
 
   it('does not rescue or commit a stalled summary cancelled while its generator is pending', async () => {

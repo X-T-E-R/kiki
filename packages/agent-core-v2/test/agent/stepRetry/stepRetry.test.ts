@@ -1161,7 +1161,8 @@ describe('stepRetry plugin', () => {
         if (upstreamCode === undefined) {
           expect(details).toMatchObject({ retry_exhausted: true, retry_attempts: 2 });
         } else {
-          expect(details).toMatchObject({ errorSource: 'provider_event', retry: false });
+          expect(details).toMatchObject({ errorSource: 'provider_event' });
+          expect(details).not.toHaveProperty('retry');
           expect(details?.['retry_exhausted']).toBeUndefined();
         }
         const attempts = upstreamCode === undefined ? 2 : 1;

@@ -326,6 +326,20 @@ describe('StopFailure continuation recovery', () => {
     } finally { await f.dispose(); }
   });
 
+  it('keeps hook continuation available when an ordinary turn retry policy is disabled', async () => {
+    const f = await fixture({ hooks: [alwaysContinue], config: { retry: { policies: [{ match: 'APIConnectionError', retry: false }] } } });
+    try {
+      f.local.mockNextProviderResponse({ error: new APIConnectionError('connection interrupted') });
+      f.local.mockNextResponse({ type: 'text', text: 'Continued on a new message.' });
+      expect(await (await prompt(f.local)).completion).toMatchObject({ state: 'completed' });
+      expect(f.local.llmCalls).toHaveLength(2);
+      expect(continuations(f.local)).toHaveLength(1);
+      const input = f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData;
+      expect(input?.['recoverable']).toBe(true);
+      expect(input?.['errorDetails']).not.toHaveProperty('retry');
+    } finally { await f.dispose(); }
+  });
+
   it.each([true, false, undefined])('permits a new message but no same-request retry for a gateway event with upstream retryable=%s', async (retryable) => {
     const f = await fixture({ hooks: [alwaysContinue] });
     try {
@@ -340,7 +354,8 @@ describe('StopFailure continuation recovery', () => {
       expect(continuations(f.local)).toHaveLength(1);
       expect(JSON.stringify(f.local.llmCalls[1])).toContain('继续');
       const input = f.trigger.mock.calls.find(([event]) => event === 'StopFailure')?.[1]?.inputData;
-      expect(input).toMatchObject({ recoverable: true, errorDetails: { retry: false } });
+      expect(input).toMatchObject({ recoverable: true, errorDetails: { upstreamErrorCode: 'gateway_stream_terminal_error' } });
+      expect(input?.['errorDetails']).not.toHaveProperty('retry');
     } finally { await f.dispose(); }
   });
 

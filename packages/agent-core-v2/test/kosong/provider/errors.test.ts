@@ -19,6 +19,7 @@ import {
   hasExplicitRetryVeto,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
+  isRetryableBufferedRequestError,
   markProviderEventError,
   markProviderHttpError,
   normalizeAPIStatusError,
@@ -396,7 +397,8 @@ describe('non-abort classification still works', () => {
     noteExplicitUpstreamRetryDenial(local, body);
     expect(isRetryableGenerateError(local)).toBe(false);
     expect(sameRequestRetryProhibition(toErrorPayload(local).details)).toBe('stream_terminal');
-    expect(toErrorPayload(local).details).toMatchObject({ retry: false });
+    expect(toErrorPayload(local).details).not.toHaveProperty('retry');
+    expect(hasExplicitRetryVeto(local)).toBe(true);
   });
 
   it('permits a new message for the recorded Messages gateway terminal details', () => {
@@ -436,7 +438,7 @@ describe('non-abort classification still works', () => {
       const payload = toErrorPayload(converted);
       expect(payload).toMatchObject({
         code: 'provider.api_error',
-        details: { errorSource: 'provider_http', upstreamErrorCode: 'gateway_stream_terminal_error', statusCode: 502, retry: false },
+        details: { errorSource: 'provider_http', upstreamErrorCode: 'gateway_stream_terminal_error', statusCode: 502 },
       });
       expect(sameRequestRetryProhibition(payload.details)).toBe('stream_terminal');
       expect(isRetryableGenerateError(converted)).toBe(false);
@@ -737,6 +739,19 @@ describe('Responses forwarded WebSocket close errors', () => {
     } });
     expect(isRetryableRequestInterruption(failure)).toBe(true);
     if (shape === 'sdk') expect(toErrorPayload(failure).details).toHaveProperty('requestId', 'fixture-request');
+  });
+
+  it('keeps an unknown forwarded WS close retryable only for buffered requests', async () => {
+    const source = OpenAIStream.fromSSEResponse(new Response(`event: error\ndata: ${JSON.stringify({ error: {
+      type: 'websocket_close_error', code: '1005', message: 'websocket closed without a close frame',
+    } })}\n\n`), new AbortController());
+    const failure = await consume(new OpenAIResponsesStreamedMessage(source, true)).catch((error: unknown) => error);
+    expect(toErrorPayload(failure).details).toMatchObject({ websocketCloseCode: 1005, retry: false });
+    expect(isRetryableGenerateError(failure)).toBe(false);
+    expect(isRetryableRequestInterruption(failure)).toBe(false);
+    expect(isRetryableBufferedRequestError(failure)).toBe(true);
+    attachErrorDetails(failure, { retry_policy_veto: true });
+    expect(isRetryableBufferedRequestError(failure)).toBe(false);
   });
 
   it.each(['1002', '1008', 'not-a-code', '1012-extra'])( 'vetoes forwarded permanent or malformed close code %s', async code => {
@@ -1048,7 +1063,6 @@ describe('convertGoogleGenAIError RetryInfo recovery', () => {
       statusCode: 503,
       errorSource: 'provider_http',
       upstreamErrorCode: 'antigravity_safety',
-      retry: false,
     });
     expect(sameRequestRetryProhibition(supportedPayload.details)).toBe('local');
     expect(permitsFailureContinuation(supportedPayload)).toBe(false);

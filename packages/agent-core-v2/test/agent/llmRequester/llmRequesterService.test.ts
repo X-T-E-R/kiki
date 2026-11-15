@@ -3733,7 +3733,10 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
       expect(toErrorPayload(failures[0])).toMatchObject({ code: 'provider.connection_error', message: expect.stringContaining('websocket_connection_limit_reached') });
       expect(toErrorPayload(failures[0]).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: 'websocket_connection_limit_reached' });
     }
-    if (mode === 'safety-lookalike') expect(toErrorPayload(failures[0])).toMatchObject({ code: 'provider.api_error', details: { retry: false } });
+    if (mode === 'safety-lookalike') {
+      expect(toErrorPayload(failures[0])).toMatchObject({ code: 'provider.api_error', details: { upstreamErrorCode: 'antigravity_safety' } });
+      expect(toErrorPayload(failures[0]).details).not.toHaveProperty('retry');
+    }
     if (mode.endsWith('1012') || mode === '1000' || mode === '1001' || mode === '1006' || mode === '1013' || mode === '1002' || mode === '1008') {
       const raw = unwrapErrorCause(failures[0]);
       expect(toErrorPayload(failures[0]).code).toBe(mode === '1002' || mode === '1008' ? 'provider.api_error' : 'provider.connection_error');

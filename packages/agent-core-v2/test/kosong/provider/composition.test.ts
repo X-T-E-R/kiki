@@ -4101,7 +4101,8 @@ describe('Google SDK SSE transport contract', () => {
       expect(parts).toEqual([{ type: 'text', text: '你好 fixture' }]);
       expect(failure).toMatchObject({ statusCode: 429, retryAfterMs: 17250 });
       const details = toErrorPayload(failure).details;
-      expect(details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: 'gateway_stream_terminal_error', retry: false });
+      expect(details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: 'gateway_stream_terminal_error' });
+      expect(details).not.toHaveProperty('retry');
       expect(details?.['execution']).toBeUndefined();
       expect(isRetryableGenerateError(failure)).toBe(false);
     });

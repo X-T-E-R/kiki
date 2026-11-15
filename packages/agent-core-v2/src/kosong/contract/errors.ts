@@ -392,6 +392,9 @@ export function hasExplicitRetryVeto(error: unknown): boolean {
     const declared = current instanceof Error2 ? current.details : undefined;
     if (attached?.['retry'] === false || declared?.['retry'] === false ||
       attached?.['upstream_retryable'] === false || declared?.['upstream_retryable'] === false) return true;
+    const details = providerErrorMetadata(current);
+    if ((details['errorSource'] === 'provider_event' || details['errorSource'] === 'provider_http') &&
+      typeof details['upstreamErrorCode'] === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(details['upstreamErrorCode'])) return true;
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
@@ -427,12 +430,12 @@ function isRetryableUncommittedProviderError(error: unknown, matches: (cause: ob
 }
 
 export function isRetryableGenerateError(error: unknown): boolean {
-  return isRetryableProviderFailure(error, false);
+  return isRetryableProviderFailure(error, 'generation');
 }
 
 /** Only an uncommitted model-request boundary that can retract partial output may replay these network failures. This does not authorize replaying tools or other provider-side effects. */
 export function isRetryableRequestInterruption(error: unknown): boolean {
-  if (!isRetryableProviderFailure(error, true)) return false;
+  if (!isRetryableProviderFailure(error, 'interruption')) return false;
   const visited = new Set<object>();
   let current = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
@@ -443,17 +446,29 @@ export function isRetryableRequestInterruption(error: unknown): boolean {
   return false;
 }
 
-function isRetryableProviderFailure(error: unknown, retractableOutput: boolean): boolean {
-  if (isAbortError(error) || (!retractableOutput && requestDeliveryProvenance(error) === 'executed')) return false;
+/** Only a side-effect-free request whose entire response is buffered and discarded on failure may ignore transport replay restrictions. User retry-policy vetoes and permanent failures still apply. */
+export function isRetryableBufferedRequestError(error: unknown): boolean {
+  return isRetryableProviderFailure(error, 'buffered');
+}
+
+function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interruption' | 'buffered'): boolean {
+  if (isAbortError(error) || (mode === 'generation' && requestDeliveryProvenance(error) === 'executed')) return false;
   const visited = new Set<object>();
   let current = error;
   let providerError = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     const details = providerErrorMetadata(current);
-    if (details['retry'] === false || details['upstream_retryable'] === false || (!retractableOutput && details['request_output'] === 'observed')) return false;
+    if (mode === 'buffered' ? details['retry_policy_veto'] === true : details['retry'] === false || details['upstream_retryable'] === false) return false;
+    if (mode === 'generation' && details['request_output'] === 'observed') return false;
     const code = details['upstreamErrorCode'];
-    if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) return false;
+    if (typeof code === 'string' && (mode === 'buffered' ? code === 'antigravity_safety' : NON_RETRYABLE_PROVIDER_CODES.has(code))) return false;
+    if (mode === 'buffered') {
+      if (current instanceof ChatProviderError &&
+        (current.code === PROVIDER_FILTERED_ERROR_CODE || current.code === PROVIDER_AUTH_ERROR_CODE || current instanceof APIProviderQuotaExhaustedError)) return false;
+      const status = current instanceof APIStatusError ? current.statusCode : details['upstreamStatus'] ?? details['statusCode'];
+      if (typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429) return false;
+    }
     if (current instanceof ChatProviderError) providerError = current;
     current = current instanceof Error ? current.cause : undefined;
   }
@@ -649,7 +664,6 @@ export function markProviderEventError<T>(error: T, upstreamErrorCode?: string |
   const code = readProviderErrorIdentifier(upstreamErrorCode) ??
     providerErrorMetadata(error)['upstreamErrorCode'];
   if (typeof code !== 'string') return error;
-  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
   return attachErrorDetails(error, { errorSource: 'provider_event', upstreamErrorCode: code });
 }
 
@@ -657,7 +671,6 @@ export function markProviderEventError<T>(error: T, upstreamErrorCode?: string |
 export function markProviderHttpError<T>(error: T, upstreamErrorCode?: string | null): T {
   const code = readProviderErrorIdentifier(upstreamErrorCode);
   if (code === null) return error;
-  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
   return attachErrorDetails(error, { errorSource: 'provider_http', upstreamErrorCode: code });
 }
 

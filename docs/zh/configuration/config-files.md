@@ -619,7 +619,7 @@ confirm = false
 | `subagent_context_strategy` | `string` | `"auto"` | 当 profile 与模型均未指定 `context_strategy` 时，子 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
 | `compaction_soft_context_size` | `integer` | `0` | 旧版绝对 token 上限，仅在各层都没有设置 `auto_compact` 时使用 |
-| `compaction_max_attempts` | `integer` | `3` | 压缩失败后的最大总请求次数（含首次请求）；所有恢复路径共用这份预算 |
+| `compaction_max_attempts` | `integer` | `3` | 压缩循环的最大摘要尝试次数（含首次尝试）；断流与上下文溢出恢复共用这份预算。OAuth 刷新、请求投影恢复和显式开启的输出前无限重试由请求器单独处理 |
 
 会话按模型保存的 token 覆写优先，其次为命中的 `model_profiles` 条目、profile 顶层、模型别名，最后才是全局百分比。压缩策略在主 Agent 上按同一优先级解析（会话覆写、命中的 `model_profiles` 条目、profile 顶层、模型别名、全局 `loop_control.context_strategy`），在子 Agent 上按命中的 `model_profiles` 条目、profile 顶层、模型别名、全局 `loop_control.subagent_context_strategy` 解析；外部执行器始终固定为 `summarize`。没有任何新 `auto_compact` 时，沿用旧阈值：`min(0.85 × 可用窗口, 可用窗口 − 50000, 正值 compaction_soft_context_size)`；显式旧比例替换 0.85。保存全局新值时，会按当前模型把 token 数换算成百分比，并删除旧比例和绝对 token 上限键；换算后无法保证其他窗口大小不同的模型仍保持旧绝对上限。新阈值在下一个模型 step 前生效，不会立即压缩。用 `/autocompact` 查看当前会话的生效值。
 

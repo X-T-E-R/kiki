@@ -1144,6 +1144,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           attempt = collectSummary(await request.result);
           break;
         } catch (error) {
+          if (isAbortError(error) || signal.aborted) throw error;
           const isContextOverflow = this.shouldRecoverFromContextOverflow(
             error,
             estimatedCompactionRequestTokens,
@@ -1190,7 +1191,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
       }
       } catch (error) {
-        if (error instanceof CompactionPersistError) throw error;
+        if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
         if (choice.strategy === 'summarize' || !eligibility.safe || customInstruction ||
             !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError)) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;

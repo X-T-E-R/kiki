@@ -20,6 +20,8 @@ import {
   ambiguousRequestDelivery,
   isRetryableGenerateError,
   isRetryableRequestInterruption,
+  hasExplicitRetryVeto,
+  isRetryableBufferedRequestError,
   isRetryableMalformedFunctionCallError,
   isRetryableMissingTerminalError,
   markProviderEventError,
@@ -113,6 +115,30 @@ describe('throwIfAbortError', () => {
     expect(caught).toBeInstanceOf(DOMException);
     expect((caught as DOMException).name).toBe('AbortError');
     expect(isRetryableGenerateError(caught)).toBe(false);
+  });
+});
+
+describe('retry veto provenance', () => {
+  it('keeps transport replay vetoes separate from buffered user-policy vetoes', () => {
+    for (const mark of [markProviderEventError, markProviderHttpError]) {
+      const error = mark(new APIStatusError(502, 'stream ended'), 'gateway_stream_terminal_error');
+      noteExplicitUpstreamRetryDenial(error, { error: { retryable: false } });
+      const wrapped = new Error('wrapped', { cause: error });
+      expect(hasExplicitRetryVeto(wrapped)).toBe(true);
+      expect(isRetryableBufferedRequestError(wrapped)).toBe(true);
+      expect(isRetryableGenerateError(wrapped)).toBe(false);
+      expect(isRetryableRequestInterruption(wrapped)).toBe(false);
+      expect(readAttachedErrorDetails(error)).not.toHaveProperty('retry');
+      attachErrorDetails(wrapped, { retry: false });
+      expect(isRetryableBufferedRequestError(wrapped)).toBe(true);
+      attachErrorDetails(wrapped, { retry_policy_veto: true });
+      expect(isRetryableBufferedRequestError(wrapped)).toBe(false);
+    }
+    const confirmed = new APIConnectionError('executed');
+    noteConfirmedRequestExecution(confirmed);
+    expect(isRetryableGenerateError(confirmed)).toBe(false);
+    expect(isRetryableRequestInterruption(confirmed)).toBe(false);
+    expect(isRetryableBufferedRequestError(confirmed)).toBe(true);
   });
 });
 

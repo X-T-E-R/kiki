@@ -3,7 +3,7 @@ import {
   APIEmptyResponseError,
   APIProviderQuotaExhaustedError,
   APIStatusError,
-  isRetryableGenerateError,
+  isRetryableBufferedRequestError,
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
@@ -13,6 +13,8 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
   const cause = unwrapErrorCause(error);
   if (cause instanceof APIEmptyResponseError && cause.finishReason === 'filtered') return 'filtered';
   if (isCodedError(cause) && cause.code === 'provider.filtered') return 'filtered';
+  const details = typeof cause === 'object' && cause !== null ? toErrorPayload(cause).details : undefined;
+  if (details?.['upstreamErrorCode'] === 'antigravity_safety') return 'filtered';
   const status = cause instanceof APIStatusError ? cause : undefined;
   if (/CONTENT_FILTERED|content[_-]?filter/i.test(status?.message ?? '')) return 'filtered';
   if (status?.statusCode === 401 || status?.statusCode === 403) return 'auth';
@@ -27,8 +29,7 @@ export function isRetryableCompactionError(error: unknown): boolean {
   if (isAbortError(error) || isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
-  if (cause instanceof APIEmptyResponseError) return true;
-  if (!isRetryableGenerateError(error)) return false;
+  if (!isRetryableBufferedRequestError(error)) return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
   return true;
 }

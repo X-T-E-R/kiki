@@ -602,7 +602,7 @@ describe('provider failures through the real Messages SDK', () => {
     expect(replayed.retryEvents).toHaveLength(0);
     expect(continuations(replayed.local)).toEqual([]);
     expect(replayed.requests[1]?.body['messages']).toEqual(replayed.requests[0]?.body['messages']);
-    const details = { errorSource: 'provider_event', upstreamErrorCode: gatewayTerminalError.code, upstreamErrorType: 'upstream_error', upstreamStatus: 502, retry: false, requestId: null, traceId: null };
+    const details = { errorSource: 'provider_event', upstreamErrorCode: gatewayTerminalError.code, upstreamErrorType: 'upstream_error', upstreamStatus: 502, requestId: null, traceId: null };
     const input = stops(replayed)[0]?.[1]?.inputData;
     expect(input).toMatchObject({ modelAlias: argonModel, hasPartialOutput: false, recoverable: true, recoveryAttempts: 0, errorDetails: details });
     expect(input?.['errorDetails']).not.toHaveProperty('upstream_retryable');
@@ -629,7 +629,7 @@ describe('provider failures through the real Messages SDK', () => {
       recoverable: true,
       recoveryAttempts: 0,
       upstreamErrorCode: gatewayTerminalError.code,
-      errorDetails: { errorSource: 'provider_http', statusCode: 502, retry: false },
+      errorDetails: { errorSource: 'provider_http', statusCode: 502 },
     });
     expect(await stopResults(replayed)).toMatchObject([[{ exitCode: 0, recovery: { action: 'retry' } }]]);
   }, 60_000);
@@ -683,8 +683,9 @@ describe('provider failures through the real Messages SDK', () => {
     expect(continuations(replayed.local)).toEqual([]);
     expect(stops(replayed)[0]?.[1]?.inputData).toMatchObject({
       modelAlias, recoverable, upstreamErrorCode: gatewayTerminalError.code,
-      errorDetails: { retry: false, upstreamStatus: status },
+      errorDetails: { upstreamStatus: status },
     });
+    expect(stops(replayed)[0]?.[1]?.inputData?.['errorDetails']).not.toHaveProperty('retry');
   }, 60_000);
 
   it('retries an ordinary 429 and does not continue it', async () => {

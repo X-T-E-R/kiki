@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { attachErrorDetails, Error2, unwrapErrorCause } from '#/errors';
-import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ambiguousRequestDelivery, normalizeAPIStatusError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
+import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ChatProviderError, ambiguousRequestDelivery, markProviderEventError, markProviderHttpError, normalizeAPIStatusError, isRetryableGenerateError, isRetryableRequestInterruption, noteConfirmedRequestExecution, noteExecutedRequestDelivery, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { compactionFailureKind, describeCompactionFailure, isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 
 describe('compaction-only retry classification', () => {
@@ -27,18 +27,67 @@ describe('compaction-only retry classification', () => {
     expect(isRetryableCompactionError(new APIStatusError(503, 'down'))).toBe(true);
   });
 
-  it('retries a discarded empty summary after observed thinking while preserving terminal refusals', () => {
+  it('retries discarded empty and interrupted summaries after observed output while preserving refusals', () => {
     const observed = <T extends Error>(error: T): T => attachErrorDetails(error, { request_delivery: 'executed', request_output: 'observed' });
     const empty = observed(new APIEmptyResponseError('thinking only'));
     expect(isRetryableGenerateError(empty)).toBe(false);
     expect(isRetryableCompactionError(empty)).toBe(true);
     expect(isRetryableCompactionError(new Error2(empty.code, 'summary request failed', { cause: empty }))).toBe(true);
+    expect(isRetryableCompactionError(observed(new APIConnectionError('interrupted output')))).toBe(true);
     for (const error of [
       new APIEmptyResponseError('filtered', { finishReason: 'filtered' }),
       new APIStatusError(401, 'unauthorized'), new APIStatusError(403, 'forbidden'),
-      new APIProviderQuotaExhaustedError('insufficient_quota'), new APIConnectionError('interrupted output'),
+      new APIProviderQuotaExhaustedError('insufficient_quota'),
+      attachErrorDetails(new APIEmptyResponseError('empty'), { retry_policy_veto: true }),
     ]) expect(isRetryableCompactionError(observed(error))).toBe(false);
     const cancelled = new Error2(empty.code, 'cancelled', { name: 'AbortError', cause: empty });
+    expect(isRetryableCompactionError(cancelled)).toBe(false);
+  });
+
+  it.each([
+    'gateway_stream_terminal_error', 'antigravity_missing_terminal', 'antigravity_thinking_only',
+    'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_malformed_function_call',
+    'overloaded_error', 'api_error', 'upstream_error',
+  ])('retries buffered %s failures independently of ordinary request replay restrictions', (code) => {
+    for (const mark of [markProviderEventError, markProviderHttpError]) {
+      for (const upstreamRetryable of [undefined, false]) {
+        const error = mark(new APIStatusError(502, 'upstream failed'), code);
+        attachErrorDetails(error, { upstream_retryable: upstreamRetryable });
+        noteExecutedRequestDelivery(error);
+        const wrapped = new Error2(error.code, 'summary request failed', { cause: error });
+        expect(isRetryableGenerateError(wrapped)).toBe(false);
+        expect(isRetryableRequestInterruption(wrapped)).toBe(false);
+        expect(isRetryableCompactionError(wrapped)).toBe(true);
+        attachErrorDetails(wrapped, { retry_policy_veto: true });
+        expect(isRetryableCompactionError(wrapped)).toBe(false);
+      }
+    }
+  });
+
+  it('ignores transport replay vetoes for buffered summaries while retaining user policy vetoes', () => {
+    const confirmed = new APIConnectionError('upstream already generating');
+    noteConfirmedRequestExecution(confirmed);
+    const closed = attachErrorDetails(new ChatProviderError('websocket closed without a terminal frame'), { websocketCloseCode: 1005, retry: false });
+    for (const error of [confirmed, closed]) {
+      const wrapped = new Error2(error.code, 'summary request failed', { cause: error });
+      expect(isRetryableGenerateError(wrapped)).toBe(false);
+      expect(isRetryableRequestInterruption(wrapped)).toBe(false);
+      expect(isRetryableCompactionError(wrapped)).toBe(true);
+      attachErrorDetails(wrapped, { retry_policy_veto: true });
+      expect(isRetryableCompactionError(wrapped)).toBe(false);
+    }
+  });
+
+  it('keeps safety stops and client failures non-retryable even with stream error metadata', () => {
+    const safety = markProviderEventError(new ChatProviderError('safety stop'), 'antigravity_safety');
+    noteExecutedRequestDelivery(safety);
+    expect(compactionFailureKind(safety)).toBe('filtered');
+    expect(isRetryableCompactionError(safety)).toBe(false);
+    for (const status of [400, 401, 403, 404, 422]) {
+      const error = attachErrorDetails(new ChatProviderError('rejected'), { upstreamStatus: status });
+      expect(isRetryableCompactionError(error)).toBe(false);
+    }
+    const cancelled = new Error('wrapper', { cause: new DOMException('cancelled', 'AbortError') });
     expect(isRetryableCompactionError(cancelled)).toBe(false);
   });
 

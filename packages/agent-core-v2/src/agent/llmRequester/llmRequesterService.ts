@@ -886,6 +886,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         const malformedFunctionCall = source?.type === 'turn' && !attemptObservedVisibleContent && isRetryableMalformedFunctionCallError(error);
         const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
         const discardRetry = malformedFunctionCall || missingTerminal;
+        if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
         if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||
           isAbortError(error) || signal?.aborted === true) throw error;
         if (source?.type === 'turn' && (discardRetry || isRetryableRequestInterruption(error))) {

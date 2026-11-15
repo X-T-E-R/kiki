@@ -7,14 +7,20 @@ import { ILogService } from '#/_base/log/log';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { join } from 'pathe';
 
+import { attachErrorDetails, toErrorPayload } from '#/errors';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import {
   APIConnectionError,
   APIContextOverflowError,
+  APIEmptyResponseError,
+  APIProviderQuotaExhaustedError,
   APIRequestTooLargeError,
   APIStatusError,
+  ChatProviderError,
+  markProviderEventError,
+  noteConfirmedRequestExecution,
   normalizeAPIStatusError,
 } from '#/kosong/contract/errors';
 import { type Message, type StreamedMessagePart, type ToolCall } from '#/kosong/contract/message';
@@ -1037,6 +1043,114 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(0);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each(['manual', 'auto', 'model-switch'] as const)('discards failed buffered %s summaries and retries stream interruptions', async (source) => {
+    for (const failureKind of ['gateway', 'upstream-denial', 'terminated', 'premature-close', 'confirmed', 'transport-veto'] as const) {
+      const firstFailure = deferred<void>();
+      const inputs: string[][] = [];
+      const failure = failureKind === 'confirmed' ? new APIConnectionError('upstream already generating')
+        : failureKind === 'transport-veto' ? attachErrorDetails(new ChatProviderError('websocket closed'), { retry: false, websocketCloseCode: 1005 })
+        : failureKind === 'terminated' || failureKind === 'premature-close'
+          ? new APIConnectionError(failureKind === 'terminated' ? 'terminated' : 'premature close')
+          : markProviderEventError(attachErrorDetails(new ChatProviderError('Upstream stream ended before a terminal event'), {
+          upstreamStatus: 502, upstream_retryable: failureKind === 'upstream-denial' ? false : undefined,
+        }), 'gateway_stream_terminal_error');
+      if (failureKind === 'confirmed') noteConfirmedRequestExecution(failure);
+      const generate = realKosongGenerate((attempt, history) => {
+        inputs.push(inputHistorySnapshot(history));
+        if (attempt > 1) return mockStreamedMessage([{ type: 'text', text: 'Recovered complete summary.' }]);
+        firstFailure.resolve();
+        return mockStreamedMessage([
+          { type: 'think', think: 'Discard this partial reasoning.' },
+          { type: 'text', text: 'Discard this incomplete summary.' },
+        ], null, { failure });
+      });
+      const records: TelemetryRecord[] = [];
+      const ctx = testAgent({ generate, telemetry: recordingTelemetry(records) });
+      try {
+        ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+        await ctx.ready;
+        ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+        ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+        const before = ctx.compactHistory();
+        const service = ctx.get(IAgentFullCompactionService);
+        vi.useFakeTimers();
+        let pending: Promise<unknown>;
+        if (source === 'model-switch') pending = service.prepareModelSwitchSummary(ctx.context.get(), new AbortController().signal);
+        else {
+          expect(service.begin({ source, strategy: 'summarize' })).toBe(true);
+          pending = service.compacting!.promise;
+        }
+        await firstFailure.promise;
+        await vi.advanceTimersByTimeAsync(299);
+        expect(inputs).toHaveLength(1);
+        expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+        expect(ctx.compactHistory()).toEqual(before);
+        expect(countEvents(ctx.newEvents(), 'context.apply_compaction')).toBe(0);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const result = await pending;
+        vi.useRealTimers();
+        expect(inputs).toHaveLength(2);
+        expect(inputs[1]).toEqual(inputs[0]);
+        if (source === 'model-switch') {
+          expect(result).toContain('Recovered complete summary.');
+          expect(result).not.toContain('Discard this');
+          expect(ctx.compactHistory()).toEqual(before);
+        } else {
+          expect(ctx.compactHistory().some(message => message.text.includes('Recovered complete summary.'))).toBe(true);
+          expect(JSON.stringify(await ctx.persistedWireRecords())).not.toContain('Discard this');
+          await ctx.expectResumeMatches();
+        }
+        expect(records).toContainEqual({ event: 'compaction_finished', properties: expect.objectContaining({ retry_count: 1, strategy: 'summarize' }) });
+      } finally {
+        vi.useRealTimers();
+        await ctx.dispose();
+      }
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([
+    ['filtered', () => new APIEmptyResponseError('filtered', { finishReason: 'filtered' })],
+    ['safety', () => markProviderEventError(new ChatProviderError('safety stop'), 'antigravity_safety')],
+    ['401', () => new APIStatusError(401, 'unauthorized')],
+    ['403', () => new APIStatusError(403, 'forbidden')],
+    ['quota', () => new APIProviderQuotaExhaustedError('insufficient_quota')],
+    ['400', () => new APIStatusError(400, 'invalid request')],
+    ['404', () => new APIStatusError(404, 'not found')],
+    ['422', () => new APIStatusError(422, 'invalid input')],
+    ['abort', () => new DOMException('cancelled', 'AbortError')],
+    ['policy marker', () => attachErrorDetails(new APIConnectionError('interrupted'), { retry_policy_veto: true })],
+    ['policy veto', () => new APIConnectionError('interrupted')],
+  ] as const)('fails a buffered %s summary on its first attempt', async (kind, createFailure) => {
+    const failure = createFailure();
+    const inputs: string[][] = [];
+    const records: TelemetryRecord[] = [];
+    const generate = realKosongGenerate((_attempt, history) => {
+      inputs.push(inputHistorySnapshot(history));
+      return mockStreamedMessage([{ type: 'text', text: 'Uncommitted partial summary.' }], null, { failure });
+    });
+    const ctx = testAgent({ generate, telemetry: recordingTelemetry(records), initialConfig: {
+      providers: {}, retry: { policies: kind === 'policy veto' ? [{ match: 'APIConnectionError', retry: false }] : [] },
+    } });
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      await ctx.ready;
+      ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      const before = ctx.compactHistory();
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+      await expect(service.compacting!.promise).rejects.toBeDefined();
+      expect(inputs).toHaveLength(1);
+      if (kind === 'policy veto') {
+        expect(toErrorPayload(failure).details).toMatchObject({ retry_policy_veto: true });
+        expect(toErrorPayload(failure).details).not.toHaveProperty('retry');
+      }
+      expect(ctx.compactHistory()).toEqual(before);
+      expect((await ctx.persistedWireRecords()).some(record => record.type === 'context.apply_compaction')).toBe(false);
+      if (kind !== 'abort') expect(records).toContainEqual({ event: 'compaction_failed', properties: expect.objectContaining({ retry_count: 0 }) });
+    } finally { await ctx.dispose(); }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('reports compaction retry_count after a retryable generation failure recovers', async () => {
     const records: TelemetryRecord[] = [];
     let attempts = 0;
@@ -1075,7 +1189,43 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('retries any compaction request error indefinitely when KIKI_INFINITE_RETRY is set', async () => {
+  it.each(['network', 'gateway'] as const)('bounds partial compaction %s interruptions even when requester infinite retry is enabled', async (kind) => {
+    vi.useFakeTimers();
+    vi.stubEnv('KIKI_INFINITE_RETRY', '1');
+    const firstFailure = deferred<void>();
+    const inputs: string[][] = [];
+    let attempts = 0;
+    const generate = realKosongGenerate((_attempt, history) => {
+      attempts += 1;
+      inputs.push(inputHistorySnapshot(history));
+      firstFailure.resolve();
+      const failure = kind === 'network' ? new APIConnectionError('socket hang up')
+        : markProviderEventError(new APIStatusError(502, 'stream ended'), 'gateway_stream_terminal_error');
+      return mockStreamedMessage([{ type: 'text', text: 'Discard this failed partial summary.' }], null, { failure });
+    });
+    const ctx = testAgent({ generate, initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 3 } } });
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      await beginSummarize(ctx);
+      const task = ctx.get(IAgentFullCompactionService).compacting!;
+      const failed = expect(task.promise).rejects.toThrow('3 attempts');
+      await firstFailure.promise;
+      await vi.advanceTimersByTimeAsync(60_000);
+      await failed;
+      expect(attempts).toBe(3);
+      expect(inputs[1]).toEqual(inputs[0]);
+      expect(inputs[2]).toEqual(inputs[0]);
+      expect(ctx.compactHistory().some(message => message.text.includes('Discard this failed partial summary.'))).toBe(false);
+      expect(countEvents(ctx.newEvents(), 'turn.step.retrying')).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await ctx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('retries pre-output compaction errors indefinitely when KIKI_INFINITE_RETRY is set', async () => {
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let attempts = 0;
     const generate: GenerateFn = async () => {
@@ -1084,33 +1234,35 @@ describe('FullCompaction', () => {
       if (attempts === 2) throw new APIStatusError(404, 'model not found', null, 1);
       return textResult('Recovered compacted summary.');
     };
-    const ctx = testAgent({ generate });
-    ctx.configure({
-      provider: CATALOGUED_PROVIDER,
-      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
-    });
-    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
-    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const compacted = ctx.once('full_compaction.complete');
-    const completed = ctx.once('compaction.completed');
-
-    await beginSummarize(ctx, {});
-    await compacted;
-    await completed;
-
-    expect(attempts).toBe(3);
-    await ctx.expectResumeMatches();
+    const ctx = testAgent({ generate, initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 } } });
+    try {
+      ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+      ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+      ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+      await beginSummarize(ctx);
+      expect(await ctx.get(IAgentFullCompactionService).compacting!.promise).toMatchObject({ strategy: 'summarize' });
+      expect(attempts).toBe(3);
+      await ctx.expectResumeMatches();
+    } finally { await ctx.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('lets context overflow reach compaction shrink instead of retrying when KIKI_INFINITE_RETRY is set', async () => {
+  it.each(['unmarked', 'transport', 'policy'] as const)('reduces overflow payloads with %s replay restrictions when infinite retry is enabled', async (mode) => {
     vi.stubEnv('KIKI_INFINITE_RETRY', '1');
     let attempts = 0;
-    const generate: GenerateFn = async () => {
+    const inputs: string[][] = [];
+    const generate: GenerateFn = async (_provider, _system, _tools, history) => {
       attempts += 1;
-      if (attempts === 1) throw new APIContextOverflowError(400, 'context length exceeded');
+      inputs.push(inputHistorySnapshot(history));
+      if (attempts === 1) {
+        const error = new APIContextOverflowError(400, 'context length exceeded');
+        if (mode === 'transport') noteConfirmedRequestExecution(error);
+        throw error;
+      }
       return textResult('Recovered compacted summary.');
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate, initialConfig: { providers: {}, retry: {
+      policies: mode === 'policy' ? [{ match: 'APIContextOverflowError', retry: false }] : [],
+    } } });
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -1125,6 +1277,7 @@ describe('FullCompaction', () => {
     await completed;
 
     expect(attempts).toBe(2);
+    expect(inputs[1]!.join('\n').length).toBeLessThan(inputs[0]!.join('\n').length);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -1185,7 +1338,7 @@ describe('FullCompaction', () => {
       sawDegradedResend = true;
       return textResult('Recovered compacted summary.');
     };
-    const ctx = testAgent({ generate });
+    const ctx = testAgent({ generate, initialConfig: { providers: {}, loopControl: { compactionMaxAttempts: 1 } } });
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -4195,7 +4348,7 @@ function textResult(text: string, traceId: string | null = null): Awaited<Return
 function mockStreamedMessage(
   parts: readonly StreamedMessagePart[],
   traceId: string | null = null,
-  opts?: { finishReason?: StreamedMessage['finishReason']; rawFinishReason?: string | null },
+  opts?: { finishReason?: StreamedMessage['finishReason']; rawFinishReason?: string | null; failure?: Error },
 ): StreamedMessage {
   return {
     get id(): string | null {
@@ -4211,6 +4364,7 @@ function mockStreamedMessage(
       for (const part of parts) {
         yield part;
       }
+      if (opts?.failure !== undefined) throw opts.failure;
     },
   };
 }
