@@ -151,6 +151,8 @@ After a brief disconnect or app reopen, Kiki catches up completion receipts reta
 
 **Settings → Capabilities → Search & retrieval** opens **Overview & source** (`/settings/search`). The old `/settings/environment-tools` address redirects to this page; its `tab` value selects a search tab (`overview`, `search`, `fetch`, `providers`, or `advanced`). It inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
 
+In the **Search** tab, choose **Add service → Zhihu Open Platform** and enter an API key from [developer.zhihu.com](https://developer.zhihu.com) (or bind `NB_SEARCH_ZHIHU_API_KEY`). Adding it provisions `zhihu.default` along with `zhihu.search`, `zhihu.global` and `zhihu.synthesis` without replacing your selected default lane. **Check key status** shows each capability's official daily request quota separately, including its reset time and timezone. The same meters appear under [Usage → Quotas](#usage).
+
 The same section's **Advanced & diagnostics** tab carries a **Full-text index** card for searching your own session history. The first index is built in the background, newest sessions first, and the card counts what is done so far. If the index stops for a reason you can fix, that card is where **Restart the indexer** appears; when indexing is off or unavailable by configuration, there is nothing to restart and the reason is stated instead.
 
 ## Browser control

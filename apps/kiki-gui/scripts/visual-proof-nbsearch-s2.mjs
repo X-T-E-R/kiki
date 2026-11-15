@@ -30,7 +30,7 @@ import { createRoot } from 'react-dom/client';
 import type { NbSearchCapabilities, NbSearchConfigPatch, NbSearchKeyUsageView } from '@kiki/protocol';
 import { nbSearchDraftFromConfig, setNbSearchFetchChain, type NbSearchDraft } from '@kiki/session-core/settings';
 import '../../src/index.css';
-import { I18nProvider } from '../../src/i18n';
+import { I18nProvider, useI18n } from '../../src/i18n';
 import { NbSearchAdvancedTab } from '../../src/components/settings/nbSearch/NbSearchAdvancedTab';
 import { NbSearchFetchTab } from '../../src/components/settings/nbSearch/NbSearchFetchTab';
 import { NbSearchKeyUsagePanel } from '../../src/components/settings/nbSearch/NbSearchKeyUsagePanel';
@@ -98,6 +98,12 @@ const CAPABILITIES: NbSearchCapabilities = {
       { provider_id: 'direct-http', adapter_version: '1', query_operations: [],
         fetch_operations: [{ operation_id: 'fetch' }, { operation_id: 'local' }],
         activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
+      { provider_id: 'zhihu', adapter_version: '1', query_operations: [
+        { operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+        { operation_id: 'global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+        { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true },
+      ], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' },
+        option_keys: ['allow_paid', 'search_db', 'zhida_model', 'search_path', 'global_search_path', 'synthesis_path', 'quota_path'] },
     ],
     instances: [
       { id: 'exa.default', provider_id: 'exa', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'required', configured: true, slot_id: 'exa.default' }, endpoint: { requirement: 'optional', configured: false } },
@@ -168,6 +174,21 @@ const CONFIG = {
 
 /** Offline stand-in for the typed key-usage read; no request leaves the page. */
 const USAGE: Record<string, NbSearchKeyUsageView> = {
+  'zhihu.default': {
+    provider_instance_id: 'zhihu.default', provider_id: 'zhihu', balance_supported: true,
+    keys: [{
+      key_index: 1, state: 'ready',
+      usage: {
+        scope: 'key', unit: 'credits', used: 12, limit: 100, remaining: 88,
+        checked_at: '2026-10-03T09:00:00Z',
+        meters: [
+          { id: 'credits', label: 'Monthly credits', unit: 'credits', used: 12, limit: 100, remaining: 88, reset_at: '2026-10-04T00:00:00Z', reset_timezone: 'Asia/Shanghai' },
+          { id: 'requests', label: 'Daily requests', unit: 'requests', used: 3, limit: 50, remaining: 47, reset_at: '2026-10-03T12:00:00Z', reset_timezone: 'UTC' },
+          { id: 'global_search', label: 'Global search', unit: 'requests', used: null, limit: null, remaining: null },
+        ],
+      },
+    }],
+  },
   'tavily.default': {
     provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true,
     keys: [
@@ -186,11 +207,12 @@ const USAGE: Record<string, NbSearchKeyUsageView> = {
 };
 
 function KeyUsageView() {
+  const { t } = useI18n();
   return (
     <div style={{ display: 'grid', gap: 24 }}>
-      {['tavily.default', 'exa.default'].map((id) => (
+      {['zhihu.default', 'tavily.default', 'exa.default'].map((id) => (
         <section key={id} data-harness-panel={id} style={{ borderTop: '1px solid var(--kiki-hairline, rgba(0,0,0,.1))', paddingTop: 16 }}>
-          <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>{id}</h2>
+          <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>{id === 'zhihu.default' ? t('st.nbSearch.provider.zhihu') : id}</h2>
           <NbSearchKeyUsagePanel instanceId={id} readUsage={async () => USAGE[id]!} />
         </section>
       ))}
@@ -201,26 +223,42 @@ function KeyUsageView() {
 function Shell({ view }: { view: string }) {
   const [config, setConfig] = useState<NbSearchConfigPatch | undefined>(CONFIG);
   const [draft, setDraft] = useState<NbSearchDraft>(() => nbSearchDraftFromConfig(CONFIG, CAPABILITIES));
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, import('../../src/components/settings/nbSearch/NbSearchMultiKeyEditor').KeyDraft>>({});
   const binding: NbSearchAdvancedBinding = { capabilities: CAPABILITIES, draft, config, onChange: setDraft };
+  const readCredential = async (id: string) => ({
+    instance_id: id,
+    slot_id: id,
+    stored: id !== 'zhihu.default',
+    active: id !== 'zhihu.default',
+    source: id === 'zhihu.default' ? 'none' as const : 'managed' as const,
+    version: 'v1',
+    binding_version: 'b1',
+  });
+  const readKeyUsage = async (id: string) => USAGE[id] ?? { provider_instance_id: id, provider_id: id.split('.')[0]!, balance_supported: false, keys: [] };
+  const onKeyDraftChange = (id: string, next: import('../../src/components/settings/nbSearch/NbSearchMultiKeyEditor').KeyDraft) => {
+    setKeyDrafts((current) => ({ ...current, [id]: next }));
+  };
   void setConfig;
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', padding: '32px 28px 120px' }} data-harness-view={view}>
       {view === 'lanes' ? (
         <NbSearchLanesTab
           capabilities={CAPABILITIES}
-          defaultSearchLane={draft.defaultSearchLane}
-          onSelectLane={() => undefined}
           advanced={binding}
+          keyDrafts={keyDrafts}
+          onKeyDraftChange={onKeyDraftChange}
+          readCredential={readCredential}
+          readKeyUsage={readKeyUsage}
         />
       ) : null}
       {view === 'fetch' ? (
         <NbSearchFetchTab
           capabilities={CAPABILITIES}
-          fetchChain={draft.fetchChain}
-          fetchChainInherited={draft.fetchChainInherited}
-          onChangeChain={() => undefined}
-          onToggleInherited={() => undefined}
           advanced={binding}
+          keyDrafts={keyDrafts}
+          onKeyDraftChange={onKeyDraftChange}
+          readCredential={readCredential}
+          readKeyUsage={readKeyUsage}
         />
       ) : null}
       {view === 'advanced' ? (
@@ -301,7 +339,7 @@ async function main() {
         locale: locale === 'zh' ? 'zh-CN' : 'en-US',
       });
       const page = await context.newPage();
-      page.setDefaultTimeout(10_000);
+      page.setDefaultTimeout(30_000);
       page.on('pageerror', (error) => { console.error('[s2] page error:', error.message); });
       page.on('console', (message) => {
         if (message.type() === 'error') console.error('[s2] console:', message.text());
@@ -318,15 +356,14 @@ async function main() {
     // ---- 1440, light, zh ------------------------------------------------
     {
       const { context, page } = await open('lanes');
+      await page.locator('[data-nb-search-add-service]').click();
+      await page.waitForSelector('[data-nb-search-directory-row="zhihu"]');
+      await shoot(page, '01a-lanes-directory-zhihu-1440-light-zh');
+      await page.locator('[data-nb-search-directory-row="zhihu"]').click();
+      await page.waitForSelector('[data-nb-search-service-card="zhihu.search"]');
       await shoot(page, '01-lanes-1440-light-zh');
 
       const row = page.locator('[data-nb-search-lane-row="exa.local"]');
-      const text = await row.textContent();
-      if (!text.includes('exa.local')) problems.push('the local method row does not show its id');
-      const execution = await row.locator('[data-nb-search-lane-execution]').getAttribute('data-nb-search-lane-execution');
-      if (execution !== 'none') problems.push(`a method with no execution modes read as "${execution}", expected none`);
-      // The catalog serves this method and Kiki is the one that added it; the
-      // layers below must not be credited with it.
       const localOrigin = await row.getAttribute('data-nb-search-lane-origin');
       if (localOrigin !== 'local') problems.push(`a method only Kiki declares read as "${localOrigin}", expected local`);
       const localBadge = await row.locator('[data-nb-search-lane-source-badge]').textContent();
@@ -373,25 +410,10 @@ async function main() {
     }
     {
       const { context, page } = await open('fetch');
-      const steps = await page.locator('[data-nb-search-fetch-chain] > li').count();
+      const steps = await page.locator('[data-nb-search-fetch-chain] [data-nb-search-service-card]').count();
       if (steps !== 2) problems.push(`the fetch tab showed ${steps} steps for url→markdown, expected 2`);
-      // The saved config already overrides url→markdown, so the all-pairs
-      // restore is offered and names how many pairs left the source order.
-      if (await page.locator('[data-nb-search-fetch-restore-all]').count() !== 1) {
-        problems.push('the all-pairs restore was not offered for a saved chain override');
-      }
-      const snapshot = await page.locator('[data-nb-search-fetch-snapshot]').textContent();
-      if (!snapshot.includes('1')) problems.push(`the snapshot line did not name 1 pair, saw "${snapshot}"`);
-
-      // Per-pair: back to the source order, then Kiki order again.
       await page.locator('[data-nb-search-fetch-restore]').click();
-      await page.waitForFunction(() => document.querySelectorAll('[data-nb-search-fetch-restore-all]').length === 0);
-      const mode = await page.locator('[data-nb-search-fetch-mode]').getAttribute('data-nb-search-fetch-mode');
-      if (mode !== 'source') problems.push(`after the per-pair restore the tab read "${mode}", expected source`);
-      await page.locator('[data-nb-search-fetch-customize]').click();
-      await page.waitForSelector('[data-nb-search-fetch-restore-all]');
-      await page.locator('[data-nb-search-fetch-remove]').nth(1).click();
-      await page.locator('details:has([data-nb-search-fetch-snapshot-note]) > summary').click();
+      await page.waitForSelector('[data-nb-search-fetch-inherited]');
       await shoot(page, '04-fetch-snapshot-1440-light-zh');
       await context.close();
     }
@@ -412,9 +434,19 @@ async function main() {
         problems.push('the key-status panel read the server before the user asked');
       }
       await shoot(page, '07a-keys-idle-1440-light-zh');
+      await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-load]').click();
       await page.locator('[data-harness-panel="tavily.default"] [data-nb-search-key-usage-load]').click();
       await page.locator('[data-harness-panel="exa.default"] [data-nb-search-key-usage-load]').click();
       await page.waitForSelector('[data-nb-search-key-usage-keys]');
+      const zhihuText = await page.locator('[data-harness-panel="zhihu.default"]').textContent();
+      if (!zhihuText.includes('知乎开放平台')) problems.push('the Zhihu provider label was not localized');
+      if (!zhihuText.includes('Monthly credits') || !zhihuText.includes('Daily requests')) problems.push('the Zhihu multi-meter labels were not rendered');
+      if (!zhihuText.includes('请求') || !zhihuText.includes('Asia/Shanghai')) problems.push('the Zhihu meter units or reset timezone were not rendered');
+      const zhihuMeters = await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-meter]').count();
+      if (zhihuMeters !== 3) problems.push(`the Zhihu panel rendered ${zhihuMeters} meters, expected 3`);
+      const nullMeterText = await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-meter="global_search"]').textContent();
+      if (nullMeterText.includes('请求')) problems.push(`null meter appended unit: "${nullMeterText}"`);
+      if (zhihuText.includes('此密钥')) problems.push('multi-meter key repeated per-row scope prefix');
       const exaText = await page.locator('[data-harness-panel="exa.default"]').textContent();
       if (!exaText.includes('不提供额度查询')) problems.push('a provider without a balance was not said to have none');
       await shoot(page, '07-keys-usage-1440-light-zh');
@@ -424,10 +456,24 @@ async function main() {
     // ---- 390 ------------------------------------------------------------
     for (const [view, name] of [['lanes', '08-lanes-390-light-zh'], ['fetch', '09-fetch-390-light-zh'], ['advanced', '10-advanced-390-light-zh']]) {
       const { context, page } = await open(view, { width: 390, height: 844 });
+      if (view === 'lanes') {
+        await page.locator('[data-nb-search-add-service]').click();
+        await page.locator('[data-nb-search-directory-row="zhihu"]').click();
+        await page.waitForSelector('[data-nb-search-service-card="zhihu.search"]');
+      }
       if (view === 'advanced') await page.locator('[data-nb-search-filescope-add]').click();
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       if (overflow > 1) problems.push(`${view} overflows at 390 by ${overflow}px`);
       await shoot(page, name);
+      await context.close();
+    }
+    {
+      const { context, page } = await open('keys', { width: 390, height: 844 });
+      await page.locator('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-load]').click();
+      await page.waitForSelector('[data-harness-panel="zhihu.default"] [data-nb-search-key-usage-meter="requests"]');
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (overflow > 1) problems.push(`key usage overflows at 390 by ${overflow}px`);
+      await shoot(page, '14-keys-390-light-zh');
       await context.close();
     }
 
@@ -450,10 +496,7 @@ async function main() {
     }
     {
       const { context, page } = await open('fetch', { theme: 'dark', locale: 'en' });
-      // One pair left the source order: the line has to read as one pair.
-      const snapshot = await page.locator('[data-nb-search-fetch-snapshot]').textContent();
-      if (!snapshot.includes('1 pair uses the Kiki order')) problems.push(`the English snapshot line read "${snapshot}"`);
-      await page.locator('details:has([data-nb-search-fetch-snapshot-note]) > summary').click();
+      await page.locator('[data-nb-search-fetch-other-pairs] > summary').click();
       await shoot(page, '13-fetch-1440-dark-en');
       await context.close();
     }

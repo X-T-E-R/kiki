@@ -46,7 +46,7 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { applyLocalCredentials } from '#/app/nbSearch/localCredentials';
 import { NbSearchCredentialFileStore } from '#/app/nbSearch/credentialFileStore';
-import { resolveNbSearchConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
+import { resolveNbSearchConfig, resolveNbSearchCapturedConfig, nbSearchConfigRevision } from '#/app/nbSearch/donorConfig';
 import { managedBinding, NbSearchManagedCredentials } from '#/app/nbSearch/managedCredentials';
 import { copyNbSearchEnvironment } from '#/app/nbSearch/environment';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -882,6 +882,33 @@ describe('NbSearchService', () => {
     expect(JSON.stringify(sources)).not.toMatch(/api_key|access_token/);
   });
 
+  it.each([true, false])('preserves generic usage meters and recognizes Zhihu balance support with enabled=%s', async (enabled) => {
+    const resolved = resolveNbSearchCapturedConfig({}, undefined, undefined);
+    const provider_instances = {
+      ...resolved.config.provider_instances,
+      'zhihu.default': { ...resolved.config.provider_instances['tavily.default']!, provider_id: 'zhihu', enabled, credential_slot_id: undefined },
+    };
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({
+      resolved: { ...resolved, config: { ...resolved.config, provider_instances } },
+      env: {}, status: { reuse_local_config: reuse, layers: ['defaults', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] },
+    });
+    const meters = [
+      { id: 'zhihu_search', label: 'Zhihu search', unit: 'requests', used: 0, limit: 100, remaining: 100, reset_at: '2026-11-16T00:00:00+08:00', reset_timezone: 'Asia/Shanghai' },
+      { id: 'global_search', unit: 'requests', used: null, limit: null, remaining: null },
+      { id: 'credits', unit: 'credits', used: 3, limit: 10, remaining: 7 },
+    ];
+    const usage = { scope: 'key', unit: 'credits', used: null, limit: null, remaining: null, checked_at: '2026-11-15T12:00:00Z', meters };
+    const keyUsage = vi.fn(async () => [{ key_index: 1, state: 'ready', usage, api_key: 'YOUR_API_KEY' }]);
+    createRuntimeMock.mockReturnValue({ keyUsage });
+    const view = await ix.get(INbSearchService).keyUsage('zhihu.default', true);
+    expect(view).toEqual({ provider_instance_id: 'zhihu.default', provider_id: 'zhihu', balance_supported: true,
+      keys: enabled ? [{ key_index: 1, state: 'ready', usage }] : [],
+    });
+    expect(JSON.stringify(view)).not.toContain('YOUR_API_KEY');
+    if (enabled) expect(keyUsage).toHaveBeenCalledWith({ provider_instance_id: 'zhihu.default', refresh: true });
+    else expect(createRuntimeMock).not.toHaveBeenCalled();
+  });
+
   it.each(['exa.search', null])('executes the native GMA lane through the real donor SSE transport with default=%s', async (defaultLane) => {
     const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
     const root = resolve('.tmp');
@@ -1080,6 +1107,60 @@ describe('NbSearchService', () => {
       expect(blocked).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes the real 0.5.1 opt-in Zhihu descriptor and parses official daily capability meters', async () => {
+    const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(join(resolve('.tmp'), 'nb-search-zhihu-'));
+    const path = join(fixture, 'config.json');
+    await writeFile(path, '{}');
+    const env = { NB_SEARCH_HOME: fixture, NB_SEARCH_CONFIG: path, NB_SEARCH_ZHIHU_API_KEY: 'fixture-zhihu-token:fixture-zhihu-secret' };
+    const requests: HttpRequest[] = [];
+    createRuntimeMock.mockImplementation((options) => donor.createNbSearchRuntime({ ...options, http_transport: {
+      send: async <T>(request: HttpRequest): Promise<import('@nb-corp/nb-search').HttpResponse<T>> => {
+        requests.push(request);
+        return { status: 200, body: { Code: 0, Data: { Items: [{ APIID: 'zhihu_search', APIName: 'Zhihu search', TotalUsed: 2, TotalQuota: 100, RemainingQuota: 98 }] } } as T };
+      },
+    } }));
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({ env, status: {
+      reuse_local_config: reuse, layers: ['defaults', 'environment', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [],
+    } });
+    let kikiConfig: Record<string, unknown> | undefined;
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? kikiConfig : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    try {
+      const unconfigured = await service.capabilities();
+      expect(unconfigured.providers.descriptors.find((item) => item.provider_id === 'zhihu')).toMatchObject({
+        provider_id: 'zhihu',
+        activation: { credential: 'required', endpoint: 'optional' },
+        option_keys: ['allow_paid', 'search_db', 'zhida_model', 'search_path', 'global_search_path', 'synthesis_path', 'quota_path'],
+      });
+      expect(unconfigured.search.lanes.some((lane) => lane.id.startsWith('zhihu.'))).toBe(false);
+      kikiConfig = {
+        provider_instances: { 'zhihu.default': { provider_id: 'zhihu', enabled: true, credential_slot_id: 'zhihu.default', options: {} } },
+        credential_slots: { 'zhihu.default': { provider_id: 'zhihu', env: 'NB_SEARCH_ZHIHU_API_KEY' } },
+        lanes: {
+          'zhihu.search': { provider_instance_id: 'zhihu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhihu'] },
+          'zhihu.global': { provider_instance_id: 'zhihu.default', operation_id: 'global', latency: 'medium', cost: 'cheap', evidence_groups: ['zhihu-web'] },
+          'zhihu.synthesis': { provider_instance_id: 'zhihu.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
+        },
+      };
+      const configured = await service.capabilities();
+      expect(configured.search.lanes.filter((lane) => lane.id.startsWith('zhihu.')).map((lane) => lane.id)).toEqual(['zhihu.global', 'zhihu.search', 'zhihu.synthesis']);
+      const usage = await service.keyUsage('zhihu.default', false);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe('https://developer.zhihu.com/api/v1/quota');
+      expect(usage).toMatchObject({
+        provider_instance_id: 'zhihu.default',
+        provider_id: 'zhihu',
+        balance_supported: true,
+        keys: [{ key_index: 1, state: 'ready', usage: { meters: [{ id: 'zhihu_search', label: 'Zhihu search', unit: 'requests', used: 2, limit: 100, remaining: 98, reset_timezone: 'Asia/Shanghai' }] } }],
+      });
+      expect(JSON.stringify(usage)).not.toContain('fixture-zhihu');
+    } finally {
       await rm(fixture, { recursive: true, force: true });
     }
   });

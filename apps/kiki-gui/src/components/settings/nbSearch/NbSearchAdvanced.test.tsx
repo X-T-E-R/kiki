@@ -11,7 +11,7 @@
 
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { NbSearchCapabilities, NbSearchConfigPatch } from '@kiki/protocol';
+import type { NbSearchCapabilities, NbSearchConfigPatch, NbSearchKeyUsageView } from '@kiki/protocol';
 import { selectFetchRoute } from '@kiki/protocol';
 import {
   nbSearchConfigPatch,
@@ -1070,6 +1070,61 @@ describe('S2 key status', () => {
       { key_index: 3, state: 'ready' as const, usage_error: 'unavailable' as const },
     ],
   };
+
+  it('renders each named credits/request meter and its reset metadata without summing meters', async () => {
+    const readUsage = vi.fn().mockResolvedValue({
+      provider_instance_id: 'zhihu.default',
+      provider_id: 'zhihu',
+      balance_supported: true,
+      keys: [{
+        key_index: 1,
+        state: 'ready',
+        usage: {
+          scope: 'key',
+          unit: 'credits',
+          used: 12,
+          limit: 100,
+          remaining: 88,
+          checked_at: '2026-10-03T09:00:00Z',
+          meters: [
+            { id: 'credits', label: 'Monthly credits', unit: 'credits', used: 12, limit: 100, remaining: 88, reset_at: '2026-10-04T00:00:00Z', reset_timezone: 'Asia/Shanghai' },
+            { id: 'requests', label: 'Daily requests', unit: 'requests', used: 3, limit: 50, remaining: 47, reset_at: '2026-10-03T12:00:00Z', reset_timezone: 'UTC' },
+            { id: 'global_search', label: 'Global search', unit: 'requests', used: null, limit: null, remaining: null },
+          ],
+        },
+      }],
+    } satisfies NbSearchKeyUsageView);
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <NbSearchKeyUsagePanel instanceId="zhihu.default" readUsage={readUsage} />
+        </I18nProvider>,
+      );
+    });
+
+    await click(container.querySelector('[data-nb-search-key-usage-load]'));
+    const panel = container.querySelector('[data-nb-search-key-usage="zhihu.default"]')!;
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="credits"]')?.textContent).toContain('Monthly credits');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="credits"]')?.textContent).toContain('88');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="credits"]')?.textContent).toContain('Asia/Shanghai');
+    const resetTime = new Intl.DateTimeFormat('en', {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Shanghai',
+    }).format(new Date('2026-10-04T00:00:00Z'));
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="credits"]')?.textContent).toContain(resetTime);
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('Daily requests');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('47');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('requests');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).toContain('Global search');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).toContain('—');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).not.toContain('requests');
+    expect(panel.textContent).not.toContain('this key');
+    expect(panel.textContent).not.toContain('135');
+  });
 
   it('reads nothing until asked, then shows a shared team balance per key without summing it', async () => {
     const readUsage = vi.fn().mockResolvedValue(TEAM_USAGE);

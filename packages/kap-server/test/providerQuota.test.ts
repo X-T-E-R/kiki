@@ -1,11 +1,15 @@
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
-import { providerQuotaSnapshotSchema } from '@kiki/protocol';
+import { providerQuotaSnapshotSchema, type NbSearchKeyUsageView } from '@kiki/protocol';
+import { IAtomicDocumentStore, IProviderService, IOAuthService, type Scope } from '@kiki/agent-core-v2';
+import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
+import { IAgentExecutorRegistry } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { parseQuota, selectQuotaAdapter, quotaHeaders } from '../src/usage/quota/adapters';
 import { ProviderQuotaService, QuotaFailure, type QuotaTarget } from '../src/usage/quota/service';
 import { registerProviderQuotaRoutes } from '../src/routes/providerQuota';
 import { createProviderQuotaFacade } from '../../klient/src/transports/http/provider-quota';
 import { fetchOfficialQuota } from '../src/usage/quota/fetch';
+import { createProviderQuotaService } from '../src/usage/quota/runtime';
 
 const time = Date.parse('2026-10-10T04:00:00Z');
 const reset = '2026-10-10T05:00:00+08:00';
@@ -17,7 +21,86 @@ function fixture() {
   const service = new ProviderQuotaService(async () => sources, { read: async () => prefs, update: async (id, enabled) => { prefs = { ...prefs, [id]: enabled }; } }, () => now);
   return { service, target, sources, fetchQuota, advance: (ms: number) => { now += ms; } };
 }
+function searchQuotaFixture(providerId: string, keys: NbSearchKeyUsageView['keys']) {
+  const instanceId = `${providerId}.default`;
+  const keyUsage = vi.fn(async (): Promise<NbSearchKeyUsageView> => ({ provider_instance_id: instanceId, provider_id: providerId, balance_supported: true, keys }));
+  const services = new Map<unknown, unknown>([
+    [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+    [IOAuthService, {}],
+    [IAtomicDocumentStore, { get: async () => undefined }],
+    [INbSearchService, { quotaSources: async () => [{ id: instanceId, provider_id: providerId, revision: 'fixture-account', enabled: true }], keyUsage }],
+    [IAgentExecutorRegistry, { list: () => [] }],
+  ]);
+  const core = { accessor: { get: (token: unknown) => { expect(services.has(token)).toBe(true); return services.get(token); } } } as unknown as Scope;
+  return { service: createProviderQuotaService(core), sourceId: `service:${instanceId}`, keyUsage };
+}
+
 describe('provider quotas', () => {
+  it('projects Zhihu capability meters with daily reset metadata and independent units', async () => {
+    const checkedAt = '2026-11-15T12:00:00Z';
+    const resetAt = new Date(Date.now() + 86_400_000).toISOString();
+    const f = searchQuotaFixture('zhihu', [{ key_index: 1, state: 'ready', usage: {
+      scope: 'key', unit: 'credits', used: null, limit: null, remaining: null, checked_at: checkedAt,
+      meters: [
+        { id: 'zhihu_search', label: 'Zhihu search', unit: 'requests', used: 0, limit: 100, remaining: 100, reset_at: resetAt, reset_timezone: 'Asia/Shanghai' },
+        { id: 'global_search', unit: 'requests', used: null, limit: null, remaining: null },
+        { id: 'credits', unit: 'credits', used: 3, limit: 10, remaining: 7 },
+      ],
+    } }]);
+    const initial = (await f.service.snapshot()).sources[0]!;
+    expect(initial).toMatchObject({ status: 'unknown', source: { label: 'zhihu 官方每日额度（nb-search）' } });
+    expect(f.keyUsage).not.toHaveBeenCalled();
+    const source = providerQuotaSnapshotSchema.parse(await f.service.refresh(f.sourceId)).sources[0]!;
+    expect(source.status).toBe('ready');
+    expect(source.meters).toEqual([
+      { id: 'key-1-zhihu_search', label: 'Zhihu search', unit: 'count', unit_label: '次', scope: 'key', used: 0, limit: 100, remaining: 100, data_as_of: checkedAt, status: 'ready',
+        window: { label: '1d', duration_seconds: 86400, reset_at: resetAt, reset_timezone: 'Asia/Shanghai' } },
+      { id: 'key-1-global_search', label: 'global_search', unit: 'count', unit_label: '次', scope: 'key', used: null, limit: null, remaining: null, data_as_of: checkedAt, status: 'ready' },
+      { id: 'key-1-credits', label: 'credits', unit: 'credits', unit_label: 'credits', scope: 'key', used: 3, limit: 10, remaining: 7, data_as_of: checkedAt, status: 'ready' },
+    ]);
+    expect(f.keyUsage).toHaveBeenCalledWith('zhihu.default', true);
+
+    const generic = searchQuotaFixture('tavily', [{ key_index: 1, state: 'ready', usage: {
+      scope: 'key', unit: 'credits', used: 10, limit: 100, remaining: 90, checked_at: checkedAt,
+      meters: [{ id: 'monthly', label: 'Monthly plan', unit: 'credits', used: 10, limit: 100, remaining: 90, reset_at: resetAt, reset_timezone: 'UTC' }],
+    } }]);
+    const genericSource = providerQuotaSnapshotSchema.parse(await generic.service.refresh(generic.sourceId)).sources[0]!;
+    expect(genericSource.meters[0]!.window).toEqual({ reset_at: resetAt, reset_timezone: 'UTC' });
+  });
+
+  it('keeps key labels and authentication/error states independent for multi-meter search quotas', async () => {
+    const usage = { scope: 'team' as const, unit: 'credits' as const, used: null, limit: null, remaining: null, checked_at: '2026-11-15T12:00:00Z',
+      meters: [{ id: 'search', label: 'Search', unit: 'requests' as const, used: 100, limit: 100, remaining: 0 }],
+    };
+    const f = searchQuotaFixture('zhihu', [
+      { key_index: 1, state: 'ready', usage },
+      { key_index: 2, state: 'cooldown', usage, usage_error: 'unavailable' },
+      { key_index: 3, state: 'invalid', usage },
+      { key_index: 4, state: 'ready', usage_error: 'invalid_response' },
+    ]);
+    const source = providerQuotaSnapshotSchema.parse(await f.service.refresh(f.sourceId)).sources[0]!;
+    expect(source).toMatchObject({ status: 'stale', reason: 'partial_data', message: '部分额度表项状态异常，详见各表项说明。' });
+    expect(source.message).not.toBe('partial_data');
+    expect(source.meters).toMatchObject([
+      { id: 'key-1-search', label: 'Key 1 · Search', status: 'ready', scope: 'team', remaining: 0 },
+      { id: 'key-2-search', label: 'Key 2 · Search', status: 'stale', message: '此 Key 的额度查询失败。' },
+      { id: 'key-3-search', label: 'Key 3 · Search', status: 'auth_required', message: '此 Key 需要重新配置凭据。' },
+      { id: 'key-4', label: 'Key 4', status: 'error', message: '此 Key 的额度查询失败。' },
+    ]);
+    expect(source.meters.every((meter) => meter.window === undefined)).toBe(true);
+    const invalid = searchQuotaFixture('zhihu', [{ key_index: 1, state: 'invalid' }]);
+    expect((await invalid.service.refresh(invalid.sourceId)).sources[0]!.status).toBe('auth_required');
+  });
+
+  it.each(['tavily', 'firecrawl'])('preserves the legacy credits row for %s with absent or empty meters', async (providerId) => {
+    const usage = { scope: 'team' as const, unit: 'credits' as const, used: 3, limit: 10, remaining: 7, checked_at: '2026-11-15T12:00:00Z' };
+    const f = searchQuotaFixture(providerId, [{ key_index: 1, state: 'ready', usage }, { key_index: 2, state: 'ready', usage: { ...usage, meters: [] } }]);
+    const source = providerQuotaSnapshotSchema.parse(await f.service.refresh(f.sourceId)).sources[0]!;
+    expect(source.source.label).toBe(`${providerId} 官方 credits（nb-search）`);
+    expect(source.meters).toEqual([1, 2].map((index) => ({ id: `key-${index}`, label: `Key ${index} · Team 共享额度`, unit: 'credits', unit_label: 'credits', scope: 'team',
+      used: 3, limit: 10, remaining: 7, data_as_of: usage.checked_at, status: 'ready',
+    })));
+  });
   it('does not fetch on reads, enable, off refresh, unsupported or disconnected targets', async () => {
     const f = fixture();
     expect((await f.service.snapshot()).sources[0]!.status).toBe('unknown');

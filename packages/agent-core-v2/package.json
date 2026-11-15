@@ -76,7 +76,7 @@
     "@modelcontextprotocol/sdk": "1.32.0",
     "@napi-rs/keyring": "2.1.0",
     "@nb-corp/im-bridge-core": "^0.1.0",
-    "@nb-corp/nb-search": "^0.5.0",
+    "@nb-corp/nb-search": "^0.5.2",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "chokidar": "^4.0.3",

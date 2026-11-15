@@ -35,6 +35,7 @@ import {
   type NbSearchAdvancedBinding,
 } from './advancedSupport';
 import { makeDefaultLane } from './serviceCards';
+import { operationWord } from './types';
 
 function firstUnusedLane(capabilities: NbSearchCapabilities, draft: NbSearchDraft): string {
   return capabilities.search.lanes.find((lane) => draft.advanced?.lanes[lane.id] === undefined)?.id
@@ -169,9 +170,12 @@ export function NbSearchLaneComposer({
             const execution = lane === undefined ? 'none' : nbSearchExecutionKind(lane.execution_modes);
             const usable = lane !== undefined && lane.availability === 'ready' && execution === 'sync';
             const isDefault = defaultLaneId === row.id;
-            const title = identity.profile === undefined
+            const providerId = identity.profile === undefined
+              ? undefined
+              : nbSearchInstanceProviderId(capabilities, draft, identity.profile.provider_instance_id) ?? identity.profile.provider_instance_id;
+            const title = identity.profile === undefined || providerId === undefined
               ? row.id
-              : `${nbSearchProviderLabel(t, nbSearchInstanceProviderId(capabilities, draft, identity.profile.provider_instance_id) ?? identity.profile.provider_instance_id)} · ${identity.profile.operation_id}`;
+              : `${nbSearchProviderLabel(t, providerId)} · ${operationWord(t, lane, identity.profile.operation_id, providerId)}`;
             return (
               <li key={row.id} data-nb-search-lane-row={row.id} data-nb-search-lane-origin={identity.source}>
                 <div className="flex items-start gap-1 py-2 pl-1 pr-1">

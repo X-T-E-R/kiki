@@ -58,17 +58,38 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
     }));
     const instances = await nbSearch.quotaSources();
     for (const instance of instances) {
-      const supported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl';
+      const supported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';
       result.push({ id: `service:${instance.id}`, label: instance.id, kind: 'external_service', providerId: instance.provider_id, accountLabel: '按 Key / Team 独立显示',
         revision: instance.revision, active: instance.enabled, supported,
-        auth: { action: 'external_service_settings', provider: instance.id }, source: { label: `${instance.provider_id} 官方 credits（nb-search）` },
+        auth: { action: 'external_service_settings', provider: instance.id },
+        source: { label: instance.provider_id === 'zhihu' ? 'zhihu 官方每日额度（nb-search）' : `${instance.provider_id} 官方 credits（nb-search）` },
         fetch: async () => {
           const usage = await nbSearch.keyUsage(instance.id, true);
           if (usage.keys.length === 0 || usage.keys.every((entry) => entry.state === 'invalid')) throw new QuotaFailure('auth_required');
-          return usage.keys.map((entry): ProviderQuotaMeter => ({ id: `key-${entry.key_index}`, label: `Key ${entry.key_index}${entry.usage?.scope === 'team' ? ' · Team 共享额度' : ''}`, unit: 'credits', unit_label: 'credits', scope: entry.usage?.scope ?? 'key',
-            used: entry.usage?.used ?? null, limit: entry.usage?.limit ?? null, remaining: entry.usage?.remaining ?? null,
-            data_as_of: entry.usage?.checked_at, status: entry.state === 'invalid' ? 'auth_required' : entry.usage_error ? entry.usage ? 'stale' : 'error' : entry.usage ? 'ready' : 'unknown',
-            message: entry.state === 'invalid' ? '此 Key 需要重新配置凭据。' : entry.usage_error ? '此 Key 的额度查询失败。' : entry.usage ? undefined : '尚无此 Key 的官方额度数据。' }));
+          return usage.keys.flatMap((entry): ProviderQuotaMeter[] => {
+            const data = entry.usage;
+            const keyId = `key-${entry.key_index}`;
+            const keyLabel = `Key ${entry.key_index}`;
+            const common = {
+              scope: data?.scope ?? 'key',
+              data_as_of: data?.checked_at,
+              status: entry.state === 'invalid' ? 'auth_required' : entry.usage_error ? data ? 'stale' : 'error' : data ? 'ready' : 'unknown',
+              message: entry.state === 'invalid' ? '此 Key 需要重新配置凭据。' : entry.usage_error ? '此 Key 的额度查询失败。' : data ? undefined : '尚无此 Key 的官方额度数据。',
+            } satisfies Pick<ProviderQuotaMeter, 'scope' | 'data_as_of' | 'status' | 'message'>;
+            if (data?.meters?.length) {
+              return data.meters.map((meter): ProviderQuotaMeter => {
+                const label = meter.label ?? meter.id;
+                return { ...common, id: `${keyId}-${meter.id}`, label: usage.keys.length > 1 ? `${keyLabel} · ${label}` : label,
+                  unit: meter.unit === 'requests' ? 'count' : 'credits', unit_label: meter.unit === 'requests' ? '次' : 'credits',
+                  used: meter.used, limit: meter.limit, remaining: meter.remaining,
+                  window: meter.reset_at === undefined ? undefined : instance.provider_id === 'zhihu'
+                    ? { label: '1d', duration_seconds: 86400, reset_at: meter.reset_at, reset_timezone: meter.reset_timezone }
+                    : { reset_at: meter.reset_at, reset_timezone: meter.reset_timezone } };
+              });
+            }
+            return [{ ...common, id: keyId, label: `${keyLabel}${data?.scope === 'team' ? ' · Team 共享额度' : ''}`, unit: 'credits', unit_label: 'credits',
+              used: data?.used ?? null, limit: data?.limit ?? null, remaining: data?.remaining ?? null }];
+          });
         } });
     }
     for (const executor of executors.list()) {

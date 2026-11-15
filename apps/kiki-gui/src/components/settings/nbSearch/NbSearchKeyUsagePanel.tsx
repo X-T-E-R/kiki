@@ -7,9 +7,9 @@
  *
  * Nothing here runs on mount. A cold cache can still reach the provider even
  * with `refresh: false`, so the panel only calls when the user asks it to, and
- * "Refresh" is the only control that passes `refresh: true`. Only two providers
- * report a balance at all; for the rest the panel says so instead of showing an
- * invented number.
+ * "Refresh" is the only control that passes `refresh: true`. Legacy usage has
+ * one credits balance; newer responses can carry several named credits/request
+ * meters, which are rendered independently rather than added together.
  *
  * Key values never reach this component: the view carries a 1-based index, a
  * state and an optional usage block.
@@ -23,6 +23,14 @@ import { SECONDARY_BUTTON } from '../../ui';
 import { FeedbackLine, InlineError } from '../../controls';
 
 type KeyUsage = NbSearchKeyUsageView['keys'][number];
+type UsageBlock = NonNullable<KeyUsage['usage']>;
+type UsageMeter = NonNullable<UsageBlock['meters']>[number];
+type DetailedMeterLine = {
+  readonly id: string;
+  readonly label: string;
+  readonly value: string;
+  readonly reset?: string;
+};
 
 const STATE_KEYS = {
   unknown: 'st.nbSearch.keyUsage.stateUnknown',
@@ -67,18 +75,47 @@ export function NbSearchKeyUsagePanel({
 
   const formatNumber = (value: number) => new Intl.NumberFormat(locale).format(value);
 
-  const usageLine = (key: KeyUsage): string | null => {
+  const legacyUsageLine = (key: KeyUsage): string | undefined => {
     const usage = key.usage;
-    if (usage === undefined) return null;
+    if (usage === undefined || (usage.meters?.length ?? 0) > 0) return undefined;
+    const scope = usage.scope === 'team'
+      ? t('st.nbSearch.keyUsage.scopeTeam')
+      : t('st.nbSearch.keyUsage.scopeKey');
     const numbers: string[] = [];
     if (usage.remaining !== null) numbers.push(t('st.nbSearch.keyUsage.remaining', { n: formatNumber(usage.remaining) }));
     else if (usage.used !== null) numbers.push(t('st.nbSearch.keyUsage.used', { n: formatNumber(usage.used) }));
     if (usage.limit !== null) numbers.push(t('st.nbSearch.keyUsage.limit', { n: formatNumber(usage.limit) }));
-    if (numbers.length === 0) return null;
-    const scope = usage.scope === 'team'
-      ? t('st.nbSearch.keyUsage.scopeTeam')
-      : t('st.nbSearch.keyUsage.scopeKey');
+    if (numbers.length === 0) return undefined;
     return t('st.nbSearch.keyUsage.usageLine', { scope, numbers: numbers.join(' · ') });
+  };
+
+  const detailedMeterLines = (key: KeyUsage): DetailedMeterLine[] => {
+    const detailedMeters = key.usage?.meters ?? [];
+    return detailedMeters.map((meter: UsageMeter): DetailedMeterLine => {
+      const numbers: string[] = [];
+      if (meter.remaining !== null) numbers.push(t('st.nbSearch.keyUsage.remaining', { n: formatNumber(meter.remaining) }));
+      else if (meter.used !== null) numbers.push(t('st.nbSearch.keyUsage.used', { n: formatNumber(meter.used) }));
+      if (meter.limit !== null) numbers.push(t('st.nbSearch.keyUsage.limit', { n: formatNumber(meter.limit) }));
+      const unit = meter.unit === 'credits'
+        ? t('st.nbSearch.keyUsage.unit.credits')
+        : t('st.nbSearch.keyUsage.unit.requests');
+      const value = numbers.length === 0
+        ? t('st.nbSearch.keyUsage.usageNone')
+        : `${numbers.join(' · ')} ${unit}`;
+      const reset = meter.reset_at === undefined
+        ? undefined
+        : meter.reset_timezone === undefined
+          ? t('st.nbSearch.keyUsage.resetAt', { time: time.absoluteTime(meter.reset_at) ?? meter.reset_at })
+          : t('st.nbSearch.keyUsage.resetAtTimezone', {
+              time: new Intl.DateTimeFormat(locale, {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+                timeZone: meter.reset_timezone,
+              }).format(new Date(meter.reset_at)),
+              timezone: meter.reset_timezone,
+            });
+      return { id: meter.id, label: meter.label ?? meter.id, value, reset };
+    });
   };
 
   return (
@@ -134,29 +171,77 @@ export function NbSearchKeyUsagePanel({
               : t('st.nbSearch.keyUsage.balanceUnsupported')}
           </p>
           <ul className="space-y-0" data-nb-search-key-usage-keys>
-            {view.keys.map((key) => (
-              <li key={key.key_index} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5">
-                <span className="font-mono text-[11px] text-ink-faint">
-                  {t('st.nbSearch.keyUsage.keyIndex', { n: String(key.key_index) })}
-                </span>
-                <span className={`text-[13px] ${STATE_CLASS[key.state]}`} data-nb-search-key-state={key.state}>
-                  {t(STATE_KEYS[key.state])}
-                </span>
-                {key.state === 'cooldown' && key.cooldown_until !== undefined ? (
-                  <span className="text-[12px] text-ink-faint">
-                    {t('st.nbSearch.keyUsage.cooldownUntil', { time: time.timeUntil(key.cooldown_until) })}
+            {view.keys.map((key) => {
+              const detailed = detailedMeterLines(key);
+              if (detailed.length > 0) {
+                return (
+                  <li key={key.key_index} className="py-1.5">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="font-mono text-[11px] text-ink-faint">
+                        {t('st.nbSearch.keyUsage.keyIndex', { n: String(key.key_index) })}
+                      </span>
+                      <span className={`text-[13px] ${STATE_CLASS[key.state]}`} data-nb-search-key-state={key.state}>
+                        {t(STATE_KEYS[key.state])}
+                      </span>
+                      {key.state === 'cooldown' && key.cooldown_until !== undefined ? (
+                        <span className="text-[12px] text-ink-faint">
+                          {t('st.nbSearch.keyUsage.cooldownUntil', { time: time.timeUntil(key.cooldown_until) })}
+                        </span>
+                      ) : null}
+                      {key.usage?.scope === 'team' ? (
+                        <span className="ml-auto text-[11px] text-ink-faint">
+                          {t('st.nbSearch.keyUsage.scopeTeam')}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 divide-y divide-hairline/50 border-t border-hairline/60 pt-0.5">
+                      {detailed.map((meter) => (
+                        <div
+                          key={`${key.key_index}:${meter.id}`}
+                          data-nb-search-key-usage-meter={meter.id}
+                          className="space-y-0.5 py-1 text-[12px]"
+                        >
+                          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                            <span className="text-ink">{meter.label}</span>
+                            <span className="ml-auto text-right tabular-nums text-ink-soft">{meter.value}</span>
+                          </div>
+                          {meter.reset !== undefined ? (
+                            <p className="text-right text-[11px] tabular-nums text-ink-faint">{meter.reset}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </li>
+                );
+              }
+              const legacy = legacyUsageLine(key);
+              return (
+                <li key={key.key_index} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5">
+                  <span className="font-mono text-[11px] text-ink-faint">
+                    {t('st.nbSearch.keyUsage.keyIndex', { n: String(key.key_index) })}
                   </span>
-                ) : null}
-                <span className="ml-auto text-[12px] text-ink-soft">
-                  {usageLine(key)
-                    ?? (key.usage_error === 'invalid_response'
-                      ? t('st.nbSearch.keyUsage.usageInvalidResponse')
-                      : key.usage_error === 'unavailable'
-                        ? t('st.nbSearch.keyUsage.usageUnavailable')
-                        : t('st.nbSearch.keyUsage.usageNone'))}
-                </span>
-              </li>
-            ))}
+                  <span className={`text-[13px] ${STATE_CLASS[key.state]}`} data-nb-search-key-state={key.state}>
+                    {t(STATE_KEYS[key.state])}
+                  </span>
+                  {key.state === 'cooldown' && key.cooldown_until !== undefined ? (
+                    <span className="text-[12px] text-ink-faint">
+                      {t('st.nbSearch.keyUsage.cooldownUntil', { time: time.timeUntil(key.cooldown_until) })}
+                    </span>
+                  ) : null}
+                  <span className="ml-auto flex flex-col items-end text-right text-[12px] text-ink-soft">
+                    {legacy !== undefined ? (
+                      <span data-nb-search-key-usage-meter="legacy">{legacy}</span>
+                    ) : (
+                      key.usage_error === 'invalid_response'
+                        ? t('st.nbSearch.keyUsage.usageInvalidResponse')
+                        : key.usage_error === 'unavailable'
+                          ? t('st.nbSearch.keyUsage.usageUnavailable')
+                          : t('st.nbSearch.keyUsage.usageNone')
+                    )}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
           {view.keys.length === 0 ? (
             <p className="text-[12px] leading-snug text-ink-faint" data-nb-search-key-usage-empty>

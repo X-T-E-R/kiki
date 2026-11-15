@@ -43,6 +43,14 @@ describe('translate', () => {
     expect(translate('zh', 'sidebar.newSession')).toBe('新会话');
     expect(translate('en', 'diagnostics.unconfigured')).toBe('No recommendations');
     expect(translate('zh', 'diagnostics.unconfigured')).toBe('未配置推荐');
+    expect(translate('en', 'st.nbSearch.provider.zhihu')).toBe('Zhihu Open Platform');
+    expect(translate('zh', 'st.nbSearch.provider.zhihu')).toBe('知乎开放平台');
+    expect(translate('en', 'st.nbSearch.lane.zhihu.search')).toBe('Search');
+    expect(translate('zh', 'st.nbSearch.lane.zhihu.search')).toBe('搜索');
+    expect(translate('en', 'st.nbSearch.lane.zhihu.global')).toBe('Global search');
+    expect(translate('zh', 'st.nbSearch.lane.zhihu.global')).toBe('全局搜索');
+    expect(translate('en', 'st.nbSearch.lane.zhihu.synthesis')).toBe('Synthesis');
+    expect(translate('zh', 'st.nbSearch.lane.zhihu.synthesis')).toBe('综合');
     expect(translate('en', 'st.im.coalesce.window')).toBe('Combine rapid messages');
     expect(translate('zh', 'st.im.coalesce.window')).toBe('消息合并');
     expect(translate('en', 'st.im.coalesce.binding')).toBe('Combine rapid messages');

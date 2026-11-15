@@ -295,22 +295,55 @@ export function removeService(
   pairs: readonly { inputKind: NbSearchInputKind; representation: NbSearchRepresentation }[],
 ): NbSearchDraft {
   if (kind === 'lane') {
-    let next = setNbSearchLane(draft, id, undefined);
     const instanceId = cardProviderInfo(capabilities, draft, laneProfiles(capabilities, draft), 'lane', id)?.instanceId;
+    const inheritedLanes = capabilities.inherited_configuration?.lanes;
+    const inheritedInstance = instanceId !== undefined && (
+      capabilities.inherited_configuration !== undefined
+        ? capabilities.inherited_configuration.provider_instance_ids.includes(instanceId)
+        : inheritedLanes?.[id] !== undefined
+    );
+    const removedLaneIds = new Set<string>([id]);
+    let next = setNbSearchLane(draft, id, undefined);
+    if (instanceId !== undefined && !inheritedInstance) {
+      for (const [laneId, lane] of Object.entries(next.advanced?.lanes ?? {})) {
+        if (lane?.provider_instance_id === instanceId && inheritedLanes?.[laneId] === undefined) {
+          removedLaneIds.add(laneId);
+          next = setNbSearchLane(next, laneId, undefined);
+        }
+      }
+    }
     const bindings = {
-      ...(capabilities.inherited_configuration?.lanes ?? capabilities.configuration?.lanes),
+      ...(capabilities.inherited_configuration?.lanes ?? (inheritedInstance ? capabilities.configuration?.lanes : undefined)),
       ...next.advanced?.lanes,
     };
-    const shared = Object.entries(bindings).some(([laneId, lane]) => laneId !== id && lane?.provider_instance_id === instanceId);
+    const shared = Object.entries(bindings).some(([laneId, lane]) => !removedLaneIds.has(laneId) && lane?.provider_instance_id === instanceId);
     // Removing one method must keep the address, options and credential binding
     // of any other search or fetch method sharing its instance.
-    if (instanceId !== undefined && !shared && draft.providers[instanceId] !== undefined) {
+    if (instanceId !== undefined && !shared && next.providers[instanceId] !== undefined) {
+      const slotId = next.providers[instanceId]!.credentialSlotId;
+      const serverInstanceExists = capabilities.providers.instances.some((candidate) => candidate.id === instanceId);
+      const providers = { ...next.providers };
+      if (serverInstanceExists) {
+        providers[instanceId] = { ...providers[instanceId]!, isDeleted: true, isNew: false };
+      } else {
+        delete providers[instanceId];
+      }
+      let credentialSlots = next.credentialSlots;
+      if (!inheritedInstance && credentialSlots?.[slotId] !== undefined) {
+        const slotShared = Object.entries(providers).some(
+          ([otherId, other]) => otherId !== instanceId && !other.isDeleted && other.credentialSlotId === slotId,
+        );
+        if (!slotShared) {
+          const slots = { ...credentialSlots };
+          delete slots[slotId];
+          credentialSlots = Object.keys(slots).length === 0 ? undefined : slots;
+        }
+      }
       next = {
         ...next,
-        providers: {
-          ...next.providers,
-          [instanceId]: { ...next.providers[instanceId]!, isDeleted: true, isNew: false },
-        },
+        defaultSearchLane: removedLaneIds.has(next.defaultSearchLane) ? '' : next.defaultSearchLane,
+        providers,
+        credentialSlots,
       };
     }
     return next;
