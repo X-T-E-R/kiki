@@ -101,8 +101,8 @@ import type { TranscriptService } from '../services/transcript/transcriptService
 import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { observeRestore, timeRestorePhase, withRestoreDeadline } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { defineRoute } from '../middleware/defineRoute';
-import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
-import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
+import { MAIN_AGENT_ID } from '../transport/mainAgent';
+import { ensureSessionAgent } from '../lib/sessionAgent';
 import { parseActionSuffix } from './action-suffix';
 import { KLIENT_CALL_BODY_LIMIT_BYTES } from '../transport/klient/registerKlientHttp';
 import { PromptIngress, type PromptIngressExecution, type PromptIngressResult } from '../services/promptIngress';
@@ -174,47 +174,7 @@ async function resolvePromptFromSession(
   session: ISessionScopeHandle,
   agentId?: string,
 ) {
-  const lifecycle = session.accessor.get(IAgentLifecycleService);
-  let agent = agentId === undefined || agentId === MAIN_AGENT_ID
-    ? await ensureMainAgent(session)
-    : lifecycle.get(agentId);
-  if (agent === undefined && agentId !== undefined) {
-    const metadata = session.accessor.get(ISessionMetadata);
-    const meta = (await metadata.read()).agents?.[agentId];
-    if (meta === undefined) {
-      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
-    }
-    const context = session.accessor.get(ISessionContext);
-    const snapshot = await readPersistedAgentProfileSnapshot(
-      core,
-      context.workspaceId,
-      context.sessionId,
-      agentId,
-      meta,
-    );
-    if (snapshot === undefined) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `Persisted binding metadata for agent "${agentId}" is unavailable`,
-        { details: { agentId } },
-      );
-    }
-    agent = await lifecycle.create({
-      agentId,
-      restoreBinding: {
-        profileName: snapshot.profileName,
-        routeId: snapshot.routeId,
-        modelAlias: snapshot.modelAlias,
-        thinkingEffort: snapshot.thinkingLevel,
-        thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
-        executorId: snapshot.executorId,
-        executorProtocol: snapshot.executorProtocol,
-      },
-    });
-  }
-  if (agent === undefined) {
-    throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
-  }
+  const agent = await ensureSessionAgent(core, session, agentId);
   return {
     agent,
     agentId: agent.id,
@@ -242,6 +202,24 @@ async function admitPromptRun(
 ): Promise<PromptRunAdmission> {
   if (resolved.agentId === MAIN_AGENT_ID) return { reservation, fail: () => {} };
   const meta = (await session.accessor.get(ISessionMetadata).read()).agents?.[resolved.agentId];
+  if (meta?.labels?.['branch'] === 'true' || meta?.labels?.['autonomousReceiptPolicy'] === 'local') {
+    const subagents = session.accessor.get(ISessionSubagentService);
+    const retained = subagents.retain(resolved.agentId);
+    return {
+      reservation: {
+        id: reservation.id,
+        dispose: () => reservation.dispose(),
+        submit: async (message, execution, disabledTools, timing) => {
+          try {
+            const handle = await reservation.submit(message, execution, disabledTools, timing);
+            void handle.completion.then(() => retained.dispose(), () => retained.dispose());
+            return handle;
+          } catch (error) { retained.dispose(); throw error; }
+        },
+      },
+      fail: () => retained.dispose(),
+    };
+  }
   const parentRef = delegatorRef(meta);
   const parentId = parentRef?.kind === 'agent' ? parentRef.agentId : MAIN_AGENT_ID;
   if (parentId === resolved.agentId) {
@@ -670,7 +648,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         await assertPromptFileRefs(req.body.content, files);
         const resolveContent = (signal: AbortSignal) => resolvePromptSessionMediaRefs(req.body.content,
           sessionMedia,
-          transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+          transcriptService === undefined ? undefined : publishedInlineMediaReader(core, transcriptService, session_id, signal),
           files);
         const submittedContent = ingressExecution === undefined
           ? await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], resolveContent)
@@ -985,7 +963,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           const replacementContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             replacement.data.content,
             sessionMedia,
-            transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+            transcriptService === undefined ? undefined : publishedInlineMediaReader(core, transcriptService, session_id, signal),
             files,
           ));
           const resolved = await resolvePromptFromSession(core, session);

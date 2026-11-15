@@ -38,7 +38,11 @@ export function openFileCommandFor(
 }
 
 function windowsCmdStartArg(absolutePath: string): LaunchCommand {
-  return { command: 'cmd', args: ['/c', 'start', '""', quoteCmdStartArg(absolutePath)] };
+  return {
+    command: 'cmd',
+    args: ['/c', 'start', '""', quoteCmdStartArg(absolutePath)],
+    windowsVerbatimArguments: true,
+  };
 }
 
 export function revealFileCommandFor(

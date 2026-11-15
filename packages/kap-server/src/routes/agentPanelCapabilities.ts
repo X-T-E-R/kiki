@@ -115,10 +115,15 @@ export async function snapshotPanelCapabilities(
     readonly workspaceDisabledTools?: readonly string[];
     readonly sessionDisabledTools?: readonly string[];
     readonly mcpToolAllowed?: SessionMcpToolPredicate;
+    readonly delegationPosition?: 'main' | 'sub';
+    readonly toolsLocked?: boolean;
   },
 ): Promise<Pick<AgentCapabilitiesProducerResponse, 'profile' | 'tools' | 'skills'>> {
   const definition = resolution.profile;
   const persisted = snapshot.source === 'wire';
+  const delegationPosition = inventory.delegationPosition ?? (hasParent ? 'sub' : 'main');
+  const subagent = hasParent && delegationPosition === 'sub';
+  const toolsLocked = inventory.toolsLocked === true;
   const activeToolNames = snapshot.activeToolsKnown ? snapshot.activeToolNames : definition.tools;
   const profileToolSource = snapshot.boundProfile ?? definition;
   const explicitProfileTools = profileToolSource.tools === undefined ? undefined : [...profileToolSource.tools];
@@ -149,7 +154,7 @@ export async function snapshotPanelCapabilities(
     global: config.get<GlobalToolsPolicy>('tools'),
     workspaceDisabledTools: inventory.workspaceDisabledTools,
     sessionDisabledTools: inventory.sessionDisabledTools,
-    subagent: hasParent ? {
+    subagent: subagent ? {
       allowedTools: config.get<SubagentConfig>(SUBAGENT_SECTION)?.allowedTools,
       explicitProfileTools,
     } : undefined,
@@ -161,9 +166,9 @@ export async function snapshotPanelCapabilities(
   const unavailableReasonCode = 'snapshot_inventory_only';
   const tools: NonNullable<AgentCapabilitiesProducerResponse['tools']> = getAgentToolContributions().map(({ options }) => {
     const source = options.source ?? 'builtin';
-    const active = isToolActiveComposed(policy, options.name, source);
+    const active = (!toolsLocked || options.name === 'Merge') && isToolActiveComposed(policy, options.name, source);
     const conditionAvailable = options.name !== 'AgentNotify' || isAgentNotifyAvailable({
-      hasParent,
+      hasParent: subagent,
       allowParentNotify: binding.allowParentNotify,
       configEnabled: parentNotifyConfigEnabled,
       toolPolicyEnabled: active,
@@ -194,7 +199,7 @@ export async function snapshotPanelCapabilities(
       const mcpAllowed = inventory.mcpToolAllowed === undefined
         ? server.enabledNames.includes(tool.name)
         : inventory.mcpToolAllowed(server.serverName, tool.name, server.enabledNames);
-      const active = mcpAllowed && isToolActiveComposed(policy, name, 'mcp');
+      const active = !toolsLocked && mcpAllowed && isToolActiveComposed(policy, name, 'mcp');
       tools.push({
         name, description: tool.description, source: 'mcp', category: 'mcp',
         state: active ? 'unknown' : 'disabled', policy_allowed: active,
@@ -205,9 +210,9 @@ export async function snapshotPanelCapabilities(
     }
   }
   return {
-    profile: panelProfile(session, binding, resolution, hasParent ? 'sub' : 'main'),
+    profile: panelProfile(session, binding, resolution, delegationPosition),
     tools: tools.toSorted((a, b) => a.name.localeCompare(b.name)),
-    skills: panelSkills(inventory.skills, isToolActiveComposed(policy, 'Skill')).map((skill) => ({
+    skills: panelSkills(inventory.skills, !toolsLocked && isToolActiveComposed(policy, 'Skill')).map((skill) => ({
       ...skill,
       state: skill.state === 'enabled' ? 'unknown' : skill.state,
       unavailable_reason: skill.unavailable_reason ?? unavailableReason,
@@ -216,8 +221,13 @@ export async function snapshotPanelCapabilities(
   };
 }
 
-export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<Pick<AgentCapabilitiesProducerResponse, 'profile' | 'tools' | 'skills'>> {
+export async function livePanelCapabilities(
+  agent: IAgentScopeHandle,
+  options: { readonly delegationPosition?: 'main' | 'sub'; readonly toolsLocked?: boolean } = {},
+): Promise<Pick<AgentCapabilitiesProducerResponse, 'profile' | 'tools' | 'skills'>> {
   const data = agent.accessor.get(IAgentProfileService).data();
+  const delegationPosition = options.delegationPosition ?? (agent.id === 'main' ? 'main' : 'sub');
+  const toolsLocked = options.toolsLocked === true;
   const catalog = agent.accessor.get(ISessionAgentProfileCatalog);
   await catalog.ready;
   const frozen = agent.accessor.get(ISubagentTool).dispatchCatalog().snapshot;
@@ -258,7 +268,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const pluginByToolName = new Map(pluginDefinitions.map((entry) => [pluginToolName(entry.pluginId, entry.definition.name), entry]));
   const tools = new Map<string, NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]>();
   for (const contribution of contributions) {
-    const policyAllowed = policy.isToolActive(contribution.name, contribution.source);
+    const policyAllowed = (!toolsLocked || contribution.name === 'Merge') && policy.isToolActive(contribution.name, contribution.source);
     const plugin = pluginByToolName.get(contribution.name);
     const usageState = plugin === undefined
       ? contribution.source === 'plugin' && pluginCatalogFailed ? 'catalog-failed' : 'allowed'
@@ -291,7 +301,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   for (const tool of registry) {
     const previous = tools.get(tool.name);
     const contribution = contributionByName.get(tool.name);
-    const policyAllowed = policy.isToolActive(tool.name, tool.source);
+    const policyAllowed = (!toolsLocked || tool.name === 'Merge') && policy.isToolActive(tool.name, tool.source);
     const plugin = pluginByToolName.get(tool.name);
     const usageState = plugin === undefined
       ? tool.source === 'plugin' && pluginCatalogFailed ? 'catalog-failed' : 'allowed'
@@ -326,7 +336,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   for (const entry of pluginDefinitions) {
     const name = pluginToolName(entry.pluginId, entry.definition.name);
     if (tools.has(name)) continue;
-    const policyAllowed = policy.isToolActive(name, 'plugin');
+    const policyAllowed = !toolsLocked && policy.isToolActive(name, 'plugin');
     const usageState = pluginUsageStates.get(entry.pluginId) ?? (pluginCatalogFailed ? 'unavailable' : 'allowed');
     const availability = panelToolAvailability({
       policyAllowed,
@@ -368,9 +378,9 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const skills = agent.accessor.get(ISessionSkillCatalog);
   await skills.ready;
   return {
-    profile: panelProfile(agent, data, resolution, agent.id === 'main' ? 'main' : 'sub'),
+    profile: panelProfile(agent, data, resolution, delegationPosition),
     tools: [...tools.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
-    skills: panelSkills(skills.catalog.listSkills(), policy.isToolActive('Skill')),
+    skills: panelSkills(skills.catalog.listSkills(), !toolsLocked && policy.isToolActive('Skill')),
   };
 }
 

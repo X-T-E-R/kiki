@@ -3,9 +3,9 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  getLiveSessionById, resumeSessionById, IAgentLifecycleService, IAgentPromptService,
+  getLiveSessionById, resumeSessionById, IAgentLifecycleService, IAgentPromptService, IAgentLoopService, IAgentProfileService, IAgentTaskService, ISessionSubagentService, ISessionMetadata, IAuthSummaryService, IAgentProfileRegistry, normalizeAgentProfile,
 } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
@@ -112,6 +112,102 @@ describe('relay-v1 REST and cold wire contract', () => {
     expect(result.code, result.msg).toBe(0);
     return result.data.id;
   }
+
+  it('preflights unbound new-session BTW and branch using the default profile', async () => {
+    for (const action of ['btw', 'branch']) {
+      const created = await request<{ id: string }>('/api/sessions', 'POST', { metadata: { cwd: home } });
+      expect(created.code, created.msg).toBe(0);
+      const auth = vi.spyOn(server!.core.accessor.get(IAuthSummaryService), 'ensureReady');
+      try {
+        const branch = await request<{ agent_id: string }>(`/api/sessions/${created.data.id}:${action}`, 'POST', {});
+        expect(branch.code, branch.msg).toBe(0);
+        expect(branch.data.agent_id).toBeTruthy();
+        expect(auth).toHaveBeenCalled();
+        expect(auth.mock.calls.every(args => args[0] !== '')).toBe(true);
+      } finally { auth.mockRestore(); }
+    }
+    expect(modelCalls).toBe(0);
+  });
+
+  it('preflights the selected cold branch parent rather than main', async () => {
+    const id = await create();
+    const live = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = live.accessor.get(IAgentLifecycleService);
+    const parent = await lifecycle.create({ binding: { profile: 'child', model: 'test' } });
+    const mainProfile = lifecycle.get('main')!.accessor.get(IAgentProfileService);
+    const mainRead = vi.spyOn(mainProfile, 'getModel').mockImplementation(() => { throw new Error('main auth model should not be read'); });
+    await lifecycle.remove(parent.id);
+    const auth = vi.spyOn(server!.core.accessor.get(IAuthSummaryService), 'ensureReady');
+    try {
+      const branch = await request<{ agent_id: string; parent_agent_id: string }>(`/api/sessions/${id}:branch`, 'POST', { parent_agent_id: parent.id });
+      expect(branch.code, branch.msg).toBe(0);
+      expect(branch.data.parent_agent_id).toBe(parent.id);
+      expect(lifecycle.get(parent.id)).toBeDefined();
+      expect(auth).toHaveBeenCalledWith('test');
+      expect(mainRead).not.toHaveBeenCalled();
+    } finally { mainRead.mockRestore(); auth.mockRestore(); }
+  });
+
+  it('preflights explicit native execution from an external parent and skips explicit external execution', async () => {
+    const id = await create();
+    server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-branch-fixture', priority: 50, contribution: { profiles: [normalizeAgentProfile({ name: 'external-branch', definitionId: 'fixture:external-branch', executor: 'grok-acp', modelAlias: 'opaque-model', systemPrompt: () => 'External branch' })] } });
+    const lifecycle = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+    const parent = await lifecycle.create({ binding: { profile: 'external-branch' } });
+    const auth = vi.spyOn(server!.core.accessor.get(IAuthSummaryService), 'ensureReady').mockRejectedValue(new Error('native auth blocked'));
+    try {
+      const native = await request(`/api/sessions/${id}:branch`, 'POST', { parent_agent_id: parent.id, executor: 'native', model: 'test' });
+      expect(native.code).not.toBe(0);
+      expect(auth).toHaveBeenCalledWith('test');
+      expect(lifecycle.list()).toHaveLength(2);
+      auth.mockClear();
+      const external = await request<{ agent_id: string }>(`/api/sessions/${id}:branch`, 'POST', { executor: 'grok-acp', model: 'opaque-model' });
+      expect(external.code, external.msg).toBe(0);
+      expect(auth).not.toHaveBeenCalled();
+      expect(lifecycle.get(external.data.agent_id)!.accessor.get(IAgentProfileService).data().executorId).toBe('grok-acp');
+    } finally { auth.mockRestore(); }
+  });
+
+  it('targets session abort by body or query and defaults older callers to main', async () => {
+    const id = await create();
+    const live = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = live.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ binding: { profile: 'child', model: 'test' } });
+    const mainCancel = vi.spyOn(lifecycle.get('main')!.accessor.get(IAgentLoopService), 'cancelFromUser');
+    const childCancel = vi.spyOn(child.accessor.get(IAgentLoopService), 'cancelFromUser');
+    try {
+      expect((await request(`/api/sessions/${id}:abort`, 'POST', { agent_id: child.id })).code).toBe(0);
+      expect((await request(`/api/sessions/${id}:abort?agent_id=${child.id}`, 'POST', {})).code).toBe(0);
+      expect(childCancel).toHaveBeenCalledTimes(2); expect(mainCancel).not.toHaveBeenCalled();
+      expect((await request(`/api/sessions/${id}:abort`, 'POST', {})).code).toBe(0);
+      expect(mainCancel).toHaveBeenCalledOnce();
+    } finally { mainCancel.mockRestore(); childCancel.mockRestore(); }
+  });
+
+  it.each(['branch', 'autonomousReceiptPolicy'] as const)('retains a local %s HTTP prompt without creating a parent task or wire lifecycle', async (label) => {
+    scriptedReplyText = 'Local side conversation answer.';
+    const id = await create();
+    const live = getLiveSessionById(server!.core.accessor, id)!;
+    const lifecycle = live.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'child', model: 'test' }, labels: label === 'branch' ? { branch: 'true', autonomousReceiptPolicy: 'local' } : { autonomousReceiptPolicy: 'local' } });
+    const main = lifecycle.get('main')!;
+    const wire = main.accessor.get(IWireService);
+    await wire.flush();
+    const records = async () => { const result = []; for await (const record of wire.readJournal()) if (record.type.startsWith('subagent.')) result.push(record); return result; };
+    const before = await records();
+    const tasks = main.accessor.get(IAgentTaskService).list(true);
+    const retain = vi.spyOn(live.accessor.get(ISessionSubagentService), 'retain');
+    try {
+      const submitted = await request<{ prompt_id: string }>(`/api/sessions/${id}/prompts`, 'POST', { agent_id: child.id, content: [{ type: 'text', text: 'Continue only here.' }] });
+      expect(submitted.code, submitted.msg).toBe(0);
+      await vi.waitFor(() => expect(modelCalls, JSON.stringify(child.accessor.get(IAgentLoopService).status())).toBe(1), { timeout: 10_000 });
+      await child.accessor.get(IAgentLoopService).settled();
+      await wire.flush();
+      expect(retain).toHaveBeenCalledWith(child.id);
+      expect(main.accessor.get(IAgentTaskService).list(true)).toEqual(tasks);
+      expect(await records()).toEqual(before);
+      expect((await live.accessor.get(ISessionMetadata).read()).agents?.[child.id]?.status).not.toBe('completed');
+    } finally { retain.mockRestore(); }
+  });
 
   it('resolves model-profile choice below session override and isolates native children', async () => {
     const id = await create();

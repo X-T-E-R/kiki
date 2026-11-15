@@ -34,10 +34,10 @@ import {
   IAgentConversationUndoService,
   IAgentFullCompactionService,
   IAgentLoopService,
+  IAgentExecutionService,
   IAgentLifecycleService,
   IAgentUsageService,
   IAtomicDocumentStore,
-  IAuthSummaryService,
   ILogService,
   IModelService,
   ISessionActivityView,
@@ -128,6 +128,8 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireSessionOperation, withSessionOperation } from '../lib/sessionOperationLease';
+import { ensureSessionAgent } from '../lib/sessionAgent';
+import { ensurePromptAuthReady } from '../lib/promptAuth';
 import { defineRoute } from '../middleware/defineRoute';
 import {
   IModelPricingService,
@@ -287,6 +289,7 @@ const sessionActionRequestSchema = z.preprocess(
       seq: z.number().int().nonnegative(),
       epoch: z.string().min(1),
     }).optional(),
+    agent_id: z.string().min(1).optional(),
     parent_agent_id: z.string().min(1).optional(),
     task: z.string().optional(),
     prompt: z.string().optional(),
@@ -1245,6 +1248,7 @@ export function registerSessionsRoutes(
       path: '/sessions/{tail}',
       params: sessionActionTailParamSchema,
       body: sessionActionRequestSchema,
+      querystring: z.object({ agent_id: z.string().min(1).optional() }),
       success: {
         data: z.union([
           sessionSchema,
@@ -1378,10 +1382,14 @@ export function registerSessionsRoutes(
         }
 
         if (parsed.action === 'abort') {
-          await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => withMainAgent(core, parsed.id, async (agent) => {
+          await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => withSessionOperation(core, parsed.id, async (session) => {
             signal.throwIfAborted();
-            agent.accessor.get(IAgentLoopService).cancelFromUser();
-            requestLog(req)?.info({ session_id: parsed.id, action: 'abort' }, 'session action completed');
+            if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            const agent = await ensureSessionAgent(core, session, req.body.agent_id ?? req.query.agent_id ?? MAIN_AGENT_ID);
+            signal.throwIfAborted();
+            if ((agent.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') agent.accessor.get(IAgentLoopService).cancelFromUser();
+            else agent.accessor.get(IAgentExecutionService).cancel();
+            requestLog(req)?.info({ session_id: parsed.id, agent_id: agent.id, action: 'abort' }, 'session action completed');
             reply.send(okEnvelope({ aborted: true }, req.id));
           }, signal), req);
           return;
@@ -1391,7 +1399,7 @@ export function registerSessionsRoutes(
           await withSessionOperation(core, parsed.id, async (session) => {
             if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
             const main = await ensureMainAgent(session);
-            await core.accessor.get(IAuthSummaryService).ensureReady(main.accessor.get(IAgentProfileService).getModel());
+            await ensurePromptAuthReady(session, main.accessor);
             const agentId = await session.accessor.get(ISessionBtwService).start();
             reply.send(okEnvelope({ agent_id: agentId }, req.id));
           });
@@ -1402,10 +1410,12 @@ export function registerSessionsRoutes(
           const body = createSessionBranchRequestSchema.parse(req.body);
           await withSessionOperation(core, parsed.id, async (session) => {
             if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
-            const main = await ensureMainAgent(session);
-            const targetModel = body.model ?? main.accessor.get(IAgentProfileService).getModel();
-            if (targetModel !== undefined) {
-              await core.accessor.get(IAuthSummaryService).ensureReady(targetModel);
+            const parent = await ensureSessionAgent(core, session, body.parent_agent_id ?? MAIN_AGENT_ID);
+            if (body.executor === undefined || body.executor === 'native') {
+              await ensurePromptAuthReady(session, parent.accessor, {
+                model: body.model || undefined,
+                execution: body.executor === 'native' ? { executor: 'native' } : undefined,
+              });
             }
             const created = await session.accessor.get(ISessionBranchService).createBranch({
               parentAgentId: body.parent_agent_id,

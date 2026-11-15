@@ -301,6 +301,17 @@ describe('HTTP REST domains', () => {
       await expect(channel.rest.sessions.listAgentTasks('session')).rejects.toThrow();
     } finally { await channel.close(); }
   });
+  it('downloads remote document preview assets through the binary broker', async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const transport = createConnectionTransport({ endpoint: 'http://example.test', token: 'secret', connectionId: '11111111-1111-4111-8111-111111111111', fetch: (async (input, init) => {
+      expect(String(input)).toBe('http://example.test/api/remote-connections/11111111-1111-4111-8111-111111111111/download');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ operation: 'documentPreviewAsset', params: { sessionId: 'session', assetId: 'page-1' } });
+      return new Response(bytes, { headers: { 'content-type': 'image/png' } });
+    }) as typeof fetch });
+    const response = await transport.fetch('http://remote.test/api/sessions/session/document-preview/assets/page-1');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
   it('omits missing bearer credentials from Cookie broker call, download and upload requests', async () => {
     const captured: RequestInit[] = [];
     const transport = createConnectionTransport({ endpoint: 'http://example.test', connectionId: '11111111-1111-4111-8111-111111111111', fetch: (async (_input, init) => { captured.push(init!); return envelope({}); }) as typeof fetch });
@@ -1763,6 +1774,8 @@ it('carries IM setup and real channel preferences through authenticated REST', a
 describe('filesystem.previewHostFile (#31)', () => {
   it('reports lossless UTF-8, GBK, and ELF headers accurately, carries etag/304, and preserves error codes', async () => {
     const utf8Bytes = new TextEncoder().encode('你好，Kiki!\n');
+    const partialUtf8Bytes = new Uint8Array([0x41, 0xf0, 0x9f, 0x98]);
+    const malformedUtf8Bytes = new Uint8Array([0x41, 0xe2, 0x28, 0x82, 0x42]);
     const gbkBytes = new Uint8Array([0xc4, 0xe3, 0xba, 0xc3]);
     const elfBytes = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -1780,6 +1793,18 @@ describe('filesystem.previewHostFile (#31)', () => {
             'content-range': `bytes 0-${utf8Bytes.byteLength - 1}/${utf8Bytes.byteLength}`,
             etag: '"etag-utf8"',
           },
+        });
+      }
+      if (path === '/work/partial.txt') {
+        return new Response(partialUtf8Bytes, {
+          status: 206,
+          headers: { 'content-type': 'text/plain; charset=utf-8', 'content-range': 'bytes 0-3/5' },
+        });
+      }
+      if (path === '/work/malformed.txt') {
+        return new Response(malformedUtf8Bytes, {
+          status: 200,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
         });
       }
       if (path === '/work/gbk.txt') {
@@ -1840,6 +1865,12 @@ describe('filesystem.previewHostFile (#31)', () => {
         etag: '"etag-utf8"',
         notModified: true,
       });
+
+      const partial = await channel.rest.filesystem.previewHostFile('/work/partial.txt', 4);
+      expect(partial).toEqual({ text: 'A', truncated: true, lossless: true, etag: undefined });
+
+      const malformed = await channel.rest.filesystem.previewHostFile('/work/malformed.txt', 512);
+      expect(malformed).toEqual({ text: 'A�(�B', truncated: false, lossless: false, etag: undefined });
 
       const gbk = await channel.rest.filesystem.previewHostFile('/work/gbk.txt', 512);
       expect(gbk.lossless).toBe(false);

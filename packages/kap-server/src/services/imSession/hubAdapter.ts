@@ -205,7 +205,8 @@ export class HubSessionAdapter implements ImSessionAdapter {
   private readonly contexts = new Map<string, { reply_context?: string; chat_kind?: SessionChatKind }>();
   private readonly replies = new Map<string, string>();
   private readonly replyBaseline = new Map<string, string>();
-  private readonly replyDirty = new Set<string>();
+  private readonly replyDirty = new Map<string, number>();
+  private replyRevision = 0;
   private replyError: unknown = undefined;
   private readonly replyReady: Promise<void>;
 
@@ -361,7 +362,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
     if (this.homeDir !== undefined && event.reply_context !== undefined) {
       const key = replyKey(this.session.instance_id, identity);
       this.replies.set(key, event.reply_context);
-      this.replyDirty.add(key);
+      this.replyDirty.set(key, ++this.replyRevision);
       await this.writeReplies();
     }
   }
@@ -454,7 +455,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
     await this.useReplies();
     const dropped = replyKey(this.session.instance_id, identity);
     this.replies.delete(dropped);
-    this.replyDirty.add(dropped);
+    this.replyDirty.set(dropped, ++this.replyRevision);
     const key = contextKey(identity);
     const saved = this.contexts.get(key);
     if (saved !== undefined) {
@@ -485,17 +486,17 @@ export class HubSessionAdapter implements ImSessionAdapter {
     if (this.homeDir === undefined) return;
     await this.useReplies();
     const file = join(this.homeDir, 'im-session-reply.json');
+    const dirty = [...this.replyDirty].map(([key, revision]) => ({ key, revision, value: this.replies.get(key) }));
     await enqueueReplyWrite(file, async () => {
-      const dirty = [...this.replyDirty];
       const current = await loadReplyMap(file);
       const merged: Record<string, string> = { ...current };
-      for (const key of dirty) {
-        const value = this.replies.get(key);
+      for (const { key, value } of dirty) {
         if (value === undefined) delete merged[key];
         else merged[key] = value;
       }
       await writePrivateFile(file, JSON.stringify(merged));
-      for (const key of dirty) {
+      for (const { key, revision } of dirty) {
+        if (this.replyDirty.get(key) !== revision) continue;
         const value = this.replies.get(key);
         if (value === undefined) this.replyBaseline.delete(key);
         else this.replyBaseline.set(key, value);

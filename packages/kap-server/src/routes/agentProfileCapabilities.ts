@@ -37,6 +37,7 @@ import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { subagentParentAgentId } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
+import { resolveDelegationPosition } from '@kiki/agent-core-v2/agent/profile/delegationContext';
 import type { AgentCapabilitiesQuery, AgentCapabilitiesProducerResponse, AgentPanelMetrics } from '@kiki/protocol';
 import {
   livePanelCapabilities,
@@ -360,6 +361,8 @@ async function readAgentCapabilities(
         ? await readColdSessionMeta(core, workspaceId, query.session_id)
         : await session.accessor.get(ISessionMetadata).read();
       const metadata = meta?.agents?.[query.agent_id];
+      const delegationPosition = resolveDelegationPosition(query.agent_id, metadata?.delegator, metadata?.labels);
+      const toolsLocked = metadata?.labels?.['branch'] === 'true' && metadata.labels['toolsLocked'] === 'true';
       let snapshot = await readPersistedAgentProfileSnapshot(
         core,
         workspaceId,
@@ -381,10 +384,10 @@ async function readAgentCapabilities(
         const catalog = session === undefined ? workspace!.catalog : session.accessor.get(ISessionAgentProfileCatalog);
         await catalog.ready;
         const profileName = snapshot.profileName ?? snapshot.execution?.selection.profile ??
-          (query.agent_id === 'main' ? catalog.snapshot?.().defaultProfile?.name : undefined);
+          (delegationPosition === 'main' ? catalog.snapshot?.().defaultProfile?.name : undefined);
         const resolution = resolvePanelProfile(catalog, profileName, snapshot.profileDefinitionId, {
           bound: snapshot.boundProfile,
-          metadataMain: query.agent_id === 'main' && snapshot.source === 'metadata',
+          metadataMain: delegationPosition === 'main' && snapshot.source === 'metadata',
         });
         if (resolution.profile === undefined) return {
           context: 'live', live: false,
@@ -420,6 +423,8 @@ async function readAgentCapabilities(
           workspaceDisabledTools: session?.accessor.get(ISessionToolPolicyGate).disabledTools,
           sessionDisabledTools: sessionPolicy?.disabledTools() ?? savedPolicy?.disabledTools,
           mcpToolAllowed,
+          delegationPosition: delegationPosition === 'sub' ? 'sub' : 'main',
+          toolsLocked,
         });
         const persistedBinding = snapshot.source === 'wire';
         const input: SubagentCapabilityCatalog = {
@@ -449,7 +454,7 @@ async function readAgentCapabilities(
           live: false,
           owner: { profile: snapshot.profileName ?? resolution.profile.name, agent_id: query.agent_id },
           available: true,
-          targets: project(core, input, query.agent_id === 'main' ? 'main' : 'sub').map((target) => ({
+          targets: project(core, input, delegationPosition === 'sub' ? 'sub' : 'main').map((target) => ({
             ...target,
             launch_allowed: false,
             launch_unavailable_reason: dispatchEnabled && target.launch_allowed !== false
@@ -467,8 +472,14 @@ async function readAgentCapabilities(
       }
     }
     const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
-    const panel = await livePanelCapabilities(agent);
-    const available = agent.accessor.get(IAgentToolPolicyService).isToolActive('AgentRun');
+    const liveMetadata = session!.accessor.get(ISessionMetadata).snapshot().agents?.[agent.id];
+    const liveDelegationPosition = resolveDelegationPosition(agent.id, liveMetadata?.delegator, liveMetadata?.labels);
+    const liveToolsLocked = liveMetadata?.labels?.['branch'] === 'true' && liveMetadata.labels['toolsLocked'] === 'true';
+    const panel = await livePanelCapabilities(agent, {
+      delegationPosition: liveDelegationPosition === 'sub' ? 'sub' : 'main',
+      toolsLocked: liveToolsLocked,
+    });
+    const available = !liveToolsLocked && agent.accessor.get(IAgentToolPolicyService).isToolActive('AgentRun');
     const policy = session!.accessor.get(ISessionDispatchService).readLaunchPolicy(agent.id);
     const baseAdmission = evaluateDispatchAdmission(policy, 'spawn');
     const unavailable_reason = available ? undefined
@@ -476,7 +487,7 @@ async function readAgentCapabilities(
     const unavailable_reason_code = available ? undefined
       : baseAdmission.reasonCode ?? 'agent_run_inactive';
     const input = agent.accessor.get(ISubagentTool).dispatchCatalog();
-    const targets = project(agent, input, agent.id === 'main' ? 'main' : 'sub').map((target) => {
+    const targets = project(agent, input, liveDelegationPosition === 'sub' ? 'sub' : 'main').map((target) => {
       const admission = evaluateDispatchAdmission(policy, 'spawn', target.executor);
       const launchUnavailableReason = target.launch_unavailable_reason ?? unavailable_reason ?? admission.reason;
       const launchUnavailableReasonCode = target.launch_unavailable_reason_code

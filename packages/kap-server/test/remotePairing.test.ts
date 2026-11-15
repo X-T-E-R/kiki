@@ -7,10 +7,11 @@ import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer as createHttpsServer } from 'node:https';
 import { X509Certificate } from 'node:crypto';
-import { createServer as createNetServer, type Socket } from 'node:net';
+import { createServer as createNetServer, createConnection, type Socket } from 'node:net';
+import type { FastifyInstance } from 'fastify';
 import { peerFetch } from '../src/services/connections/peerTls';
 import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connections/tlsIdentity';
-import { pairOutbound } from '../src/services/connections/pairing';
+import { pairOutbound, PeerListeners } from '../src/services/connections/pairing';
 import { formatPairingUri, matchConnectionOperation, parsePairingUri } from '@kiki/protocol';
 import { ConnectionAdmission } from '../src/services/connections/admission';
 import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
@@ -202,6 +203,65 @@ describe('pairing rotation and zero-token preflight', () => {
 
 
 describe('TLS identity and pinning', () => {
+  it('pins a manually entered HTTPS peer on pairing and re-verifies the same certificate', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-manual-https-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+        } else {
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+        }
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const first = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      expect(first.pinnedFingerprint).toBe(tls.tlsFingerprint);
+      expect(first.fingerprintToVerify).toBe(tls.tlsFingerprint);
+      const second = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      expect(second.id).toBe(first.id);
+      expect(second.pinnedFingerprint).toBe(tls.tlsFingerprint);
+      const lease = manager.lease(second.id);
+      try { await manager.connect(second.id, lease.signal); expect(manager.get(second.id).state).toBe('online'); }
+      finally { lease.release(); }
+    } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
+  });
+
+  it('clears header deadlines for each concurrent peer socket independently', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-peer-deadlines-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const app = { server: createServer((_req, reply) => reply.end('ok')) } as unknown as FastifyInstance;
+    const listeners = new PeerListeners(app, 0, new WeakSet(), true, tls);
+    const listen = (listeners as unknown as { listen(host: string, port: number): Promise<{ url: string; close(): Promise<void> }> }).listen.bind(listeners);
+    const peer = await listen('127.0.0.1', 0);
+    const sockets: Socket[] = [];
+    const nativeTimeout = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => nativeTimeout(callback, milliseconds === 15000 ? 150 : milliseconds, ...args)) as typeof setTimeout);
+    try {
+      const port = Number(new URL(peer.url).port);
+      for (let index = 0; index < 2; index++) {
+        const socket = createConnection({ host: '127.0.0.1', port }); sockets.push(socket); await once(socket, 'connect'); socket.write('G');
+      }
+      await new Promise<void>((resolve) => nativeTimeout(resolve, 20));
+      for (const socket of sockets.toReversed()) {
+        const response = once(socket, 'data'); socket.write('ET / HTTP/1.1\r\nHost: example.test\r\nConnection: keep-alive\r\n\r\n'); await response;
+      }
+      await new Promise<void>((resolve) => nativeTimeout(resolve, 180));
+      expect(sockets.every(socket => !socket.destroyed)).toBe(true);
+    } finally { timer.mockRestore(); for (const socket of sockets) socket.destroy(); await peer.close(); }
+  });
   it('persists a valid self-signed P256 certificate with canonical SPKI fingerprint', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-peer-tls-')); homes.push(home);
     const first = await loadPeerTlsIdentity(home); const restored = await loadPeerTlsIdentity(home);
@@ -318,7 +378,7 @@ describe('paired peer surface parity and host boundaries', () => {
 
     expect(matchConnectionOperation('PUT', '/gui/shortcuts')).toBeUndefined();
     expect(matchConnectionOperation('POST', '/gui/shortcuts/reset')).toBeUndefined();
-    expect(matchConnectionOperation('PATCH', '/sessions/session-1/agents/main/context-strategy')).toBeUndefined();
+    expect(matchConnectionOperation('PATCH', '/sessions/session-1/agents/main/context-strategy')?.operation).toBe('contextStrategyUpdate');
     expect(matchConnectionOperation('PUT', '/output-layer/configuration')).toBeUndefined();
     expect(matchConnectionOperation('GET', '/quotas/harness')).toBeUndefined();
     expect(matchConnectionOperation('GET', '/ssh/hosts')).toBeUndefined();

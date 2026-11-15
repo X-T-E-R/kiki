@@ -26,8 +26,22 @@ const sessionReadRoutes = new Set([
   '/agent-tasks', '/goal', '/warnings', '/profile', '/runtime', '/skills',
 ].map((suffix) => `/api/sessions/:session_id${suffix}`));
 
+function normalizeSessionAccessPath(rawPath: string): string | undefined {
+  if (rawPath.includes('\\') || /[\u0000-\u001F\u007F-\u009F]/u.test(rawPath) || /%(?![0-9a-f]{2})/iu.test(rawPath) || /%(?:2f|5c|00)/iu.test(rawPath)) return undefined;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    return undefined;
+  }
+  if (decoded.includes('\\') || decoded.includes('%') || /[\u0000-\u001F\u007F-\u009F]/u.test(decoded) ||
+      decoded.includes('//') || decoded.endsWith('/') || decoded.split('/').some((segment) => segment === '.' || segment === '..')) return undefined;
+  return decoded;
+}
+
 function sessionAccessOperation(token: SessionAccessToken, request: FastifyRequest, rawPath: string): boolean {
-  if (rawPath.includes('%') || rawPath.includes('//') || rawPath.endsWith('/') || rawPath.split('/').some((segment) => segment === '.' || segment === '..')) return false;
+  const normalizedPath = normalizeSessionAccessPath(rawPath);
+  if (normalizedPath === undefined) return false;
   const { method, routeOptions: { url } } = request;
   const params = request.params as { session_id?: string; sessionId?: string; tail?: string; file_id?: string };
   const sessionId = params.session_id ?? params.sessionId;
@@ -44,7 +58,7 @@ function sessionAccessOperation(token: SessionAccessToken, request: FastifyReque
       (url === '/api/sessions/:session_id/prompts/:tail' && /^[^/:]+:cancel$/.test(params.tail ?? ''))) {
     return sessionId === token.session_id && token.scopes.includes('prompt');
   }
-  const abort = /^\/api\/sessions\/([^/:]+):abort$/.exec(rawPath);
+  const abort = /^\/api\/sessions\/([^/:]+):abort$/.exec(normalizedPath);
   return abort !== null && abort[1] === token.session_id && token.scopes.includes('abort');
 }
 

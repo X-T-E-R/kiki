@@ -7,14 +7,14 @@ import { ContentChangedError, contentRevision } from '../transport/klient/bounde
 
 const originalLocatorSchema = z.tuple([z.string(), z.enum(['frame', 'task']), z.string(), z.string(), z.string(), z.enum(['input', 'output', 'outputTail']), z.string()]);
 
-export async function openContentOriginal(service: TranscriptService, sessionId: string, fileId: string): Promise<SessionMediaFile | undefined> {
+export async function openContentOriginal(service: TranscriptService, sessionId: string, fileId: string, signal?: AbortSignal): Promise<SessionMediaFile | undefined> {
   let parsed: ReturnType<typeof originalLocatorSchema.parse>;
   try { parsed = originalLocatorSchema.parse(JSON.parse(Buffer.from(fileId.slice(4), 'base64url').toString('utf8'))); }
   catch { return undefined; }
   const [agentId, kind, id, turnId, stepId, field, revision] = parsed;
   if (!isPlainAgentId(agentId) || !(kind === 'frame' && (field === 'input' || field === 'output') || kind === 'task' && field === 'outputTail')) return undefined;
   const source: ContentRef['source'] = { kind, id, ...(turnId === '' ? {} : { turnId }), ...(stepId === '' ? {} : { stepId }) };
-  const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId, ref: { source } });
+  const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId, ref: { source }, signal });
   if (entity === undefined || !Object.hasOwn(entity, field)) return undefined;
   if (kind === 'frame' && (entity as { kind?: string }).kind !== 'tool') return undefined;
   const value = (entity as Record<string, unknown>)[field];

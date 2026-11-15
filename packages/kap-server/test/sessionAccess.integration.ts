@@ -279,7 +279,7 @@ describe('server-v2 session access REST integration', () => {
 
     const token = await issueToken(sessionId, ['read']);
     const foreignRefOnOwnPath = await request('POST', `/api/klient/session-view/${sessionId}/transcript/content`, token.token, { agentId: 'main', ref: foreignRef });
-    expect(foreignRefOnOwnPath.body.code).toBe(40401);
+    expect(foreignRefOnOwnPath.body.code, JSON.stringify(foreignRefOnOwnPath.body)).toBe(40401);
     const denied = [
       await request('GET', `/api/sessions/${otherSessionId}/snapshot`, token.token),
       await request('GET', '/api/sessions', token.token),
@@ -317,10 +317,18 @@ describe('server-v2 session access REST integration', () => {
       `/api/sessions/${sessionId}/./snapshot`,
       `/api/sessions/${sessionId}/../snapshot`,
       `/api/sessions/${sessionId}/snapshot/`,
+      `/api/sessions/${sessionId}/%2e/snapshot`,
+      `/api/sessions/${sessionId}/%2e%2e/snapshot`,
+      `/api/sessions/${sessionId}/snapshot%5cstatus`,
+      `/api/sessions/${sessionId}/snapshot%00`,
+      `/api/sessions/${sessionId}/snapshot%0d`,
+      `/api/sessions/${sessionId}/snapshot%zz`,
+      `/api/sessions/${sessionId}/snapshot%252fstatus`,
+      `/api/sessions/${sessionId}/snapshot%252e%252e`,
     ];
     for (const path of paths) {
       const result = await rawRequest('GET', path, token.token);
-      expect(result.status, path).toBe(403);
+      expect([400, 403], path).toContain(result.status);
     }
     const head = await rawRequest('HEAD', `/api/sessions/${sessionId}/snapshot`, token.token);
     expect(head.status).toBe(403);
@@ -564,6 +572,8 @@ describe('server-v2 session access REST integration', () => {
       expect((await preview.arrayBuffer()).byteLength).toBeGreaterThan(0);
       expect((await request('GET', `/api/sessions/${otherId}/media/${fileId}`, token.token)).status).toBe(403);
     }
+    const encodedBlobRef = await rawRequest('GET', `/api/sessions/${sessionId}/media/blobref%3Amain%3A${hash}`, token.token);
+    expect(encodedBlobRef.status).toBe(200);
     for (const fileId of ['raw:example', 'inline-content:example', 'C:private.png']) {
       expect((await request('GET', `/api/sessions/${sessionId}/media/${fileId}`, token.token)).status).toBe(403);
     }

@@ -182,12 +182,12 @@ export class HttpChannel implements KlientChannel {
       const value = input as {
         target?: string;
         body?: unknown;
-        query?: { agent_id?: string };
+        query?: { agent_id?: string; queued_only?: 'true' };
       };
       const suffix = spec.suffix.replace('{target}', encodeURIComponent(value.target ?? ''));
       const result = await this.viewRequest(
         `/api/sessions/${encodeURIComponent(sessionId)}${suffix}`,
-        { agent_id: value.query?.agent_id, receipt: command === 'submit' ? 'true' : undefined },
+        { ...value.query, agent_id: value.query?.agent_id, receipt: command === 'submit' ? 'true' : undefined },
         {
           method: spec.method,
           body: spec.method === 'GET' ? undefined : value.body ?? {},

@@ -457,6 +457,43 @@ describe('disposed agent capability snapshots', () => {
     expect(manager.get(sessionId)).toBeUndefined();
   });
 
+  it('projects branch metadata as main capabilities and preserves cold tool locks', async () => {
+    await writeFile(join(home, 'config.toml'), [
+      'default_model = "stub"',
+      '[subagent]', 'allowed_tools = ["Read"]',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    await start();
+    const sessionId = await createSession();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const session = manager.get(sessionId)!;
+    const metadata = session.accessor.get(ISessionMetadata);
+    await metadata.registerAgent('branch-open', {
+      type: 'sub', parentAgentId: 'main', model: 'stub',
+      labels: { branch: 'true', toolsLocked: 'false' },
+    });
+    await metadata.registerAgent('branch-locked', {
+      type: 'sub', parentAgentId: 'main', model: 'stub',
+      labels: { branch: 'true', toolsLocked: 'true' },
+    });
+    await manager.close(sessionId);
+    const open = await readCapabilities(sessionId, 'branch-open');
+    const locked = await readCapabilities(sessionId, 'branch-locked');
+    expect(open.tools?.find((tool) => tool.name === 'Bash')).toMatchObject({ state: 'unknown', policy_allowed: true });
+    expect(open.tools?.find((tool) => tool.name === 'AgentRun')).toMatchObject({ state: 'unknown', policy_allowed: true });
+    expect(open.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ launch_allowed: false, launch_unavailable_reason_code: 'snapshot_launch_unavailable' }),
+    ]));
+    expect(locked.tools?.find((tool) => tool.name === 'Read')).toMatchObject({ state: 'disabled', policy_allowed: false });
+    expect(locked.tools?.find((tool) => tool.name === 'AgentRun')).toMatchObject({ state: 'disabled', policy_allowed: false });
+    expect(locked.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ launch_allowed: false, launch_unavailable_reason_code: 'agent_run_inactive' }),
+    ]));
+    expect(manager.get(sessionId)).toBeUndefined();
+  });
+
   it('applies saved session MCP overrides to stopped and cold capability reads', async () => {
     await writeStubConfig(home);
     await writeFile(

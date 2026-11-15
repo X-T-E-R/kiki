@@ -150,7 +150,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/:connectionId/call', { bodyLimit: BROKER_BODY_BYTES }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);
-    if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
+    if (['media', 'file', 'fileUpload', 'appearanceAsset', 'personaAvatar', 'mediaPreview', 'htmlPreviewResource', 'documentPreviewAsset'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'use_explicit_attachment_stream', req.id));
     const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
     reply.raw.once('close', stop);
     try {
@@ -206,7 +206,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   });
   app.post('/api/remote-connections/:connectionId/download', { bodyLimit: 8192 }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId; const input = connectionBrokerInputSchema.parse(req.body);
-    if (!['media', 'mediaPreview', 'file', 'appearanceAsset', 'personaAvatar'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'invalid_download_operation', req.id));
+    if (!['media', 'mediaPreview', 'file', 'appearanceAsset', 'personaAvatar', 'documentPreviewAsset'].includes(input.operation)) return reply.code(400).send(errEnvelope(40001, 'invalid_download_operation', req.id));
     const controller = new AbortController(); const stop = () => controller.abort(); let release = () => {}; let detachWeb = () => {};
     let stream: Readable | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -264,9 +264,12 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
   }
   const epoch = manager.credentialEpoch(id);
   const lease = manager.lease(id); let remote: WebSocket | undefined; let detachWeb = () => {};
-  const stop = () => { detachWeb(); remote?.terminate(); local.close(4001, 'connection stopped'); lease.release(); };
+  const cleanup = () => { detachWeb(); lease.signal.removeEventListener('abort', stop); lease.release(); };
+  const stop = () => { remote?.terminate(); local.close(4001, 'connection stopped'); cleanup(); };
   if (webPrincipal(request) !== undefined) detachWeb = web!.attachConnection(id, stop);
-  lease.signal.addEventListener('abort', stop, { once: true }); local.once('close', stop); local.once('error', stop);
+  lease.signal.addEventListener('abort', stop, { once: true });
+  local.once('close', (code, reason) => { if (remote !== undefined) forwardSocketClose(remote, code, reason); cleanup(); });
+  local.once('error', stop);
   local.pause();
   try {
     const { record, transport, credential } = await manager.connect(id, lease.signal);
@@ -299,7 +302,12 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
       });
     });
     target.on('unexpected-response', (_request, response) => { response.resume(); manager.failed(id, new AdmissionError(response.statusCode ?? 502, response.statusCode === 401 ? 'connection_not_approved' : 'event_transport_rejected'), epoch); stop(); });
-    target.on('close', (code, reason) => { if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch); local.close(code === 1006 ? 1011 : code, reason.toString().slice(0, 100)); lease.release(); });
+    target.on('close', (code, reason) => { if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch); forwardSocketClose(local, code, reason); cleanup(); });
     target.on('error', (error) => { manager.failed(id, error instanceof AdmissionError ? error : new AdmissionError(502, 'event_transport_failed'), epoch); stop(); });
   } catch (error) { manager.failed(id, error, epoch); stop(); }
+}
+
+function forwardSocketClose(socket: WebSocket, code: number, reason: Buffer): void {
+  if (code === 1000 || code >= 3000 && code <= 4999) socket.close(code, reason.toString().slice(0, 30));
+  else socket.close();
 }

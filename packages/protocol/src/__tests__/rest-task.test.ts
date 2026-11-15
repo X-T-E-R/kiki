@@ -97,6 +97,31 @@ describe('whole-session agent task metadata', () => {
     expect(matchConnectionOperation('POST', '/api/sessions/example/agent-tasks')).toBeUndefined();
     expect(matchConnectionOperation('GET', '/api/sessions/%2Fother/agent-tasks')).toBeUndefined();
   });
+
+  it.each([
+    ['POST', '/api/sessions/session-example:abort', 'abort', { sessionId: 'session-example' }],
+    ['POST', '/api/sessions/session-example/turns/12:abort', 'turnAbort', { sessionId: 'session-example', turnId: '12' }],
+    ['POST', '/api/sessions/session-example/messages/message-example:edit', 'messageEdit', { sessionId: 'session-example', messageId: 'message-example' }],
+    ['POST', '/api/sessions/session-example/messages/message-example:regenerate', 'messageRegenerate', { sessionId: 'session-example', messageId: 'message-example' }],
+    ['POST', '/api/sessions/session-example/tasks/task-example:cancel', 'taskCancel', { sessionId: 'session-example', taskId: 'task-example' }],
+    ['POST', '/api/sessions/session-example/prompts/prompt-example:move', 'promptMove', { sessionId: 'session-example', promptId: 'prompt-example' }],
+    ['POST', '/api/sessions/session-example/prompts/prompt-example:replace', 'promptReplace', { sessionId: 'session-example', promptId: 'prompt-example' }],
+    ['POST', '/api/sessions/session-example/prompts/prompt-example:timing', 'promptTiming', { sessionId: 'session-example', promptId: 'prompt-example' }],
+    ['POST', '/api/sessions/session-example/prompts/prompt-example:hold', 'promptHold', { sessionId: 'session-example', promptId: 'prompt-example' }],
+    ['POST', '/api/sessions/session-example/prompts/prompt-example:steer', 'promptSteer', { sessionId: 'session-example', promptId: 'prompt-example' }],
+    ['POST', '/api/sessions/session-example/prompts:steer', 'steer', { sessionId: 'session-example' }],
+    ['POST', '/api/sessions/session-example/agents/agent-example:promote', 'agentPromote', { sessionId: 'session-example', agentId: 'agent-example' }],
+    ['POST', '/api/sessions/session-example/document-preview', 'documentPreview', { sessionId: 'session-example' }],
+    ['GET', '/api/sessions/session-example/document-preview/assets/page-1', 'documentPreviewAsset', { sessionId: 'session-example', assetId: 'page-1' }],
+    ['PATCH', '/api/sessions/session-example/agents/agent-example/context-strategy', 'contextStrategyUpdate', { sessionId: 'session-example', agentId: 'agent-example' }],
+  ] as const)('matches the active session route %s %s', (method, path, operation, params) => {
+    expect(matchConnectionOperation(method, path)).toEqual({ operation, params });
+  });
+
+  it('does not admit the pre-colon session abort or collection steer paths', () => {
+    expect(matchConnectionOperation('POST', '/api/sessions/session-example/abort')).toBeUndefined();
+    expect(matchConnectionOperation('POST', '/api/sessions/session-example/prompts/steer')).toBeUndefined();
+  });
   it('requires owner provenance and bounds query pages', () => {
     expect(listAgentTasksQuerySchema.parse({ page_size: '2', page_token: 'opaque' })).toEqual({ page_size: 2, page_token: 'opaque' });
     expect(listAgentTasksQuerySchema.safeParse({ page_size: 101 }).success).toBe(false);

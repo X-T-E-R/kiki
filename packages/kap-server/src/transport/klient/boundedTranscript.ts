@@ -27,7 +27,8 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
   const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
   const taskBudget = snapshot.tasks.length === 0 ? 2 : Math.min(TASK_COLLECTION_BYTES, Math.max(GLOBAL_COLLECTION_BYTES, Math.floor(windowBytes / 8)));
-  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES * 2 - taskBudget - jsonBytes({ interactions, todos, meta });
+  const attachmentBudget = snapshot.attachments.length === 0 ? 2 : Math.min(32 * 1024, Math.max(GLOBAL_COLLECTION_BYTES, Math.floor(windowBytes / 8)));
+  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES - attachmentBudget - taskBudget - jsonBytes({ interactions, todos, meta });
   const items = boundedItems(snapshot.items, budget, direction, agentId);
   const referencedTaskOrder = new Map<string, number>();
   const recordReferencedTask = (taskId: string | undefined) => {
@@ -76,16 +77,20 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
     (prompt) => prompt.status === 'running' || prompt.status === 'queued' || prompt.status === 'blocked',
     8,
     referencedPromptOrder);
-  const required = new Set<string>();
-  for (const item of items) {
+  const referencedAttachmentOrder = new Map<string, number>();
+  const recordReferencedAttachment = (id: string) => {
+    if (!referencedAttachmentOrder.has(id)) referencedAttachmentOrder.set(id, referencedAttachmentOrder.size);
+  };
+  for (const item of items.toReversed()) {
     if (item.kind !== 'turn') continue;
-    for (const id of item.attachmentIds ?? []) required.add(id);
-    for (const step of item.steps) for (const frame of step.frames) {
-      if ('attachmentIds' in frame) for (const id of frame.attachmentIds ?? []) required.add(id);
+    for (const step of item.steps.toReversed()) for (const frame of step.frames.toReversed()) {
+      if ('attachmentIds' in frame) for (const id of frame.attachmentIds ?? []) recordReferencedAttachment(id);
     }
+    for (const id of item.attachmentIds ?? []) recordReferencedAttachment(id);
   }
   const attachments = boundedCollection(snapshot.attachments, 'attachment', (attachment) => attachment.attachmentId,
-    (attachment) => boundedAttachment(attachment, agentId, 2048), required);
+    (attachment) => boundedAttachment(attachment, agentId, 2048), new Set(referencedAttachmentOrder.keys()),
+    undefined, 64, referencedAttachmentOrder, attachmentBudget);
   const globals = { tasks, attachments, prompts, interactions, todos, meta };
   return {
     ...globals,

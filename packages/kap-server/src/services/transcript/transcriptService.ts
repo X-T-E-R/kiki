@@ -2756,15 +2756,19 @@ export class TranscriptService {
     this.assertReadableAgent(sessionId, agentId);
     if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
     const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
-    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
-      signal?.throwIfAborted();
+    if (transcript !== undefined) {
       const turn = transcript.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
-      const completeTurn = turn !== undefined && turn.stepsPartial !== true &&
-        !(turn.origin.kind === 'other' && turn.message === undefined && turn.promptId === undefined && turn.startedAt === undefined);
-      const entity = source.kind === 'turn'
-        ? (completeTurn ? turn : undefined)
-        : turn?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
-      if (entity !== undefined) return entity;
+      if (source.kind === 'frame') {
+        const frame = turn?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+        if (frame !== undefined) return frame;
+      } else {
+        const completeTurn = turn !== undefined && turn.stepsPartial !== true &&
+          !(turn.origin.kind === 'other' && turn.message === undefined && turn.promptId === undefined && turn.startedAt === undefined);
+        if (completeTurn && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
+          signal?.throwIfAborted();
+          return turn;
+        }
+      }
     }
     const result = await this.detailLocator().readCanonicalEntity(sessionId, agentId, source, signal);
     signal?.throwIfAborted();

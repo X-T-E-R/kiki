@@ -25,7 +25,7 @@ import { withSessionOperation } from '../lib/sessionOperationLease';
 import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
-import { ensureMainAgent } from '../transport/mainAgent';
+import { ensureSessionAgent } from '../lib/sessionAgent';
 
 interface RouteHost {
   get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: { id: string; params: unknown }, reply: { send(payload: unknown): unknown }) => Promise<void>): unknown;
@@ -100,13 +100,7 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
         return;
       }
-      const agent = req.params.agent_id === MAIN_AGENT_ID
-        ? await ensureMainAgent(session)
-        : session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
-      if (agent === undefined) {
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id));
-        return;
-      }
+      const agent = await ensureSessionAgent(core, session, req.params.agent_id);
       const compact = agent.accessor.get(IAgentFullCompactionService);
       const profile = agent.accessor.get(IAgentProfileService);
       if (!profile.hasModel() && (profile.data().executorId ?? 'native') === 'native') {
