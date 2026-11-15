@@ -184,7 +184,10 @@ export function NbSearchServiceCard({
   const [credentialSource, setCredentialSource] = useState<{ source: import('@kiki/protocol').SecretSource; envName?: string }>({ source: 'none' });
   const credentialInstanceId = editableInstanceId;
   useEffect(() => {
-    if (credentialInstanceId === undefined || info?.credentialRequirement === 'none') return undefined;
+    if (credentialInstanceId === undefined || info?.credentialRequirement === 'none' || (instance === undefined && providerDraft?.isNew === true)) {
+      setCredentialSource({ source: 'none' });
+      return undefined;
+    }
     let live = true;
     setCredentialSource({ source: 'none' });
     void readCredential(credentialInstanceId, false).then((view) => {

@@ -1089,6 +1089,7 @@ describe('S2 key status', () => {
           meters: [
             { id: 'credits', label: 'Monthly credits', unit: 'credits', used: 12, limit: 100, remaining: 88, reset_at: '2026-10-04T00:00:00Z', reset_timezone: 'Asia/Shanghai' },
             { id: 'requests', label: 'Daily requests', unit: 'requests', used: 3, limit: 50, remaining: 47, reset_at: '2026-10-03T12:00:00Z', reset_timezone: 'UTC' },
+            { id: 'global_search', label: 'Global search', unit: 'requests', used: null, limit: null, remaining: null },
           ],
         },
       }],
@@ -1118,6 +1119,10 @@ describe('S2 key status', () => {
     expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('Daily requests');
     expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('47');
     expect(panel.querySelector('[data-nb-search-key-usage-meter="requests"]')?.textContent).toContain('requests');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).toContain('Global search');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).toContain('—');
+    expect(panel.querySelector('[data-nb-search-key-usage-meter="global_search"]')?.textContent).not.toContain('requests');
+    expect(panel.textContent).not.toContain('this key');
     expect(panel.textContent).not.toContain('135');
   });
 

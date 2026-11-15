@@ -1111,6 +1111,60 @@ describe('NbSearchService', () => {
     }
   });
 
+  it('exposes the real 0.5.1 opt-in Zhihu descriptor and parses official daily capability meters', async () => {
+    const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(join(resolve('.tmp'), 'nb-search-zhihu-'));
+    const path = join(fixture, 'config.json');
+    await writeFile(path, '{}');
+    const env = { NB_SEARCH_HOME: fixture, NB_SEARCH_CONFIG: path, NB_SEARCH_ZHIHU_API_KEY: 'fixture-zhihu-token:fixture-zhihu-secret' };
+    const requests: HttpRequest[] = [];
+    createRuntimeMock.mockImplementation((options) => donor.createNbSearchRuntime({ ...options, http_transport: {
+      send: async <T>(request: HttpRequest): Promise<import('@nb-corp/nb-search').HttpResponse<T>> => {
+        requests.push(request);
+        return { status: 200, body: { Code: 0, Data: { Items: [{ APIID: 'zhihu_search', APIName: 'Zhihu search', TotalUsed: 2, TotalQuota: 100, RemainingQuota: 98 }] } } as T };
+      },
+    } }));
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({ env, status: {
+      reuse_local_config: reuse, layers: ['defaults', 'environment', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [],
+    } });
+    let kikiConfig: Record<string, unknown> | undefined;
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? kikiConfig : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    try {
+      const unconfigured = await service.capabilities();
+      expect(unconfigured.providers.descriptors.find((item) => item.provider_id === 'zhihu')).toMatchObject({
+        provider_id: 'zhihu',
+        activation: { credential: 'required', endpoint: 'optional' },
+        option_keys: ['allow_paid', 'search_db', 'zhida_model', 'search_path', 'global_search_path', 'synthesis_path', 'quota_path'],
+      });
+      expect(unconfigured.search.lanes.some((lane) => lane.id.startsWith('zhihu.'))).toBe(false);
+      kikiConfig = {
+        provider_instances: { 'zhihu.default': { provider_id: 'zhihu', enabled: true, credential_slot_id: 'zhihu.default', options: {} } },
+        credential_slots: { 'zhihu.default': { provider_id: 'zhihu', env: 'NB_SEARCH_ZHIHU_API_KEY' } },
+        lanes: {
+          'zhihu.search': { provider_instance_id: 'zhihu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhihu'] },
+          'zhihu.global': { provider_instance_id: 'zhihu.default', operation_id: 'global', latency: 'medium', cost: 'cheap', evidence_groups: ['zhihu-web'] },
+          'zhihu.synthesis': { provider_instance_id: 'zhihu.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
+        },
+      };
+      const configured = await service.capabilities();
+      expect(configured.search.lanes.filter((lane) => lane.id.startsWith('zhihu.')).map((lane) => lane.id)).toEqual(['zhihu.global', 'zhihu.search', 'zhihu.synthesis']);
+      const usage = await service.keyUsage('zhihu.default', false);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe('https://developer.zhihu.com/api/v1/quota');
+      expect(usage).toMatchObject({
+        provider_instance_id: 'zhihu.default',
+        provider_id: 'zhihu',
+        balance_supported: true,
+        keys: [{ key_index: 1, state: 'ready', usage: { meters: [{ id: 'zhihu_search', label: 'Zhihu search', unit: 'requests', used: 2, limit: 100, remaining: 98, reset_timezone: 'Asia/Shanghai' }] } }],
+      });
+      expect(JSON.stringify(usage)).not.toContain('fixture-zhihu');
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the key scheduler across synchronous calls, then resets it when credentials change', async () => {
     const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
     await mkdir(resolve('.tmp'), { recursive: true });

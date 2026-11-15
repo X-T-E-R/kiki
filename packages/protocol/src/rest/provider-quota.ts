@@ -7,7 +7,7 @@ export const providerQuotaMeterSchema = z.object({
   used: z.number().finite().nullable(), limit: z.number().finite().nullable(), remaining: z.number().finite().nullable(),
   model_group: z.string().optional(), scope: z.enum(['account', 'key', 'team']),
   status: z.enum(['ready', 'unknown', 'error', 'auth_required', 'stale']).optional(), message: z.string().optional(), data_as_of: z.string().datetime({ offset: true }).optional(),
-  window: z.object({ label: z.string(), duration_seconds: z.number().positive().optional(), reset_at: z.string().datetime({ offset: true }).optional(), reset_timezone: z.string().optional() }).strict().optional(),
+  window: z.object({ label: z.string().optional(), duration_seconds: z.number().positive().optional(), reset_at: z.string().datetime({ offset: true }).optional(), reset_timezone: z.string().optional() }).strict().optional(),
 }).strict();
 export const providerQuotaSourceSchema = z.object({
   id: z.string(), label: z.string(), kind: z.enum(['provider', 'external_service', 'executor']),

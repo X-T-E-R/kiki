@@ -117,6 +117,18 @@ const PROJECTED_CAPABILITIES: NbSearchCapabilities = {
         : descriptor),
       { provider_id: 'github', adapter_version: '1', query_operations: [{ operation_id: 'repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'none' }, option_keys: [] },
       { provider_id: 'jina-reader', adapter_version: '1', query_operations: [], fetch_operations: [{ operation_id: 'reader' }], activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
+      {
+        provider_id: 'zhihu',
+        adapter_version: '1',
+        query_operations: [
+          { operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+          { operation_id: 'global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+          { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true },
+        ],
+        fetch_operations: [],
+        activation: { credential: 'required', endpoint: 'optional' },
+        option_keys: ['allow_paid', 'search_db', 'zhida_model', 'search_path', 'global_search_path', 'synthesis_path', 'quota_path'],
+      },
     ],
     instances: [
       ...CAPABILITIES.providers.instances,
@@ -169,65 +181,6 @@ const PROJECTED_CAPABILITIES: NbSearchCapabilities = {
     file_scopes: [],
   },
 };
-
-function zhihuCapabilities(): NbSearchCapabilities {
-  const lanes: NbSearchCapabilities['search']['lanes'] = [
-    { id: 'zhihu.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'fast', cost: 'cheap' },
-    { id: 'zhihu.global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'medium', cost: 'cheap' },
-    { id: 'zhihu.synthesis', output: { channel: 'typed', schema_id: 'example.zhihu-synthesis@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'medium', cost: 'cheap' },
-  ];
-  const bindings = {
-    'zhihu.search': { provider_instance_id: 'zhihu.default', operation_id: 'search', latency: 'fast', cost: 'cheap' },
-    'zhihu.global': { provider_instance_id: 'zhihu.default', operation_id: 'global', latency: 'medium', cost: 'cheap' },
-    'zhihu.synthesis': { provider_instance_id: 'zhihu.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
-  } satisfies NonNullable<NbSearchCapabilities['inherited_configuration']>['lanes'];
-  const descriptor: NbSearchCapabilities['providers']['descriptors'][number] = {
-    provider_id: 'zhihu',
-    adapter_version: '1',
-    query_operations: [
-      { operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
-      { operation_id: 'global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
-      { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'example.zhihu-synthesis@1' }, built_in_async: true },
-    ],
-    fetch_operations: [],
-    activation: { credential: 'required', endpoint: 'none' },
-    option_keys: [],
-  };
-  const instance: NbSearchCapabilities['providers']['instances'][number] = {
-    id: 'zhihu.default',
-    provider_id: 'zhihu',
-    enabled: true,
-    availability: 'ready',
-    issues: [],
-    credential: { requirement: 'required', configured: false },
-    endpoint: { requirement: 'none', configured: false },
-  };
-  return {
-    ...PROJECTED_CAPABILITIES,
-    providers: {
-      ...PROJECTED_CAPABILITIES.providers,
-      descriptors: [...PROJECTED_CAPABILITIES.providers.descriptors, descriptor],
-      instances: [...PROJECTED_CAPABILITIES.providers.instances, instance],
-    },
-    search: {
-      ...PROJECTED_CAPABILITIES.search,
-      default_lane: 'exa.search',
-      lanes: [...PROJECTED_CAPABILITIES.search.lanes, ...lanes],
-    },
-    configuration: {
-      ...PROJECTED_CAPABILITIES.configuration!,
-      lanes: { ...PROJECTED_CAPABILITIES.configuration!.lanes, ...bindings },
-      provider_instance_ids: [...PROJECTED_CAPABILITIES.configuration!.provider_instance_ids, 'zhihu.default'],
-      default_search_lane: 'exa.search',
-    },
-    inherited_configuration: {
-      ...PROJECTED_CAPABILITIES.inherited_configuration!,
-      lanes: { ...PROJECTED_CAPABILITIES.inherited_configuration!.lanes, ...bindings },
-      provider_instance_ids: [...PROJECTED_CAPABILITIES.inherited_configuration!.provider_instance_ids, 'zhihu.default'],
-      default_search_lane: 'exa.search',
-    },
-  };
-}
 
 function searchableDirectoryCapabilities(): NbSearchCapabilities {
   const template = PROJECTED_CAPABILITIES.fetch.pipelines[0]!;
@@ -455,18 +408,127 @@ describe('NbSearchSection status', () => {
     expect(services.textContent).not.toContain('example.documents@1');
   });
 
-  it('labels Zhihu lanes and its key guide without replacing the configured search default', async () => {
-    getNbSearchCapabilities.mockResolvedValue(zhihuCapabilities());
+  it('provisions opt-in Zhihu from + Add service, cleans up on remove, and saves without overriding defaultSearchLane', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
+    readNbSearchCredential.mockImplementation(async (id: string) => ({
+      instance_id: id,
+      slot_id: id,
+      stored: false,
+      active: false,
+      source: 'none',
+      version: 'fixture-v0',
+      binding_version: 'fixture-bind-0',
+    }));
     const container = await renderSection('/settings/search?tab=search');
+    expect(container.querySelector('[data-nb-search-service-card^="zhihu."]')).toBeNull();
+
+    // Opt-in Zhihu appears in + Add service when unconfigured.
+    let directory = await openDirectory(container);
+    const zhihuDirRow = directory.querySelector('[data-nb-search-directory-row="zhihu"]')!;
+    expect(zhihuDirRow).not.toBeNull();
+    expect(zhihuDirRow.textContent).toContain('Zhihu Open Platform');
+
+    await click(zhihuDirRow);
+    expect(container.querySelector('[data-nb-search-service-card="zhihu.search"]')).not.toBeNull();
+    expect(container.querySelector('[data-nb-search-service-card="zhihu.global"]')).not.toBeNull();
+    expect(container.querySelector('[data-nb-search-service-card="zhihu.synthesis"]')).not.toBeNull();
+
     const methods = container.querySelector('[data-nb-search-lane-rows]')!;
     expect(methods.querySelector('[data-nb-search-lane-row="zhihu.search"]')?.textContent).toContain('Zhihu Open Platform · Search');
     expect(methods.querySelector('[data-nb-search-lane-row="zhihu.global"]')?.textContent).toContain('Zhihu Open Platform · Global search');
     expect(methods.querySelector('[data-nb-search-lane-row="zhihu.synthesis"]')?.textContent).toContain('Zhihu Open Platform · Synthesis');
     expect(methods.querySelector('[data-nb-search-lane-row="exa.search"] [data-nb-search-lane-default]')).not.toBeNull();
-    expect(methods.querySelector('[data-nb-search-lane-row="zhihu.global"] [data-nb-search-lane-default]')).toBeNull();
+    expect(methods.querySelector('[data-nb-search-lane-row="zhihu.search"] [data-nb-search-lane-default]')).toBeNull();
 
     const detail = await openServiceDetail(container, 'zhihu.default');
     expect(detail.querySelector('[data-nb-search-key-guide] a')?.getAttribute('href')).toBe('https://developer.zhihu.com');
+    expect(detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')?.value).toBe('NB_SEARCH_ZHIHU_API_KEY');
+    expect(detail.querySelector('[data-nb-search-base-url]')).not.toBeNull();
+    expect(detail.querySelector('[data-nb-search-options-json]')).not.toBeNull();
+
+    // Removing the added Zhihu service card cleanly drops the staged instance, slot, and 3 lanes.
+    await click(detail.querySelector('[data-nb-search-service-remove]')!);
+    await click(document.querySelector('[data-confirm-action="confirm"]')!);
+    expect(container.querySelector('[data-nb-search-service-card^="zhihu."]')).toBeNull();
+    expectClean(container);
+
+    // Re-add from + Add service, configure key, and save.
+    let savedNbSearch: Record<string, unknown> | undefined;
+    patchConfig.mockImplementation(async (payload: Record<string, unknown>) => {
+      savedNbSearch = payload['nb_search'] as Record<string, unknown>;
+      return { providers: {}, nb_search: savedNbSearch } as unknown as KikiConfigResponse;
+    });
+    const postSaveCapabilities = (): NbSearchCapabilities => savedNbSearch?.['provider_instances'] === undefined
+      ? PROJECTED_CAPABILITIES
+      : {
+          ...PROJECTED_CAPABILITIES,
+          providers: {
+            ...PROJECTED_CAPABILITIES.providers,
+            instances: [
+              ...PROJECTED_CAPABILITIES.providers.instances,
+              { id: 'zhihu.default', provider_id: 'zhihu', enabled: true, availability: 'ready', issues: [], credential: { requirement: 'required', configured: true, slot_id: 'zhihu.default' }, endpoint: { requirement: 'optional', configured: false } },
+            ],
+          },
+          search: {
+            ...PROJECTED_CAPABILITIES.search,
+            lanes: [
+              ...PROJECTED_CAPABILITIES.search.lanes,
+              { id: 'zhihu.search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'fast', cost: 'cheap' },
+              { id: 'zhihu.global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'medium', cost: 'cheap' },
+              { id: 'zhihu.synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, execution_modes: ['sync'], availability: 'ready', issues: [], latency: 'medium', cost: 'cheap' },
+            ],
+          },
+          configuration: {
+            ...PROJECTED_CAPABILITIES.configuration!,
+            lanes: { ...PROJECTED_CAPABILITIES.configuration!.lanes, ...(savedNbSearch['lanes'] as NonNullable<NbSearchCapabilities['configuration']>['lanes']) },
+            provider_instance_ids: [...PROJECTED_CAPABILITIES.configuration!.provider_instance_ids, 'zhihu.default'],
+          },
+        };
+    getNbSearchCapabilities.mockImplementation(async () => postSaveCapabilities());
+
+    directory = await openDirectory(container);
+    await click(directory.querySelector('[data-nb-search-directory-row="zhihu"]')!);
+    const readdedDetail = await openServiceDetail(container, 'zhihu.default');
+    const keys = readdedDetail.querySelector('[data-nb-search-keys="zhihu.default"]')!;
+    await setInputValue(keys.querySelector<HTMLInputElement>('[data-key-input]')!, 'fixture-zhihu-key');
+    await click(keys.querySelector('[data-key-add]')!);
+    await click(saveButtonOf(container)!);
+    await flush();
+
+    const patch = patchConfig.mock.calls.at(-1)![0] as {
+      nb_search: {
+        provider_instances: Record<string, unknown>;
+        credential_slots: Record<string, unknown>;
+        lanes: Record<string, unknown>;
+        defaults?: Record<string, unknown>;
+      };
+    };
+    expect(patch.nb_search.provider_instances['zhihu.default']).toMatchObject({
+      provider_id: 'zhihu',
+      enabled: true,
+      credential_slot_id: 'zhihu.default',
+      options: {},
+    });
+    expect(patch.nb_search.credential_slots['zhihu.default']).toEqual({
+      provider_id: 'zhihu',
+      env: 'NB_SEARCH_ZHIHU_API_KEY',
+    });
+    expect(patch.nb_search.lanes).toEqual({
+      'zhihu.search': { provider_instance_id: 'zhihu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhihu'] },
+      'zhihu.global': { provider_instance_id: 'zhihu.default', operation_id: 'global', latency: 'medium', cost: 'cheap', evidence_groups: ['zhihu-web'] },
+      'zhihu.synthesis': { provider_instance_id: 'zhihu.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
+    });
+    expect(patch.nb_search.defaults).toBeUndefined();
+    expect(writeNbSearchCredential).toHaveBeenCalledWith('zhihu.default', 'fixture-zhihu-key', 'fixture-v0', 'fixture-bind-0');
+
+    // Removing saved opt-in Zhihu also clears its saved instance, slot, and 3 lanes.
+    const savedDetail = await openServiceDetail(container, 'zhihu.default');
+    await click(savedDetail.querySelector('[data-nb-search-service-remove]')!);
+    await click(document.querySelector('[data-confirm-action="confirm"]')!);
+    expect(container.querySelector('[data-nb-search-service-card^="zhihu."]')).toBeNull();
+    await click(saveButtonOf(container)!);
+    await flush();
+    expect(savedNbSearch).toEqual({});
   });
 
   it('names the operation in the row’s own words and skips fetch-only services', async () => {
@@ -2013,7 +2075,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
 
     // Services without a card yet are listed with one Add each, and the long
     // directory exposes search without listing configuration forms.
-    expect(directory.querySelectorAll('[data-nb-search-directory-row]')).toHaveLength(8);
+    expect(directory.querySelectorAll('[data-nb-search-directory-row]')).toHaveLength(9);
     expect(directory.textContent).toContain('Jina Reader');
     expect(directory.textContent).toContain('Direct HTTP');
 

@@ -120,6 +120,90 @@ export function nbSearchProviderReferences(draft: NbSearchDraft, instanceId: str
   return Object.entries({ ...capabilities?.inherited_configuration?.lanes, ...draft.advanced?.lanes }).filter(([, lane]) => lane?.provider_instance_id === instanceId).map(([id]) => `lanes.${id}`);
 }
 
+const OPT_IN_ZHIHU_LANES: Readonly<Record<string, LaneConfig>> = {
+  'zhihu.search': {
+    provider_instance_id: 'zhihu.default',
+    operation_id: 'search',
+    latency: 'fast',
+    cost: 'cheap',
+    evidence_groups: ['zhihu'],
+  },
+  'zhihu.global': {
+    provider_instance_id: 'zhihu.default',
+    operation_id: 'global',
+    latency: 'medium',
+    cost: 'cheap',
+    evidence_groups: ['zhihu-web'],
+  },
+  'zhihu.synthesis': {
+    provider_instance_id: 'zhihu.default',
+    operation_id: 'synthesis',
+    latency: 'medium',
+    cost: 'cheap',
+  },
+};
+
+export function nbSearchOptInProviders(capabilities: NbSearchCapabilities, draft: NbSearchDraft): string[] {
+  const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === 'zhihu');
+  if (descriptor === undefined || descriptor.query_operations.length === 0) return [];
+  const hasServerInstance = capabilities.providers.instances.some(
+    (instance) => instance.provider_id === 'zhihu' && draft.providers[instance.id]?.isDeleted !== true,
+  );
+  const hasDraftInstance = Object.values(draft.providers).some(
+    (provider) => provider.providerId === 'zhihu' && provider.isDeleted !== true,
+  );
+  if (hasServerInstance || hasDraftInstance) return [];
+  const inheritedLanes = capabilities.inherited_configuration?.lanes ?? {};
+  const ownLanes = draft.advanced?.lanes ?? {};
+  const hasInheritedLane = Object.keys(inheritedLanes).some((id) => id.startsWith('zhihu.'));
+  const hasOwnLane = Object.entries(ownLanes).some(([id, lane]) => lane !== null && lane !== undefined && id.startsWith('zhihu.'));
+  const hasActiveServerLane = capabilities.inherited_configuration === undefined
+    && Object.keys(capabilities.configuration?.lanes ?? {}).some((id) => id.startsWith('zhihu.'));
+  if (hasInheritedLane || hasOwnLane || hasActiveServerLane) return [];
+  return ['zhihu'];
+}
+
+export function provisionOptInNbSearchProvider(
+  draft: NbSearchDraft, capabilities: NbSearchCapabilities, providerId: string,
+): NbSearchDraft {
+  if (draft.advanced === undefined) throw new Error('Advanced draft is not initialized.');
+  if (providerId !== 'zhihu') throw new Error(`Unsupported opt-in provider: ${providerId}`);
+  if (!capabilities.providers.descriptors.some((descriptor) => descriptor.provider_id === 'zhihu')) {
+    throw new Error('Unknown provider: zhihu');
+  }
+  const serverInstanceExists = capabilities.providers.instances.some((instance) => instance.id === 'zhihu.default');
+  const existingSlot = draft.credentialSlots?.['zhihu.default'];
+  return {
+    ...draft,
+    providers: {
+      ...draft.providers,
+      'zhihu.default': {
+        providerId: 'zhihu',
+        enabled: true,
+        baseUrl: '',
+        credentialSlotId: 'zhihu.default',
+        credentialSlotExplicit: true,
+        optionsJson: '',
+        isNew: !serverInstanceExists,
+        isDeleted: false,
+      },
+    },
+    credentialSlots: {
+      ...draft.credentialSlots,
+      'zhihu.default': existingSlot && existingSlot !== null
+        ? { ...existingSlot }
+        : { provider_id: 'zhihu', env: 'NB_SEARCH_ZHIHU_API_KEY' },
+    },
+    advanced: {
+      ...draft.advanced,
+      lanes: {
+        ...draft.advanced.lanes,
+        ...structuredClone(OPT_IN_ZHIHU_LANES),
+      },
+    },
+  };
+}
+
 /** IDs are caller-owned stable identities. No provider.default inference or shared credential slot. */
 export function createNbSearchProviderInstance(
   draft: NbSearchDraft, capabilities: NbSearchCapabilities, providerId: string, instanceId: string, credentialEnv?: string,

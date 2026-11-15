@@ -82,7 +82,9 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
                 return { ...common, id: `${keyId}-${meter.id}`, label: usage.keys.length > 1 ? `${keyLabel} · ${label}` : label,
                   unit: meter.unit === 'requests' ? 'count' : 'credits', unit_label: meter.unit === 'requests' ? '次' : 'credits',
                   used: meter.used, limit: meter.limit, remaining: meter.remaining,
-                  window: meter.reset_at === undefined ? undefined : { label, duration_seconds: 86400, reset_at: meter.reset_at, reset_timezone: meter.reset_timezone } };
+                  window: meter.reset_at === undefined ? undefined : instance.provider_id === 'zhihu'
+                    ? { label: '1d', duration_seconds: 86400, reset_at: meter.reset_at, reset_timezone: meter.reset_timezone }
+                    : { reset_at: meter.reset_at, reset_timezone: meter.reset_timezone } };
               });
             }
             return [{ ...common, id: keyId, label: `${keyLabel}${data?.scope === 'team' ? ' · Team 共享额度' : ''}`, unit: 'credits', unit_label: 'credits',

@@ -54,11 +54,18 @@ describe('provider quotas', () => {
     expect(source.status).toBe('ready');
     expect(source.meters).toEqual([
       { id: 'key-1-zhihu_search', label: 'Zhihu search', unit: 'count', unit_label: '次', scope: 'key', used: 0, limit: 100, remaining: 100, data_as_of: checkedAt, status: 'ready',
-        window: { label: 'Zhihu search', duration_seconds: 86400, reset_at: resetAt, reset_timezone: 'Asia/Shanghai' } },
+        window: { label: '1d', duration_seconds: 86400, reset_at: resetAt, reset_timezone: 'Asia/Shanghai' } },
       { id: 'key-1-global_search', label: 'global_search', unit: 'count', unit_label: '次', scope: 'key', used: null, limit: null, remaining: null, data_as_of: checkedAt, status: 'ready' },
       { id: 'key-1-credits', label: 'credits', unit: 'credits', unit_label: 'credits', scope: 'key', used: 3, limit: 10, remaining: 7, data_as_of: checkedAt, status: 'ready' },
     ]);
     expect(f.keyUsage).toHaveBeenCalledWith('zhihu.default', true);
+
+    const generic = searchQuotaFixture('tavily', [{ key_index: 1, state: 'ready', usage: {
+      scope: 'key', unit: 'credits', used: 10, limit: 100, remaining: 90, checked_at: checkedAt,
+      meters: [{ id: 'monthly', label: 'Monthly plan', unit: 'credits', used: 10, limit: 100, remaining: 90, reset_at: resetAt, reset_timezone: 'UTC' }],
+    } }]);
+    const genericSource = providerQuotaSnapshotSchema.parse(await generic.service.refresh(generic.sourceId)).sources[0]!;
+    expect(genericSource.meters[0]!.window).toEqual({ reset_at: resetAt, reset_timezone: 'UTC' });
   });
 
   it('keeps key labels and authentication/error states independent for multi-meter search quotas', async () => {
@@ -71,7 +78,9 @@ describe('provider quotas', () => {
       { key_index: 3, state: 'invalid', usage },
       { key_index: 4, state: 'ready', usage_error: 'invalid_response' },
     ]);
-    const source = (await f.service.refresh(f.sourceId)).sources[0]!;
+    const source = providerQuotaSnapshotSchema.parse(await f.service.refresh(f.sourceId)).sources[0]!;
+    expect(source).toMatchObject({ status: 'stale', reason: 'partial_data', message: '部分额度表项状态异常，详见各表项说明。' });
+    expect(source.message).not.toBe('partial_data');
     expect(source.meters).toMatchObject([
       { id: 'key-1-search', label: 'Key 1 · Search', status: 'ready', scope: 'team', remaining: 0 },
       { id: 'key-2-search', label: 'Key 2 · Search', status: 'stale', message: '此 Key 的额度查询失败。' },

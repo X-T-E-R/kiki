@@ -79,7 +79,7 @@ export class ProviderQuotaService {
     else if (entry?.reason || partial && !anyReadable && entry?.meters.some((meter) => meter.status === 'error')) status = 'error';
     else if (!(partial && !anyReadable) && entry?.dataAt !== undefined) status = 'ready';
     const reason = status === 'unsupported' ? target.unsupportedReason ?? 'no_official_quota_api' : status === 'off' ? 'disabled' : entry?.reason ?? (expired ? 'cache_expired' : partial ? 'partial_data' : entry ? undefined : 'not_refreshed');
-    const messages: Record<string, string> = { disabled: '此来源已关闭，不会发起额度请求。', no_official_quota_api: '此来源暂无可用的官方额度接口；本地消耗不代表厂商余额。', not_refreshed: '尚未查询，点击刷新获取官方额度。', no_data: '官方接口未返回可读额度；不代表剩余为零。', cache_expired: '这是上次查询结果，请刷新确认当前额度。', auth_required: '登录或凭据已失效，请在对应来源重新连接后刷新。', invalid_response: '官方接口响应不符合已知格式，请稍后重试。', request_failed: '额度查询失败，请稍后重试。', rate_limited: '官方接口暂时限流，请稍后重试。' };
+    const messages: Record<string, string> = { disabled: '此来源已关闭，不会发起额度请求。', no_official_quota_api: '此来源暂无可用的官方额度接口；本地消耗不代表厂商余额。', not_refreshed: '尚未查询，点击刷新获取官方额度。', no_data: '官方接口未返回可读额度；不代表剩余为零。', cache_expired: '这是上次查询结果，请刷新确认当前额度。', partial_data: '部分额度表项状态异常，详见各表项说明。', auth_required: '登录或凭据已失效，请在对应来源重新连接后刷新。', invalid_response: '官方接口响应不符合已知格式，请稍后重试。', request_failed: '额度查询失败，请稍后重试。', rate_limited: '官方接口暂时限流，请稍后重试。' };
     return { id: target.id, label: target.label, kind: target.kind, provider_id: target.providerId, account_label: target.accountLabel,
       enabled, supported: target.supported, status, reason, message: reason ? messages[reason] ?? reason : undefined,
       checked_at: entry ? new Date(entry.checked).toISOString() : undefined, data_as_of: entry?.dataAt !== undefined ? new Date(entry.dataAt).toISOString() : undefined,

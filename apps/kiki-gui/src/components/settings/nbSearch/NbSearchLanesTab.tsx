@@ -13,7 +13,11 @@
 
 import { useMemo, useState } from 'react';
 import type { NbSearchCapabilities } from '@kiki/protocol';
-import { resolveEffectiveDefaultLane } from '@kiki/session-core/settings';
+import {
+  nbSearchOptInProviders,
+  provisionOptInNbSearchProvider,
+  resolveEffectiveDefaultLane,
+} from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
@@ -63,18 +67,19 @@ export function NbSearchLanesTab({
     () => draft.defaultSearchLane === '' || Object.keys(draft.advanced?.presets ?? {}).length > 0,
   );
 
+  const ownLanes = draft.advanced?.lanes ?? {};
   // Service cards come from the engine's own catalog view (every lane it
-  // reports), not from Kiki's draft — otherwise a lane the server already
-  // declares would hide until the user re-declares it.
+  // reports) plus draft-staged lanes whose save has not round-tripped yet.
   const allCards = useMemo(() => {
     const engineProfiles = engineLaneProfiles(capabilities);
     const descriptorProvider = new Map(
       capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor.provider_id]),
     );
+    const seen = new Set<string>();
     // Only lanes whose provider can actually search: a fetch-only service
     // (browser rendering) belongs to 网页抓取, never to this list.
     const searchCards = capabilities.search.lanes.flatMap((lane) => {
-      const profile = engineProfiles[lane.id];
+      const profile = profiles[lane.id] ?? engineProfiles[lane.id];
       if (profile === undefined) return [];
       // A profile that names no real provider (a projection pointing at an
       // instance id as if it were a provider) is not a service card.
@@ -82,6 +87,7 @@ export function NbSearchLanesTab({
       if (providerId === undefined) return [];
       const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
       if (descriptor === undefined || descriptor.query_operations.length === 0) return [];
+      seen.add(lane.id);
       const word = operationWord(t, lane, profile.operation_id, profile.provider_id);
       return [{
         id: lane.id,
@@ -93,16 +99,40 @@ export function NbSearchLanesTab({
         cost: lane.cost,
       }];
     });
-    return searchCards;
-  }, [capabilities, t]);
+    const draftCards = Object.entries(ownLanes).flatMap(([laneId, lane]) => {
+      if (lane === null || lane === undefined || seen.has(laneId)) return [];
+      const providerId = descriptorProvider.get(profiles[laneId]?.provider_id ?? '');
+      if (providerId === undefined) return [];
+      const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
+      const operation = descriptor?.query_operations.find((candidate) => candidate.operation_id === lane.operation_id);
+      if (descriptor === undefined || operation === undefined) return [];
+      const word = operationWord(t, { output: operation.output }, lane.operation_id, providerId);
+      return [{
+        id: laneId,
+        title: serviceTitle(labelOf(providerId), word),
+        subtitle: word,
+        operationId: lane.operation_id,
+        providerId,
+        latency: lane.latency,
+        cost: lane.cost,
+      }];
+    });
+    return [...searchCards, ...draftCards];
+  }, [capabilities, ownLanes, profiles, t]);
 
   // The directory adds anything the engine reports that the list does not
-  // already hold — including fetch pipelines, which become fetch services.
+  // already hold — including opt-in search descriptors and fetch pipelines.
   const directoryCardsAll = useMemo(() => {
     const engineProfiles = engineLaneProfiles(capabilities);
     const descriptorProvider = new Map(
       capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor.provider_id]),
     );
+    const optInCards = nbSearchOptInProviders(capabilities, draft).map((providerId): ServiceCard => ({
+      id: providerId,
+      title: labelOf(providerId),
+      subtitle: t('st.nbSearch.operation.search'),
+      providerId,
+    }));
     const pipelineCards = capabilities.fetch.pipelines.flatMap((pipeline) => {
       if (allCards.some((card) => card.id === pipeline.id)) return [];
       const profile = engineProfiles[pipeline.id];
@@ -120,15 +150,19 @@ export function NbSearchLanesTab({
         cost: pipeline.cost,
       }];
     });
-    return [...allCards, ...pipelineCards];
-  }, [capabilities, allCards, t]);
+    return [...allCards, ...optInCards, ...pipelineCards];
+  }, [capabilities, draft, allCards, t]);
 
-  const ownLanes = draft.advanced?.lanes ?? {};
+  const deletedInstanceIds = new Set(
+    Object.entries(draft.providers)
+      .filter(([, provider]) => provider.isDeleted === true)
+      .map(([id]) => id),
+  );
   // An override that already reached the server (`provider_instances` in the
   // saved config) is a configuration even before the next read-back: the
   // engine's projection only catches up after a save.
   const configuredInstanceIds = new Set([
-    ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>),
+    ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>).filter((id) => !deletedInstanceIds.has(id)),
     ...Object.entries(draft.providers)
       .filter(([, provider]) => provider.isDeleted !== true && provider.isNew === true)
       .map(([id]) => id),
@@ -142,7 +176,7 @@ export function NbSearchLanesTab({
     const overriddenInstances = new Set([
       ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>),
       ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
-    ]);
+    ].filter((id) => !deletedInstanceIds.has(id)));
     return allCards.filter((card) => {
       const instanceId = boundInstanceId(card);
       return Object.prototype.hasOwnProperty.call(ownLanes, card.id)
@@ -150,7 +184,7 @@ export function NbSearchLanesTab({
         || (inherited === undefined && capabilities.configuration?.lanes[card.id] !== undefined)
         || (instanceId !== undefined && (overriddenInstances.has(instanceId) || configuredInstanceIds.has(instanceId)));
     });
-  }, [allCards, ownLanes, capabilities, bindingConfig, configuredInstanceIds, profiles]);
+  }, [allCards, ownLanes, capabilities, bindingConfig, configuredInstanceIds, deletedInstanceIds, profiles]);
   const directoryCards = useMemo(
     () => directoryCardsAll.filter((card) => !activeCards.some((active) => active.id === card.id)),
     [directoryCardsAll, activeCards],
@@ -162,7 +196,8 @@ export function NbSearchLanesTab({
   const instanceCards = useMemo(() => {
     const overridden = new Set([
       ...configuredInstanceIds,
-      ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
+      ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? [])
+        .filter((id) => !deletedInstanceIds.has(id)),
     ]);
     // A lane covers only the instance it edits; other configured instances
     // of the same provider keep their own card.
@@ -202,6 +237,7 @@ export function NbSearchLanesTab({
     for (const [instanceId, provider] of Object.entries(draft.providers)) {
       if (provider.isNew !== true || provider.isDeleted === true || provider.providerId === undefined) continue;
       if (capabilities.providers.instances.some((instance) => instance.id === instanceId)) continue;
+      if (laneCoveredInstances.has(instanceId)) continue;
       cardFor(instanceId, provider.providerId);
     }
     return cards;
@@ -313,10 +349,14 @@ export function NbSearchLanesTab({
                       data-nb-search-directory-row={card.id}
                       disabled={saving}
                       onClick={() => {
+                        const isOptInProvider = card.providerId === card.id
+                          && capabilities.providers.descriptors.some((descriptor) => descriptor.provider_id === card.id);
                         const isPipeline = capabilities.fetch.pipelines.some((pipeline) => pipeline.id === card.id);
-                        advanced.onChange(isPipeline
-                          ? addPipelineService(draft, capabilities, card.id, [])
-                          : addLaneService(draft, card.id));
+                        advanced.onChange(isOptInProvider
+                          ? provisionOptInNbSearchProvider(draft, capabilities, card.id)
+                          : isPipeline
+                            ? addPipelineService(draft, capabilities, card.id, [])
+                            : addLaneService(draft, card.id));
                         setDirectoryOpen(false);
                       }}
                       className="row-interactive flex w-full min-w-0 items-center gap-2 py-1.5 pl-3 pr-2 text-left"
@@ -378,7 +418,12 @@ export function NbSearchLanesTab({
                   advanced.onChange(makeDefaultLane(draft, card.id));
                 }}
                 onRemoveService={() => {
-                  advanced.onChange(removeService(draft, capabilities, 'lane', card.id, []));
+                  const instanceId = boundInstanceId(card);
+                  const next = removeService(draft, capabilities, 'lane', card.id, []);
+                  advanced.onChange(next);
+                  if (instanceId !== undefined && (next.providers[instanceId] === undefined || next.providers[instanceId]?.isDeleted === true)) {
+                    onKeyDraftChange(instanceId, { mode: 'keep' });
+                  }
                 }}
                 removeTitle={t('st.nbSearch.services.removeServiceTitle', { name: card.title })}
               />

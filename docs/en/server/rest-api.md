@@ -218,7 +218,7 @@ The Vibe adapter retains unsupported buckets in `queue.quarantined`, with their 
 
 #### Provider and external-service quotas
 
-Search-service sources use `service:<instance_id>`. Zhihu exposes one daily meter per capability, with request units represented as `count` and reset metadata in `window` (`duration_seconds: 86400`, `reset_at`, `reset_timezone`). Each meter ID is `key-<index>-<meter_id>`; multiple keys keep separate labels and values. Tavily and Firecrawl responses without detailed meters retain one credits row per key.
+Search-service sources use `service:<instance_id>`. Zhihu exposes one daily meter per capability, with request units represented as `count` and reset metadata in `window` (`label: "1d"`, `duration_seconds: 86400`, `reset_at`, `reset_timezone`); generic `reset_at` meters carry only `reset_at` and optional `reset_timezone`. Each meter ID is `key-<index>-<meter_id>`; multiple keys keep separate labels and values. Tavily and Firecrawl responses without detailed meters retain one credits row per key.
 
 `GET /api/usage/provider-quotas` lists connected sources and cached official quotas without querying remote services. To query one source explicitly, the local owner sends `POST /api/usage/provider-quotas/refresh` with `{ "source_id": "provider:example" }`. Disable quota collection with `PUT /api/usage/provider-quotas/enabled` and `{ "source_id": "provider:example", "enabled": false }`; enabling does not query or log in, and refreshing an off source never enables it. The typed client exposes these operations as `klient.rest.providerQuotas.snapshot()`, `.refresh(sourceId)` and `.setEnabled(sourceId, enabled)`.
 

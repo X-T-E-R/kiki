@@ -218,7 +218,7 @@ Vibe 适配器把不支持的桶保留在 `queue.quarantined`，可通过 `GET /
 
 #### 供应商与外部服务剩余额度
 
-搜索服务来源使用 `service:<instance_id>`。知乎按能力分别提供每日额度，请求单位投影为 `count`，重置信息位于 `window`（`duration_seconds: 86400`、`reset_at`、`reset_timezone`）。每项 ID 为 `key-<index>-<meter_id>`，多个 Key 保留各自的名称和数值。Tavily 和 Firecrawl 响应未提供详细表项时，仍按 Key 显示单行 credits 额度。
+搜索服务来源使用 `service:<instance_id>`。知乎按能力分别提供每日额度，请求单位投影为 `count`，重置信息位于 `window`（`label: "1d"`、`duration_seconds: 86400`、`reset_at`、`reset_timezone`）；其他仅带重置时间的表项在 `window` 中只保留 `reset_at` 与可选 `reset_timezone`。每项 ID 为 `key-<index>-<meter_id>`，多个 Key 保留各自的名称和数值。Tavily 和 Firecrawl 响应未提供详细表项时，仍按 Key 显示单行 credits 额度。
 
 `GET /api/usage/provider-quotas` 列出已连接来源及缓存的官方额度，不向远端服务发请求。要明确查询一个来源，由 local owner 向 `POST /api/usage/provider-quotas/refresh` 发送 `{ "source_id": "provider:example" }`。向 `PUT /api/usage/provider-quotas/enabled` 发送 `{ "source_id": "provider:example", "enabled": false }` 可关闭额度采集；开启本身不查询、不登录，刷新已关闭来源也不会自动开启。类型客户端对应方法为 `klient.rest.providerQuotas.snapshot()`、`.refresh(sourceId)` 和 `.setEnabled(sourceId, enabled)`。
 
