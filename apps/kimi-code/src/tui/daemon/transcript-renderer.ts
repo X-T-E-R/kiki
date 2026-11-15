@@ -918,10 +918,8 @@ function prepareDisplayBlocks(
   const seenRecipes = new Set<string>();
   let lastVisibleId: string | undefined;
   let currentTurnId: string | undefined;
-  let activeTurnFailure:
-    | { readonly turnId: string | undefined; readonly normError: string; outcomeSeen: boolean }
-    | undefined;
-  let pendingFrameDanger: { readonly turnId: string | undefined; readonly normError: string } | undefined;
+  let activeTurnFailure: { readonly turnId: string; readonly normError: string } | undefined;
+  let pendingFrameDanger: { readonly turnId: string; readonly normError: string } | undefined;
 
   const recordSuppressed = (id: string): void => {
     if (lastVisibleId === undefined) {
@@ -950,13 +948,13 @@ function prepareDisplayBlocks(
       pendingFrameDanger = undefined;
       const outcome = block.promptOutcome;
       if (
+        turnId !== undefined &&
         outcome !== undefined &&
         (outcome.status === 'failed' || outcome.status === 'aborted') &&
         outcome.error !== undefined
       ) {
         const normError = normalizeFailureText(outcome.error);
-        activeTurnFailure =
-          normError.length > 0 ? { turnId, normError, outcomeSeen: false } : undefined;
+        activeTurnFailure = normError.length > 0 ? { turnId, normError } : undefined;
       } else {
         activeTurnFailure = undefined;
       }
@@ -1004,36 +1002,28 @@ function prepareDisplayBlocks(
         const normNotice = normalizeFailureText(formatNoticeText(block));
         if (normNotice.length > 0) {
           const explicitOutcome = isExplicitTurnOutcomeNotice(block);
-          const activeFailure = activeTurnFailure;
-          const inActiveFailedPromptTurn =
-            activeFailure !== undefined &&
-            (turnId !== undefined
-              ? activeFailure.turnId === undefined || turnId === activeFailure.turnId
-              : !activeFailure.outcomeSeen);
-          if (inActiveFailedPromptTurn && normNotice === activeFailure.normError) {
-            if (explicitOutcome) {
-              activeFailure.outcomeSeen = true;
-            }
+          if (
+            turnId !== undefined &&
+            activeTurnFailure !== undefined &&
+            turnId === activeTurnFailure.turnId &&
+            normNotice === activeTurnFailure.normError
+          ) {
             recordSuppressed(block.id);
             continue;
-          }
-          if (explicitOutcome && activeFailure !== undefined && turnId === activeFailure.turnId) {
-            activeFailure.outcomeSeen = true;
           }
 
           if (
             explicitOutcome &&
+            turnId !== undefined &&
             pendingFrameDanger !== undefined &&
-            (turnId === undefined ||
-              pendingFrameDanger.turnId === undefined ||
-              turnId === pendingFrameDanger.turnId) &&
+            turnId === pendingFrameDanger.turnId &&
             normNotice === pendingFrameDanger.normError
           ) {
             pendingFrameDanger = undefined;
             recordSuppressed(block.id);
             continue;
           }
-          if (!explicitOutcome) {
+          if (!explicitOutcome && turnId !== undefined) {
             pendingFrameDanger = { turnId, normError: normNotice };
           } else {
             pendingFrameDanger = undefined;

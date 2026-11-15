@@ -1,5 +1,6 @@
 import { Container, visibleWidth } from '@kiki/pi-tui';
 import type { PromptItem } from '@kiki/protocol';
+import { agentTranscriptToBlocks } from '@kiki/session-core/session/transcript';
 import type { Block } from '@kiki/session-core/session/transcript/types';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -771,6 +772,7 @@ describe('DaemonTranscriptRenderer', () => {
       {
         kind: 'notice',
         id: 'agent-frame-1',
+        turnId: 't1',
         tone: 'danger',
         text: 'Retry attempts exhausted (5/5). Connection error.',
       },
@@ -889,6 +891,91 @@ describe('DaemonTranscriptRenderer', () => {
       },
     ]);
     expect(consecutivePromptlessOut.match(/Permission denied/g)).toHaveLength(2);
+  });
+
+  it('end-to-end agentTranscriptToBlocks -> DaemonTranscriptRenderer deduplicates same-turn frame error but preserves subsequent promptless turn error', () => {
+    const projectedBlocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      prompts: [
+        {
+          promptId: 'p0',
+          status: 'failed',
+          content: [{ type: 'text', text: 'Deploy candidate' }],
+          error: 'Permission denied',
+          createdAt: '2026-06-01T12:00:00.000Z',
+          finishedAt: '2026-06-01T12:00:01.000Z',
+        },
+      ],
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't0',
+          promptId: 'p0',
+          ordinal: 1,
+          state: 'failed',
+          origin: { kind: 'user', payload: { promptId: 'p0' } },
+          prompt: 'Deploy candidate',
+          startedAt: '2026-06-01T12:00:00.000Z',
+          endedAt: '2026-06-01T12:00:01.000Z',
+          error: 'Permission denied',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 's0',
+              turnId: 't0',
+              ordinal: 1,
+              state: 'failed',
+              frames: [
+                {
+                  kind: 'notice',
+                  frameId: 'f0',
+                  level: 'error',
+                  message: 'Permission denied',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 2,
+          state: 'failed',
+          origin: { kind: 'task', taskId: 'task-1' },
+          prompt: '',
+          startedAt: '2026-06-01T12:00:02.000Z',
+          endedAt: '2026-06-01T12:00:03.000Z',
+          error: 'Permission denied',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 's1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'failed',
+              frames: [
+                {
+                  kind: 'notice',
+                  frameId: 'f1',
+                  level: 'error',
+                  message: 'Permission denied',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const t0Notice = projectedBlocks.find((b) => b.id === 'agent-frame-f0');
+    const t1Notice = projectedBlocks.find((b) => b.id === 'agent-frame-f1');
+    expect(t0Notice).toMatchObject({ kind: 'notice', turnId: 't0', tone: 'danger' });
+    expect(t1Notice).toMatchObject({ kind: 'notice', turnId: 't1', tone: 'danger' });
+
+    const collapsed = render(projectedBlocks);
+    expect(collapsed).toContain('Reply failed · Permission denied');
+    // 1 on t0's prompt outcome ("Reply failed · Permission denied") + 1 standalone notice for promptless t1
+    expect(collapsed.match(/Permission denied/g)).toHaveLength(2);
   });
 
   it('wraps long key-value /status lines in TranscriptNoteComponent with hanging indentation', () => {

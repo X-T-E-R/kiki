@@ -3955,6 +3955,7 @@ export function agentTranscriptToBlocks(
             blocks.push({
               kind: 'notice',
               id: `agent-frame-${frame.frameId}`,
+              turnId: item.turnId,
               text: frame.message,
               tone: frame.level === 'error' ? 'danger' : 'neutral',
               errorDetails: noticeFrameErrorDetails('detail' in frame ? frame.detail : undefined),
