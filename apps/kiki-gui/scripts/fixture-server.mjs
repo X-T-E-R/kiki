@@ -2381,6 +2381,7 @@ class FixtureServer {
       // Governed-store memory routes and write gating (fixture-memory-governance.mjs).
       if (await handleMemoryGovernance(this, res, path, url.searchParams, body, req.method)) return;
       const advanced = path === '/usage'
+        || path.startsWith('/usage/sessions/')
         || path === '/usage/pricing'
         || path === '/usage/realtime'
         || path === '/usage/realtime/agents'
@@ -2425,6 +2426,13 @@ class FixtureServer {
     }
     if (path === '/usage' && method === 'GET') {
       return this.usageV2Response(res, query);
+    }
+    const accountingMatch = /^\/usage\/sessions\/([^/]+)\/accounting$/.exec(path);
+    if (accountingMatch !== null && method === 'GET') {
+      const accounting = this.sessions.get(decodeURIComponent(accountingMatch[1]))?.record.usage?.accounting;
+      return accounting === undefined
+        ? this.envelope(res, null, 40404, 'no session accounting fixture for this scenario')
+        : this.envelope(res, { ...accounting, freshness: accounting.freshness ?? 'current' });
     }
     if (path === '/usage/realtime' && method === 'GET') {
       if (this.requestGovernance === null) {

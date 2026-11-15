@@ -134,6 +134,7 @@ import {
   pendingQuestionCount,
   queuedPromptPreviews,
   sessionAgentForest,
+  type SessionViewState,
   type ApprovalBlock,
   type QuestionBlock,
   type AssistantBlock,
@@ -1332,6 +1333,15 @@ export function resolveSessionSendReady(input: {
 }
 
 /** Session-operation reads start once the mounted controller can serve them. */
+export function resolveComposerContext(state: SessionViewState, nativeCatalogLimit?: number) {
+  const usage = state.session?.usage;
+  const used = state.contextTokens ?? ((usage?.context_tokens ?? 0) > 0 ||
+    (usage?.turn_count === 0 && state.blocks.length === 0) ? usage?.context_tokens : undefined);
+  const limit = state.maxContextTokens === 0 ? undefined : [state.maxContextTokens, usage?.context_limit, nativeCatalogLimit]
+    .find((value): value is number => value !== undefined && value > 0);
+  return { used, limit };
+}
+
 export function sessionIdForSendReadyRead(sessionId: string | undefined, sendReady: boolean): string | undefined {
   return sendReady ? sessionId : undefined;
 }
@@ -4941,9 +4951,7 @@ boundExecution,
   // The composer footer's mini meter reads the same usage fields as the rail.
   const usage = state.session?.usage;
   const usageError = state.session?.usage_error;
-  const contextUsed = state.contextTokens ?? usage?.context_tokens;
-  const contextLimit = state.maxContextTokens !== undefined && state.maxContextTokens > 0
-    ? state.maxContextTokens : undefined;
+  const { used: contextUsed, limit: contextLimit } = resolveComposerContext(state, catalogItem?.max_context_size);
   compactionHintShownRef.current = contextUsed !== undefined && contextLimit !== undefined;
   // The main agent's automatic-compaction point, read from the server for the
   // meter's adjustable track (absent on engines that do not report one).

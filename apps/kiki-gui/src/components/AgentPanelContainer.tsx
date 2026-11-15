@@ -27,7 +27,7 @@ import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
 import { CockpitOverview } from './rail-variants/CockpitOverview';
 import type { RailMode } from './rail-variants/shell';
-import { agentUsageCacheHitRate } from './agent-panel/cacheRate';
+import { agentUsageCacheHitRate, calculateCacheHitRate, aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
 import { AgentIdentitySection } from './agent-panel/AgentIdentitySection';
 import { AgentTodoSection } from './agent-panel/AgentTodoSection';
@@ -38,7 +38,6 @@ import { AgentCapabilitiesSection, capabilityCounts } from './agent-panel/AgentC
 import { usageSessionDeepLink } from '../lib/usageV2';
 import type { Klient } from '@kiki/klient';
 import { observePanelUsage, panelUsageRevision } from '../lib/usageFreshness';
-import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import {
   agentCapabilitiesErrorText,
   capabilityFieldGaps,
@@ -361,8 +360,9 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     ? [...new Set([MAIN_AGENT_ID, agentId, ...Object.keys(forest.byId), ...roster.map(snapshotSubagentAgentId), ...Object.keys(headerMetrics)])].sort()
     : [agentId], [showsTree, agentId, forest.byId, roster, headerMetrics]);
   const rosterRef = showsTree ? sessionState.contentRefs?.find((ref) => ref.source.kind === 'snapshot' && ref.kind === 'array' && ref.path.length === 1 && ref.path[0] === 'subagents') : undefined;
-  const rosterPending = rosterRef !== undefined && sessionState.detailLoads[`content:${JSON.stringify(rosterRef)}`]?.status !== 'error';
-  const rosterIncomplete = showsTree && (rosterRef !== undefined || (sessionState.agentCounts?.total ?? 0) > ids.length);
+  const rosterTruncated = rosterRef !== undefined;
+  const rosterLoading = rosterRef !== undefined && sessionState.detailLoads[`content:${JSON.stringify(rosterRef)}`]?.status === 'loading';
+  const rosterIncomplete = showsTree && (rosterTruncated || (sessionState.agentCounts?.total ?? 0) > ids.length);
   const revisions = usePanelSourceRevisions(controller, forest, ids, klient, state.sessionId);
   const kept = useRef({ identity: metricsIdentity, byId: new Map<string, KeptPanelMetric>() });
   if (kept.current.identity !== metricsIdentity) kept.current = { identity: metricsIdentity, byId: new Map() };
@@ -385,7 +385,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     const subtotal = hasMeasuredPanelMetrics(row?.metrics) ? row?.metrics
       : hasMeasuredPanelMetrics(previous?.metrics) ? previous?.metrics : row?.metrics ?? previous?.metrics ?? raw;
     if (subtotal !== undefined) metrics[id] = row === undefined || subtotal !== row.metrics ? countingMetric(subtotal) : subtotal;
-    if ((!rosterPending || id === agentId) && isUnsettledPanelMetrics(row?.metrics)) requestIds.push(id);
+    if (isUnsettledPanelMetrics(row?.metrics)) requestIds.push(id);
   }
   const canSettle = metricsWanted && visible && state.loaded && !state.resyncing && (header.isSuccess || showsTree && kept.current.byId.size > 0);
   const requestToken = `${spaceIdentity}\0${revisionToken(requestIds, revisions)}`;
@@ -504,15 +504,27 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     return row !== undefined && !isUnsettledPanelMetrics(row) && row.usagePartial !== true && panelTotalTokens(row) !== null;
   });
   const treeComplete = treeTokensCovered && ids.every((id) => metrics[id]?.costPartial !== true);
-  const treeCounting = showsTree && (rosterPending || requestIds.length > 0 && !metricsSettle.isError);
+  const treeCounting = showsTree && (rosterLoading || requestIds.length > 0 && !metricsSettle.isError);
   const tree = sumAgentTreeMetrics(ids, metrics);
   const canonical = useCanonicalSessionUsage(metricsWanted && visible && showsTree && !treeTokensCovered, state.sessionId);
   const matchedSession = sessionState.session?.id === state.sessionId && sessionState.session.private !== true
     ? sessionState.session
     : undefined;
   const sessionAccounting = canonical.usage?.accounting ?? matchedSession?.usage?.accounting;
+  const savedUsage = matchedSession?.usage_error === 'read-failed' ? undefined : matchedSession?.usage;
+  const savedTotal = savedUsage === undefined ? 0 : savedUsage.input_tokens + savedUsage.output_tokens + savedUsage.cache_read_tokens + savedUsage.cache_creation_tokens;
+  const accountingTotal = sessionAccounting === undefined ? 0 : Object.values(sessionAccounting.tokens).reduce((sum, value) => sum + value, 0);
+  const useSavedUsage = sessionAccounting?.complete !== true && savedUsage !== undefined && savedTotal >= accountingTotal;
+  const treeCacheRate = treeTokensCovered ? aggregateTreeCacheHitRate(ids, metrics) : (() => {
+    const tokens = useSavedUsage ? undefined : sessionAccounting?.tokens;
+    const read = tokens?.input_cache_read ?? savedUsage?.cache_read_tokens;
+    const denominator = tokens === undefined
+      ? (savedUsage?.input_tokens ?? 0) + (read ?? 0) + (savedUsage?.cache_creation_tokens ?? 0)
+      : tokens.input_other + tokens.input_cache_read + tokens.input_cache_creation;
+    return calculateCacheHitRate(read, denominator);
+  })();
   const canonicalTotalTokens = (() => {
-    if (sessionAccounting !== undefined) {
+    if (sessionAccounting !== undefined && !useSavedUsage) {
       const tokens = sessionAccounting.tokens;
       const sum = tokens.input_other + tokens.input_cache_read + tokens.input_cache_creation + tokens.output;
       if (!Number.isFinite(sum)) return null;
@@ -528,6 +540,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   })();
   if (!treeTokensCovered && canonicalTotalTokens !== null) {
     tree.totalTokens = tree.totalTokens === null ? canonicalTotalTokens : Math.max(tree.totalTokens, canonicalTotalTokens);
+  }
+  if (!treeTokensCovered) {
+    const cost = useSavedUsage ? savedUsage.total_cost_usd : sessionAccounting?.cost_usd_estimated;
+    if (known(cost)) tree.totalCostUsd = cost;
   }
   const { id: routeSessionId } = useParams<{ id?: string }>();
   const isMain = agentId === MAIN_AGENT_ID;
@@ -715,7 +731,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     </>;
   }
   const facts = overviewFacts({
-    t, agentId, state, agentState: currentAgentState, forest, usage, metrics, ids, treeComplete, treeCounting, tree,
+    t, agentId, state, agentState: currentAgentState, forest, usage, metrics, ids, treeComplete, treeCounting, tree, treeCacheRate,
     compactPoint: autoCompact?.status?.tokens,
   });
   if (part === 'overview') {
@@ -906,14 +922,17 @@ function overviewFacts(input: {
   treeComplete: boolean;
   treeCounting: boolean;
   tree: { totalTokens: number | null; totalCostUsd: number | null };
+  treeCacheRate: number | null;
   compactPoint: number | undefined;
 }) {
-  const { t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, treeCounting, tree } = input;
+  const { t, agentId, state, agentState, forest, usage, treeComplete, treeCounting, tree } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
   const contextUsed = agentState?.contextTokens ?? node?.contextTokens
-    ?? (known(usage.contextTokens) ? usage.contextTokens : undefined);
-  const reportedLimit = agentState === undefined ? node?.maxContextTokens : agentState.maxContextTokens;
+    ?? (known(usage.contextTokens) ? usage.contextTokens : undefined)
+    ?? (isMain && (state.session?.usage?.context_tokens ?? 0) > 0 ? state.session?.usage?.context_tokens : undefined);
+  const reportedLimit = agentState?.maxContextTokens === 0 ? undefined : [agentState?.maxContextTokens, node?.maxContextTokens, usage.contextLimit,
+    isMain ? state.session?.usage?.context_limit : undefined].find((value): value is number => known(value) && value > 0);
   const contextLimit = reportedLimit !== undefined && reportedLimit > 0 ? reportedLimit : undefined;
   const figures = figuresFrom(usage, t);
   // The standard inspector's own tree scope. It stays main-only on purpose:
@@ -924,7 +943,7 @@ function overviewFacts(input: {
   const treeFigures: OverviewFigures | undefined = isMain ? {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
-    cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
+    cacheRate: input.treeCacheRate ?? undefined,
     incomplete: !treeComplete,
     counting: treeCounting,
   } : undefined;
@@ -947,12 +966,14 @@ function overviewFacts(input: {
   const cockpitTreeFigures: OverviewFigures = {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
-    cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
+    cacheRate: input.treeCacheRate ?? undefined,
     incomplete: !treeComplete,
     counting: treeCounting,
   };
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
-  const turns = isMain ? state.session?.usage?.turn_count : undefined;
+  const tailTurnId = Number(state.turnTail?.turnId);
+  const turns = isMain ? (state.session?.usage?.turn_count ?? 0) > 0 ? state.session?.usage?.turn_count
+    : Number.isInteger(tailTurnId) && tailTurnId >= 0 ? tailTurnId + 1 : undefined : undefined;
   const toolCalls = !isMain && node?.toolCallCountKnown === true ? node.toolCallCount : undefined;
   return {
     contextUsed,

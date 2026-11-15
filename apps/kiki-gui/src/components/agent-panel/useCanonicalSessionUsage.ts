@@ -4,6 +4,8 @@ import { useOptionalConnection } from '../../state/connection';
 
 type SessionAccountingUsage = Pick<SessionUsage, 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens' | 'total_cost_usd' | 'accounting'>;
 
+const INCOMPLETE_ACCOUNTING_DELAYS_MS = [250, 1_000, 3_000, 10_000] as const;
+
 export function useCanonicalSessionUsage(open: boolean, sessionId?: string, agentId?: string) {
   const connection = useOptionalConnection();
   const client = connection?.client;
@@ -17,6 +19,7 @@ export function useCanonicalSessionUsage(open: boolean, sessionId?: string, agen
     const controller = new AbortController();
     let running = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let incompleteAccountingAttempt = 0;
     const refresh = async () => {
       if (running || controller.signal.aborted) return;
       clearTimeout(timer);
@@ -29,8 +32,14 @@ export function useCanonicalSessionUsage(open: boolean, sessionId?: string, agen
         const accounting = await rest.sessionUsageAccounting(sessionId, { signal: controller.signal });
         const usage: SessionAccountingUsage = { input_tokens: accounting.tokens.input_other, output_tokens: accounting.tokens.output, cache_read_tokens: accounting.tokens.input_cache_read, cache_creation_tokens: accounting.tokens.input_cache_creation, total_cost_usd: accounting.cost_usd_estimated, accounting };
         if (!controller.signal.aborted) setRead({ identity, usage, error: false });
-        if (!accounting.complete || accounting.freshness === 'stale') delay = 250;
+        if (!accounting.complete || accounting.freshness === 'stale') {
+          delay = INCOMPLETE_ACCOUNTING_DELAYS_MS[incompleteAccountingAttempt] ?? 10_000;
+          incompleteAccountingAttempt = Math.min(incompleteAccountingAttempt + 1, INCOMPLETE_ACCOUNTING_DELAYS_MS.length - 1);
+        } else {
+          incompleteAccountingAttempt = 0;
+        }
       } catch {
+        incompleteAccountingAttempt = 0;
         if (!controller.signal.aborted) setRead((old) => ({ identity, usage: old?.identity === identity ? old.usage : undefined, error: true }));
       } finally {
         running = false;

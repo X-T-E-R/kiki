@@ -41,6 +41,7 @@ import { MASTER_ENV } from '#/app/flag/flagService';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { ITaskBoardService, type BoardSummary } from '#/app/taskBoard/taskBoard';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 import type { TestAgentContext, TestAgentOptions, TestAgentServiceOverride } from '../../harness';
@@ -542,6 +543,9 @@ describe('FullCompaction', () => {
   it('runs manual compaction and applies the compacted context', async () => {
     const records: TelemetryRecord[] = [];
     const ctx = testAgent({ telemetry: recordingTelemetry(records) });
+    await ctx.ready;
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { type: 'main', model: 'example-model' });
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
@@ -561,6 +565,8 @@ describe('FullCompaction', () => {
     await beginSummarize(ctx, { instruction: 'Keep the important test facts.' });
     await compacted;
     await completed;
+    await metadata.drain();
+    expect((await metadata.read()).agents?.['main']?.contextTokens).toBe(ctx.get(IAgentTokenCountingService).statusSize());
 
     const events = ctx.newEvents();
     expect(countEvents(events, 'context.append_message')).toBeGreaterThanOrEqual(6);

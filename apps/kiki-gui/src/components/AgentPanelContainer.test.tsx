@@ -1225,7 +1225,7 @@ it('reads Standard main only until tree demand, then keeps 1210 rows and continu
   expect(settleCalls()).toHaveLength(3);
 });
 
-it('waits for the automatic roster continuation before settling the whole tree and retains a complete prefix', async () => {
+it('settles known agents before roster continuation and retains the complete prefix', async () => {
   const ref = { source: { kind: 'snapshot' as const, id: '' }, path: ['subagents'], kind: 'array' as const, offset: 2, total: 1209, revision: 'roster' };
   harness.agents['main'] = viewState({ contentRefs: [ref] });
   getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; metrics_agent_ids?: string[] }) => Promise.resolve({ metrics: query.metrics_settle
@@ -1233,13 +1233,14 @@ it('waits for the automatic roster continuation before settling the whole tree a
     : { main: { ...countedMetrics(100, 0), usageComplete: true } } }));
   await render('main', { part: 'overview', forest: forestOf(['main', 'child-1', 'child-2']) });
   await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
-  expect(settleCalls()).toEqual([]);
-  expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+  await flushRender();
+  expect(settleCalls()).toHaveLength(1);
+  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: ['child-1', 'child-2'] });
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
   harness.agents['main'] = viewState();
   await render('main', { part: 'overview', forest: forestOf(['main', ...Array.from({ length: 1209 }, (_, i) => `child-${i}`)]) });
-  expect(settleCalls()).toHaveLength(1);
-  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: expect.any(Array) });
-  expect((settleCalls()[0] as { metrics_agent_ids: string[] }).metrics_agent_ids).toHaveLength(1209);
+  expect(settleCalls()).toHaveLength(2);
+  expect((settleCalls()[1] as { metrics_agent_ids: string[] }).metrics_agent_ids).toHaveLength(1207);
   expect(element.querySelector('[data-tree-metrics] [data-overview-fact="tokens"]')?.getAttribute('title')).toBe('1,309');
 });
 
@@ -2279,4 +2280,45 @@ it('continues a dirty source partial even while the header retains its earlier c
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('renders cold overview context, turns and compactions from persisted panel and session facts', async () => {
+  const session = { id: 'session', workspace_id: 'workspace_example', title: 'Cold session', busy: false,
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', metadata: { cwd: 'C:/example' },
+    agent_config: { model: 'example-model' }, permission_rules: [], message_count: 0, last_seq: 0,
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 50, cache_creation_tokens: 10,
+      total_cost_usd: 0.25, context_tokens: 32000, context_limit: 64000, turn_count: 7 } };
+  harness.agents['main'] = viewState({ session });
+  getAgentCapabilities.mockResolvedValue({ metrics: { main: { ...countedMetrics(180, 0.25),
+    contextTokens: 32000, contextLimit: 64000, compactionCount: 3 } } });
+  await render('main', { part: 'overview', routed: viewState({ session }) });
+  expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('32k / 64k');
+  expect(element.textContent).toContain('7');
+  expect(element.textContent).toContain('3');
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+});
+
+it.each(['default', 'cockpit'] as const)('settles visible agents with an undrained roster ref and shows whole-session cost/cache in %s', async overviewMode => {
+  const ref: ContentRef = { source: { kind: 'snapshot', id: '' }, path: ['subagents'], kind: 'array', offset: 2, total: 100, revision: 'cold-roster' };
+  const session = { id: 'session', workspace_id: 'workspace_example', title: 'Cold tree', busy: false,
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', metadata: { cwd: 'C:/example' },
+    agent_config: { model: 'example-model' }, permission_rules: [], message_count: 0, last_seq: 0,
+    usage: { input_tokens: 1000, output_tokens: 200, cache_read_tokens: 3000, cache_creation_tokens: 1000,
+      total_cost_usd: 2.5, context_tokens: 320, context_limit: 1000, turn_count: 7 } };
+  harness.agents['main'] = viewState({ session, contentRefs: [ref] });
+  harness.sessionUsageAccounting.mockResolvedValue({ version: 2, subject: { session_id: 'session', scope: 'session' },
+    covered_at: 1, complete: false, freshness: 'stale', tokens: { input_other: 10, output: 20, input_cache_read: 30, input_cache_creation: 0 },
+    cost_usd_estimated: 0.01, cost_unknown: false });
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => Promise.resolve({ metrics: query.metrics_settle
+    ? { main: countedMetrics(100, 0.01), child: countedMetrics(50, 0.01) }
+    : { main: countedMetrics(100, 0.01), child: coldMetrics } }));
+  await render('main', { part: 'overview', overviewMode, routed: viewState({ session }), forest: forestOf(['main', 'child']) });
+  if (overviewMode === 'default') await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  await flushRender();
+  expect(getAgentCapabilities.mock.calls.some(([query]) => query.metrics_settle === true && query.metrics_agent_ids.includes('child'))).toBe(true);
+  const prefix = overviewMode === 'default' ? 'overview' : 'cockpit';
+  expect(element.querySelector(`[data-${prefix}-fact="tokens"]`)?.textContent).toContain(overviewMode === 'default' ? '5.2k' : '5k');
+  expect(element.textContent).toContain('2.50');
+  expect(element.textContent).toContain('60%');
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
 });

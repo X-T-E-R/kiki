@@ -110,6 +110,7 @@ import {
   resolveSessionSendReady,
   sessionIdForSendReadyRead,
   initialBindingStillPending,
+  resolveComposerContext,
   sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
@@ -2316,6 +2317,26 @@ describe('ContextMeter', () => {
       </I18nProvider>,
     );
   }
+
+  it('renders the cold composer ring from snapshot context before placeholder session usage', () => {
+    const state = { ...createViewState('cold'), contextTokens: 32000, maxContextTokens: 64000 };
+    state.session = { id: 'cold', workspace_id: 'workspace_example', title: 'Cold session', busy: false,
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', metadata: { cwd: 'C:/example' },
+      agent_config: { model: 'example-model' }, permission_rules: [], message_count: 0, last_seq: 0,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0,
+        total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 7 } };
+    const facts = resolveComposerContext(state, 128000);
+    expect(facts).toEqual({ used: 32000, limit: 64000 });
+    expect(renderMeter(facts.used!, facts.limit!)).toContain('50%');
+    expect(resolveComposerContext({ ...state, maxContextTokens: 0,
+      session: { ...state.session, usage: { ...state.session.usage!, context_limit: 64000 } } }, 128000))
+      .toEqual({ used: 32000, limit: undefined });
+    expect(resolveComposerContext({ ...state, contextTokens: undefined, maxContextTokens: undefined }, 128000))
+      .toEqual({ used: undefined, limit: 128000 });
+    expect(resolveComposerContext({ ...state, contextTokens: undefined, maxContextTokens: undefined,
+      session: { ...state.session, usage: { ...state.session.usage!, context_tokens: 32000, context_limit: 64000 } } }))
+      .toEqual({ used: 32000, limit: 64000 });
+  });
 
   it('shows the rounded percentage without a warning below 50%', () => {
     const html = renderMeter(40_000, 100_000);

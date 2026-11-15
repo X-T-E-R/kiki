@@ -12,6 +12,12 @@ import {
   type Scope,
   type TokenUsage,
 } from '@kiki/agent-core-v2';
+import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
+import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { readPersistedAgentProfileSnapshot, PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET } from './agentProfileSnapshot';
+import { persistedAgentContextLimit } from './persistedAgentContext';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
 import { summarizeUsageFacts } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { AgentPanelMetrics } from '@kiki/protocol';
@@ -146,6 +152,34 @@ export async function readPersistedAgentPanelMetrics(
     ? await core.accessor.get(IFileSystemStorageService).list(`${sessionScope}/agents`)
     : [...new Set(options.agentIds)];
   const wanted = requested.filter((agentId) => !skip.has(agentId));
+  const metadata = wanted.length === 0 ? undefined : await readColdSessionMeta(core, workspaceId, sessionId);
+  const runtime = new Map(await Promise.all(wanted.map(async agentId => {
+    const meta = metadata?.agents?.[agentId];
+    const [facts, profile, size] = await Promise.all([
+      readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
+      readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
+        { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+      logicalByteSize(core.accessor.get(IFileSystemStorageService), `${sessionScope}/agents/${agentId}`, 'wire.jsonl'),
+    ]);
+    const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
+      && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
+    return [agentId, { facts, checkpointReady: facts.complete && (size ?? 0) > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, context: {
+      contextTokens: facts.contextTokens ?? null,
+      contextLimit: native ? persistedAgentContextLimit(core, profile, profile?.modelAlias ?? meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+      compactionCount: native ? facts.panelAccounting?.successfulCompactions ?? null : null,
+    } }] as const;
+  })));
+  const resolvedUsage = (agentId: string, canonical: PersistedUsage): PersistedUsage => {
+    const facts = runtime.get(agentId)?.facts;
+    const accounting = facts?.panelAccounting;
+    if (canonical.complete || runtime.get(agentId)?.checkpointReady !== true || accounting === undefined) return canonical;
+    return {
+      usage: sumUsage(Object.values(accounting.knownByModel)) ?? { ...EMPTY_USAGE },
+      byModel: accounting.knownByModel, byModelMask: accounting.knownByModelMask,
+      records: accounting.records, knownUsageRecords: accounting.knownRecords,
+      partial: accounting.incomplete, complete: true,
+    };
+  };
   const mutable = new Set(options.mutableAgentIds ?? []);
   const sourceFor = (agentId: string) => agentMetricsCacheKey(workspaceId, sessionId, agentId);
   const keyFor = (agentId: string) => {
@@ -174,7 +208,7 @@ export async function readPersistedAgentPanelMetrics(
   state.reads.add(valid);
   const result = new Map<string, AgentPanelMetrics>();
   const finish = () => Object.freeze(Object.fromEntries([...result].map(([id, metrics]) => [id,
-    valid.has(sourceFor(id)) ? metrics : { ...metrics, usageComplete: false, usagePartial: true, costPartial: true },
+    valid.has(sourceFor(id)) ? { ...metrics, ...runtime.get(id)?.context } : { ...metrics, ...runtime.get(id)?.context, usageComplete: false, usagePartial: true, costPartial: true },
   ])));
   try {
     const missing: string[] = [];
@@ -187,8 +221,15 @@ export async function readPersistedAgentPanelMetrics(
     if (missing.length === 0) return finish();
     if (options.settle === false) {
       const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
-      for (const agentId of missing) result.set(agentId, toPersistedMetrics(persistedUsageOf(rows[agentId]), pricing));
+      for (const agentId of missing) result.set(agentId, toPersistedMetrics(resolvedUsage(agentId, persistedUsageOf(rows[agentId])), pricing));
       return finish();
+    }
+    const checkpointReady = missing.filter(id => runtime.get(id)?.checkpointReady === true && runtime.get(id)?.facts.panelAccounting !== undefined);
+    if (checkpointReady.length > 0) {
+      const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, checkpointReady, options.signal);
+      for (const id of checkpointReady) result.set(id, toPersistedMetrics(resolvedUsage(id, persistedUsageOf(rows[id])), pricing));
+      for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
+      if (missing.length === 0) return finish();
     }
     const limitsKey = [
       options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
@@ -263,7 +304,7 @@ export async function readPersistedAgentPanelMetrics(
     } finally { if (timer !== undefined) clearTimeout(timer); }
     for (const agentId of missing) {
       const usage = scanned.usages[agentId] ?? emptyPersistedUsage(true);
-      result.set(agentId, toPersistedMetrics(usage, pricing));
+      result.set(agentId, toPersistedMetrics(resolvedUsage(agentId, usage), pricing));
     }
     return finish();
   } finally { state.reads.delete(valid); }

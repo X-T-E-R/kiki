@@ -1,6 +1,8 @@
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { readPersistedAgentCheckpoint } from './persistedAgentCheckpoint';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
@@ -12,6 +14,8 @@ import {
   ToolsResetActiveTools,
   ToolsSetActiveTools,
   profileKey,
+  profileActiveToolsKey,
+  ToolsPolicyRefreshed,
   type ProfileModelState,
 } from '#/agent/profile/profileOps';
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
@@ -21,7 +25,7 @@ import { LlmRequest, promptRequestEvidence } from '#/agent/llmRequester/llmReque
 import { McpToolsDiscovered } from '#/agent/mcp/mcpDiscoveryOps';
 
 type PersistedProfileFields = Pick<ProfileModelState,
-  'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
+  'driver' | 'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
   'execution' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortExplicit' | 'thinkingEffortAdjusted' |
@@ -48,6 +52,7 @@ export const PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET = 8 << 20;
 export type AgentProfileSnapshotHost = { readonly accessor: ServicesAccessor } | {
   readonly storage: IFileSystemStorageService;
   readonly appendLog: IAppendLogStore;
+  readonly docs?: IAtomicDocumentStore;
 };
 
 interface PersistedAgentProfileCacheEntry {
@@ -76,6 +81,7 @@ const PROFILE_LINE_MARKERS = [
   `"type":"${AgentModelSwitch.type}"`,
   `"type":"${ToolsSetActiveTools.type}"`,
   `"type":"${ToolsResetActiveTools.type}"`,
+  `"type":"${ToolsPolicyRefreshed.type}"`,
   `"type":"${LlmRequest.type}"`,
   `"type":"${McpToolsDiscovered.type}"`,
 ];
@@ -86,6 +92,7 @@ const PROFILE_EVENT_CLASSES: ReadonlyMap<string, Event2Class> = new Map<string, 
   [AgentModelSwitch.type, AgentModelSwitch],
   [ToolsSetActiveTools.type, ToolsSetActiveTools],
   [ToolsResetActiveTools.type, ToolsResetActiveTools],
+  [ToolsPolicyRefreshed.type, ToolsPolicyRefreshed],
 ]);
 
 const REPLAY_CONTEXT = {
@@ -116,7 +123,7 @@ export async function readPersistedAgentProfileSnapshot(
   let mtimeMs: number;
   try {
     [size, mtimeMs] = await Promise.all([
-      storage.size(scope, AGENT_WIRE_RECORD_KEY).then((value) => value ?? 0),
+      logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY).then((value) => value ?? 0),
       storage.mtime(scope, AGENT_WIRE_RECORD_KEY).then((value) => value ?? 0),
     ]);
   } catch (error) {
@@ -133,14 +140,19 @@ export async function readPersistedAgentProfileSnapshot(
     return cached.snapshot;
   }
   const inlineByteBudget = options?.inlineByteBudget;
-  if (inlineByteBudget !== undefined && size > inlineByteBudget) {
+  const checkpoint = inlineByteBudget !== undefined && size > inlineByteBudget
+    ? await readPersistedAgentCheckpoint('accessor' in core ? core.accessor.get(IAtomicDocumentStore) : core.docs,
+      storage, scope, size, mtimeMs, new Set([profileKey.name, profileActiveToolsKey.name]))
+    : undefined;
+  if (inlineByteBudget !== undefined && size > inlineByteBudget &&
+    (checkpoint === undefined || !checkpoint.states.has(profileKey.name) || !checkpoint.states.has(profileActiveToolsKey.name) || size - checkpoint.offset > inlineByteBudget)) {
     const fallback = metadataSnapshot(metadata);
     return fallback === undefined ? undefined : { ...fallback, wireCoverage: 'unscanned' };
   }
   const flights = persistedAgentProfileFlightMap(core);
   let flight = flights.get(scope);
   if (flight === undefined || flight.size !== size || flight.mtimeMs !== mtimeMs || flight.metadataKey !== metadataKey) {
-    const promise = scanPersistedAgentProfileSnapshot(appendLog, storage, scope)
+    const promise = scanPersistedAgentProfileSnapshot(appendLog, storage, scope, checkpoint, size)
       .then((snapshot) => snapshot ?? metadataSnapshot(metadata))
       .catch(() => metadataSnapshot(metadata))
       .then((snapshot) => {
@@ -183,14 +195,16 @@ async function scanPersistedAgentProfileSnapshot(
   appendLog: IAppendLogStore,
   storage: IFileSystemStorageService,
   scope: string,
+  checkpoint: Awaited<ReturnType<typeof readPersistedAgentCheckpoint>>,
+  size: number,
 ): Promise<PersistedAgentProfileSnapshot | undefined> {
   const records = typeof storage.readStream === 'function'
-    ? filteredProfileRecords(storage, appendLog, scope)
+    ? filteredProfileRecords(storage, appendLog, scope, checkpoint?.offset ?? 0, size)
     : appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY);
-  let state = structuredClone(profileKey.initial()) as ProfileModelState;
-  let activeToolNames: readonly string[] | undefined;
-  let activeToolsKnown = false;
-  let profileStateSeen = false;
+  let state = structuredClone(checkpoint?.states.get(profileKey.name) ?? profileKey.initial()) as ProfileModelState;
+  let activeToolNames = checkpoint?.states.get(profileActiveToolsKey.name) as readonly string[] | undefined;
+  let activeToolsKnown = checkpoint !== undefined;
+  let profileStateSeen = checkpoint !== undefined;
   let promptRequest: import('@kiki/protocol').AgentPromptRequest | undefined;
   const mcpTools = new Map<string, McpToolsDiscovered>();
   for await (const record of records) {
@@ -214,7 +228,7 @@ async function scanPersistedAgentProfileSnapshot(
       profileStateSeen = true;
     } else if (event instanceof ConfigUpdate || event instanceof AgentModelSwitch) {
       profileStateSeen = true;
-    } else if (event instanceof ToolsSetActiveTools) {
+    } else if (event instanceof ToolsSetActiveTools || event instanceof ToolsPolicyRefreshed) {
       activeToolNames = event.names;
       activeToolsKnown = true;
     } else if (event instanceof ToolsResetActiveTools) {
@@ -230,6 +244,7 @@ async function scanPersistedAgentProfileSnapshot(
   const toolPolicy = effectiveToolBinding({ tools: activeToolNames, toolAllowPolicies: state.toolAllowPolicies, disallowedTools: state.disallowedTools }, state.toolOverride, state.boundProfile);
   return {
     source: 'wire',
+    driver: state.driver,
     execution: state.execution,
     toolOverride: state.toolOverride,
     memoryReadContext: state.memoryReadContext,
@@ -275,6 +290,8 @@ async function* filteredProfileRecords(
   storage: IFileSystemStorageService,
   appendLog: IAppendLogStore,
   scope: string,
+  start: number,
+  size: number,
 ): AsyncIterable<WireRecord> {
   await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY).catch(() => undefined);
   const decoder = new TextDecoder();
@@ -290,7 +307,8 @@ async function* filteredProfileRecords(
     const record = parseProfileLine(line);
     if (record !== undefined) yield record;
   };
-  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY)) {
+  if (start >= size) return;
+  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: size - 1 })) {
     pending += decoder.decode(chunk, { stream: true });
     let newline = pending.indexOf('\n');
     while (newline !== -1) {

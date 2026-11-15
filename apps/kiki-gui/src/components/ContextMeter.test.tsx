@@ -255,7 +255,7 @@ describe('canonical current-agent cumulative usage', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('continues incomplete session accounting and keeps freshness independent of source coverage', async () => {
+  it('continues incomplete session accounting with bounded backoff and keeps freshness independent of source coverage', async () => {
     vi.useFakeTimers();
     let root: Root | undefined;
     const accounting = {
@@ -268,7 +268,11 @@ describe('canonical current-agent cumulative usage', () => {
       client: { klient: { rest: { sessionUsageAccounting: canonicalMocks.read }, events: { on: () => ({ dispose: () => {} }) } } },
     };
     canonicalMocks.read.mockResolvedValueOnce(accounting)
-      .mockResolvedValueOnce({ ...accounting, complete: true, freshness: 'current', tokens_unknown: true });
+      .mockResolvedValueOnce(accounting)
+      .mockResolvedValueOnce(accounting)
+      .mockResolvedValueOnce(accounting)
+      .mockResolvedValueOnce(accounting)
+      .mockResolvedValue({ ...accounting, complete: true, freshness: 'current', tokens_unknown: true });
     try {
       const container = document.createElement('div');
       document.body.append(container);
@@ -278,14 +282,52 @@ describe('canonical current-agent cumulative usage', () => {
       expect(canonicalMocks.read).not.toHaveBeenCalled();
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
       expect(container.querySelector('[data-context-usage-freshness="unverified"]')?.textContent).toBe('Not yet checked');
-      await act(async () => { vi.advanceTimersByTime(249); });
-      expect(canonicalMocks.read).toHaveBeenCalledTimes(1);
-      await act(async () => { vi.advanceTimersByTime(1); });
-      expect(canonicalMocks.read).toHaveBeenCalledTimes(2);
+
+      for (const [delay, expectedCalls] of [[249, 1], [1, 2], [999, 2], [1, 3], [2_999, 3], [1, 4], [9_999, 4], [1, 5], [9_999, 5], [1, 6]] as const) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
+        expect(canonicalMocks.read).toHaveBeenCalledTimes(expectedCalls);
+      }
       expect(container.querySelector('[data-context-usage-freshness]')).toBeNull();
       expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('Some usage or prices are unknown');
-      await act(async () => { vi.advanceTimersByTime(14_999); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(14_999); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(6);
+    } finally {
+      if (root !== undefined) await act(async () => { root!.unmount(); });
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets incomplete-accounting backoff when the session query changes', async () => {
+    vi.useFakeTimers();
+    let root: Root | undefined;
+    const accounting = {
+      version: 2, subject: { session_id: 'session_a', scope: 'session' }, covered_at: 1,
+      complete: false, freshness: 'unverified', tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+      tokens_unknown: false, cost_usd_estimated: 0.01, cost_unknown: false,
+    };
+    canonicalMocks.connection = {
+      spaceKey: 'main', scopeId: 'local',
+      client: { klient: { rest: { sessionUsageAccounting: canonicalMocks.read }, events: { on: () => ({ dispose: () => {} }) } } },
+    };
+    canonicalMocks.read.mockImplementation((sessionId: string) => Promise.resolve({ ...accounting, subject: { session_id: sessionId, scope: 'session' } }));
+    try {
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      root = createRoot(container);
+      await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_a" /></MemoryRouter></I18nProvider>); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
       expect(canonicalMocks.read).toHaveBeenCalledTimes(2);
+
+      await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_b" /></MemoryRouter></I18nProvider>); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(3);
+      expect(canonicalMocks.read.mock.calls.map(([sessionId]) => sessionId)).toEqual(['session_a', 'session_a', 'session_b']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(4);
+      expect(canonicalMocks.read.mock.calls.at(-1)?.[0]).toBe('session_b');
     } finally {
       if (root !== undefined) await act(async () => { root!.unmount(); });
       vi.useRealTimers();

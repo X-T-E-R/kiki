@@ -2514,8 +2514,8 @@ describe('cold session snapshot', () => {
     expect(messageShape(cold)).toEqual(messageShape(warm));
     expect(cold.messages.items[0]?.content).toEqual([{ type: 'text', text: 'history-1' }]);
     expect(cold.messages.items.at(-1)?.content).toEqual([{ type: 'text', text: 'history-100' }]);
-    expect(coldPreview.context_tokens).toBeUndefined();
-    expect(coldPreview.max_context_tokens).toBeUndefined();
+    expect(coldPreview.context_tokens).toBe(0);
+    expect(coldPreview.max_context_tokens).toBe(warm.max_context_tokens);
     expect(coldPreview.context_breakdown).toBeUndefined();
     expect(coldPreview.in_flight_turn).toBeNull();
     expect(coldPreview.pending_approvals).toEqual([]);

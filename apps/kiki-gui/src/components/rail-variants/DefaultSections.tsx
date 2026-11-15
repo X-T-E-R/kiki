@@ -206,7 +206,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const [drawer, setDrawer] = useState<DetailDrawerTarget | null>(null);
   const query = { session_id: sessionId, agent_id: agentId };
   const state = useAgentState(sessionId, agentId);
-  const read = useAgentPanelCatalog(query, drawer !== null,
+  const read = useAgentPanelCatalog(query, sessionId !== undefined,
     JSON.stringify([state?.profile, state?.model, state?.permissionMode, state?.planMode]));
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);

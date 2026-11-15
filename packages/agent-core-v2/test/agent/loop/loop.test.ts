@@ -33,6 +33,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IEventBus } from '#/app/event/eventBus';
 import { IThreadMailboxStore } from '#/app/threadCommunication/threadMailboxStore';
 import { userCancellationReason } from '#/_base/utils/abort';
@@ -76,6 +77,19 @@ describe('Agent loop', () => {
     } finally {
       await ctx.dispose();
     }
+  });
+
+  it('mirrors native main context tokens after a normal turn completes', async () => {
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { type: 'main', model: 'mock' });
+    ctx.mockNextResponse({ type: 'text', text: 'Completed response' });
+    const receipt = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Measure this context' }], toolCalls: [] }, { admission: 'newTurn' }));
+    const { turn } = await receipt.assigned;
+    await turn.result;
+    await metadata.drain();
+    const tokens = ctx.get(IAgentTokenCountingService).statusSize();
+    expect(tokens).toBeGreaterThan(0);
+    expect((await metadata.read()).agents?.['main']?.contextTokens).toBe(tokens);
   });
 
   it('resolves the loop service from the agent scope by interface', () => {

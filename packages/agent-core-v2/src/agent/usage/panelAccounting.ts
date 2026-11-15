@@ -5,7 +5,7 @@ import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { UsageRecord } from './usageOps';
 import { usageTokenMask } from './usageFact';
 
-interface PanelAccountingState {
+export interface PanelAccountingState {
   version: 2;
   knownByModelMask: Record<string, Record<string, TokenUsage>>;
   records: number;
