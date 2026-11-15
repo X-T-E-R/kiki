@@ -1151,7 +1151,7 @@ function ChildAgentWorkspace({
     }
   };
   // ---- model switching (child): the same panel and queue as main ----
-  const modelSwitches = useModelSwitches(sessionId, agentId);
+  const modelSwitches = useModelSwitches(sessionId, agentId, agentLiveState.queuedPromptMeta);
   const currentChildCanonicalModel = displayModel === undefined
     ? undefined
     : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;

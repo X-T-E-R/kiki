@@ -40,7 +40,7 @@ import type {
 import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID, type AgentTurnOutcome } from '../agentTree';
-import { isModelSwitchQueueId } from '../modelSwitchQueue';
+import { isModelSwitchQueueId, modelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
@@ -4899,6 +4899,17 @@ export function projectAgentTranscriptView(
         existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls && existing.userMessageId === userMessageId && existing.content === content
           ? existing
           : { appendTiming, revision, queuePosition, runtimeControls, userMessageId, content };
+    }
+  }
+  const switchPositions = snapshot.meta.modelSwitchQueuePositions;
+  if (switchPositions !== undefined) {
+    for (const [operationId, queuePosition] of Object.entries(switchPositions)) {
+      const switchId = modelSwitchQueueId(operationId);
+      const existing = previousQueuedMeta[switchId];
+      queuedPromptMeta[switchId] =
+        existing !== undefined && existing.appendTiming === 'agent_idle' && existing.queuePosition === queuePosition
+          ? existing
+          : { appendTiming: 'agent_idle', queuePosition };
     }
   }
   let running: TranscriptPrompt | undefined;

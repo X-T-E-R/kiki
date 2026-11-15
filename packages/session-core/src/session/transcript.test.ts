@@ -30,7 +30,7 @@ import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
-import { mergeSessionQueueRows } from './modelSwitchQueue';
+import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 
 import {
   agentTranscriptPageFromResponse,
@@ -7642,6 +7642,73 @@ describe('queued prompt scheduling projection', () => {
       { kind: 'message', promptId: 'C' },
       { kind: 'message', promptId: 'D' },
       { kind: 'modelSwitch', operationId: 'sw-after-d' },
+    ]);
+  });
+
+  it('synchronously compacts and reorders modelSwitch slots without a new switch event or reconnect', () => {
+    const baseRecords = [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'Prompt A' }] }, queueIndex: 0, time: 1_000 },
+      {
+        type: 'prompt.model_switch_queued',
+        operationId: 'M',
+        queueIndex: 1,
+        entry: { placement: 'queued' },
+        receipt: { operationId: 'M', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+        time: 1_001,
+      },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Prompt B' }] }, queueIndex: 2, time: 1_002 },
+    ];
+    const staleSwitchFromWs = { operationId: 'M', queueIndex: 1 };
+
+    const afterRemoveA = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      replayAgentWire('main', [
+        ...baseRecords,
+        { type: 'prompt.aborted', promptId: 'A', abortedAt: FIXED_AT_1, beforeStart: true, time: 1_003 },
+      ]),
+    );
+    expect(afterRemoveA.queuedPromptIds).toEqual(['B']);
+    expect(resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterRemoveA.queuedPromptMeta)).toBe(0);
+    expect(
+      mergeSessionQueueRows(queuedPromptPreviews(afterRemoveA), [
+        {
+          operationId: 'M',
+          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterRemoveA.queuedPromptMeta),
+        },
+      ]),
+    ).toEqual([
+      { kind: 'modelSwitch', operationId: 'M' },
+      { kind: 'message', promptId: 'B' },
+    ]);
+
+    const afterMoveBAhead = projectAgentTranscriptView(
+      afterRemoveA,
+      'main',
+      replayAgentWire('main', [
+        ...baseRecords,
+        { type: 'prompt.aborted', promptId: 'A', abortedAt: FIXED_AT_1, beforeStart: true, time: 1_003 },
+        {
+          type: 'prompt.moved',
+          promptId: 'B',
+          targetIndex: 0,
+          queuedPromptIds: ['B', '\u0000model-switch:M'],
+          movedAt: FIXED_AT_2,
+          time: 1_004,
+        },
+      ]),
+    );
+    expect(resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterMoveBAhead.queuedPromptMeta)).toBe(1);
+    expect(
+      mergeSessionQueueRows(queuedPromptPreviews(afterMoveBAhead), [
+        {
+          operationId: 'M',
+          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterMoveBAhead.queuedPromptMeta),
+        },
+      ]),
+    ).toEqual([
+      { kind: 'message', promptId: 'B' },
+      { kind: 'modelSwitch', operationId: 'M' },
     ]);
   });
 

@@ -755,6 +755,99 @@ describe('QueueStrip drawer body', () => {
     });
     expect(onRemove).toHaveBeenCalledWith('cron-queue-accepted');
   });
+
+  it('renders M -> B at slots 0 and 1 after removing A, and B -> M after moving B ahead of M, without a new switch event', async () => {
+    const { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } = await import('@kiki/transcript');
+    const { createViewState, projectAgentTranscriptView, queuedPromptPreviews } = await import('@kiki/session-core/session');
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyWire = (record: import('@kiki/transcript').TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+
+    applyWire({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'First prompt A' }] }, queueIndex: 0, time: 1_000 });
+    applyWire({
+      type: 'prompt.model_switch_queued',
+      operationId: 'M',
+      queueIndex: 1,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'M', state: 'pending', fromModel: 'model/old', toModel: 'model/new', mode: 'direct' },
+      time: 1_001,
+    });
+    applyWire({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Second prompt B' }] }, queueIndex: 2, time: 1_002 });
+
+    // Simulate useModelSwitches holding M's initial queueIndex: 1 with no further switch WS events.
+    const staleSwitches = [
+      {
+        input: { operationId: 'M', model: 'model/new', mode: 'direct' as const },
+        revision: 0,
+        receipt: { operationId: 'M', agentId: 'main', state: 'pending' as const, fromModel: 'model/old', toModel: 'model/new', mode: 'direct' as const },
+        originalBinding: { model: 'model/old', thinking: '' },
+        queueIndex: 1,
+      },
+    ];
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    containers.push(host);
+    const root = createRoot(host);
+    roots.push(root);
+    let view = createViewState('session-r1');
+    const draw = async () => {
+      view = projectAgentTranscriptView(view, 'main', transcript.snapshot());
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <QueueStrip
+              items={queuedPromptPreviews(view)}
+              modelSwitches={staleSwitches}
+              queuedPromptMeta={view.queuedPromptMeta}
+              onSendNow={() => {}}
+              onRemove={() => {}}
+              onClearAll={() => {}}
+            />
+          </I18nProvider>,
+        );
+      });
+    };
+
+    const domOrder = () =>
+      rows(host).map((row) => ({
+        id: row.getAttribute('data-queue-item') ?? `switch:${row.getAttribute('data-queue-model-switch')}`,
+        slot: Number(row.getAttribute('data-queue-index')),
+      }));
+
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'A', slot: 0 },
+      { id: 'switch:M', slot: 1 },
+      { id: 'B', slot: 2 },
+    ]);
+
+    // Remove A with NO new switch event and NO reconnect.
+    applyWire({ type: 'prompt.aborted', promptId: 'A', abortedAt: '2026-06-09T00:00:03.000Z', beforeStart: true, time: 1_003 });
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'switch:M', slot: 0 },
+      { id: 'B', slot: 1 },
+    ]);
+
+    // Reorder B ahead of M via prompt.moved with NO new switch event.
+    applyWire({
+      type: 'prompt.moved',
+      promptId: 'B',
+      targetIndex: 0,
+      queuedPromptIds: ['B', '\u0000model-switch:M'],
+      movedAt: '2026-06-09T00:00:04.000Z',
+      time: 1_004,
+    });
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'B', slot: 0 },
+      { id: 'switch:M', slot: 1 },
+    ]);
+  });
 });
 
 describe('QueueStrip reorder', () => {

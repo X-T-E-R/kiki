@@ -492,7 +492,14 @@ function isWireInitOnlyRecord(record: ContextRecord, index: number): boolean {
 
 function isNonHistoryMetaOnlyOp(op: TranscriptOperation): boolean {
   if (op.op !== 'meta.merge') return false;
-  if (op.meta.goal !== undefined || op.meta.modes !== undefined || op.meta.promptQueueHold !== undefined) return false;
+  if (
+    op.meta.goal !== undefined ||
+    op.meta.modes !== undefined ||
+    op.meta.promptQueueHold !== undefined ||
+    op.meta.modelSwitchQueuePositions !== undefined
+  ) {
+    return false;
+  }
   if (op.meta.activity !== undefined && op.meta.activity !== 'idle') return false;
   const phase = op.meta.agent?.phase;
   return phase === undefined || phase.kind === 'idle';
@@ -814,7 +821,8 @@ export class TranscriptService {
     if (
       snapshot.meta.goal !== undefined ||
       snapshot.meta.modes !== undefined ||
-      snapshot.meta.promptQueueHold !== undefined
+      snapshot.meta.promptQueueHold !== undefined ||
+      snapshot.meta.modelSwitchQueuePositions !== undefined
     ) {
       return false;
     }

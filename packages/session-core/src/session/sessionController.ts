@@ -4688,8 +4688,15 @@ export class SessionController {
     if (agentId !== MAIN_AGENT_ID) return true;
     this.unprojectedQueueReceipts.delete(promptId);
     const main = this.viewOf(MAIN_AGENT_ID);
-    const queuedPromptMeta = { ...main.queuedPromptMeta };
-    delete queuedPromptMeta[promptId];
+    const removedPosition = main.queuedPromptMeta[promptId]?.queuePosition;
+    const queuedPromptMeta: Record<string, QueuedPromptMeta> = {};
+    for (const [id, meta] of Object.entries(main.queuedPromptMeta)) {
+      if (id === promptId) continue;
+      queuedPromptMeta[id] =
+        removedPosition !== undefined && meta.queuePosition !== undefined && meta.queuePosition > removedPosition
+          ? { ...meta, queuePosition: meta.queuePosition - 1 }
+          : meta;
+    }
     this.publishView(MAIN_AGENT_ID, { ...main, version: main.version + 1,
       queuedPromptIds: main.queuedPromptIds.filter((id) => id !== promptId), queuedPromptMeta,
       blocks: main.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
@@ -4751,7 +4758,14 @@ export class SessionController {
     const main = this.viewOf(MAIN_AGENT_ID);
     const queuedPromptMeta: Record<string, QueuedPromptMeta> = { ...main.queuedPromptMeta };
     result.queued_prompt_ids.forEach((id, index) => {
-      if (isModelSwitchQueueId(id)) return;
+      if (isModelSwitchQueueId(id)) {
+        const existing = queuedPromptMeta[id];
+        queuedPromptMeta[id] =
+          existing !== undefined && existing.appendTiming === 'agent_idle' && existing.queuePosition === index
+            ? existing
+            : { appendTiming: 'agent_idle', queuePosition: index };
+        return;
+      }
       const receipt = this.unprojectedQueueReceipts.get(id);
       if (receipt !== undefined) {
         this.unprojectedQueueReceipts.delete(id);

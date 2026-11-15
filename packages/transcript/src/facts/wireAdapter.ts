@@ -167,6 +167,7 @@ export class TranscriptWireAdapter {
   readonly #cancelRequests = new Map<string, TurnCancellation>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
   readonly #queueOrder: string[] = [];
+  readonly #emittedSwitchPositions = new Map<string, number>();
   readonly #queuedModelSwitchIds = new Set<string>();
   readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
@@ -346,6 +347,12 @@ export class TranscriptWireAdapter {
         .map((prompt) => prompt.promptId);
       this.#queueOrder.splice(0, this.#queueOrder.length, ...recovered);
     }
+    this.#emittedSwitchPositions.clear();
+    for (const [slot, id] of this.#queueOrder.entries()) {
+      if (id.startsWith('\u0000model-switch:')) {
+        this.#emittedSwitchPositions.set(id.slice('\u0000model-switch:'.length), slot);
+      }
+    }
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
     this.#openBlockedBatchIds.clear();
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
@@ -459,12 +466,15 @@ export class TranscriptWireAdapter {
       const switchQueueId = `\u0000model-switch:${operationId}`;
       if (record.type === 'prompt.model_switch_queued') {
         this.#queuedModelSwitchIds.add(operationId);
+        const rawSwitchIndex = numberOf(record['queueIndex']);
         if (entry?.['placement'] === 'setting') {
           this.#bindingSettingIds.add(operationId);
           this.removeQueueSlot(switchQueueId);
         } else {
           this.#bindingSettingIds.delete(operationId);
-          this.insertQueueSlot(switchQueueId, numberOf(record['queueIndex']));
+          if (rawSwitchIndex !== undefined && rawSwitchIndex >= 0) {
+            this.insertQueueSlot(switchQueueId, rawSwitchIndex);
+          }
         }
       }
       const setting = this.#bindingSettingIds.has(operationId);
@@ -661,7 +671,7 @@ export class TranscriptWireAdapter {
       this.#queueOrder.splice(0, this.#queueOrder.length, ...ids);
       const operations: TranscriptOperation[] = [];
       for (const [queuePosition, id] of ids.entries()) {
-        if (this.#hiddenPromptIds.has(id)) continue;
+        if (this.#hiddenPromptIds.has(id) || id.startsWith('\u0000model-switch:')) continue;
         const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
         operations.push(
           this.storePrompt({
@@ -671,7 +681,7 @@ export class TranscriptWireAdapter {
           }),
         );
       }
-      return operations;
+      return [...operations, ...this.syncSwitchPositionOps()];
     }
     if (record.type === 'prompt.launch_committed') {
       this.#openBlockedBatchIds.clear();
@@ -794,6 +804,19 @@ export class TranscriptWireAdapter {
     this.#queueOrder.splice(0, this.#queueOrder.length, ...ids);
   }
 
+  switchPositions(): Readonly<Record<string, number>> | undefined {
+    return this.#emittedSwitchPositions.size === 0 ? undefined : Object.fromEntries(this.#emittedSwitchPositions);
+  }
+
+  syncSwitchPositions(positions: Readonly<Record<string, number>> | undefined): void {
+    this.#emittedSwitchPositions.clear();
+    if (positions !== undefined) {
+      for (const [operationId, slot] of Object.entries(positions)) {
+        this.#emittedSwitchPositions.set(operationId, slot);
+      }
+    }
+  }
+
   syncPrompt(prompt: TranscriptPrompt): void {
     this.#prompts.set(prompt.promptId, prompt);
     if (prompt.status === 'queued') {
@@ -826,7 +849,28 @@ export class TranscriptWireAdapter {
       if (prior?.status !== 'queued' || prior.queuePosition === undefined || prior.queuePosition === slot) continue;
       operations.push(this.storePrompt({ ...prior, queuePosition: slot }));
     }
-    return operations;
+    return [...operations, ...this.syncSwitchPositionOps()];
+  }
+
+  private syncSwitchPositionOps(): TranscriptOperation[] {
+    const next = new Map<string, number>();
+    for (const [slot, id] of this.#queueOrder.entries()) {
+      if (id.startsWith('\u0000model-switch:')) {
+        next.set(id.slice('\u0000model-switch:'.length), slot);
+      }
+    }
+    if (
+      next.size === this.#emittedSwitchPositions.size &&
+      [...next.entries()].every(([operationId, slot]) => this.#emittedSwitchPositions.get(operationId) === slot)
+    ) {
+      return [];
+    }
+    this.#emittedSwitchPositions.clear();
+    for (const [operationId, slot] of next) this.#emittedSwitchPositions.set(operationId, slot);
+    return [{
+      op: 'meta.merge',
+      meta: { modelSwitchQueuePositions: next.size === 0 ? null : Object.fromEntries(next) },
+    }];
   }
 
   private storePrompt(prompt: TranscriptPrompt): TranscriptOperation {

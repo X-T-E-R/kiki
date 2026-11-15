@@ -485,6 +485,14 @@ export class AgentTranscriptDraft {
       activity: meta.activity ?? this.#meta.activity,
       modes: modes !== undefined && modes.plan === undefined ? undefined : modes,
       agent,
+      promptQueueHold:
+        meta.promptQueueHold === null
+          ? undefined
+          : (meta.promptQueueHold ?? this.#meta.promptQueueHold),
+      modelSwitchQueuePositions:
+        meta.modelSwitchQueuePositions === null
+          ? undefined
+          : (meta.modelSwitchQueuePositions ?? this.#meta.modelSwitchQueuePositions),
     };
     if (transcriptValueEquals(next, this.#meta)) return { changed: false, toolCallCountDelta: 0 };
     this.#meta = next;

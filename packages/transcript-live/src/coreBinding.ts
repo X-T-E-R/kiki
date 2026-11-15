@@ -212,9 +212,6 @@ export function bindSessionTranscript(
       } catch {
         continue;
       }
-      const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
-        { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
-      ];
       const orderedIds = [
         ...snapshot.pending.map((item) => ({ id: item.id, index: item.queueIndex ?? Number.MAX_SAFE_INTEGER })),
         ...(snapshot.modelSwitches ?? [])
@@ -223,9 +220,32 @@ export function bindSessionTranscript(
       ]
         .toSorted((left, right) => left.index - right.index)
         .map((entry) => entry.id);
+      const seededSwitchPositions: Record<string, number> = {};
+      for (const [slot, id] of orderedIds.entries()) {
+        if (id.startsWith('\u0000model-switch:')) {
+          seededSwitchPositions[id.slice('\u0000model-switch:'.length)] = slot;
+        }
+      }
+      const nextSwitchMeta =
+        Object.keys(seededSwitchPositions).length > 0
+          ? seededSwitchPositions
+          : store.getAgent(agent.id)?.getMeta().modelSwitchQueuePositions !== undefined
+            ? null
+            : undefined;
+      const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
+        {
+          op: 'meta.merge',
+          meta: nextSwitchMeta === undefined
+            ? { promptQueueHold: snapshot.hold ?? null }
+            : { promptQueueHold: snapshot.hold ?? null, modelSwitchQueuePositions: nextSwitchMeta },
+        },
+      ];
       const wireAdapter = wireAdapterFor(agent.id);
+      const syncedPositions = Object.keys(seededSwitchPositions).length > 0 ? seededSwitchPositions : undefined;
       liveAdapter.syncQueueOrder(orderedIds);
+      liveAdapter.syncSwitchPositions(syncedPositions);
       wireAdapter.syncQueueOrder(orderedIds);
+      wireAdapter.syncSwitchPositions(syncedPositions);
       if (snapshot.active !== undefined && isQueueVisiblePrompt(snapshot.active)) {
         const running = promptFromSnapshot(snapshot.active, 'running');
         ops.push(...liveAdapter.seedPrompt(running));
@@ -279,6 +299,7 @@ export function bindSessionTranscript(
         if (op.op === 'prompt.upsert') liveAdapterFor(agentId).syncPrompt(op.prompt);
       }
       liveAdapterFor(agentId).syncQueueOrder(wireAdapterFor(agentId).queueOrder());
+      liveAdapterFor(agentId).syncSwitchPositions(wireAdapterFor(agentId).switchPositions());
       return;
     }
     const promptId = event['promptId'];
@@ -289,6 +310,7 @@ export function bindSessionTranscript(
         applyOps(agentId, ops);
         for (const op of ops) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
         wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+        wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
         return;
       }
       if (typeof promptId === 'string') {
@@ -296,6 +318,7 @@ export function bindSessionTranscript(
         applyOps(agentId, ops);
         for (const op of ops) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
         wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+        wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
         return;
       }
     }
@@ -326,6 +349,7 @@ export function bindSessionTranscript(
         if (op.op === 'prompt.upsert') liveAdapterFor(agentId).syncPrompt(op.prompt);
       }
       liveAdapterFor(agentId).syncQueueOrder(wireAdapterFor(agentId).queueOrder());
+      liveAdapterFor(agentId).syncSwitchPositions(wireAdapterFor(agentId).switchPositions());
       if (event.type === 'prompt.outcome_committed') return;
     }
     if (event.type === 'prompt.moved') seedPrompts(agentId);
@@ -358,6 +382,7 @@ export function bindSessionTranscript(
     if (event.type.startsWith('prompt.')) {
       for (const op of liveOps) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
       wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+      wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
     }
   };
 

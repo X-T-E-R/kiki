@@ -323,6 +323,7 @@ export class AgentTranscriptLiveAdapter {
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */
   private readonly prompts = new Map<string, TranscriptPrompt>();
   private readonly queueOrderList: string[] = [];
+  private readonly emittedSwitchPositions = new Map<string, number>();
   private readonly pendingTaskNotifications: TaskNotifiedEvent[] = [];
   /** turnId → step usages reported so far; folded into the turn header at `turn.ended`. */
   private readonly stepUsageByTurn = new Map<string, StepUsage[]>();
@@ -1771,6 +1772,19 @@ export class AgentTranscriptLiveAdapter {
     this.queueOrderList.splice(0, this.queueOrderList.length, ...ids);
   }
 
+  switchPositions(): Readonly<Record<string, number>> | undefined {
+    return this.emittedSwitchPositions.size === 0 ? undefined : Object.fromEntries(this.emittedSwitchPositions);
+  }
+
+  syncSwitchPositions(positions: Readonly<Record<string, number>> | undefined): void {
+    this.emittedSwitchPositions.clear();
+    if (positions !== undefined) {
+      for (const [operationId, slot] of Object.entries(positions)) {
+        this.emittedSwitchPositions.set(operationId, slot);
+      }
+    }
+  }
+
   syncPrompt(prompt: TranscriptPrompt): void {
     this.prompts.set(prompt.promptId, prompt);
     if (prompt.status === 'queued') {
@@ -1882,7 +1896,7 @@ export class AgentTranscriptLiveAdapter {
       }));
       ops.push({ op: 'prompt.upsert', prompt });
     }
-    return ops;
+    return [...ops, ...this.syncSwitchPositionOps()];
   }
 
   private onHookResult(event: { readonly type: 'hook.result' } & HookResult): TranscriptOperation[] {
@@ -2028,7 +2042,28 @@ export class AgentTranscriptLiveAdapter {
       this.prompts.set(id, updated);
       ops.push({ op: 'prompt.upsert', prompt: updated });
     }
-    return ops;
+    return [...ops, ...this.syncSwitchPositionOps()];
+  }
+
+  private syncSwitchPositionOps(): TranscriptOperation[] {
+    const next = new Map<string, number>();
+    for (const [slot, id] of this.queueOrderList.entries()) {
+      if (id.startsWith('\u0000model-switch:')) {
+        next.set(id.slice('\u0000model-switch:'.length), slot);
+      }
+    }
+    if (
+      next.size === this.emittedSwitchPositions.size &&
+      [...next.entries()].every(([operationId, slot]) => this.emittedSwitchPositions.get(operationId) === slot)
+    ) {
+      return [];
+    }
+    this.emittedSwitchPositions.clear();
+    for (const [operationId, slot] of next) this.emittedSwitchPositions.set(operationId, slot);
+    return [{
+      op: 'meta.merge',
+      meta: { modelSwitchQueuePositions: next.size === 0 ? null : Object.fromEntries(next) },
+    }];
   }
 
   private upsertPrompt(

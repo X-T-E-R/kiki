@@ -4175,6 +4175,52 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts.find((p) => p.promptId === 'E')?.queuePosition).toBe(2);
   });
 
+  it('projects compact modelSwitchQueuePositions synchronously across prompt removal and prompt.moved', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyRecord = (record: TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+    applyRecord({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, time: 1_000 });
+    applyRecord({
+      type: 'prompt.model_switch_queued',
+      operationId: 'M',
+      queueIndex: 1,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'M', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_001,
+    });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'B' }] }, queueIndex: 2, time: 1_002 });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(transcript.getPrompt('A')?.queuePosition).toBe(0);
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(2);
+
+    applyRecord({ type: 'prompt.aborted', promptId: 'A', abortedAt: '2026-06-09T00:00:03.000Z', beforeStart: true, time: 1_003 });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 0 });
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(1);
+
+    applyRecord({
+      type: 'prompt.moved',
+      promptId: 'B',
+      targetIndex: 0,
+      queuedPromptIds: ['B', '\u0000model-switch:M'],
+      movedAt: '2026-06-09T00:00:04.000Z',
+      time: 1_004,
+    });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(0);
+    expect(transcript.getPrompts().has('\u0000model-switch:M')).toBe(false);
+
+    applyRecord({
+      type: 'prompt.model_switch_status',
+      operationId: 'M',
+      receipt: { operationId: 'M', state: 'cancelled', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_005,
+    });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toBeUndefined();
+  });
+
   it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
     const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
     const adapter = new TranscriptWireAdapter('main');

@@ -3023,7 +3023,7 @@ export function SessionView({
   // read through `configQuery` above); the resolution snapshot is captured
   // when a pick is accepted, never re-derived later, so a settings edit cannot
   // change an accepted switch.
-  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID);
+  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID, state.queuedPromptMeta);
   const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
     setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
   }, []);
@@ -5104,6 +5104,7 @@ boundExecution,
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
           modelSwitches={modelSwitches.switches}
+          queuedPromptMeta={state.queuedPromptMeta}
           resolveModelId={value => resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value}
           onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
@@ -5119,7 +5120,7 @@ boundExecution,
     queuedItems, ordinaryQueuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
-    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
+    modelSwitches.switches, state.queuedPromptMeta, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
     controller, sessionId, state.detailLoads, state.contentRefs, state.tasks, openAgent,
   ]);

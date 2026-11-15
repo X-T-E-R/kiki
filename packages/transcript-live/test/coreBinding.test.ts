@@ -2287,6 +2287,60 @@ describe('bindSessionTranscript', () => {
     reducer.apply(adapter.finish());
     expect(cold.getPrompt('C')?.queuePosition).toBe(0);
     expect(cold.getPrompt('D')?.queuePosition).toBe(1);
+    expect(live.getMeta().modelSwitchQueuePositions).toEqual({ 'sw-after-d': 2 });
+    expect(cold.getMeta().modelSwitchQueuePositions).toEqual({ 'sw-after-d': 2 });
+  });
+
+  it('synchronizes modelSwitchQueuePositions with prompt removal and prompt.moved across live and cold', async () => {
+    const disposables = new DisposableStore();
+    onTestFinished(() => disposables.dispose());
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('session-switch-sync');
+    disposables.add(bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents)));
+    const records: TranscriptWireRecord[] = [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, appendTiming: 'agent_idle', revision: 0, time: 1_000 },
+      {
+        type: 'prompt.model_switch_queued',
+        operationId: 'M',
+        queueIndex: 1,
+        entry: { placement: 'queued' },
+        receipt: { operationId: 'M', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+        time: 1_001,
+      },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'B' }] }, queueIndex: 2, appendTiming: 'agent_idle', revision: 0, time: 1_002 },
+    ];
+    for (const record of records) main.bus.emit(ev(record));
+    const live = store.getAgent('main')!;
+    expect(live.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(live.getPrompt('B')?.queuePosition).toBe(2);
+
+    const abortedA = { type: 'prompt.aborted', promptId: 'A', abortedAt: '2026-01-01T00:00:03.000Z', beforeStart: true, time: 1_003 };
+    records.push(abortedA);
+    main.bus.emit(ev(abortedA));
+    expect(live.getMeta().modelSwitchQueuePositions).toEqual({ M: 0 });
+    expect(live.getPrompt('B')?.queuePosition).toBe(1);
+
+    const movedB = {
+      type: 'prompt.moved',
+      promptId: 'B',
+      targetIndex: 0,
+      queuedPromptIds: ['B', '\u0000model-switch:M'],
+      movedAt: '2026-01-01T00:00:04.000Z',
+      time: 1_004,
+    };
+    records.push(movedB);
+    main.bus.emit(ev(movedB));
+    expect(live.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(live.getPrompt('B')?.queuePosition).toBe(0);
+
+    const cold = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(cold);
+    for (const record of records) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    expect(cold.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(cold.getPrompt('B')?.queuePosition).toBe(0);
   });
 
   it('keeps live prompt-bound controls through submitted and queued events on one message', async () => {

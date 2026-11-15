@@ -48,7 +48,7 @@ import { parseSelectionCarryovers, selectionCarryoverPreviewText, stripThreadRef
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { isOrdinaryQueueItem, replaceAgentRefs, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
-import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
+import { mergeSessionQueueRows, pendingModelSwitchChange, resolveModelSwitchQueueIndex, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
@@ -261,6 +261,7 @@ function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) 
 export function QueueStrip({
   items,
   modelSwitches,
+  queuedPromptMeta,
   resolveModelId,
   onSendNow,
   onRemove,
@@ -295,6 +296,7 @@ export function QueueStrip({
    * contract only a pending operation can be cancelled.
    */
   readonly modelSwitches?: readonly QueuedModelSwitch[];
+  readonly queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>;
   readonly resolveModelId?: (value: string) => string;
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
@@ -365,9 +367,12 @@ export function QueueStrip({
       items.map((item) => ({ promptId: item.promptId, queuePosition: item.queuePosition })),
       (modelSwitches ?? [])
         .filter((entry) => entry.queueIndex >= 0)
-        .map((entry) => ({ operationId: entry.input.operationId, queueIndex: entry.queueIndex })),
+        .map((entry) => ({
+          operationId: entry.input.operationId,
+          queueIndex: resolveModelSwitchQueueIndex(entry.input.operationId, entry.queueIndex, queuedPromptMeta),
+        })),
     ),
-    [items, modelSwitches],
+    [items, modelSwitches, queuedPromptMeta],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
   const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && !item.steerAccepted && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
