@@ -181,7 +181,7 @@ export function SpaceSwitcher() {
     };
     let actionStarted = false;
     let guardCancelled = false;
-    let result: Promise<unknown>;
+    let result: Promise<unknown> | void;
     if (mode === 'switch') {
       actionStarted = true;
       result = openTarget();
