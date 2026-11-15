@@ -464,6 +464,8 @@ export const promptQueueHoldMetaSchema = z.object({
   count: z.number().int().nonnegative(),
 });
 
+export const modelSwitchQueuePositionsMetaSchema = z.record(z.string(), z.number().int().nonnegative());
+
 export const transcriptMetaSchema = z.object({
   ...contentWindowSchema.shape,
   goal: goalMetaSchema.optional(),
@@ -471,6 +473,7 @@ export const transcriptMetaSchema = z.object({
   activity: z.enum(['idle', 'turn', 'disposing', 'unknown']).optional(),
   agent: agentStatusMetaSchema.optional(),
   promptQueueHold: promptQueueHoldMetaSchema.optional(),
+  modelSwitchQueuePositions: modelSwitchQueuePositionsMetaSchema.optional(),
 });
 
 /** Clearable fields set to `null` in a merge are removed from the materialized meta. */
@@ -478,6 +481,7 @@ export const transcriptMetaMergeSchema = transcriptMetaSchema.extend({
   goal: goalMetaSchema.nullable().optional(),
   modes: modesMetaMergeSchema.optional(),
   promptQueueHold: promptQueueHoldMetaSchema.nullable().optional(),
+  modelSwitchQueuePositions: modelSwitchQueuePositionsMetaSchema.nullable().optional(),
 });
 
 export const attachmentSchema = z.object({

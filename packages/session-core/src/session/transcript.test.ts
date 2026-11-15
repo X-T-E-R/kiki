@@ -32,6 +32,7 @@ import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
+import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 
 import {
   agentTranscriptPageFromResponse,
@@ -7569,6 +7570,247 @@ describe('queued prompt scheduling projection', () => {
       promptId: 'p-photo', text: '', content,
       media: [{ kind: 'image', url: 'https://example.test/photo.png', mime: undefined }],
     })]);
+  });
+
+  it('excludes accepted steers from queued previews so scheduled prompts keep their own text', () => {
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Nightly digest</prompt></cron-fire>' }];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'msg_now_1',
+            userMessageId: 'msg_now_1',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: [{ type: 'text', text: 'Immediate send now text' }],
+          },
+          {
+            promptId: 'scheduled-idle',
+            userMessageId: 'scheduled-idle',
+            originKind: 'cron_job',
+            originDeliveryMode: 'idle',
+            status: 'queued',
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: cronContent,
+          },
+        ],
+      }),
+    );
+    expect(projected.queuedPromptIds).toEqual(['scheduled-idle']);
+    expect(queuedPromptPreviews(projected)).toEqual([
+      expect.objectContaining({
+        promptId: 'scheduled-idle',
+        originKind: 'cron_job',
+        cronDeliveryMode: 'idle',
+        text: 'Nightly digest',
+      }),
+    ]);
+  });
+
+  it('keeps queued prompts in compact 0..N-1 coordinates so mergeSessionQueueRows orders C -> D -> switch', () => {
+    const replayed = replayAgentWire('main', [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'Prompt A' }] }, queueIndex: 0, time: 1_000 },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Prompt B' }] }, queueIndex: 1, time: 1_001 },
+      { type: 'prompt.enqueued', promptId: 'C', userMessageId: 'C', message: { content: [{ type: 'text', text: 'Prompt C' }] }, queueIndex: 2, time: 1_002 },
+      { type: 'prompt.launch_committed', promptId: 'A', time: 1_003 },
+      { type: 'prompt.completed', promptId: 'A', reason: 'completed', time: 1_004 },
+      { type: 'prompt.launch_committed', promptId: 'B', time: 1_005 },
+      { type: 'prompt.completed', promptId: 'B', reason: 'completed', time: 1_006 },
+      { type: 'prompt.enqueued', promptId: 'D', userMessageId: 'D', message: { content: [{ type: 'text', text: 'Prompt D' }] }, queueIndex: 1, time: 1_007 },
+      {
+        type: 'prompt.model_switch_queued',
+        operationId: 'sw-after-d',
+        queueIndex: 2,
+        entry: { placement: 'queued' },
+        receipt: { operationId: 'sw-after-d', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+        time: 1_008,
+      },
+    ]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', replayed);
+    const previews = queuedPromptPreviews(projected);
+    expect(previews.map((item) => ({ promptId: item.promptId, queuePosition: item.queuePosition }))).toEqual([
+      { promptId: 'C', queuePosition: 0 },
+      { promptId: 'D', queuePosition: 1 },
+    ]);
+    const rows = mergeSessionQueueRows(previews, [
+      { operationId: 'sw-after-d', queueIndex: 2 },
+    ]);
+    expect(rows).toEqual([
+      { kind: 'message', promptId: 'C' },
+      { kind: 'message', promptId: 'D' },
+      { kind: 'modelSwitch', operationId: 'sw-after-d' },
+    ]);
+  });
+
+  it('synchronously compacts and reorders modelSwitch slots without a new switch event or reconnect', () => {
+    const baseRecords = [
+      { type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'Prompt A' }] }, queueIndex: 0, time: 1_000 },
+      {
+        type: 'prompt.model_switch_queued',
+        operationId: 'M',
+        queueIndex: 1,
+        entry: { placement: 'queued' },
+        receipt: { operationId: 'M', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+        time: 1_001,
+      },
+      { type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Prompt B' }] }, queueIndex: 2, time: 1_002 },
+    ];
+    const staleSwitchFromWs = { operationId: 'M', queueIndex: 1 };
+
+    const afterRemoveA = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      replayAgentWire('main', [
+        ...baseRecords,
+        { type: 'prompt.aborted', promptId: 'A', abortedAt: FIXED_AT_1, beforeStart: true, time: 1_003 },
+      ]),
+    );
+    expect(afterRemoveA.queuedPromptIds).toEqual(['B']);
+    expect(resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterRemoveA.queuedPromptMeta)).toBe(0);
+    expect(
+      mergeSessionQueueRows(queuedPromptPreviews(afterRemoveA), [
+        {
+          operationId: 'M',
+          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterRemoveA.queuedPromptMeta),
+        },
+      ]),
+    ).toEqual([
+      { kind: 'modelSwitch', operationId: 'M' },
+      { kind: 'message', promptId: 'B' },
+    ]);
+
+    const afterMoveBAhead = projectAgentTranscriptView(
+      afterRemoveA,
+      'main',
+      replayAgentWire('main', [
+        ...baseRecords,
+        { type: 'prompt.aborted', promptId: 'A', abortedAt: FIXED_AT_1, beforeStart: true, time: 1_003 },
+        {
+          type: 'prompt.moved',
+          promptId: 'B',
+          targetIndex: 0,
+          queuedPromptIds: ['B', '\u0000model-switch:M'],
+          movedAt: FIXED_AT_2,
+          time: 1_004,
+        },
+      ]),
+    );
+    expect(resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterMoveBAhead.queuedPromptMeta)).toBe(1);
+    expect(
+      mergeSessionQueueRows(queuedPromptPreviews(afterMoveBAhead), [
+        {
+          operationId: 'M',
+          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchFromWs.queueIndex, afterMoveBAhead.queuedPromptMeta),
+        },
+      ]),
+    ).toEqual([
+      { kind: 'message', promptId: 'B' },
+      { kind: 'modelSwitch', operationId: 'M' },
+    ]);
+  });
+
+  it('keeps an accepted queue-mode cron_job prompt visible as held while excluding accepted user steers', () => {
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Hourly sync</prompt></cron-fire>' }];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'user-accepted',
+            userMessageId: 'user-accepted',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: [{ type: 'text', text: 'User steer' }],
+          },
+          {
+            promptId: 'cron-accepted',
+            userMessageId: 'cron-accepted',
+            originKind: 'cron_job',
+            originDeliveryMode: 'queue',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: cronContent,
+          },
+        ],
+      }),
+    );
+    expect(projected.queuedPromptIds).toEqual(['cron-accepted']);
+    const previews = queuedPromptPreviews(projected);
+    expect(previews).toEqual([
+      expect.objectContaining({
+        promptId: 'cron-accepted',
+        originKind: 'cron_job',
+        cronDeliveryMode: 'queue',
+        steerAccepted: true,
+        text: 'Hourly sync',
+      }),
+    ]);
+    expect(isOrdinaryQueueItem(previews[0]!)).toBe(false);
+  });
+
+  it('recovers formal text, annotations, and skill invocations in queuedPromptPreviews when a UserBlock is absent or re-id matched', () => {
+    const selection = selectionCarryoverPresentation(
+      [{ quote: 'Selected line', comment: 'Keep this annotation' }],
+      [],
+    );
+    const annotationContent: Message['content'] = [
+      { type: 'text', text: selection.prefix, presentation: selection.presentation },
+    ];
+    const skillContent: Message['content'] = [
+      { type: 'text', text: '/review --fast' },
+    ];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'p-skill',
+            userMessageId: 'um-skill',
+            status: 'queued',
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: skillContent,
+          },
+          {
+            promptId: 'p-annot-2',
+            userMessageId: 'um-annot',
+            status: 'queued',
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: annotationContent,
+          },
+        ],
+      }),
+    );
+    const withoutUserBlock: SessionViewState = {
+      ...projected,
+      blocks: projected.blocks.map((block) =>
+        block.kind === 'user' && block.userMessageId === 'um-annot'
+          ? { ...block, promptId: 'p-annot-old' }
+          : block,
+      ).filter((block) => !(block.kind === 'user' && block.promptId === 'p-skill')),
+    };
+    const previews = queuedPromptPreviews(withoutUserBlock);
+    expect(previews[0]).toMatchObject({
+      promptId: 'p-skill',
+      text: '/review --fast',
+    });
+    expect(previews[1]?.promptId).toBe('p-annot-2');
+    expect(parseSelectionCarryovers(previews[1]!.text, previews[1]!.presentation)).toMatchObject({
+      body: '',
+      annotations: [{ quote: 'Selected line', comment: 'Keep this annotation' }],
+    });
   });
 
   it.each([

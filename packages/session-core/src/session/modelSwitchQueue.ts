@@ -14,8 +14,22 @@ export function isModelSwitchQueueId(promptId: string): boolean {
   return promptId.startsWith(MODEL_SWITCH_QUEUE_ID_PREFIX);
 }
 
+export function modelSwitchQueueId(operationId: string): string {
+  return `${MODEL_SWITCH_QUEUE_ID_PREFIX}${operationId}`;
+}
+
 export function modelSwitchOperationIdFromQueueId(promptId: string): string {
   return promptId.slice(MODEL_SWITCH_QUEUE_ID_PREFIX.length);
+}
+
+export function resolveModelSwitchQueueIndex(
+  operationId: string,
+  fallbackQueueIndex: number,
+  queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>,
+): number {
+  if (fallbackQueueIndex < 0) return fallbackQueueIndex;
+  const liveSlot = queuedPromptMeta?.[modelSwitchQueueId(operationId)]?.queuePosition;
+  return liveSlot ?? fallbackQueueIndex;
 }
 
 export interface ModelSwitchQueueRowData {

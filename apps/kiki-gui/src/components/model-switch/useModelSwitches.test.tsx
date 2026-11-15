@@ -29,8 +29,24 @@ let node: HTMLDivElement;
 let handle: ModelSwitchesHandle;
 let listeners: Array<(event: AgentModelSwitchEvent) => void>;
 let ready: ReturnType<typeof deferred<void>>;
-function Probe({ session = 's1' }: { session?: string }) { handle = useModelSwitches(session, 'child'); return null; }
-async function render(session = 's1') { await act(async () => { root.render(<Probe session={session} />); }); }
+function Probe({
+  session = 's1',
+  queuedPromptMeta,
+}: {
+  session?: string;
+  queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>;
+}) {
+  handle = useModelSwitches(session, 'child', queuedPromptMeta);
+  return null;
+}
+async function render(
+  session = 's1',
+  queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>,
+) {
+  await act(async () => {
+    root.render(<Probe session={session} queuedPromptMeta={queuedPromptMeta} />);
+  });
+}
 async function emit(event: AgentModelSwitchEvent) { await act(async () => { listeners.at(-1)!(event); }); }
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -223,4 +239,24 @@ it('rereads the queue after reconnect and aborts a superseded list without cance
   expect(signal.aborted).toBe(true); expect(handle.switches[0]?.input.operationId).toBe('restored');
   await act(async () => { old.reject(new Error('aborted')); });
   expect(handle.error).toBeUndefined();
+});
+
+it('overrides stale switch queueIndex with live transcript slot while keeping settings negative', async () => {
+  const setting = { ...entry('setting-op'), placement: 'setting' as const, queueIndex: -1 };
+  connection.list.mockResolvedValue([entry('M', 'pending', 2), entry('M2', 'pending', 1), setting]);
+  await render('s1', {
+    '\u0000model-switch:M': { queuePosition: 0 },
+    '\u0000model-switch:M2': { queuePosition: 1 },
+    '\u0000model-switch:setting-op': { queuePosition: 0 },
+  });
+  expect(handle.switches.filter((item) => item.queueIndex >= 0).map((item) => ({
+    id: item.input.operationId,
+    queueIndex: item.queueIndex,
+  }))).toEqual([
+    { id: 'M', queueIndex: 0 },
+    { id: 'M2', queueIndex: 1 },
+  ]);
+  expect(handle.switches.find((item) => item.input.operationId === 'setting-op')?.queueIndex).toBe(-1);
+  expect(handle.active?.input.operationId).toBe('M');
+  expect(handle.dependency?.input.operationId).toBe('M2');
 });

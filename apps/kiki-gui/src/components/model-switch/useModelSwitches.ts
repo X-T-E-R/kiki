@@ -1,5 +1,6 @@
 /** One agent's switch queue, reconciled from snapshots and ordered live events without polling. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { resolveModelSwitchQueueIndex } from '@kiki/session-core/session/modelSwitchQueue';
 
 import { API_CODES, ApiError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import { useConnection } from '../../state/connection';
@@ -19,7 +20,11 @@ export interface ModelSwitchesHandle {
   readonly refresh: () => void;
 }
 
-export function useModelSwitches(sessionId: string, agentId: string | undefined): ModelSwitchesHandle {
+export function useModelSwitches(
+  sessionId: string,
+  agentId: string | undefined,
+  queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>,
+): ModelSwitchesHandle {
   const { client, scopeId, wsStatus } = useConnection();
   // KikiClient owns one stable Klient; a new React wrapper is not a new connection.
   const identity = client.klient;
@@ -145,11 +150,19 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
     previousStatus.current = wsStatus;
   }, [wsStatus, refresh]);
 
-  const switches = useMemo<readonly QueuedModelSwitch[]>(() => [...operations.values()].toSorted((left, right) => {
-    const leftIndex = left.placement === 'setting' ? -1 : left.queueIndex >= 0 ? left.queueIndex : Number.MAX_SAFE_INTEGER;
-    const rightIndex = right.placement === 'setting' ? -1 : right.queueIndex >= 0 ? right.queueIndex : Number.MAX_SAFE_INTEGER;
-    return leftIndex - rightIndex;
-  }), [operations]);
+  const switches = useMemo<readonly QueuedModelSwitch[]>(() => [...operations.values()]
+    .map((entry) => {
+      if (entry.placement === 'setting' || entry.queueIndex < 0 || (entry.receipt.state !== 'pending' && entry.receipt.state !== 'preparing')) {
+        return entry;
+      }
+      const resolvedIndex = resolveModelSwitchQueueIndex(entry.input.operationId, entry.queueIndex, queuedPromptMeta);
+      return resolvedIndex === entry.queueIndex ? entry : { ...entry, queueIndex: resolvedIndex };
+    })
+    .toSorted((left, right) => {
+      const leftIndex = left.placement === 'setting' ? -1 : left.queueIndex >= 0 ? left.queueIndex : Number.MAX_SAFE_INTEGER;
+      const rightIndex = right.placement === 'setting' ? -1 : right.queueIndex >= 0 ? right.queueIndex : Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex;
+    }), [operations, queuedPromptMeta]);
   const active = switches.find((entry) => entry.placement !== 'setting' && (entry.receipt.state === 'pending' || entry.receipt.state === 'preparing'));
   const latestSetting = switches.findLast((entry) => entry.placement === 'setting');
   const recoveringSetting = switches.find(entry => entry.placement === 'setting' && entry.receipt.state === 'preparing' && entry.receipt.error !== undefined);

@@ -11,6 +11,7 @@ import {
   getAnnotationOverridesSnapshot,
   parseSelectionCarryovers,
   resetAnnotationOverridesForTests,
+  selectionCarryoverPreviewText,
   subscribeAnnotationOverrides,
   writeAnnotationOverride,
   type TimelineAnnotation,
@@ -124,6 +125,29 @@ describe('parseSelectionCarryovers', () => {
     ]);
     expect(parsed.body).toBe('typed body');
     expect(parsed.body).not.toContain('kiki-source');
+  });
+
+  it('builds single-line carryover previews from body first, then annotation comments, then quotes', () => {
+    const withBody = selectionCarryoverPresentation([{ quote: 'quoted', comment: 'note' }], []);
+    expect(
+      selectionCarryoverPreviewText(parseSelectionCarryovers(`${withBody.prefix}formal body`, withBody.presentation)),
+    ).toBe('formal body');
+
+    const annotationOnly = selectionCarryoverPresentation(
+      [
+        { quote: 'first quote', comment: 'First note' },
+        { quote: 'second quote', comment: 'Second note' },
+      ],
+      [],
+    );
+    expect(
+      selectionCarryoverPreviewText(parseSelectionCarryovers(annotationOnly.prefix, annotationOnly.presentation)),
+    ).toBe('First note · Second note');
+
+    const quoteOnly = selectionCarryoverPresentation([{ quote: 'Quoted requirement', comment: '' }], []);
+    expect(
+      selectionCarryoverPreviewText(parseSelectionCarryovers(quoteOnly.prefix, quoteOnly.presentation)),
+    ).toBe('Quoted requirement');
   });
 });
 

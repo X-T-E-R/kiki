@@ -148,11 +148,13 @@ export interface TranscriptMeta extends ContentWindow {
   readonly activity?: ActivityMeta;
   readonly agent?: AgentStatusMeta;
   readonly promptQueueHold?: PromptQueueHoldMeta;
+  readonly modelSwitchQueuePositions?: Readonly<Record<string, number>>;
 }
 
 /** Contract shape of a `meta.merge` payload — like {@link TranscriptMeta}, but clearable keys may be `null`. */
-export type TranscriptMetaMerge = Omit<TranscriptMeta, 'modes' | 'goal' | 'promptQueueHold'> & {
+export type TranscriptMetaMerge = Omit<TranscriptMeta, 'modes' | 'goal' | 'promptQueueHold' | 'modelSwitchQueuePositions'> & {
   readonly modes?: ModesMetaMerge;
   readonly goal?: GoalMeta | null;
   readonly promptQueueHold?: PromptQueueHoldMeta | null;
+  readonly modelSwitchQueuePositions?: Readonly<Record<string, number>> | null;
 };

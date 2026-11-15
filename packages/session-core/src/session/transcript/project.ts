@@ -40,7 +40,7 @@ import type {
 import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID, type AgentTurnOutcome } from '../agentTree';
-import { isModelSwitchQueueId } from '../modelSwitchQueue';
+import { isModelSwitchQueueId, modelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
@@ -4895,8 +4895,15 @@ export function projectAgentTranscriptView(
   const queuedPrompts = prompts
     // Model-switch control items share the drain order under reserved ids;
     // they are not messages and surface through the model-switch event pair,
-    // never as queue rows or transcript blocks.
-    .filter((prompt) => prompt.status === 'queued' && !isModelSwitchQueueId(prompt.promptId))
+    // never as queue rows or transcript blocks. Accepted user steers render on
+    // the timeline; accepted cron_job steers have no user bubble and remain
+    // visible in the queue strip until step-boundary delivery.
+    .filter(
+      (prompt) =>
+        prompt.status === 'queued' &&
+        (!prompt.steerAccepted || prompt.originKind === 'cron_job') &&
+        !isModelSwitchQueueId(prompt.promptId),
+    )
     .toSorted(
       (left, right) =>
         (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
@@ -4911,13 +4918,28 @@ export function projectAgentTranscriptView(
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
     const runtimeControls = prompt.runtimeControls ?? existing?.runtimeControls;
+    const userMessageId = prompt.userMessageId ?? existing?.userMessageId;
+    const parts = promptContentParts(prompt.content);
     if (prompt.originKind === 'cron_job') {
-      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
+      const steerAccepted = prompt.steerAccepted === true ? true : undefined;
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, userMessageId, steerAccepted, originKind: prompt.originKind, content: parts, cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
     } else {
+      const content = parts.length > 0 ? parts : existing?.content;
       queuedPromptMeta[prompt.promptId] =
-        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls
+        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls && existing.userMessageId === userMessageId && existing.content === content
           ? existing
-          : { appendTiming, revision, queuePosition, runtimeControls };
+          : { appendTiming, revision, queuePosition, runtimeControls, userMessageId, content };
+    }
+  }
+  const switchPositions = snapshot.meta.modelSwitchQueuePositions;
+  if (switchPositions !== undefined) {
+    for (const [operationId, queuePosition] of Object.entries(switchPositions)) {
+      const switchId = modelSwitchQueueId(operationId);
+      const existing = previousQueuedMeta[switchId];
+      queuedPromptMeta[switchId] =
+        existing !== undefined && existing.appendTiming === 'agent_idle' && existing.queuePosition === queuePosition
+          ? existing
+          : { appendTiming: 'agent_idle', queuePosition };
     }
   }
   let running: TranscriptPrompt | undefined;

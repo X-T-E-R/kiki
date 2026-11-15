@@ -626,6 +626,228 @@ describe('QueueStrip drawer body', () => {
     expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('first parked prompt');
     expect(container.querySelector('[data-queue-first-timing]')?.textContent).toBe('after subagents');
   });
+
+  it('previews annotation comments and quotes without showing (attachment only), while keeping (attachment only) for media-only items', async () => {
+    const { selectionCarryoverPresentation } = await import('@kiki/session-core/composer');
+    const annotationOnly = selectionCarryoverPresentation(
+      [{ quote: 'Target paragraph', comment: 'Clarify this edge case' }],
+      [],
+    );
+    const quoteOnly = selectionCarryoverPresentation(
+      [{ quote: 'Quoted line alone', comment: '' }],
+      [],
+    );
+
+    const summaryHost = document.createElement('div');
+    document.body.append(summaryHost);
+    containers.push(summaryHost);
+    const summaryRoot = createRoot(summaryHost);
+    roots.push(summaryRoot);
+    await act(async () => {
+      summaryRoot.render(
+        <I18nProvider>
+          <QueueHeaderSummary
+            count={1}
+            first={{
+              text: annotationOnly.prefix,
+              presentation: annotationOnly.presentation,
+              timing: 'agent_idle',
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(summaryHost.querySelector('[data-queue-first-preview]')?.textContent).toBe('Clarify this edge case');
+    expect(summaryHost.textContent).not.toContain('(attachment only)');
+
+    await act(async () => {
+      summaryRoot.render(
+        <I18nProvider>
+          <QueueHeaderSummary
+            count={0}
+            heldCount={1}
+            first={{
+              text: 'Daily scheduled check',
+              cronDeliveryMode: 'idle',
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(summaryHost.querySelector('[data-queue-count]')).toBeNull();
+    expect(summaryHost.querySelector('[data-queue-held-count]')?.textContent).toBe('1 scheduled waiting');
+    expect(summaryHost.querySelector('[data-queue-first-preview]')?.textContent).toBe('Daily scheduled check');
+    expect(summaryHost.querySelector('[data-queue-first-timing]')?.textContent).toBe('Insert when idle');
+
+    const { container } = await renderStrip({
+      items: [
+        {
+          promptId: 'p-annot',
+          userMessageId: 'um-annot',
+          text: annotationOnly.prefix,
+          presentation: annotationOnly.presentation,
+        },
+        {
+          promptId: 'p-quote',
+          userMessageId: 'um-quote',
+          text: quoteOnly.prefix,
+          presentation: quoteOnly.presentation,
+        },
+        {
+          promptId: 'p-media',
+          userMessageId: 'um-media',
+          text: '',
+          media: [{ kind: 'image', url: 'https://example.test/only.png' }],
+        },
+      ],
+    });
+    const [annotRow, quoteRow, mediaRow] = rows(container);
+    expect(annotRow?.textContent).not.toContain('(attachment only)');
+    expect(annotRow?.querySelector('[data-annotation-bubble]')).not.toBeNull();
+    expect(quoteRow?.textContent).not.toContain('(attachment only)');
+    expect(quoteRow?.querySelector('[data-quote-chip]')?.textContent).toContain('Quoted line alone');
+    expect(mediaRow?.textContent).toContain('(attachment only)');
+  });
+
+  it('keeps an accepted queue-mode cron_job row visible as held steer without offering a duplicate Send now', async () => {
+    const onSendNow = vi.fn();
+    const onRemove = vi.fn();
+    const { container } = await renderStrip({
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+      onSendNow,
+      onRemove,
+      items: [
+        {
+          promptId: 'cron-queue-accepted',
+          userMessageId: 'cron-queue-accepted',
+          originKind: 'cron_job',
+          cronDeliveryMode: 'queue',
+          steerAccepted: true,
+          text: 'Hourly health check',
+        },
+        {
+          promptId: 'u-next',
+          userMessageId: 'u-next',
+          text: 'Follow-up user message',
+        },
+      ],
+    });
+    const [acceptedCronRow, userRow] = rows(container);
+    expect(acceptedCronRow?.getAttribute('data-queue-held')).toBe('steer');
+    expect(acceptedCronRow?.textContent).toContain('Hourly health check');
+    expect(acceptedCronRow?.textContent).toContain('Scheduled job');
+    expect(acceptedCronRow?.textContent).toContain('Insert immediately');
+    expect(acceptedCronRow?.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(acceptedCronRow?.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(acceptedCronRow?.querySelector('[data-queue-timing]')).toBeNull();
+    expect(userRow?.querySelector('button[aria-label="Send now"]')).not.toBeNull();
+
+    const removeBtn = acceptedCronRow?.querySelector('button[aria-label="Remove"]') as HTMLButtonElement | null;
+    expect(removeBtn).not.toBeNull();
+    await act(async () => {
+      removeBtn?.click();
+    });
+    const confirmBtn = acceptedCronRow?.querySelector('button[aria-label="Remove?"]') as HTMLButtonElement | null;
+    expect(confirmBtn).not.toBeNull();
+    await act(async () => {
+      confirmBtn?.click();
+    });
+    expect(onRemove).toHaveBeenCalledWith('cron-queue-accepted');
+  });
+
+  it('renders M -> B at slots 0 and 1 after removing A, and B -> M after moving B ahead of M, without a new switch event', async () => {
+    const { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } = await import('@kiki/transcript');
+    const { createViewState, projectAgentTranscriptView, queuedPromptPreviews } = await import('@kiki/session-core/session');
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyWire = (record: import('@kiki/transcript').TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+
+    applyWire({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'First prompt A' }] }, queueIndex: 0, time: 1_000 });
+    applyWire({
+      type: 'prompt.model_switch_queued',
+      operationId: 'M',
+      queueIndex: 1,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'M', state: 'pending', fromModel: 'model/old', toModel: 'model/new', mode: 'direct' },
+      time: 1_001,
+    });
+    applyWire({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'Second prompt B' }] }, queueIndex: 2, time: 1_002 });
+
+    // Simulate useModelSwitches holding M's initial queueIndex: 1 with no further switch WS events.
+    const staleSwitches = [
+      {
+        input: { operationId: 'M', model: 'model/new', mode: 'direct' as const },
+        revision: 0,
+        receipt: { operationId: 'M', agentId: 'main', state: 'pending' as const, fromModel: 'model/old', toModel: 'model/new', mode: 'direct' as const },
+        originalBinding: { model: 'model/old', thinking: '' },
+        queueIndex: 1,
+      },
+    ];
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    containers.push(host);
+    const root = createRoot(host);
+    roots.push(root);
+    let view = createViewState('session-r1');
+    const draw = async () => {
+      view = projectAgentTranscriptView(view, 'main', transcript.snapshot());
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <QueueStrip
+              items={queuedPromptPreviews(view)}
+              modelSwitches={staleSwitches}
+              queuedPromptMeta={view.queuedPromptMeta}
+              onSendNow={() => {}}
+              onRemove={() => {}}
+              onClearAll={() => {}}
+            />
+          </I18nProvider>,
+        );
+      });
+    };
+
+    const domOrder = () =>
+      rows(host).map((row) => ({
+        id: row.getAttribute('data-queue-item') ?? `switch:${row.getAttribute('data-queue-model-switch')}`,
+        slot: Number(row.getAttribute('data-queue-index')),
+      }));
+
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'A', slot: 0 },
+      { id: 'switch:M', slot: 1 },
+      { id: 'B', slot: 2 },
+    ]);
+
+    // Remove A with NO new switch event and NO reconnect.
+    applyWire({ type: 'prompt.aborted', promptId: 'A', abortedAt: '2026-06-09T00:00:03.000Z', beforeStart: true, time: 1_003 });
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'switch:M', slot: 0 },
+      { id: 'B', slot: 1 },
+    ]);
+
+    // Reorder B ahead of M via prompt.moved with NO new switch event.
+    applyWire({
+      type: 'prompt.moved',
+      promptId: 'B',
+      targetIndex: 0,
+      queuedPromptIds: ['B', '\u0000model-switch:M'],
+      movedAt: '2026-06-09T00:00:04.000Z',
+      time: 1_004,
+    });
+    await draw();
+    expect(domOrder()).toEqual([
+      { id: 'B', slot: 0 },
+      { id: 'switch:M', slot: 1 },
+    ]);
+  });
 });
 
 describe('QueueStrip reorder', () => {

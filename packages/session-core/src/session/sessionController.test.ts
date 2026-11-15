@@ -18,7 +18,7 @@ import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
-import { mergeSessionQueueRows } from './modelSwitchQueue';
+import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 import { turnContentOps } from './transcript/content';
 import { buildFloorEntries, queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
@@ -5169,7 +5169,13 @@ describe('SessionController transcript authority', () => {
       expected_revision: 3,
     });
     const updatedMeta = controller.getState().queuedPromptMeta['p1'];
-    expect(updatedMeta).toEqual({ appendTiming: 'tasks_done', revision: 4, queuePosition: 2 });
+    expect(updatedMeta).toMatchObject({
+      appendTiming: 'tasks_done',
+      revision: 4,
+      queuePosition: 2,
+      userMessageId: 'm1',
+      content: [{ type: 'text', text: 'parked' }],
+    });
     expect(mergeSessionQueueRows(
       [{ promptId: 'p1', queuePosition: updatedMeta?.queuePosition }],
       [{ operationId: 'switch-0', queueIndex: 0 }, { operationId: 'switch-1', queueIndex: 1 }],
@@ -5177,6 +5183,83 @@ describe('SessionController transcript authority', () => {
       { kind: 'modelSwitch', operationId: 'switch-0' },
       { kind: 'modelSwitch', operationId: 'switch-1' },
       { kind: 'message', promptId: 'p1' },
+    ]);
+    controller.close();
+  });
+
+  it('compacts and reorders model-switch queue slots synchronously on abortPrompt and moveQueued without a switch event', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [
+          {
+            promptId: 'A',
+            userMessageId: 'mA',
+            status: 'queued',
+            content: [{ type: 'text', text: 'Prompt A' }],
+            createdAt: '2026-01-01T00:00:00.000Z',
+            queuePosition: 0,
+            appendTiming: 'agent_idle',
+            revision: 1,
+          },
+          {
+            promptId: 'B',
+            userMessageId: 'mB',
+            status: 'queued',
+            content: [{ type: 'text', text: 'Prompt B' }],
+            createdAt: '2026-01-01T00:00:01.000Z',
+            queuePosition: 2,
+            appendTiming: 'agent_idle',
+            revision: 1,
+          },
+        ],
+        meta: {
+          modelSwitchQueuePositions: { M: 1 },
+        },
+      },
+    }));
+    flushAll();
+
+    const staleSwitchIndex = 1;
+    const rowsOf = () => {
+      const current = controller.getState();
+      return mergeSessionQueueRows(queuedPromptPreviews(current), [
+        {
+          operationId: 'M',
+          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchIndex, current.queuedPromptMeta),
+        },
+      ]);
+    };
+
+    expect(rowsOf()).toEqual([
+      { kind: 'message', promptId: 'A' },
+      { kind: 'modelSwitch', operationId: 'M' },
+      { kind: 'message', promptId: 'B' },
+    ]);
+
+    client.abortPrompt.mockResolvedValueOnce({ aborted: true, at_seq: 2 });
+    await controller.abortPrompt('A');
+    expect(rowsOf()).toEqual([
+      { kind: 'modelSwitch', operationId: 'M' },
+      { kind: 'message', promptId: 'B' },
+    ]);
+
+    client.movePrompt.mockResolvedValueOnce({
+      queued_prompt_ids: ['B', '\u0000model-switch:M'],
+    });
+    await controller.moveQueued('B', 0);
+    expect(rowsOf()).toEqual([
+      { kind: 'message', promptId: 'B' },
+      { kind: 'modelSwitch', operationId: 'M' },
     ]);
     controller.close();
   });

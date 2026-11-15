@@ -982,6 +982,8 @@ export interface QueuedPromptMeta {
   readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
+  readonly userMessageId?: string;
+  readonly steerAccepted?: boolean;
   readonly originKind?: 'cron_job';
   readonly content?: Message['content'];
   /**
@@ -1004,6 +1006,7 @@ export interface QueuedPromptPreview {
   readonly text: string;
   readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly originKind?: 'cron_job';
+  readonly steerAccepted?: boolean;
   /** Scheduled delivery mode; absent on a legacy cron record, which reads FIFO. */
   readonly cronDeliveryMode?: CronDeliveryMode;
   readonly media?: readonly MediaRef[];

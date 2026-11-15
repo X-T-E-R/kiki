@@ -322,6 +322,8 @@ export class AgentTranscriptLiveAdapter {
   private readonly interactions = new Map<string, TranscriptInteraction>();
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */
   private readonly prompts = new Map<string, TranscriptPrompt>();
+  private readonly queueOrderList: string[] = [];
+  private readonly emittedSwitchPositions = new Map<string, number>();
   private readonly pendingTaskNotifications: TaskNotifiedEvent[] = [];
   /** turnId → step usages reported so far; folded into the turn header at `turn.ended`. */
   private readonly stepUsageByTurn = new Map<string, StepUsage[]>();
@@ -1754,12 +1756,52 @@ export class AgentTranscriptLiveAdapter {
       appendTiming: event.appendTiming ?? prev?.appendTiming,
       revision: event.revision ?? prev?.revision,
     }));
-    return [{ op: 'prompt.upsert', prompt }];
+    if (prompt.status === 'queued') {
+      this.insertQueueSlot(prompt.promptId, prompt.queuePosition);
+      return [{ op: 'prompt.upsert', prompt }];
+    }
+    this.removeQueueSlot(prompt.promptId);
+    return [{ op: 'prompt.upsert', prompt }, ...this.compactQueuedPositions()];
+  }
+
+  queueOrder(): readonly string[] {
+    return this.queueOrderList;
+  }
+
+  syncQueueOrder(ids: readonly string[]): void {
+    this.queueOrderList.splice(0, this.queueOrderList.length, ...ids);
+  }
+
+  switchPositions(): Readonly<Record<string, number>> | undefined {
+    return this.emittedSwitchPositions.size === 0 ? undefined : Object.fromEntries(this.emittedSwitchPositions);
+  }
+
+  syncSwitchPositions(positions: Readonly<Record<string, number>> | undefined): void {
+    this.emittedSwitchPositions.clear();
+    if (positions !== undefined) {
+      for (const [operationId, slot] of Object.entries(positions)) {
+        this.emittedSwitchPositions.set(operationId, slot);
+      }
+    }
+  }
+
+  syncPrompt(prompt: TranscriptPrompt): void {
+    this.prompts.set(prompt.promptId, prompt);
+    if (prompt.status === 'queued') {
+      this.insertQueueSlot(prompt.promptId, prompt.queuePosition);
+    } else {
+      this.removeQueueSlot(prompt.promptId);
+    }
+  }
+
+  dropQueueSlot(id: string): TranscriptOperation[] {
+    this.removeQueueSlot(id);
+    return this.compactQueuedPositions();
   }
 
   seedPrompt(prompt: TranscriptPrompt): TranscriptOperation[] {
-    this.prompts.set(prompt.promptId, prompt);
-    return [{ op: 'prompt.upsert', prompt }];
+    this.syncPrompt(prompt);
+    return [{ op: 'prompt.upsert', prompt }, ...(prompt.status === 'queued' ? [] : this.compactQueuedPositions())];
   }
 
   private onPromptQueued(event: PromptQueuedEvent): TranscriptOperation[] {
@@ -1776,6 +1818,7 @@ export class AgentTranscriptLiveAdapter {
       appendTiming: event.appendTiming ?? prev?.appendTiming,
       revision: event.revision ?? prev?.revision,
     }));
+    this.insertQueueSlot(prompt.promptId, prompt.queuePosition);
     return [{ op: 'prompt.upsert', prompt }];
   }
 
@@ -1801,6 +1844,7 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onPromptStarted(event: PromptStartedEvent): TranscriptOperation[] {
+    this.removeQueueSlot(event.promptId);
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
       status: 'running',
@@ -1812,7 +1856,7 @@ export class AgentTranscriptLiveAdapter {
       appendTiming: prev?.appendTiming,
       revision: prev?.revision,
     }));
-    return [{ op: 'prompt.upsert', prompt }];
+    return [{ op: 'prompt.upsert', prompt }, ...this.compactQueuedPositions()];
   }
 
   private onPromptReplaced(event: PromptReplacedEvent): TranscriptOperation[] {
@@ -1833,8 +1877,10 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onPromptMoved(event: PromptMovedEvent): TranscriptOperation[] {
+    this.queueOrderList.splice(0, this.queueOrderList.length, ...event.queuedPromptIds);
     const ops: TranscriptOperation[] = [];
     for (const [queuePosition, promptId] of event.queuedPromptIds.entries()) {
+      if (promptId.startsWith('\u0000model-switch:')) continue;
       const prompt = this.upsertPrompt(promptId, (prev) => ({
         promptId,
         status: prev?.status ?? 'queued',
@@ -1850,7 +1896,7 @@ export class AgentTranscriptLiveAdapter {
       }));
       ops.push({ op: 'prompt.upsert', prompt });
     }
-    return ops;
+    return [...ops, ...this.syncSwitchPositionOps()];
   }
 
   private onHookResult(event: { readonly type: 'hook.result' } & HookResult): TranscriptOperation[] {
@@ -1863,6 +1909,7 @@ export class AgentTranscriptLiveAdapter {
   private pendingHookBlockError: string | undefined;
 
   private onPromptCompleted(event: PromptCompletedEvent): TranscriptOperation[] {
+    this.removeQueueSlot(event.promptId);
     const projectedError = projectTurnError(event.error);
     const blockError = event.reason === 'blocked' ? this.pendingHookBlockError : undefined;
     if (event.reason === 'blocked') this.pendingHookBlockError = undefined;
@@ -1879,11 +1926,12 @@ export class AgentTranscriptLiveAdapter {
       error: projectedError.error ?? blockError ?? prev?.error,
       errorDetails: projectedError.errorDetails ?? prev?.errorDetails,
     }));
-    return [{ op: 'prompt.upsert', prompt }];
+    return [{ op: 'prompt.upsert', prompt }, ...this.compactQueuedPositions()];
   }
 
   private onPromptOutcomeCommitted(event: PromptOutcomeCommittedEvent): TranscriptOperation[] {
     const terminal = event.terminal;
+    this.removeQueueSlot(terminal.promptId);
     const status: TranscriptPrompt['status'] = terminal.state === 'cancelled' ? 'aborted' : terminal.state;
     const finishedAt = epochMsToIso(event.time ?? Date.now());
     const resultError =
@@ -1907,10 +1955,11 @@ export class AgentTranscriptLiveAdapter {
       error: projectedError.error ?? prev?.error,
       errorDetails: projectedError.errorDetails ?? prev?.errorDetails,
     }));
-    return [{ op: 'prompt.upsert', prompt }];
+    return [{ op: 'prompt.upsert', prompt }, ...this.compactQueuedPositions()];
   }
 
   private onPromptAborted(event: PromptAbortedEvent): TranscriptOperation[] {
+    this.removeQueueSlot(event.promptId);
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
       status: 'aborted',
@@ -1923,7 +1972,7 @@ export class AgentTranscriptLiveAdapter {
       appendTiming: prev?.appendTiming,
       revision: prev?.revision,
     }));
-    return [{ op: 'prompt.upsert', prompt }];
+    return [{ op: 'prompt.upsert', prompt }, ...this.compactQueuedPositions()];
   }
 
   /**
@@ -1935,12 +1984,15 @@ export class AgentTranscriptLiveAdapter {
    * 'completed' (their content was delivered, not aborted).
    */
   private onPromptSteered(event: PromptSteeredEvent): TranscriptOperation[] {
+    this.removeQueueSlot(event.activePromptId);
+    for (const promptId of event.promptIds) this.removeQueueSlot(promptId);
     const ops: TranscriptOperation[] = [];
     const active = this.upsertPrompt(event.activePromptId, (prev) => ({
       promptId: event.activePromptId,
-      status: prev?.status ?? 'running',
+      status: prev !== undefined && isTerminalPromptStatus(prev.status) ? prev.status : 'running',
+      queuePosition: undefined,
       userMessageId: prev?.userMessageId,
-      content: projectPromptContentParts(event.content),
+      content: prev?.originKind === 'cron_job' ? prev.content : projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.steeredAt,
       finishedAt: prev?.finishedAt,
       steeredAt: event.steeredAt,
@@ -1949,9 +2001,11 @@ export class AgentTranscriptLiveAdapter {
     }));
     ops.push({ op: 'prompt.upsert', prompt: active });
     for (const promptId of event.promptIds) {
+      if (promptId === event.activePromptId) continue;
       const steered = this.upsertPrompt(promptId, (prev) => ({
         promptId,
         status: 'completed',
+        queuePosition: undefined,
         userMessageId: prev?.userMessageId,
         content: prev?.content,
         createdAt: prev?.createdAt ?? event.steeredAt,
@@ -1962,7 +2016,54 @@ export class AgentTranscriptLiveAdapter {
       }));
       ops.push({ op: 'prompt.upsert', prompt: steered });
     }
-    return ops;
+    return [...ops, ...this.compactQueuedPositions()];
+  }
+
+  private insertQueueSlot(id: string, queueIndex: number | undefined): void {
+    if (this.queueOrderList.includes(id)) return;
+    const slot = queueIndex === undefined
+      ? this.queueOrderList.length
+      : Math.min(Math.max(0, queueIndex), this.queueOrderList.length);
+    this.queueOrderList.splice(slot, 0, id);
+  }
+
+  private removeQueueSlot(id: string): void {
+    const index = this.queueOrderList.indexOf(id);
+    if (index >= 0) this.queueOrderList.splice(index, 1);
+  }
+
+  private compactQueuedPositions(): TranscriptOperation[] {
+    const ops: TranscriptOperation[] = [];
+    for (const [slot, id] of this.queueOrderList.entries()) {
+      if (id.startsWith('\u0000model-switch:')) continue;
+      const prior = this.prompts.get(id);
+      if (prior?.status !== 'queued' || prior.queuePosition === undefined || prior.queuePosition === slot) continue;
+      const updated = { ...prior, queuePosition: slot };
+      this.prompts.set(id, updated);
+      ops.push({ op: 'prompt.upsert', prompt: updated });
+    }
+    return [...ops, ...this.syncSwitchPositionOps()];
+  }
+
+  private syncSwitchPositionOps(): TranscriptOperation[] {
+    const next = new Map<string, number>();
+    for (const [slot, id] of this.queueOrderList.entries()) {
+      if (id.startsWith('\u0000model-switch:')) {
+        next.set(id.slice('\u0000model-switch:'.length), slot);
+      }
+    }
+    if (
+      next.size === this.emittedSwitchPositions.size &&
+      [...next.entries()].every(([operationId, slot]) => this.emittedSwitchPositions.get(operationId) === slot)
+    ) {
+      return [];
+    }
+    this.emittedSwitchPositions.clear();
+    for (const [operationId, slot] of next) this.emittedSwitchPositions.set(operationId, slot);
+    return [{
+      op: 'meta.merge',
+      meta: { modelSwitchQueuePositions: next.size === 0 ? null : Object.fromEntries(next) },
+    }];
   }
 
   private upsertPrompt(

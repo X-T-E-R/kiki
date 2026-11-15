@@ -212,15 +212,50 @@ export function bindSessionTranscript(
       } catch {
         continue;
       }
+      const orderedIds = [
+        ...snapshot.pending.map((item) => ({ id: item.id, index: item.queueIndex ?? Number.MAX_SAFE_INTEGER })),
+        ...(snapshot.modelSwitches ?? [])
+          .filter((entry) => entry.queueIndex >= 0)
+          .map((entry) => ({ id: `\u0000model-switch:${entry.input.operationId}`, index: entry.queueIndex })),
+      ]
+        .toSorted((left, right) => left.index - right.index)
+        .map((entry) => entry.id);
+      const seededSwitchPositions: Record<string, number> = {};
+      for (const [slot, id] of orderedIds.entries()) {
+        if (id.startsWith('\u0000model-switch:')) {
+          seededSwitchPositions[id.slice('\u0000model-switch:'.length)] = slot;
+        }
+      }
+      const nextSwitchMeta =
+        Object.keys(seededSwitchPositions).length > 0
+          ? seededSwitchPositions
+          : store.getAgent(agent.id)?.getMeta().modelSwitchQueuePositions !== undefined
+            ? null
+            : undefined;
       const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
-        { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
+        {
+          op: 'meta.merge',
+          meta: nextSwitchMeta === undefined
+            ? { promptQueueHold: snapshot.hold ?? null }
+            : { promptQueueHold: snapshot.hold ?? null, modelSwitchQueuePositions: nextSwitchMeta },
+        },
       ];
+      const wireAdapter = wireAdapterFor(agent.id);
+      const syncedPositions = Object.keys(seededSwitchPositions).length > 0 ? seededSwitchPositions : undefined;
+      liveAdapter.syncQueueOrder(orderedIds);
+      liveAdapter.syncSwitchPositions(syncedPositions);
+      wireAdapter.syncQueueOrder(orderedIds);
+      wireAdapter.syncSwitchPositions(syncedPositions);
       if (snapshot.active !== undefined && isQueueVisiblePrompt(snapshot.active)) {
-        ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
+        const running = promptFromSnapshot(snapshot.active, 'running');
+        ops.push(...liveAdapter.seedPrompt(running));
+        wireAdapter.syncPrompt(running);
       }
       for (const pending of snapshot.pending) {
         if (!isQueueVisiblePrompt(pending)) continue;
-        ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(pending, 'queued')));
+        const queued = promptFromSnapshot(pending, 'queued');
+        ops.push(...liveAdapter.seedPrompt(queued));
+        wireAdapter.syncPrompt(queued);
       }
       applyOps(agent.id, ops);
     }
@@ -257,21 +292,35 @@ export function bindSessionTranscript(
 
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
-    const message = event['message'] as { origin?: { kind?: string } } | undefined;
-    if (event.type === 'prompt.steer_accepted' ||
-      event.type === 'prompt.enqueued' && (message?.origin?.kind === 'cron_job' || message?.origin?.kind === 'user' || message?.origin?.kind === undefined)) {
+    if (event.type === 'prompt.steer_accepted' || event.type === 'prompt.enqueued') {
       const facts = wireAdapterFor(agentId).add(event);
       applyFacts(agentId, facts);
       for (const fact of facts) for (const op of fact.operations) {
-        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).syncPrompt(op.prompt);
       }
+      liveAdapterFor(agentId).syncQueueOrder(wireAdapterFor(agentId).queueOrder());
+      liveAdapterFor(agentId).syncSwitchPositions(wireAdapterFor(agentId).switchPositions());
       return;
     }
     const promptId = event['promptId'];
     const prompt = typeof promptId === 'string' ? store.getAgent(agentId)?.getPrompt(promptId) : undefined;
-    if (event.type === 'prompt.launch_committed' && prompt?.originKind === 'cron_job') {
-      applyOps(agentId, liveAdapterFor(agentId).seedPrompt({ ...prompt, status: 'running', queuePosition: undefined }));
-      return;
+    if (event.type === 'prompt.launch_committed') {
+      if (prompt?.originKind === 'cron_job') {
+        const ops = liveAdapterFor(agentId).seedPrompt({ ...prompt, status: 'running', queuePosition: undefined });
+        applyOps(agentId, ops);
+        for (const op of ops) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
+        wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+        wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
+        return;
+      }
+      if (typeof promptId === 'string') {
+        const ops = liveAdapterFor(agentId).dropQueueSlot(promptId);
+        applyOps(agentId, ops);
+        for (const op of ops) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
+        wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+        wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
+        return;
+      }
     }
     const liveOwned =
       (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_') && event.type !== 'prompt.outcome_committed') ||
@@ -291,11 +340,17 @@ export function bindSessionTranscript(
       if (ids.length > 0) applyOps(agentId, [{ op: 'items.remove', ids }]);
     }
     applyFacts(agentId, wireFacts);
-    if (event.type === 'prompt.outcome_committed') {
+    if (
+      event.type === 'prompt.outcome_committed' ||
+      event.type === 'agent.model_switch' ||
+      event.type.startsWith('prompt.model_switch_')
+    ) {
       for (const fact of wireFacts) for (const op of fact.operations) {
-        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).syncPrompt(op.prompt);
       }
-      return;
+      liveAdapterFor(agentId).syncQueueOrder(wireAdapterFor(agentId).queueOrder());
+      liveAdapterFor(agentId).syncSwitchPositions(wireAdapterFor(agentId).switchPositions());
+      if (event.type === 'prompt.outcome_committed') return;
     }
     if (event.type === 'prompt.moved') seedPrompts(agentId);
     if (
@@ -324,6 +379,11 @@ export function bindSessionTranscript(
       fact.operations.some((op) => op.op === 'turn.upsert'),
     );
     applyOps(agentId, wireEndedTurn ? liveOps.filter((op) => op.op !== 'turn.upsert') : liveOps);
+    if (event.type.startsWith('prompt.')) {
+      for (const op of liveOps) if (op.op === 'prompt.upsert') wireAdapterFor(agentId).syncPrompt(op.prompt);
+      wireAdapterFor(agentId).syncQueueOrder(liveAdapterFor(agentId).queueOrder());
+      wireAdapterFor(agentId).syncSwitchPositions(liveAdapterFor(agentId).switchPositions());
+    }
   };
 
   const finishReplay = (agentId: string, state?: TranscriptReplayState): void => {

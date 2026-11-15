@@ -2653,6 +2653,56 @@ describe('AgentTranscriptLiveAdapter', () => {
     ]);
   });
 
+  it('keeps an active scheduled prompt running with its own content when steered', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Scheduled task text</prompt></cron-fire>' }];
+    tx.apply(
+      liveAdapter.seedPrompt({
+        promptId: 'cron-1',
+        userMessageId: 'cron-1',
+        originKind: 'cron_job',
+        originDeliveryMode: 'idle',
+        status: 'queued',
+        queuePosition: 0,
+        content: cronContent,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
+    tx.apply(
+      liveAdapter.seedPrompt({
+        promptId: 'steer-1',
+        userMessageId: 'steer-1',
+        status: 'queued',
+        steerAccepted: true,
+        queuePosition: 1,
+        content: [{ type: 'text', text: 'Send now text' }],
+        createdAt: '2026-01-01T00:00:01.000Z',
+      }),
+    );
+    tx.apply(
+      liveAdapter.map(
+        ev({
+          type: 'prompt.steered',
+          activePromptId: 'cron-1',
+          promptIds: ['steer-1'],
+          content: [{ type: 'text', text: 'Send now text' }],
+          steeredAt: '2026-01-01T00:00:02.000Z',
+        }),
+      ),
+    );
+    expect(tx.getPrompt('cron-1')).toMatchObject({
+      originKind: 'cron_job',
+      status: 'running',
+      queuePosition: undefined,
+      content: cronContent,
+    });
+    expect(tx.getPrompt('steer-1')).toMatchObject({
+      status: 'completed',
+      steeredAt: '2026-01-01T00:00:02.000Z',
+    });
+  });
+
   it('folds blocked turn endings into failed (engine wire contract)', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

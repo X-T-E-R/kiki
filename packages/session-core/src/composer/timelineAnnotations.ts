@@ -191,6 +191,26 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
 }
 
 /**
+ * Single-line preview text for a message whose prose body may be empty because
+ * the user sent selection annotations or quotes alone. Non-empty prose leads,
+ * followed by annotation comments, then quoted selection text.
+ */
+export function selectionCarryoverPreviewText(
+  carry: Pick<SelectionCarryovers, 'body' | 'annotations' | 'quotes' | 'selections'>,
+): string {
+  if (carry.body.trim() !== '') return carry.body;
+  const comments = carry.annotations
+    .map((annotation) => annotation.comment.trim())
+    .filter((comment) => comment !== '');
+  if (comments.length > 0) return comments.join(' · ');
+  const quotes =
+    carry.selections.length > 0
+      ? carry.selections.map((selection) => selection.quote.trim()).filter((quote) => quote !== '')
+      : carry.quotes.map((quote) => quote.quote.trim()).filter((quote) => quote !== '');
+  return quotes.join(' · ');
+}
+
+/**
  * Match a rendered selection back to message text. Exact containment wins so
  * punctuation and whitespace remain inside the visual marker. Raw assistant
  * blocks still contain Markdown syntax, so a letter/number skeleton is the

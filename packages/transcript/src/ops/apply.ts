@@ -860,6 +860,10 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
       meta.promptQueueHold === null
         ? undefined
         : (meta.promptQueueHold ?? state.meta.promptQueueHold),
+    modelSwitchQueuePositions:
+      meta.modelSwitchQueuePositions === null
+        ? undefined
+        : (meta.modelSwitchQueuePositions ?? state.meta.modelSwitchQueuePositions),
   };
   if (transcriptValueEquals(next, state.meta)) return { state, changed: false };
   return { state: { ...state, meta: next }, changed: true };

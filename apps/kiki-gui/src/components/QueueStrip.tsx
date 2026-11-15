@@ -42,13 +42,13 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
-import type { DeferredAppendTiming, Task } from '@kiki/protocol';
+import type { CronDeliveryMode, DeferredAppendTiming, Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
+import { parseSelectionCarryovers, selectionCarryoverPreviewText, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { isOrdinaryQueueItem, replaceAgentRefs, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
-import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
+import { mergeSessionQueueRows, pendingModelSwitchChange, resolveModelSwitchQueueIndex, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
@@ -167,10 +167,24 @@ export function QueueHeaderSummary({
   readonly count: number;
   readonly heldCount?: number;
   /** Next prompt in drain order: what the collapsed bar previews, and when it sends. */
-  readonly first?: Pick<QueuedPromptPreview, 'text' | 'presentation'> & { readonly timing: DeferredAppendTiming };
+  readonly first?: Pick<QueuedPromptPreview, 'text' | 'presentation' | 'media'> & {
+    readonly timing?: DeferredAppendTiming;
+    readonly cronDeliveryMode?: CronDeliveryMode;
+  };
 }) {
   const { t, tp } = useI18n();
-  const previewText = first === undefined ? '' : parseSelectionCarryovers(first.text, first.presentation).body;
+  const previewText = useMemo(() => {
+    if (first === undefined) return '';
+    const carry = parseSelectionCarryovers(first.text, first.presentation);
+    return stripThreadRefContext(
+      selectionCarryoverPreviewText({ ...carry, body: stripThreadRefContext(carry.body) }),
+    ).trim();
+  }, [first]);
+  const hasMedia = (first?.media?.length ?? 0) > 0;
+  const heldDeliveryMode =
+    first?.cronDeliveryMode === 'idle' || first?.cronDeliveryMode === 'steer'
+      ? first.cronDeliveryMode
+      : undefined;
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
       {count > 0 ? (
@@ -185,11 +199,19 @@ export function QueueHeaderSummary({
       ) : null}
       {first !== undefined ? (
         <>
-          <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
-            {previewText === '' ? t('sv.queueNoText') : replaceAgentRefs(stripThreadRefContext(previewText))}
-          </span>
+          {previewText !== '' ? (
+            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+              {replaceAgentRefs(previewText)}
+            </span>
+          ) : hasMedia ? (
+            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+              {t('sv.queueNoText')}
+            </span>
+          ) : null}
           <span data-queue-first-timing className="shrink-0 text-ink-faint">
-            {t(TIMING_SHORT_KEY[first.timing])}
+            {heldDeliveryMode !== undefined
+              ? t(`cron.delivery.${heldDeliveryMode}`)
+              : t(TIMING_SHORT_KEY[first.timing ?? 'agent_idle'])}
           </span>
         </>
       ) : null}
@@ -210,19 +232,25 @@ const QUEUED_CONTENT_ROOTS: readonly string[] = ['content'];
 function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) {
   const { t } = useI18n();
   const carry = parseSelectionCarryovers(item.text, item.presentation);
+  const body = stripThreadRefContext(carry.body);
+  const hasBody = body.trim() !== '';
+  const hasCarry = carry.quotes.length > 0 || carry.annotations.length > 0;
+  const hasMedia = (item.media?.length ?? 0) > 0;
   const source = useMemo(() => ({ kind: 'prompt' as const, id: item.promptId }), [item.promptId]);
   return <div className="min-w-0 flex-1 basis-36 text-[13px] text-ink">
-    <div className="truncate" title={stripThreadRefContext(carry.body) || undefined}>
-      {carry.body === '' ? t('sv.queueNoText') : (
+    {hasBody ? (
+      <div className="truncate" title={body}>
         <AgentRefText
-          text={stripThreadRefContext(carry.body)}
+          text={body}
           references={[]}
           messageId={item.userMessageId}
           projectSegment={(text) => <ThreadRefText text={text} projectSegment={(segment) => segment} />}
         />
-      )}
-    </div>
-    {carry.quotes.length > 0 || carry.annotations.length > 0 ? <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      </div>
+    ) : !hasCarry && hasMedia ? (
+      <div className="truncate">{t('sv.queueNoText')}</div>
+    ) : null}
+    {hasCarry ? <div className={`${hasBody ? 'mt-1 ' : ''}flex flex-wrap items-center gap-1.5`}>
       {carry.quotes.map((quote, index) => <QuoteChip key={index} quote={quote.quote} />)}
       {carry.annotations.length > 0 ? <SentAnnotationsBubble blockId={`user-${item.userMessageId ?? item.promptId}`} annotations={carry.annotations} /> : null}
     </div> : null}
@@ -233,6 +261,7 @@ function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) 
 export function QueueStrip({
   items,
   modelSwitches,
+  queuedPromptMeta,
   resolveModelId,
   onSendNow,
   onRemove,
@@ -267,6 +296,7 @@ export function QueueStrip({
    * contract only a pending operation can be cancelled.
    */
   readonly modelSwitches?: readonly QueuedModelSwitch[];
+  readonly queuedPromptMeta?: Readonly<Record<string, { readonly queuePosition?: number }>>;
   readonly resolveModelId?: (value: string) => string;
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
@@ -337,12 +367,15 @@ export function QueueStrip({
       items.map((item) => ({ promptId: item.promptId, queuePosition: item.queuePosition })),
       (modelSwitches ?? [])
         .filter((entry) => entry.queueIndex >= 0)
-        .map((entry) => ({ operationId: entry.input.operationId, queueIndex: entry.queueIndex })),
+        .map((entry) => ({
+          operationId: entry.input.operationId,
+          queueIndex: resolveModelSwitchQueueIndex(entry.input.operationId, entry.queueIndex, queuedPromptMeta),
+        })),
     ),
-    [items, modelSwitches],
+    [items, modelSwitches, queuedPromptMeta],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
-  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
+  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && !item.steerAccepted && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
   const sendOrderIndexes = rows.flatMap((row, index) => row.kind === 'message' && idleIds.has(row.promptId) ? [] : [index]);
   const switchById = useMemo(
     () => new Map((modelSwitches ?? []).map((entry) => [entry.input.operationId, entry])),
@@ -610,7 +643,8 @@ export function QueueStrip({
     const held = !isOrdinaryQueueItem(item);
     // Idle timing belongs to the leading region, not to each occurrence row.
     const idle = idleIds.has(item.promptId);
-    const heldMode = held && !idle ? item.cronDeliveryMode : undefined;
+    const effectiveCronMode = item.steerAccepted ? 'steer' : item.cronDeliveryMode;
+    const heldMode = held && !idle ? effectiveCronMode : undefined;
     // A `queue` cron record really is in the user's send order, so it keeps
     // the same drag handle, timing picker and Send now as a typed message.
     const reordering = draggable && !held;
@@ -619,7 +653,7 @@ export function QueueStrip({
         key={item.promptId}
         data-queue-item={item.promptId}
         data-queue-index={index}
-        data-queue-held={held ? item.cronDeliveryMode : undefined}
+        data-queue-held={held ? effectiveCronMode : undefined}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
           isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'

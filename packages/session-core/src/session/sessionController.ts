@@ -59,10 +59,12 @@ import {
   applyTranscriptShell,
   appendLocalUserMessage,
   createViewState,
+  classifyTranscriptText,
   markApprovalResolved,
   markQuestionOutcome,
   projectAgentTranscriptView,
   projectMessageContent,
+  queuedPromptPreviews,
   SessionAgentForestQuery,
   setLoadError,
   setLoadingOlder,
@@ -4340,13 +4342,17 @@ export class SessionController {
       ? this.publishForest()
       : false;
     if (timeline.cursor !== undefined) timeline.publishedCursor = timeline.cursor;
-    this.adoptAcceptedSteers(agentId, withCoverage);
+    const steersChanged = this.adoptAcceptedSteers(agentId, withCoverage);
     // A projection of main's timeline also means the session has loaded: the
     // first reset may arrive before the session snapshot does.
     if (agentId === MAIN_AGENT_ID && (!this.shell.loaded || this.shell.loadError !== undefined)) {
       this.setShell({ ...this.shell, version: this.shell.version + 1, loaded: true, loadError: undefined }, false);
     }
-    this.publishView(agentId, withCoverage);
+    if (steersChanged && withCoverage === this.viewOf(agentId)) {
+      this.republishSteers(agentId);
+    } else {
+      this.publishView(agentId, withCoverage);
+    }
     if (agentId === MAIN_AGENT_ID && (previous.transcriptReady || previous.busy) && !next.busy && next.turnTail !== undefined
         && (previous.busy || next.turnTail.turnId !== previous.turnTail?.turnId)) void this.refreshSession();
     if (this.contentReaders.size > 0) void this.pumpContentReads();
@@ -4684,8 +4690,15 @@ export class SessionController {
     if (agentId !== MAIN_AGENT_ID) return true;
     this.unprojectedQueueReceipts.delete(promptId);
     const main = this.viewOf(MAIN_AGENT_ID);
-    const queuedPromptMeta = { ...main.queuedPromptMeta };
-    delete queuedPromptMeta[promptId];
+    const removedPosition = main.queuedPromptMeta[promptId]?.queuePosition;
+    const queuedPromptMeta: Record<string, QueuedPromptMeta> = {};
+    for (const [id, meta] of Object.entries(main.queuedPromptMeta)) {
+      if (id === promptId) continue;
+      queuedPromptMeta[id] =
+        removedPosition !== undefined && meta.queuePosition !== undefined && meta.queuePosition > removedPosition
+          ? { ...meta, queuePosition: meta.queuePosition - 1 }
+          : meta;
+    }
     this.publishView(MAIN_AGENT_ID, { ...main, version: main.version + 1,
       queuedPromptIds: main.queuedPromptIds.filter((id) => id !== promptId), queuedPromptMeta,
       blocks: main.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
@@ -4747,7 +4760,14 @@ export class SessionController {
     const main = this.viewOf(MAIN_AGENT_ID);
     const queuedPromptMeta: Record<string, QueuedPromptMeta> = { ...main.queuedPromptMeta };
     result.queued_prompt_ids.forEach((id, index) => {
-      if (isModelSwitchQueueId(id)) return;
+      if (isModelSwitchQueueId(id)) {
+        const existing = queuedPromptMeta[id];
+        queuedPromptMeta[id] =
+          existing !== undefined && existing.appendTiming === 'agent_idle' && existing.queuePosition === index
+            ? existing
+            : { appendTiming: 'agent_idle', queuePosition: index };
+        return;
+      }
       const receipt = this.unprojectedQueueReceipts.get(id);
       if (receipt !== undefined) {
         this.unprojectedQueueReceipts.delete(id);
@@ -4837,8 +4857,13 @@ export class SessionController {
   async steerQueued(promptId: string): Promise<{ readonly outcome: 'accepted' | 'steered' | 'started' | 'queued' | 'not_pending' | 'unconfirmed' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.shell);
     if (this.findPendingSteer(MAIN_AGENT_ID, promptId)?.phase === 'waiting') return { outcome: 'accepted' };
-    const queued = this.viewOf(MAIN_AGENT_ID).blocks.find((block) =>
+    if (this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(promptId)?.steerAccepted === true) {
+      return { outcome: 'accepted' };
+    }
+    const view = this.viewOf(MAIN_AGENT_ID);
+    const queued = view.blocks.find((block) =>
       block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
+    const preview = queued?.kind === 'user' ? undefined : queuedPromptPreviews(view).find((item) => item.promptId === promptId);
     if (queued?.kind === 'user') {
       this.setPendingSteer(MAIN_AGENT_ID, {
         promptId,
@@ -4846,6 +4871,16 @@ export class SessionController {
         text: queued.text,
         presentation: queued.presentation,
         media: queued.media,
+        createdAt: new Date().toISOString(),
+        phase: 'sending',
+      });
+    } else if (preview !== undefined && preview.originKind !== 'cron_job') {
+      this.setPendingSteer(MAIN_AGENT_ID, {
+        promptId,
+        userMessageId: preview.userMessageId,
+        text: preview.text,
+        presentation: preview.presentation,
+        media: preview.media,
         createdAt: new Date().toISOString(),
         phase: 'sending',
       });
@@ -4880,7 +4915,18 @@ export class SessionController {
       const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
       if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
     } else this.clearPendingSteer(MAIN_AGENT_ID, promptId);
-    if (delivery.delivery_state === 'accepted') return { outcome: 'accepted' };
+    if (delivery.delivery_state === 'accepted') {
+      if (this.findPendingSteer(MAIN_AGENT_ID, promptId) === undefined) {
+        const store = this.timelines.get(MAIN_AGENT_ID)?.store;
+        const stored = store?.getPrompt(promptId);
+        if (store !== undefined && stored?.status === 'queued' && !stored.steerAccepted) {
+          store.apply([{ op: 'prompt.upsert', prompt: { ...stored, steerAccepted: true } }]);
+          this.publishProjectedAgent(MAIN_AGENT_ID, store);
+        }
+        await this.refreshPrompts();
+      }
+      return { outcome: 'accepted' };
+    }
     await this.refreshPrompts();
     if (!delivery.steered && delivery.delivery_state !== 'queued') await this.resync();
     return { outcome: delivery.steered ? 'steered' : delivery.delivery_state ?? 'not_pending', reason: delivery.delivery_reason };
@@ -5110,24 +5156,41 @@ export class SessionController {
     this.republishSteers(agentId);
   }
 
-  private adoptAcceptedSteers(agentId: string, next: SessionViewState): void {
+  private adoptAcceptedSteers(agentId: string, next: SessionViewState): boolean {
     const store = this.timelines.get(agentId)?.store;
-    if (store === undefined) return;
-    let steers = this.timelines.get(agentId)?.steers ?? [];
-    for (const id of next.queuedPromptIds) {
-      const prompt = store.getPrompt(id);
-      if (!prompt?.steerAccepted || prompt.status !== 'queued') continue;
+    if (store === undefined) return false;
+    const current = this.timelines.get(agentId)?.steers ?? [];
+    let steers = current;
+    for (const prompt of store.getPrompts().values()) {
+      if (!prompt.steerAccepted || prompt.status !== 'queued' || prompt.originKind === 'cron_job') continue;
       const existing = steers.find(item => item.promptId === prompt.promptId);
       if (existing !== undefined) {
         if (existing.phase !== 'waiting') steers = steers.map(item => item === existing ? { ...item, phase: 'waiting' } : item);
         continue;
       }
       const row = next.blocks.find(block => block.kind === 'user' && block.promptId === prompt.promptId && block.promptStatus === 'queued');
-      if (row?.kind !== 'user') continue;
-      steers = [...steers, { promptId: prompt.promptId, userMessageId: row.userMessageId, text: row.text,
-        presentation: row.presentation, media: row.media, createdAt: row.createdAt, phase: 'waiting' }];
+      if (row?.kind === 'user') {
+        steers = [...steers, { promptId: prompt.promptId, userMessageId: row.userMessageId, text: row.text,
+          presentation: row.presentation, media: row.media, createdAt: row.createdAt, phase: 'waiting' }];
+        continue;
+      }
+      const projected = projectMessageContent((prompt.content ?? []) as unknown as MessageContent[], prompt.contentRefs);
+      const classified = classifyTranscriptText({ text: projected.text, presentation: projected.presentation, role: 'user', origin: { kind: 'user' } });
+      steers = [...steers, {
+        promptId: prompt.promptId,
+        userMessageId: prompt.userMessageId,
+        text: classified.text !== '' ? classified.text : projected.text,
+        presentation: classified.presentation ?? projected.presentation,
+        media: projected.media.length > 0 ? projected.media : undefined,
+        createdAt: prompt.createdAt,
+        phase: 'waiting',
+      }];
     }
-    if (steers.length > 0) this.timeline(agentId).steers = steers;
+    if (steers !== current) {
+      this.timeline(agentId).steers = steers;
+      return true;
+    }
+    return false;
   }
 
   /** Drop echoes once the projection owns delivery or refusal. */
@@ -5161,7 +5224,7 @@ export class SessionController {
    * parked prompt; one reconcile at the end repaints the strip. Failed ids stay
    * queued so the user can retry. */
   async clearQueue(): Promise<{ total: number; failed: number }> {
-    const ids = this.viewOf(MAIN_AGENT_ID).queuedPromptIds;
+    const ids = this.getState().queuedPromptIds;
     if (ids.length === 0) return { total: 0, failed: 0 };
     const results = await Promise.allSettled(
       ids.map((promptId) => this.abortPrompt(promptId)),

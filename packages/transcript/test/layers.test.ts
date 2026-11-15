@@ -4108,6 +4108,133 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
   });
 
+  it('preserves scheduled prompt content on steer and keeps older queued scheduled items ahead of newer enqueues', () => {
+    const cronContent = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Daily scheduled report</prompt></cron-fire>' }];
+    const steerContent = [{ type: 'text', text: 'Immediate steer text' }];
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'u0', userMessageId: 'u0', message: { content: [{ type: 'text', text: 'first' }] }, queueIndex: 0, time: 1_000 },
+      { type: 'prompt.enqueued', promptId: 'u1', userMessageId: 'u1', message: { content: [{ type: 'text', text: 'second' }] }, queueIndex: 1, time: 1_001 },
+      { type: 'prompt.enqueued', promptId: 'cron-queued', userMessageId: 'cron-queued', message: { origin: { kind: 'cron_job', deliveryMode: 'queue' }, content: cronContent }, queueIndex: 2, time: 1_002 },
+      { type: 'prompt.launch_committed', promptId: 'u0', time: 1_003 },
+      { type: 'prompt.completed', promptId: 'u0', reason: 'completed', time: 1_004 },
+      { type: 'prompt.launch_committed', promptId: 'u1', time: 1_005 },
+      { type: 'prompt.completed', promptId: 'u1', reason: 'completed', time: 1_006 },
+      { type: 'prompt.enqueued', promptId: 'cron-active', userMessageId: 'cron-active', message: { origin: { kind: 'cron_job', deliveryMode: 'idle' }, content: cronContent }, queueIndex: 1, time: 1_007 },
+      { type: 'prompt.launch_committed', promptId: 'cron-active', time: 1_008 },
+      { type: 'prompt.enqueued', promptId: 'steer-1', userMessageId: 'steer-1', message: { content: steerContent }, queueIndex: 1, time: 1_009 },
+      { type: 'prompt.steered', activePromptId: 'cron-active', promptIds: ['steer-1'], content: steerContent, steeredAt: '2026-06-09T00:00:10.000Z', time: 1_010 },
+      { type: 'prompt.enqueued', promptId: 'u-later', userMessageId: 'u-later', message: { content: [{ type: 'text', text: 'deferred send now' }] }, queueIndex: 1, time: 1_011 },
+    ]);
+    const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(prompts.get('cron-active')).toMatchObject({
+      originKind: 'cron_job',
+      status: 'running',
+      queuePosition: undefined,
+      content: cronContent,
+    });
+    expect(prompts.get('cron-queued')?.queuePosition).toBe(0);
+    expect(prompts.get('u-later')?.queuePosition).toBe(1);
+  });
+
+  it('compacts remaining queuePositions on prompt exit so new prompts and model switches share 0..N-1 order', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyRecord = (record: TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+    applyRecord({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, time: 1_000 });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'B' }] }, queueIndex: 1, time: 1_001 });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'C', userMessageId: 'C', message: { content: [{ type: 'text', text: 'C' }] }, queueIndex: 2, time: 1_002 });
+    applyRecord({ type: 'prompt.launch_committed', promptId: 'A', time: 1_003 });
+    applyRecord({ type: 'prompt.completed', promptId: 'A', reason: 'completed', time: 1_004 });
+    applyRecord({ type: 'prompt.launch_committed', promptId: 'B', time: 1_005 });
+    applyRecord({ type: 'prompt.completed', promptId: 'B', reason: 'completed', time: 1_006 });
+    expect(transcript.getPrompt('C')?.queuePosition).toBe(0);
+
+    applyRecord({ type: 'prompt.enqueued', promptId: 'D', userMessageId: 'D', message: { content: [{ type: 'text', text: 'D' }] }, queueIndex: 1, time: 1_007 });
+    applyRecord({
+      type: 'prompt.model_switch_queued',
+      operationId: 'sw-1',
+      queueIndex: 2,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'sw-1', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_008,
+    });
+
+    expect(transcript.getPrompt('C')?.queuePosition).toBe(0);
+    expect(transcript.getPrompt('D')?.queuePosition).toBe(1);
+    expect(adapter.queueOrder()).toEqual(['C', 'D', '\u0000model-switch:sw-1']);
+
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(transcript.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(resumedAdapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'E',
+      userMessageId: 'E',
+      message: { content: [{ type: 'text', text: 'E' }] },
+      queueIndex: 3,
+      time: 1_009,
+    }));
+    resumedReducer.apply(resumedAdapter.add({
+      type: 'prompt.model_switch_status',
+      operationId: 'sw-1',
+      receipt: { operationId: 'sw-1', state: 'cancelled', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_010,
+    }));
+    expect(resumedAdapter.queueOrder()).toEqual(['C', 'D', 'E']);
+    expect(resumed.snapshot().prompts.find((p) => p.promptId === 'E')?.queuePosition).toBe(2);
+  });
+
+  it('projects compact modelSwitchQueuePositions synchronously across prompt removal and prompt.moved', () => {
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const applyRecord = (record: TranscriptWireRecord) => {
+      reducer.apply(adapter.add(record));
+    };
+    applyRecord({ type: 'prompt.enqueued', promptId: 'A', userMessageId: 'A', message: { content: [{ type: 'text', text: 'A' }] }, queueIndex: 0, time: 1_000 });
+    applyRecord({
+      type: 'prompt.model_switch_queued',
+      operationId: 'M',
+      queueIndex: 1,
+      entry: { placement: 'queued' },
+      receipt: { operationId: 'M', state: 'pending', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_001,
+    });
+    applyRecord({ type: 'prompt.enqueued', promptId: 'B', userMessageId: 'B', message: { content: [{ type: 'text', text: 'B' }] }, queueIndex: 2, time: 1_002 });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(transcript.getPrompt('A')?.queuePosition).toBe(0);
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(2);
+
+    applyRecord({ type: 'prompt.aborted', promptId: 'A', abortedAt: '2026-06-09T00:00:03.000Z', beforeStart: true, time: 1_003 });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 0 });
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(1);
+
+    applyRecord({
+      type: 'prompt.moved',
+      promptId: 'B',
+      targetIndex: 0,
+      queuedPromptIds: ['B', '\u0000model-switch:M'],
+      movedAt: '2026-06-09T00:00:04.000Z',
+      time: 1_004,
+    });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toEqual({ M: 1 });
+    expect(transcript.getPrompt('B')?.queuePosition).toBe(0);
+    expect(transcript.getPrompts().has('\u0000model-switch:M')).toBe(false);
+
+    applyRecord({
+      type: 'prompt.model_switch_status',
+      operationId: 'M',
+      receipt: { operationId: 'M', state: 'cancelled', fromModel: 'm1', toModel: 'm2', mode: 'direct' },
+      time: 1_005,
+    });
+    expect(transcript.getMeta().modelSwitchQueuePositions).toBeUndefined();
+  });
+
   it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
     const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
     const adapter = new TranscriptWireAdapter('main');
@@ -4206,7 +4333,7 @@ describe('TranscriptWireAdapter', () => {
     const transcript = replay(records);
     const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
     expect(prompts.has('cron1')).toBe(false);
-    expect(prompts.get('u1')).toMatchObject({ status: 'queued', queuePosition: 1 });
+    expect(prompts.get('u1')).toMatchObject({ status: 'queued', queuePosition: 0 });
 
     const sourceAdapter = new TranscriptWireAdapter('main');
     const source = new AgentTranscriptDraft('main');

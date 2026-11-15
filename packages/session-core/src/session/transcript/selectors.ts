@@ -14,20 +14,69 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
     // snapshot fold filters them; they never have a message row to show.
     .filter((promptId) => !isModelSwitchQueueId(promptId))
     .map((promptId) => {
-    const block = state.blocks.find(
-      (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
-    );
     const meta = state.queuedPromptMeta[promptId];
-    const scheduled = meta?.originKind === 'cron_job' ? projectMessageContent(meta.content ?? []) : undefined;
+    const block =
+      state.blocks.find(
+        (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
+      ) ??
+      (meta?.userMessageId === undefined
+        ? undefined
+        : state.blocks.find(
+            (candidate): candidate is UserBlock =>
+              candidate.kind === 'user' &&
+              candidate.promptStatus === 'queued' &&
+              candidate.userMessageId === meta.userMessageId,
+          ));
+    const content = meta?.content ?? block?.queuedContent;
+    if (meta?.originKind === 'cron_job') {
+      const scheduled = projectMessageContent(content ?? []);
+      return {
+        promptId,
+        userMessageId: block?.userMessageId ?? meta.userMessageId,
+        originKind: meta.originKind,
+        steerAccepted: meta.steerAccepted,
+        cronDeliveryMode: meta.cronDeliveryMode,
+        text: classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
+        presentation: scheduled.presentation ?? block?.presentation,
+        media: scheduled.media,
+        content,
+        runtimeControls: meta.runtimeControls ?? block?.runtimeControls,
+        appendTiming: meta.appendTiming ?? 'agent_idle',
+        revision: meta.revision,
+        queuePosition: meta.queuePosition,
+      };
+    }
+    const needFallback = (block === undefined || block.text === '') && content !== undefined && content.length > 0;
+    const fallback = needFallback ? projectMessageContent(content) : undefined;
+    const fallbackClassified =
+      fallback !== undefined && fallback.text !== ''
+        ? classifyTranscriptText({
+            text: fallback.text,
+            presentation: fallback.presentation,
+            role: 'user',
+            origin: { kind: 'user' },
+          })
+        : undefined;
+    const fallbackText =
+      fallbackClassified === undefined
+        ? ''
+        : fallbackClassified.text !== ''
+          ? fallbackClassified.text
+          : fallbackClassified.skill !== undefined
+            ? fallbackClassified.skill.args === undefined
+              ? `/${fallbackClassified.skill.name}`
+              : `/${fallbackClassified.skill.name} ${fallbackClassified.skill.args}`
+            : fallback!.text;
+    const useFallbackText = (block === undefined || block.text === '') && fallbackText !== '';
     return {
       promptId,
-      userMessageId: block?.userMessageId,
+      userMessageId: block?.userMessageId ?? meta?.userMessageId,
       originKind: meta?.originKind,
       cronDeliveryMode: meta?.cronDeliveryMode,
-      text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
-      presentation: scheduled?.presentation ?? block?.presentation,
-      media: scheduled?.media ?? block?.media,
-      content: meta?.content ?? block?.queuedContent,
+      text: useFallbackText ? fallbackText : block?.text ?? '',
+      presentation: useFallbackText ? fallbackClassified?.presentation ?? fallback?.presentation : block?.presentation,
+      media: block?.media ?? (fallback !== undefined && fallback.media.length > 0 ? fallback.media : undefined),
+      content,
       runtimeControls: meta?.runtimeControls ?? block?.runtimeControls,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
@@ -49,8 +98,10 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
  */
 export function isOrdinaryQueueItem(item: QueuedPromptPreview): boolean {
   return item.originKind !== 'cron_job'
-    || item.cronDeliveryMode === undefined
-    || item.cronDeliveryMode === 'queue';
+    || (
+      !item.steerAccepted
+      && (item.cronDeliveryMode === undefined || item.cronDeliveryMode === 'queue')
+    );
 }
 
 export function pendingApprovalCount(state: SessionViewState): number {

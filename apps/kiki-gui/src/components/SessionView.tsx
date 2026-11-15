@@ -3023,7 +3023,7 @@ export function SessionView({
   // read through `configQuery` above); the resolution snapshot is captured
   // when a pick is accepted, never re-derived later, so a settings edit cannot
   // change an accepted switch.
-  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID);
+  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID, state.queuedPromptMeta);
   const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
     setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
   }, []);
@@ -5068,16 +5068,25 @@ boundExecution,
     // prompt held ahead of the send order counts too — otherwise a session
     // waiting only on one would show nothing at all.
     if (queueRowCount === 0) return undefined;
-    const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
+    const idleCount = heldCronItems.filter((item) => !item.steerAccepted && item.cronDeliveryMode === 'idle').length;
     const total = queueRowCount - Math.max(0, idleCount - 1);
+    const nextItem =
+      heldCronItems.find((item) => item.steerAccepted || item.cronDeliveryMode === 'steer') ??
+      heldCronItems[0] ??
+      ordinaryQueuedItems[0];
     return {
       summary: (
         <QueueHeaderSummary
-          count={total}
-          first={queuedItems[0] === undefined ? undefined : {
-            text: queuedItems[0].text,
-            presentation: queuedItems[0].presentation,
-            timing: queuedItems[0].appendTiming ?? 'agent_idle',
+          count={queuedItemCount}
+          heldCount={heldCronItems.length}
+          first={nextItem === undefined ? undefined : {
+            text: nextItem.text,
+            presentation: nextItem.presentation,
+            media: nextItem.media,
+            timing: nextItem.appendTiming ?? 'agent_idle',
+            cronDeliveryMode: nextItem.originKind === 'cron_job'
+              ? (nextItem.steerAccepted ? 'steer' : nextItem.cronDeliveryMode)
+              : undefined,
           }}
         />
       ),
@@ -5095,6 +5104,7 @@ boundExecution,
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
           modelSwitches={modelSwitches.switches}
+          queuedPromptMeta={state.queuedPromptMeta}
           resolveModelId={value => resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value}
           onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
@@ -5107,10 +5117,10 @@ boundExecution,
       ),
     };
   }, [
-    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
+    queuedItems, ordinaryQueuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
-    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
+    modelSwitches.switches, state.queuedPromptMeta, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
     controller, sessionId, state.detailLoads, state.contentRefs, state.tasks, openAgent,
   ]);
