@@ -1292,6 +1292,19 @@ describe('WorkspaceFsService.read', () => {
     expect(result.truncated).toBe(true);
   });
 
+  it.each([
+    { text: 'hello 🚀 rest', offset: 0, length: 8, expected: 'hello ' },
+    { text: 'hello 🚀 rest', offset: 0, length: 10, expected: 'hello 🚀' },
+    { text: '你好世界', offset: 0, length: 4, expected: '你' },
+    { text: '你好世界', offset: 3, length: 4, expected: '好' },
+    { text: 'hello 🚀 rest', offset: 7, length: 4, expected: '��� ' },
+  ])('trims only an incomplete UTF-8 code point from a truncated byte window of $length bytes', async ({ text, offset, length, expected }) => {
+    const fs = makeSession({ 'a.txt': text }, emptyHandler);
+    const result = await fs.read({ path: 'a.txt', offset, length, encoding: 'utf-8' });
+    expect(result.content).toBe(expected);
+    expect(result.truncated).toBe(true);
+  });
+
   it('returns base64 for binary content in auto mode', async () => {
     const fs = makeSession({ 'bin.dat': 'abc\x00def' }, emptyHandler);
     const result = await fs.read({ path: 'bin.dat', offset: 0, length: 1024, encoding: 'auto' });

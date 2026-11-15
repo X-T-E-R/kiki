@@ -490,7 +490,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         }
       }
       const bindingAction = service === 'agentProfileService' && ['setModel', 'setEffort', 'setThinking'].includes(method)
-        || service === 'agentPromptService' && ['switchModel', 'updateModelSwitch', 'cancelModelSwitch', 'recoverModelSwitch'].includes(method);
+        || service === 'agentPromptService' && ['switchModel', 'updateModelSwitch', 'cancelModelSwitch', 'recoverModelSwitch'].includes(method)
+        || service === 'agentPermissionModeService' && ['mode', 'setMode', 'setModeAndBroadcast'].includes(method)
+        || service === 'agentPlanService' && ['enter', 'exit'].includes(method);
       if (bindingAction && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
         const manager = root.accessor.get(ISessionManager);
         const lease = await manager.acquire?.(scope.sessionId, 'model-binding-action');
@@ -502,7 +504,10 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           options?.signal?.throwIfAborted();
           const instance = resolveService(resolved, service);
           const member = instance[method];
-          if (typeof member !== 'function') throw new RPCError(REQUEST_INVALID, `method not found: ${service}.${method}`);
+          if (typeof member !== 'function') {
+            if (service === 'agentPermissionModeService' && method === 'mode') return wireClone(member);
+            throw new RPCError(REQUEST_INVALID, `method not found: ${service}.${method}`);
+          }
           return wireClone(await (member as (...values: unknown[]) => unknown).apply(instance, args.map(wireClone)));
         } catch (error) {
           throw toRPCError(error);

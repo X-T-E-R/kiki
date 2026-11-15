@@ -18,7 +18,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
-import { filterPromotedDescendantRecords } from '#/workspace/sessionLifecycle/internal/promoteAgent';
+import { filterPromotedDescendantRecords, filterPromotedRecords, promotedExecutorSession } from '#/workspace/sessionLifecycle/internal/promoteAgent';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
@@ -1319,6 +1319,30 @@ describe('Codex app-server external executor', () => {
       expect(harness.starts).toHaveLength(0);
       expect(harness.prompts).toHaveLength(0);
     } finally { await harness.session.shutdown(); }
+  });
+
+  it('resumes a promoted main thread after remapping its source execution generation and binding fingerprint', async () => {
+    const harness = createHarness({ priorThreadId: 'source-thread' });
+    const first = resolveExecutionBinding({ executor: 'codex-app-server', overrides: { model: 'old-model' } }, undefined, undefined, undefined);
+    const source = resolveExecutionBinding({ executor: 'codex-app-server', overrides: { model: 'gpt-test' } }, undefined, undefined, first);
+    const execution = resolveExecutionBinding(source.selection, undefined, undefined, undefined);
+    expect(source.generation).toBe(2);
+    expect(execution.generation).toBe(1);
+    const binding = { ...harness.context.binding, execution };
+    const copied = filterPromotedRecords([{
+      type: 'executor.session.updated', ...harness.states.get(externalExecutorKey), executionGeneration: source.generation,
+      bindingFingerprint: agentExecutorBindingFingerprint({ ...harness.context.binding, execution: source }),
+    }]);
+    const continuation = promotedExecutorSession(copied, { execution: source }, binding);
+    expect(continuation).toBeDefined();
+    await harness.dispatcher.dispatch(continuation!);
+    const session = harness.createSession({ ...harness.context, binding });
+    try {
+      await (await session.run({ kind: 'prompt', prompt: 'Continue the promoted work.' }, { signal: new AbortController().signal })).completion;
+      expect(harness.resumes[0]).toMatchObject({ threadId: 'source-thread' });
+      expect(harness.starts).toHaveLength(0);
+      expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({ resumeMode: 'resume' });
+    } finally { await session.shutdown(); }
   });
 
   it.each([false, true])('seeds a promoted Codex descendant into its own remote thread with execution binding %s', async (explicitBinding) => {

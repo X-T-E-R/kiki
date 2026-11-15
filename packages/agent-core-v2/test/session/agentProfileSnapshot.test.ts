@@ -1,4 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
+import { planKey } from '#/features/plan/planOps';
+import { PersistedStatusReader } from '#/app/sessionLegacy/persistedStatus';
+import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
+import { createWireContextProjection } from '#/agent/contextMemory/wireContextProjection';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { WireRecord } from '#/wire/record';
 import { createHash } from 'node:crypto';
 import { profileKey, profileActiveToolsKey } from '#/agent/profile/profileOps';
 import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
@@ -13,6 +20,16 @@ import {
 } from '#/session/agentProfileSnapshot';
 
 describe('readPersistedAgentProfileSnapshot', () => {
+  it('does not interpret a branch title as its profile when the journal has no binding', async () => {
+    const host = {
+      storage: { size: async () => 0, mtime: async () => 1, pathFor: () => undefined, read: async () => undefined },
+      appendLog: { flush: async () => {} },
+    };
+    const snapshot = await readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'branch', {
+      type: 'main', displayName: 'BTW', labels: { branch: 'true' },
+    });
+    expect(snapshot?.profileName).toBeUndefined();
+  });
   it('returns metadata for an oversized wire and does not start a scan', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -120,7 +137,7 @@ describe('readPersistedAgentProfileSnapshot', () => {
   });
 });
 
-function checkpointFixture() {
+function checkpointFixture(extraTail: readonly WireRecord[] = [], context: readonly ContextMessage[] = []) {
   const prefix = Buffer.alloc((8 << 20) + 100, 32);
   prefix[prefix.length - 1] = 10;
   const tail = Buffer.from([
@@ -129,6 +146,7 @@ function checkpointFixture() {
     { type: 'turn.prompt', input: [], origin: { kind: 'user' }, turnId: 7, time: 2 },
     { type: 'usage.record', model: 'example-model', usage: { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 }, usageKnown: true, time: 2 },
     { type: 'full_compaction.complete', time: 2 },
+    ...extraTail,
   ].map(record => JSON.stringify(record)).join('\n') + '\n');
   const bytes = Buffer.concat([prefix, tail]);
   const states = [
@@ -139,6 +157,9 @@ function checkpointFixture() {
     { name: tokenCountingKey.name, value: tokenCountingKey.initial() },
     { name: turnKey.name, value: turnKey.initial() },
     { name: panelAccountingKey.name, value: panelAccountingKey.initial() },
+    { name: permissionModeKey.name, value: 'yolo' },
+    { name: planKey.name, value: { active: true, id: 'plan-1' } },
+    { name: contextMemoryKey.name, value: context },
   ];
   const checkpoint = { format: 1, replayAbi: REPLAY_ABI_VERSION,
     wire: { size: prefix.length, mtimeMs: 1, storeGeneration: 'fixture-generation',
@@ -174,6 +195,50 @@ it('recovers a large cold profile and runtime facts from a verified checkpoint a
       knownByModel: { 'example-model': { inputOther: 100, output: 20, inputCacheRead: 50, inputCacheCreation: 10 } } } });
   expect(reads.some(range => range.start === prefix.length)).toBe(true);
   expect(reads.reduce((sum, range) => sum + range.end - range.start + 1, 0)).toBeLessThan(160_000);
+});
+
+it('reads cold status from verified runtime facts without starting the full projection worker', async () => {
+  const { host, reads } = checkpointFixture();
+  const request = vi.fn(async () => { throw new Error('Unexpected full wire scan'); });
+  const reader = new PersistedStatusReader({ request } as never, host.appendLog as never, host.storage as never, host.docs as never);
+  expect(await reader.read('workspace', 'session')).toMatchObject({
+    permissionMode: 'yolo', permissionConfigured: true, planActive: true,
+    contextTokens: { 'measured+estimated': 1234 },
+  });
+  expect(request).not.toHaveBeenCalled();
+  expect(reads.reduce((sum, range) => sum + range.end - range.start + 1, 0)).toBeLessThan(160_000);
+});
+
+it('preserves canonical token strategies across a large checkpoint and an unmeasured context tail', async () => {
+  const context: ContextMessage[] = Array.from({ length: 4 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant', content: [{ type: 'text', text: 'Saved context '.repeat(40) }], toolCalls: [],
+  }));
+  const tail: WireRecord = { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Unmeasured output '.repeat(300) }], toolCalls: [] }, time: 3 };
+  const { host } = checkpointFixture([tail], context);
+  const projection = createWireContextProjection();
+  for (const message of context) projection.add({ type: 'context.append_message', message });
+  projection.add({ type: 'token_counting.rebased', length: 4, tokens: 1234, measured: true });
+  projection.add(tail);
+  const request = vi.fn(async () => { throw new Error('Unexpected full wire scan'); });
+  const reader = new PersistedStatusReader({ request } as never, host.appendLog as never, host.storage as never, host.docs as never);
+  expect((await reader.read('workspace', 'session')).contextTokens).toEqual(projection.result().contextTokens);
+  expect(request).not.toHaveBeenCalled();
+});
+
+it('keeps all cold status token strategies equal to canonical projection after an unmeasured tail', async () => {
+  const records = [
+    { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: 'question '.repeat(200) }], toolCalls: [], origin: { kind: 'user' } }, time: 1 },
+    { type: 'token_counting.measured', length: 1, tokens: 100, time: 2 },
+    { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'answer '.repeat(200) }], toolCalls: [] }, time: 3 },
+  ];
+  const bytes = Buffer.from(records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const host = { storage: { size: async () => bytes.length, mtime: async () => 1, pathFor: () => undefined,
+    read: async () => undefined, readStream: async function* () { yield bytes; } }, appendLog: { flush: async () => {} } };
+  const projection = createWireContextProjection();
+  for (const record of records) projection.add(record);
+  const facts = await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', undefined, undefined, { includeStatus: true });
+  expect(facts.status?.contextTokens).toEqual(projection.result().contextTokens);
+  expect(facts.status?.contextTokens['measured+estimated']).toBeGreaterThan(100);
 });
 
 it('rejects an invalid large checkpoint without scanning its wire and uses mirrored context', async () => {

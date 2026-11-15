@@ -142,6 +142,8 @@ import {
   filterPromotedDescendantRecords,
   filterPromotedRecords,
   normalizePromotedDescendantMeta,
+  normalizePromotedTaskDocument,
+  promotedExecutorSession,
   retargetPromotedRecords,
   settlePromotedWireRecords,
   sliceSettledAgentRecords,
@@ -957,7 +959,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     );
     if (externalRoot !== undefined) return refuse('external_delegation');
     if (!(await this.saveReplayCheckpoints(sessionId, handle))) return refuse('checkpoint_incomplete');
-    this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
@@ -974,6 +975,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.appendLogStore.drainRetirements();
       await handle.accessor.get(ISessionMetadata).drain();
     }
+    this.disposeCheckpointScheduling(sessionId);
     this.sessions.delete(sessionId);
     await handle.dispose();
     await drainLogCloses();
@@ -1476,6 +1478,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           });
         }
 
+        for (const agentId of retainedAgentIds) {
+          if (agentId === MAIN_AGENT_ID) continue;
+          const sourceAgent = sourceAgents[agentId]!;
+          await targetMeta.registerAgent(agentId, {
+            ...sourceAgent,
+            homedir: join(targetSessionDir, 'agents', agentId),
+          });
+        }
         if (turnSlice !== undefined) {
           await this.pruneTruncatedForkFiles(targetSessionDir, agentIds, retainedAgentIds);
         }
@@ -1594,6 +1604,16 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           });
           await targetMeta.registerAgent(descendant.agentId, normalized);
         }
+      }
+
+      for (const agentId of retainedAgentIds) {
+        const agentDir = join(targetSessionDir, 'agents', agentId);
+        const tasks = await this.readPromotedTaskDocuments(agentDir, agentId);
+        const quiet = new Map([...tasks].map(([taskId, task]) => [taskId, {
+          ...task,
+          info: normalizePromotedTaskDocument(task.info, MAIN_AGENT_ID, Date.now())!,
+        }]));
+        await this.copyPromotedTaskOutputs(agentDir, agentDir, quiet);
       }
 
       const title = opts.title ?? `Fork: ${sourceMeta?.title || sourceId}`;
@@ -1933,17 +1953,22 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       });
       const catalog = target.accessor.get(ISessionAgentProfileCatalog);
       await catalog.ready;
-      const sourceProfileName = subagentProfileName(source.agentMeta);
+      const sourceProfileName = subagentProfileName(source.agentMeta) ??
+        (source.records.findLast((record) => record.type === 'profile.bind')?.['profileName'] as string | undefined);
       const profile = this.resolvePromotedProfile(catalog, opts.profile, sourceProfileName);
       const sameExecutor = (source.agentMeta.executor ?? 'native') === (profile.executor ?? 'native');
       const carriedModel = sameExecutor ? source.agentMeta.model : undefined;
       const model = opts.model ?? (carriedModel !== undefined && this.models.resolveId(carriedModel) !== undefined ? carriedModel : undefined);
       const thinking = opts.thinking ?? (sameExecutor ? source.agentMeta.thinkingEffort : undefined);
-      await target.accessor.get(IAgentLifecycleService).create({
+      const main = await target.accessor.get(IAgentLifecycleService).create({
         agentId: MAIN_AGENT_ID,
         copiedIdentity: true,
         binding: { profile: profile.name, model, thinking, strictThinking: opts.thinking !== undefined },
       });
+      if (sameExecutor && (profile.executor ?? 'native') !== 'native') {
+        const continuation = promotedExecutorSession(retargetedMain.records, source.agentMeta, main.accessor.get(IAgentProfileService).data());
+        if (continuation !== undefined) await main.accessor.get(IEventDispatcher).dispatch(continuation);
+      }
       const targetMeta = target.accessor.get(ISessionMetadata);
       if (normalizedDescendants.length > 0) {
         await Promise.all(normalizedDescendants.map((item) => targetMeta.registerAgent(item.agentId, item.meta)));
@@ -2063,7 +2088,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private async readPromotedTaskDocuments(
     sourceAgentDir: string,
     ownerAgentId: string,
-    descendantIds: ReadonlySet<string>,
+    descendantIds?: ReadonlySet<string>,
   ): Promise<ReadonlyMap<string, PromotedTaskDocument>> {
     const documents = new Map<string, PromotedTaskDocument>();
     const sourceTasks = join(sourceAgentDir, 'tasks');
@@ -2093,7 +2118,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
       const info = parsed as Record<string, unknown>;
       if (info['taskId'] !== taskId || (info['ownerAgentId'] !== undefined && info['ownerAgentId'] !== ownerAgentId)) continue;
-      if (info['kind'] === 'agent' && typeof info['agentId'] === 'string' && !descendantIds.has(info['agentId'])) continue;
+      if (descendantIds !== undefined && info['kind'] === 'agent' && typeof info['agentId'] === 'string' && !descendantIds.has(info['agentId'])) continue;
       let output: Uint8Array | undefined;
       try {
         output = await this.hostFs.readBytes(join(sourceTasks, taskId, 'output.log'));
@@ -2272,6 +2297,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         rel === 'logs' ||
         rel === 'external-delegation' ||
         rel === 'upcoming-goals.json' ||
+        rel === 'execution-control.json' ||
+        entry.name === 'prompt-ingress' ||
+        entry.name === 'replay-checkpoints' ||
+        entry.name === 'autonomous-receipts-v1' ||
+        (/^agents\/[^/]+$/.test(relBase) && entry.name === 'cron') ||
         entry.name === AGENT_WIRE_RECORD_KEY ||
         entry.name === WIRE_TRANSCRIPT_RECEIPT_KEY
       ) {

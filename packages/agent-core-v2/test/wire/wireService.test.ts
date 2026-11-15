@@ -1573,10 +1573,10 @@ describe('WireService corruption repair', () => {
     const prefix = `${currentMetadata()}\n`;
     const raw = `${prefix}GARBAGE\n`;
     await seedCorrupt(raw);
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (scope, key, data, options) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
       if (key === AGENT_WIRE_RECORD_KEY) throw new Error('disk full');
-      return originalWrite(scope, key, data, options);
+      return originalWriteStream(scope, key, source, options);
     };
 
     const yielded = await collect(svc.readJournal());
@@ -1603,13 +1603,13 @@ describe('WireService corruption repair', () => {
     const prefix = `${currentMetadata()}\n`;
     const raw = `${prefix}GARBAGE\n`;
     await seedCorrupt(raw);
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (scope, key, data, options) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
       if (key === AGENT_WIRE_RECORD_KEY) throw new Error('disk full');
-      return originalWrite(scope, key, data, options);
+      return originalWriteStream(scope, key, source, options);
     };
     await collect(svc.readJournal());
-    storage.write = originalWrite;
+    storage.writeStream = originalWriteStream;
 
     svc.appendRecord({ type: 'wire.test.new', time: 7 });
     await svc.flush();
@@ -1648,10 +1648,10 @@ describe('WireService corruption repair', () => {
     const prefix = `${currentMetadata()}\n`;
     const raw = `${prefix}GARBAGE\n`;
     await seedCorrupt(raw);
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (scope, key, data, options) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
       if (key === AGENT_WIRE_RECORD_KEY) throw new Error('disk full');
-      return originalWrite(scope, key, data, options);
+      return originalWriteStream(scope, key, source, options);
     };
     await collect(svc.readJournal());
 
@@ -1694,10 +1694,13 @@ describe('WireService corruption repair', () => {
   it.each([AGENT_WIRE_RECORD_KEY, BACKUP_KEY])('does not erase a discarded fact after repair recovers (%s)', async (failedKey) => {
     const prefix = `${currentMetadata()}\n`;
     await seedCorrupt(`${prefix}GARBAGE\n`);
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (scope, key, data, options) => {
-      if (key === failedKey) throw new Error('disk full');
-      return originalWrite(scope, key, data, options);
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
+      if (key === failedKey) {
+        if (key === BACKUP_KEY) for await (const _chunk of source) {}
+        throw new Error('disk full');
+      }
+      return originalWriteStream(scope, key, source, options);
     };
     await collect(wire.readJournal());
     const unexpected: unknown[] = [];
@@ -1705,14 +1708,14 @@ describe('WireService corruption repair', () => {
     try {
       wire.appendRecord({ type: 'wire.test.doomed', time: 1 });
       await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
-      storage.write = originalWrite;
+      storage.writeStream = originalWriteStream;
       wire.appendRecord({ type: 'wire.test.recovered', time: 2 });
       await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
       await expect(wire.flush()).rejects.toThrow('Wire journal repair did not complete');
       expect(await rawBytes()).toBe(`${prefix}${JSON.stringify({ type: 'wire.test.recovered', time: 2 })}\n`);
       expect(unexpected).toHaveLength(1);
     } finally {
-      storage.write = originalWrite;
+      storage.writeStream = originalWriteStream;
       resetUnexpectedErrorHandler();
     }
   });
@@ -1723,10 +1726,13 @@ describe('WireService corruption repair', () => {
     const prefix = `${currentMetadata()}\n`;
     const raw = `${prefix}GARBAGE\n`;
     await seedCorrupt(raw);
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (scope, key, data, options) => {
-      if (key === BACKUP_KEY) throw new Error('disk full');
-      return originalWrite(scope, key, data, options);
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
+      if (key === BACKUP_KEY) {
+        for await (const _chunk of source) {}
+        throw new Error('disk full');
+      }
+      return originalWriteStream(scope, key, source, options);
     };
     await collect(svc.readJournal());
 

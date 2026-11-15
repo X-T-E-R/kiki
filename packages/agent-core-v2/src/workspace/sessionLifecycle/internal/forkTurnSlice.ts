@@ -5,6 +5,7 @@ import {
   promptMetadataTextFromText,
 } from '#/agent/prompt/promptMetadataText';
 import type { WireRecord } from '#/wire/record';
+import { createContextTranscriptReducer } from '#/agent/contextMemory/contextTranscript';
 
 export interface MainTurnSlice {
   readonly records: readonly WireRecord[];
@@ -28,10 +29,14 @@ export function sliceMainRecordsAtTurn(
   turnIndex: number,
   throughUserMessage = false,
 ): MainTurnSlice {
-  const turnStarts: number[] = [];
+  const reducer = createContextTranscriptReducer();
   for (let index = 0; index < records.length; index += 1) {
-    if (isUserVisibleTurnRecord(records[index]!)) turnStarts.push(index);
+    reducer.add({ ...records[index]!, time: index });
   }
+  const transcript = reducer.result();
+  const turnStarts = transcript.entries.flatMap((message, index) =>
+    isUserVisibleTurnRecord({ type: 'context.append_message', message }) ? [transcript.times[index]!] : []);
+
   const start = turnStarts[turnIndex];
   if (start === undefined) {
     throw new Error2(
@@ -41,8 +46,22 @@ export function sliceMainRecordsAtTurn(
     );
   }
 
-  const end = throughUserMessage ? start + 1 : (turnStarts[turnIndex + 1] ?? records.length);
-  const retainedTurnInputs = turnInputIndicesThrough(records, turnIndex);
+  const next = records.findIndex((record, index) => index > start && isUserVisibleTurnRecord(turnRecord(record)));
+  let end = throughUserMessage ? start + 1 : next === -1 ? records.length : next;
+  if (!throughUserMessage) {
+    let lastOutput = start;
+    for (let index = 0; index < transcript.entries.length; index += 1) {
+      const source = transcript.times[index]!;
+      const role = transcript.entries[index]!.role;
+      if (source >= start && source < end && (role === 'assistant' || role === 'tool')) lastOutput = Math.max(lastOutput, source);
+    }
+    const reset = records.findIndex((record, index) => index > lastOutput && index < end && (
+      record.type === 'context.clear' || record.type === 'context.apply_compaction' ||
+      record.type === 'context.undo' || (record.type === 'agent.model_switch' && Array.isArray(record['context']))
+    ));
+    if (reset !== -1) end = reset;
+  }
+  const retainedTurnInputs = turnInputIndicesThrough(records, start);
   const retained = records
     .slice(0, end)
     .filter(
@@ -51,7 +70,7 @@ export function sliceMainRecordsAtTurn(
   const cutoffTimes = retained
     .map(recordTime)
     .filter((time): time is number => time !== undefined);
-  const lastPrompt = promptMetadataFromTurnRecord(records[start]!);
+  const lastPrompt = promptMetadataFromTurnRecord(turnRecord(records[start]!));
   return {
     records: retained,
     cutoffTime: cutoffTimes.length === 0 ? undefined : Math.max(...cutoffTimes),
@@ -73,6 +92,12 @@ export function sliceSubagentRecordsAtTime(
     }
   }
   return records.slice(0, end);
+}
+
+function turnRecord(record: WireRecord): WireRecord {
+  if (record.type !== 'context.undo') return record;
+  const prompt = asRecord(record['replacementPrompt']);
+  return { type: 'context.append_message', message: prompt?.['message'] };
 }
 
 function isUserVisibleTurnRecord(record: WireRecord): boolean {
@@ -112,11 +137,10 @@ function isUserVisibleTurnInputRecord(record: WireRecord): boolean {
 
 function turnInputIndicesThrough(
   records: readonly WireRecord[],
-  turnIndex: number,
+  throughRecordIndex: number,
 ): ReadonlySet<number> {
   const pending: number[] = [];
   const retained = new Set<number>();
-  let visibleTurnIndex = 0;
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index]!;
     if (isUserVisibleTurnInputRecord(record)) {
@@ -128,11 +152,10 @@ function turnInputIndicesThrough(
     const matchAt = findMatchingTurnInput(records, pending, record);
     if (matchAt !== -1) {
       const [inputIndex] = pending.splice(matchAt, 1);
-      if (visibleTurnIndex <= turnIndex && inputIndex !== undefined) {
+      if (index <= throughRecordIndex && inputIndex !== undefined) {
         retained.add(inputIndex);
       }
     }
-    visibleTurnIndex += 1;
   }
   return retained;
 }

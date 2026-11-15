@@ -8,6 +8,7 @@ import { Emitter, type Event } from '#/_base/event';
 import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
+import { encodeJsonLines } from '#/persistence/jsonLines';
 import {
   AppendLogCorruptedError,
   IAppendLogStore,
@@ -304,7 +305,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   }
 
   async rewrite<R>(scope: string, key: string, records: readonly R[]): Promise<void> {
-    const encoded = encodeBatch(records);
+    const encoded = [...encodeJsonLines(records)];
     const state = this.state(scope, key);
     state.cutoverEpoch++;
     const prior = state.flushPromise ?? state.ready;
@@ -326,9 +327,19 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
               state.source.revision++;
               state.source.unexplained++;
             }
-            await this.storage.write(scope, key, encoded, { atomic: true });
-            const boundary = encoded.slice(-4096);
-            committed = { generation, offset: encoded.byteLength, boundary };
+            let offset = 0;
+            let boundary = new Uint8Array(0);
+            const source = async function* () {
+              for (const chunk of encoded) {
+                offset += chunk.byteLength;
+                boundary = chunk.byteLength >= 4096
+                  ? chunk.slice(-4096)
+                  : new Uint8Array([...boundary.slice(-(4096 - chunk.byteLength)), ...chunk]);
+                yield chunk;
+              }
+            };
+            await this.storage.writeStream(scope, key, source(), { atomic: true });
+            committed = { generation, offset, boundary };
           };
           const located = this.storage.pathFor(scope, key);
           if (located === undefined || located.length === 0) await replace();
@@ -657,9 +668,14 @@ function fromLogId(id: string): { scope: string; key: string } {
 }
 
 function encodeBatch(records: readonly unknown[]): Uint8Array {
-  if (records.length === 0) return new Uint8Array(0);
-  const content = records.map((record) => JSON.stringify(record) + '\n').join('');
-  return textEncoder.encode(content);
+  const chunks = [...encodeJsonLines(records)];
+  const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {

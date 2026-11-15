@@ -856,6 +856,7 @@ export class ResponsesWebSocketTransport {
       readonly baseUrl: string;
       readonly apiKey: string;
       readonly headers: Readonly<Record<string, string>>;
+      readonly suppressUserAgent?: boolean;
       readonly signal?: AbortSignal;
       readonly forceFullInput?: boolean;
       readonly baselinePolicyKey?: string;
@@ -866,7 +867,7 @@ export class ResponsesWebSocketTransport {
     const client = new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseUrl,
-      defaultHeaders: options.headers,
+      defaultHeaders: options.suppressUserAgent === true ? { ...options.headers, 'user-agent': null } : options.headers,
       maxRetries: 0,
     });
     return this.create(client, fullParams, options);

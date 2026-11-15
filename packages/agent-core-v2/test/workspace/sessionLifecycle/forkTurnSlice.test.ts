@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { WireRecord } from '#/wire/record';
+import { reduceContextTranscript } from '#/agent/contextMemory/contextTranscript';
 import { sliceMainRecordsAtTurn } from '#/workspace/sessionLifecycle/internal/forkTurnSlice';
 import {
   collectPromotedDescendantIds,
@@ -50,6 +51,55 @@ describe('sliceMainRecordsAtTurn message boundaries', () => {
     user('u2', 'two', 6),
     assistant('a2', 'reply two', 7),
   ];
+
+  it('addresses surviving turns after undo without copying a discarded prompt into an earlier turn', () => {
+    const rewritten = [...records, { type: 'context.undo', count: 1, time: 8 }, user('u3', 'three', 9)];
+    const earlier = sliceMainRecordsAtTurn(rewritten, 'session_test', 0);
+    expect(reduceContextTranscript(earlier.records).entries.map((message) => message.id)).toEqual(['u1', 'a1']);
+    const latest = sliceMainRecordsAtTurn(rewritten, 'session_test', 1, true);
+    expect(latest.records.at(-1)).toEqual(rewritten.at(-1));
+    expect(reduceContextTranscript(latest.records).entries.map((message) => message.id)).toEqual(['u1', 'a1', 'u3']);
+    expect(latest.lastPrompt).toBe('three');
+  });
+
+  it('cuts edit and regenerate replacements at their undo fact rather than the original user record', () => {
+    const replacement = {
+      type: 'context.undo', count: 1, time: 8,
+      replacementPrompt: { id: 'replacement', message: user('u2', 'edited', 8)['message'] },
+    };
+    const rewritten = [...records, replacement, assistant('a3', 'new reply', 9)];
+    const sliced = sliceMainRecordsAtTurn(rewritten, 'session_test', 1, true);
+    expect(sliced.records.at(-1)).toEqual(replacement);
+    expect(sliced.cutoffTime).toBe(8);
+    expect(sliced.lastPrompt).toBe('edited');
+    const projected = reduceContextTranscript(sliced.records).entries;
+    expect(projected.map((message) => message.id)).toEqual(['u1', 'a1', 'u2']);
+    expect(projected.at(-1)?.content).toEqual([{ type: 'text', text: 'edited' }]);
+  });
+
+  it.each([
+    { type: 'context.clear', time: 8 },
+    { type: 'context.apply_compaction', compactedCount: 4, summary: 'Earlier conversation', time: 8 },
+    { type: 'agent.model_switch', context: [], time: 8 },
+  ])('uses the transcript undo window after $type', (reset) => {
+    const rewritten = [...records, reset, user('u3', 'three', 9), { type: 'context.undo', count: 1, time: 10 }, user('u4', 'four', 11)];
+    const sliced = sliceMainRecordsAtTurn(rewritten, 'session_test', 2, true);
+    expect(sliced.records.at(-1)).toEqual(rewritten.at(-1));
+    expect(reduceContextTranscript(sliced.records).entries.filter((message) => message.origin?.kind === 'user').map((message) => message.id)).toEqual(['u1', 'u2', 'u4']);
+    expect(sliced.lastPrompt).toBe('four');
+  });
+
+  it.each([
+    { type: 'context.clear', time: 8 },
+    { type: 'context.apply_compaction', compactedCount: 4, summary: 'Later summary', time: 8 },
+    { type: 'agent.model_switch', context: [], time: 8 },
+  ])('does not inherit a later $type when forking an archived assistant', (reset) => {
+    const rewritten = [...records, reset, user('u3', 'three', 9)];
+    const sliced = sliceMainRecordsAtTurn(rewritten, 'session_test', 1);
+    expect(sliced.records).not.toContainEqual(reset);
+    expect(reduceContextTranscript(sliced.records).logicalEntries.map((message) => message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    expect(sliced.records.at(-1)).toEqual(records.at(-1));
+  });
 
   it('retains exactly through a user message for an open-tail fork', () => {
     const slice = sliceMainRecordsAtTurn(records, 'session_test', 1, true);
@@ -145,10 +195,13 @@ describe('promoted subagent records', () => {
     expect(sliceSettledAgentRecords(records).lastTurnReason).toBe('failed');
   });
 
-  it('drops source-runtime records, the remote executor session and session-scoped approval grants while keeping subagent and task facts', () => {
+  it('drops source-runtime locks and session-scoped approvals while preserving executor continuity', () => {
     const kept = filterPromotedRecords([
       user('u1', 'task', 1),
       { type: 'profile.bind', time: 2 },
+      { type: 'agent.branch_sealed', sealed: true, time: 2 },
+      { type: 'agent.tool_lock_changed', locked: true, time: 2 },
+      { type: 'branch.base', parentAgentId: 'main', time: 2 },
       { type: 'prompt.enqueued', time: 3 },
       { type: 'task.started', time: 4 },
       { type: 'subagent.spawned', time: 5 },
@@ -162,7 +215,7 @@ describe('promoted subagent records', () => {
       { type: 'tools.update_store', time: 12, key: 'todo', value: [{ title: 'ship', status: 'in_progress' }] },
     ]);
     expect(kept.map((record) => record.type)).toEqual([
-      'context.append_message', 'task.started', 'subagent.spawned',
+      'context.append_message', 'task.started', 'subagent.spawned', 'executor.session.updated',
       'permission.record_approval_result', 'permission.record_approval_result',
       'permission.record_approval_result', 'tools.update_store',
     ]);

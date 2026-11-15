@@ -30,13 +30,29 @@ export async function repairWireJournal(
   let droppedCount = 0;
   let repairError: unknown;
   try {
-    const original = await storage.read(scope, key);
-    if (original !== undefined) {
-      droppedCount = Math.max(0, countJournalLines(original) - records.length);
+    if ((await storage.size(scope, key)) !== undefined) {
       const backupKey = wireJournalBackupKey(key);
+      let lines = 0;
+      let hasContent = false;
+      const original = async function* () {
+        for await (const chunk of storage.readStream(scope, key)) {
+          for (const byte of chunk) {
+            if (byte === 0x0a) {
+              lines++;
+              hasContent = false;
+            } else {
+              hasContent = true;
+            }
+          }
+          yield chunk;
+        }
+        droppedCount = Math.max(0, lines + Number(hasContent) - records.length);
+      };
       if ((await storage.size(scope, backupKey)) === undefined) {
-        await storage.write(scope, backupKey, original, { atomic: true });
+        await storage.writeStream(scope, backupKey, original(), { atomic: true });
         backupCreated = true;
+      } else {
+        for await (const _chunk of original()) {}
       }
     }
     await appendLog.rewrite(scope, key, records);
@@ -61,18 +77,4 @@ export async function repairWireJournal(
     backup_created: backupCreated,
   });
   return outcome;
-}
-
-function countJournalLines(data: Uint8Array): number {
-  let lines = 0;
-  let hasContent = false;
-  for (const byte of data) {
-    if (byte === 0x0a) {
-      lines++;
-      hasContent = false;
-    } else {
-      hasContent = true;
-    }
-  }
-  return hasContent ? lines + 1 : lines;
 }

@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
-import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -10,6 +10,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { AppendLogCorruptedError, IAppendLogStore, type AppendLogTruncation } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 
 const enc = new TextEncoder();
@@ -174,10 +175,10 @@ describe('AppendLogStore', () => {
     await record.rewrite(SCOPE, KEY, [{ n: 2 }]);
     const generation = await record.generation(SCOPE, KEY);
     expect(generation).not.toBe('legacy');
-    const write = storage.write.bind(storage);
-    storage.write = async (scope, key, value, options) => {
+    const writeStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
       if (key === KEY) throw new Error('rewrite failed');
-      return write(scope, key, value, options);
+      return writeStream(scope, key, source, options);
     };
     await expect(record.rewrite(SCOPE, KEY, [{ n: 3 }])).rejects.toThrow('rewrite failed');
     expect(await record.generation(SCOPE, KEY)).not.toBe(generation);
@@ -645,6 +646,96 @@ describe('AppendLogStore', () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 9 }, { n: 8 }]);
   });
 
+  it('streams multi-megabyte Unicode rewrites in bounded chunks and recovers the append boundary for projections', async () => {
+    const cjk = { text: '中'.repeat(400_000) };
+    const emoji = { text: '🙂'.repeat(300_000) };
+    const replacement = [cjk, emoji];
+    const expected = Buffer.from(`${JSON.stringify(cjk)}\n${JSON.stringify(emoji)}\n`);
+    const chunkSizes: number[] = [];
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (scope, key, source, options) => {
+      const observed = async function* () {
+        for await (const chunk of source) {
+          chunkSizes.push(chunk.byteLength);
+          yield chunk;
+        }
+      };
+      return originalWriteStream(scope, key, observed(), options);
+    };
+    const commits: {
+      start: number;
+      end: number;
+      generation: string;
+      boundaryHash: string;
+      rewrite: boolean;
+      records: readonly unknown[];
+    }[] = [];
+    record.registerProjection({
+      key: KEY,
+      prepare: (_scope, records) => records,
+      commit: async (position, records) => {
+        expect(await storage.size(SCOPE, KEY)).toBe(position.end);
+        commits.push({
+          start: position.start,
+          end: position.end,
+          generation: position.generation,
+          boundaryHash: position.boundaryHash,
+          rewrite: position.rewrite,
+          records,
+        });
+      },
+      onError: () => { throw new Error('unexpected projection failure'); },
+    });
+
+    await record.rewrite(SCOPE, KEY, replacement);
+    const generation = await record.generation(SCOPE, KEY);
+    const replacementBoundaryHash = createHash('sha256').update(expected.subarray(-4096)).digest('base64url');
+    expect(chunkSizes.length).toBeGreaterThan(1);
+    expect(chunkSizes.every((size) => size > 0 && size <= 1024 * 1024)).toBe(true);
+    expect(chunkSizes.reduce((total, size) => total + size, 0)).toBe(expected.byteLength);
+    expect(Buffer.from((await storage.read(SCOPE, KEY))!).equals(expected)).toBe(true);
+    expect(generation).not.toBe('legacy');
+    expect(commits.map(({ start, end, generation: committedGeneration, boundaryHash, rewrite }) => ({
+      start, end, generation: committedGeneration, boundaryHash, rewrite,
+    }))).toEqual([{
+      start: 0,
+      end: expected.byteLength,
+      generation,
+      boundaryHash: replacementBoundaryHash,
+      rewrite: true,
+    }]);
+    expect(commits[0]!.records).toBe(replacement);
+
+    const appended = { text: '尾🙂' };
+    const appendedBytes = Buffer.from(`${JSON.stringify(appended)}\n`);
+    const complete = Buffer.concat([expected, appendedBytes]);
+    record.append(SCOPE, KEY, appended);
+    await record.flush(SCOPE, KEY);
+
+    expect(Buffer.from((await storage.read(SCOPE, KEY))!).equals(complete)).toBe(true);
+    expect(await collect(SCOPE, KEY)).toEqual([cjk, emoji, appended]);
+    expect(commits.map(({ start, end, generation: committedGeneration, boundaryHash, rewrite }) => ({
+      start, end, generation: committedGeneration, boundaryHash, rewrite,
+    }))).toEqual([
+      {
+        start: 0,
+        end: expected.byteLength,
+        generation,
+        boundaryHash: replacementBoundaryHash,
+        rewrite: true,
+      },
+      {
+        start: expected.byteLength,
+        end: complete.byteLength,
+        generation,
+        boundaryHash: createHash('sha256').update(complete.subarray(-4096)).digest('base64url'),
+        rewrite: false,
+      },
+    ]);
+    expect(commits[0]!.records).toBe(replacement);
+    expect(commits[1]!.records).toEqual([appended]);
+  });
+
   it('rewrite preserves an append accepted after the replacement snapshot', async () => {
     let markWriteStarted!: () => void;
     const writeStarted = new Promise<void>((resolve) => {
@@ -654,11 +745,11 @@ describe('AppendLogStore', () => {
     const writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (...args) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (...args) => {
       markWriteStarted();
       await writeGate;
-      return originalWrite(...args);
+      return originalWriteStream(...args);
     };
     const replacement = [{ n: 9 }];
     record.append<Rec>(SCOPE, KEY, { n: 2 });
@@ -758,7 +849,7 @@ describe('AppendLogStore', () => {
       await appendGate;
       return originalAppend(...args);
     };
-    storage.write = async () => {
+    storage.writeStream = async () => {
       throw failure;
     };
     record.append<Rec>(SCOPE, KEY, { n: 2 });
@@ -826,14 +917,14 @@ describe('AppendLogStore', () => {
       }
       return originalAppend(...args);
     };
-    let writeAttempts = 0;
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (...args) => {
+    let writeStreamAttempts = 0;
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (...args) => {
       if (args[1] === KEY) {
-        writeAttempts++;
-        if (writeAttempts === 1) throw failure;
+        writeStreamAttempts++;
+        if (writeStreamAttempts === 1) throw failure;
       }
-      return originalWrite(...args);
+      return originalWriteStream(...args);
     };
     record.append<Rec>(SCOPE, KEY, { n: 2 });
     await appendStarted;
@@ -850,7 +941,7 @@ describe('AppendLogStore', () => {
     await record.rewrite<Rec>(SCOPE, KEY, [{ n: 9 }]);
     await record.flush();
 
-    expect(writeAttempts).toBe(2);
+    expect(writeStreamAttempts).toBe(2);
     expect(appendAttempts).toBe(2);
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 9 }, { n: 2 }]);
   });
@@ -904,10 +995,10 @@ describe('AppendLogStore', () => {
     const writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (...args) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (...args) => {
       await writeGate;
-      return originalWrite(...args);
+      return originalWriteStream(...args);
     };
 
     record.append<Rec>(SCOPE, KEY, { n: 1 });
@@ -926,10 +1017,10 @@ describe('AppendLogStore', () => {
     const writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (...args) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (...args) => {
       await writeGate;
-      return originalWrite(...args);
+      return originalWriteStream(...args);
     };
 
     record.append<Rec>(SCOPE, KEY, { n: 1 });
@@ -955,10 +1046,10 @@ describe('AppendLogStore', () => {
     const appendGate = new Promise<void>((resolve) => {
       releaseAppend = resolve;
     });
-    const originalWrite = storage.write.bind(storage);
-    storage.write = async (...args) => {
+    const originalWriteStream = storage.writeStream.bind(storage);
+    storage.writeStream = async (...args) => {
       await writeGate;
-      return originalWrite(...args);
+      return originalWriteStream(...args);
     };
     const originalAppend = storage.append.bind(storage);
     storage.append = async (...args) => {

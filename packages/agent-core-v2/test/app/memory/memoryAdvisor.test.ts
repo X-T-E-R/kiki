@@ -1003,7 +1003,7 @@ describe('Advisor governed protocols', () => {
         return Response.json({
           answers: [
             { type: 'choice', name: 'c0', choice: 'read', probabilities: [{ value: 'read', probability: 0.92 }, { value: 'skip', probability: 0.08 }] },
-            { type: 'refusal', name: 'c1', reason: 'Ambiguous' },
+            { type: 'refusal', name: 'c1', reason: null },
           ],
           usage: { input_tokens: 80, output_tokens: 0, input_tokens_details: { cached_tokens: 15, cache_write_tokens: 0 } },
         });

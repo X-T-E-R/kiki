@@ -305,7 +305,7 @@ describe('updateColdSessionProfile', () => {
     ]);
   });
 
-  it('preserves promotion provenance while replacing omitted custom metadata on pin changes', async () => {
+  it('preserves promotion provenance and internal goal state while replacing custom metadata', async () => {
     const promotedFrom = {
       sessionId: 'source-session',
       agentId: 'research-agent',
@@ -319,7 +319,7 @@ describe('updateColdSessionProfile', () => {
       createdAt: 10,
       updatedAt: 20,
       archived: false,
-      custom: { promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 100, retained: 'drop' },
+      custom: { goal: { objective: 'Preserve saved work', status: 'active' }, promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 100, retained: 'drop' },
     };
     const apply = (metadata: Record<string, unknown>) => updateColdSessionProfile(
       coldPathAccessor({
@@ -335,7 +335,7 @@ describe('updateColdSessionProfile', () => {
     const unpinned = await apply({ 'kiki.pinned': false });
     expect(unpinned).toMatchObject({
       kind: 'updated',
-      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': false } },
+      meta: { custom: { goal: { objective: 'Preserve saved work', status: 'active' }, promoted_from: promotedFrom, 'kiki.pinned': false } },
     });
     expect(unpinned.kind === 'updated' ? unpinned.meta.custom : undefined).not.toHaveProperty('pinned_at');
     expect(unpinned.kind === 'updated' ? unpinned.meta.custom : undefined).not.toHaveProperty('retained');
@@ -343,13 +343,13 @@ describe('updateColdSessionProfile', () => {
     const pinned = await apply({ 'kiki.pinned': true, pinned_at: 200 });
     expect(pinned).toMatchObject({
       kind: 'updated',
-      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 200 } },
+      meta: { custom: { goal: { objective: 'Preserve saved work', status: 'active' }, promoted_from: promotedFrom, 'kiki.pinned': true, pinned_at: 200 } },
     });
 
     const unpinnedAgain = await apply({ 'kiki.pinned': false });
     expect(unpinnedAgain).toMatchObject({
       kind: 'updated',
-      meta: { custom: { promoted_from: promotedFrom, 'kiki.pinned': false } },
+      meta: { custom: { goal: { objective: 'Preserve saved work', status: 'active' }, promoted_from: promotedFrom, 'kiki.pinned': false } },
     });
     expect(unpinnedAgain.kind === 'updated' ? unpinnedAgain.meta.custom : undefined).not.toHaveProperty('pinned_at');
   });

@@ -72,7 +72,7 @@ export class SessionLegacyService implements ISessionLegacyService {
       await preview.catalog.ready;
       const models = this.services.get(IModelService);
       await models.ready;
-      const binding = resolveEffectiveSessionModel(models, profile ?? {}, profile?.modelAlias ? undefined : preview.catalog.getDefault());
+      const binding = resolveEffectiveSessionModel(models, profile ?? {}, profile?.modelAlias || profile?.profileName ? undefined : preview.catalog.getDefault());
       const config = this.services.get(IConfigService);
       let thinkingLevel = profile?.modelAlias ? profile.thinkingLevel ?? '' : '';
       let modelName: string | null = null;
@@ -99,8 +99,8 @@ export class SessionLegacyService implements ISessionLegacyService {
         } catch { modelName = null; }
       }
       this.statusReader ??= new PersistedStatusReader(this.services.get(ICpuWorkerService),
-        this.services.get(IAppendLogStore), this.services.get(IFileSystemStorageService));
-      const projection = await this.statusReader.read(`${scope}/agents/main`);
+        this.services.get(IAppendLogStore), this.services.get(IFileSystemStorageService), this.services.get(IAtomicDocumentStore));
+      const projection = await this.statusReader.read(summary.workspaceId, sessionId, metadata?.agents?.['main']);
       const strategy = config.get<TokenCountingConfig>(TOKEN_COUNTING_SECTION)?.strategy ?? 'measured+estimated';
       const tokens = projection.contextTokens[strategy];
       return {

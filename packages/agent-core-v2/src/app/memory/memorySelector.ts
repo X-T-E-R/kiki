@@ -431,7 +431,7 @@ export class MemorySelector extends Service implements IMemorySelector {
                 .object({
                   type: z.literal('refusal'),
                   name: z.string().nullable().optional(),
-                  reason: z.string().optional(),
+                  reason: z.string().nullable().optional(),
                 })
                 .passthrough(),
             ]),

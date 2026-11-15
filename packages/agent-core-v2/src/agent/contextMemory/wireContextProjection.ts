@@ -4,7 +4,7 @@ import { event2FromRecord, type Event2, type Event2Class } from '#/app/event/eve
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 import { RuntimeSetBinding } from '#/agent/runtimeBinding/runtimeBindingOps';
 import type { RuntimeBinding } from '#/runtime/runtime';
-import { tokenCountingKey, TokenCountingMeasured, TokenCountingRebased, TokenCountingTruncated } from '#/agent/tokenCounting/tokenCountingOps';
+import { tokenCountingKey, TokenCountingMeasured, TokenCountingRebased, TokenCountingTruncated, type TokenCountingState } from '#/agent/tokenCounting/tokenCountingOps';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { PermissionSetMode, permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
@@ -12,6 +12,7 @@ import { planKey, type PlanState } from '#/features/plan/planOps';
 import { expandedStateFolds, type FoldContext, type ReplayableStateKey } from '#/state/state';
 import type { WireRecord } from '#/wire/record';
 import { createContextTranscriptReducer, type ContextTranscript } from './contextTranscript';
+import type { ContextMessage } from './types';
 
 export interface WireContextProjection {
   readonly transcript: ContextTranscript;
@@ -87,17 +88,22 @@ export function createWireContextProjection(): { add(record: WireRecord): void; 
     result: () => {
       const transcript = reducer.result();
       const context = transcript.logicalEntries;
-      const measured = tokenCounting.anchors.findLast(anchor => anchor.measured)?.tokens ?? 0;
-      const anchor = tokenCounting.anchors.findLast(anchor => anchor.length <= context.length);
+
       return {
         transcript, permissionMode, permissionConfigured, planActive: plan.active === true, runtimeBinding,
-        contextTokens: {
-          measured,
-          estimated: estimateTokensForMessages(context),
-          'measured+estimated': Math.max(measured, (anchor?.tokens ?? 0) + estimateTokensForMessages(context.slice(anchor?.length ?? 0))),
-        },
+        contextTokens: contextTokenCounts(context, tokenCounting),
       };
     },
+  };
+}
+
+export function contextTokenCounts(context: readonly ContextMessage[], tokenCounting: TokenCountingState): WireContextProjection['contextTokens'] {
+  const measured = tokenCounting.anchors.findLast(anchor => anchor.measured)?.tokens ?? 0;
+  const anchor = tokenCounting.anchors.findLast(anchor => anchor.length <= context.length);
+  return {
+    measured,
+    estimated: estimateTokensForMessages(context),
+    'measured+estimated': Math.max(measured, (anchor?.tokens ?? 0) + estimateTokensForMessages(context.slice(anchor?.length ?? 0))),
   };
 }
 

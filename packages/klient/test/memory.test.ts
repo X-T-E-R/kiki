@@ -355,6 +355,52 @@ describe('memory dispatcher specifics', () => {
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
+  it('restores cold saved child and branch agents for permission and plan actions', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    const model = '__klient_restore_permission_plan__';
+    try {
+      await klient.global.kosong.addProvider({
+        id: model,
+        model,
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 1000,
+        auth: { method: 'api-key', apiKey: 'restore-key' },
+      });
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const session = klient.session(created.id);
+      const live = getLiveSessionById(app.accessor, created.id);
+      if (live === undefined) throw new Error('created session was not live');
+      const lifecycle = live.accessor.get(IAgentLifecycleService);
+      const binding = { profile: 'agent', model, thinking: 'off' };
+      const child = await lifecycle.create({ agentId: 'restore-child', binding });
+      const childAgent = session.agent(child.id);
+      await childAgent.setPermission('manual', { broadcast: false });
+      await child.accessor.get(IEventDispatcher).flush();
+      await lifecycle.remove(child.id);
+      expect(lifecycle.get(child.id)).toBeUndefined();
+      await expect(childAgent.getPermission()).resolves.toBe('manual');
+      await lifecycle.remove(child.id);
+      await expect(childAgent.setPermission('yolo')).resolves.toBeUndefined();
+      expect(await childAgent.getPermission()).toBe('yolo');
+
+      const branch = await lifecycle.create({ agentId: 'restore-branch', binding, labels: { branch: 'true' } });
+      const branchAgent = session.agent(branch.id);
+      await lifecycle.remove(branch.id);
+      expect(lifecycle.get(branch.id)).toBeUndefined();
+      await expect(branchAgent.enterPlan()).resolves.toBeUndefined();
+      await lifecycle.remove(branch.id);
+      await expect(branchAgent.exitPlan()).resolves.toBeUndefined();
+      expect(lifecycle.get(branch.id)).toBeDefined();
+      expect((await session.agents())[branch.id]?.labels).toMatchObject({ branch: 'true' });
+    } finally {
+      await klient.close();
+      await klient.global.kosong.removeProvider(model);
+      await app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
   it('COLD-EVENTS-R1 keeps new saved-child subscriptions attached across the real session closing window', async () => {
     const { homeDir, app } = await makeEngine('klient-closing-events-');
     const manager = app.accessor.get(ISessionManager);

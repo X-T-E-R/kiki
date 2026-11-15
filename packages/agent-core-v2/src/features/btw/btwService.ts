@@ -1,6 +1,8 @@
 import { ulid } from 'ulid';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
+import { readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
 import { Service } from '#/_base/di/service';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { BranchBase } from '#/agent/contextMemory/contextEvents';
@@ -60,8 +62,10 @@ const FOLD_PROMPT_MESSAGE =
 
 export class SessionBranchService extends Service implements ISessionBranchService {
   declare readonly _serviceBrand: undefined;
+  private readonly profileHost: { readonly accessor: ServicesAccessor };
 
   constructor(
+    @IInstantiationService instantiation: IInstantiationService,
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionContext private readonly session: ISessionContext,
@@ -69,6 +73,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     @IOptionalCapabilityPolicy private readonly capabilities?: IOptionalCapabilityPolicy,
   ) {
     super();
+    this.profileHost = { accessor: { get: (id) => instantiation.invokeFunction((accessor) => accessor.get(id)) } };
   }
 
   isBranch(agentId: string): boolean {
@@ -131,21 +136,22 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         binding: { profile: DEFAULT_AGENT_PROFILE_NAME },
       });
     }
+    const profile = await readPersistedAgentProfileSnapshot(
+      this.profileHost, this.session.workspaceId, this.session.sessionId, agentId, meta,
+    );
     return this.lifecycle.create({
       agentId,
       delegator: meta?.delegator,
       userLabel: meta?.userLabel,
       labels: meta?.labels,
-      restoreBinding: meta === undefined || meta.model === undefined && (meta.executor ?? 'native') === 'native'
-        ? undefined
-        : {
-            profileName: meta.labels?.['profileName'] ?? meta.displayName ?? DEFAULT_AGENT_PROFILE_NAME,
-            modelAlias: meta.model,
-            thinkingEffort: meta.thinkingEffort ?? 'medium',
-            thinkingEffortExplicit: meta.thinkingEffortExplicit,
-            executorId: meta.executor ?? 'native',
-            executorProtocol: meta.executorProtocol ?? 'native',
-          },
+      restoreBinding: profile === undefined ? undefined : {
+        profileName: profile.profileName,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingLevel,
+        thinkingEffortExplicit: profile.thinkingEffortExplicit,
+        executorId: profile.executorId,
+        executorProtocol: profile.executorProtocol,
+      },
     });
   }
 
@@ -190,6 +196,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     const labels: Record<string, string> = {
       [AUTONOMOUS_RECEIPT_POLICY_LABEL]: 'local',
       branch: 'true',
+      profileName: parentData.profileName ?? DEFAULT_AGENT_PROFILE_NAME,
       branchSeed: seedMode,
       branchInitiator: initiator,
       toolsLocked: toolsLocked ? 'true' : 'false',
@@ -316,7 +323,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     }
     const sessionMeta = await this.metadata.read();
     const branchMeta = sessionMeta.agents?.[branchId];
-    if (branchMeta === undefined) {
+    if (branchMeta?.labels?.['branch'] !== 'true') {
       throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Branch "${branchId}" does not exist`, {
         details: { agentId: branchId },
       });
@@ -391,25 +398,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       origin,
     };
 
-    const targetLoop = targetHandle.accessor.get(IAgentLoopService);
-    const targetPrompts = targetHandle.accessor.get(IAgentPromptService);
-    const targetRunning =
-      targetLoop.status().state !== 'idle' ||
-      targetLoop.status().pendingTurnIds.length > 0 ||
-      targetPrompts.list().active !== undefined ||
-      targetPrompts.list().launching !== undefined;
-    const initiator = branchMeta.labels?.['branchInitiator'] === 'agent' ? 'agent' : 'user';
-
-    if (targetRunning) {
-      targetLoop.enqueue(new MessageStepRequest(foldMessage, {
-        kind: 'branch_fold',
-        admission: 'activeOrNextTurn',
-        mergeable: false,
-        turnScoped: false,
-        deliveryOrigin: 'mailbox',
-      }));
-    } else if (initiator === 'agent') {
-      targetLoop.enqueue(new MessageStepRequest(foldMessage, {
+    if ((targetHandle.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') {
+      targetHandle.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest(foldMessage, {
         kind: 'branch_fold',
         admission: 'activeOrNewTurn',
         mergeable: false,
@@ -417,7 +407,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         deliveryOrigin: 'mailbox',
       }));
     } else {
-      targetHandle.accessor.get(IAgentContextMemoryService).appendObservable(foldMessage);
+      await targetHandle.accessor.get(IAgentPromptService).enqueue({ message: foldMessage, waitForLaunch: false });
     }
 
     let sealed = alreadySealed;
@@ -538,6 +528,7 @@ export class SessionBtwService extends Service implements ISessionBtwService {
         ...current.labels,
         [AUTONOMOUS_RECEIPT_POLICY_LABEL]: 'local',
         branch: 'true',
+        profileName: child.accessor.get(IAgentProfileService).data().profileName ?? DEFAULT_AGENT_PROFILE_NAME,
         branchSeed: 'verbatim',
         branchInitiator: 'user',
         toolsLocked: 'true',

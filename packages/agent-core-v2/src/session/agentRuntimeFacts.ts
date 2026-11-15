@@ -12,16 +12,31 @@ import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/works
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { AgentProfileSnapshotHost } from './agentProfileSnapshot';
 import { readPersistedAgentCheckpoint } from './persistedAgentCheckpoint';
+import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import { planKey, type PlanState } from '#/features/plan/planOps';
+import { expandedStateFolds } from '#/state/state';
+import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
+import { contextTokenCounts, type WireContextProjection } from '#/agent/contextMemory/wireContextProjection';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { TokenCountingState } from '#/agent/tokenCounting/tokenCountingOps';
 
 export interface PersistedAgentRuntimeFacts {
   readonly contextTokens?: number;
   readonly turnCount?: number;
   readonly panelAccounting?: PanelAccountingState;
   readonly complete: boolean;
+  readonly status?: {
+    readonly permissionMode: PermissionMode;
+    readonly permissionConfigured: boolean;
+    readonly planActive: boolean;
+    readonly contextTokens: WireContextProjection['contextTokens'];
+  };
 }
 
 const KEYS = [tokenCountingKey, turnKey, panelAccountingKey] as const;
-const FOLDS = KEYS.map(key => ({ key, folds: new Map([...key.replayable.folds].map(([event, fold]) => [event.type, { event, fold }])) }));
+const STATUS_KEYS = [permissionModeKey, planKey, contextMemoryKey] as const;
+const FOLDS = [...KEYS, ...STATUS_KEYS].map(key => ({ key, folds: new Map([...expandedStateFolds(key)].map(([event, fold]) => [event.type, { event, fold }])) }));
 const BYTE_BUDGET = 8 << 20;
 const CONTEXT = { silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {} };
 interface RuntimeFactsCacheEntry {
@@ -40,6 +55,7 @@ export async function readPersistedAgentRuntimeFacts(
   agentId: string,
   metadata?: AgentMeta,
   signal?: AbortSignal,
+  options?: { readonly includeStatus?: boolean },
 ): Promise<PersistedAgentRuntimeFacts> {
   signal?.throwIfAborted();
   const storage = 'accessor' in host ? host.accessor.get(IFileSystemStorageService) : host.storage;
@@ -53,14 +69,18 @@ export async function readPersistedAgentRuntimeFacts(
   let cache = caches.get(host);
   if (cache === undefined) { cache = new Map(); caches.set(host, cache); }
   const wait = (promise: Promise<PersistedAgentRuntimeFacts>) => promise.then(facts => { signal?.throwIfAborted(); return facts; });
-  const cached = cache.get(scope);
+  const cacheKey = options?.includeStatus === true ? `${scope}:status` : scope;
+  const cached = cache.get(cacheKey);
   if (cached?.size === size && cached.mtime === mtime && cached.contextTokens === metadata?.contextTokens) return wait(cached.promise);
   const read = async (): Promise<PersistedAgentRuntimeFacts> => {
-    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(KEYS.map(key => key.name)));
+    const keys = options?.includeStatus === true ? [...KEYS, ...STATUS_KEYS] : KEYS;
+    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)));
     const usable = checkpoint !== undefined && KEYS.every(key => checkpoint.states.has(key.name));
     const start = usable ? checkpoint.offset : 0;
     if (size - start > BYTE_BUDGET) return fallback;
-    const states = usable ? checkpoint.states : new Map<string, unknown>(KEYS.map(key => [key.name, key.initial()]));
+    const states = usable ? checkpoint.states : new Map<string, unknown>(keys.map(key => [key.name, key.initial()]));
+    let statusComplete = options?.includeStatus === true && (!usable || STATUS_KEYS.every(key => states.has(key.name)));
+    let permissionConfigured = usable && states.has(permissionModeKey.name);
     let valid = true;
     let tokensSeen = usable;
     const foldLine = (line: string) => {
@@ -68,13 +88,18 @@ export async function readPersistedAgentRuntimeFacts(
       let record: unknown;
       try { record = JSON.parse(line); } catch { valid = false; return; }
       if (!isWireRecord(record)) { valid = false; return; }
+      if (record.type === 'permission.set_mode') permissionConfigured = true;
       for (const { key, folds } of FOLDS) {
+        if (STATUS_KEYS.some(statusKey => statusKey.name === key.name) && !statusComplete) continue;
         const entry = folds.get(record.type);
         if (entry === undefined) continue;
         const event = event2FromRecord(entry.event, record);
         if (event === undefined) { valid = false; continue; }
         if (key === tokenCountingKey && (!(event instanceof AgentModelSwitch) || event.contextTokens !== undefined)) tokensSeen = true;
-        states.set(key.name, produce(states.get(key.name), (draft: unknown) => entry.fold(draft as never, event as never, CONTEXT)));
+        states.set(key.name, produce(states.get(key.name), (draft: unknown) => entry.fold(draft as never, event as never, {
+          ...CONTEXT,
+          undoToCheckpoint: () => { statusComplete = false; },
+        })));
       }
     };
     if (start < size) {
@@ -102,13 +127,19 @@ export async function readPersistedAgentRuntimeFacts(
       turnCount: (states.get(turnKey.name) as ReturnType<typeof turnKey.initial>).nextTurnId,
       panelAccounting: states.get(panelAccountingKey.name) as PanelAccountingState,
       complete: true,
+      status: statusComplete ? {
+        permissionMode: states.get(permissionModeKey.name) as PermissionMode,
+        permissionConfigured,
+        planActive: (states.get(planKey.name) as PlanState).active,
+        contextTokens: contextTokenCounts(states.get(contextMemoryKey.name) as ContextMessage[], states.get(tokenCountingKey.name) as TokenCountingState),
+      } : undefined,
     };
   };
   const entry = { size, mtime, contextTokens: metadata?.contextTokens, promise: read() };
-  cache.delete(scope);
-  cache.set(scope, entry);
+  cache.delete(cacheKey);
+  cache.set(cacheKey, entry);
   if (cache.size > 1024) cache.delete(cache.keys().next().value!);
-  void entry.promise.then(facts => { if (!facts.complete && cache.get(scope) === entry) cache.delete(scope); },
-    () => { if (cache.get(scope) === entry) cache.delete(scope); });
+  void entry.promise.then(facts => { if (!facts.complete && cache.get(cacheKey) === entry) cache.delete(cacheKey); },
+    () => { if (cache.get(cacheKey) === entry) cache.delete(cacheKey); });
   return wait(entry.promise);
 }

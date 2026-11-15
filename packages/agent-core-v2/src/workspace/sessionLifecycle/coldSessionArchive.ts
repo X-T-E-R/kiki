@@ -32,8 +32,10 @@ function replaceCustomMetadata(
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
   const custom = { ...patch };
-  if (!Object.hasOwn(custom, PROMOTED_FROM_KEY) && existing !== undefined && Object.hasOwn(existing, PROMOTED_FROM_KEY)) {
-    custom[PROMOTED_FROM_KEY] = existing[PROMOTED_FROM_KEY];
+  for (const key of [PROMOTED_FROM_KEY, 'goal']) {
+    if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
+      custom[key] = existing[key];
+    }
   }
   return custom;
 }

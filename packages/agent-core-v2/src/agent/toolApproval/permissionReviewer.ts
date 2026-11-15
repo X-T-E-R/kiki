@@ -65,7 +65,7 @@ const openAiDecisionAnswerSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('refusal'),
     name: z.string().nullable().optional(),
-    reason: z.string().optional(),
+    reason: z.string().nullable().optional(),
   }).passthrough(),
 ]);
 const openAiDecisionResponseSchema = z.object({

@@ -39,6 +39,7 @@ export interface ResponsesRequestTransport {
     apiKey: string;
     headers: Readonly<Record<string, string>>;
     signal?: AbortSignal;
+    suppressUserAgent?: boolean;
     forceFullInput?: boolean;
     baselinePolicyKey?: string;
     canonicalOutput?: (nativeOutput: readonly unknown[]) => ResponsesOutputProjection | undefined;

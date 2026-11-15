@@ -371,7 +371,7 @@ function persistedMetadataKey(metadata: AgentMeta | undefined): string {
 
 function metadataProfileName(metadata: AgentMeta | undefined): string | undefined {
   return subagentProfileName(metadata)
-    ?? (metadata?.type === 'main' && metadata.displayName !== '' ? metadata.displayName : undefined);
+    ?? (metadata?.labels?.['branch'] !== 'true' && metadata?.type === 'main' && metadata.displayName !== '' ? metadata.displayName : undefined);
 }
 
 function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfileSnapshot | undefined {

@@ -94,9 +94,11 @@ function textMessage(
   };
 }
 
-function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: AgentMeta) {
+function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: AgentMeta, executorId = 'native', cold = false) {
   const branchId = 'branch-1';
-  let branchMeta = initialMeta;
+  let branchMeta: AgentMeta = { labels: { branch: 'true' }, ...initialMeta };
+  const enqueue = vi.fn();
+  const prompt = vi.fn(async () => {});
   let branchSealed = initialMeta.labels?.['branchSealed'] === 'true';
   const updateAgent = vi.fn(async (_agentId: string, update: (current: AgentMeta) => AgentMeta) => {
     branchMeta = update(branchMeta);
@@ -133,20 +135,20 @@ function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: Agen
     accessor: {
       get: (token: unknown) => {
         if (token === IAgentLoopService) {
-          return { status: () => ({ state: 'idle', pendingTurnIds: [] }) };
+          return { status: () => ({ state: 'finalizing', pendingTurnIds: [] }), enqueue };
         }
         if (token === IAgentPromptService) {
-          return { list: () => ({ active: undefined, launching: undefined, pending: [] }) };
+          return { enqueue: prompt, list: () => ({ active: undefined, launching: undefined, pending: [] }) };
         }
-        if (token === IAgentContextMemoryService) {
-          return { appendObservable: vi.fn() };
-        }
+        if (token === IAgentProfileService) return { data: () => ({ executorId }) };
         return undefined;
       },
     },
   };
+  const create = vi.fn(async () => { cold = false; return branchHandle; });
   const lifecycle = {
-    get: (agentId: string) => agentId === branchId ? branchHandle : agentId === 'main' ? mainHandle : undefined,
+    get: (agentId: string) => agentId === branchId ? cold ? undefined : branchHandle : agentId === 'main' ? mainHandle : undefined,
+    create,
   } as unknown as IAgentLifecycleService;
   const metadata = {
     read: async () => ({
@@ -163,7 +165,7 @@ function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: Agen
   ix.stub(ISessionContext, { sessionId: 'session-1', workspaceId: 'workspace-1' });
   ix.stub(IConfigService, {});
   ix.set(ISessionBranchService, new SyncDescriptor(SessionBranchService));
-  return { service: ix.get(ISessionBranchService), updateAgent, getBranchMeta: () => branchMeta };
+  return { service: ix.get(ISessionBranchService), updateAgent, enqueue, prompt, create, getBranchMeta: () => branchMeta };
 }
 
 describe('SessionBtwService', () => {
@@ -188,6 +190,7 @@ describe('SessionBtwService', () => {
       accessor: {
         get: (id: unknown) => {
           if (id === IAgentSystemReminderService) return { appendSystemReminder: appendReminder };
+          if (id === IAgentProfileService) return { data: () => ({ profileName: 'example' }) };
           if (id === IAgentToolApprovalService) return { formatDenyMessage };
           if (id === IAgentToolExecutorService) return executorEvents.executor;
           if (id === ISessionMetadata) {
@@ -258,6 +261,43 @@ describe('SessionBranchService completion metadata', () => {
   let ix: TestInstantiationService;
   beforeEach(() => { ix = new TestInstantiationService(); });
   afterEach(() => { ix.dispose(); });
+
+  it.each(['native', 'example-external'])('delivers a fold through the %s execution owner even while finalizing', async (executorId) => {
+    const harness = createBranchFoldHarness(ix, {}, executorId);
+    await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Fold result', done: false });
+    if (executorId === 'native') {
+      expect(harness.enqueue).toHaveBeenCalledOnce();
+      expect(harness.enqueue.mock.calls[0]![0]).toMatchObject({ admissionPolicy: 'activeOrNewTurn' });
+      expect(harness.prompt).not.toHaveBeenCalled();
+    } else {
+      expect(harness.prompt).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ origin: expect.objectContaining({ kind: 'branch_fold' }) }), waitForLaunch: false }));
+      expect(harness.enqueue).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['BTW', 'Custom branch title'])('restores a cold %s branch from its persisted profile binding', async (displayName) => {
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const logs = ix.get(IAppendLogStore);
+    const scope = 'sessions/workspace-1/session-1/agents/branch-1';
+    logs.append(scope, 'wire.jsonl', {
+      type: 'profile.bind', profileName: 'example', modelAlias: 'example-model',
+      executorId: 'native', thinkingEffort: 'high', systemPrompt: '', disallowedTools: [],
+    });
+    await logs.flush(scope, 'wire.jsonl');
+    const harness = createBranchFoldHarness(ix, { type: 'main', displayName, labels: { branch: 'true' } }, 'native', true);
+    await harness.service.setToolsLocked({ branchId: 'branch-1', locked: false });
+    expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({ restoreBinding: expect.objectContaining({ profileName: 'example', modelAlias: 'example-model', thinkingEffort: 'high' }) }));
+    await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Cold result', done: false });
+    expect(harness.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a normal subagent as a merge source', async () => {
+    const harness = createBranchFoldHarness(ix, { labels: { profileName: 'example' } });
+    await expect(harness.service.foldBranch({ branchId: 'branch-1', summary: 'Do not merge' })).rejects.toMatchObject({ code: 'agent.not_found' });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+  });
 
   it('records the sealing timestamp without changing task outcome fields', async () => {
     const completedAt = 1_234_567;

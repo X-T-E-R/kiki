@@ -357,6 +357,25 @@ describe('ResponsesWebSocketTransport', () => {
     transport.close();
   });
 
+  it('suppresses the WebSocket user agent when request identity opts out', async () => {
+    const gateway = await createGateway((_body, socket) => sendCompleted(socket, 'resp_identity', 'identity'));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const result = await generate(
+        productionProvider(gateway.baseUrl),
+        '',
+        [],
+        [user('identity question')],
+        undefined,
+        { responsesTransport: transport, requestIdentity: { suppressUserAgent: true } },
+      );
+      expect(result.message.content).toEqual([{ type: 'text', text: 'identity' }]);
+      expect(gateway.connections[0]?.headers['user-agent']).toBeUndefined();
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it('uses an exact input plus output prefix and performs one proven full rebase on a not-executed state miss', async () => {
     const firstInput = [{ content: [{ text: 'first', type: 'input_text' }], role: 'user', type: 'message' }];
     const firstOutput = responseOutput('first');

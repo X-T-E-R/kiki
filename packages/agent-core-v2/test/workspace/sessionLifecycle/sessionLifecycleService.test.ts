@@ -917,6 +917,33 @@ describe('SessionLifecycleService unload', () => {
     }
   });
 
+  it('keeps idle checkpoint scheduling after an eviction is superseded', async () => {
+    vi.useFakeTimers();
+    const save = vi.fn(async () => true);
+    const fx = fixture(undefined, accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: save }],
+      [IAgentPromptService, { list: () => ({ pending: [] }) }],
+      [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [] }) }],
+      [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
+    ]));
+    const changes = new Emitter<{ cause: string }>();
+    Object.assign(fx.handle.accessor.get(ISessionActivityView), { onDidChange: changes.event });
+    const scheduling = fx.service as unknown as { installCheckpointScheduling(id: string, handle: ISessionScopeHandle): void };
+    try {
+      scheduling.installCheckpointScheduling('session-1', fx.handle);
+      expect(await fx.service.unload('session-1', () => false)).toBe(false);
+      expect(save).toHaveBeenCalledOnce();
+      changes.fire({ cause: 'turn_ended' });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(fx.dispose).not.toHaveBeenCalled();
+    } finally {
+      changes.dispose();
+      await fx.service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('retries a changed checkpoint while idle and bounds persistent failures with diagnostics', async () => {
     vi.useFakeTimers();
     const save = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValue(true);
@@ -1329,10 +1356,10 @@ describe('SessionLifecycleService fork file copying', () => {
     });
     const write = vi.fn(async () => {});
     const readdir = vi.fn(async (path: string) => {
-      if (path === '/source') return [directory('agents'), directory('attachments')];
+      if (path === '/source') return [directory('agents'), directory('attachments'), file('execution-control.json'), directory('prompt-ingress'), directory('replay-checkpoints'), directory('autonomous-receipts-v1')];
       if (path === '/source/agents') return [directory('main')];
       if (path === '/source/agents/main') return [...sidecars.map(file), ...kept.map(file),
-        directory('wire.jsonl.readers'), directory('attachments'), file(AGENT_WIRE_RECORD_KEY), file(WIRE_TRANSCRIPT_RECEIPT_KEY)];
+        directory('wire.jsonl.readers'), directory('cron'), directory('prompt-ingress'), directory('replay-checkpoints'), directory('autonomous-receipts-v1'), directory('attachments'), file(AGENT_WIRE_RECORD_KEY), file(WIRE_TRANSCRIPT_RECEIPT_KEY)];
       if (path.endsWith('/attachments')) return sidecars.map(file);
       if (path.endsWith('/wire.jsonl.readers')) throw Object.assign(new Error('removed lease directory'), { code: 'ENOENT' });
       throw new Error(`Unexpected directory: ${path}`);
@@ -1366,6 +1393,54 @@ describe('SessionLifecycleService fork file copying', () => {
 });
 
 describe('SessionLifecycleService fork cron ownership', () => {
+  it.each(['completed', 'running', 'orphan'])('preserves idle descendant metadata and quiets copied %s tasks on an untruncated cold fork', async (status) => {
+    const fx = fixture();
+    const child: AgentMeta = { type: 'sub', userLabel: 'Research child', status: 'completed', resultSummary: 'Saved summary', parentAgentId: 'main', labels: { profileName: 'example' } };
+    const sourceMeta = { title: 'Source', agents: { main: { type: 'main' }, child } };
+    const registerAgent = vi.fn(async () => {});
+    const create = vi.fn(async () => {});
+    const target = { id: 'idle-fork', dispose: vi.fn(), accessor: accessor([
+      [ISessionContext, { sessionId: 'idle-fork' }],
+      [ISessionMetadata, { registerAgent, update: async () => {}, drain: async () => {} }],
+      [IAgentLifecycleService, { list: () => [], create }],
+    ]) } as unknown as ISessionScopeHandle;
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(): Promise<ISessionScopeHandle>;
+      announceCreated(): Promise<void>;
+      copySessionFiles(): Promise<void>;
+    };
+    internals.sessions.delete('session-1');
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    const copy = vi.spyOn(internals, 'copySessionFiles').mockResolvedValue();
+    const records = [{ type: 'metadata', created_at: 1 }, { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2 }];
+    const task = { taskId: 'saved-task', ownerAgentId: 'main', kind: status === 'orphan' ? 'agent' : 'process', agentId: status === 'orphan' ? 'removed-child' : undefined, status: status === 'orphan' ? 'completed' : status, endedAt: status === 'running' ? null : 2 };
+    const writes = new Map<string, Uint8Array>();
+    Object.assign(fx.service, {
+      index: { get: async (id: string) => id === 'session-1' ? { workspaceId: 'workspace-1' } : undefined },
+      docs: { get: async (scope: string, key: string) => scope.endsWith('/session-1') && key === 'state.json' ? sourceMeta : undefined },
+      appendLogStore: { append: () => {}, flush: async () => {}, read: async function* () { yield* records; }, rewrite: async () => {} },
+      hostFs: {
+        stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+        readdir: async (path: string) => path === '/home/workspace-1/idle-fork/agents/main/tasks'
+          ? [{ name: 'saved-task.json', isFile: true, isDirectory: false }] : [],
+        readBytes: async (path: string) => path.endsWith('saved-task.json') ? new TextEncoder().encode(JSON.stringify(task)) : (() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); })(),
+        writeBytes: async (path: string, bytes: Uint8Array) => { writes.set(path, bytes); },
+        mkdir: async () => {}, remove: async () => {},
+      },
+    });
+    try {
+      await fx.service.fork({ sourceSessionId: 'session-1', newSessionId: target.id });
+      expect(registerAgent).toHaveBeenCalledWith('child', { ...child, homedir: '/home/workspace-1/idle-fork/agents/child' });
+      expect(create).toHaveBeenCalledTimes(2);
+      const saved = writes.get('/home/workspace-1/idle-fork/agents/main/tasks/saved-task.json');
+      expect(JSON.parse(new TextDecoder().decode(saved))).toMatchObject({ taskId: task.taskId, status: status === 'running' ? 'killed' : 'completed', terminalNotificationSuppressed: true });
+    } finally {
+      materialize.mockRestore(); announce.mockRestore(); copy.mockRestore();
+      await fx.service.dispose();
+    }
+  });
   it('supports an external-material-only fork without cloning child agents or main task state', async () => {
     const fx = fixture();
     const sourceRecords = [
@@ -2129,6 +2204,26 @@ describe('SessionLifecycleService subagent promotion', () => {
     return { fx, sourceRecords, snapshot, read, readScopes, rewrite, createAgent, registerAgent, update, writes, materialize, announce };
   }
 
+  it('promotes a legacy titled branch using its persisted profile without branch execution locks', async () => {
+    const p = promotionFixture({ main: { type: 'main' }, 'agent-3': {
+      ...agentMeta, displayName: 'BTW', labels: { branch: 'true', branchSealed: 'true', toolsLocked: 'true' },
+    } });
+    p.sourceRecords[1] = { type: 'profile.bind', profileName: 'coder', time: 2 };
+    p.sourceRecords.push({ type: 'agent.branch_sealed', sealed: true }, { type: 'agent.tool_lock_changed', locked: true }, { type: 'branch.base', parentAgentId: 'main' });
+    try {
+      const source = await p.fx.service.readPromotionSource({ sourceSessionId: 'session-1', agentId: 'agent-3' });
+      await p.fx.service.materializePromotion(source, { sourceSessionId: 'session-1', agentId: 'agent-3', newSessionId: 'promoted' });
+      expect(p.createAgent).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ profile: 'coder' }) }));
+      const copied = p.rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
+      expect(copied.some((record) => ['agent.branch_sealed', 'agent.tool_lock_changed', 'branch.base'].includes(String(record['type'])))).toBe(false);
+      expect(copied.some((record) => record['type'] === 'executor.session.updated')).toBe(true);
+    } finally {
+      p.materialize.mockRestore();
+      p.announce.mockRestore();
+      await p.fx.service.dispose();
+    }
+  });
+
   it('copies a subagent into a new main-agent thread without touching the source', async () => {
     const p = promotionFixture({ main: { type: 'main' }, 'agent-3': agentMeta });
     try {
@@ -2147,7 +2242,7 @@ describe('SessionLifecycleService subagent promotion', () => {
       expect(text).toContain(`blobref:main:${hash}`);
       expect(text).toContain(`blobref:main:${parentHash}`);
       expect(text).not.toContain('blobref:agent-3');
-      expect(text).not.toContain('remote-1');
+      expect(text).toContain('remote-1');
       expect(copied.map((record) => record['type'])).toContain('subagent.spawned');
       expect(copied).toContainEqual({
         type: 'subagent.failed',

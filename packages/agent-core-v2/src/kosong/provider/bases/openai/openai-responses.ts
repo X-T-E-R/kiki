@@ -1643,6 +1643,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             baseUrl: client.baseURL,
             apiKey: requireProviderApiKey('OpenAIResponsesChatProvider', auth, this._apiKey),
             headers: Object.fromEntries(headers),
+            suppressUserAgent: options?.requestIdentity?.suppressUserAgent,
             signal: options?.signal,
             forceFullInput: options?.forceFullResponsesInput,
             baselinePolicyKey: options?.responsesBaselinePolicyKey,

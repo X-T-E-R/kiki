@@ -288,11 +288,11 @@ export class WorkspaceFsService implements IWorkspaceFsService {
 
     const encoding: 'utf-8' | 'base64' =
       req.encoding === 'base64' || (req.encoding === 'auto' && isBinary) ? 'base64' : 'utf-8';
+    const truncated = req.offset + effectiveLength < totalLength;
     const content =
       encoding === 'utf-8'
-        ? Buffer.from(bytes).toString('utf-8')
+        ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes, { stream: truncated })
         : Buffer.from(bytes).toString('base64');
-    const truncated = req.offset + effectiveLength < totalLength;
 
     const out: FsReadResponse = {
       path: rel,

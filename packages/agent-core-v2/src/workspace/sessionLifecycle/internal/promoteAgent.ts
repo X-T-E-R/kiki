@@ -2,6 +2,10 @@ import { TERMINAL_STATUSES, type AgentTaskStatus } from '#/agent/task/types';
 import { subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { WireRecord } from '#/wire/record';
+import { event2FromRecord } from '#/app/event/event2';
+import { agentExecutorBindingFingerprint } from '#/app/agentExecutor/agentExecutor';
+import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
+import { ExecutorSessionUpdated } from '#/agent/execution/externalExecutorOps';
 
 /** Descendant subagent or branch captured from the promoted root subagent's subtree. */
 export interface PromotedDescendantSource {
@@ -73,7 +77,9 @@ const MAIN_DROPPED_TYPES: ReadonlySet<string> = new Set([
   'tools.reset_active_tools',
   'tools.policy_refreshed',
   'permission.set_mode',
-  'executor.session.updated',
+  'agent.branch_sealed',
+  'agent.tool_lock_changed',
+  'branch.base',
   'turn.cancel',
   'subagent.autonomous_receipt_delivered',
 ]);
@@ -180,12 +186,31 @@ export function sliceSettledAgentRecords(records: readonly WireRecord[]): Settle
  * Removes records that belong to the source session's runtime rather than the promoted main agent's
  * conversation: its subagent binding and tool activation (the promoted main binds fresh), queued or
  * unsettled prompt bookkeeping, cron entries, pending interactions, session-scoped approval grants,
- * and remote executor session references so the new thread can never write into the old one.
+ * and branch-only execution locks while preserving the promoted executor's session continuity.
  */
 export function filterPromotedRecords(records: readonly WireRecord[]): readonly WireRecord[] {
   return records.filter((record) => !isSessionScopedApprovedGrant(record) &&
     !MAIN_DROPPED_TYPES.has(record.type) &&
     !DROPPED_PREFIXES.some((prefix) => record.type.startsWith(prefix)));
+}
+
+export function promotedExecutorSession(
+  records: readonly WireRecord[],
+  source: AgentMeta,
+  binding: ProfileBindingSnapshot,
+): ExecutorSessionUpdated | undefined {
+  const record = records.findLast((record) => record.type === ExecutorSessionUpdated.type);
+  if (record === undefined) return undefined;
+  const event = event2FromRecord(ExecutorSessionUpdated, record);
+  if (!(event instanceof ExecutorSessionUpdated) || event.executionGeneration !== source.execution?.generation ||
+    event.executorId !== binding.executorId || event.descriptorRevision !== binding.executorDescriptorRevision) return undefined;
+  return new ExecutorSessionUpdated({
+    ...event,
+    executionGeneration: binding.execution?.generation,
+    bindingFingerprint: agentExecutorBindingFingerprint(binding),
+    profileDeliveredSessionId: undefined,
+    profileDelivery: undefined,
+  });
 }
 
 /**

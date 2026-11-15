@@ -287,7 +287,7 @@ describe('permission reviewer', () => {
       json: async () => ({
         answers: [
           { type: 'predicate', name: 'policy_compliance', probability: 0.99 },
-          { type: 'refusal', name: 'no_secret_egress', reason: 'Uncertain context' },
+          { type: 'refusal', name: 'no_secret_egress', reason: null },
         ],
       }),
     } as Response)) as unknown as typeof fetch;
