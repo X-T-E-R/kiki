@@ -7569,6 +7569,101 @@ describe('queued prompt scheduling projection', () => {
     })]);
   });
 
+  it('excludes accepted steers from queued previews so scheduled prompts keep their own text', () => {
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Nightly digest</prompt></cron-fire>' }];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'msg_now_1',
+            userMessageId: 'msg_now_1',
+            status: 'queued',
+            steerAccepted: true,
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: [{ type: 'text', text: 'Immediate send now text' }],
+          },
+          {
+            promptId: 'scheduled-idle',
+            userMessageId: 'scheduled-idle',
+            originKind: 'cron_job',
+            originDeliveryMode: 'idle',
+            status: 'queued',
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: cronContent,
+          },
+        ],
+      }),
+    );
+    expect(projected.queuedPromptIds).toEqual(['scheduled-idle']);
+    expect(queuedPromptPreviews(projected)).toEqual([
+      expect.objectContaining({
+        promptId: 'scheduled-idle',
+        originKind: 'cron_job',
+        cronDeliveryMode: 'idle',
+        text: 'Nightly digest',
+      }),
+    ]);
+  });
+
+  it('recovers formal text, annotations, and skill invocations in queuedPromptPreviews when a UserBlock is absent or re-id matched', () => {
+    const selection = selectionCarryoverPresentation(
+      [{ quote: 'Selected line', comment: 'Keep this annotation' }],
+      [],
+    );
+    const annotationContent: Message['content'] = [
+      { type: 'text', text: selection.prefix, presentation: selection.presentation },
+    ];
+    const skillContent: Message['content'] = [
+      { type: 'text', text: '/review --fast' },
+    ];
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        prompts: [
+          {
+            promptId: 'p-skill',
+            userMessageId: 'um-skill',
+            status: 'queued',
+            queuePosition: 0,
+            createdAt: FIXED_AT,
+            content: skillContent,
+          },
+          {
+            promptId: 'p-annot-2',
+            userMessageId: 'um-annot',
+            status: 'queued',
+            queuePosition: 1,
+            createdAt: FIXED_AT_1,
+            content: annotationContent,
+          },
+        ],
+      }),
+    );
+    const withoutUserBlock: SessionViewState = {
+      ...projected,
+      blocks: projected.blocks.map((block) =>
+        block.kind === 'user' && block.userMessageId === 'um-annot'
+          ? { ...block, promptId: 'p-annot-old' }
+          : block,
+      ).filter((block) => !(block.kind === 'user' && block.promptId === 'p-skill')),
+    };
+    const previews = queuedPromptPreviews(withoutUserBlock);
+    expect(previews[0]).toMatchObject({
+      promptId: 'p-skill',
+      text: '/review --fast',
+    });
+    expect(previews[1]?.promptId).toBe('p-annot-2');
+    expect(parseSelectionCarryovers(previews[1]!.text, previews[1]!.presentation)).toMatchObject({
+      body: '',
+      annotations: [{ quote: 'Selected line', comment: 'Keep this annotation' }],
+    });
+  });
+
   it.each([
     { kind: 'merged', origins: [{ kind: 'user' }, { kind: 'task_notification', taskId: 'example-task' }] },
     { kind: 'unknown' },

@@ -12,7 +12,7 @@ import { ApiError, type AgentTranscriptResponse, type SessionTransport } from '.
 import { SendNowError, SessionController } from './sessionController';
 import type { SessionViewState, UserBlock } from './transcript';
 import { withPendingSteers } from './transcript/steer';
-import { createViewState } from './transcript';
+import { createViewState, queuedPromptPreviews } from './transcript';
 import { emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 const CHILD = 'agent-research';
@@ -450,6 +450,93 @@ describe('send now (steer) — main agent', () => {
     expect(visibleUsers(reopened.controller.getState()).some(row => row.promptId === promptId)).toBe(false);
     expect(reopened.client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, undefined, true);
     reopened.controller.close(); controller.close();
+  });
+
+  it('keeps scheduled queue text untouched when Send now is submitted or accepted on the wire', async () => {
+    const { controller, client } = await open();
+    const cronContent = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Scheduled backup check</prompt></cron-fire>' }];
+    const cronPrompt = {
+      promptId: 'cron-idle-1',
+      userMessageId: 'cron-idle-1',
+      originKind: 'cron_job' as const,
+      originDeliveryMode: 'idle' as const,
+      status: 'queued' as const,
+      queuePosition: 2,
+      content: cronContent,
+      createdAt: '2026-01-01T00:00:02.000Z',
+    };
+    await deliver(
+      controller,
+      resetEvent('main', { ...userTurnSnapshot({ streaming: true }), prompts: [cronPrompt] }, 1),
+    );
+    expect(queuedPromptPreviews(controller.getState())).toEqual([
+      expect.objectContaining({
+        promptId: 'cron-idle-1',
+        originKind: 'cron_job',
+        cronDeliveryMode: 'idle',
+        text: 'Scheduled backup check',
+      }),
+    ]);
+
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'msg_now_local',
+      user_message_id: 'msg_now_local',
+      status: 'queued',
+      delivery_state: 'accepted',
+    });
+    const sendOutcome = await controller.sendPromptNow({ promptId: 'msg_now_local', text: 'Urgent steer message' });
+    expect(sendOutcome).toMatchObject({ outcome: 'accepted' });
+
+    await deliver(
+      controller,
+      opsEvent(
+        'main',
+        [
+          {
+            op: 'prompt.upsert',
+            prompt: {
+              promptId: 'msg_now_local',
+              userMessageId: 'msg_now_local',
+              status: 'queued',
+              steerAccepted: true,
+              queuePosition: 0,
+              content: [{ type: 'text', text: 'Urgent steer message' }],
+              createdAt: '2026-01-01T00:00:03.000Z',
+            },
+          },
+          {
+            op: 'prompt.upsert',
+            prompt: {
+              promptId: 'msg_now_remote',
+              userMessageId: 'msg_now_remote',
+              status: 'queued',
+              steerAccepted: true,
+              queuePosition: 1,
+              content: [{ type: 'text', text: 'Remote surface steer' }],
+              createdAt: '2026-01-01T00:00:04.000Z',
+            },
+          },
+        ],
+        2,
+      ),
+    );
+
+    expect(queuedPromptPreviews(controller.getState())).toEqual([
+      expect.objectContaining({
+        promptId: 'cron-idle-1',
+        text: 'Scheduled backup check',
+      }),
+    ]);
+    expect(controller.getPendingSteers().map((item) => item.promptId)).toEqual([
+      'msg_now_local',
+      'msg_now_remote',
+    ]);
+
+    client.abortPrompt.mockResolvedValue({ aborted: true, at_seq: 1 });
+    await controller.clearQueue();
+    expect(client.abortPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'cron-idle-1', undefined, true);
+    controller.close();
   });
 
   it.each(['accepted first', 'late accepted', 'lost ACK'] as const)('keeps the canonical blocked row when the Send now receipt is %s', async order => {

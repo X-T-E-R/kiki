@@ -981,6 +981,7 @@ export interface QueuedPromptMeta {
   readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
+  readonly userMessageId?: string;
   readonly originKind?: 'cron_job';
   readonly content?: Message['content'];
   /**

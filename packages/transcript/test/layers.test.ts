@@ -4094,6 +4094,35 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
   });
 
+  it('preserves scheduled prompt content on steer and keeps older queued scheduled items ahead of newer enqueues', () => {
+    const cronContent = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Daily scheduled report</prompt></cron-fire>' }];
+    const steerContent = [{ type: 'text', text: 'Immediate steer text' }];
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'u0', userMessageId: 'u0', message: { content: [{ type: 'text', text: 'first' }] }, queueIndex: 0, time: 1_000 },
+      { type: 'prompt.enqueued', promptId: 'u1', userMessageId: 'u1', message: { content: [{ type: 'text', text: 'second' }] }, queueIndex: 1, time: 1_001 },
+      { type: 'prompt.enqueued', promptId: 'cron-queued', userMessageId: 'cron-queued', message: { origin: { kind: 'cron_job', deliveryMode: 'queue' }, content: cronContent }, queueIndex: 2, time: 1_002 },
+      { type: 'prompt.launch_committed', promptId: 'u0', time: 1_003 },
+      { type: 'prompt.completed', promptId: 'u0', reason: 'completed', time: 1_004 },
+      { type: 'prompt.launch_committed', promptId: 'u1', time: 1_005 },
+      { type: 'prompt.completed', promptId: 'u1', reason: 'completed', time: 1_006 },
+      { type: 'prompt.enqueued', promptId: 'cron-active', userMessageId: 'cron-active', message: { origin: { kind: 'cron_job', deliveryMode: 'idle' }, content: cronContent }, queueIndex: 1, time: 1_007 },
+      { type: 'prompt.launch_committed', promptId: 'cron-active', time: 1_008 },
+      { type: 'prompt.enqueued', promptId: 'steer-1', userMessageId: 'steer-1', message: { content: steerContent }, queueIndex: 1, time: 1_009 },
+      { type: 'prompt.steered', activePromptId: 'cron-active', promptIds: ['steer-1'], content: steerContent, steeredAt: '2026-06-09T00:00:10.000Z', time: 1_010 },
+      { type: 'prompt.enqueued', promptId: 'u-later', userMessageId: 'u-later', message: { content: [{ type: 'text', text: 'deferred send now' }] }, queueIndex: 1, time: 1_011 },
+    ]);
+    const prompts = new Map(transcript.snapshot().prompts.map((entry) => [entry.promptId, entry]));
+    expect(prompts.get('cron-active')).toMatchObject({
+      originKind: 'cron_job',
+      status: 'running',
+      queuePosition: undefined,
+      content: cronContent,
+    });
+    const cronPos = prompts.get('cron-queued')?.queuePosition ?? Number.MAX_SAFE_INTEGER;
+    const laterPos = prompts.get('u-later')?.queuePosition ?? -1;
+    expect(cronPos).toBeLessThan(laterPos);
+  });
+
   it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
     const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
     const adapter = new TranscriptWireAdapter('main');

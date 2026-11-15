@@ -1938,9 +1938,10 @@ export class AgentTranscriptLiveAdapter {
     const ops: TranscriptOperation[] = [];
     const active = this.upsertPrompt(event.activePromptId, (prev) => ({
       promptId: event.activePromptId,
-      status: prev?.status ?? 'running',
+      status: prev !== undefined && isTerminalPromptStatus(prev.status) ? prev.status : 'running',
+      queuePosition: undefined,
       userMessageId: prev?.userMessageId,
-      content: projectPromptContentParts(event.content),
+      content: prev?.originKind === 'cron_job' ? prev.content : projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.steeredAt,
       finishedAt: prev?.finishedAt,
       steeredAt: event.steeredAt,
@@ -1949,9 +1950,11 @@ export class AgentTranscriptLiveAdapter {
     }));
     ops.push({ op: 'prompt.upsert', prompt: active });
     for (const promptId of event.promptIds) {
+      if (promptId === event.activePromptId) continue;
       const steered = this.upsertPrompt(promptId, (prev) => ({
         promptId,
         status: 'completed',
+        queuePosition: undefined,
         userMessageId: prev?.userMessageId,
         content: prev?.content,
         createdAt: prev?.createdAt ?? event.steeredAt,

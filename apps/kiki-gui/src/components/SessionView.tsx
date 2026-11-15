@@ -5070,14 +5070,21 @@ boundExecution,
     if (queueRowCount === 0) return undefined;
     const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
     const total = queueRowCount - Math.max(0, idleCount - 1);
+    const nextItem =
+      heldCronItems.find((item) => item.cronDeliveryMode === 'steer') ??
+      heldCronItems[0] ??
+      ordinaryQueuedItems[0];
     return {
       summary: (
         <QueueHeaderSummary
-          count={total}
-          first={queuedItems[0] === undefined ? undefined : {
-            text: queuedItems[0].text,
-            presentation: queuedItems[0].presentation,
-            timing: queuedItems[0].appendTiming ?? 'agent_idle',
+          count={queuedItemCount}
+          heldCount={heldCronItems.length}
+          first={nextItem === undefined ? undefined : {
+            text: nextItem.text,
+            presentation: nextItem.presentation,
+            media: nextItem.media,
+            timing: nextItem.appendTiming ?? 'agent_idle',
+            cronDeliveryMode: nextItem.originKind === 'cron_job' ? nextItem.cronDeliveryMode : undefined,
           }}
         />
       ),
@@ -5107,7 +5114,7 @@ boundExecution,
       ),
     };
   }, [
-    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
+    queuedItems, ordinaryQueuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, mainTimelineActions.cancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,

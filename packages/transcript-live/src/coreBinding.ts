@@ -146,6 +146,7 @@ export function bindSessionTranscript(
         task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
         todo: (todoId) => store.getAgent(agentId)?.getTodo(todoId),
         prompt: (promptId) => store.getAgent(agentId)?.getPrompt(promptId),
+        prompts: () => store.getAgent(agentId)?.getPrompts().values() ?? [],
       });
       wireAdapters.set(agentId, adapter);
     }

@@ -42,9 +42,9 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
-import type { DeferredAppendTiming, Task } from '@kiki/protocol';
+import type { CronDeliveryMode, DeferredAppendTiming, Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
+import { parseSelectionCarryovers, selectionCarryoverPreviewText, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { isOrdinaryQueueItem, replaceAgentRefs, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
@@ -167,10 +167,24 @@ export function QueueHeaderSummary({
   readonly count: number;
   readonly heldCount?: number;
   /** Next prompt in drain order: what the collapsed bar previews, and when it sends. */
-  readonly first?: Pick<QueuedPromptPreview, 'text' | 'presentation'> & { readonly timing: DeferredAppendTiming };
+  readonly first?: Pick<QueuedPromptPreview, 'text' | 'presentation' | 'media'> & {
+    readonly timing?: DeferredAppendTiming;
+    readonly cronDeliveryMode?: CronDeliveryMode;
+  };
 }) {
   const { t, tp } = useI18n();
-  const previewText = first === undefined ? '' : parseSelectionCarryovers(first.text, first.presentation).body;
+  const previewText = useMemo(() => {
+    if (first === undefined) return '';
+    const carry = parseSelectionCarryovers(first.text, first.presentation);
+    return stripThreadRefContext(
+      selectionCarryoverPreviewText({ ...carry, body: stripThreadRefContext(carry.body) }),
+    ).trim();
+  }, [first]);
+  const hasMedia = (first?.media?.length ?? 0) > 0;
+  const heldDeliveryMode =
+    first?.cronDeliveryMode === 'idle' || first?.cronDeliveryMode === 'steer'
+      ? first.cronDeliveryMode
+      : undefined;
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
       {count > 0 ? (
@@ -185,11 +199,19 @@ export function QueueHeaderSummary({
       ) : null}
       {first !== undefined ? (
         <>
-          <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
-            {previewText === '' ? t('sv.queueNoText') : replaceAgentRefs(stripThreadRefContext(previewText))}
-          </span>
+          {previewText !== '' ? (
+            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+              {replaceAgentRefs(previewText)}
+            </span>
+          ) : hasMedia ? (
+            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+              {t('sv.queueNoText')}
+            </span>
+          ) : null}
           <span data-queue-first-timing className="shrink-0 text-ink-faint">
-            {t(TIMING_SHORT_KEY[first.timing])}
+            {heldDeliveryMode !== undefined
+              ? t(`cron.delivery.${heldDeliveryMode}`)
+              : t(TIMING_SHORT_KEY[first.timing ?? 'agent_idle'])}
           </span>
         </>
       ) : null}
@@ -210,19 +232,25 @@ const QUEUED_CONTENT_ROOTS: readonly string[] = ['content'];
 function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) {
   const { t } = useI18n();
   const carry = parseSelectionCarryovers(item.text, item.presentation);
+  const body = stripThreadRefContext(carry.body);
+  const hasBody = body.trim() !== '';
+  const hasCarry = carry.quotes.length > 0 || carry.annotations.length > 0;
+  const hasMedia = (item.media?.length ?? 0) > 0;
   const source = useMemo(() => ({ kind: 'prompt' as const, id: item.promptId }), [item.promptId]);
   return <div className="min-w-0 flex-1 basis-36 text-[13px] text-ink">
-    <div className="truncate" title={stripThreadRefContext(carry.body) || undefined}>
-      {carry.body === '' ? t('sv.queueNoText') : (
+    {hasBody ? (
+      <div className="truncate" title={body}>
         <AgentRefText
-          text={stripThreadRefContext(carry.body)}
+          text={body}
           references={[]}
           messageId={item.userMessageId}
           projectSegment={(text) => <ThreadRefText text={text} projectSegment={(segment) => segment} />}
         />
-      )}
-    </div>
-    {carry.quotes.length > 0 || carry.annotations.length > 0 ? <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      </div>
+    ) : !hasCarry && hasMedia ? (
+      <div className="truncate">{t('sv.queueNoText')}</div>
+    ) : null}
+    {hasCarry ? <div className={`${hasBody ? 'mt-1 ' : ''}flex flex-wrap items-center gap-1.5`}>
       {carry.quotes.map((quote, index) => <QuoteChip key={index} quote={quote.quote} />)}
       {carry.annotations.length > 0 ? <SentAnnotationsBubble blockId={`user-${item.userMessageId ?? item.promptId}`} annotations={carry.annotations} /> : null}
     </div> : null}

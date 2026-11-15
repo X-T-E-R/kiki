@@ -44,6 +44,7 @@ export interface TranscriptWireAdapterLookups {
   readonly task?: (taskId: string) => TranscriptTask | undefined;
   readonly todo?: (todoId: string) => TranscriptTodo | undefined;
   readonly prompt?: (promptId: string) => TranscriptPrompt | undefined;
+  readonly prompts?: () => Iterable<TranscriptPrompt>;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -580,6 +581,25 @@ export class TranscriptWireAdapter {
       this.#hiddenPromptIds.delete(promptId);
       const origin = objectOf(message?.['origin']);
       const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
+      const rawQueuePosition = numberOf(record['queueIndex']);
+      let queuePosition = rawQueuePosition;
+      if (rawQueuePosition !== undefined) {
+        let maxQueuedPosition = -1;
+        for (const [id, candidate] of this.#prompts) {
+          if (id === promptId) continue;
+          const current = this.lookups?.prompt?.(id) ?? candidate;
+          if (current.status === 'queued' && current.queuePosition !== undefined && current.queuePosition > maxQueuedPosition) {
+            maxQueuedPosition = current.queuePosition;
+          }
+        }
+        for (const current of this.lookups?.prompts?.() ?? []) {
+          if (current.promptId === promptId) continue;
+          if (current.status === 'queued' && current.queuePosition !== undefined && current.queuePosition > maxQueuedPosition) {
+            maxQueuedPosition = current.queuePosition;
+          }
+        }
+        queuePosition = Math.max(rawQueuePosition, maxQueuedPosition + 1);
+      }
       const prompt: TranscriptPrompt = {
         promptId,
         runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
@@ -590,7 +610,7 @@ export class TranscriptWireAdapter {
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
         createdAt: promptRecordTime(record, ['createdAt']) ?? isoOf(record.time) ?? new Date(0).toISOString(),
-        queuePosition: numberOf(record['queueIndex']),
+        queuePosition,
         appendTiming: promptAppendTimingOf(record['appendTiming']),
         revision: numberOf(record['revision']),
       };
@@ -685,6 +705,7 @@ export class TranscriptWireAdapter {
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
           status,
+          queuePosition: undefined,
           finishedAt: promptRecordTime(record, ['finishedAt']) ?? previous?.finishedAt,
           error: nextError,
           errorDetails: projectedError.errorDetails ?? previous?.errorDetails,
@@ -697,6 +718,7 @@ export class TranscriptWireAdapter {
         this.storePrompt({
           ...promptOrMinimal(previous, promptId, record),
           status: 'aborted',
+          queuePosition: undefined,
           finishedAt: promptRecordTime(record, ['abortedAt']) ?? previous?.finishedAt,
           abortedBeforeStart:
             record['beforeStart'] === true ? true : previous?.abortedBeforeStart,
@@ -714,7 +736,13 @@ export class TranscriptWireAdapter {
         const active: TranscriptPrompt = {
           ...activePrior,
           status: isTerminalPromptStatus(activePrior.status) ? activePrior.status : 'running',
-          content: content.length > 0 ? content : activePrior.content,
+          queuePosition: undefined,
+          content:
+            activePrior.originKind === 'cron_job'
+              ? activePrior.content
+              : content.length > 0
+                ? content
+                : activePrior.content,
           steeredAt,
         };
         operations.push(this.storePrompt(active));
@@ -723,7 +751,7 @@ export class TranscriptWireAdapter {
         if (id === activePromptId || this.#hiddenPromptIds.has(id)) continue;
         const prior = this.#prompts.get(id) ?? minimalPrompt(id, record);
         operations.push(
-          this.storePrompt({ ...prior, status: 'completed', finishedAt: steeredAt, steeredAt }),
+          this.storePrompt({ ...prior, status: 'completed', queuePosition: undefined, finishedAt: steeredAt, steeredAt }),
         );
       }
       return operations;

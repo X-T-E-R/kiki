@@ -4865,8 +4865,9 @@ export function projectAgentTranscriptView(
   const queuedPrompts = prompts
     // Model-switch control items share the drain order under reserved ids;
     // they are not messages and surface through the model-switch event pair,
-    // never as queue rows or transcript blocks.
-    .filter((prompt) => prompt.status === 'queued' && !isModelSwitchQueueId(prompt.promptId))
+    // never as queue rows or transcript blocks. Accepted steers are already
+    // bound to the active turn's next step boundary and render on the timeline.
+    .filter((prompt) => prompt.status === 'queued' && !prompt.steerAccepted && !isModelSwitchQueueId(prompt.promptId))
     .toSorted(
       (left, right) =>
         (left.queuePosition ?? Number.MAX_SAFE_INTEGER) -
@@ -4881,13 +4882,16 @@ export function projectAgentTranscriptView(
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
     const runtimeControls = prompt.runtimeControls ?? existing?.runtimeControls;
+    const userMessageId = prompt.userMessageId ?? existing?.userMessageId;
+    const parts = promptContentParts(prompt.content);
     if (prompt.originKind === 'cron_job') {
-      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, userMessageId, originKind: prompt.originKind, content: parts, cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
     } else {
+      const content = parts.length > 0 ? parts : existing?.content;
       queuedPromptMeta[prompt.promptId] =
-        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls
+        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls && existing.userMessageId === userMessageId && existing.content === content
           ? existing
-          : { appendTiming, revision, queuePosition, runtimeControls };
+          : { appendTiming, revision, queuePosition, runtimeControls, userMessageId, content };
     }
   }
   let running: TranscriptPrompt | undefined;

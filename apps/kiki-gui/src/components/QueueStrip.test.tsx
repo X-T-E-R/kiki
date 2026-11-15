@@ -626,6 +626,88 @@ describe('QueueStrip drawer body', () => {
     expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('first parked prompt');
     expect(container.querySelector('[data-queue-first-timing]')?.textContent).toBe('after subagents');
   });
+
+  it('previews annotation comments and quotes without showing (attachment only), while keeping (attachment only) for media-only items', async () => {
+    const { selectionCarryoverPresentation } = await import('@kiki/session-core/composer');
+    const annotationOnly = selectionCarryoverPresentation(
+      [{ quote: 'Target paragraph', comment: 'Clarify this edge case' }],
+      [],
+    );
+    const quoteOnly = selectionCarryoverPresentation(
+      [{ quote: 'Quoted line alone', comment: '' }],
+      [],
+    );
+
+    const summaryHost = document.createElement('div');
+    document.body.append(summaryHost);
+    containers.push(summaryHost);
+    const summaryRoot = createRoot(summaryHost);
+    roots.push(summaryRoot);
+    await act(async () => {
+      summaryRoot.render(
+        <I18nProvider>
+          <QueueHeaderSummary
+            count={1}
+            first={{
+              text: annotationOnly.prefix,
+              presentation: annotationOnly.presentation,
+              timing: 'agent_idle',
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(summaryHost.querySelector('[data-queue-first-preview]')?.textContent).toBe('Clarify this edge case');
+    expect(summaryHost.textContent).not.toContain('(attachment only)');
+
+    await act(async () => {
+      summaryRoot.render(
+        <I18nProvider>
+          <QueueHeaderSummary
+            count={0}
+            heldCount={1}
+            first={{
+              text: 'Daily scheduled check',
+              cronDeliveryMode: 'idle',
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(summaryHost.querySelector('[data-queue-count]')).toBeNull();
+    expect(summaryHost.querySelector('[data-queue-held-count]')?.textContent).toBe('1 scheduled waiting');
+    expect(summaryHost.querySelector('[data-queue-first-preview]')?.textContent).toBe('Daily scheduled check');
+    expect(summaryHost.querySelector('[data-queue-first-timing]')?.textContent).toBe('Insert when idle');
+
+    const { container } = await renderStrip({
+      items: [
+        {
+          promptId: 'p-annot',
+          userMessageId: 'um-annot',
+          text: annotationOnly.prefix,
+          presentation: annotationOnly.presentation,
+        },
+        {
+          promptId: 'p-quote',
+          userMessageId: 'um-quote',
+          text: quoteOnly.prefix,
+          presentation: quoteOnly.presentation,
+        },
+        {
+          promptId: 'p-media',
+          userMessageId: 'um-media',
+          text: '',
+          media: [{ kind: 'image', url: 'https://example.test/only.png' }],
+        },
+      ],
+    });
+    const [annotRow, quoteRow, mediaRow] = rows(container);
+    expect(annotRow?.textContent).not.toContain('(attachment only)');
+    expect(annotRow?.querySelector('[data-annotation-bubble]')).not.toBeNull();
+    expect(quoteRow?.textContent).not.toContain('(attachment only)');
+    expect(quoteRow?.querySelector('[data-quote-chip]')?.textContent).toContain('Quoted line alone');
+    expect(mediaRow?.textContent).toContain('(attachment only)');
+  });
 });
 
 describe('QueueStrip reorder', () => {

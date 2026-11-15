@@ -11,7 +11,7 @@ import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { AdmissionLine, AdmissionScope, RESTORE_NOTICE_MS, RESTORE_POLL_MS, useAdmissionScope, useAdmissionView, withAdmissionUserBlocks } from './timeline/AdmissionLine';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
-import { createViewState, type UserBlock } from '@kiki/session-core/session';
+import { createViewState, projectAgentTranscriptView, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
@@ -1429,5 +1429,154 @@ describe('an edit approval in the composer card', () => {
     expect(card()?.querySelector('[data-content-continuation]')).toBeNull();
     expect(card()?.querySelector('[data-diff-tag="delete"]')?.textContent).toContain('beta');
     expect(card()?.querySelector('[data-diff-tag="insert"]')?.textContent).toContain('BETA');
+  });
+});
+
+describe('queue header summary with scheduled tasks and annotations', () => {
+  const SESSION = {
+    id: 'session-example',
+    title: 'Queue preview example',
+    workspace_id: 'workspace-example',
+    ephemeral: false,
+    metadata: { cwd: '/example' },
+    agent_config: { profile: 'agent' },
+    profile: 'agent',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+
+  function stubProjectedController(prompts: import('@kiki/transcript').TranscriptPrompt[]) {
+    const listeners = new Set<() => void>();
+    const buildState = (currentPrompts: import('@kiki/transcript').TranscriptPrompt[]) => ({
+      ...projectAgentTranscriptView(
+        createViewState('session-example'),
+        'main',
+        { items: [], prompts: currentPrompts, attachments: [], tasks: [], todos: [], interactions: [], meta: {} },
+      ),
+      loaded: true,
+      transcriptReady: true,
+      session: SESSION,
+      busy: true,
+    });
+    let state = buildState(prompts);
+    fixture.controller = {
+      subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      subscribeContent: () => () => {},
+      getContentRevision: () => 0,
+      subscribeInterruptedPrompt: () => () => {},
+      subscribeAgent: (agentId: string, listener: () => void) => {
+        if (agentId !== 'main') return () => {};
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+      getState: () => state,
+      getAgentState: () => state,
+      getForest: () => ({ roots: [], byId: {} }),
+      getDurableIngress: () => [],
+      open: async () => {},
+      close() {},
+      setFocusedAgent() {},
+      refreshSession: async () => {},
+      retainHistoryRead: () => () => {},
+      contentRefsFor: () => [],
+      ...contentRead,
+    };
+    return {
+      updatePrompts(nextPrompts: import('@kiki/transcript').TranscriptPrompt[]) {
+        state = buildState(nextPrompts);
+        for (const listener of listeners) listener();
+      },
+    };
+  }
+
+  async function mountSession(): Promise<void> {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+            <Route element={<ConversationShell />}><Route path="/s/:id/*" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+          </Routes></MemoryRouter></I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  }
+
+  it('keeps the scheduled prompt preview in the collapsed queue bar across accepted and deferred Send now', async () => {
+    const cronPrompt: import('@kiki/transcript').TranscriptPrompt = {
+      promptId: 'cron-idle-1',
+      userMessageId: 'cron-idle-1',
+      originKind: 'cron_job',
+      originDeliveryMode: 'idle',
+      status: 'queued',
+      queuePosition: 1,
+      content: [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Check nightly backup</prompt></cron-fire>' }],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const { updatePrompts } = stubProjectedController([cronPrompt]);
+    await mountSession();
+
+    expect(container.querySelector('[data-queue-count]')).toBeNull();
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toContain('scheduled waiting');
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Check nightly backup');
+
+    await act(async () => {
+      updatePrompts([
+        {
+          promptId: 'msg_now_accepted',
+          userMessageId: 'msg_now_accepted',
+          status: 'queued',
+          steerAccepted: true,
+          queuePosition: 0,
+          content: [{ type: 'text', text: 'Immediate send now text' }],
+          createdAt: '2026-01-01T00:00:01.000Z',
+        },
+        cronPrompt,
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(container.querySelector('[data-queue-count]')).toBeNull();
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Check nightly backup');
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).not.toContain('Immediate send now text');
+
+    await act(async () => {
+      updatePrompts([
+        {
+          promptId: 'msg_now_deferred',
+          userMessageId: 'msg_now_deferred',
+          status: 'queued',
+          queuePosition: 0,
+          content: [{ type: 'text', text: 'Deferred send now text' }],
+          createdAt: '2026-01-01T00:00:02.000Z',
+        },
+        cronPrompt,
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1');
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toContain('scheduled waiting');
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Check nightly backup');
+  });
+
+  it('previews annotation-only queued prompts in the collapsed queue bar without (attachment only)', async () => {
+    const selection = selectionCarryoverPresentation(
+      [{ quote: 'Highlighted sentence', comment: 'Verify edge condition' }],
+      [],
+    );
+    stubProjectedController([
+      {
+        promptId: 'p-annot',
+        userMessageId: 'um-annot',
+        status: 'queued',
+        queuePosition: 0,
+        content: [{ type: 'text', text: selection.prefix, presentation: selection.presentation }],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    await mountSession();
+
+    expect(container.querySelector('[data-queue-first-preview]')?.textContent).toBe('Verify edge condition');
+    expect(container.textContent).not.toContain('(attachment only)');
   });
 });
