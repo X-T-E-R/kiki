@@ -1,7 +1,9 @@
+import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { request as httpRequest } from 'node:http';
-import { getLiveSessionById, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IModelService, ISessionAgentProfileCatalog, SessionAgentProfileCatalogService, AGENT_PROFILE_SOURCE_PRIORITY, ISessionMediaStore, ISessionContext, IBlobStore, IBootstrapService, agentScopeOf, sessionScopeOf, workspacePersistenceScope, IAgentExecutorRegistry, closeSessionById, IWorkAdmissionService } from '@kiki/agent-core-v2';
+import { getLiveSessionById, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IModelService, ISessionAgentProfileCatalog, SessionAgentProfileCatalogService, AGENT_PROFILE_SOURCE_PRIORITY, ISessionMediaStore, ISessionContext, IBlobStore, IBootstrapService, agentScopeOf, sessionScopeOf, workspacePersistenceScope, IAgentExecutorRegistry, closeSessionById, IWorkAdmissionService, IFileSystemStorageService, IAgentContextMemoryService, IAgentTokenCountingService } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
 import { bearerToken } from './helpers/auth';
@@ -396,7 +398,91 @@ describe('server-v2 session access REST integration', () => {
     expect(removed.body.data['max_context_tokens']).toBeUndefined();
   });
 
-  it('does not assign a native default model to a bound external harness without a model selection', async () => {
+  it.each([false, true])('inspects a pre-turn session without restoring it (permission pinned: %s)', async (pinned) => {
+    const core = fixture.server!.core;
+    const models = core.accessor.get(IModelService);
+    await models.set('stub', { ...models.get('stub'), displayName: 'Example Model', usage: { main: { contextBudget: 80 } } });
+    const sessionId = await fixture.createSession(fixture.home!, pinned);
+    const session = getLiveSessionById(core.accessor, sessionId)!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const scope = sessionScopeOf(workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId), sessionId);
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const token = await issueToken(sessionId, ['read']);
+    const path = `/api/sessions/${sessionId}`;
+    expect((await request('GET', `${path}/status`, token.token)).body).toMatchObject({ code: 0, data: { max_context_tokens: 80 } });
+    if (!pinned) {
+      expect((await request('GET', `${path}/tasks`, token.token)).body.code).toBe(0);
+      expect((await request('GET', `${path}/runtime`, token.token)).body).toMatchObject({ code: 0, data: { workspace_id: workspaceId, runtime_id: 'local' } });
+      expect((await request('GET', `${path}/warnings`, token.token)).body).toMatchObject({ code: 0, data: { warnings: [] } });
+      expect(session.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    }
+    await closeSessionById(core.accessor, sessionId);
+    const before = await storage.read(scope, 'state.json');
+    expect(JSON.parse(Buffer.from(before!).toString()).agents?.main !== undefined).toBe(pinned);
+    expect((await request('GET', `${path}/status`, token.token)).body).toMatchObject({ code: 0, data: {
+      busy: false, model: 'stub', model_name: 'Example Model', permission: pinned ? 'manual' : 'auto', plan_mode: false, context_tokens: 0, max_context_tokens: 80,
+    } });
+    expect((await request('GET', `${path}/warnings`, token.token)).body).toMatchObject({ code: 0, data: { warnings: [] } });
+    expect((await request('GET', `${path}/runtime`, token.token)).body).toMatchObject({ code: 0, data: { workspace_id: workspaceId, runtime_id: 'local' } });
+    expect((await request('GET', `${path}/tasks`, token.token)).body.code).toBe(0);
+    expect((await request('GET', path, token.token)).body).toMatchObject({ code: 0, data: { agent_config: { model: 'stub' } } });
+    expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+    expect(await storage.read(scope, 'state.json')).toEqual(before);
+    if (!pinned) expect(await storage.size(agentScopeOf(scope, 'main'), 'wire.jsonl')).toBeUndefined();
+  });
+
+  it('preserves bound status facts across cold inspection without restoring the session', async () => {
+    const core = fixture.server!.core;
+    const models = core.accessor.get(IModelService);
+    await models.set('stub-alt', { ...models.get('stub-alt'), usage: { main: { contextBudget: 80 } } });
+    const sessionId = await fixture.createSession(fixture.home!);
+    const session = getLiveSessionById(core.accessor, sessionId)!;
+    const catalog = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+    catalog.setContribution('example-budget', { profiles: [{ ...catalog.getDefault(), contextBudget: 100 }] }, AGENT_PROFILE_SOURCE_PRIORITY.explicit);
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub-alt', thinking: 'high' });
+    const context = main.accessor.get(IAgentContextMemoryService);
+    context.append({ role: 'user', content: [{ type: 'text', text: 'A saved user message' }], toolCalls: [] });
+    main.accessor.get(IAgentTokenCountingService).measured(context.get(), [], { inputOther: 60, inputCacheRead: 0, inputCacheCreation: 0, output: 5 });
+    context.append({ role: 'assistant', content: [{ type: 'text', text: 'A saved response' }], toolCalls: [] });
+    const owner = bearerToken(fixture.server!);
+    const path = `/api/sessions/${sessionId}`;
+    expect((await request('POST', `${path}/profile`, owner, { agent_config: { plan_mode: true } })).body.code).toBe(0);
+    const token = await issueToken(sessionId, ['read']);
+    const before = await request<Record<string, unknown>>('GET', `${path}/status`, token.token);
+    expect(before.body).toMatchObject({ code: 0, data: { model: 'stub-alt', thinking_level: 'high', permission: 'manual', plan_mode: true, max_context_tokens: 80 } });
+    expect(before.body.data['context_tokens']).toBeGreaterThan(65);
+    const { context_breakdown: breakdown, ...persisted } = before.body.data;
+    expect(breakdown).toBeDefined();
+    await closeSessionById(core.accessor, sessionId);
+    const cold = (await request<Record<string, unknown>>('GET', `${path}/status`, token.token)).body.data;
+    expect(cold).toEqual(persisted);
+    expect(cold['context_breakdown']).toBeUndefined();
+    expect((await request('GET', `${path}/status`, token.token)).body.data).toEqual(persisted);
+    expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+  });
+
+  it.each([undefined, 'harness-id'])('keeps the external default profile model opaque before Turn 1 (%s)', async (model) => {
+    const core = fixture.server!.core;
+    await writeFile(join(fixture.home!, 'SYSTEM.md'), `---\nexecutor: example-acp\n${model === undefined ? '' : `model_alias: ${model}\n`}---\nExternal default profile`);
+    const sessionId = await fixture.createSession(fixture.home!, false);
+    const token = await issueToken(sessionId, ['read']);
+    const path = `/api/sessions/${sessionId}`;
+    const inspect = async () => {
+      expect((await request('GET', path, token.token)).body).toMatchObject({ code: 0, data: { agent_config: { model: model ?? '' } } });
+      const status = await request<Record<string, unknown>>('GET', `${path}/status`, token.token);
+      expect(status.body).toMatchObject({ code: 0, data: { model_name: null } });
+      expect(status.body.data['model']).toBe(model);
+      expect(status.body.data['max_context_tokens']).toBeUndefined();
+    };
+    await inspect();
+    expect(getLiveSessionById(core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    await closeSessionById(core.accessor, sessionId);
+    await inspect();
+    expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+  });
+
+  it.each(['stub', 'harness-id'])('keeps native defaults, aliases, and display names out of external harness inspection (%s)', async (model) => {
     const sessionId = await fixture.createSession(fixture.home!, false);
     const core = fixture.server!.core;
     const session = getLiveSessionById(core.accessor, sessionId)!;
@@ -407,20 +493,41 @@ describe('server-v2 session access REST integration', () => {
     });
     const validate = vi.spyOn(executors, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
     try {
-      const main = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
-      const profile = main.accessor.get(IAgentProfileService);
-      await profile.bind({ execution: { executor: 'example-acp', profile: 'agent' } });
-      expect(profile.getModel()).toBe('');
+      const models = core.accessor.get(IModelService);
+      await models.set('stub', { ...models.get('stub'), displayName: 'Example Model' });
+      await models.set('fixture/harness-id', { ...models.get('stub'), displayName: 'Example Colliding Model' });
+      expect(models.resolveId('harness-id')).toBe('fixture/harness-id');
+      const catalog = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+      catalog.setContribution('example-harness', { profiles: [{ ...catalog.getDefault(), executor: 'example-acp' }] }, AGENT_PROFILE_SOURCE_PRIORITY.explicit);
       const token = await issueToken(sessionId, ['read']);
-      const status = await request<Record<string, unknown>>('GET', `/api/sessions/${sessionId}/status`, token.token);
-      expect(status.body).toMatchObject({ code: 0, data: { model_name: null } });
-      expect(status.body.data['model']).toBeUndefined();
-      expect(status.body.data['max_context_tokens']).toBeUndefined();
+      const path = `/api/sessions/${sessionId}`;
+      const read = () => request('GET', path, token.token);
+      const status = () => request<Record<string, unknown>>('GET', `${path}/status`, token.token);
+      expect((await read()).body).toMatchObject({ code: 0, data: { agent_config: { model: '' } } });
+      const unbound = await status();
+      expect(unbound.body).toMatchObject({ code: 0, data: { model_name: null } });
+      expect(unbound.body.data['model']).toBeUndefined();
+      expect(unbound.body.data['max_context_tokens']).toBeUndefined();
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      expect(lifecycle.get('main')).toBeUndefined();
+      catalog.removeContribution('example-harness');
+      const main = await lifecycle.create({ agentId: 'main' });
+      const profile = main.accessor.get(IAgentProfileService);
+      const execution = { executor: 'example-acp', profile: 'agent' } as const;
+      await profile.bind({ execution });
+      expect((await read()).body).toMatchObject({ code: 0, data: { agent_config: { model: '' } } });
+      expect((await status()).body.data['model']).toBeUndefined();
+      await profile.bind({ execution: { ...execution, overrides: { model } } });
       const binding = JSON.parse(JSON.stringify(profile.data().execution));
-      const read = () => request('GET', `/api/sessions/${sessionId}`, token.token);
-      expect((await read()).body).toMatchObject({ code: 0, data: { agent_config: { model: '', execution: binding } } });
+      const expectHarnessModel = async () => {
+        expect((await read()).body).toMatchObject({ code: 0, data: { agent_config: { model, execution: binding } } });
+        const bound = await status();
+        expect(bound.body).toMatchObject({ code: 0, data: { model, model_name: null } });
+        expect(bound.body.data['max_context_tokens']).toBeUndefined();
+      };
+      await expectHarnessModel();
       await closeSessionById(core.accessor, sessionId);
-      expect((await read()).body).toMatchObject({ code: 0, data: { agent_config: { model: '', execution: binding } } });
+      await expectHarnessModel();
       expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
     } finally { resolve.mockRestore(); validate.mockRestore(); }
   });

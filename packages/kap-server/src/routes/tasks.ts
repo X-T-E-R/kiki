@@ -33,7 +33,6 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ensureMainAgent } from '../transport/mainAgent';
 import { parseActionSuffix } from './action-suffix';
 
 const DEFAULT_TASK_OUTPUT_PREVIEW_BYTES = 32 * 1024;
@@ -323,8 +322,9 @@ async function resolveSessionTasks(
   if (summary === undefined) return { kind: 'session_not_found' };
 
   const session = getLiveSessionById(core.accessor, sid);
-  if (session === undefined) {
-    const ownerId = agentId ?? MAIN_AGENT_ID;
+  const ownerId = agentId ?? MAIN_AGENT_ID;
+  const agent = session?.accessor.get(IAgentLifecycleService).get(ownerId);
+  if (session === undefined || ownerId === MAIN_AGENT_ID && agent === undefined) {
     if (ownerId === '.' || ownerId === '..' || /[/\\\0]/.test(ownerId) || ownerId.length === 0) {
       return { kind: 'agent_not_found', agentId: ownerId };
     }
@@ -338,14 +338,8 @@ async function resolveSessionTasks(
     const persisted = new PersistedTasksReader(persistence, docs, fallback === undefined ? [ownerScope] : [ownerScope, scope], ownerId);
     return { kind: 'resolved', tasks: undefined, persisted };
   }
-  if (agentId !== undefined && agentId !== MAIN_AGENT_ID) {
-    const agent = session.accessor.get(IAgentLifecycleService).get(agentId);
-    if (agent === undefined) return { kind: 'agent_not_found', agentId };
-    return { kind: 'resolved', tasks: agent.accessor.get(IAgentTaskService) };
-  }
-  const agent = await ensureMainAgent(session);
-  const tasks = agent.accessor.get(IAgentTaskService);
-  return { kind: 'resolved', tasks };
+  if (agent === undefined) return { kind: 'agent_not_found', agentId: ownerId };
+  return { kind: 'resolved', tasks: agent.accessor.get(IAgentTaskService) };
 }
 
 function mapKind(k: AgentTaskInfo['kind']): TaskKind {

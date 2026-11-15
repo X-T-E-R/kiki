@@ -99,7 +99,7 @@ function stubSessionChain(ix: TestInstantiationService, session: ISessionScopeHa
   ix.stub(ISessionManager, {
     _serviceBrand: undefined,
     create: () => Promise.resolve(handler),
-    resume: () => Promise.resolve(handler),
+    resume: vi.fn(() => Promise.resolve(handler)),
     get: () => handler,
     list: () => [handler],
     close: () => Promise.resolve(),
@@ -210,6 +210,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
 
     const status = await ix.get(ISessionLegacyService).status('session-test');
     expect(agents.create).not.toHaveBeenCalled();
+    expect(ix.get(ISessionManager).resume).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       busy: false,
@@ -270,6 +271,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
 
     const status = await ix.get(ISessionLegacyService).status('session-unbound');
     expect(agents.create).not.toHaveBeenCalled();
+    expect(ix.get(ISessionManager).resume).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       busy: false,
@@ -336,6 +338,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
 
     const status = await ix.get(ISessionLegacyService).status('session-draft');
     expect(agents.create).not.toHaveBeenCalled();
+    expect(ix.get(ISessionManager).resume).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       model: 'default-model',
@@ -414,6 +417,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
 
     const status = await ix.get(ISessionLegacyService).status('session-capped');
     expect(agents.create).not.toHaveBeenCalled();
+    expect(ix.get(ISessionManager).resume).not.toHaveBeenCalled();
 
     expect(status).toMatchObject({
       model: 'example-model',
@@ -533,6 +537,7 @@ describe('Session legacy reads (best-effort runtime state)', () => {
     expect(index.get).not.toHaveBeenCalled();
     expect(agents.get).toHaveBeenCalledExactlyOnceWith('main');
     expect(agents.create).not.toHaveBeenCalled();
+    expect(ix.get(ISessionManager).resume).not.toHaveBeenCalled();
   });
 
   it('returns the valid goal prefix when the append log ends with a torn JSON record', async () => {

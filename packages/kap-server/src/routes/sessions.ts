@@ -6,8 +6,14 @@ import type { AgentMeta, SessionMeta, SessionPromotedFrom } from '@kiki/agent-co
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
-import { resolveSessionModel } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
-import { acquireDraftProfileListCatalog } from './agentProfileCapabilities';
+import { resolveEffectiveSessionModel } from '@kiki/agent-core-v2/app/sessionLegacy/sessionModel';
+import { loadAgentsMdDetailed } from '@kiki/agent-core-v2/agent/profile/context';
+import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
+import { ISessionInstructionsProvider } from '@kiki/agent-core-v2/session/sessionInstructions/instructionsProvider';
+import { readSessionObserver } from '../lib/sessionObserver';
+import { resolveSessionModelBinding } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
+import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
+import { IInstantiationService } from '@kiki/agent-core-v2/_base/di/instantiation';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -1833,18 +1839,31 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       const { session_id } = req.params;
       try {
-        await withSessionOperation(core, session_id, async (session) => {
-          if (session === undefined) {
-            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
-            return;
-          }
-          const agent = await ensureMainAgent(session);
-          const agentsMdWarning = agent.accessor.get(IAgentProfileService).getAgentsMdWarning();
-          const warnings = agentsMdWarning === undefined ? [] : [{
-            code: 'agents-md-oversized', message: agentsMdWarning, severity: 'warning' as const,
-          }];
-          reply.send(okEnvelope({ warnings }, req.id));
-        });
+        const observer = await readSessionObserver(core, session_id);
+        if (observer === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+          return;
+        }
+        const main = observer.live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+        let agentsMdWarning: string | undefined;
+        if (main !== undefined) {
+          agentsMdWarning = main.accessor.get(IAgentProfileService).getAgentsMdWarning();
+        } else if (observer.live !== undefined) {
+          const instructions = observer.live.accessor.get(ISessionInstructionsProvider);
+          await instructions.ready;
+          agentsMdWarning = instructions.agentsMdWarning;
+        } else {
+          const bootstrap = core.accessor.get(IBootstrapService);
+          agentsMdWarning = (await loadAgentsMdDetailed(
+            { fs: core.accessor.get(IHostFileSystem), homeDir: bootstrap.osHomeDir },
+            observer.metadata?.cwd ?? observer.summary!.cwd ?? bootstrap.osHomeDir, bootstrap.homeDir,
+            { inheritance: resolveSpaceInheritance(bootstrap) },
+          )).warning;
+        }
+        const warnings = agentsMdWarning === undefined ? [] : [{
+          code: 'agents-md-oversized', message: agentsMdWarning, severity: 'warning' as const,
+        }];
+        reply.send(okEnvelope({ warnings }, req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -1971,8 +1990,8 @@ export async function resolveSessionBindingFacts(
 ): Promise<SessionFacts> {
   let facts = resolveSessionFacts(core, sessionId, persistedUsage);
   if (facts.live && !facts.agentConfig?.model) {
-    const model = await resolveSessionModel(getLiveSessionById(core.accessor, sessionId)!);
-    facts = { ...facts, agentConfig: { ...facts.agentConfig, model: model ?? '' } };
+    const binding = await resolveSessionModelBinding(getLiveSessionById(core.accessor, sessionId)!);
+    facts = { ...facts, executorId: binding.executorId, agentConfig: { ...facts.agentConfig, model: binding.model ?? '' } };
   }
   if (facts.live && facts.usage?.accounting?.complete) return facts;
   if (options.includeAccounting !== false) {
@@ -1991,19 +2010,19 @@ export async function resolveSessionBindingFacts(
   ))?.agents?.[MAIN_AGENT_ID];
   const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined,
     { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
-  if (profile === undefined) {
-    const preview = await acquireDraftProfileListCatalog(core, { workspace_id: workspaceId });
-    try {
-      const models = core.accessor.get(IModelService);
-      await models.ready;
-      const selected = preview?.catalog.getDefault().modelAlias;
-      const model = selected ? models.resolveId(selected) ?? selected : models.getDefaultModel();
-      return { ...facts, agentConfig: { model: model ?? '' } };
-    } finally { await preview?.dispose(); }
-  }
-  const persona = profile.persona?.definition;
-  return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
-    execution: profile.execution, model: profile.modelAlias ?? '', profile: profile.profileName,
+  const preview = !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
+    ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService),
+      (await core.accessor.get(IWorkspaceService).get(workspaceId))?.root, workspaceId, false) : undefined;
+  let binding: { model: string | undefined; executorId: string };
+  try {
+    await preview?.catalog.ready;
+    const models = core.accessor.get(IModelService);
+    await models.ready;
+    binding = resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+  } finally { await preview?.dispose(); }
+  const persona = profile?.persona?.definition;
+  return { ...facts, executorId: binding.executorId, agentConfig: {
+    execution: profile?.execution, model: binding.model ?? '', profile: profile?.profileName,
     persona: persona === undefined ? undefined : {
       id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
     },

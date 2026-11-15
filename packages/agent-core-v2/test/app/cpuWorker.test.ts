@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CpuWorkerPool } from '#/app/cpuWorker/host';
 import { runCpuStream } from '#/app/cpuWorker/stream';
 import { reduceContextTranscript } from '#/agent/contextMemory/contextTranscript';
+import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import type { WireContextProjection } from '#/agent/contextMemory/wireContextProjection';
 import { deserialize } from 'node:v8';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
@@ -122,7 +123,10 @@ describe('CPU wire projection', () => {
         yield bytes.subarray(0, 9);
         yield bytes.subarray(9);
       });
-    expect(deserialize(Buffer.from(result))).toEqual({ transcript: reduceContextTranscript(records), permissionMode: 'yolo', planActive: true });
+    const transcript = reduceContextTranscript(records);
+    const estimated = estimateTokensForMessages(transcript.logicalEntries);
+    expect(deserialize(Buffer.from(result))).toEqual({ transcript, permissionMode: 'yolo', permissionConfigured: true,
+      planActive: true, runtimeBinding: undefined, contextTokens: { measured: 0, estimated, 'measured+estimated': estimated } });
   });
 
   it('reads logical sealed bytes and reports the same corruption location as append-log replay', async () => {
@@ -133,7 +137,10 @@ describe('CPU wire projection', () => {
     await storage.write('test', 'wire.jsonl', bytes);
     await sealColdSegments(storage, 'test', 'wire.jsonl', bytes.length, { segmentBytes: 31 });
     const result = await readWireContextProjection(workers.request.bind(workers), flushedLogs, storage, 'test', 'wire.jsonl');
-    expect(result).toEqual({ transcript: reduceContextTranscript(records), permissionMode: 'auto', planActive: false });
+    const transcript = reduceContextTranscript(records);
+    const estimated = estimateTokensForMessages(transcript.logicalEntries);
+    expect(result).toEqual({ transcript, permissionMode: 'auto', permissionConfigured: false,
+      planActive: false, runtimeBinding: undefined, contextTokens: { measured: 0, estimated, 'measured+estimated': estimated } });
     await storage.write('bad', 'wire.jsonl', Buffer.from(`${JSON.stringify(message('valid'))}\n\ninvalid\n`));
     await expect(readWireContextProjection(workers.request.bind(workers), flushedLogs, storage, 'bad', 'wire.jsonl'))
       .rejects.toMatchObject({ code: 'storage.corrupted', details: { scope: 'bad', key: 'wire.jsonl', lineNumber: 3 } });

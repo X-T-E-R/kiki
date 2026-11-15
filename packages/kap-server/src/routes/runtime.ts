@@ -2,6 +2,8 @@ import {
   Error2,
   ErrorCodes,
   IAgentRuntimeBindingService,
+  IAgentLifecycleService,
+  ISessionContext,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { RuntimeError } from '@kiki/agent-core-v2/runtime/runtimeRegistry';
@@ -16,6 +18,8 @@ import {
   switchRuntimeRequestSchema,
   type RuntimeBindingResponse,
 } from '../protocol/rest-runtime';
+import { readSessionObserver } from '../lib/sessionObserver';
+import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { ensureMainAgent } from '../transport/mainAgent';
 
 interface RuntimeRouteHost {
@@ -49,9 +53,15 @@ export function registerRuntimeRoutes(app: RuntimeRouteHost, core: Scope): void 
       tags: ['sessions'],
     },
     async (req, reply) => {
-      await withRuntime(core, req.params.session_id, async (service) => {
-        reply.send(okEnvelope(toResponse(service.get()), req.id));
-      });
+      const sessionId = req.params.session_id;
+      const observer = await readSessionObserver(core, sessionId);
+      if (observer === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      const main = observer.live?.accessor.get(IAgentLifecycleService).get('main');
+      const workspaceId = observer.live?.accessor.get(ISessionContext).workspaceId ?? observer.summary!.workspaceId;
+      const binding = main === undefined
+        ? (await readColdMainWireProjection(core, workspaceId, sessionId)).runtimeBinding ?? { workspaceId, runtimeId: 'local' }
+        : main.accessor.get(IAgentRuntimeBindingService).get();
+      reply.send(okEnvelope(toResponse(binding), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<RuntimeRouteHost['get']>[2]);

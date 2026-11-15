@@ -17,6 +17,8 @@ import {
   type LoopRecordedEvent,
 } from '#/agent/contextMemory/loopEventFold';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import { createWireContextProjection } from '#/agent/contextMemory/wireContextProjection';
+import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import type { WireRecord } from '#/wire/record';
 
 function userMessage(text: string, origin?: PromptOrigin): ContextMessage {
@@ -713,6 +715,50 @@ describe('live fold parity', () => {
     ]);
     expect(replaced.logicalEntries.map((message) => message.content)).toEqual([[{ type: 'text', text: 'replacement body' }]]);
     expect(texts(replaced)).toEqual(['first user body']);
+  });
+
+  it('projects persisted runtime, permission, plan, and measured-plus-estimated status sizes', () => {
+    const projection = createWireContextProjection();
+    expect(projection.result()).toMatchObject({ permissionConfigured: false, contextTokens: { measured: 0, estimated: 0, 'measured+estimated': 0 } });
+    const response = assistantMessage('Saved response');
+    for (const record of [
+      { type: 'runtime.set_binding', workspaceId: 'workspace-example', runtimeId: 'local' },
+      { type: 'runtime.set_binding', workspaceId: 'workspace-example', runtimeId: 'remote-example' },
+      { type: 'permission.set_mode', mode: 'manual' },
+      { type: 'plan_mode.enter', id: 'plan-example' },
+      appendMessage(userMessage('Saved user message')),
+      { type: 'token_counting.measured', length: 1, tokens: 60 },
+      appendMessage(response),
+    ]) projection.add(record);
+    const result = projection.result();
+    expect(result).toMatchObject({
+      runtimeBinding: { workspaceId: 'workspace-example', runtimeId: 'remote-example' },
+      permissionMode: 'manual', permissionConfigured: true, planActive: true,
+      contextTokens: {
+        measured: 60,
+        estimated: estimateTokensForMessages(result.transcript.logicalEntries),
+        'measured+estimated': 60 + estimateTokensForMessages([response]),
+      },
+    });
+    projection.add({ type: 'token_counting.rebased', length: 2, tokens: 12, measured: false });
+    expect(projection.result().contextTokens).toMatchObject({ measured: 0, 'measured+estimated': 12 });
+    projection.add({ type: 'plan_mode.exit', id: 'plan-example' });
+    expect(projection.result().planActive).toBe(false);
+  });
+
+  it('retains the replacement-message plan checkpoint through edit and undo', () => {
+    const projection = createWireContextProjection();
+    projection.add(appendMessage(userMessage('Undo this turn')));
+    projection.add({ type: 'plan_mode.enter', id: 'plan-example' });
+    expect(projection.result().planActive).toBe(true);
+    projection.add({ ...undo(1), replacementPrompt: {
+      schemaVersion: 1, promptId: 'replacement', userMessageId: 'user-example', createdAt: '2026-01-01T00:00:00.000Z',
+      message: userMessage('Replacement turn'), alreadyMaterialized: true, appendTiming: 'head', revision: 1, queueIndex: 0,
+    } });
+    expect(projection.result().planActive).toBe(false);
+    projection.add({ type: 'plan_mode.enter', id: 'replacement-plan' });
+    projection.add(undo(1));
+    expect(projection.result().planActive).toBe(false);
   });
 
   it('keeps injections not owned by any removed prompt across undo', () => {
