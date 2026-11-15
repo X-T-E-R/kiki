@@ -19,6 +19,8 @@ import {
 } from '@kiki/pi-tui';
 import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
+import { homeAlias } from '#/tui/utils/home-alias';
+import { ellipsizePathMiddle } from '#/tui/utils/path-ellipsis';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
 import type {
@@ -92,7 +94,12 @@ function renderShellDisplayBlock(
 ): string[] {
   const lines: string[] = [];
   if (block.cwd !== undefined && block.cwd.length > 0) {
-    lines.push(s.dim(`cwd: ${block.cwd}`));
+    const cwdPrefix = 'cwd: ';
+    const displayCwd = ellipsizePathMiddle(
+      homeAlias(block.cwd),
+      Math.max(1, width - cwdPrefix.length),
+    );
+    lines.push(s.dim(`${cwdPrefix}${displayCwd}`));
   }
   if (block.danger !== undefined) {
     lines.push(s.errorBold(`Dangerous: ${block.danger}`));

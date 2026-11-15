@@ -158,4 +158,39 @@ describe('UserMessageComponent', () => {
     const cached = component.render(80);
     expect(cached[0]).toBe(lines[0]);
   });
+
+  it('renders subtle via <client> attribution, sanitizes control chars, and wraps cleanly at narrow widths', () => {
+    setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+
+    const inline = new UserMessageComponent(
+      'Ship the fix',
+      [],
+      undefined,
+      undefined,
+      'companion\u001B[31m\napp\u0007',
+    )
+      .render(80)
+      .map((line) => stripAnsi(line).replaceAll(/\u001B\]133;[ABC]\u0007/g, ''));
+    expect(inline.join('\n')).toContain('Ship the fix  via companion app');
+    expect(inline.join('\n')).not.toContain('\u0007');
+
+    const wrapped = new UserMessageComponent(
+      'Ship the rendering polish across narrow viewports',
+      [],
+      undefined,
+      undefined,
+      'companion',
+    )
+      .render(28)
+      .map((line) => stripAnsi(line).replaceAll(/\u001B\]133;[ABC]\u0007/g, ''));
+    expect(wrapped.some((line) => line.trim() === 'via companion')).toBe(true);
+
+    for (const width of [1, 2, 4, 12]) {
+      const narrowLines = new UserMessageComponent('hi', [], undefined, undefined, 'companion').render(width);
+      for (const line of narrowLines) {
+        const clean = stripAnsi(line).replaceAll(/\u001B\]133;[ABC]\u0007/g, '');
+        expect(clean.length).toBeLessThanOrEqual(width);
+      }
+    }
+  });
 });

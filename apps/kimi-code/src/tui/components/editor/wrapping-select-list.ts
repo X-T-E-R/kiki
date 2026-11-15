@@ -139,7 +139,8 @@ export class WrappingSelectList extends SelectList {
       const descriptionStart = prefixWidth + truncatedValueWidth + spacing.length;
       const remainingWidth = width - descriptionStart - 2; // -2 for safety, as upstream
       if (remainingWidth > MIN_DESCRIPTION_WIDTH) {
-        const descriptionLines = wrapDescription(description, remainingWidth);
+        const maxLines = isSkillSelectItem(item, description) ? 1 : DESCRIPTION_MAX_LINES;
+        const descriptionLines = wrapDescription(description, remainingWidth, maxLines);
         const indent = ' '.repeat(descriptionStart);
         if (isSelected) {
           return descriptionLines.map((line, index) =>
@@ -193,18 +194,37 @@ export class WrappingSelectList extends SelectList {
   }
 }
 
+function isSkillSelectItem(item: SelectItem, description: string | undefined): boolean {
+  return (
+    item.data?.['kind'] === 'skill' ||
+    item.data?.['inlineSkill'] === true ||
+    item.value.startsWith('skill:') ||
+    (item.label?.startsWith('skill:') ?? false) ||
+    (description?.startsWith('[skill]') ?? false)
+  );
+}
+
 /**
- * Wrap `text` to at most DESCRIPTION_MAX_LINES lines of `width` columns.
+ * Wrap `text` to at most `maxLines` lines of `width` columns.
  * When the text needs more lines, the last visible line is rebuilt from the
  * remaining text and ellipsized.
  */
-function wrapDescription(text: string, width: number): string[] {
+function wrapDescription(
+  text: string,
+  width: number,
+  maxLines: number = DESCRIPTION_MAX_LINES,
+): string[] {
+  if (maxLines <= 1) {
+    if (visibleWidth(text) <= width) return [text];
+    const clipped = truncatePlainToWidth(text, Math.max(0, width - ELLIPSIS_WIDTH)).trimEnd();
+    return [`${clipped}${ELLIPSIS}`];
+  }
   const wrapped = wrapTextWithAnsi(text, width);
-  if (wrapped.length <= DESCRIPTION_MAX_LINES) {
+  if (wrapped.length <= maxLines) {
     return wrapped;
   }
-  const kept = wrapped.slice(0, DESCRIPTION_MAX_LINES - 1);
-  const rest = wrapped.slice(DESCRIPTION_MAX_LINES - 1).join(' ');
+  const kept = wrapped.slice(0, maxLines - 1);
+  const rest = wrapped.slice(maxLines - 1).join(' ');
   const clipped = truncatePlainToWidth(rest, width - ELLIPSIS_WIDTH).trimEnd();
   return [...kept, `${clipped}${ELLIPSIS}`];
 }

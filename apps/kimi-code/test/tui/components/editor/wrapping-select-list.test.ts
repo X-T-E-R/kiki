@@ -138,4 +138,26 @@ describe('WrappingSelectList', () => {
       expect(visibleWidth(line)).toBeLessThanOrEqual(80);
     }
   });
+
+  it('truncates skill descriptions onto a single compact line with ellipsis while keeping 2 lines for commands', () => {
+    const longDesc = '[skill] Inspect browser tabs, capture screenshots, and verify visual layouts across viewports';
+    const lines = makeList([
+      {
+        value: 'skill:ego-browser',
+        label: 'skill:ego-browser',
+        description: longDesc,
+        data: { kind: 'skill' },
+      },
+      {
+        value: 'goal',
+        label: 'goal',
+        description: 'Start or manage a long-running autonomous goal with turn and wall-clock budgets',
+      },
+    ]).render(80);
+
+    // Skill item takes 1 row (ellipsized), built-in command wraps onto 2 rows -> 3 rows total
+    expect(lines).toHaveLength(3);
+    expect(lines[0]!.endsWith('…')).toBe(true);
+    expect(lines[1]).toContain('  goal');
+  });
 });

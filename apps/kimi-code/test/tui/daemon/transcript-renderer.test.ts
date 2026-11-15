@@ -7,7 +7,7 @@ import { GutterContainer } from '#/tui/components/chrome/gutter-container';
 import { adaptQuestionResponse } from '#/tui/interactions/question-adapter';
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import type { ToolCallComponent } from '#/tui/components/messages/tool-call';
-import { createBlockComponent, DaemonTranscriptRenderer } from '#/tui/daemon/transcript-renderer';
+import { createBlockComponent, DaemonTranscriptRenderer, TranscriptNoteComponent } from '#/tui/daemon/transcript-renderer';
 
 function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '').replaceAll(/\u001B\]133;[ABC]\u0007/g, '');
@@ -41,7 +41,8 @@ describe('DaemonTranscriptRenderer', () => {
       { ...reads[0]!, id: 'failed', toolCallId: 'failed', turnId: 't2', status: 'error', args: { path: 'failed.txt' }, output: 'File not found' },
       { kind: 'system-reminder', id: 'standalone', variant: 'steer', text: 'Standalone reminder detail', createdAt: undefined },
     ]);
-    expect(frame()).toContain('Worked · 3 steps · 1 thought · 1 note');
+    expect(frame()).toContain('Worked · 3 steps · 1 thought');
+    expect(frame()).not.toContain('1 note');
     expect(frame()).toContain('This is the answer');
     expect(frame()).toContain('failed.txt');
     expect(frame().match(/Keep this follow-up/g)).toHaveLength(1);
@@ -668,5 +669,146 @@ describe('DaemonTranscriptRenderer', () => {
       single: { kind: 'single', option_id: 'b' },
       multi: { kind: 'multi_with_other', option_ids: ['x'], other_text: 'custom' },
     });
+  });
+
+  it('renders via <client> attribution on external user prompts and preserves it across timestamp toggles', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const externalUser = {
+      kind: 'user' as const,
+      id: 'u-ext',
+      text: 'Check status',
+      createdAt: '2026-06-01T12:34:56.000Z',
+      via: { client: 'companion' },
+    } as Block;
+    const localUser: Block = {
+      kind: 'user',
+      id: 'u-local',
+      text: 'Local prompt',
+      createdAt: '2026-06-01T12:35:00.000Z',
+    };
+
+    renderer.sync([externalUser, localUser]);
+    const initial = strip(container.render(80).join('\n'));
+    expect(initial).toContain('Check status  via companion');
+    expect(initial).toContain('Local prompt');
+    expect(initial.match(/via companion/g)).toHaveLength(1);
+
+    renderer.setShowTimestamps(true);
+    const withTs = strip(container.render(80).join('\n'));
+    expect(withTs).toContain('Check status  via companion');
+  });
+
+  it('hides internal reminders/plumbing, summarizes Recipes cleanly, and deduplicates turn failure errors', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const recipeBody = '<recipe name="clean-code">\nAlways verify before committing:\n- Run unit tests\n</recipe>';
+
+    renderer.sync([
+      {
+        kind: 'user',
+        id: 'u1',
+        turnId: 't1',
+        text: 'Run task',
+        createdAt: '',
+        promptOutcome: {
+          status: 'failed',
+          delivered: true,
+          error: 'Retry attempts exhausted (5/5). Connection error.',
+        },
+      },
+      {
+        kind: 'system',
+        id: 'sys-recipe-1',
+        turnId: 't1',
+        variant: 'injection',
+        source: 'model_steering',
+        text: recipeBody,
+        createdAt: undefined,
+      },
+      {
+        kind: 'system',
+        id: 'sys-internal',
+        turnId: 't1',
+        variant: 'injection',
+        source: 'runtime_snapshot',
+        text: '<system-reminder>\nHost runtime snapshot\n</system-reminder>',
+        createdAt: undefined,
+      },
+      {
+        kind: 'system-reminder',
+        id: 'rem-renew',
+        turnId: 't1',
+        category: { kind: 'renew', reason: 'budget' } as never,
+        text: 'Renew cognition anchor',
+        createdAt: undefined,
+      },
+      {
+        kind: 'notice',
+        id: 'notice-interrupt',
+        turnId: 't1',
+        tone: 'neutral',
+        text: 'interruption',
+      },
+      {
+        kind: 'notice',
+        id: 'agent-frame-1',
+        tone: 'danger',
+        text: 'Retry attempts exhausted (5/5). Connection error.',
+      },
+      {
+        kind: 'notice',
+        id: 'agent-turn-outcome-t1',
+        turnId: 't1',
+        tone: 'danger',
+        text: 'Reply failed · Retry attempts exhausted (5/5). Connection error.',
+      },
+      {
+        kind: 'user',
+        id: 'u2',
+        turnId: 't2',
+        text: 'Second turn',
+        createdAt: '',
+      },
+      {
+        kind: 'system',
+        id: 'sys-recipe-2',
+        turnId: 't2',
+        variant: 'injection',
+        source: 'model_steering',
+        text: recipeBody,
+        createdAt: undefined,
+      },
+    ]);
+
+    const collapsed = strip(container.render(100).join('\n'));
+    expect(collapsed).toContain('Recipe · clean-code');
+    expect(collapsed.match(/Recipe · clean-code/g)).toHaveLength(1);
+    expect(collapsed).not.toContain('Always verify before committing:');
+    expect(collapsed).not.toContain('Reminder · renew');
+    expect(collapsed).not.toContain('Host runtime snapshot');
+    expect(collapsed).not.toContain('interruption');
+    expect(collapsed.match(/Retry attempts exhausted \(5\/5\)\. Connection error\./g)).toHaveLength(1);
+
+    renderer.setExpanded(true);
+    const expanded = strip(container.render(100).join('\n'));
+    expect(expanded).toContain('Always verify before committing:');
+    expect(expanded).toContain('Reminder · renew');
+    expect(expanded).toContain('Interrupted');
+    // Duplicate turn-outcome error notice remains deduplicated even when expanded
+    expect(expanded.match(/Retry attempts exhausted \(5\/5\)\. Connection error\./g)).toHaveLength(1);
+  });
+
+  it('wraps long key-value /status lines in TranscriptNoteComponent with hanging indentation', () => {
+    const note = new TranscriptNoteComponent(
+      'Working directory: /Users/example/projects/workspace/apps/kimi-code/src/tui/daemon',
+    );
+    const rendered = note.render(56).map(strip).filter((line) => line.trim().length > 0);
+    expect(rendered.length).toBeGreaterThan(1);
+    expect(rendered[0]).toMatch(/^ {2}Working directory: \/Users\/example\/projects\/workspace\/$/);
+    expect(rendered[1]).toBe(`${' '.repeat(21)}apps/kimi-code/src/tui/daemon`);
+    for (const line of rendered) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(56);
+    }
   });
 });

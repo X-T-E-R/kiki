@@ -228,6 +228,7 @@ export class FileMentionProvider implements AutocompleteProvider {
             value: m.cmd.name,
             label: m.label,
             description: formatSlashCommandDescription(m.cmd),
+            data: m.cmd.kind === 'skill' ? { kind: 'skill' } : undefined,
           })),
           prefix: textBeforeCursor,
         };
@@ -312,7 +313,7 @@ export class FileMentionProvider implements AutocompleteProvider {
         value: m.cmd.name,
         label: m.cmd.name,
         description: formatSlashCommandDescription(m.cmd),
-        data: { inlineSkill: true },
+        data: { inlineSkill: true, kind: 'skill' },
       })),
       prefix,
     };
@@ -715,18 +716,21 @@ function scoreTokens(tokens: readonly string[], text: string): number | null {
   return score;
 }
 
+const SKILL_SOURCE_BADGE_PREFIX =
+  /^(?:\[(?:skill|user|project|builtin|built-in|plugin|extra|workspace|system|local)\]\s*)+/iu;
+
 /**
- * Mirrors CombinedAutocompleteProvider's description rendering so the
- * intercepted name completion keeps showing the argument hint.
+ * Mirrors CombinedAutocompleteProvider's description rendering for built-in
+ * commands while keeping skill descriptions compact (`[skill] <summary>`)
+ * without redundant `[arguments] — [skill] [user]` source-tag clutter.
  */
 function formatSlashCommandDescription(cmd: SlashAutocompleteCommand): string | undefined {
   const rawDesc = cmd.description ?? '';
-  const badge =
-    cmd.kind === 'skill' && !rawDesc.startsWith('[skill')
-      ? '[skill] '
-      : cmd.kind === 'agent' && !rawDesc.startsWith('[agent')
-        ? '[agent] '
-        : '';
+  if (cmd.kind === 'skill') {
+    const cleanDesc = rawDesc.trim().replace(SKILL_SOURCE_BADGE_PREFIX, '').trim();
+    return cleanDesc.length > 0 ? `[skill] ${cleanDesc}` : '[skill]';
+  }
+  const badge = cmd.kind === 'agent' && !rawDesc.startsWith('[agent') ? '[agent] ' : '';
   const desc = `${badge}${rawDesc}`;
   const full = cmd.argumentHint
     ? desc
