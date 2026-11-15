@@ -50,9 +50,8 @@ import {
 } from './model';
 import { backgroundRowsOf, projectSessionTasks, taskRowState, type SessionTaskCoverage, type SessionTaskProjection, type SessionTaskRead, type SessionTaskRow, type SessionTaskSummary } from './sessionTasks';
 import { FOCUS_RING, StateMark, stateFillClass } from './shell';
-import { Icon } from '../icons';
+import { Icon, Spinner } from '../icons';
 import type { OverviewFigures } from '../agent-panel/InspectorOverview';
-import { PanelMetricsCounting } from '../agent-panel/PanelMetricsCounting';
 
 /** The `useSyncExternalStore` subscribe contract: a function that unsubscribes. */
 const noop = (): (() => void) => () => {};
@@ -327,7 +326,7 @@ function money(usd: number | undefined): string {
 }
 
 /** A 240° arc gauge. Past the warning point the arc turns amber, never the "needs you" accent. */
-function Gauge({ ratio, label, value, sub, warn, scope }: { ratio: number | undefined; label: string; value: string; sub?: string; warn?: boolean; scope?: string }) {
+function Gauge({ ratio, label, value, sub, warn, scope, scopeStatus }: { ratio: number | undefined; label: string; value: string; sub?: string; warn?: boolean; scope?: string; scopeStatus?: { readonly kind: 'partial' | 'loading'; readonly label: string } }) {
   const r = 30;
   const c = 2 * Math.PI * r;
   const arc = c * (240 / 360);
@@ -344,8 +343,13 @@ function Gauge({ ratio, label, value, sub, warn, scope }: { ratio: number | unde
         <text x="40" y="47" textAnchor="middle" className="fill-ink font-mono text-[14px] font-medium">{value}</text>
       </svg>
       <span className="-mt-1 text-[11.5px] text-ink-faint">{label}</span>
-      <span className="font-mono text-[10.5px] text-ink-faint tabular-nums">
+      <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-ink-faint tabular-nums">
         {scope !== undefined ? scope : sub}
+        {scopeStatus !== undefined ? (
+          <span role="status" title={scopeStatus.label} aria-label={scopeStatus.label} className="inline-flex">
+            {scopeStatus.kind === 'loading' ? <Spinner label={scopeStatus.label} size={12} /> : <Icon name="partial" size={12} />}
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -768,91 +772,45 @@ function BackgroundCoverageNote({ state, coverage, summary, onRetry, t }: {
   onRetry: (() => void) | undefined;
   t: Translate;
 }) {
-  const retry = (label: string) => onRetry === undefined ? null : (
+  const retry = onRetry === undefined ? null : (
     <button
       type="button"
       data-cockpit-task-retry
+      aria-label={t('rail.cockpit.taskRetry')}
+      title={t('rail.cockpit.taskRetry')}
       onClick={onRetry}
-      className={`shrink-0 rounded text-ink-soft underline decoration-ink-faint underline-offset-2 transition-colors hover:text-ink ${FOCUS_RING}`}
+      className={`inline-flex shrink-0 text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
     >
-      {label}
+      <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
     </button>
   );
-  if (state === 'pending') {
-    return (
-      <p data-cockpit-task-read="pending" role="status" className="text-[11px] leading-4 text-ink-faint">
-        {t('rail.cockpit.taskReading')}
-      </p>
-    );
-  }
-  if (state === 'failed') {
-    return (
-      <p data-cockpit-task-read="failed" role="status" className="flex items-baseline gap-1.5 text-[11px] leading-4 text-amber-ink">
-        <span className="min-w-0">{t('rail.cockpit.taskReadFailed')}</span>
-        {retry(t('rail.cockpit.taskRetry'))}
-      </p>
-    );
-  }
+  const indicator = (stateName: string, hint: string, busy = false) => (
+    <span
+      data-cockpit-task-read={stateName}
+      role="status"
+      title={hint}
+      aria-label={hint}
+      className="inline-flex items-center text-ink-faint"
+    >
+      {busy ? <Spinner label={hint} size={12} /> : <Icon name="partial" size={12} />}
+    </span>
+  );
+  if (state === 'pending') return indicator('pending', t('rail.cockpit.taskReading'), true);
+  if (state === 'failed') return <span className="inline-flex items-center gap-1.5">{indicator('failed', t('rail.cockpit.taskReadFailed'))}{retry}</span>;
   if (summary?.lastError !== undefined) {
-    return (
-      <p data-cockpit-task-read="partial" role="status" className="flex items-baseline gap-1.5 text-[11px] leading-4 text-amber-ink">
-        <span className="min-w-0">{t('rail.cockpit.taskReadPartial')}</span>
-        {retry(t('rail.cockpit.taskRetry'))}
-      </p>
-    );
+    return <span className="inline-flex items-center gap-1.5">{indicator('partial', t('rail.cockpit.taskReadPartial'))}{retry}</span>;
   }
   if (summary?.readFailed === true) {
-    // The server read some owners and failed others. That is missing work, and
-    // it says so in its own terms: the count is of agents whose background
-    // work could not be read, not of agents with no background work.
-    return (
-      <p data-cockpit-task-read="read-failed" role="status" className="flex items-baseline gap-1.5 text-[11px] leading-4 text-amber-ink">
-        <span className="min-w-0">{t('rail.cockpit.taskOwnersFailed', { count: summary.failedOwners ?? 0 })}</span>
-        {retry(t('rail.cockpit.taskRetry'))}
-      </p>
-    );
+    return <span className="inline-flex items-center gap-1.5">{indicator('read-failed', t('rail.cockpit.taskOwnersFailed', { count: summary.failedOwners ?? 0 }))}{retry}</span>;
   }
   if (summary?.inventoryIncomplete === true) {
-    // The server could not enumerate every owner it knows about, so the
-    // denominator below is only the ones it managed to list. It is not a cap on
-    // how much one read covers — the read has no such limit — and saying so
-    // would invent one.
-    return (
-      <p data-cockpit-task-read="inventory" role="status" className="flex items-baseline gap-1.5 text-[11px] leading-4 text-ink-faint">
-        <span className="min-w-0">{t('rail.cockpit.taskInventoryIncomplete')}</span>
-        {retry(t('rail.cockpit.taskRetry'))}
-      </p>
-    );
+    return <span className="inline-flex items-center gap-1.5">{indicator('inventory', t('rail.cockpit.taskInventoryIncomplete'))}{retry}</span>;
   }
-  if (!coverage.totalKnown) {
-    // The server has not said how many owners the session has, and the agents
-    // this client has loaded are not that number — a session that has not
-    // loaded its older agents has a shorter tree than it had. So the graph says
-    // the owner list is not established instead of printing a fraction of a
-    // count it cannot stand behind.
-    return (
-      <p data-cockpit-task-read="owners-unknown" role="status" className="text-[11px] leading-4 text-ink-faint">
-        {t('rail.cockpit.taskOwnersUnknown')}
-      </p>
-    );
-  }
+  if (!coverage.totalKnown) return indicator('owners-unknown', t('rail.cockpit.taskOwnersUnknown'));
   if (coverage.partial || coverage.windowed || (summary?.pendingOwners ?? 0) > 0) {
-    // The server's own owner count is the denominator, and it is the only
-    // honest one: the local tree is what this client can see, not what the
-    // session has.
-    return (
-      <p data-cockpit-task-coverage className="text-[11px] leading-4 text-ink-faint">
-        {t('rail.cockpit.taskCoverage', { covered: coverage.covered, total: coverage.total ?? 0 })}
-      </p>
-    );
+    return indicator('coverage', t('rail.cockpit.taskCoverage', { covered: coverage.covered, total: coverage.total ?? 0 }));
   }
-  if ((summary?.failedOwners ?? 0) > 0) {
-    return (
-      <p data-cockpit-task-coverage className="text-[11px] leading-4 text-ink-faint">
-        {t('rail.cockpit.taskOwnersFailed', { count: summary?.failedOwners ?? 0 })}
-      </p>
-    );
-  }
+  if ((summary?.failedOwners ?? 0) > 0) return indicator('coverage', t('rail.cockpit.taskOwnersFailed', { count: summary?.failedOwners ?? 0 }));
   return null;
 }
 
@@ -930,6 +888,13 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
     <section data-cockpit-graph data-cockpit-lanes role="group" aria-label={t('rail.cockpit.graph.aria')} className="space-y-1.5">
       <header className="flex items-baseline gap-2">
         <h4 className="text-[11.5px] font-medium tracking-[0.02em] text-ink-soft">{t('rail.cockpit.graph.title')}</h4>
+        <BackgroundCoverageNote
+          state={backgroundReadState}
+          coverage={backgroundCoverage}
+          summary={backgroundRead}
+          onRetry={onRetryTaskRead}
+          t={t}
+        />
         <span className="ml-auto font-mono text-[10.5px] text-ink-faint tabular-nums">
           {t('rail.cockpit.graph.range', { count: branchTotal })}
         </span>
@@ -996,13 +961,6 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
           {t('rail.cockpit.graph.folded', { count: hiddenAgents })}
         </p>
       ) : null}
-      <BackgroundCoverageNote
-        state={backgroundReadState}
-        coverage={backgroundCoverage}
-        summary={backgroundRead}
-        onRetry={onRetryTaskRead}
-        t={t}
-      />
       <div className="relative flex h-4 items-end pt-1" aria-hidden>
         <span className="shrink-0" style={{ width: LABEL_W }} />
         <span data-cockpit-axis="tick" ref={axisRef} className="relative h-full flex-1">
@@ -1120,7 +1078,12 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           ratio={cache === undefined ? undefined : cache / 100}
           label={t('rail.cockpit.cacheHit')}
           value={cache === undefined ? '—' : `${Math.round(cache)}%`}
-          scope={t(treeFigures?.incomplete === true ? 'rail.cockpit.scope.treePartial' : 'rail.cockpit.scope.tree')}
+          scope={t('rail.cockpit.scope.tree')}
+          scopeStatus={treeFigures?.counting === true
+            ? { kind: 'loading', label: t('usage.strip.counting') }
+            : treeFigures?.incomplete === true
+              ? { kind: 'partial', label: t('inspector.treeTotalPartial') }
+              : undefined}
         />
       </div>
       <dl className="grid grid-cols-3 divide-x divide-hairline text-center">
@@ -1141,9 +1104,6 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           </dd>
         </div>
       </dl>
-      {treeFigures?.counting === true ? <PanelMetricsCounting /> : treeFigures?.incomplete === true ? (
-        <p data-cockpit-tree-partial className="-mt-1 text-[11.5px] leading-4 text-amber-ink">{t('rail.cockpit.treePartial')}</p>
-      ) : null}
     </div>
   );
 });

@@ -21,6 +21,7 @@ import type { HostFileReadResult } from '#/state/hostFileEditor';
 import {
   classifyResource,
   isKikiComputer,
+  isLosslessUtf8Bytes,
   normalizeHostFilePath,
   type PreviewEnvironment,
   type PreviewReadFailureReason,
@@ -122,8 +123,6 @@ function decodeBase64ToBytes(encoded: string): Uint8Array {
   return bytes;
 }
 
-const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
 export async function readWorkspaceTextViaSession(
   client: KikiClient,
   sessionId: string,
@@ -137,7 +136,7 @@ export async function readWorkspaceTextViaSession(
     sessionId,
     {
       path: relPath,
-      encoding: 'auto',
+      encoding: 'base64',
       length: options?.length ?? SESSION_FS_READ_TEXT_BYTES,
     },
     { signal: options?.signal },
@@ -161,16 +160,16 @@ export async function readWorkspaceTextViaSession(
   }
   const bytes = decodeBase64ToBytes(res.content);
   try {
-    const decoded = fatalUtf8Decoder.decode(bytes);
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: res.truncated });
     return {
       text: decoded,
       truncated: res.truncated,
-      lossless: !res.is_binary,
+      lossless: isLosslessUtf8Bytes(bytes),
       etag: res.etag,
     };
   } catch {
     return {
-      text: new TextDecoder('utf-8').decode(bytes),
+      text: new TextDecoder('utf-8').decode(bytes, { stream: res.truncated }),
       truncated: res.truncated,
       lossless: false,
       etag: res.etag,

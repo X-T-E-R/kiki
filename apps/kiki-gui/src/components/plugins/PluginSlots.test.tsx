@@ -11,7 +11,7 @@ import { LOCALE_STORAGE_KEY } from '@kiki/session-core/i18n';
 import { subscribePluginPromptInserts, type PluginPromptInsertRequest } from '@kiki/session-core';
 
 import { I18nProvider } from '../../i18n';
-import { PluginComposerSlots, buildPluginPanelHref, fetchPluginGuiSlots } from './PluginComposerSlots';
+import { PluginComposerSlots, buildPluginPanelHref, fetchPluginGuiSlots, invokePluginBrokerRoute } from './PluginComposerSlots';
 import { PluginStatusCapsules } from './PluginStatusCapsules';
 import { PluginMessageActions } from './PluginMessageActions';
 import { PluginSettingsSectionSlotList } from './PluginSettingsSectionCard';
@@ -293,5 +293,12 @@ describe('E12 declarative plugin GUI slot components', () => {
       }),
     );
     await expect(fetchPluginGuiSlots(fakeConnection, { sessionId: 'sess-1' })).rejects.toThrow(/HTTP 503/);
+
+    const failedJson = vi.fn(async () => ({ code: 0, data: { result: 'must not be accepted' } }));
+    fetchSpy.mockResolvedValueOnce({ ok: false, status: 502, json: failedJson } as unknown as Response);
+    await expect(invokePluginBrokerRoute(fakeConnection, {
+      pluginId: 'cordis-git', method: 'GET', subpath: 'status',
+    })).rejects.toThrow(/HTTP 502/);
+    expect(failedJson).not.toHaveBeenCalled();
   });
 });

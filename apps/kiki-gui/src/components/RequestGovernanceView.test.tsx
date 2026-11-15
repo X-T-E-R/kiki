@@ -205,7 +205,7 @@ describe('live request governance', () => {
     expect(container.querySelector('[data-governance-dimensions-empty]')).toBeNull();
   });
 
-  it.each(['zh', 'en'] as const)('keeps authoritative counts and one amber stale line on disconnection (%s)', async (locale) => {
+  it.each(['zh', 'en'] as const)('keeps authoritative counts and offers a compact refresh on disconnection (%s)', async (locale) => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', locale);
     connection.wsStatus = 'open';
@@ -221,19 +221,18 @@ describe('live request governance', () => {
     await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
-    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2 ◦');
+    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
     expect(container.querySelector('[data-request-governance-badge]')?.getAttribute('aria-label')).toContain(
       locale === 'zh'
-        ? '当前模型请求 3，等待 2 · 数据可能已过期'
-        : 'Model requests 3, waiting 2 · This view may be out of date',
+        ? '当前模型请求 3，等待 2 · 更新于 '
+        : 'Model requests 3, waiting 2 · Updated ',
     );
-    const staleLines = container.querySelectorAll('[data-governance-stale]');
-    expect(staleLines).toHaveLength(1);
-    expect(staleLines[0]?.textContent).toContain(locale === 'zh'
-      ? '数据可能已过期 · 最后更新 '
-      : 'This view may be out of date · last update ');
-    expect(staleLines[0]?.classList.contains('text-amber-ink')).toBe(true);
-    expect(staleLines[0]?.className).not.toMatch(/(?:^|\s)(?:bg-|border)/);
+    const staleButton = container.querySelector<HTMLButtonElement>('[data-governance-stale]');
+    expect(staleButton).not.toBeNull();
+    expect(staleButton?.querySelector('[data-icon="refresh"]')).not.toBeNull();
+    expect(staleButton?.getAttribute('aria-label')).toContain(locale === 'zh' ? '重试' : 'Retry');
+    expect(staleButton?.classList.contains('text-amber-ink')).toBe(true);
+    expect(staleButton?.className).not.toMatch(/(?:^|\s)(?:bg-|border)/);
   });
 
   it('hides raw session dimension rows from the live breakdown', async () => {
@@ -936,7 +935,7 @@ describe('execution pause/resume', () => {
     await settle(render, 1100);
     const panel = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
     expect(panel).not.toBeNull();
-    expect(panel.textContent).toContain('Background tasks may still be running');
+    expect(panel.textContent).toContain('Execution paused');
 
     // Explicit resume returns the session to running and clears the overview.
     await act(async () => { panel.querySelector<HTMLButtonElement>('[data-execution-action="resume"]')!.click(); });
@@ -1021,7 +1020,7 @@ describe('execution pause/resume', () => {
     expect(container.querySelector<HTMLElement>('[data-execution-sessions]')?.getAttribute('data-collapsed')).toBe('true');
     expect(row('session-alpha').hidden).toBe(true);
     expect(row('session-beta').hidden).toBe(false);
-    expect(row('session-beta').textContent).toContain('Background tasks may still be running');
+    expect(row('session-beta').textContent).toContain('Execution paused');
     expect(row('session-gamma').hidden).toBe(false);
     expect(row('session-gamma').textContent).toContain('resume lost a participant');
 
@@ -1051,8 +1050,8 @@ describe('execution pause/resume', () => {
     expect(list.querySelector('[data-execution-sessions-toggle]')).toBeNull();
     expect(list.getAttribute('data-collapsed')).toBeNull();
     expect(list.querySelectorAll('[data-execution-session]:not([hidden])')).toHaveLength(3);
-    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('Background tasks may still be running');
-    expect(list.textContent!.split('Background tasks may still be running')).toHaveLength(2);
+    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('Execution paused');
+    expect(list.textContent!.split('Execution paused')).toHaveLength(2);
     expect(list.querySelectorAll('[data-execution-action="resume"]')).toHaveLength(3);
   });
 
@@ -1529,7 +1528,9 @@ describe('live agent snapshot availability', () => {
     expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
     expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('1');
     expect(container.querySelector('[data-governance-agent-row="kiki"]')).not.toBeNull();
-    expect(container.querySelector('[data-governance-agents-stale]')?.textContent).toContain('This view may be out of date');
+    const stale = container.querySelector<HTMLButtonElement>('[data-governance-agents-stale]');
+    expect(stale?.querySelector('[data-icon="refresh"]')).not.toBeNull();
+    expect(stale?.getAttribute('aria-label')).toContain('Retry');
     expect(container.querySelector('[data-governance-agents-status]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-agents-retry]')!.click(); });
     expect(refetch).toHaveBeenCalledTimes(1);

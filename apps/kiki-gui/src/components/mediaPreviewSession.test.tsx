@@ -212,6 +212,46 @@ describe('session media preview', () => {
     expect(load.mock.calls).toEqual([['main', 'attachment', 'image-detail'], ['main', 'attachment', 'image-detail']]);
   });
 
+  it('hydrates visible video and omitted file placeholders after a fold supplies a display name', async () => {
+    const load = vi.fn(async () => true);
+    const { root } = makeRoot();
+    await renderSettled(root, <MediaPreviewProvider sessionId="session">
+      <TranscriptDetailProvider load={load} loads={{}} sessionId="session" agentId="main">
+        <MediaPartList media={[
+          { kind: 'video', detail: { agentId: 'main', attachmentId: 'video-detail' } },
+          { kind: 'audio', detail: { agentId: 'main', attachmentId: 'audio-detail' } },
+          { kind: 'file', name: 'shot.png', origin: { path: 'E:/images/shot.png', trusted: true }, detail: { agentId: 'main', attachmentId: 'omitted-detail' } },
+        ]} />
+      </TranscriptDetailProvider>
+    </MediaPreviewProvider>);
+    expect(load.mock.calls).toEqual([['main', 'attachment', 'video-detail'], ['main', 'attachment', 'audio-detail'], ['main', 'attachment', 'omitted-detail']]);
+  });
+
+  it('observes a saved audio slot and reads canonical bytes only when visible', async () => {
+    let intersect!: IntersectionObserverCallback;
+    const observe = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+      observe = observe;
+      disconnect() {}
+    });
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'audio/wav' });
+    try {
+      const { root, container } = makeRoot();
+      await renderSettled(root, <MediaPreviewProvider sessionId="session">
+        <MediaPartList agentId="child" media={[{ kind: 'audio', blobHash: 'a'.repeat(64), mime: 'audio/wav', name: 'voice.wav' }]} />
+      </MediaPreviewProvider>);
+      expect(observe).toHaveBeenCalledOnce();
+      expect(mocks.readSessionMediaBytes).not.toHaveBeenCalled();
+      await act(async () => { intersect([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
+      expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session', `blobref:child:${'a'.repeat(64)}`, expect.anything());
+      expect(container.querySelector('audio')?.getAttribute('src')).toBe('blob:kiki-session-media');
+      expect(mocks.readSessionMediaPreviewBytes).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('decodes a bounded offscreen thumbnail rather than displaying the full bitmap', async () => {
     const close = vi.fn();
     const drawImage = vi.fn();

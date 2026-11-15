@@ -216,18 +216,20 @@ it('continues cold preparation as loading and only clears an actual read failure
     expect(handle.error).toBeUndefined(); expect(handle.switches).toEqual([]);
   } finally { vi.useRealTimers(); }
 });
-it('bounds cold preparation and leaves a recoverable unknown queue without scanning all history', async () => {
+it('continues cold preparation beyond three slices and resets consecutive read failures', async () => {
   vi.useFakeTimers();
   try {
-    connection.list.mockRejectedValue(preparingError());
+    connection.list.mockRejectedValueOnce(new Error('transient one'))
+      .mockRejectedValueOnce(new Error('transient two'));
+    for (let slice = 0; slice < 5; slice += 1) connection.list.mockRejectedValueOnce(preparingError());
+    connection.list.mockRejectedValueOnce(new Error('transient after progress')).mockResolvedValueOnce([entry('continued')]);
     await render();
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(connection.list).toHaveBeenCalledTimes(3);
-    expect(handle.loading).toBe(false);
-    expect(handle.error).toMatchObject({ code: 40001, details: { reason: 'model_switch_queue_preparing' } });
-    connection.list.mockResolvedValueOnce([entry('continued')]);
-    await act(async () => { handle.refresh(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+    expect(connection.list).toHaveBeenCalledTimes(8);
+    expect(handle.error?.message).toBe('transient after progress');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(handle.error).toBeUndefined();
+    expect(handle.loading).toBe(false);
     expect(handle.switches[0]?.input.operationId).toBe('continued');
   } finally { vi.useRealTimers(); }
 });

@@ -741,7 +741,7 @@ describe('Sidebar global search pagination', () => {
     });
     await waitForText(container, 'alpha three');
 
-    expect(container.querySelector('[data-search-incomplete]')?.textContent).toBe('Partial results — the search hit its time limit.');
+    expect(container.querySelector('[data-search-incomplete]')?.textContent).toBe('Search time limit reached.');
   });
 });
 

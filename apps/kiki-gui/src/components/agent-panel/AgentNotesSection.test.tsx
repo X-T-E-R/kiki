@@ -133,11 +133,17 @@ describe('AgentNotesSection', () => {
 
   it('distinguishes incompatible, stale, and explicitly empty notes', async () => {
     const status = { state: 'incompatible' as const, wireOrdinal: 12, schemaVersion: 1, fields: ['notes.future_field'] };
-    const { container, rerender, cleanup } = await render({ notes: undefined, meta: undefined, status, loaded: true });
+    const onRetry = vi.fn();
+    const { container, rerender, cleanup } = await render({ notes: undefined, meta: undefined, status, loaded: true, viewStatus: 'partial', onRetry });
     expect(container.textContent).toContain('Working notes cannot be read right now.');
     expect(container.textContent).not.toContain('No working notes yet.');
-    await rerender({ notes: { goal: 'last readable goal' }, meta, status, loaded: true });
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('Showing the last readable version');
+    expect(container.querySelector('[data-agent-notes-read-status="partial"]')).toBeNull();
+    await rerender({ notes: { goal: 'last readable goal' }, meta, status, loaded: true, viewStatus: 'partial', onRetry });
+    const stale = container.querySelector('[data-agent-notes-read-status="stale"]');
+    expect(stale?.textContent).toBe('');
+    expect(stale?.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Latest notes unavailable');
+    expect(stale?.querySelector('button')).toBeNull();
+    expect(onRetry).not.toHaveBeenCalled();
     expect(container.textContent).toContain('last readable goal');
     await rerender({ notes: undefined, meta, loaded: true });
     expect(container.textContent).toContain('Working notes are empty · revision 4');
@@ -234,7 +240,7 @@ describe('AgentNotesSection', () => {
     await cleanup();
   });
 
-  it('preserves existing notes body and meta revision during partial read and attaches status line with retry', async () => {
+  it('preserves notes during a partial read and offers an icon-only retry in the header', async () => {
     const onRetry = vi.fn();
     const { container, cleanup } = await render({
       notes: { goal: 'Partial preserved goal', next: 'Partial next' },
@@ -245,7 +251,12 @@ describe('AgentNotesSection', () => {
     });
     await openSection(container);
     expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('partial');
-    expect(container.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('Showing read version, latest notes not yet confirmed.');
+    const partial = container.querySelector('[data-agent-notes-read-status="partial"]');
+    expect(partial?.textContent).toBe('');
+    const refresh = partial?.querySelector('button');
+    expect(refresh?.getAttribute('aria-label')).toBe('Notes partly loaded · Retry');
+    expect(refresh?.getAttribute('title')).toBe('Notes partly loaded · Retry');
+    expect(refresh?.querySelector('[data-icon="refresh"]')).not.toBeNull();
     expect(container.querySelector('[data-agent-notes-part="goal"] dd')?.textContent).toBe('Partial preserved goal');
     expect(container.querySelector('[data-agent-notes-part="next"] dd')?.textContent).toBe('Partial next');
     expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 4');
@@ -260,7 +271,10 @@ describe('AgentNotesSection', () => {
   it('never mislabels partial as cleared when notes are empty and meta is present', async () => {
     const { container, cleanup } = await render({ notes: undefined, meta, loaded: true, viewStatus: 'partial' });
     expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('partial');
-    expect(container.textContent).toContain('Showing read version, latest notes not yet confirmed.');
+    const status = container.querySelector('[data-agent-notes-read-status="partial"]');
+    expect(status?.textContent).toBe('');
+    expect(status?.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Notes partly loaded');
+    expect(status?.querySelector('[data-icon="partial"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Working notes are empty');
     expect(container.textContent).not.toContain('revision 4');
     await cleanup();

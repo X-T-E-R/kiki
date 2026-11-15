@@ -210,8 +210,6 @@ const TEXT_LIKE_TYPES: ReadonlySet<PreviewResourceType> = new Set([
   'table',
 ]);
 
-const utf8FatalDecoder = new TextDecoder('utf-8', { fatal: true });
-
 export function resourceMutability(resource: Pick<PreviewResource, 'source'>): PreviewResourceMutability {
   return resource.source.kind === 'session-copy' ? 'copy' : 'live';
 }
@@ -394,7 +392,7 @@ function hasBinarySignatureOrControls(head: Uint8Array): boolean {
 export function isLosslessUtf8Bytes(head: Uint8Array): boolean {
   if (hasBinarySignatureOrControls(head)) return false;
   try {
-    utf8FatalDecoder.decode(head);
+    new TextDecoder('utf-8', { fatal: true }).decode(head, { stream: true });
     return true;
   } catch {
     return false;

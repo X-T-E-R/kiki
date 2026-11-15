@@ -82,9 +82,8 @@ export class DaemonProgramStatus {
       if (this.presenceUsed && this.config?.enabled !== false && this.sessionId !== undefined) {
         try {
           await this.client.releaseSessionAccess(holderId, this.sessionId, AbortSignal.timeout(500));
-        } catch (error) {
+        } catch {
           this.closePresence();
-          throw error;
         }
       }
       this.sessionId = sessionId;

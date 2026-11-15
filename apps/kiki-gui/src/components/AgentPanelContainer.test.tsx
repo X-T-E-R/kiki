@@ -1403,10 +1403,10 @@ it('keeps the tree scope standing on main even when it has no children', async (
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
 });
 
-it('marks the tree scope incomplete while a child has not reported, and says so in words', async () => {
+it('marks the tree scope incomplete with a quiet icon while a child has not reported', async () => {
   // The cold-open case the rail used to hide: a child exists in the forest but
   // the server has sent no metrics row for it. The switch stays, the summed
-  // numbers are marked partial, and the caveat says what was left out.
+  // numbers are marked partial, and the status stays on a quiet icon.
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
     metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 } },
@@ -1415,17 +1415,16 @@ it('marks the tree scope incomplete while a child has not reported, and says so 
   const tree = () => element.querySelector<HTMLButtonElement>('[data-overview-test-head] [data-usage-scope="tree"]')!;
   expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(false);
   expect(tree().disabled).toBe(false);
-  // Switching to the tree really changes the scope, and the caveat travels
-  // with it. The sum is the real one over the agents that reported — main's
-  // 1.2k here — and the row says which agents it could not count, rather
-  // than passing 1.2k off as the whole tree or inventing a total.
+  // Switching to the tree changes the scope and keeps the partial state on the
+  // compact status icon. The sum is the real one over the agents that reported.
   await act(async () => { tree().click(); });
   expect(tree().getAttribute('aria-checked')).toBe('true');
   expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(true);
-  expect(tree().title).toContain('部分用量或费用不完整');
+  expect(tree().title).toContain('整棵树部分统计');
   const note = element.querySelector<HTMLElement>('[data-overview-tree-incomplete]');
-  expect(note?.textContent).toContain('已显示可用的小计');
-  expect(element.querySelector('[data-metrics-counting]')?.textContent).toBe('统计中…');
+  expect(note?.textContent).toBe('');
+  expect(note?.querySelector('[data-icon="partial"]')).not.toBeNull();
+  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
   expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
   // Back on the agent scope the caveat is gone and the real count returns.

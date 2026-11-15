@@ -7,7 +7,7 @@
 import { memo, useState, type ReactNode } from 'react';
 
 import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
-import { isLiveSubagentStatus, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
+import { isLiveSubagentStatus, isMediaTool, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { ContentContinuation, MESSAGE_TEXT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
@@ -37,13 +37,13 @@ function mediaItems(run: MediaRun, agentId: string): MediaItem[] {
     const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true, tool.outputPending === true);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
     return media.flatMap((item, index) => {
-      if (item.kind !== 'image') return [];
+      if (item.kind !== 'image' && !(item.kind === 'file' && item.detail !== undefined && isMediaTool(tool))) return [];
       const path = item.path ?? (typeof argPath === 'string' ? argPath : undefined);
       return [{
         key: `${tool.id}:${index}`,
         blockId: tool.id,
         index,
-        item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path) },
+        item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path), origin: item.origin ?? { path, trusted: true } },
         name: item.name ?? (path === undefined ? tool.name : basenameOf(path)),
       }];
     });

@@ -29,7 +29,7 @@
 import { memo, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
-import { PanelMetricsCounting } from './PanelMetricsCounting';
+import { Icon, Spinner } from '../icons';
 
 export interface OverviewFigures {
   readonly costUsd?: number;
@@ -150,21 +150,17 @@ export const InspectorOverview = memo(function InspectorOverview({
         type="button"
         role="radio"
         aria-checked={scope === 'tree'}
-        aria-label={t('inspector.treeTotal')}
         title={treePartial ? t('inspector.treeTotalPartial') : t('inspector.treeTotal')}
+        aria-label={treePartial ? t('inspector.treeTotalPartial') : t('inspector.treeTotal')}
         data-usage-scope="tree"
         data-usage-scope-incomplete={treePartial || undefined}
         onClick={() => { onScope('tree'); }}
-        className={`h-7 shrink-0 truncate rounded-md px-1 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-          scope === 'tree' ? 'text-ink' : treePartial ? 'text-amber-ink hover:text-amber-ink' : 'text-ink-faint hover:text-ink-soft'
+        className={`inline-flex h-7 shrink-0 items-center gap-1 truncate rounded-md px-1 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+          scope === 'tree' ? 'text-ink' : 'text-ink-faint hover:text-ink-soft'
         }`}
       >
         {t('inspector.scopeTree')}
-        {treePartial ? (
-          // The whole-tree count is missing some agents: say so in words
-          // rather than leaning on a bare asterisk nobody reads.
-          <span className="ml-1 whitespace-nowrap text-[11px] text-amber-ink">{t('inspector.treePartialShort')}</span>
-        ) : null}
+        {treePartial ? <Icon name="partial" size={12} className="text-ink-faint" /> : null}
       </button>
     </div>
   );
@@ -244,17 +240,26 @@ export const InspectorOverview = memo(function InspectorOverview({
         </div>
       ) : null}
 
-      {figureCells.length > 0 || shown.counting === true ? (
+      {figureCells.length > 0 || shown.counting === true || shown.partial === true || treePartial ? (
         <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
           {figureCells}
-          {shown.counting === true ? <PanelMetricsCounting /> : shown.partial === true ? <span className="text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
+          {shown.counting === true ? (
+            <span role="status" title={t('usage.strip.counting')} aria-label={t('usage.strip.counting')} className="inline-flex text-ink-faint">
+              <Spinner label={t('usage.strip.counting')} size={12} />
+            </span>
+          ) : null}
+          {shown.counting !== true && (shown.partial === true || treePartial) ? (
+            <span
+              role="status"
+              data-overview-tree-incomplete={treePartial || undefined}
+              title={t(treePartial ? 'inspector.treeTotalPartial' : 'agentPanel.partialBadge')}
+              aria-label={t(treePartial ? 'inspector.treeTotalPartial' : 'agentPanel.partialBadge')}
+              className="inline-flex text-ink-faint"
+            >
+              <Icon name="partial" size={12} />
+            </span>
+          ) : null}
         </div>
-      ) : null}
-
-      {tree && treePartial ? (
-        <p data-overview-tree-incomplete className="-mt-1 text-[11.5px] leading-4 text-amber-ink">
-          {t('inspector.treePartialNote')}
-        </p>
       ) : null}
 
       {workLine.length > 0 ? (

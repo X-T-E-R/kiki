@@ -347,6 +347,44 @@ describe('ProviderEditor save channel', () => {
     expect(keyInput(container).value).not.toContain('sk-new');
   });
 
+  it('updates the provider entity cache and revision for back-to-back field saves', async () => {
+    updateProvider
+      .mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+        ...COLON_PROVIDER,
+        base_url: patch['base_url'] as string,
+        revision: 'provider-rev-2',
+      }))
+      .mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+        ...COLON_PROVIDER,
+        base_url: patch['base_url'] as string,
+        revision: 'provider-rev-3',
+      }));
+    const { container, client } = await renderSurface(
+      <ProviderEditor provider={COLON_PROVIDER} models={FAST_MODELS} onSaved={async () => {}} />,
+    );
+    const baseUrl = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
+
+    await act(async () => { setInputValue(baseUrl, 'https://edge-2.example.test/v1'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+
+    expect(client.getQueryData(['provider-entity', COLON_PROVIDER.id])).toMatchObject({
+      base_url: 'https://edge-2.example.test/v1',
+      revision: 'provider-rev-2',
+    });
+    const nextBaseUrl = [...container.querySelectorAll('input')].find((input) => input.value === 'https://edge-2.example.test/v1')!;
+    await act(async () => { setInputValue(nextBaseUrl, 'https://edge-3.example.test/v1'); });
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+
+    expect(updateProvider).toHaveBeenNthCalledWith(2, COLON_PROVIDER.id, {
+      base_url: 'https://edge-3.example.test/v1',
+      base_revision: 'provider-rev-2',
+    });
+    expect(client.getQueryData(['provider-entity', COLON_PROVIDER.id])).toMatchObject({
+      base_url: 'https://edge-3.example.test/v1',
+      revision: 'provider-rev-3',
+    });
+  });
+
   it('shows an edited key as saved after the save, and reveals the new value', async () => {
     // Replacing one stored key with another leaves `has_api_key` and a
     // content-hashed revision unchanged; the field must still settle.

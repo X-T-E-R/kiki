@@ -1133,11 +1133,13 @@ function ChildAgentWorkspace({
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const stoppingRef = useRef<string | null>(null);
   const handleTerminateAgent = async () => {
-    if (runningAgentTask === undefined || stoppingRef.current !== null) return;
-    stoppingRef.current = runningAgentTask.id;
-    setStoppingTaskId(runningAgentTask.id);
+    if ((!headerBusy && runningAgentTask === undefined) || stoppingRef.current !== null) return;
+    const targetId = runningAgentTask?.id ?? agentId;
+    stoppingRef.current = targetId;
+    setStoppingTaskId(targetId);
     try {
-      await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+      if (runningAgentTask !== undefined) await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+      else await klient.session(sessionId).agent(agentId).cancel();
     } catch (error) {
       pushToast({
         tone: 'error',
@@ -1224,17 +1226,15 @@ function ChildAgentWorkspace({
     agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
   // The effort ladder comes from the DISPLAY model's catalog row: a bare alias
   // on the node (`k3-256k`) resolves to the provider row that owns
-  // `support_efforts`. A terminal subagent keeps the pick disabled.
+  // `support_efforts`. Resumable agents retain their binding controls.
   const resolvedDisplayModel =
     displayModel !== undefined
       ? resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)
       : undefined;
-  const agentTerminal =
-    selectedStatus === 'completed' || selectedStatus === 'cancelled' || selectedStatus === 'failed';
   const supportedEfforts =
-    agentKnown && !agentTerminal ? resolvedDisplayModel?.support_efforts : undefined;
+    !composerDisabled ? resolvedDisplayModel?.support_efforts : undefined;
   const handleChangeAgentEffort = async (effort: string | undefined) => {
-    if (!agentKnown || agentTerminal || effort === undefined || effort === displayEffort) return;
+    if (composerDisabled || effort === undefined || effort === displayEffort) return;
     if (externalExecutor) {
       try {
         await client.setAgentEffort(sessionId, agentId, effort);
@@ -1273,7 +1273,7 @@ function ChildAgentWorkspace({
   // This agent's own compaction point: a child never inherits its parent's
   // session override, so the read and write address this agent id.
   const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId: agentKnown && !agentTerminal ? sessionId : undefined,
+    sessionId: !composerDisabled ? sessionId : undefined,
     agentId,
     modelId: displayModel,
     modelLabel: resolvedDisplayModel?.display_name ?? displayModel,
@@ -1382,7 +1382,7 @@ function ChildAgentWorkspace({
     maxContextTokens: displayMaxContextTokens,
     contextBreakdown: undefined,
     usage: displayUsage,
-    pendingInteraction: 'none',
+    pendingInteraction: agentLiveState.pendingInteraction ?? 'none',
   }), [
     agentLiveState, sessionState.session, agentBlocks, headerBusy, displayModel,
     displayEffort, displayContextTokens, displayMaxContextTokens, displayUsage,
@@ -1538,7 +1538,7 @@ function ChildAgentWorkspace({
           busySendsNow={canSteerBusyPlain}
           sendTimingDefault={externalExecutor ? undefined : liveSettings.defaultAppendTiming}
           working={composerWorkingInfo}
-          onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
+          onAbort={headerBusy || runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
         />
       </div>}

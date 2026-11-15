@@ -173,6 +173,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, isUnconfirmedTransportError, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
+import { isMediaPreviewUnavailable } from './mediaParts';
 import { invalidatePluginQueries } from '../lib/pluginFreshness';
 import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
 import { activeFindHost } from '../lib/timelineFind';
@@ -4286,7 +4287,7 @@ boundExecution,
           return { ...baseRetained, previewUrl: image.previewUrl };
         } catch (error: unknown) {
           signal?.throwIfAborted();
-          if (!(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+          if (!isMediaPreviewUnavailable(error)) throw error;
           return baseRetained;
         }
       }

@@ -77,6 +77,15 @@ describe('translate', () => {
     expect(translate('en', 'sidebar.noMatches', {})).toBe('No matches for “{query}”.');
   });
 
+  it('keeps search status factual and puts history coverage in a concise icon label', () => {
+    expect(translate('en', 'sidebar.indexBuilding', { indexed: 3, total: 10 })).toBe('Indexing sessions (3/10)…');
+    expect(translate('zh', 'sidebar.indexBuilding', { indexed: 3, total: 10 })).toBe('正在建立索引（3/10）…');
+    expect(translate('en', 'sidebar.indexIncomplete')).toBe('Search limit reached.');
+    expect(translate('zh', 'sidebar.indexIncomplete')).toBe('已达到搜索上限。');
+    expect(translate('en', 'transcript.historyPartial')).toBe('Earlier history unverified');
+    expect(translate('zh', 'transcript.historyPartial')).toBe('早期记录未核对');
+  });
+
   it('falls back to English when a locale misses a key, then to the key itself', () => {
     const missing = 'sidebar.newSession' as I18nKey;
     const dictionaries = zh as Partial<Record<I18nKey, string>>;

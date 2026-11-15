@@ -235,6 +235,13 @@ export async function invokePluginBrokerRoute(
     body: hasBody ? JSON.stringify(input.body) : undefined,
     signal: input.signal,
   });
+  if (!response.ok) {
+    throw new ApiError({
+      code: API_CODES.INVALID_RESPONSE,
+      msg: `HTTP ${response.status} — plugin route request failed`,
+      data: null,
+    });
+  }
   let envelope: unknown = null;
   try {
     envelope = await response.json();

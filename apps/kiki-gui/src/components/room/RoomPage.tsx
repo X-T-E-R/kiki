@@ -20,6 +20,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 
 import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
 import { formatTokens } from '@kiki/session-core/util';
+import { ApiError, API_CODES } from '@kiki/session-core/transport';
 
 import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
@@ -137,7 +138,10 @@ function RoomView({
   const memberIds = room.members.map((member) => member.sessionId);
   const memberSessionsQuery = useQuery({
     queryKey: ['rooms', room.id, 'member-sessions', memberIds.join(',')],
-    queryFn: async () => (await Promise.all(memberIds.map((sessionId) => client.getSession(sessionId).catch(() => undefined))))
+    queryFn: async () => (await Promise.all(memberIds.map((sessionId) => client.getSession(sessionId).catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === API_CODES.SESSION_NOT_FOUND) return undefined;
+      throw error;
+    }))))
       .filter((session): session is Session => session !== undefined),
     refetchInterval: ROOM_POLL_MS,
   });

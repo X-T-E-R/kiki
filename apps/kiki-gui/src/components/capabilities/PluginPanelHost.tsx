@@ -131,7 +131,7 @@ export function PluginPanelHost({
       ? 'h-full min-h-0 min-w-0 w-full flex-1'
       : 'h-full min-h-[420px] w-full');
   const documentQuery = useQuery({
-    queryKey: ['plugin-panel-document', pluginId, panelId, targetKey],
+    queryKey: ['plugin-panel-document', pluginId, panelId, targetKey, serverId, baseOrigin],
     queryFn: () => client.getPluginPanelDocument(pluginId, panelId, effectiveTarget),
     staleTime: PANEL_DOCUMENT_STALE_TIME_MS,
     gcTime: PANEL_GRANT_SAFE_REUSE_MS,

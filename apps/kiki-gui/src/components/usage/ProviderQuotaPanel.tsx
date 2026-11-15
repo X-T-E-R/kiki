@@ -224,9 +224,17 @@ export function ProviderQuotaPanel() {
         <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{t('usage.quota.title')}</h2>
         <div className="flex items-center gap-3">
           {stale ? (
-            <span className="text-[12px] text-amber-ink" data-quota-stale>
-              {t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })}
-            </span>
+            <button
+              type="button"
+              data-quota-stale
+              aria-label={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
+              title={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
+              onClick={() => { void refetch(); }}
+              disabled={isRefetching}
+              className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
+            >
+              <Icon name="refresh" size={12} className={`h-[13px] w-[13px] ${isRefetching ? 'animate-spin' : ''}`} />
+            </button>
           ) : asOfTime ? (
             <span className="text-[12px] text-ink-faint">{t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}</span>
           ) : null}

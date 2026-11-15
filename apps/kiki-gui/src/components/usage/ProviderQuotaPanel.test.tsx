@@ -95,7 +95,12 @@ describe('ProviderQuotaPanel', () => {
   it('renders truthful empty and stale states without requesting credentials', async () => {
     show([], true); const container = await mount();
     expect(container.querySelector('[data-quota-empty]')?.textContent).toContain('No quota information available');
-    expect(container.querySelector('[data-quota-stale]')).not.toBeNull();
+    const stale = container.querySelector<HTMLButtonElement>('[data-quota-stale]');
+    expect(stale).not.toBeNull();
+    expect(stale?.querySelector('[data-icon="refresh"]')).not.toBeNull();
+    expect(stale?.getAttribute('aria-label')).toContain('Retry');
+    await click(container, '[data-quota-stale]');
+    expect(refetch).toHaveBeenCalledOnce();
     expect(client.startOAuthLogin).not.toHaveBeenCalled();
     expect(client.listOAuthMethods).not.toHaveBeenCalled();
   });

@@ -110,6 +110,20 @@ describe('classifyResource', () => {
     expect(classifyResource({ name: 'Dockerfile', head: elfBinary })).toBe('unsupported');
   });
 
+  it('accepts sampled UTF-8 cut inside CJK or emoji without accepting malformed prefixes', () => {
+    for (const text of ['line 中文', 'line 😀']) {
+      const bytes = new TextEncoder().encode(text);
+      const width = text.endsWith('😀') ? 4 : 3;
+      for (let cut = 1; cut < width; cut += 1) {
+        const head = bytes.subarray(0, bytes.length - cut);
+        expect(isLosslessUtf8Bytes(head)).toBe(true);
+        expect(classifyResource({ name: 'Makefile', head })).toBe('text');
+      }
+    }
+    expect(isLosslessUtf8Bytes(Uint8Array.from([0x41, 0xff, 0xe4]))).toBe(false);
+    expect(isLosslessUtf8Bytes(Uint8Array.from([0xe0, 0x80]))).toBe(false);
+  });
+
   it('prefers the filename extension when declared MIME disagrees', () => {
     expect(classifyResource({ name: 'diagram.svg', mime: 'text/plain' })).toBe('image');
     expect(classifyResource({ name: 'notes.md', mime: 'application/octet-stream' })).toBe('markdown');

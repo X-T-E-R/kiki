@@ -54,6 +54,11 @@ type SessionMediaLoad =
       readonly thumbnailUrl?: string;
     };
 
+export function isMediaPreviewUnavailable(error: unknown): boolean {
+  return error instanceof ApiError && (error.code === API_CODES.REQUEST_INVALID || error.code === 413 || error.reason === 'preview_budget_exceeded') ||
+    error instanceof Error && /exceeds its byte budget|preview_budget_exceeded|HTTP 413/i.test(error.message);
+}
+
 export function useSessionMedia(
   item: MediaRef,
   sessionId: string | undefined,
@@ -85,7 +90,7 @@ export function useSessionMedia(
         ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options)
         : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       return primary.catch((error: unknown) => {
-        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
         return client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       });
     };
@@ -94,7 +99,7 @@ export function useSessionMedia(
         ? client.readHostMediaPreviewBytes(hostPath!, options)
         : client.readHostFileBytes(hostPath!, options);
       return primary.catch((error: unknown) => {
-        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+        if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
         return client.readHostFileBytes(hostPath!, options);
       });
     };
@@ -277,8 +282,9 @@ function AudioPart({ item }: { item: MediaRef }) {
   const [hostRef, visible] = useVisibleOnce();
   const load = useSessionMedia(item, preview?.sessionId, visible && item.url === undefined, false);
   const src = item.url ?? (load.status === 'ready' ? load.url : undefined);
-  if (src === undefined) return <FileChip item={item} />;
-  return <span ref={hostRef} className="inline-flex max-w-full"><audio controls src={src} preload="none" className="h-10 max-w-full" /></span>;
+  return <span ref={hostRef} className="inline-flex max-w-full">{src === undefined
+    ? <FileChip item={item} />
+    : <audio controls src={src} preload="none" className="h-10 max-w-full" />}</span>;
 }
 
 function relativePathForMention(path: string, cwd: string | undefined): string {
@@ -596,9 +602,10 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   const target = useMemo(() => ({ client, sessionId: preview?.sessionId, agentId: item.detail.agentId, id: item.detail.attachmentId }), [client, preview?.sessionId, item.detail.agentId, item.detail.attachmentId]);
   const attempted = useRef<typeof target | undefined>(undefined);
   const status = detail.status?.status;
-  const isOmittedPlaceholder = item.kind === 'file' && item.name === undefined && item.mime === undefined && item.size === undefined;
+  const isOmittedPlaceholder = item.kind === 'file' && item.mime === undefined && item.size === undefined &&
+    (item.name === undefined || item.origin !== undefined);
   useEffect(() => {
-    if (!visible || (item.kind === 'file' && !isOmittedPlaceholder) || detail.request === undefined || attempted.current === target || status === 'error') return;
+    if (!visible || !(item.kind === 'image' || item.kind === 'video' || item.kind === 'audio' || isOmittedPlaceholder) || detail.request === undefined || attempted.current === target || status === 'error') return;
     attempted.current = target;
     detail.request();
   }, [visible, item.kind, isOmittedPlaceholder, detail.request, target, status]);
@@ -670,7 +677,9 @@ function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: 
   }
   if (item.blobHash !== undefined) {
     const savedItem = canonicalGalleryItem({ ...item, name: item.name ?? safeImagePreviewName({ path: item.path }) }, order?.agentId ?? agentId ?? 'main');
-    return <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} />;
+    return savedItem.kind === 'audio'
+      ? <AudioPart item={savedItem} />
+      : <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} />;
   }
   if (item.kind === 'image') {
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} onOpen={openImage} />;

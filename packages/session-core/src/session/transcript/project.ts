@@ -4617,10 +4617,31 @@ function foldConsecutiveMarkerDividers(blocks: readonly Block[]): Block[] {
   return folded;
 }
 
-export function latestFinalAssistantBlockId(blocks: readonly Block[]): string | undefined {
+export function latestFinalAssistantBlockId(
+  blocks: readonly Block[],
+  options: { readonly busy?: boolean; readonly liveTurnId?: string; readonly incompleteTurnIds?: readonly string[] } = {},
+): string | undefined {
+  const latestBlock = blocks.findLast((block) => blockTurnId(block) !== undefined);
+  const latestTurn = latestBlock === undefined ? undefined : blockTurnId(latestBlock);
+  const runningTurn = normalizeTurnId(options.liveTurnId ?? (options.busy ? latestTurn : undefined));
+  const excluded = new Set((options.incompleteTurnIds ?? []).map(normalizeTurnId));
+  const toolTurns = new Set<string>();
+  const streamingTurns = new Set<string>();
+  let unscopedTurn = 0;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
-    if (block.kind === 'assistant' && !block.streaming) return block.id;
+    const turnId = normalizeTurnId(blockTurnId(block));
+    const key = turnId ?? `unscoped-${unscopedTurn}`;
+    if (block.kind === 'tool' || block.kind === 'shell' || block.kind === 'approval' || block.kind === 'question' ||
+        block.kind === 'subagent' || block.kind === 'subagent-event' && block.event === 'sent' ||
+        block.kind === 'message' && block.origin === 'send_message') toolTurns.add(key);
+    if (block.kind === 'assistant') {
+      if (block.streaming) streamingTurns.add(key);
+      if (!block.streaming && !toolTurns.has(key) && !streamingTurns.has(key) &&
+          !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
+          !(options.busy && turnId === undefined && unscopedTurn === 0)) return block.id;
+    }
+    if (block.kind === 'user' && turnId === undefined) unscopedTurn += 1;
   }
   return undefined;
 }

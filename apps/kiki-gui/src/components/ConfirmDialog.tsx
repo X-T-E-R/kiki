@@ -59,10 +59,14 @@ export function ConfirmDialog({
   const stacked = ownStack || inheritedStack;
   const cancelRef = useRef<HTMLButtonElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   // The stacked branch gets phone back from Dialog; the inline one registers
   // the same layer itself, so back cancels it rather than its host.
   const coarse = useCoarsePointer();
-  useLayerHistory(overlayId, coarse && open && !stacked, () => { if (!busy) onCancel(); });
+  useLayerHistory(overlayId, coarse && open && !stacked, () => { if (!busyRef.current) onCancelRef.current(); });
 
   useEffect(() => {
     if (!open || stacked) return;
@@ -79,14 +83,14 @@ export function ConfirmDialog({
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      onCancel();
+      onCancelRef.current();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => {
       unregister();
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [open, overlayId, onCancel, stacked]);
+  }, [open, overlayId, stacked]);
 
   if (!open) return null;
 
@@ -94,7 +98,7 @@ export function ConfirmDialog({
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onCancel();
+      onCancelRef.current();
       return;
     }
     if (event.key === 'Tab') {
@@ -133,7 +137,7 @@ export function ConfirmDialog({
     </>
   );
   if (stacked) return (
-    <Dialog stacked role="alertdialog" ariaLabel={title} overlayId={overlayId} onClose={() => { if (!busy) onCancel(); }}>
+    <Dialog stacked role="alertdialog" ariaLabel={title} overlayId={overlayId} onClose={() => { if (!busyRef.current) onCancelRef.current(); }}>
       {content}
     </Dialog>
   );

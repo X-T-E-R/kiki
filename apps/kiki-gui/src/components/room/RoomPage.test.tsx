@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PersonaSummary, RoomDocument, RoomLogEntry, RoomUsage } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
+import { ApiError } from '@kiki/session-core/transport';
 import { resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
 import { mentionAtCaret, mentionOptions } from './roomLog';
 import { RoomPage } from './RoomPage';
@@ -406,4 +407,23 @@ describe('RoomPage', () => {
     await flush();
     expect(rooms.removeMember).toHaveBeenCalledWith('release-031', 'sess_tests');
   });
+});
+
+it('retains cached member sessions on transient failures and only omits missing sessions', async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await renderRoom(queryClient);
+  const key = ['rooms', 'release-031', 'member-sessions', 'sess_lin,sess_che,sess_lan'];
+  const cached = queryClient.getQueryData(key);
+  expect(cached).toHaveLength(3);
+  client.getSession.mockRejectedValue(new Error('network unavailable'));
+  await act(async () => { await queryClient.refetchQueries({ queryKey: key }); });
+  expect(queryClient.getQueryData(key)).toBe(cached);
+  expect(queryClient.getQueryState(key)?.status).toBe('error');
+  client.getSession.mockImplementation(async (id: string) => {
+    if (id === 'sess_lin') throw new ApiError({ code: 40401, msg: 'Session not found', data: null });
+    return { id, busy: false, metadata: { cwd: 'C:/' } };
+  });
+  await act(async () => { await queryClient.refetchQueries({ queryKey: key }); });
+  expect(queryClient.getQueryData(key)).toHaveLength(2);
+  expect(queryClient.getQueryState(key)?.status).toBe('success');
 });

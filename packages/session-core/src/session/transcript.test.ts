@@ -375,7 +375,37 @@ describe('message-closure anchors', () => {
     // A streaming tail never qualifies — regenerate/fork wait for it to settle.
     expect(
       latestFinalAssistantBlockId([user('u1'), assistant('a1'), assistant('live', true)]),
-    ).toBe('a1');
+    ).toBeUndefined();
+  });
+
+  it('excludes running and incomplete turns and tool-calling preambles from final boundaries', () => {
+    const previous = { ...assistant('previous'), turnId: 't1', stepId: 's1' };
+    const preamble = { ...assistant('preamble'), turnId: 't2', stepId: 's2' };
+    const tool = { kind: 'tool', id: 'tool', turnId: 't2', stepId: 's2', status: 'done' } as ToolBlock;
+    expect(latestFinalAssistantBlockId([previous, preamble], { busy: true, liveTurnId: 't2' })).toBe('previous');
+    expect(latestFinalAssistantBlockId([previous, preamble, tool])).toBe('previous');
+    expect(latestFinalAssistantBlockId([previous, preamble], { incompleteTurnIds: ['t2'] })).toBe('previous');
+    const final = { ...assistant('final'), turnId: 't2', stepId: 's3' };
+    expect(latestFinalAssistantBlockId([previous, preamble, tool, final])).toBe('final');
+    expect(latestFinalAssistantBlockId([previous, preamble, tool, final], { busy: true, liveTurnId: '2' })).toBe('previous');
+    expect(latestFinalAssistantBlockId([assistant('preamble'), { ...tool, turnId: undefined }])).toBeUndefined();
+  });
+
+  it('rejects preambles followed by specialized tool-call projections', () => {
+    const previous = { ...assistant('previous'), turnId: 't1' };
+    const preamble = { ...assistant('preamble'), turnId: 't2' };
+    const actions = [
+      { kind: 'shell', id: 'shell', turnId: 't2' },
+      { kind: 'message', id: 'message', origin: 'send_message', turnId: 't2' },
+      { kind: 'approval', id: 'approval', request: { turn_id: 2 } },
+      { kind: 'question', id: 'question', request: { turn_id: 2 } },
+      { kind: 'subagent', id: 'agent', parentTurnId: 't2' },
+      { kind: 'subagent-event', id: 'send', event: 'sent', turnId: 't2' },
+    ] as Block[];
+    for (const action of actions) {
+      expect(latestFinalAssistantBlockId([previous, preamble, action]), action.kind).toBe('previous');
+      expect(latestFinalAssistantBlockId([previous, preamble, action, { ...assistant('final'), turnId: 't2' }])).toBe('final');
+    }
   });
 
   it('assistantMessageIdFromBlockId unwraps snapshot ids and rejects live ids', () => {

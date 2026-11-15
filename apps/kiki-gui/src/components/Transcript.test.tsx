@@ -1902,6 +1902,11 @@ describe('live and event chrome', () => {
       onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
     />);
     expect(container.textContent).not.toContain('A blank page');
+    expect(container.textContent).not.toContain('Earlier history');
+    const status = container.querySelector('[data-history-unverified]');
+    expect(status?.getAttribute('aria-label')).toBe('Earlier history unverified');
+    expect(status?.getAttribute('title')).toBe('Earlier history unverified');
+    expect(status?.querySelector('[data-icon="partial"]')).not.toBeNull();
     expect(container.querySelector('[data-transcript-loading]')).toBeNull();
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
@@ -3438,6 +3443,26 @@ describe('message row actions', () => {
     expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork', 'link']);
   });
 
+  it.each([true, false])('withholds fork and regenerate on a tool-calling preamble when busy=%s', async (busy) => {
+    const preamble = { ...assistantBlock('assistant-preamble-0', 'I will inspect the file.'), turnId: 't2', stepId: 's2' };
+    const { root, container } = makeRoot();
+    const blocks: Block[] = [
+      userBlock({ id: 'user-opening', text: 'inspect', turnId: 't2' }),
+      preamble,
+      { kind: 'tool', id: 'tool-inspect', toolCallId: 'inspect', name: 'Read', turnId: 't2', stepId: 's2', status: 'stopped',
+        argsText: '', args: {}, display: undefined, description: undefined, output: '', isError: undefined, durationMs: undefined, progressText: undefined },
+    ];
+    await renderSettled(root, <Transcript
+      state={transcriptState(blocks, { busy, abortableTurnId: busy ? 2 : undefined })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions}
+      rowActions={{ disabled: false, onEditMessage: () => undefined, onRegenerate: () => undefined, onFork: () => undefined }}
+    />);
+    const row = container.querySelector('[data-block-id="assistant-preamble-0"]');
+    expect(row).not.toBeNull();
+    expect(rowActionButtons(row!)).not.toContain('fork');
+    expect(rowActionButtons(row!)).not.toContain('regenerate');
+  });
+
   it('hides edit/fork on a user row without a wire identity', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
@@ -4896,18 +4921,18 @@ describe('virtualized transcript scrolling', () => {
     expect(container.textContent).toContain('Load earlier messages');
   });
 
-  it('says unverified history is partial, as one quiet line, once the pages run out', async () => {
+  it('marks unverified history with only a compact accessible icon once the pages run out', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
       historyCoverageKind: 'unknown', hasMoreHistory: false, oldestMessageId: 'known-turn', fetchedOlder: true,
     });
     const line = container.querySelector('[data-top-edge="unverified"]');
     expect(line?.getAttribute('role')).toBe('status');
-    expect(line?.textContent).toContain('Earlier history is unverified');
-    const toggle = line?.querySelector<HTMLButtonElement>('[data-top-edge-toggle]');
-    expect(toggle).not.toBeNull();
-    expect(line?.querySelector('[data-top-edge-detail]')).toBeNull();
-    await act(async () => { toggle!.click(); });
-    expect(line?.querySelector('[data-top-edge-detail]')?.textContent).toBeTruthy();
+    expect(line?.textContent).toBe('');
+    const icon = line?.querySelector('[role="img"]');
+    expect(icon?.getAttribute('title')).toBe('Earlier history unverified');
+    expect(icon?.getAttribute('aria-label')).toBe('Earlier history unverified');
+    expect(icon?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(line?.querySelector('button, [data-top-edge-detail]')).toBeNull();
     expect(container.textContent).not.toContain('beginning of history');
   });
 

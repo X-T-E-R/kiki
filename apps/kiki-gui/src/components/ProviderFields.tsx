@@ -1432,6 +1432,7 @@ export function ProviderEditor({
           base_revision: revisions.provider,
         });
         mutationSucceeded = true;
+        queryClient.setQueryData(['provider-entity', provider.id], updatedProvider);
         setRevisions({ provider: updatedProvider.revision, models: revisionMap });
       }
       // The saved key is not kept in the draft: the listing never carries it,
@@ -1772,7 +1773,8 @@ export function SavedGenerationParametersEditor({
         }
         await client.updateModel(id, { base_revision: revision, parameters: patch as GenerationParametersPatch });
       } else {
-        await client.updateProvider(id, { base_revision: revision, defaults: patch as GenerationParametersPatch });
+        const updatedProvider = await client.updateProvider(id, { base_revision: revision, defaults: patch as GenerationParametersPatch });
+        queryClient.setQueryData(['provider-entity', id], updatedProvider);
       }
       setBaseline(draft);
       await Promise.all([
