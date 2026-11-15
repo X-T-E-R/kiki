@@ -155,7 +155,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   // Live agent dimensions
   const AGENT_DIMENSION_KEYS = ['executor', 'profile', 'model', 'role', 'session'] as const;
   const [chosenAgentDim, setChosenAgentDim] = useState<LiveAgentDimensionKind | null>(null);
-  const agentSnapshot = liveAgent.snapshot;
+  const agentSnapshot = liveAgent.snapshot ?? undefined;
   const agentDimensions = agentSnapshot?.dimensions ?? [];
   const presentAgentDims = AGENT_DIMENSION_KEYS.filter((opt) =>
     agentDimensions.some((row) => row.dimension === opt));
@@ -220,7 +220,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     `${t('usage.governance.running')} ${snapshot.active}`,
     `${t('usage.governance.queued')} ${snapshot.queued}`,
   ].join(' · ');
-  const agentSummary = [
+  const agentSummary = agentSnapshot === undefined ? undefined : [
     `${t('usage.governance.mainAgents')} ${agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}`,
     `${t('usage.governance.subagents')} ${agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}`,
     ...(agentSnapshot !== null && agentSnapshot !== undefined && (agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0) > 0
@@ -317,9 +317,9 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
         <UsageSectionHeading
           title={t('usage.governance.viewAgents')}
           help={agentSummary}
-          actions={(
+          actions={agentSnapshot === undefined ? undefined : (
             <>
-              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} /> : null}
+              <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
               <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
               <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
@@ -328,66 +328,87 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             </>
           )}
         />
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <AxisGroup
-            label={t('usage.governance.byDimension')}
-            dataAxis="governance-agent-dimension"
-            options={agentOptions}
-            value={agentDimension}
-            onChange={(next) => { setChosenAgentDim(next); }}
-            labelFor={(option) => {
-              if (option === 'executor') return t('usage.governance.executor');
-              if (option === 'profile') return t('usage.governance.profile');
-              if (option === 'model') return t('usage.governance.model');
-              return t(`usage.governance.${option}` as I18nKey);
-            }}
-          />
-        </div>
-        {shownAgentRows.length === 0 ? (
-          <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
-        ) : phone ? (
-          <ol data-governance-agent-dimensions data-governance-agent-dimension={agentDimension} className="divide-y divide-hairline border-t border-hairline">
-            {shownAgentRows.map((row) => (
-              <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
-                <span className="block truncate text-[13px] text-ink" title={row.id ?? ''}>{agentRowDisplay(row.id)}</span>
-                <span className="block text-[12px] text-ink-soft tabular-nums">
-                  {[
-                    `${t('usage.governance.mainAgents')} ${row.mainActive ?? row.main}`,
-                    `${t('usage.governance.subagents')} ${row.subActive ?? row.subagent}`,
-                    `${t('usage.governance.independentAgents')} ${row.independentActive ?? row.independent ?? 0}`,
-                    `${t('usage.governance.totalAgents')} ${row.totalActive ?? row.active}`,
-                  ].join(' · ')}
-                </span>
-              </li>
-            ))}
-          </ol>
+        {agentSnapshot === undefined ? (
+          <p role="status" data-governance-agents-status className="text-[12.5px] text-ink-faint">
+            {t(liveAgent.isError || !liveAgent.loading ? 'usage.governance.agentsUnavailable' : 'usage.governance.agentsLoading')}
+            {liveAgent.isError || !liveAgent.loading ? (
+              <button type="button" data-governance-agents-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { void liveAgent.refetch(); }}>
+                {t('usage.execution.retryRefresh')}
+              </button>
+            ) : null}
+          </p>
         ) : (
-          <div className="overflow-x-auto pb-1" data-governance-agent-dimensions data-governance-agent-dimension={agentDimension}>
-            <div className="min-w-[480px]">
-              <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint">
-                <span>{t('usage.governance.target')}</span>
-                <span className="text-right">{t('usage.governance.mainAgents')}</span>
-                <span className="text-right">{t('usage.governance.subagents')}</span>
-                <span className="text-right">{t('usage.governance.independentAgents')}</span>
-                <span className="text-right">{t('usage.governance.totalAgents')}</span>
-              </div>
-              <ol className="divide-y divide-hairline border-t border-hairline">
+          <>
+            {liveAgent.stale ? (
+              <p role="status" data-governance-agents-stale className="mb-3 text-[12px] text-amber-ink">
+                {t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })}
+                <button type="button" data-governance-agents-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { void liveAgent.refetch(); }}>
+                  {t('usage.execution.retryRefresh')}
+                </button>
+              </p>
+            ) : null}
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <AxisGroup
+                label={t('usage.governance.byDimension')}
+                dataAxis="governance-agent-dimension"
+                options={agentOptions}
+                value={agentDimension}
+                onChange={(next) => { setChosenAgentDim(next); }}
+                labelFor={(option) => {
+                  if (option === 'executor') return t('usage.governance.executor');
+                  if (option === 'profile') return t('usage.governance.profile');
+                  if (option === 'model') return t('usage.governance.model');
+                  return t(`usage.governance.${option}` as I18nKey);
+                }}
+              />
+            </div>
+            {shownAgentRows.length === 0 ? (
+              <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
+            ) : phone ? (
+              <ol data-governance-agent-dimensions data-governance-agent-dimension={agentDimension} className="divide-y divide-hairline border-t border-hairline">
                 {shownAgentRows.map((row) => (
-                  <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] items-baseline gap-x-2 py-2">
-                    <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className="min-w-0 truncate text-[13px] text-ink" title={row.id ?? ''}>
-                        {agentRowDisplay(row.id)}
-                      </span>
+                  <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
+                    <span className="block truncate text-[13px] text-ink" title={row.id ?? ''}>{agentRowDisplay(row.id)}</span>
+                    <span className="block text-[12px] text-ink-soft tabular-nums">
+                      {[
+                        `${t('usage.governance.mainAgents')} ${row.mainActive ?? row.main}`,
+                        `${t('usage.governance.subagents')} ${row.subActive ?? row.subagent}`,
+                        `${t('usage.governance.independentAgents')} ${row.independentActive ?? row.independent ?? 0}`,
+                        `${t('usage.governance.totalAgents')} ${row.totalActive ?? row.active}`,
+                      ].join(' · ')}
                     </span>
-                    <span className="text-right text-[12.5px] text-ink tabular-nums">{row.mainActive ?? row.main}</span>
-                    <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.subActive ?? row.subagent}</span>
-                    <span className="text-right text-[12.5px] text-ink-faint tabular-nums">{row.independentActive ?? row.independent ?? 0}</span>
-                    <span className="text-right text-[12.5px] text-ink tabular-nums">{row.totalActive ?? row.active}</span>
                   </li>
                 ))}
               </ol>
-            </div>
-          </div>
+            ) : (
+              <div className="overflow-x-auto pb-1" data-governance-agent-dimensions data-governance-agent-dimension={agentDimension}>
+                <div className="min-w-[480px]">
+                  <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint">
+                    <span>{t('usage.governance.target')}</span>
+                    <span className="text-right">{t('usage.governance.mainAgents')}</span>
+                    <span className="text-right">{t('usage.governance.subagents')}</span>
+                    <span className="text-right">{t('usage.governance.independentAgents')}</span>
+                    <span className="text-right">{t('usage.governance.totalAgents')}</span>
+                  </div>
+                  <ol className="divide-y divide-hairline border-t border-hairline">
+                    {shownAgentRows.map((row) => (
+                      <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] items-baseline gap-x-2 py-2">
+                        <span className="flex min-w-0 items-baseline gap-1.5">
+                          <span className="min-w-0 truncate text-[13px] text-ink" title={row.id ?? ''}>
+                            {agentRowDisplay(row.id)}
+                          </span>
+                        </span>
+                        <span className="text-right text-[12.5px] text-ink tabular-nums">{row.mainActive ?? row.main}</span>
+                        <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.subActive ?? row.subagent}</span>
+                        <span className="text-right text-[12.5px] text-ink-faint tabular-nums">{row.independentActive ?? row.independent ?? 0}</span>
+                        <span className="text-right text-[12.5px] text-ink tabular-nums">{row.totalActive ?? row.active}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+            )}
+          </>
         )}
         <ExecutionSessionList liveSessionIds={liveSessionIds} states={executionStates} onRetryRead={refetchExecutions} labelOf={labelOf} />
         {executionVisibleError !== undefined ? (

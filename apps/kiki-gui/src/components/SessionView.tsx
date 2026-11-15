@@ -702,9 +702,13 @@ export function SessionTitle({
   const { t } = useI18n();
   // The committed name shows at once: the list refetch that brings it back
   // as `title` waits on the patch, and the old name used to flash back in
-  // between. It holds only while `title` is still the name it replaced, and
-  // drops when the rename fails (the caller has already said why).
+  // between. It retires when the authoritative title changes or the rename fails.
   const [renamed, setRenamed] = useState<{ readonly from: string; readonly to: string } | undefined>(undefined);
+  const renameSequence = useRef(0);
+  const renameFlight = useRef<Promise<void> | undefined>(undefined);
+  useEffect(() => {
+    if (renamed !== undefined && title !== renamed.from) setRenamed(undefined);
+  }, [title, renamed]);
   const current = renamed !== undefined && renamed.from === title ? renamed.to : title;
   const currentRef = useRef(current);
   currentRef.current = current;
@@ -732,11 +736,15 @@ export function SessionTitle({
     const next = draft.trim();
     onEditingChange(false);
     if (next === '' || next === current) return;
+    const sequence = ++renameSequence.current;
     const attempt = { from: title, to: next };
     setRenamed(attempt);
-    onRename(next).catch(() => {
-      setRenamed((value) => (value === attempt ? undefined : value));
+    const submit = () => sequence !== renameSequence.current ? Promise.resolve() : onRename(next).catch(() => {
+      if (renameSequence.current === sequence) setRenamed((value) => (value === attempt ? undefined : value));
     });
+    const flight = renameFlight.current === undefined ? submit() : renameFlight.current.then(submit);
+    renameFlight.current = flight;
+    void flight.then(() => { if (renameFlight.current === flight) renameFlight.current = undefined; });
   };
 
   const shown = useThreadTitle(current !== '' ? current : t('sidebar.untitled'));

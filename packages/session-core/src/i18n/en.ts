@@ -10948,6 +10948,8 @@ export const en = {
   'archive.restore': 'Restore',
   'usage.governance.loading': 'Loading live request state…',
   'usage.governance.unavailable': 'Live request state unavailable',
+  'usage.governance.agentsLoading': 'Loading live agent state…',
+  'usage.governance.agentsUnavailable': 'Live agent state unavailable',
   'usage.governance.running': 'Running',
   'usage.governance.queued': 'Queued',
   'usage.governance.details': 'Details',

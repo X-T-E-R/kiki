@@ -794,6 +794,22 @@ export function Sidebar({
   }, [selected.size]);
   const [renaming, setRenaming] = useState<ConversationListItem | null>(null);
   const [renamedTitles, setRenamedTitles] = useState<ReadonlyMap<string, { readonly from: string; readonly to: string }>>(() => new Map());
+  const renameSequences = useRef(new Map<string, number>());
+  useEffect(() => {
+    setRenamedTitles((current) => {
+      if (current.size === 0) return current;
+      const titles = new Map(rawSessionGroups.flatMap((group) => group.items.map((item) =>
+        [item.key, item.kind === 'session' ? item.session.title : item.title] as const)));
+      for (const session of rawSessions) titles.set(`session:${session.id}`, session.title);
+      for (const room of rawRooms) titles.set(`room:${room.id}`, room.title);
+      const next = new Map(current);
+      for (const [key, override] of current) {
+        const title = titles.get(key);
+        if (title !== undefined && title !== override.from) next.delete(key);
+      }
+      return next.size === current.size ? current : next;
+    });
+  }, [rawSessions, rawRooms, rawSessionGroups, renamedTitles]);
   const [justRenamed, setJustRenamed] = useState<{ readonly key: string; readonly seq: number } | null>(null);
   const pendingPrivacyRef = useRef(new Set<string>());
   const [pendingPrivacy, setPendingPrivacy] = useState<ReadonlySet<string>>(() => new Set());
@@ -2273,8 +2289,11 @@ export function Sidebar({
           resolveTitle={resolveTitle}
           onSubmit={async (title) => {
             const target = renaming;
+            const sequence = (renameSequences.current.get(target.key) ?? 0) + 1;
+            renameSequences.current.set(target.key, sequence);
             if (target.kind === 'room') {
               const updated = await roomApi.updateRoom(target.id, { name: title });
+              if (renameSequences.current.get(target.key) !== sequence) return;
               queryClient.setQueryData<RoomListItem[]>(ROOM_ITEMS_QUERY_KEY, (old) =>
                 old === undefined ? old : old.map((room) => (room.id === target.id ? { ...room, title } : room)),
               );
@@ -2285,15 +2304,16 @@ export function Sidebar({
                   old !== null && typeof old === 'object' ? { ...old, name: title } : old,
                 );
               }
-              setRenamedTitles((prev) => new Map(prev).set(target.key, { from: target.title, to: title }));
+              setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.title, to: title }));
               setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-              setRenaming(null);
+              setRenaming((current) => current === target ? null : current);
               refreshRooms();
               return;
             }
             // A bare title patch omits `metadata`, so the server leaves the
             // stored custom document (and with it any client-local pin) untouched.
             const updated = await client.updateSessionProfile(target.id, { title });
+            if (renameSequences.current.get(target.key) !== sequence) return;
             const mergeUpdated = (existing: Session): Session => ({
               ...existing,
               ...(updated !== null && typeof updated === 'object' && 'id' in updated ? updated : undefined),
@@ -2315,9 +2335,9 @@ export function Sidebar({
                 old === undefined ? old : mergeUpdated(old),
               );
             }
-            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: target.session.title, to: title }));
+            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.session.title, to: title }));
             setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-            setRenaming(null);
+            setRenaming((current) => current === target ? null : current);
             refreshSessions();
           }}
           onClose={closeRenameEditor}

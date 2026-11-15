@@ -1422,7 +1422,7 @@ export class SessionController {
       if (before === after) continue;
       // A raise re-seeds the agent: until its baseline (or the attachment's
       // `ready`) lands, the window shows what it holds.
-      timeline.refreshing = after > before && after > GRADE_RANK.off && timeline.appliedGrade !== undefined;
+      timeline.refreshing = this.viewHandle !== undefined && after > before && after > GRADE_RANK.off && timeline.appliedGrade !== undefined;
       this.publishProjectedAgent(timeline.agentId, timeline.store);
     }
     const handle = this.viewHandle;
@@ -1547,6 +1547,7 @@ export class SessionController {
         });
         if (signal.recoverable) void this.resync();
         else {
+          for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
           this.clearResyncTimer();
           this.clearRewriteHold();
           this.hardResyncQueued = false;

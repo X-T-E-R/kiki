@@ -473,6 +473,77 @@ describe('session title', () => {
     expect(props.onEditingChange).toHaveBeenCalledWith(false);
   });
 
+  it.each(['Renamed title', 'Another client title'])('retires an optimistic title after the authoritative title reaches %s', async (confirmed) => {
+    const { props, container } = title({ editing: true });
+    const render = (nextTitle: string) => act(() => {
+      mounted.at(-1)!.root.render(<I18nProvider><SessionTitle {...props} title={nextTitle} editing={false} /></I18nProvider>);
+    });
+    const input = container.querySelector<HTMLInputElement>('[data-session-rename-input]')!;
+    setValue(input, 'Renamed title');
+    key(input, 'Enter');
+    await act(async () => {});
+    render(props.title);
+    expect(container.querySelector('[data-session-title]')?.textContent).toContain('Renamed title');
+    render(confirmed);
+    render(props.title);
+    expect(container.querySelector('[data-session-title]')?.textContent).toContain(props.title);
+    expect(container.querySelector('[data-session-title]')?.textContent).not.toContain('Renamed title');
+  });
+
+  it('serializes successful rename callbacks so an older response cannot overwrite newer cached titles', async () => {
+    const queryClient = new QueryClient();
+    const id = 'session-example';
+    queryClient.setQueryData(['session', id], { id, title: 'Release prep' });
+    queryClient.setQueryData(['sessions', 'cached'], { pages: [{ items: [{ id, title: 'Release prep' }] }] });
+    let finishFirst!: () => void;
+    let finishSecond!: () => void;
+    const first = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const second = new Promise<void>((resolve) => { finishSecond = resolve; });
+    const onRename = vi.fn(async (next: string) => {
+      await (next === 'First name' ? first : second);
+      queryClient.setQueryData(['session', id], { id, title: next });
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, { pages: [{ items: [{ id, title: next }] }] });
+    });
+    const { props, container } = title({ editing: true, onRename });
+    const render = (editing: boolean) => act(() => {
+      mounted.at(-1)!.root.render(<I18nProvider><SessionTitle {...props} editing={editing} /></I18nProvider>);
+    });
+    setValue(container.querySelector('[data-session-rename-input]')!, 'First name');
+    key(container.querySelector('[data-session-rename-input]')!, 'Enter');
+    render(false);
+    render(true);
+    setValue(container.querySelector('[data-session-rename-input]')!, 'Latest name');
+    key(container.querySelector('[data-session-rename-input]')!, 'Enter');
+    render(false);
+    expect(onRename).toHaveBeenCalledTimes(1);
+    await act(async () => { finishSecond(); });
+    expect(queryClient.getQueryData(['session', id])).toMatchObject({ title: 'Release prep' });
+    await act(async () => { finishFirst(); });
+    expect(onRename).toHaveBeenNthCalledWith(2, 'Latest name');
+    expect(queryClient.getQueryData(['session', id])).toMatchObject({ title: 'Latest name' });
+    expect(queryClient.getQueryData(['sessions', 'cached'])).toMatchObject({ pages: [{ items: [{ title: 'Latest name' }] }] });
+    queryClient.clear();
+  });
+
+  it('keeps the latest optimistic title when an older rename fails out of order', async () => {
+    let failFirst!: (reason: Error) => void;
+    const onRename = vi.fn().mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failFirst = reject; })).mockResolvedValue(undefined);
+    const { props, container } = title({ editing: true, onRename });
+    const render = (editing: boolean) => act(() => {
+      mounted.at(-1)!.root.render(<I18nProvider><SessionTitle {...props} editing={editing} /></I18nProvider>);
+    });
+    setValue(container.querySelector('[data-session-rename-input]')!, 'First name');
+    key(container.querySelector('[data-session-rename-input]')!, 'Enter');
+    render(false);
+    render(true);
+    setValue(container.querySelector('[data-session-rename-input]')!, 'Latest name');
+    key(container.querySelector('[data-session-rename-input]')!, 'Enter');
+    render(false);
+    await act(async () => { failFirst(new Error('older request failed')); });
+    expect(container.querySelector('[data-session-title]')?.textContent).toContain('Latest name');
+    expect(onRename).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the typed draft when the title changes mid-edit', () => {
     const { props, container } = title({ editing: true });
     const input = container.querySelector<HTMLInputElement>('[data-session-rename-input]')!;

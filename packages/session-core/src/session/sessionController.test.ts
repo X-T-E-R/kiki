@@ -2696,6 +2696,31 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it('settles a raised timeline refresh and surfaces an unrecoverable attachment failure', async () => {
+    const { controller } = await openTranscriptController();
+    try {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'last known answer' }), 2));
+      controller.retainAgentView('workspace:child-1', 'child-1', 'delta');
+      controller.setFocusedAgent('child-1');
+      await Promise.resolve();
+      controller.releaseAgentView('workspace:child-1');
+      controller.setFocusedAgent('main');
+      await Promise.resolve();
+      expect(controller.getState().refreshing).toBe(true);
+      controller.handleSignal({ type: 'protocolError', generation: 1, recoverable: false, detail: 'Session view attachment failed' });
+      expect(controller.getState()).toMatchObject({
+        refreshing: false, resyncing: false, resyncFailed: true,
+        resyncError: { message: 'Session view attachment failed', retryable: false },
+      });
+      expect(controller.getState().blocks).toContainEqual(expect.objectContaining({ kind: 'assistant', text: 'last known answer' }));
+      controller.setFocusedAgent('child-1');
+      await Promise.resolve();
+      controller.setFocusedAgent('main');
+      await Promise.resolve();
+      expect(controller.getState().refreshing).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it('returning to main shows what it holds at once, marks only the turns updated while lowered, and refreshes them', async () => {
     const { controller, client, socket } = await openTranscriptController();
     const turn = (ordinal: number, text: string, state: 'running' | 'completed' = 'completed') => ({ ...answeredTurn(ordinal, text), state,

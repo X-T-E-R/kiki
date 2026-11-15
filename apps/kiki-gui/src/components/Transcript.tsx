@@ -5330,6 +5330,8 @@ export const Transcript = memo(function Transcript({
   const olderIntentAtRef = useRef(0);
   const olderCarryPxRef = useRef(0);
   const olderInflightRef = useRef(false);
+  const underfillStartedRef = useRef(false);
+  useInsertionEffect(() => { underfillStartedRef.current = false; }, [agentId, state.transcriptResetVersion]);
   const readingIntentRef = useRef(0);
   const seekRequestRef = useRef<AbortController | null>(null);
   const olderRequestRef = useRef<AbortController | null>(null);
@@ -5407,7 +5409,7 @@ export const Transcript = memo(function Transcript({
     return loaded;
   }, [readOlderPage]);
   const [olderBatchActive, setOlderBatchActive] = useState(false);
-  const requestOlderAtReadingAnchor = useCallback(async () => {
+  const requestOlderAtReadingAnchor = useCallback(async (underfill = false) => {
     if (olderInflightRef.current) return false;
     olderIntentRef.current = false;
     const carryPx = olderCarryPxRef.current;
@@ -5460,12 +5462,16 @@ export const Transcript = memo(function Transcript({
       // after the page's own anchor restore (inside loadOlderAtReadingAnchor)
       // has settled, so the distance is measured where the reader really is.
       let continued = loaded;
-      for (let page = 0; page < OLDER_CONTINUATION_PAGES && continued && !request.signal.aborted &&
+      const continuationPages = underfill ? OLDER_CONTINUATION_PAGES - 1 : OLDER_CONTINUATION_PAGES;
+      for (let page = 0; page < continuationPages && continued && !request.signal.aborted &&
           readingIntentRef.current === intent && visibleRef.current; page += 1) {
+        if (underfill) await new Promise<void>((resolve) => { requestAnimationFrame(() => { requestAnimationFrame(() => { resolve(); }); }); });
         const scroll = scrollRef.current;
         const current = stateRef.current;
-        if (scroll === null || !current.hasMoreHistory || current.olderError !== undefined ||
-            scroll.scrollTop >= olderPrefetchDistance(scroll.clientHeight)) break;
+        if (request.signal.aborted || readingIntentRef.current !== intent || !visibleRef.current ||
+            scroll === null || !current.hasMoreHistory || current.olderError !== undefined ||
+            (underfill ? scroll.clientHeight <= 0 || scroll.scrollHeight > scroll.clientHeight
+              : scroll.scrollTop >= olderPrefetchDistance(scroll.clientHeight))) break;
         olderInflightRef.current = true;
         continued = await loadOlderAtReadingAnchor(request.signal);
       }
@@ -5481,6 +5487,7 @@ export const Transcript = memo(function Transcript({
   // The long-wait Cancel: ends the reader's older-history run the way a
   // downward gesture does, and the next run needs a new upward one.
   const cancelOlderRun = useCallback(() => {
+    underfillStartedRef.current = true;
     readingIntentRef.current += 1;
     olderRequestRef.current?.abort();
     olderIntentRef.current = false;
@@ -5494,6 +5501,7 @@ export const Transcript = memo(function Transcript({
     const recordIntent = (upward: boolean, upwardDeltaPx = 0) => {
       seekRequestRef.current?.abort();
       if (!upward) {
+        underfillStartedRef.current = true;
         readingIntentRef.current += 1;
         olderRequestRef.current?.abort();
         olderIntentRef.current = false;
@@ -5577,6 +5585,30 @@ export const Transcript = memo(function Transcript({
       element.removeEventListener('scroll', loadAtTop);
     };
   }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, requestOlderAtReadingAnchor]);
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!loaded || !visible || scroll === null || underfillStartedRef.current) return;
+    let frame = 0;
+    const check = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          const current = stateRef.current;
+          if (underfillStartedRef.current || !visibleRef.current || !current.hasMoreHistory ||
+              current.olderError !== undefined || current.loadingOlder || olderInflightRef.current ||
+              scroll.clientHeight <= 0 || scroll.scrollHeight > scroll.clientHeight) return;
+          underfillStartedRef.current = true;
+          void requestOlderAtReadingAnchor(true);
+        });
+      });
+    };
+    const observer = new ResizeObserver(check);
+    observer.observe(scroll);
+    const content = scroll.querySelector('[data-transcript-virtual-content]');
+    if (content !== null) observer.observe(content);
+    check();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [loaded, visible, state.blocks, state.hasMoreHistory, state.loadingOlder, state.olderError, state.transcriptResetVersion, requestOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -6635,7 +6667,7 @@ export const Transcript = memo(function Transcript({
       <div className="relative min-h-0 flex-1">
       {topEdgeState.loadingOlder || topEdgeState.olderError !== undefined ? (
         <div data-history-feedback className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-xl border border-hairline bg-paper px-4 py-2 shadow-sm">
-          <TopEdge state={topEdgeState} onLoadOlder={requestOlderAtReadingAnchor} onCancel={olderBatchActive ? cancelOlderRun : undefined} />
+          <TopEdge state={topEdgeState} onLoadOlder={() => requestOlderAtReadingAnchor()} onCancel={olderBatchActive ? cancelOlderRun : undefined} />
         </div>
       ) : null}
       {readingRestoreFailed ? (
@@ -6694,7 +6726,7 @@ export const Transcript = memo(function Transcript({
                 onDetach={captureRekeyedFold}
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
+                  {first ? <TopEdge state={topEdgeState} reserveFeedback onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : () => requestOlderAtReadingAnchor()} /> : null}
                   {visible && turnTailId !== undefined ? <TurnPreviewLease agentId={agentId} turnId={turnTailId} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>

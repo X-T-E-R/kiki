@@ -708,6 +708,7 @@ function testMessage(overrides: Partial<Message> = {}): Message {
 function testSessionStatus(): SessionStatusResponse {
   return {
     busy: false,
+    model_name: null,
     model: 'kimi-code/kimi-for-coding',
     thinking_level: 'off',
     permission: 'manual',
