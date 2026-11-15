@@ -462,21 +462,31 @@ describe('server-v2 session access REST integration', () => {
     expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
   });
 
-  it.each([undefined, 'harness-id'])('keeps the external default profile model opaque before Turn 1 (%s)', async (model) => {
+  it.each([
+    [false, undefined], [false, 'harness-id'], [true, undefined], [true, 'harness-id'],
+  ] as const)('keeps the external default profile model opaque before Turn 1 (pinned: %s, model: %s)', async (pinned, model) => {
     const core = fixture.server!.core;
+    const models = core.accessor.get(IModelService);
+    await models.set('stub', { ...models.get('stub'), displayName: 'Example Model' });
     await writeFile(join(fixture.home!, 'SYSTEM.md'), `---\nexecutor: example-acp\n${model === undefined ? '' : `model_alias: ${model}\n`}---\nExternal default profile`);
-    const sessionId = await fixture.createSession(fixture.home!, false);
+    const sessionId = await fixture.createSession(fixture.home!, pinned);
+    const lifecycle = getLiveSessionById(core.accessor, sessionId)!.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get('main');
+    expect(main !== undefined).toBe(pinned);
     const token = await issueToken(sessionId, ['read']);
     const path = `/api/sessions/${sessionId}`;
     const inspect = async () => {
-      expect((await request('GET', path, token.token)).body).toMatchObject({ code: 0, data: { agent_config: { model: model ?? '' } } });
+      expect((await request('GET', path, token.token)).body).toMatchObject({ code: 0, data: {
+        executor_id: 'example-acp', agent_config: { model: model ?? '' },
+      } });
       const status = await request<Record<string, unknown>>('GET', `${path}/status`, token.token);
       expect(status.body).toMatchObject({ code: 0, data: { model_name: null } });
       expect(status.body.data['model']).toBe(model);
       expect(status.body.data['max_context_tokens']).toBeUndefined();
     };
     await inspect();
-    expect(getLiveSessionById(core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    expect(lifecycle.get('main')).toBe(main);
+    expect(main?.accessor.get(IAgentProfileService).getModel()).toBe(pinned ? '' : undefined);
     await closeSessionById(core.accessor, sessionId);
     await inspect();
     expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();

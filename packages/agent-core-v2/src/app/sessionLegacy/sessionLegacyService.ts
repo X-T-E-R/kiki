@@ -184,11 +184,16 @@ export class SessionLegacyService implements ISessionLegacyService {
 export async function resolveSessionModelBinding(session: ISessionScopeHandle): Promise<{ model: string | undefined; executorId: string }> {
   const profile = session.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentProfileService);
   const bound = profile?.getModel();
+  const data = profile?.data();
   const metadata = bound ? undefined : (await session.accessor.get(ISessionMetadata).read()).agents?.['main'];
-  const binding = { modelAlias: bound || metadata?.model, executorId: profile?.data().executorId ?? metadata?.executor };
+  const modelAlias = bound || metadata?.model;
+  const executorId = data?.executorId ?? metadata?.executor;
+  const placeholder = profile !== undefined && !modelAlias && data?.profileName === undefined && data?.execution === undefined
+    && metadata?.execution === undefined && executorId === 'native' && (metadata?.executor ?? 'native') === 'native';
+  const binding = { modelAlias, executorId: placeholder ? undefined : executorId };
   const models = session.accessor.get(IModelService);
   await models.ready;
-  if (binding.modelAlias || profile?.data().profileName !== undefined || binding.executorId !== undefined && binding.executorId !== 'native') {
+  if (binding.modelAlias || data?.profileName !== undefined || binding.executorId !== undefined && binding.executorId !== 'native') {
     return resolveEffectiveSessionModel(models, binding);
   }
   const catalog = session.accessor.get(ISessionAgentProfileCatalog);
