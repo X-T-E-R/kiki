@@ -127,7 +127,7 @@ LICENSE/NOTICE for the original attribution and full terms.
     @anthropic-ai/sdk 0.95.2 (Anthropic)
     @modelcontextprotocol/sdk 1.29.0 (Anthropic, PBC)
     @jimp/core 1.6.1 (Andrew Lisowski)
-    @nb-corp/nb-search 0.5.1 (nb-search contributors)
+    @nb-corp/nb-search 0.5.2 (nb-search contributors)
     @nb-corp/nb-im 0.3.1 (nb-im contributors)
     @nb-corp/im-bridge-core 0.1.0 (shared IM session bridge)
     fastify 5.8.5 and pino 9.14.0 (Matteo Collina)

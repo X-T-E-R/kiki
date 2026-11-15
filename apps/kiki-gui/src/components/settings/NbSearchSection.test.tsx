@@ -410,15 +410,29 @@ describe('NbSearchSection status', () => {
 
   it('provisions opt-in Zhihu from + Add service, cleans up on remove, and saves without overriding defaultSearchLane', async () => {
     getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
-    readNbSearchCredential.mockImplementation(async (id: string) => ({
+    let zhihuStoredValue: string | undefined;
+    readNbSearchCredential.mockImplementation(async (id: string, reveal?: boolean) => ({
       instance_id: id,
       slot_id: id,
-      stored: false,
-      active: false,
-      source: 'none',
-      version: 'fixture-v0',
+      stored: id === 'zhihu.default' && zhihuStoredValue !== undefined,
+      active: id === 'zhihu.default' && zhihuStoredValue !== undefined,
+      source: id === 'zhihu.default' && zhihuStoredValue !== undefined ? 'managed' : 'none',
+      version: id === 'zhihu.default' && zhihuStoredValue !== undefined ? 'fixture-v1' : 'fixture-v0',
       binding_version: 'fixture-bind-0',
+      value: reveal && id === 'zhihu.default' ? zhihuStoredValue : undefined,
     }));
+    writeNbSearchCredential.mockImplementation(async (id: string, value: string | null) => {
+      if (id === 'zhihu.default') zhihuStoredValue = value ?? undefined;
+      return {
+        instance_id: id,
+        slot_id: id,
+        stored: value !== null,
+        active: value !== null,
+        source: value !== null ? 'managed' : 'none',
+        version: value !== null ? 'fixture-v1' : 'fixture-v2',
+        binding_version: 'fixture-bind-0',
+      };
+    });
     const container = await renderSection('/settings/search?tab=search');
     expect(container.querySelector('[data-nb-search-service-card^="zhihu."]')).toBeNull();
 
@@ -521,8 +535,10 @@ describe('NbSearchSection status', () => {
     expect(patch.nb_search.defaults).toBeUndefined();
     expect(writeNbSearchCredential).toHaveBeenCalledWith('zhihu.default', 'fixture-zhihu-key', 'fixture-v0', 'fixture-bind-0');
 
-    // Removing saved opt-in Zhihu also clears its saved instance, slot, and 3 lanes.
+    // Saved opt-in Zhihu card immediately reflects stored credential source without remounting, and removing it clears saved config.
     const savedDetail = await openServiceDetail(container, 'zhihu.default');
+    expect(savedDetail.textContent).toContain('Saved in Kiki');
+    expect(savedDetail.querySelector('[data-key-show]')).not.toBeNull();
     await click(savedDetail.querySelector('[data-nb-search-service-remove]')!);
     await click(document.querySelector('[data-confirm-action="confirm"]')!);
     expect(container.querySelector('[data-nb-search-service-card^="zhihu."]')).toBeNull();

@@ -183,9 +183,13 @@ export function NbSearchServiceCard({
   // guess "managed" from availability flags.
   const [credentialSource, setCredentialSource] = useState<{ source: import('@kiki/protocol').SecretSource; envName?: string }>({ source: 'none' });
   const credentialInstanceId = editableInstanceId;
+  const isUnpersistedNewInstance = instance === undefined && providerDraft?.isNew === true;
+  const isKeySavedState = keyDraft.mode === 'keep';
   useEffect(() => {
-    if (credentialInstanceId === undefined || info?.credentialRequirement === 'none' || (instance === undefined && providerDraft?.isNew === true)) {
-      setCredentialSource({ source: 'none' });
+    if (credentialInstanceId === undefined || info?.credentialRequirement === 'none' || isUnpersistedNewInstance || !isKeySavedState) {
+      if (credentialInstanceId === undefined || info?.credentialRequirement === 'none' || isUnpersistedNewInstance) {
+        setCredentialSource({ source: 'none' });
+      }
       return undefined;
     }
     let live = true;
@@ -199,7 +203,16 @@ export function NbSearchServiceCard({
       }
     }, () => undefined);
     return () => { live = false; };
-  }, [credentialInstanceId, info?.credentialRequirement, readCredential]);
+  }, [
+    credentialInstanceId,
+    info?.credentialRequirement,
+    isUnpersistedNewInstance,
+    isKeySavedState,
+    instance?.credential.configured,
+    instance?.credential.slot_id,
+    capabilities.configuration?.revision,
+    readCredential,
+  ]);
 
   const state = serviceCardState(info, instance);
   const [confirmRemove, setConfirmRemove] = useState(false);
