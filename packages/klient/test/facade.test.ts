@@ -679,13 +679,18 @@ describe('session skills routing', () => {
     ]);
   });
 
-  it('shuts down only the addressed agent execution and omits an unset reason', async () => {
+  it('cancels or shuts down only the addressed agent execution and omits an unset reason', async () => {
     const channel = new FakeChannel();
+    channel.results.set('agentExecutionService.cancel', true);
     const klient = createKlientFromChannel(channel);
     const agent = klient.session('s1').agent('child-1');
+    await agent.cancelExecution('user-stop');
+    await agent.cancelExecution();
     await agent.shutdownExecution('failed-external-cleanup');
     await agent.shutdownExecution();
     expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'cancel', args: ['user-stop'] },
+      { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'cancel', args: [] },
       { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'shutdown', args: ['failed-external-cleanup'] },
       { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'shutdown', args: [] },
     ]);

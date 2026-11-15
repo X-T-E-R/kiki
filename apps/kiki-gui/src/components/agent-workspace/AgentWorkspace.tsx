@@ -1139,6 +1139,7 @@ function ChildAgentWorkspace({
     setStoppingTaskId(targetId);
     try {
       if (runningAgentTask !== undefined) await client.stopAgentTask(sessionId, ownerAgentId, runningAgentTask.id);
+      else if (externalExecutor) await klient.session(sessionId).agent(agentId).cancelExecution();
       else await klient.session(sessionId).agent(agentId).cancel();
     } catch (error) {
       pushToast({

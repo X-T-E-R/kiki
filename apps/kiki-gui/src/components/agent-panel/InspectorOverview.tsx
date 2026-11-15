@@ -244,7 +244,7 @@ export const InspectorOverview = memo(function InspectorOverview({
         <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
           {figureCells}
           {shown.counting === true ? (
-            <span role="status" title={t('usage.strip.counting')} aria-label={t('usage.strip.counting')} className="inline-flex text-ink-faint">
+            <span role="status" data-metrics-counting title={t('usage.strip.counting')} aria-label={t('usage.strip.counting')} className="inline-flex text-ink-faint">
               <Spinner label={t('usage.strip.counting')} size={12} />
             </span>
           ) : null}

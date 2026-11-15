@@ -346,7 +346,13 @@ function Gauge({ ratio, label, value, sub, warn, scope, scopeStatus }: { ratio: 
       <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-ink-faint tabular-nums">
         {scope !== undefined ? scope : sub}
         {scopeStatus !== undefined ? (
-          <span role="status" title={scopeStatus.label} aria-label={scopeStatus.label} className="inline-flex">
+          <span
+            role="status"
+            data-metrics-counting={scopeStatus.kind === 'loading' ? '' : undefined}
+            title={scopeStatus.label}
+            aria-label={scopeStatus.label}
+            className="inline-flex"
+          >
             {scopeStatus.kind === 'loading' ? <Spinner label={scopeStatus.label} size={12} /> : <Icon name="partial" size={12} />}
           </span>
         ) : null}
@@ -1079,11 +1085,13 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           label={t('rail.cockpit.cacheHit')}
           value={cache === undefined ? '—' : `${Math.round(cache)}%`}
           scope={t('rail.cockpit.scope.tree')}
-          scopeStatus={treeFigures?.counting === true
+          scopeStatus={(treeFigures?.counting ?? figures.counting) === true
             ? { kind: 'loading', label: t('usage.strip.counting') }
             : treeFigures?.incomplete === true
               ? { kind: 'partial', label: t('inspector.treeTotalPartial') }
-              : undefined}
+              : figures.partial === true
+                ? { kind: 'partial', label: t('agentPanel.partialBadge') }
+                : undefined}
         />
       </div>
       <dl className="grid grid-cols-3 divide-x divide-hairline text-center">

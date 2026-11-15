@@ -1421,10 +1421,10 @@ it('marks the tree scope incomplete with a quiet icon while a child has not repo
   expect(tree().getAttribute('aria-checked')).toBe('true');
   expect(tree().hasAttribute('data-usage-scope-incomplete')).toBe(true);
   expect(tree().title).toContain('整棵树部分统计');
-  const note = element.querySelector<HTMLElement>('[data-overview-tree-incomplete]');
-  expect(note?.textContent).toBe('');
-  expect(note?.querySelector('[data-icon="partial"]')).not.toBeNull();
-  expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+  expect(tree().querySelector('[data-icon="partial"]')).not.toBeNull();
+  const counting = element.querySelector<HTMLElement>('[data-metrics-counting]');
+  expect(counting?.getAttribute('aria-label')).toBe('统计中');
+  expect(counting?.textContent).toBe('');
   expect(element.querySelector('[data-tree-metrics]')).not.toBeNull();
   expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
   // Back on the agent scope the caveat is gone and the real count returns.
@@ -1820,7 +1820,8 @@ it('prioritizes todoRead over historyRead and keeps child notes state isolated',
   const mainToggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
   await act(async () => { mainToggle.click(); });
   expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
-  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('显示已读取的版本，最新笔记尚未确认。');
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toBe('');
+  expect(element.querySelector('[data-agent-notes-read-status="partial"] [aria-label]')?.getAttribute('aria-label')).toContain('笔记部分已加载');
   expect(element.textContent).toContain('Main goal');
 
   await render('child', { part: 'work', forest: forestOf(['main', 'child']) });
@@ -2024,7 +2025,8 @@ it('falls back to history unknown coverage as partial while preserving notes bod
   const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
   await act(async () => { toggle.click(); });
   expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
-  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('显示已读取的版本，最新笔记尚未确认。');
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toBe('');
+  expect(element.querySelector('[data-agent-notes-read-status="partial"] [aria-label]')?.getAttribute('aria-label')).toContain('笔记部分已加载');
   expect(element.textContent).toContain('Fallback preserved goal');
 });
 
@@ -2205,7 +2207,9 @@ it.each(['default', 'cockpit'] as const)('continues successful partial %s metric
     await render('main', options);
     await act(async () => { await vi.advanceTimersByTimeAsync(5); });
     expect(attempts).toBe(1);
-    expect(element.querySelector('[data-metrics-counting]')?.textContent).toBe('统计中…');
+    const counting = element.querySelector<HTMLElement>('[data-metrics-counting]');
+    expect(counting?.getAttribute('aria-label')).toBe('统计中');
+    expect(counting?.textContent).toBe('');
     const cost = () => element.querySelector(overviewMode === 'default' ? '[data-overview-fact="cost"]' : '[data-cockpit-fact="cost"]')?.textContent;
     expect(cost()).toContain('$0.05');
     for (const [delay, count] of [[1_000, 2], [2_000, 3], [4_000, 4]] as const) {

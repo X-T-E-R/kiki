@@ -149,6 +149,7 @@ export const agentPluginContract = {
 } satisfies ServiceContract;
 
 export const agentExecutionContract = {
+  cancel: { input: z.tuple([z.string().optional()]), output: z.boolean() },
   shutdown: { input: z.tuple([z.string().optional()]), output: noResult },
 } satisfies ServiceContract;
 

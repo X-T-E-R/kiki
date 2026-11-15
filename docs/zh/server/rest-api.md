@@ -125,11 +125,11 @@ holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期�
 | --- | --- |
 | `read` | `GET /api/sessions/{session_id}` 及其 `/status`、`/snapshot`、`/messages`、`/messages/{message_id}`、`/transcript`、`/transcript/ops`、`/transcript/detail`、`/transcript/details`、`/transcript/plan`、`/transcript/user-messages`、`/prompts`、`/prompts/{prompt_id}`、`/approvals`、`/questions`、`/children`、`/tasks`、`/tasks/{task_id}`、`/agent-tasks`、`/goal`、`/warnings`、`/profile`、`/runtime`、`/skills`、`/media/{file_id}` 和 `/media/{file_id}/preview` 读取；`GET /api/usage/sessions/{sessionId}/accounting`；`POST /api/klient/session-view/{session_id}/transcript/content`；以及按下文限制使用 WebSocket `/api/ws` |
 | `prompt` | `POST /api/sessions/{session_id}/prompts` 和 `/prompts:steer` 提交新内容；`POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` 只取消排队项；允许 `?receipt=true`；见 [提示词限制](#session-access-prompts) |
-| `abort` | 仅 `POST /api/sessions/{session_id}:abort` |
+| `abort` | `POST /api/sessions/{session_id}:abort`（可在请求体或查询参数传可选 `agent_id` 指定该会话内的子 Agent 或分支） |
 
-请求路径中的会话 ID 必须与会话访问令牌绑定的会话一致。使用会话访问令牌读取媒体时，只接受规范的 `f_*` 文件 ID 或已校验的 `blobref:<agentId>:<sha256>` ID；路径中保留 blobref 的冒号，不要百分号编码。它们不会解析本机文件路径，`raw:` 和 `inline-content:` ID 也不在令牌准入范围内。本契约没有 agent-roster GET。大字段转录读取使用 Klient 路由中的 `session_id` 绑定 `contentRef`；该引用不能跨会话读取。在 `/api/ws` 上，令牌只能发送 `client_hello`、`subscribe`、`subscribe_v2`、`unsubscribe`、`unsubscribe_v2` 和 `ping` / `pong` 帧；订阅只覆盖绑定的会话。即时事件仅包括该会话的 `event.session.work_changed`、`event.session.history_rewritten`、`session.meta.updated`、`event.approval.*` 和 `event.question.*`；不会推送 plugin topic 或 room 变更。会话访问令牌连接不能用另一个令牌重新鉴权。
+请求路径中的会话 ID 必须与会话访问令牌绑定的会话一致。使用会话访问令牌读取媒体时，只接受规范的 `f_*` 文件 ID 或已校验的 `blobref:<agentId>:<sha256>` ID，路径中的冒号可保留字面形式或单次编码为 `%3A`。它们不会解析本机文件路径，`raw:` 和 `inline-content:` ID 也不在令牌准入范围内。本契约没有 agent-roster GET。大字段转录读取使用 Klient 路由中的 `session_id` 绑定 `contentRef`；该引用不能跨会话读取。在 `/api/ws` 上，令牌只能发送 `client_hello`、`subscribe`、`subscribe_v2`、`unsubscribe`、`unsubscribe_v2` 和 `ping` / `pong` 帧；订阅只覆盖绑定的会话。即时事件仅包括该会话的 `event.session.work_changed`、`event.session.history_rewritten`、`session.meta.updated`、`event.approval.*` 和 `event.question.*`；不会推送 plugin topic 或 room 变更。会话访问令牌连接不能用另一个令牌重新鉴权。
 
-未列出的操作一律拒绝，即使路径看起来属于单个会话。文件系统路由、文档预览、媒体播放授权和终端仍不可用。这也包括批量会话路由、除新内容 `:steer` 和排队专用 `:cancel` 外的提示词动作、消息动作、其他会话动作、审批和提问答复、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。令牌请求也拒绝 `HEAD`、含百分号的路径、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled` 或服务关闭 / 重启时撤销。
+未列出的操作一律拒绝，即使路径看起来属于单个会话。文件系统路由、文档预览、媒体播放授权和终端仍不可用。这也包括批量会话路由、除新内容 `:steer` 和排队专用 `:cancel` 外的提示词动作、消息动作、其他会话动作、审批和提问答复、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。令牌请求也拒绝 `HEAD`、编码后的路径分隔符或空字节（`%2F`、`%5C`、`%00`）、格式错误或双重百分号编码、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled` 或服务关闭 / 重启时撤销。
 
 ### 服务与元信息
 
@@ -397,7 +397,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
 | `POST /api/sessions/{session_id}/profile` | 更新标题、私密状态、元数据或 Agent 配置 |
-| `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort`（请求体或查询参数可带可选 `agent_id`）/ `btw` / `branch` / `archive` / `restore` |
 | `POST /api/sessions/{session_id}/agents/{agent_id}:promote` | 把子智能体复制成新的顶层会话 |
 | `POST /api/sessions/{session_id}:delete-archived` | 永久删除已归档对话及仍附属的归档对话 |
 | `POST /api/sessions:delete-archived` | 永久删除当前连接 home 中全部归档对话 |

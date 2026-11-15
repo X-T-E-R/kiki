@@ -935,16 +935,17 @@ function decodePreviewHostFile(maxBytes: number) {
     const truncated =
       response.status === 206 &&
       Number(response.headers.get('content-range')?.split('/')[1]) > maxBytes;
+    const decodedBytes = truncated ? trimIncompleteTrailingUtf8(bytes) : bytes;
     if (!hasBinaryControlBytes(bytes)) {
       try {
-        const text = utf8FatalDecoder.decode(truncated ? trimIncompleteTrailingUtf8(bytes) : bytes);
+        const text = utf8FatalDecoder.decode(decodedBytes);
         return { text, truncated, lossless: true, etag };
       } catch {
         // Fall through to lossy decode below.
       }
     }
     return {
-      text: utf8LossyDecoder.decode(bytes),
+      text: utf8LossyDecoder.decode(decodedBytes),
       truncated,
       lossless: false,
       etag,

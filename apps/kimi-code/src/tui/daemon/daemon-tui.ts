@@ -843,7 +843,10 @@ export class DaemonTUI {
       const controller = this.controller;
       if (controller === undefined) return;
       if (this.focusedAgentId !== 'main') {
-        await this.client.klient.session(controller.sessionId).agent(this.focusedAgentId).cancel();
+        const executorId = controller.getForest()?.byId[this.focusedAgentId]?.executorId;
+        const target = this.client.klient.session(controller.sessionId).agent(this.focusedAgentId);
+        if (executorId !== undefined && executorId !== 'native') await target.cancelExecution();
+        else await target.cancel();
         return;
       }
       await controller.abortActive();
