@@ -107,7 +107,7 @@ export class ProgramStatusReporter {
       const result = this.handleInput(text);
       if (result === undefined) pending.push(Buffer.from(text));
       else if ('data' in result) pending.push(Buffer.from(result.data));
-      if (this.support !== 'pending') finish();
+      if (/^\x1b\[\?[\d;]*c$/u.test(text)) finish();
     };
     const buffer = new StdinBuffer({ timeout: PROGRAM_STATUS_FRAGMENT_TIMEOUT_MS, escapeTimeout: PROGRAM_STATUS_FRAGMENT_TIMEOUT_MS });
     buffer.on('data', onData);

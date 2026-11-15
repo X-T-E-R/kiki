@@ -21,6 +21,7 @@ import {
 import type { DaemonFileAttachment } from '#/tui/daemon/attachments';
 import type { ShowStatusOptions } from '#/tui/daemon/activity-status-helper';
 import { buildLoadedTranscriptMarkdown, DaemonTUI } from '#/tui/daemon/daemon-tui';
+import type { DaemonProgramStatus } from '#/tui/daemon/program-status';
 import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import * as clipboardImage from '#/utils/clipboard/clipboard-image';
 
@@ -149,6 +150,8 @@ function driver(
     readonly continue?: boolean;
     readonly session?: string;
     readonly model?: string | null;
+    readonly thinking?: string | null;
+    readonly ephemeral?: boolean;
   } = {},
 ) {
   // Submitting through the editor persists input history under KIKI_HOME;
@@ -167,7 +170,8 @@ function driver(
         auto: false,
         plan,
         model: sources.model === null ? undefined : sources.model ?? 'model-a',
-        thinking: 'off',
+        thinking: sources.thinking === null ? undefined : sources.thinking ?? 'off',
+        ephemeral: sources.ephemeral,
         agentFiles: sources.agentFiles ?? [],
         skillsDirs: sources.skillsDirs ?? [],
       },
@@ -1094,6 +1098,45 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.appState).toMatchObject({ maxContextTokens: 1200, contextUsage: 0.5 });
     await internal.handleSlash('/model model-b');
     expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+  });
+
+  it.each(['model-a', null])('uses the target thinking default from a non-thinking or unbound %s state', async (initialModel) => {
+    const { tui, internal } = driver(false, { model: initialModel, thinking: null });
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, capabilities: ['chat'] },
+      { id: 'model-b', max_context_size: 8000, effective_capabilities: ['chat', 'thinking'], support_efforts: ['low', 'high'], default_effort: 'high' },
+    ] });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'high');
+    expect(tui.state.appState.thinkingEffort).toBe('high');
+    await internal.handleSlash('/model model-a');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-a', 'off');
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'high');
+  });
+
+  it('preserves off observed on an optional-thinking model without a CLI effort override', async () => {
+    const { internal } = driver(false, { thinking: null });
+    internal.client.listModels.mockResolvedValue({ items: [
+      { id: 'model-a', max_context_size: 4000, capabilities: ['chat', 'thinking'], support_efforts: ['low', 'high'], default_effort: 'high' },
+      { id: 'model-b', max_context_size: 8000, capabilities: ['chat', 'thinking'], support_efforts: ['high'], default_effort: 'high' },
+    ] });
+    await internal.handleSlash('/model model-b');
+    expect(internal.client.setModel).toHaveBeenLastCalledWith('session-1', 'model-b', 'off');
+  });
+
+  it('does not mark a saved session temporary when opened from an ephemeral invocation', async () => {
+    const { tui } = driver(false, { ephemeral: true });
+    const { programStatus, temporarySessionIds } = tui as unknown as { programStatus: DaemonProgramStatus; temporarySessionIds: Set<string> };
+    const report = vi.spyOn(programStatus.reporter, 'update');
+    temporarySessionIds.add('temporary');
+    await programStatus.switchSession('temporary');
+    programStatus.update({ ...createViewState('temporary'), loaded: true });
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ ephemeral: true }));
+    await programStatus.switchSession('saved');
+    programStatus.update({ ...createViewState('saved'), loaded: true });
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ ephemeral: false }));
+    temporarySessionIds.clear();
   });
 
   it('does not replace an existing configured default when a model is selected', async () => {

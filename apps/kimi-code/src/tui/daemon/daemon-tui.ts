@@ -263,7 +263,7 @@ export class DaemonTUI {
       connection,
       (sequence) => this.state.terminal.write(sequence),
       () => this.state.terminalState.focused,
-      (sessionId) => this.temporarySessionIds.has(sessionId) || this.startup.cliOptions.ephemeral === true,
+      (sessionId) => this.temporarySessionIds.has(sessionId),
       process.env,
       startup.programStatus,
     );
@@ -1101,7 +1101,7 @@ export class DaemonTUI {
     if (this.startup.cliOptions.ephemeral === true) this.temporarySessionIds.add(session.id);
     if (!this.startupOverridesPending && this.runModel !== undefined) {
       const model = (await this.client.listModels()).items.find((item) => item.id === this.runModel);
-      await this.client.setModel(session.id, this.runModel, model === undefined ? undefined : thinkingEffortForModel(this.preferredThinking ?? this.state.appState.thinkingEffort, model));
+      await this.client.setModel(session.id, this.runModel, model === undefined ? undefined : thinkingEffortForModel(this.preferredThinking, model));
     }
     await this.openSession(session.id);
   }
@@ -2342,7 +2342,10 @@ export class DaemonTUI {
     const choice = models.find((item) => item.id === model);
     if (choice === undefined) throw new Error(`Model "${model}" was not found.`);
     const controller = await this.ensureSession();
-    this.preferredThinking ??= this.state.appState.thinkingEffort;
+    const currentEffort = this.state.appState.thinkingEffort;
+    const capabilities = this.state.appState.availableModels[this.state.appState.model]?.capabilities ?? [];
+    if (this.preferredThinking === undefined && (currentEffort !== 'off'
+        || capabilities.includes('thinking') && !capabilities.includes('always_thinking'))) this.preferredThinking = currentEffort;
     const thinkingEffort = thinkingEffortForModel(this.preferredThinking, choice);
     const session = await this.client.setModel(controller.sessionId, model, thinkingEffort);
     this.runModel = model;

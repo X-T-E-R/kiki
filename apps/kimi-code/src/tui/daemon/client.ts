@@ -263,7 +263,11 @@ export class DaemonClient implements SessionTransport {
         headers: { Accept: 'text/event-stream', Authorization: `Bearer ${this.token}` },
         signal: controller.signal,
       });
-      if (!response.ok || response.body === null) throw new Error('Session hand-off presence refused');
+      if (!response.ok) {
+        const envelope = await response.json() as Envelope<unknown>;
+        throw new ApiError({ ...envelope, reason: response.status === 403 ? envelope.msg : undefined });
+      }
+      if (response.body === null) throw new Error('Session hand-off presence refused');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';

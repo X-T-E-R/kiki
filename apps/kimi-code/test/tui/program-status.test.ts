@@ -97,6 +97,28 @@ describe('OSC 7501 negotiation and coalescing', () => {
     input.destroy();
   });
 
+  it('waits for its DA1 sentinel after an earlier OSC reply in separate macrotasks', async () => {
+    const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
+    let completed = false;
+    const reporter = new ProgramStatusReporter((data) => {
+      if (!data.endsWith('\x1b[c')) return;
+      input.emit('data', osc('?version=1'));
+      setImmediate(() => {
+        expect(completed).toBe(false);
+        expect(input.setRawMode).toHaveBeenLastCalledWith(true);
+        expect(input.listenerCount('data')).toBe(1);
+        input.emit('data', '\x1b[?62;');
+        setImmediate(() => { input.emit('data', 'c'); });
+      });
+    }, async () => undefined);
+    await reporter.probe(input as unknown as NodeJS.ReadStream).then(() => { completed = true; });
+    expect(reporter.supported).toBe(true);
+    expect(input.read()).toBeNull();
+    expect(input.listenerCount('data')).toBe(0);
+    expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
+    input.destroy();
+  });
+
   it('locks out late support after DA1 arrives first and ignores ticket replies before support', async () => {
     const writes: string[] = [];
     const request = vi.fn(async () => challenge('t'));
@@ -182,8 +204,9 @@ describe('OSC 7501 ticket scheduling', () => {
 function handoffFixture(options: { url?: string; localOwner?: boolean; env?: NodeJS.ProcessEnv; ephemeral?: boolean } = {}) {
   const writes: string[] = [];
   let markReady!: () => void;
+  let refuseReady!: (error: Error) => void;
   let closePresence!: () => void;
-  const ready = new Promise<void>((resolve) => { markReady = resolve; });
+  const ready = new Promise<void>((resolve, reject) => { markReady = resolve; refuseReady = reject; });
   const closed = new Promise<void>((resolve) => { closePresence = resolve; });
   const presence = { ready, closed, close: vi.fn(() => closePresence()) };
   const client = {
@@ -194,7 +217,7 @@ function handoffFixture(options: { url?: string; localOwner?: boolean; env?: Nod
   };
   const status = new DaemonProgramStatus(client, { url: options.url ?? 'http://127.0.0.1:57580', token: 'owner', localOwner: options.localOwner ?? true }, (sequence) => writes.push(sequence), () => true, () => options.ephemeral ?? false, options.env ?? {});
   status.reporter.handleInput(osc('?'));
-  return { status, client, writes, presence, markReady };
+  return { status, client, writes, presence, markReady, refuseReady };
 }
 
 describe('OSC 7501 hand-off lifecycle', () => {
@@ -237,6 +260,34 @@ describe('OSC 7501 hand-off lifecycle', () => {
     expect(client.releaseSessionAccess.mock.calls.filter((call) => call[1] === 'first')).toHaveLength(2);
     expect(fields(writes.at(-1)!)['session']).toBe('second');
     expect(fields(writes.at(-1)!)).not.toHaveProperty('ticket');
+    await status.dispose();
+  });
+
+  it('discards an older failed config read after a replacement connection refreshes', async () => {
+    const { status, client, writes } = handoffFixture();
+    let rejectOld!: (error: Error) => void;
+    client.getSessionAccess.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }));
+    const old = status.refreshConfig();
+    client.getSessionAccess.mockResolvedValueOnce({ enabled: true, terminal_handoff: true, server_id: 'server-two' });
+    await status.reconnect({ url: 'http://127.0.0.1:57581', token: 'owner', localOwner: true });
+    rejectOld(new Error('Retired port'));
+    await old;
+    expect(fields(writes.at(-1)!)).toMatchObject({ handoff: '1', port: '57581', server: 'server-two' });
+    await status.dispose();
+  });
+
+  it('withdraws hand-off immediately when presence is refused because access was disabled', async () => {
+    const { status, client, writes, refuseReady } = handoffFixture();
+    await status.refreshConfig();
+    await status.switchSession('first');
+    status.update(loadedViewState('first'));
+    status.input(osc(`?ticket=${challenge()}`));
+    client.getSessionAccess.mockResolvedValueOnce({ enabled: false, terminal_handoff: false, server_id: 'server-one' });
+    refuseReady(new ApiError({ code: 40101, msg: 'session_access_disabled', reason: 'session_access_disabled', data: null }));
+    await flush();
+    expect(client.getSessionAccess).toHaveBeenCalledTimes(2);
+    expect(client.requestSessionAccessTicket).not.toHaveBeenCalled();
+    for (const key of ['handoff', 'session', 'port', 'server']) expect(fields(writes.at(-1)!)).not.toHaveProperty(key);
     await status.dispose();
   });
 

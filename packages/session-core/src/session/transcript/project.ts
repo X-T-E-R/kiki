@@ -161,6 +161,15 @@ function reminderBlocks(
   }));
 }
 
+function userVia(origin: unknown): UserBlock['via'] {
+  if (typeof origin !== 'object' || origin === null) return undefined;
+  const via = (origin as { via?: unknown }).via;
+  if (typeof via !== 'object' || via === null) return undefined;
+  const { client, channel } = via as { client?: unknown; channel?: unknown };
+  return typeof client === 'string' && client !== '' && (channel === 'owner' || channel === 'terminal')
+    ? { client, channel } : undefined;
+}
+
 function classifiedTextToBlocks(input: {
   id: string;
   classified: ReturnType<typeof classifyTranscriptText>;
@@ -190,7 +199,7 @@ function classifiedTextToBlocks(input: {
           contentPending: input.contentPending,
           promptTextParts: input.promptTextParts,
           sourceOrigin: classified.origin,
-          via: (classified.origin as { via?: UserBlock['via'] } | undefined)?.via,
+          via: userVia(classified.origin),
           text: classified.text,
           presentation: classified.presentation ?? input.presentation,
           media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
@@ -2578,6 +2587,7 @@ function upsertPromptItemBlocks(
       sameMedia(existing.media, nextMedia) &&
       transcriptValueEquals(existing.queuedContent, queuedContent) &&
       transcriptValueEquals(existing.sourceOrigin, sourceOrigin) &&
+      transcriptValueEquals(existing.via, incoming?.via ?? existing.via) &&
       transcriptValueEquals(existing.contentSource, contentSource) &&
       existing.contentPending === contentPending &&
       transcriptValueEquals(existing.promptTextParts, promptTextParts) &&
@@ -2589,6 +2599,7 @@ function upsertPromptItemBlocks(
     const index = next.indexOf(existing);
     next.splice(index, 1, {
       ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource, contentPending, promptTextParts,
+      via: incoming?.via ?? existing.via,
       agentMessage: incoming?.agentMessage, bridgedPeer: incoming?.bridgedPeer, peerThread: incoming?.peerThread,
     }, ...reminders);
     return next;
@@ -3803,7 +3814,7 @@ export function agentTranscriptToBlocks(
                 turnUserMessageId !== undefined &&
                 userMessageId === turnUserMessageId
               ) {
-                stepOpeningVia ??= (frameOrigin as { via?: UserBlock['via'] } | undefined)?.via;
+                stepOpeningVia ??= userVia(frameOrigin);
                 break;
               }
               blocks.push(

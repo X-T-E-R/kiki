@@ -14,6 +14,7 @@ export class DaemonProgramStatus {
   private port: string | undefined;
   private attachedTurn = false;
   private config: SessionAccessConfig | undefined;
+  private configRequest = 0;
   private presence: SessionAccessPresence | undefined;
   private presenceUsed = false;
   private presenceRetry: ReturnType<typeof setTimeout> | undefined;
@@ -132,10 +133,11 @@ export class DaemonProgramStatus {
   }
 
   async refreshConfig(): Promise<void> {
+    const request = ++this.configRequest;
     if (this.port === undefined || this.stopped) return;
     const previous = this.config;
     const config = await this.client.getSessionAccess().catch(() => undefined);
-    if (this.stopped) return;
+    if (this.stopped || request !== this.configRequest) return;
     this.config = config;
     const changed = previous?.server_id !== config?.server_id || previous?.enabled !== config?.enabled || previous?.terminal_handoff !== config?.terminal_handoff;
     if (changed) {
@@ -201,7 +203,9 @@ export class DaemonProgramStatus {
     this.presenceUsed = true;
     const presence = this.client.openSessionAccessPresence(holderId);
     this.presence = presence;
-    void presence.ready.then(() => { this.presenceFailures = 0; }, () => {});
+    void presence.ready.then(() => { this.presenceFailures = 0; }, (error) => {
+      if (this.presence === presence && error instanceof ApiError && error.reason === 'session_access_disabled') void this.refreshConfig();
+    });
     void presence.closed.then(() => {
       if (this.presence !== presence) return;
       this.presence = undefined;

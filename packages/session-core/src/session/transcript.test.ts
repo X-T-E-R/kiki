@@ -9022,6 +9022,32 @@ describe('terminal-facing transcript facts', () => {
     expect(view.blocks.find((block) => block.kind === 'user')).toMatchObject({ text: 'hello', via });
   });
 
+  it('adds and retains via when an existing prompt block is updated', () => {
+    const input = { userMessageId: 'message', promptId: 'prompt', text: 'hello', createdAt: FIXED_AT, status: 'queued' as const };
+    const queued = appendLocalUserMessage(createViewState(session.id), input);
+    const via = { client: 'example-terminal', channel: 'terminal' as const };
+    const enriched = appendLocalUserMessage(queued, { ...input, origin: { kind: 'user', via } });
+    expect(enriched.blocks.find((block) => block.kind === 'user')).toMatchObject({ via });
+    const updated = appendLocalUserMessage(enriched, { ...input, text: 'updated', origin: { kind: 'user' } });
+    expect(updated.blocks.find((block) => block.kind === 'user')).toMatchObject({ text: 'updated', via });
+  });
+
+  it.each([null, {}, { client: '', channel: 'owner' }, { client: 42, channel: 'terminal' }, { client: 'example', channel: 'other' }, 'untrusted'])('omits malformed user provenance %j', (via) => {
+    const origin = { kind: 'user' as const, via };
+    for (const turnPrompt of [false, true]) {
+      const view = projectAgentTranscriptView(createViewState(session.id), 'main', emptySnapshot({ items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user', payload: { userMessageId: 'message' } }, prompt: turnPrompt ? 'hello' : undefined, steps: [{
+          kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', frames: [{
+            kind: 'text', frameId: 'message', role: 'user', text: 'hello', origin,
+            part: { partId: 'part', messageId: 'message', revision: 1, provenance: { source: 'engine' } },
+          }],
+        }],
+      }] }));
+      const user = view.blocks.find((block) => block.kind === 'user');
+      expect(user?.kind === 'user' ? user.via : undefined).toBeUndefined();
+    }
+  });
+
   it('adopts a changed session binding without retaining its previous context denominator', () => {
     const state = { ...createViewState(session.id), model: 'small', maxContextTokens: 4_000 };
     const next = setSessionRecord(state, { ...session, title: 'New title', agent_config: { model: 'large' } });
