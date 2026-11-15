@@ -671,35 +671,53 @@ describe('DaemonTranscriptRenderer', () => {
     });
   });
 
-  it('renders via <client> attribution on external user prompts and preserves it across timestamp toggles', () => {
+  it('renders via <client> attribution from UserBlock.via, UserBlock.sourceOrigin.via, and ingress item.origin.via', () => {
     const container = new Container();
     const renderer = new DaemonTranscriptRenderer(container);
-    const externalUser = {
+    const viaFieldUser = {
       kind: 'user' as const,
-      id: 'u-ext',
+      id: 'u-via',
       text: 'Check status',
       createdAt: '2026-06-01T12:34:56.000Z',
       via: { client: 'companion' },
     } as Block;
+    const sourceOriginUser: Block = {
+      kind: 'user',
+      id: 'u-origin',
+      text: 'Inspect logs',
+      createdAt: '2026-06-01T12:34:58.000Z',
+      sourceOrigin: { kind: 'user', via: { client: 'companion', channel: 'owner' } },
+    };
     const localUser: Block = {
       kind: 'user',
       id: 'u-local',
       text: 'Local prompt',
       createdAt: '2026-06-01T12:35:00.000Z',
     };
+    const failedIngress = {
+      prompt_id: 'p-ingress-1',
+      created_at: '2026-06-01T12:35:02.000Z',
+      content: [{ type: 'text', text: 'Held remote prompt' }],
+      admission: 'held',
+      origin: { kind: 'user', via: { client: 'companion', channel: 'terminal' } },
+    } as unknown as PromptItem;
 
-    renderer.sync([externalUser, localUser]);
+    renderer.sync([viaFieldUser, sourceOriginUser, localUser], { ingress: [failedIngress] });
     const initial = strip(container.render(80).join('\n'));
     expect(initial).toContain('Check status  via companion');
+    expect(initial).toContain('Inspect logs  via companion');
+    expect(initial).toContain('Held remote prompt  via companion');
     expect(initial).toContain('Local prompt');
-    expect(initial.match(/via companion/g)).toHaveLength(1);
+    expect(initial.match(/via companion/g)).toHaveLength(3);
 
     renderer.setShowTimestamps(true);
     const withTs = strip(container.render(80).join('\n'));
     expect(withTs).toContain('Check status  via companion');
+    expect(withTs).toContain('Inspect logs  via companion');
+    expect(withTs).toContain('Held remote prompt  via companion');
   });
 
-  it('hides internal reminders/plumbing, summarizes Recipes cleanly, and deduplicates turn failure errors', () => {
+  it('hides internal reminders/plumbing, summarizes Recipes cleanly, and deduplicates turn failure errors in collapsed mode only', () => {
     const container = new Container();
     const renderer = new DaemonTranscriptRenderer(container);
     const recipeBody = '<recipe name="clean-code">\nAlways verify before committing:\n- Run unit tests\n</recipe>';
@@ -795,8 +813,82 @@ describe('DaemonTranscriptRenderer', () => {
     expect(expanded).toContain('Always verify before committing:');
     expect(expanded).toContain('Reminder · renew');
     expect(expanded).toContain('Interrupted');
-    // Duplicate turn-outcome error notice remains deduplicated even when expanded
-    expect(expanded.match(/Retry attempts exhausted \(5\/5\)\. Connection error\./g)).toHaveLength(1);
+    // Expanded view preserves every underlying notice without deduplication
+    expect(expanded.match(/Retry attempts exhausted \(5\/5\)\. Connection error\./g)).toHaveLength(3);
+  });
+
+  it('preserves failed compaction diagnostics after a failed prompt and preserves danger notices across separate promptless turns', () => {
+    const compactionOut = render([
+      {
+        kind: 'user',
+        id: 'u-timeout',
+        turnId: 't1',
+        text: 'Summarize history',
+        createdAt: '',
+        promptOutcome: {
+          status: 'failed',
+          delivered: true,
+          error: 'Timeout',
+        },
+      },
+      {
+        kind: 'notice',
+        id: 'compaction-failed-1',
+        tone: 'danger',
+        text: 'compaction',
+        compactionPhase: 'failed',
+        compactionFailure: 'Timeout',
+      },
+      {
+        kind: 'notice',
+        id: 'distinct-danger-1',
+        turnId: 't1',
+        tone: 'danger',
+        text: 'Socket read timeout while flushing stream',
+      },
+    ]);
+    expect(compactionOut).toContain('Reply failed · Timeout');
+    expect(compactionOut).toContain('Context compaction failed · Timeout');
+    expect(compactionOut).toContain('Socket read timeout while flushing stream');
+
+    const promptlessOut = render([
+      {
+        kind: 'notice',
+        id: 'agent-frame-p1',
+        tone: 'danger',
+        text: 'Permission denied',
+      },
+      {
+        kind: 'assistant',
+        id: 'a-p1',
+        text: 'First autonomous turn ended.',
+        streaming: false,
+        createdAt: undefined,
+      },
+      {
+        kind: 'notice',
+        id: 'agent-frame-p2',
+        tone: 'danger',
+        text: 'Permission denied',
+      },
+    ]);
+    expect(promptlessOut.match(/Permission denied/g)).toHaveLength(2);
+
+    const consecutivePromptlessOut = render([
+      {
+        kind: 'notice',
+        id: 'agent-frame-only-1',
+        tone: 'danger',
+        text: 'Permission denied',
+      },
+      {
+        kind: 'notice',
+        id: 'agent-frame-only-2',
+        tone: 'danger',
+        text: 'Permission denied',
+      },
+    ]);
+    expect(consecutivePromptlessOut.match(/Permission denied/g)).toHaveLength(2);
   });
 
   it('wraps long key-value /status lines in TranscriptNoteComponent with hanging indentation', () => {

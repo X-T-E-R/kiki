@@ -98,14 +98,21 @@ export class DaemonTranscriptRenderer {
       (item.admission === 'failed' || item.admission === 'cancelled' || item.admission === 'held') &&
       !blocks.some((block) => block.kind === 'user' && block.promptId === item.prompt_id),
     ).map((item) => {
-      const via = (item as { readonly via?: { readonly client?: string } }).via;
+      const itemWithOrigin = item as {
+        readonly origin?: unknown;
+        readonly via?: { readonly client?: unknown };
+      };
+      const viaClient =
+        extractViaClientFromOrigin(itemWithOrigin.origin) ??
+        extractViaClientField(itemWithOrigin.via);
       const receipt: UserBlockWithVia = {
         kind: 'user',
         id: `ingress-${item.prompt_id}`,
         promptId: item.prompt_id,
         createdAt: item.created_at,
         ...projectMessageContent(item.content),
-        via,
+        sourceOrigin: itemWithOrigin.origin,
+        via: viaClient === undefined ? undefined : { client: viaClient },
         steerStatus: item.admission === 'held' ? 'held' : undefined,
         promptOutcome: item.admission === 'held' ? undefined : {
           status: item.admission === 'cancelled' ? 'aborted' : 'failed',
@@ -873,9 +880,22 @@ function disposeComponent(component: Component): void {
 
 type UserBlockWithVia = UserBlock & { readonly via?: { readonly client?: unknown } };
 
+function extractViaClientField(via: unknown): string | undefined {
+  if (typeof via !== 'object' || via === null) return undefined;
+  const client = (via as { readonly client?: unknown }).client;
+  return typeof client === 'string' && client.length > 0 ? client : undefined;
+}
+
+function extractViaClientFromOrigin(origin: unknown): string | undefined {
+  if (typeof origin !== 'object' || origin === null) return undefined;
+  return extractViaClientField((origin as { readonly via?: unknown }).via);
+}
+
 function readViaClient(block: UserBlock): string | undefined {
-  const raw = (block as UserBlockWithVia).via?.client;
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+  return (
+    extractViaClientField((block as UserBlockWithVia).via) ??
+    extractViaClientFromOrigin(block.sourceOrigin)
+  );
 }
 
 function readBlockTurnId(block: Block): string | undefined {
@@ -898,8 +918,10 @@ function prepareDisplayBlocks(
   const seenRecipes = new Set<string>();
   let lastVisibleId: string | undefined;
   let currentTurnId: string | undefined;
-  let activeTurnFailure: { readonly turnId: string | undefined; readonly normError: string } | undefined;
-  let seenTurnDangerNotices = new Set<string>();
+  let activeTurnFailure:
+    | { readonly turnId: string | undefined; readonly normError: string; outcomeSeen: boolean }
+    | undefined;
+  let pendingFrameDanger: { readonly turnId: string | undefined; readonly normError: string } | undefined;
 
   const recordSuppressed = (id: string): void => {
     if (lastVisibleId === undefined) {
@@ -918,14 +940,14 @@ function prepareDisplayBlocks(
     const turnId = readBlockTurnId(block);
     if (turnId !== undefined && currentTurnId !== undefined && turnId !== currentTurnId) {
       activeTurnFailure = undefined;
-      seenTurnDangerNotices = new Set<string>();
+      pendingFrameDanger = undefined;
     }
     if (turnId !== undefined) {
       currentTurnId = turnId;
     }
 
     if (block.kind === 'user') {
-      seenTurnDangerNotices = new Set<string>();
+      pendingFrameDanger = undefined;
       const outcome = block.promptOutcome;
       if (
         outcome !== undefined &&
@@ -933,10 +955,13 @@ function prepareDisplayBlocks(
         outcome.error !== undefined
       ) {
         const normError = normalizeFailureText(outcome.error);
-        activeTurnFailure = normError.length > 0 ? { turnId, normError } : undefined;
+        activeTurnFailure =
+          normError.length > 0 ? { turnId, normError, outcomeSeen: false } : undefined;
       } else {
         activeTurnFailure = undefined;
       }
+    } else if (block.kind === 'assistant') {
+      pendingFrameDanger = undefined;
     }
 
     if (!options.showThinking && block.kind === 'thinking') {
@@ -968,27 +993,51 @@ function prepareDisplayBlocks(
     }
 
     if (block.kind === 'notice') {
+      if (isStructuredDomainNotice(block)) {
+        pendingFrameDanger = undefined;
+      }
       if (!options.expanded && isPlumbingNotice(block)) {
         recordSuppressed(block.id);
         continue;
       }
-      if (isTurnFailureNotice(block)) {
+      if (!options.expanded && isTurnFailureNotice(block)) {
         const normNotice = normalizeFailureText(formatNoticeText(block));
         if (normNotice.length > 0) {
+          const explicitOutcome = isExplicitTurnOutcomeNotice(block);
           const activeFailure = activeTurnFailure;
-          const matchesPromptFailure =
+          const inActiveFailedPromptTurn =
             activeFailure !== undefined &&
-            (turnId === undefined ||
-              activeFailure.turnId === undefined ||
-              turnId === activeFailure.turnId) &&
-            (normNotice === activeFailure.normError ||
-              activeFailure.normError.includes(normNotice) ||
-              normNotice.includes(activeFailure.normError));
-          if (matchesPromptFailure || seenTurnDangerNotices.has(normNotice)) {
+            (turnId !== undefined
+              ? activeFailure.turnId === undefined || turnId === activeFailure.turnId
+              : !activeFailure.outcomeSeen);
+          if (inActiveFailedPromptTurn && normNotice === activeFailure.normError) {
+            if (explicitOutcome) {
+              activeFailure.outcomeSeen = true;
+            }
             recordSuppressed(block.id);
             continue;
           }
-          seenTurnDangerNotices.add(normNotice);
+          if (explicitOutcome && activeFailure !== undefined && turnId === activeFailure.turnId) {
+            activeFailure.outcomeSeen = true;
+          }
+
+          if (
+            explicitOutcome &&
+            pendingFrameDanger !== undefined &&
+            (turnId === undefined ||
+              pendingFrameDanger.turnId === undefined ||
+              turnId === pendingFrameDanger.turnId) &&
+            normNotice === pendingFrameDanger.normError
+          ) {
+            pendingFrameDanger = undefined;
+            recordSuppressed(block.id);
+            continue;
+          }
+          if (!explicitOutcome) {
+            pendingFrameDanger = { turnId, normError: normNotice };
+          } else {
+            pendingFrameDanger = undefined;
+          }
         }
       }
     }
@@ -1083,13 +1132,29 @@ function isPlumbingNotice(block: NoticeBlock): boolean {
   return false;
 }
 
-function isTurnFailureNotice(block: NoticeBlock): boolean {
+function isStructuredDomainNotice(block: NoticeBlock): boolean {
+  return (
+    block.compactionPhase !== undefined ||
+    block.modelSwitch !== undefined ||
+    block.goalChange !== undefined ||
+    block.branchBase !== undefined ||
+    block.executor !== undefined ||
+    block.externalText !== undefined
+  );
+}
+
+function isExplicitTurnOutcomeNotice(block: NoticeBlock): boolean {
   const key = block.i18n?.key;
   return (
-    block.tone === 'danger' ||
     key === 'notice.turnFailedDetail' ||
-    key === 'notice.turnCancelledDetail'
+    key === 'notice.turnCancelledDetail' ||
+    block.id.startsWith('agent-turn-outcome-')
   );
+}
+
+function isTurnFailureNotice(block: NoticeBlock): boolean {
+  if (isStructuredDomainNotice(block)) return false;
+  return block.tone === 'danger' || isExplicitTurnOutcomeNotice(block);
 }
 
 function formatNoticeText(block: NoticeBlock): string {
