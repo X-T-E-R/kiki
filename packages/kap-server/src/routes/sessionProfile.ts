@@ -4,16 +4,18 @@ import {
   type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
 import { PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import type { SessionWireFields } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import type { UpdateSessionProfileRequest } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
+import type { SessionWireFields } from './sessions';
 
 function replaceCustomMetadata(
   existing: Record<string, unknown> | undefined,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
   const custom = { ...patch };
-  if (!Object.hasOwn(custom, PROMOTED_FROM_KEY) && existing !== undefined && Object.hasOwn(existing, PROMOTED_FROM_KEY)) {
-    custom[PROMOTED_FROM_KEY] = existing[PROMOTED_FROM_KEY];
+  for (const key of [PROMOTED_FROM_KEY, 'goal']) {
+    if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
+      custom[key] = existing[key];
+    }
   }
   return custom;
 }
@@ -21,7 +23,7 @@ function replaceCustomMetadata(
 export async function updateSessionProfile(
   session: ISessionScopeHandle,
   body: Pick<UpdateSessionProfileRequest, 'title' | 'private' | 'metadata'>,
-): Promise<SessionWireFields> {
+): Promise<SessionWireFields & { readonly root: string }> {
   const metadata = session.accessor.get(ISessionMetadata);
 
   if (typeof body.title === 'string') {
@@ -48,10 +50,17 @@ export async function updateSessionProfile(
     lastPrompt: meta.lastPrompt,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
+    ownUpdatedAt: meta.updatedAt,
+    activityUpdatedAt: meta.activityUpdatedAt,
     archived: meta.archived,
     private: meta.private,
     archivedAt: meta.archivedAt,
     executionPhase: meta.executionPhase,
+    worktree: meta.worktree,
+    promotedFrom: meta.promotedFrom,
+    delivery: meta.delivery,
+    agents: meta.agents,
+    lastTurnReason: meta.lastTurnReason,
     custom: meta.custom,
   };
 }

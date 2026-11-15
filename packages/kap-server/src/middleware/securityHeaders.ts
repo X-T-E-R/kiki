@@ -7,8 +7,9 @@ export interface SecurityHeadersOptions {
 
 const HSTS_VALUE = 'max-age=31536000';
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
+  "default-src 'self'; connect-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data: https: http:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
 const GUI_CONTENT_SECURITY_POLICY = CONTENT_SECURITY_POLICY
+  .replace("connect-src 'self' data: blob:", "connect-src 'self' https: http: ws: wss: data: blob:")
   .replace("img-src 'self' data: blob:", "img-src 'self' data: blob: https: http:")
   .replace("frame-src 'self' http://*.kiki-document.localhost:*", "frame-src 'self' http://*.kiki-document.localhost:* https: http: blob:")
   + "; worker-src 'self' blob:";

@@ -320,7 +320,7 @@ export class RemoteConnectionManager {
     if (record.summary !== undefined) record.summary.stale = true;
     const reason = error instanceof Error ? error.message : 'connection_failed'; record.lastError = reason;
     record.state = error instanceof AdmissionError && error.reason === 'identity_changed' ? 'identity_changed'
-      : error instanceof AdmissionError && (error.status === 401 || (error.status === 403 && error.reason !== 'inbound_disabled')) ? 'authentication_required' : 'offline';
+      : error instanceof AdmissionError && error.status === 401 ? 'authentication_required' : 'offline';
     if (record.state !== 'offline') this.stop(id, record.state === 'identity_changed' ? undefined : 'gui');
     void this.change(async () => undefined).catch(() => {});
   }
@@ -371,7 +371,9 @@ export class RemoteConnectionManager {
     const response = await peerFetch(endpoint + '/api/remote-connections/handshake', { headers, signal: deadline }, fingerprint);
     const envelope = await readBoundedJsonBody(response, 8192, deadline) as { code: number; data: unknown };
     const hello = connectionHandshakeSchema.safeParse(envelope.data);
-    if (!response.ok || envelope.code !== 0 || !hello.success || !sameIdentity(hello.data.identity, target)) throw new AdmissionError(409, 'identity_changed');
+    if (!hello.success) throw new AdmissionError(response.ok || response.status === 401 ? 502 : response.status, 'handshake_unavailable');
+    if (!sameIdentity(hello.data.identity, target)) throw new AdmissionError(409, 'identity_changed');
+    if (!response.ok || envelope.code !== 0) throw new AdmissionError(response.ok || response.status === 401 ? 502 : response.status, 'handshake_unavailable');
     const status = response.headers.get('x-kiki-handshake-status');
     const proof = response.headers.get('x-kiki-handshake-proof') ?? '';
     const domain = status === 'approved' ? 'res' : status === 'revoked' ? 'revoked' : status === 'inbound_disabled' ? 'disabled' : status === 'invited' ? 'invited' : undefined;

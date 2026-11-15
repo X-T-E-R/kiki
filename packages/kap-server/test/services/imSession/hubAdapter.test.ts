@@ -2,11 +2,18 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
+import * as privateFiles from '../../../src/services/auth/privateFiles';
 import { mimeAllowed as sharedMimeAllowed } from '@nb-corp/im-bridge-core/adapter';
 import { oneBotIdentityTransport, type OneBotIdentityLink } from '../../../src/services/imSession/oneBotIdentity';
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound[] } {
   const adapter = {
@@ -103,6 +110,48 @@ describe('hub session adapter', () => {
     stopped.abort();
     await expect(cancelled.ready).rejects.toThrow();
   });
+  it('keeps a reply-context change made during persistence dirty until the newer revision is written', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-im-reply-race-'));
+    const raw = session();
+    const hub = new HubSessionAdapter(raw, home);
+    const firstWriteEntered = deferred();
+    const releaseFirstWrite = deferred();
+    const originalWrite = privateFiles.writePrivateFile;
+    const write = vi.spyOn(privateFiles, 'writePrivateFile');
+    let writes = 0;
+    write.mockImplementation(async (filePath, data) => {
+      if (writes++ === 0) {
+        firstWriteEntered.resolve();
+        await releaseFirstWrite.promise;
+      }
+      await originalWrite(filePath, data);
+    });
+    try {
+      await hub.start(async () => undefined);
+      const admit = (eventId: string, replyContext: string) => raw.sink!.admit({
+        event_key: eventId,
+        platform_event_id: eventId,
+        cursor: eventId,
+        identity: { platform: 'personal_wechat', account_id: 'wx', chat_id: 'chat', sender_id: 'user', topic_id: '0' },
+        payload: { type: 'text', text: 'hello' },
+        reply_context: replyContext,
+      });
+      const first = admit('reply-one', 'older-context');
+      await firstWriteEntered.promise;
+      const second = admit('reply-two', 'newer-context');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releaseFirstWrite.resolve();
+      await Promise.all([first, second]);
+      const saved = JSON.parse(await readFile(join(home, 'im-session-reply.json'), 'utf8')) as Record<string, string>;
+      expect(Object.values(saved)).toEqual(['newer-context']);
+    } finally {
+      releaseFirstWrite.resolve();
+      write.mockRestore();
+      await hub.stop();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('keeps reply context on the send target and out of the admitted event', async () => {
     const raw = session();
     const hub = new HubSessionAdapter(raw);

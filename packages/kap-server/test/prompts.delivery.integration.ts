@@ -667,7 +667,7 @@ describe('server-v2 /api prompts', () => {
     } finally { controller?.close(); await client.klient.close(); held.finish(); executor.mockRestore(); }
   });
 
-  it('cancels an idle external child HTTP prompt from its one parent task', async () => {
+  it.each(['parent-task', 'session-abort'] as const)('cancels an idle external child HTTP prompt through %s', async (control) => {
     fixture.server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-cancel-fixture', priority: 50,
       contribution: { profiles: [normalizeAgentProfile({ name: 'external-cancel', definitionId: 'fixture:external-cancel',
         executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_CANCEL' })] } });
@@ -708,8 +708,13 @@ describe('server-v2 /api prompts', () => {
       expect(run).toHaveBeenCalledTimes(1);
       expect(prompt.abort('external-cancel-next')).toBe(true);
       expect(run).toHaveBeenCalledTimes(1);
-      await tasks.stopByUser(visible[0]!.taskId);
-      await vi.waitFor(() => expect(tasks.getTask(visible[0]!.taskId)?.status).toBe('killed'));
+      if (control === 'parent-task') {
+        await tasks.stopByUser(visible[0]!.taskId);
+        await vi.waitFor(() => expect(tasks.getTask(visible[0]!.taskId)?.status).toBe('killed'));
+      } else {
+        const aborted = await call('POST', `/api/sessions/${id}:abort`, { agent_id: child.id });
+        expect(aborted.body.code, JSON.stringify(aborted.body)).toBe(0);
+      }
       await vi.waitFor(() => expect(prompt.lookup('external-cancel-active')?.terminal?.state).toBe('cancelled'));
       expect(run).toHaveBeenCalledTimes(1);
       await child.accessor.get(IAgentExecutionService).settled();

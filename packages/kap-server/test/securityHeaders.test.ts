@@ -47,6 +47,8 @@ describe('createSecurityHeadersHook', () => {
     const csp = headers.get('content-security-policy');
     expect(csp).toBeDefined();
     const directives = parseCsp(csp ?? '');
+    expect(directives.get('connect-src')).toEqual(["'self'", 'data:', 'blob:']);
+    expect(directives.get('media-src')).toEqual(["'self'", 'blob:', 'data:', 'https:', 'http:']);
     const styleSrc = directives.get('style-src');
     expect(styleSrc).toContain("'self'");
     expect(styleSrc).toContain("'unsafe-inline'");
@@ -64,6 +66,8 @@ describe('createSecurityHeadersHook', () => {
     const directives = parseCsp(gui.headers.get('content-security-policy')!);
     expect(directives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
     expect(directives.get('worker-src')).toEqual(["'self'", 'blob:']);
+    expect(directives.get('connect-src')).toEqual(["'self'", 'https:', 'http:', 'ws:', 'wss:', 'data:', 'blob:']);
+    expect(directives.get('media-src')).toEqual(["'self'", 'blob:', 'data:', 'https:', 'http:']);
     expect(directives.get('img-src')).toEqual(["'self'", 'data:', 'blob:', 'https:', 'http:']);
     expect(directives.get('script-src') ?? directives.get('default-src')).toEqual(["'self'"]);
 
@@ -71,6 +75,8 @@ describe('createSecurityHeadersHook', () => {
     await hook(bareRequest(), api.reply as never, '');
     const apiDirectives = parseCsp(api.headers.get('content-security-policy')!);
     expect(apiDirectives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*']);
+    expect(apiDirectives.get('connect-src')).toEqual(["'self'", 'data:', 'blob:']);
+    expect(apiDirectives.get('media-src')).toEqual(["'self'", 'blob:', 'data:', 'https:', 'http:']);
     expect(apiDirectives.has('worker-src')).toBe(false);
     expect(apiDirectives.get('img-src')).toEqual(["'self'", 'data:', 'blob:']);
   });
@@ -80,6 +86,8 @@ describe('createSecurityHeadersHook', () => {
     const directives = parseCsp(config.app.security.csp);
     expect(directives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
     expect(directives.get('worker-src')).toEqual(["'self'", 'blob:']);
+    expect(directives.get('connect-src')).toEqual(["'self'", 'ipc:', 'http://ipc.localhost', 'https:', 'http:', 'ws:', 'wss:', 'data:', 'blob:']);
+    expect(directives.get('media-src')).toEqual(["'self'", 'blob:', 'data:', 'https:', 'http:']);
     expect(directives.get('script-src')).toEqual(["'self'"]);
   });
 

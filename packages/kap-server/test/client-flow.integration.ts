@@ -806,6 +806,26 @@ describe('GUI shared client against an isolated KAP host', () => {
     }
   });
 
+  it('returns lock-free SESSION_BUSY for observed hooks of an idle-evicted child in a live session', async () => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') }, agent_config: { model: 'first' } })).id;
+    const manager = host.core.accessor.get(ISessionManager);
+    const live = getLiveSessionById(host.core.accessor, id)!;
+    const lifecycle = live.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'agent', model: 'first' } });
+    await lifecycle.remove(child.id);
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(new Error('observe must not acquire'));
+    const restore = vi.spyOn(lifecycle, 'create');
+    const size = vi.spyOn(host.core.accessor.get(IFileSystemStorageService), 'size').mockResolvedValue(9 * 1024 * 1024);
+    const read = vi.spyOn(host.core.accessor.get(IAppendLogStore), 'read');
+    try {
+      const response = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/hooks?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ code: 40901 });
+      expect(acquire).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+      expect(manager.get(id)).toBe(live);
+    } finally { acquire.mockRestore(); restore.mockRestore(); size.mockRestore(); read.mockRestore(); }
+  });
+
   it('returns fast SESSION_BUSY for observed reads of a cold bound main without restoring it', async () => {
     const id = (await client.createSession({
       metadata: { cwd: join(home, 'workspace') },

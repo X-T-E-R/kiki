@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   IAgentActivityView,
@@ -6,6 +6,7 @@ import {
   IAgentProfileService,
   IAgentTokenCountingService,
   IAgentUsageService,
+  ISessionContext,
   ILogService,
   ISessionActivityView,
   ISessionDeliveryService,
@@ -17,6 +18,8 @@ import {
 } from '@kiki/agent-core-v2';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
+import { updateSessionProfile } from '../src/routes/sessionProfile';
+import { PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { resolveSessionFacts, toWireSession, type SessionFacts, type SessionWireFields } from '../src/routes/sessions';
 
 const fields: SessionWireFields = {
@@ -33,6 +36,40 @@ const coldFacts: SessionFacts = {
   pendingInteraction: 'none',
   live: false,
 };
+
+describe('session profile metadata projection', () => {
+  it('preserves goal and promotion metadata while returning the full live session field set', async () => {
+    const promotedFrom = { sessionId: 'source-session', agentId: 'source-agent', profile: 'explore', promotedAt: 4 };
+    let current: Record<string, unknown> = {
+      id: 's1', title: 'Session', lastPrompt: 'Prompt', createdAt: 1, updatedAt: 2, activityUpdatedAt: 3,
+      archived: false, private: true, archivedAt: 5, executionPhase: 'paused',
+      custom: { goal: 'Keep this goal', [PROMOTED_FROM_KEY]: promotedFrom, stale: 'drop' },
+      worktree: { worktreeId: 'wt1', branch: 'branch', sourceRoot: '/source', baseRef: 'HEAD' },
+      promotedFrom, delivery: 'message', agents: { main: { type: 'main' } }, lastTurnReason: 'failed',
+    };
+    const metadata = {
+      setTitle: vi.fn(),
+      update: vi.fn(async (patch: { readonly custom?: Record<string, unknown> }) => {
+        current = { ...current, ...patch, updatedAt: 6 };
+      }),
+      read: vi.fn(async () => current),
+    };
+    const context = { workspaceId: 'w1', cwd: '/workspace' };
+    const session = {
+      accessor: {
+        get: (service: unknown) => service === ISessionMetadata ? metadata : service === ISessionContext ? context : undefined,
+      },
+    };
+    const result = await updateSessionProfile(session as never, { metadata: { label: 'after' } });
+    expect(metadata.update).toHaveBeenCalledWith({ custom: {
+      goal: 'Keep this goal', [PROMOTED_FROM_KEY]: promotedFrom, label: 'after',
+    } });
+    expect(result).toMatchObject({
+      id: 's1', workspaceId: 'w1', root: '/workspace', ownUpdatedAt: 6, activityUpdatedAt: 3,
+      worktree: current['worktree'], promotedFrom, delivery: 'message', agents: current['agents'], lastTurnReason: 'failed',
+    });
+  });
+});
 
 describe('toWireSession privacy', () => {
   it('projects privacy and replaces measured or failed usage with the empty wire shape', () => {

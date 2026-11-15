@@ -901,6 +901,30 @@ function hasBinaryControlBytes(bytes: Uint8Array): boolean {
   return false;
 }
 
+function trimIncompleteTrailingUtf8(bytes: Uint8Array): Uint8Array {
+  let continuationStart = bytes.length;
+  let continuationCount = 0;
+  while (continuationStart > 0 && continuationCount < 3 && (bytes[continuationStart - 1]! & 0xc0) === 0x80) {
+    continuationStart -= 1;
+    continuationCount += 1;
+  }
+  const leadIndex = continuationStart - 1;
+  if (leadIndex < 0) return bytes;
+  const lead = bytes[leadIndex]!;
+  const expected = lead >= 0xc2 && lead <= 0xdf ? 2
+    : lead >= 0xe0 && lead <= 0xef ? 3
+      : lead >= 0xf0 && lead <= 0xf4 ? 4
+        : undefined;
+  if (expected === undefined || bytes.length - leadIndex >= expected) return bytes;
+  const second = bytes[leadIndex + 1];
+  if (second !== undefined && (second < 0x80 || second > 0xbf)) return bytes;
+  if (lead === 0xe0 && second !== undefined && second < 0xa0) return bytes;
+  if (lead === 0xed && second !== undefined && second > 0x9f) return bytes;
+  if (lead === 0xf0 && second !== undefined && second < 0x90) return bytes;
+  if (lead === 0xf4 && second !== undefined && second > 0x8f) return bytes;
+  return bytes.subarray(0, leadIndex);
+}
+
 function decodePreviewHostFile(maxBytes: number) {
   return async (response: Response): Promise<import('../../core/facade/http-rest.js').HttpRestPreviewHostFileResult> => {
     const etag = response.headers.get('etag') ?? undefined;
@@ -913,7 +937,7 @@ function decodePreviewHostFile(maxBytes: number) {
       Number(response.headers.get('content-range')?.split('/')[1]) > maxBytes;
     if (!hasBinaryControlBytes(bytes)) {
       try {
-        const text = utf8FatalDecoder.decode(bytes);
+        const text = utf8FatalDecoder.decode(truncated ? trimIncompleteTrailingUtf8(bytes) : bytes);
         return { text, truncated, lossless: true, etag };
       } catch {
         // Fall through to lossy decode below.

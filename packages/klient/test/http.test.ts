@@ -775,12 +775,12 @@ describe('http transport', () => {
     const commands = klient.session('s1').commands;
     await commands.steer('p1', 'agent-a');
     await commands.steer('p2', 'main');
-    await commands.abort('p3', 'agent-a');
+    await commands.abort('p3', 'agent-a', true);
     await commands.abort('p4');
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       'http://127.0.0.1:58627/api/sessions/s1/prompts/p1:steer?agent_id=agent-a',
       'http://127.0.0.1:58627/api/sessions/s1/prompts/p2:steer',
-      'http://127.0.0.1:58627/api/sessions/s1/prompts/p3:abort?agent_id=agent-a',
+      'http://127.0.0.1:58627/api/sessions/s1/prompts/p3:abort?agent_id=agent-a&queued_only=true',
       'http://127.0.0.1:58627/api/sessions/s1/prompts/p4:abort',
     ]);
     await klient.close();

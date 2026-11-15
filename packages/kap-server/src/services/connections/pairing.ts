@@ -99,19 +99,19 @@ export class PeerListeners {
     await Promise.allSettled(active.map((entry) => entry.close()));
   }
   private async listen(host: string, port: number): Promise<{ url: string; close: () => Promise<void> }> {
-    const http = createServer((req, res) => { this.peerRequests.add(req); this.app.server.emit('request', req, res); });
+    const headerTimers = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
+    const clearHeaders = (socket: Socket): void => { clearTimeout(headerTimers.get(socket)); headerTimers.delete(socket); };
+    const http = createServer((req, res) => { clearHeaders(req.socket); this.peerRequests.add(req); this.app.server.emit('request', req, res); });
     http.requestTimeout = 0;
-    http.on('upgrade', (req, socket, head) => { this.peerRequests.add(req); this.app.server.emit('upgrade', req, socket, head); });
+    http.on('upgrade', (req, socket, head) => { clearHeaders(req.socket); this.peerRequests.add(req); this.app.server.emit('upgrade', req, socket, head); });
     const guardHeaders = (socket: Socket): void => {
       const drop = (): void => { socket.destroy(); };
       const timer = setTimeout(drop, 15000);
       timer.unref();
-      const clear = (): void => { clearTimeout(timer); };
-      socket.once('close', clear);
-      http.prependOnceListener('request', (req) => { if (req.socket === socket) clear(); });
-      http.prependOnceListener('upgrade', (req) => { if (req.socket === socket) clear(); });
+      headerTimers.set(socket, timer);
+      socket.once('close', () => clearHeaders(socket));
     };
-    const tls = createTlsServer(this.identity, (socket) => { guardHeaders(socket); http.emit('connection', socket); });
+    const tls = createTlsServer({ ...this.identity, handshakeTimeout: 15000 }, (socket) => { guardHeaders(socket); http.emit('connection', socket); });
     const sockets = new Set<Socket>();
     const server = createNetServer({ pauseOnConnect: true }, (socket) => {
       sockets.add(socket);
@@ -171,7 +171,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   const original = endpoint;
   const direct = isDirectConnectionHost(new URL(endpoint).hostname);
   let response: Response;
-  if (fingerprint !== undefined || (direct && original.startsWith('http:'))) {
+  if (fingerprint !== undefined || original.startsWith('https:') || (direct && original.startsWith('http:'))) {
     endpoint = secure.origin;
     try { response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init, fingerprint, (actual) => { pinnedFingerprint = actual; }); }
     catch (error) {

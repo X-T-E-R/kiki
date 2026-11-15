@@ -232,7 +232,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
           const editedContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             body.content,
             sessionMedia,
-            publishedInlineMediaReader(deps.transcriptService, session_id, signal),
+            publishedInlineMediaReader(core, deps.transcriptService, session_id, signal),
             files,
           ));
           preparedMedia = await resolvePromptMediaFiles(

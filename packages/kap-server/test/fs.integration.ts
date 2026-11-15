@@ -476,6 +476,21 @@ describe('server-v2 /api fs routes', () => {
     expect(cached.status).toBe(304);
   });
 
+  it('GET fs/{path}:download preserves Unicode names with an ASCII fallback', async () => {
+    const filename = '报告-final.txt';
+    await writeFile(join(work!, filename), 'download-me');
+    const id = await createSession();
+
+    const res = await fetch(`${base}/api/sessions/${id}/fs/${encodeURIComponent(filename)}:download`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toBe(
+      "attachment; filename=\"__-final.txt\"; filename*=UTF-8''%E6%8A%A5%E5%91%8A-final.txt",
+    );
+    expect(await res.text()).toBe('download-me');
+  });
+
   it('GET fs/{path}:download defaults to the local runtime when runtime_id is omitted', async () => {
     await writeFile(join(work!, 'b.txt'), 'compat-download');
     const id = await createSession();

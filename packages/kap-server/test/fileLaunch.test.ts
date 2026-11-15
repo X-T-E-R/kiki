@@ -53,17 +53,20 @@ describe('fileLaunch', () => {
       expect(cmd.command).toBe('cmd');
       expect(cmd.args).toEqual(['/c', 'start', '""', '"C:\\work\\a&b.txt"']);
       expect(cmd.shell).toBeUndefined();
+      expect(cmd.windowsVerbatimArguments).toBe(true);
     });
 
     it('openFileCommandFor doubles embedded quotes instead of ending the argument', () => {
       const cmd = openFileCommandFor('C:\\my "dir"\\file.txt', undefined, {}, 'win32');
       expect(cmd.args).toEqual(['/c', 'start', '""', '"C:\\my ""dir""\\file.txt"']);
+      expect(cmd.windowsVerbatimArguments).toBe(true);
     });
 
     it('openFileCommandFor keeps the empty title first', () => {
       const cmd = openFileCommandFor('C:\\proj\\file.txt', undefined, {}, 'win32');
       expect(cmd.args[2]).toBe('""');
       expect(cmd.args[3]).toBe('"C:\\proj\\file.txt"');
+      expect(cmd.windowsVerbatimArguments).toBe(true);
     });
   });
 });

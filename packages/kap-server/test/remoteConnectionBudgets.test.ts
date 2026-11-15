@@ -25,7 +25,10 @@ async function fixture() {
   const targetAdmission = new ConnectionAdmission(join(home, 'target'), targetIdentity);
   await targetAdmission.setEnabled(true);
   const invitation = await targetAdmission.invite(sourceIdentity, 'Fixture');
+  let handshakeFailure: { status: number; body: unknown } | undefined;
+  const failHandshake = (status?: number, body: unknown = { code: 50001, msg: 'storage maintenance', data: null }) => { handshakeFailure = status === undefined ? undefined : { status, body }; };
   target.get('/api/remote-connections/handshake', async (request, reply) => {
+    if (handshakeFailure !== undefined) return reply.code(handshakeFailure.status).send(handshakeFailure.body);
     const proof = targetAdmission.inspectHandshakeProof({ nonce: String(request.headers['x-kiki-handshake-nonce']), proof: String(request.headers['x-kiki-handshake-proof']) });
     if (proof !== undefined) reply.header('x-kiki-handshake-proof', proof.proof).header('x-kiki-handshake-status', proof.status);
     return { code: 0, data: { identity: targetIdentity, serverId: randomUUID(), inboundEnabled: true } };
@@ -46,9 +49,58 @@ async function fixture() {
     const call = (suffix: string, body: unknown, signal?: AbortSignal) => fetch(`${sourceUrl}/api/remote-connections/${record.id}/${suffix}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     return { sourceUrl, record, call };
   };
-  return { target, source, events, broker, manager, start };
+  return { target, source, events, broker, manager, start, failHandshake };
 }
 describe('broker budgets against explicit adversarial transport fixtures', () => {
+  it.each([401, 429, 502, 503, 504])('keeps non-handshake HTTP %s failures transient and reconnects after recovery', async (status) => {
+    const f = await fixture();
+    const { record } = await f.start();
+    f.failHandshake(status);
+    const lease = f.manager.lease(record.id);
+    try {
+      await expect(f.manager.connect(record.id, lease.signal)).rejects.toThrow('handshake_unavailable');
+      expect(f.manager.get(record.id).state).toBe('offline');
+      expect(lease.signal.aborted).toBe(false);
+      f.failHandshake();
+      await f.manager.connect(record.id, lease.signal);
+      expect(f.manager.get(record.id).state).toBe('online');
+    } finally { lease.release(); }
+  });
+
+  it('keeps non-handshake success bodies transient but pins parsed identity and proof failures', async () => {
+    const f = await fixture();
+    let badProof = false;
+    f.target.addHook('onSend', async (request, reply, body) => {
+      if (badProof && request.url === '/api/remote-connections/handshake') reply.header('x-kiki-handshake-proof', '0'.repeat(64));
+      return body;
+    });
+    const { record } = await f.start();
+    const lease = f.manager.lease(record.id);
+    try {
+      f.failHandshake(200, { code: 0, data: { maintenance: true } });
+      await expect(f.manager.connect(record.id, lease.signal)).rejects.toThrow('handshake_unavailable');
+      expect(f.manager.get(record.id).state).toBe('offline');
+      f.failHandshake(); badProof = true;
+      await expect(f.manager.connect(record.id, lease.signal)).rejects.toThrow('identity_changed');
+      expect(f.manager.get(record.id).state).toBe('identity_changed');
+      expect(lease.signal.aborted).toBe(true);
+    } finally { lease.release(); }
+  });
+
+  it.each(['local-empty', 'remote-empty', 'local-abrupt', 'remote-abrupt'] as const)('normalizes %s WebSocket closes and releases the broker lease', async (mode) => {
+    const f = await fixture(); const { sourceUrl, record } = await f.start();
+    const client = new WebSocket(sourceUrl.replace('http:', 'ws:') + `/api/remote-connections/${record.id}/events`);
+    cleanups.push(async () => { client.terminate(); }); await once(client, 'open');
+    await expect.poll(() => f.events.clients.size).toBe(1);
+    const remote = [...f.events.clients][0]!;
+    const closing = once(client, 'close');
+    const from = mode.startsWith('local') ? client : remote;
+    if (mode.endsWith('empty')) from.close(); else from.terminate();
+    await closing;
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+    await expect.poll(() => remote.readyState).toBe(WebSocket.CLOSED);
+    expect(f.manager.get(record.id).state).not.toBe('authentication_required');
+  });
   it('forwards an allowlisted preview denial and reports other target denials as unapproved', async () => {
     const f = await fixture(); let writes = 0;
     const passed = { code: 40301, msg: 'html_preview_target_owner_grant_required', data: null };
@@ -66,7 +118,9 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     const response = await call('call', { operation: 'sessionCreate', body: { cwd: '/example' } });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 40101, msg: 'connection_not_approved' });
-    expect(writes).toBe(2); expect(f.manager.get(record.id).state).not.toBe('online');
+    expect(writes).toBe(2); expect(f.manager.get(record.id).state).toBe('offline');
+    expect((await call('call', { operation: 'meta' })).status).toBe(200);
+    expect(f.manager.get(record.id).state).toBe('online');
   });
   it('forwards a legal history response over the former 1114112 HTTP cap and cancels an unfinished read', async () => {
     const f = await fixture(); let producerClosed = false;
@@ -142,6 +196,20 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     await expect.poll(() => f.manager.list()[0]?.activeLeases, { timeout: 3000 }).toBe(0);
     await expect.poll(() => producerClosed, { timeout: 3000 }).toBe(true); expect(produced).toBeLessThan(100);
   });
+  it('streams a remote document preview asset instead of treating its bytes as an envelope', async () => {
+    const f = await fixture();
+    const bytes = Buffer.from([137, 80, 78, 71]);
+    f.target.get('/api/sessions/:sessionId/document-preview/assets/:assetId', async (_request, reply) => reply.type('image/png').send(bytes));
+    const { call } = await f.start();
+    const input = { operation: 'documentPreviewAsset', params: { sessionId: 'example', assetId: 'page-1' } };
+    expect((await call('call', input)).status).toBe(400);
+    const response = await call('download', input);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('image/png');
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+    expect(f.manager.list()[0]?.activeLeases).toBe(0);
+  });
+
   it('passes a 512 KiB derived preview through the broker unchanged', async () => {
     const f = await fixture();
     const bytes = Buffer.alloc(512 * 1024, 42);

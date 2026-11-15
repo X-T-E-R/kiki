@@ -77,6 +77,10 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     const agent = live?.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
     if (agent !== undefined) { reply.send(okEnvelope(await agent.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
     if (live !== undefined) {
+      if (req.query.observe === 'true' && (await logicalByteSize(core.accessor.get(IFileSystemStorageService), live.accessor.get(ISessionContext).scope(`agents/${req.params.agent_id}`), 'wire.jsonl') ?? 0) > 8 * 1024 * 1024) {
+        reply.send(errEnvelope(ErrorCode.SESSION_BUSY, 'Hook cadence is unavailable while the agent is not active', req.id));
+        return;
+      }
       await withSessionOperation(core, req.params.session_id, async session => {
         if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
         const resident = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);

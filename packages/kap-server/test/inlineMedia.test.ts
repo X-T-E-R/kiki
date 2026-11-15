@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'node:http';
+import { createHash } from 'node:crypto';
+import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
+import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
 import * as sessionOperation from '../src/lib/sessionOperationLease';
 import * as imageValidation from '@kiki/agent-core-v2/agent/media/image-compress';
 import { installErrorHandler } from '../src/error-handler';
@@ -11,7 +14,7 @@ import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstr
 import * as mainAgent from '../src/transport/mainAgent';
 import * as promptMedia from '../src/lib/promptMedia';
 import { registerSkillsRoutes } from '../src/routes/skills';
-import { registerSessionMediaRoutes } from '../src/routes/sessionMedia';
+import { openSessionMedia, registerSessionMediaRoutes } from '../src/routes/sessionMedia';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedTranscriptOps, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { inlineMediaFile, openPublishedInlineMedia, parseInlineMediaIdentity } from '../src/services/inlineMedia';
@@ -32,6 +35,82 @@ const servers: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); });
 
 describe('canonical inline media original', () => {
+  it('hydrates published live frame and attachment handles from offloaded canonical blobs after preparing slices', async () => {
+    const original = bitmap();
+    const url = `data:image/bmp;base64,${original.toString('base64')}`;
+    const hash = createHash('sha256').update(original.toString('base64')).digest('hex');
+    const source = { kind: 'frame' as const, id: 'f1', turnId: 't1', stepId: 's1' };
+    const frame = { kind: 'tool', frameId: 'f1', name: 'ReadMediaFile', toolCallId: 'call', state: 'done', output: [{ type: 'image_url', imageUrl: { url } }] };
+    const attachment: TranscriptAttachment = { attachmentId: 'tool-image', name: 'image.bmp', mediaType: 'image/bmp', source: { kind: 'url', url } };
+    const snapshot = boundedTranscriptSnapshot({ items: [], tasks: [], attachments: [attachment], prompts: [], interactions: [], todos: [], meta: {} }, 'child');
+    const attachmentSource = snapshot.attachments[0]!.source;
+    if (attachmentSource?.kind !== 'session_media') throw new Error('Expected attachment handle');
+    const projected = boundedEntity(frame, source, undefined, 'child') as unknown as { output: { source: { file_id: string } }[] };
+    const fileId = projected.output[0]!.source.file_id;
+    const blobUrl = `blobref:image/bmp;${hash}`;
+    let preparing = 2;
+    let changed = false;
+    const service = {
+      readCanonicalEntity: vi.fn(async () => {
+        if (preparing-- > 0) throw new CanonicalEntityPreparingError();
+        return { ...frame, output: [{ type: 'image_url', imageUrl: { url: changed ? `blobref:image/bmp;${'0'.repeat(64)}` : blobUrl } }] };
+      }),
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => ({ items: [], tasks: [], attachments: [{ ...attachment, source: { kind: 'url', url: blobUrl } }], prompts: [], interactions: [], todos: [], meta: {} }),
+    } as unknown as TranscriptService;
+    const blobs = { get: vi.fn(async (_scope: string, id: string) => id === hash ? original : undefined) };
+    const services = new Map<unknown, unknown>([
+      [ISessionIndex, { get: async () => ({ workspaceId: 'workspace' }) }],
+      [IBootstrapService, { scope: () => 'sessions' }], [IBlobStore, blobs],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const app = Fastify(); servers.push(app); installErrorHandler(app);
+    registerSessionMediaRoutes(app as unknown as Parameters<typeof registerSessionMediaRoutes>[0], core, service);
+    for (const id of [fileId, attachmentSource.fileId]) {
+      const path = `/sessions/example/media/${encodeURIComponent(id)}`;
+      const download = await app.inject({ url: path, headers: { range: 'bytes=0-63' } });
+      expect(download.statusCode).toBe(206);
+      expect(download.rawPayload).toEqual(original.subarray(0, 64));
+      expect(download.headers['content-type']).toContain('image/bmp');
+      expect((await app.inject({ url: `${path}/preview` })).statusCode).toBe(200);
+      expect((await app.inject({ url: `/sessions/example/media/${encodeURIComponent(id.replace(/:[a-f0-9]{64}$/, `:${'0'.repeat(64)}`))}` })).statusCode).toBe(404);
+    }
+    expect(service.readCanonicalEntity).toHaveBeenCalledTimes(5);
+    expect(blobs.get).toHaveBeenCalledWith(expect.stringContaining('child/blobs'), hash);
+    const reused = await resolvePromptSessionMediaRefs([{ type: 'image', source: { kind: 'session_media', file_id: fileId } }], { open: async () => undefined } as unknown as ISessionMediaStore, publishedInlineMediaReader(core, service, 'example'));
+    expect(reused).toMatchObject([{ type: 'image', source: { kind: 'base64', media_type: 'image/bmp', data: original.toString('base64') } }]);
+    changed = true;
+    expect((await app.inject({ url: `/sessions/example/media/${encodeURIComponent(fileId)}` })).statusCode).toBe(404);
+  });
+
+  it('stops and closes an offloaded media revision stream when the request is cancelled', async () => {
+    const original = bitmap();
+    const source = { kind: 'frame' as const, id: 'f', turnId: 't', stepId: 's' };
+    const projected = boundedEntity({ output: [{ type: 'image_url', imageUrl: { url: `data:image/bmp;base64,${original.toString('base64')}` } }] }, source, undefined, 'main') as unknown as { output: { source: { file_id: string } }[] };
+    const controller = new AbortController();
+    let closed = false; let readBytes = 0;
+    const file = { name: 'image.bmp', mediaType: 'image/bmp', size: original.length, stream: async function* () {
+      try {
+        for (let index = 0; index < original.length; index += 3) {
+          readBytes += 3; yield original.subarray(index, index + 3);
+          controller.abort();
+        }
+      } finally { closed = true; }
+    } };
+    await expect(openPublishedInlineMedia(projected.output[0]!.source.file_id,
+      async () => ({ output: [{ type: 'image_url', imageUrl: { url: `blobref:image/bmp;${'a'.repeat(64)}` } }] }),
+      async () => file, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(closed).toBe(true); expect(readBytes).toBeLessThan(original.length);
+  });
+
+  it('cancels between canonical media preparing slices without retrying', async () => {
+    const source = { kind: 'frame' as const, id: 'f', turnId: 't', stepId: 's' };
+    const projected = boundedEntity({ output: [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } }] }, source, undefined, 'main') as unknown as { output: { source: { file_id: string } }[] };
+    const controller = new AbortController();
+    const service = { readCanonicalEntity: vi.fn(async () => { controller.abort(); throw new CanonicalEntityPreparingError(); }) } as unknown as TranscriptService;
+    await expect(openSessionMedia({} as Scope, 'example', projected.output[0]!.source.file_id, service, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(service.readCanonicalEntity).toHaveBeenCalledOnce();
+  });
   it('activates a skill with its retained canonical original and rejects a replaced revision without activating again', async () => {
     const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
     const { picture } = await import(fixture);
@@ -92,7 +171,7 @@ describe('canonical inline media original', () => {
     let prompt = { promptId: 'published', userMessageId: 'logical', status: 'queued' as 'queued' | 'running' | 'completed', createdAt: '2026-01-01T00:00:00.000Z', content: [image] };
     const transcript = new AgentTranscript('main');
     const service = { forSessionLive: () => ({ getAgent: () => transcript }), ensureAgentHistory: async () => transcript } as unknown as TranscriptService;
-    const reader = publishedInlineMediaReader(service, 'fixture');
+    const reader = publishedInlineMediaReader({} as Scope, service, 'fixture');
     const store = { open: vi.fn(async () => undefined) } as unknown as ISessionMediaStore;
     let stableId: string | undefined;
     let draft!: PromptSubmission['content'];
@@ -424,9 +503,13 @@ describe('canonical inline media original', () => {
     const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 's1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: 'f1', name: 'Read', toolCallId: 'call1', state: 'done', output }] }] });
     const transcript = new AgentTranscript('main');
     transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } }]);
+    let preparing = 2;
     const service = { forSessionLive: (id: string) => id === 'fixture-session' ? { getAgent: () => transcript } : undefined, whenReady: async () => {}, ensureAgentHistory: async () => transcript, readColdSnapshot: async () => undefined,
-      readCanonicalEntity: async (id: string, agent: string, source: { id: string; turnId?: string; stepId?: string }) => id === 'fixture-session' && agent === 'main'
-        ? transcript.getTurn(source.turnId ?? '')?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id) : undefined,
+      readCanonicalEntity: async (id: string, agent: string, source: { id: string; turnId?: string; stepId?: string }) => {
+        if (preparing-- > 0) throw new CanonicalEntityPreparingError();
+        return id === 'fixture-session' && agent === 'main'
+          ? transcript.getTurn(source.turnId ?? '')?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id) : undefined;
+      },
     } as unknown as TranscriptService;
     const frame = turn.steps[0]!.frames[0]!;
     const preview = boundedEntity(frame, { kind: 'frame', id: 'f1', turnId: 't1', stepId: 's1' });

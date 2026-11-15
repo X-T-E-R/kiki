@@ -51,7 +51,7 @@ export function createConnectionTransport(options: ConnectionHttpOptions): { fet
     if (matched === undefined) throw new RPCError(40301, 'Operation is not available to a remote space');
     const query: Record<string, string | string[]> = {};
     for (const [key, value] of url.searchParams) { const old = query[key]; query[key] = old === undefined ? value : Array.isArray(old) ? [...old, value] : [old, value]; }
-    const binary = ['media', 'mediaPreview', 'file', 'appearanceAsset', 'personaAvatar'].includes(matched.operation);
+    const binary = ['media', 'mediaPreview', 'file', 'appearanceAsset', 'personaAvatar', 'documentPreviewAsset'].includes(matched.operation);
     const incomingHeaders = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
     if (matched.operation === 'fileUpload') {
       incomingHeaders.delete('authorization');

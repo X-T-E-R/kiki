@@ -542,7 +542,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
               (signal) => resolvePromptSessionMediaRefs(
                 attachments,
                 sessionMedia,
-                transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+                transcriptService === undefined ? undefined : publishedInlineMediaReader(core, transcriptService, session_id, signal),
                 files,
               ),
             );

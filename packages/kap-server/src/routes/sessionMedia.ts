@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyReply } from 'fastify';
 
 import {
@@ -18,7 +19,6 @@ import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
-import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import {
   agentScopeOf,
@@ -40,8 +40,10 @@ import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
+import { openPersistedToolMedia } from '../services/persistedToolMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { openContentOriginal } from '../services/contentOriginal';
+import { CanonicalEntityPreparingError } from '../services/history/historyCanonicalReader';
 import { ContentChangedError } from '../transport/klient/boundedContent';
 
 interface SessionMediaRouteHost {
@@ -88,14 +90,15 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       description: 'Download session-canonical prompt media by file ID',
       tags: ['files'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const r = reply as unknown as SessionMediaReply;
       const { session_id, file_id } = req.params;
       let operation: SessionOperationLease | undefined;
       let stream: Readable | undefined;
       let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
-        const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
+        const opened = await openSessionMedia(core, session_id, file_id, transcriptService, signal);
+        signal.throwIfAborted();
         operation = opened.operation;
         if (!opened.sessionExists) {
           r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id));
@@ -146,7 +149,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       } finally {
         if (stream === undefined) await operation?.dispose();
       }
-    },
+    }),
   );
   app.get(
     route.path,
@@ -155,6 +158,8 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       try {
         await route.handler(req, reply);
       } catch (error) {
+        if (reply.raw.destroyed) return;
+        if (error instanceof CanonicalEntityPreparingError) { reply.code(503).send(errEnvelope(ErrorCode.SESSION_BUSY, error.message, req.id)); return; }
         if (error instanceof ContentChangedError) { reply.code(409).send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id)); return; }
         requestLog(req)?.error({ err: error }, 'session media download failed');
         reply.code(500).send(errEnvelope(
@@ -195,6 +200,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
       } catch (error) {
         if (r.raw.destroyed) return;
+        if (error instanceof CanonicalEntityPreparingError) return r.code(503).send(errEnvelope(ErrorCode.SESSION_BUSY, error.message, req.id)) as void;
         if (!(error instanceof MediaPreviewUnavailableError)) throw error;
         return r.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
       } finally {
@@ -218,6 +224,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       if (isPreview) await preview.handler(request, reply);
       else await route.handler(request, reply);
     } catch (error) {
+      if (error instanceof CanonicalEntityPreparingError) { (reply as unknown as SessionMediaReply).code(503).send(errEnvelope(ErrorCode.SESSION_BUSY, error.message, req.id)); return; }
       if (error instanceof ContentChangedError) { (reply as unknown as SessionMediaReply).code(409).send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id)); return; }
       throw error;
     }
@@ -226,9 +233,19 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
 }
 
 export async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService, signal?: AbortSignal): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
-  if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
-  if (fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
-    return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId, signal)(fileId) };
+  if (fileId.startsWith('raw:') || fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
+    if (service === undefined) return { sessionExists: true };
+    const read = () => fileId.startsWith('raw:') ? openContentOriginal(service, sessionId, fileId, signal)
+      : publishedInlineMediaReader(core, service, sessionId, signal)(fileId);
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      signal?.throwIfAborted();
+      try { return { sessionExists: true, file: await read() }; }
+      catch (error) {
+        if (!(error instanceof CanonicalEntityPreparingError) || Date.now() >= deadline) throw error;
+        await delay(80, undefined, { signal });
+      }
+    }
   }
   if (fileId.startsWith('blobref:')) {
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
@@ -262,35 +279,6 @@ export async function openSessionMedia(core: Scope, sessionId: string, fileId: s
     await operation.dispose();
     throw error;
   }
-}
-
-async function openPersistedToolMedia(
-  core: Scope,
-  sessionId: string,
-  workspaceId: string,
-  fileId: string,
-): Promise<SessionMediaFile | undefined> {
-  const ref = parseMediaBlobRef(fileId);
-  if (ref?.kind !== 'agent') return undefined;
-  const sessionScope = sessionScopeOf(
-    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
-    sessionId,
-  );
-  const blobs = core.accessor.get(IBlobStore);
-  const scope = `${agentScopeOf(sessionScope, ref.agentId)}/blobs`;
-  const bytes = blobs.size === undefined ? await blobs.get(scope, ref.hash) : undefined;
-  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, ref.hash);
-  if (size === undefined) return undefined;
-  return {
-    name: 'tool-result.bin',
-    mediaType: 'application/octet-stream',
-    size,
-    stream: bytes === undefined
-      ? (range) => blobs.getStream(scope, ref.hash, range)
-      : async function* (range) {
-          yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
-        },
-  };
 }
 
 const SOURCE_ID_RE = /^[a-f0-9]{64}$/u;

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AutoCompactStatus, AutoCompactWriteResult } from '@kiki/protocol';
-import { getLiveSessionById, IAgentLifecycleService, IAgentProfileService } from '@kiki/agent-core-v2';
+import { getLiveSessionById, IAgentLifecycleService, IAgentProfileService, ISessionManager } from '@kiki/agent-core-v2';
 import { autoCompactOverrideKey } from '@kiki/agent-core-v2/agent/fullCompaction/autoCompactOps';
 import { IAgentStateService } from '@kiki/agent-core-v2/agent/state/agentState';
 
@@ -158,6 +158,17 @@ describe('automatic compaction REST contract', () => {
     expect((await request<AutoCompactStatus>(childPath)).data).toMatchObject({ source: 'legacy', tokens: 467_500 });
     expect((await request<AutoCompactWriteResult>(childPath, 'PATCH', { tokens: 300_000 })).data.effective).toMatchObject({ source: 'session', tokens: 300_000 });
     expect((await request<AutoCompactStatus>(parentPath)).data).toMatchObject({ source: 'session', tokens: 330_000 });
+    const lifecycle = live.accessor.get(IAgentLifecycleService);
+    await lifecycle.remove(child.id);
+    expect(lifecycle.get(child.id)).toBeUndefined();
+    const restored = await request<AutoCompactWriteResult>(childPath, 'PATCH', { tokens: 310_000 });
+    expect(restored.code, restored.msg).toBe(0);
+    expect(restored.data.effective).toMatchObject({ source: 'session', tokens: 310_000 });
+    expect(lifecycle.get(child.id)!.accessor.get(IAgentProfileService).data().profileName).toBe('custom');
+    await server!.core.accessor.get(ISessionManager).close(id);
+    const cold = await request<AutoCompactWriteResult>(childPath, 'PATCH', { tokens: 320_000 });
+    expect(cold.code, cold.msg).toBe(0);
+    expect(cold.data.effective).toMatchObject({ source: 'session', tokens: 320_000 });
   });
 
   it('rejects automatic compaction when the session has no model and leaves config unchanged', async () => {

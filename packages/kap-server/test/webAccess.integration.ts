@@ -330,6 +330,15 @@ describe('shared daemon Web access', () => {
     expect(buildContentDisposition('movie.mp4', 'video/mp4')).toMatch(/^inline/);
     expect(buildContentDisposition('doc.pdf', 'application/pdf')).toMatch(/^attachment/);
   });
+  it('preserves Unicode filenames with RFC 5987 while keeping a safe ASCII fallback', () => {
+    expect(buildContentDisposition('报告-final.png', 'image/png')).toBe(
+      "inline; filename=\"__-final.png\"; filename*=UTF-8''%E6%8A%A5%E5%91%8A-final.png",
+    );
+    const unsafe = `safe"\r\nname.txt`;
+    expect(buildContentDisposition(unsafe, 'text/plain')).toBe(
+      "attachment; filename=\"safe___name.txt\"",
+    );
+  });
   it('shares only owner-selected remote Kikis with Web browsers across three isolated hosts, revoking active streams without logging out local Web', async () => {
     const homeA = await mkdtemp(join(tmpdir(), 'kiki-web-remote-a-'));
     const homeB = await mkdtemp(join(tmpdir(), 'kiki-web-remote-b-'));

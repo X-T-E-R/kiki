@@ -26,6 +26,20 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('retains recent visible attachment strips with a larger bounded budget and newest-frame priority', () => {
+    const attachments = Array.from({ length: 80 }, (_, index) => ({ attachmentId: `image-${index}`, name: `image-${index}.png`, mediaType: 'image/png', source: { kind: 'session_media' as const, fileId: `file-${index}` }, size: 1024 }));
+    const items: TranscriptTurn[] = Array.from({ length: 10 }, (_, ordinal) => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' },
+      steps: [{ kind: 'step', stepId: `s${ordinal}`, turnId: `t${ordinal}`, ordinal: 0, state: 'completed', frames: Array.from({ length: 2 }, (_, frame) => ({ kind: 'tool', frameId: `f${ordinal}-${frame}`, name: 'ReadMediaFile', toolCallId: `c${ordinal}-${frame}`, state: 'done', attachmentIds: attachments.slice(ordinal * 8 + frame * 4, ordinal * 8 + frame * 4 + 4).map(value => value.attachmentId) })) }] }));
+    const source = { ...empty(), items, attachments };
+    const large = boundedTranscriptSnapshot(source, 'main');
+    expect(large.attachments).toHaveLength(64);
+    expect(large.attachments.map(value => value.attachmentId)).toEqual(attachments.slice(16).map(value => value.attachmentId));
+    expect(large.globalCoverage?.attachments).toEqual({ returned: 64, total: 80, hasMore: true });
+    const small = boundedTranscriptSnapshot(source, 'main', 'tail', 32 * 1024);
+    expect(small.attachments).toEqual(expect.arrayContaining(attachments.slice(-8)));
+    expect(small.attachments.length).toBeLessThan(64);
+    expect(jsonBytes(large)).toBeLessThan(1024 * 1024);
+  });
   it('keeps canonical one-turn preparation retryable over HTTP until the complete structure is available', async () => {
     const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Saved opening', stepsPartial: true, steps: [] };
     const canonical = { ...turn, stepsPartial: undefined, steps: [{ kind: 'step' as const, stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed' as const,

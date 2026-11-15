@@ -810,6 +810,13 @@ describe('TranscriptService live integration', () => {
       expect(await service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't100' })).toBe(transcript.getTurn('t100'));
       expect(cold).not.toHaveBeenCalled();
       expect(navigation).not.toHaveBeenCalled();
+      const coverage = vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockResolvedValue(false);
+      expect(await service.readCanonicalEntity('s1', 'main', { kind: 'frame', id: 'resident-frame', turnId: 't100', stepId: 'resident-step' }))
+        .toBe(transcript.getToolCall('resident-call')?.frame);
+      expect(coverage).not.toHaveBeenCalled();
+      expect(navigation).not.toHaveBeenCalled();
+      await expect(service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't100' })).rejects.toThrow('navigation should not be called');
+      expect(coverage).toHaveBeenCalledOnce();
       const cancelled = new AbortController(); cancelled.abort();
       await expect(service.lookupToolCall('s1', 'main', 'resident-call', cancelled.signal)).rejects.toMatchObject({ name: 'AbortError' });
     } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }

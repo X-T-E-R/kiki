@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { parseImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-format-policy';
 import { validateImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-compress';
-import { isPlainAgentId, mediaUrlFromPart, type ContentRef, type ContentSource, type TranscriptAttachment, type TranscriptTurn } from '@kiki/transcript';
+import { isPlainAgentId, mediaUrlFromPart, parseMediaBlobRef, type ContentRef, type ContentSource, type TranscriptAttachment, type TranscriptTurn } from '@kiki/transcript';
 import { z } from 'zod';
 import { contentRevision } from '../transport/klient/contentRevision';
 
@@ -55,14 +56,16 @@ const INLINE_MEDIA_CACHE_BYTES = 16 * 1024 * 1024;
 const inlineMediaCache = new Map<string, SessionMediaFile>();
 let inlineMediaCacheBytes = 0;
 
-export async function openPublishedInlineMedia(fileId: string, readEntity: PublishedMediaEntityReader): Promise<SessionMediaFile | undefined> {
+export async function openPublishedInlineMedia(fileId: string, readEntity: PublishedMediaEntityReader,
+  readBlob?: (fileId: string) => Promise<SessionMediaFile | undefined>, signal?: AbortSignal): Promise<SessionMediaFile | undefined> {
+  signal?.throwIfAborted();
   const identity = parseInlineMediaIdentity(fileId);
   if (identity === undefined) return undefined;
   let url: string;
   let name: string;
   if (identity.kind === 'attachment') {
     const attachment = await readEntity(identity.agentId, { kind: 'attachment', id: identity.attachmentId }) as TranscriptAttachment | undefined;
-    if (attachment === undefined || inlineMediaId(attachment, identity.agentId) !== fileId || attachment.source?.kind !== 'url') return undefined;
+    if (attachment?.source?.kind !== 'url') return undefined;
     url = attachment.source.url;
     name = attachment.name ?? attachment.attachmentId;
   } else {
@@ -71,12 +74,19 @@ export async function openPublishedInlineMedia(fileId: string, readEntity: Publi
       if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return undefined;
       selected = (selected as Record<string | number, unknown>)[key];
     }
-    const media = inlineToolMedia(selected);
-    if (media === undefined || contentRevision(media.url) !== identity.revision) return undefined;
+    const media = mediaUrlFromPart(selected);
+    if (media === undefined) return undefined;
     const selectedName = (selected as { name?: unknown }).name;
     url = media.url;
     name = typeof selectedName === 'string' && selectedName.length > 0 ? selectedName : `${identity.source.id}.${media.kind}`;
   }
+  const blob = parseMediaBlobRef(url);
+  if (blob?.kind === 'mime') {
+    const file = await readBlob?.(`blobref:${identity.agentId}:${blob.hash}`);
+    if (file === undefined || await inlineBlobRevision(file, blob.mime, signal) !== identity.revision) return undefined;
+    return { ...file, name, mediaType: blob.mime };
+  }
+  if (contentRevision(url) !== identity.revision) return undefined;
   const cached = inlineMediaCache.get(fileId);
   if (cached !== undefined) {
     inlineMediaCache.delete(fileId);
@@ -97,6 +107,23 @@ export async function openPublishedInlineMedia(fileId: string, readEntity: Publi
     }
   }
   return file;
+}
+
+async function inlineBlobRevision(file: SessionMediaFile, mime: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const prefix = `data:${mime};base64,`;
+  const hash = createHash('sha256').update(`string:${prefix.length + 4 * Math.ceil(file.size / 3)}:`).update(prefix);
+  let carry = Buffer.alloc(0);
+  for await (const chunk of file.stream()) {
+    signal?.throwIfAborted();
+    const bytes = carry.length === 0 ? Buffer.from(chunk) : Buffer.concat([carry, chunk]);
+    const end = bytes.length - bytes.length % 3;
+    hash.update(bytes.subarray(0, end).toString('base64'));
+    carry = bytes.subarray(end);
+  }
+  signal?.throwIfAborted();
+  if (carry.length > 0) hash.update(carry.toString('base64'));
+  return hash.digest('hex');
 }
 
 export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {

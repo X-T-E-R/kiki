@@ -45,6 +45,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { AdmissionError } from '../services/connections/admission';
 import { peerAudience } from '../services/connections/audience';
+import { buildContentDisposition } from '../lib/contentDisposition';
 import {
   launchDetached,
   openFileCommandFor,
@@ -557,7 +558,8 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
 
         r.header('etag', resolved.etag);
         r.header('last-modified', resolved.modifiedAt.toUTCString());
-        r.header('content-disposition', `attachment; filename="${sanitizeFilename(resolved.relative)}"`);
+        const filename = resolved.relative.split('/').at(-1) ?? resolved.relative;
+        r.header('content-disposition', buildContentDisposition(filename, resolved.mime));
         r.type(resolved.mime);
         const range = parseRangeHeader(pickHeader(req.headers, 'range'), resolved.size);
         if (range !== null) {
@@ -899,10 +901,4 @@ function buildValidationEnvelope(
     request_id: requestId,
     details,
   };
-}
-
-function sanitizeFilename(rel: string): string {
-  const segs = rel.split('/');
-  const base = segs[segs.length - 1] ?? rel;
-  return base.replace(/"/g, '\\"');
 }
