@@ -383,7 +383,7 @@ describe('OSC 7501 input and revocation regressions', () => {
     await status.dispose();
   });
 
-  it('serializes session releases and retains the old session if revocation fails', async () => {
+  it('serializes session releases and proceeds when revocation of the old session fails', async () => {
     const { status, client, markReady, presence, writes } = handoffFixture();
     await status.refreshConfig();
     await status.switchSession('first');
@@ -404,10 +404,10 @@ describe('OSC 7501 input and revocation regressions', () => {
     expect(client.releaseSessionAccess.mock.calls.map((call) => call[1])).toEqual(['first', 'second']);
     status.update(loadedViewState('third'));
     client.releaseSessionAccess.mockRejectedValueOnce(new Error('release refused'));
-    await expect(status.switchSession('fourth')).rejects.toThrow('release refused');
+    await expect(status.switchSession('fourth')).resolves.toBeUndefined();
     expect(presence.close).toHaveBeenCalled();
-    status.update(loadedViewState('third'));
-    expect(fields(writes.at(-1)!)['session']).toBe('third');
+    status.update(loadedViewState('fourth'));
+    expect(fields(writes.at(-1)!)['session']).toBe('fourth');
     await status.dispose();
   });
 

@@ -392,12 +392,19 @@ describe('CockpitOverview', () => {
     expect(q('[data-cockpit-fact="tokens"] dd')?.textContent).toBe('—');
   });
 
-  it('marks a partly reported session rather than printing a full total', async () => {
+  it('marks a partly reported session with a quiet status icon', async () => {
     await render({
       forest: forestOf([node(MAIN_AGENT_ID, { childIds: ['a'] }), node('a', { parentAgentId: MAIN_AGENT_ID })]),
       treeFigures: { cacheRate: 55, costUsd: 1.23, incomplete: true },
     });
-    expect(q('[data-cockpit-tree-partial]')).toBeTruthy();
+    const status = q('[data-cockpit-gauge="Cache hits"] [data-icon="partial"]');
+    expect(status).toBeTruthy();
+    expect(q('[data-cockpit-tree-partial]')).toBeNull();
+
+    await render({
+      treeFigures: { cacheRate: 55, costUsd: 1.23, counting: true },
+    });
+    expect(q('[data-cockpit-gauge="Cache hits"] [role="status"]')?.getAttribute('aria-label')).toBe('Counting…');
   });
 
   it('draws an axis ending at now even when nothing was ever timed', async () => {
@@ -518,6 +525,7 @@ describe('CockpitOverview whole-tree background read', () => {
     expect(note).toBeTruthy();
     // And it is not claiming the session has no background work.
     expect(note?.getAttribute('role')).toBe('status');
+    expect(q('[data-cockpit-graph] header [data-cockpit-task-read="failed"]')).toBe(note);
   });
 
   it('restarts from the first page when the cursor goes stale, and keeps the rows it then reads', async () => {
@@ -559,7 +567,9 @@ describe('CockpitOverview whole-tree background read', () => {
       throw new Error('boom');
     });
     expect(q('[data-cockpit-task="t1"]')).toBeTruthy();
-    expect(q('[data-cockpit-task-read="partial"]')).toBeTruthy();
+    const note = q('[data-cockpit-task-read="partial"]');
+    expect(note).toBeTruthy();
+    expect(q('[data-cockpit-graph] header [data-cockpit-task-read="partial"]')).toBe(note);
   });
 
   it('recovers when a failed read is asked again, from the first page', async () => {
@@ -647,8 +657,9 @@ describe('CockpitOverview whole-tree background read', () => {
     }));
     const note = q('[data-cockpit-task-read="inventory"]');
     expect(note).toBeTruthy();
-    expect(note?.textContent ?? '').not.toMatch(/one read|budget|cap/i);
-    expect(note?.textContent).toContain('could not list every agent');
+    expect(q('[data-cockpit-graph] header [data-cockpit-task-read="inventory"]')).toBe(note);
+    expect(note?.textContent ?? '').toBe('');
+    expect(note?.getAttribute('aria-label')).toContain('Agent list incomplete');
   });
 
   it('separates a failed owner read from an incomplete inventory', async () => {
@@ -660,8 +671,10 @@ describe('CockpitOverview whole-tree background read', () => {
     }));
     const note = q('[data-cockpit-task-read="read-failed"]');
     expect(note).toBeTruthy();
+    expect(q('[data-cockpit-graph] header [data-cockpit-task-read="read-failed"]')).toBe(note);
     expect(q('[data-cockpit-task-read="inventory"]')).toBeNull();
-    expect(note?.textContent).toContain('1 agents');
+    expect(note?.textContent).toBe('');
+    expect(note?.getAttribute('aria-label')).toContain('1 agents');
   });
 
   it('keeps the branch count stable when a branch is expanded', async () => {

@@ -109,9 +109,10 @@ export function useModelSwitches(
         failed = true;
         const preparing = error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID &&
           (error.details as { reason?: unknown } | undefined)?.reason === 'model_switch_queue_preparing';
-        const retrying = ++failureCount < 3;
-        setLoading(preparing && retrying);
-        if (!preparing || !retrying) setError(error instanceof Error ? error : new Error(String(error)));
+        failureCount = preparing ? 0 : failureCount + 1;
+        const retrying = failureCount < 3;
+        setLoading(preparing);
+        if (!preparing) setError(error instanceof Error ? error : new Error(String(error)));
         if (retrying) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
       });
     };

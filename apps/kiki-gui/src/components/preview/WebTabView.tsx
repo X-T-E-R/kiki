@@ -8,6 +8,7 @@ import { openExternalUrl, useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { copyTextToClipboard } from '#/lib/clipboard';
 import { usePhoneMode } from '#/lib/layoutHooks';
+import { useOptionalConnection } from '#/state/connection';
 import { Icon } from '../icons';
 import { MiniContextMenu } from '../MiniContextMenu';
 import {
@@ -35,6 +36,19 @@ export function PreviewWebView({
   readonly timeoutMs?: number;
 }) {
   const host = useHost();
+  const connection = useOptionalConnection();
+  let sandbox = 'allow-scripts allow-forms allow-popups';
+  try {
+    const target = new URL(url);
+    const server = new URL(connection?.client.baseUrl || window.location.origin, window.location.href);
+    const hostname = target.hostname.toLowerCase().replace(/\.+$/, '');
+    const local = /^(?:localhost|.*\.localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[::1?\]|\[::ffff:(?:7f[\da-f]{2}:[\da-f]{1,4}|0:0)\])$/u.test(hostname);
+    if ((target.protocol === 'http:' || target.protocol === 'https:') &&
+        target.origin !== window.location.origin && target.origin !== server.origin &&
+        !local) {
+      sandbox += ' allow-same-origin';
+    }
+  } catch {}
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
   const [reloadKey, setReloadKey] = useState(0);
@@ -193,7 +207,7 @@ export function PreviewWebView({
               src={url}
               onLoad={() => { setFrameState('ready'); }}
               onError={() => { setFrameState('failed'); }}
-              sandbox="allow-scripts allow-forms allow-popups"
+              sandbox={sandbox}
               referrerPolicy="no-referrer"
               className="min-h-0 min-w-0 flex-1 border-0 bg-paper"
             />

@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
+import { ApiError } from '@kiki/session-core/transport';
 import { resetMediaOutcomes } from './imageActions';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { LazyMediaLightbox } from './preview/PreviewLoadBoundary';
@@ -79,6 +80,30 @@ async function flush(): Promise<void> {
 }
 
 describe('thumbnail recovery', () => {
+  it.each([
+    new Error('preview exceeds its byte budget'),
+    new ApiError({ code: 413, msg: 'Payload too large', data: null }),
+    new ApiError({ code: -3, msg: 'preview_budget_exceeded', data: null }),
+    new ApiError({ code: 40001, msg: 'preview unsupported', data: null }),
+  ])('loads original image bytes when the preview is unavailable: %s', async (error) => {
+    fixture.preview.mockRejectedValue(error);
+    fixture.hostPreview.mockRejectedValue(error);
+    fixture.hostOriginal.mockResolvedValue({ bytes: Uint8Array.from([1, 2, 3]), mime: 'image/png' });
+    await act(async () => {
+      root.render(<I18nProvider><MediaPreviewProvider sessionId="session">
+        <MediaPartList media={[
+          { kind: 'image', fileId: 'large', path: 'E:/images/large.png', name: 'large.png' },
+          { kind: 'image', path: 'E:/images/host.png', name: 'host.png' },
+        ]} />
+      </MediaPreviewProvider></I18nProvider>);
+    });
+    await flush();
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    expect(container.querySelector('[data-media-broken]')).toBeNull();
+    expect(fixture.original).toHaveBeenCalledWith('session', 'large', expect.anything());
+    expect(fixture.hostOriginal).toHaveBeenCalledExactlyOnceWith('E:/images/host.png', expect.anything());
+  });
+
   it('retries only the file thumbnail after that image becomes ready in the viewer', async () => {
     await act(async () => {
       root.render(

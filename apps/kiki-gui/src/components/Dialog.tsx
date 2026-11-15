@@ -170,7 +170,7 @@ export function Dialog({
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      if (dismissible) closeRef.current();
+      if (dismissibleRef.current) closeRef.current();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => {
@@ -179,7 +179,7 @@ export function Dialog({
       unregister();
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [overlayId, depth, dismissible, depth === undefined ? onClose : undefined]);
+  }, [overlayId, depth]);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -252,9 +252,9 @@ export function Dialog({
         className={overlayClassName ?? (panelClassName === undefined ? DIALOG_SHEET_OVERLAY_CLASS : CENTERED_OVERLAY_CLASS)}
         style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
         onPointerDown={(event) => {
-          if (dismissible && event.target === event.currentTarget && (depth === undefined
+          if (dismissibleRef.current && event.target === event.currentTarget && (depth === undefined
             ? panelRef.current && canRestoreModalFocus(panelRef.current)
-            : ownership.current?.isTop())) onClose();
+            : ownership.current?.isTop())) closeRef.current();
         }}
       >
         <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}>

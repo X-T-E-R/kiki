@@ -242,6 +242,20 @@ describe('MediaRunRow gallery order', () => {
     ]);
   });
 
+  it('includes omitted media-tool attachments and keeps their path-derived label', async () => {
+    const omitted: MediaRef = { kind: 'file', detail: { agentId: 'main', attachmentId: 'omitted' } };
+    const run: MediaRun = {
+      kind: 'media-run', id: 'omitted-run', turnId: 't1', latest: true,
+      members: [
+        { ...readTool('media', 'ReadMediaFile', [omitted]), args: { path: 'E:/shots/capture.png' } },
+        readTool('generic', 'Read', [omitted]),
+      ],
+    };
+    const container = await renderRun(run);
+    expect(container.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+    expect(container.querySelector('[data-media-thumb]')?.getAttribute('title')).toBe('capture.png');
+  });
+
   it('invents no place for a member the caller cannot locate', async () => {
     galleryOrderProbe.calls.length = 0;
     const run: MediaRun = {

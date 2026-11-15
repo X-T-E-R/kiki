@@ -120,6 +120,25 @@ describe('extractToolOutputMedia', () => {
       { kind: 'file', fileId: 'resource', mime: 'application/octet-stream', size: 3, name: 'resource.bin' },
     ] });
   });
+  it('hydrates inline, saved and source-based audio alongside images and videos', () => {
+    const hash = 'a'.repeat(64);
+    expect(extractToolOutputMedia([
+      { type: 'text', text: '<audio path="E:/audio/voice.wav">' },
+      { type: 'audio_url', audioUrl: { url: `blobref:audio/wav;${hash}` } },
+      { type: 'audio', source: { kind: 'base64', media_type: 'audio/ogg', data: 'AAAA' } },
+      { type: 'audio', source: { kind: 'session_media', file_id: 'saved-audio' } },
+      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } },
+      { type: 'video', source: { kind: 'url', url: 'https://example.test/video.mp4' } },
+    ])?.media).toMatchObject([
+      { kind: 'audio', path: 'E:/audio/voice.wav', blobHash: hash, mime: 'audio/wav' },
+      { kind: 'audio', url: 'data:audio/ogg;base64,AAAA' },
+      { kind: 'audio', fileId: 'saved-audio' },
+      { kind: 'image', url: 'data:image/png;base64,AAAA' },
+      { kind: 'video', url: 'https://example.test/video.mp4' },
+    ]);
+    expect(mediaRefWithAttachmentDetail({ kind: 'file', detail: { agentId: 'main', attachmentId: 'audio' } }, { mediaType: 'audio/wav' })).toMatchObject({ kind: 'audio', mime: 'audio/wav' });
+  });
+
   it('extracts engine image_url parts and their <image path> wrapper', () => {
     const output = [
       { type: 'text', text: '<image path="/work/shots/home.png">' },
@@ -562,4 +581,14 @@ it('keeps registered app routes and prose version numbers out of file navigation
     expect(resolveFileReference(route, '/work')).toBeUndefined();
   }
   expect(findFileReferences('Version 0.3.3 and 1.2 are available.')).toEqual([]);
+});
+
+it('clamps relative traversal at Windows drive and UNC roots', () => {
+  expect(joinPath('E:/kiki-wt', '..', '..')).toBe('E:/');
+  expect(joinPath('E:/kiki-wt', '../../../shot.png')).toBe('E:/shot.png');
+  expect(joinPath('E:\\kiki-wt', '..\\..')).toBe('E:/');
+  expect(resolveHostPath('../../shot.png', '/E:/kiki-wt')).toBe('E:/shot.png');
+  expect(joinPath('//server/share/folder', '../../..')).toBe('//server/share');
+  expect(joinPath('/work', '../..')).toBe('/');
+  expect(joinPath('work', '../..')).toBe('..');
 });

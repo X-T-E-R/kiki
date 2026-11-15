@@ -28,7 +28,11 @@ const response = usageResponseSchema.parse({
 });
 
 describe('UsageReliabilityDetails', () => {
-  it.each([false, true])('uses shared completeness=%s even when all reason lists are empty', async (complete) => {
+  it.each([
+    { complete: false, tokensUnknown: false },
+    { complete: true, tokensUnknown: false },
+    { complete: false, tokensUnknown: true },
+  ])('uses a compact status without redundant subtotal prose for %j', async ({ complete, tokensUnknown }) => {
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement('div');
     containers.push(container);
@@ -36,14 +40,21 @@ describe('UsageReliabilityDetails', () => {
     const root = createRoot(container);
     try {
       await act(async () => {
-        root.render(<I18nProvider><UsageReliabilityDetails summary={response.summary}
+        root.render(<I18nProvider><UsageReliabilityDetails summary={{ ...response.summary, tokens_unknown: tokensUnknown,
+          tokens: { ...response.summary.tokens, input_other: 100 } }}
           reliability={{ ...response.reliability, complete }} /></I18nProvider>);
       });
       expect(container.querySelector<HTMLElement>('[data-usage-reliability-state]')?.dataset['usageReliabilityState'])
         .toBe(complete ? 'complete' : 'partial');
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!.click(); });
-      if (complete) expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
-      else expect(container.querySelector('[data-usage-incomplete]')?.textContent).toMatch(/Coverage.*Partial|覆盖范围.*不完整/);
+      expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
+      expect(container.querySelector('[data-usage-accounting-known-subtotal]')).toBeNull();
+      expect(container.textContent).not.toContain('Known subtotal only');
+      if (!complete) {
+        expect(container.querySelector('[data-usage-reliability-toggle] [data-icon="partial"]')).not.toBeNull();
+        expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('About these totals');
+        expect(container.querySelector('[data-usage-reliability] dl')?.className).not.toMatch(/mt-4|border-t/);
+      }
     } finally {
       await act(async () => { root.unmount(); });
     }

@@ -1126,6 +1126,60 @@ describe('S2 key status', () => {
     expect(panel.textContent).not.toContain('135');
   });
 
+  it('falls back to UTC or the raw timestamp for an invalid reset timezone', async () => {
+    const readUsage = vi.fn().mockResolvedValue({
+      provider_instance_id: 'example.default',
+      provider_id: 'example',
+      balance_supported: true,
+      keys: [{
+        key_index: 1,
+        state: 'ready',
+        usage: {
+          scope: 'key',
+          unit: 'credits',
+          used: 1,
+          limit: 10,
+          remaining: 9,
+          checked_at: '2026-10-03T09:00:00Z',
+          meters: [{
+            id: 'requests',
+            label: 'Requests',
+            unit: 'credits',
+            used: 1,
+            limit: 10,
+            remaining: 9,
+            reset_at: '2026-10-03T12:00:00Z',
+            reset_timezone: 'Mars/Olympus',
+          }],
+        },
+      }],
+    } satisfies NbSearchKeyUsageView);
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <NbSearchKeyUsagePanel instanceId="example.default" readUsage={readUsage} />
+        </I18nProvider>,
+      );
+    });
+
+    await click(container.querySelector('[data-nb-search-key-usage-load]'));
+
+    expect(container.querySelector('[data-nb-search-key-usage-result]')).not.toBeNull();
+    expect(container.querySelector('[data-nb-search-key-usage-error]')).toBeNull();
+    const meter = container.querySelector('[data-nb-search-key-usage-meter="requests"]');
+    expect(meter?.textContent).toContain('Requests');
+    expect(meter?.textContent).toContain(new Intl.DateTimeFormat('en', {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
+    }).format(new Date('2026-10-03T12:00:00Z')));
+    expect(meter?.textContent).toContain('UTC');
+    expect(meter?.textContent).not.toContain('Mars/Olympus');
+  });
+
   it('reads nothing until asked, then shows a shared team balance per key without summing it', async () => {
     const readUsage = vi.fn().mockResolvedValue(TEAM_USAGE);
     const container = document.createElement('div');

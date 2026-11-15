@@ -387,6 +387,14 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(isReadStep(image('t1'))).toBe(false);
   });
 
+  it('keeps omitted attachments from known media tools in a media run until hydration', () => {
+    const omitted = inTurn(tool('ReadMediaFile', 'done', {
+      media: [{ kind: 'file', detail: { agentId: 'main', attachmentId: 'omitted' } }],
+    }), 't1');
+    expect(foldHistory([omitted], 't1')[0]?.kind).toBe('media-run');
+    expect(foldHistory([{ ...omitted, name: 'Read' }], 't1')[0]?.kind).not.toBe('media-run');
+  });
+
   it('gives an image that arrives as the result’s own attachment the same row', () => {
     const attached = (turnId: string): ToolBlock => inTurn(tool('external_paint', 'done', {
       media: [{ kind: 'image', fileId: 'f_acp_2f1a', name: 'answer.png', mime: 'image/png' }],

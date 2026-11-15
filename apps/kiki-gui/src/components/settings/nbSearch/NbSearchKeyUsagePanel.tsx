@@ -32,6 +32,22 @@ type DetailedMeterLine = {
   readonly reset?: string;
 };
 
+function formatResetTime(resetAt: string, timezone: string, locale: string): { time: string; timezone: string } {
+  const date = new Date(resetAt);
+  if (Number.isNaN(date.getTime())) return { time: resetAt, timezone };
+  try {
+    return {
+      time: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(date),
+      timezone,
+    };
+  } catch {
+    return {
+      time: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(date),
+      timezone: 'UTC',
+    };
+  }
+}
+
 const STATE_KEYS = {
   unknown: 'st.nbSearch.keyUsage.stateUnknown',
   ready: 'st.nbSearch.keyUsage.stateReady',
@@ -106,14 +122,7 @@ export function NbSearchKeyUsagePanel({
         ? undefined
         : meter.reset_timezone === undefined
           ? t('st.nbSearch.keyUsage.resetAt', { time: time.absoluteTime(meter.reset_at) ?? meter.reset_at })
-          : t('st.nbSearch.keyUsage.resetAtTimezone', {
-              time: new Intl.DateTimeFormat(locale, {
-                dateStyle: 'medium',
-                timeStyle: 'short',
-                timeZone: meter.reset_timezone,
-              }).format(new Date(meter.reset_at)),
-              timezone: meter.reset_timezone,
-            });
+          : t('st.nbSearch.keyUsage.resetAtTimezone', formatResetTime(meter.reset_at, meter.reset_timezone, locale));
       return { id: meter.id, label: meter.label ?? meter.id, value, reset };
     });
   };

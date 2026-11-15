@@ -311,6 +311,43 @@ it('keeps a non-dismissible dialog out of the phone back stack', async () => {
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('keeps focus and the latest Escape callback through a Dialog rerender', async () => {
+  const firstClose = vi.fn();
+  const latestClose = vi.fn();
+  await act(async () => root.render(<Dialog ariaLabel="Latest callback" overlayId="latest-dialog" onClose={firstClose}>
+    <input aria-label="Dialog field" />
+  </Dialog>));
+  const input = document.querySelector<HTMLInputElement>('[aria-label="Dialog field"]')!;
+  input.focus();
+
+  await act(async () => root.render(<Dialog ariaLabel="Latest callback" overlayId="latest-dialog" onClose={latestClose}>
+    <input aria-label="Dialog field" />
+  </Dialog>));
+  expect(document.activeElement).toBe(input);
+  await escape();
+  expect(firstClose).not.toHaveBeenCalled();
+  expect(latestClose).toHaveBeenCalledOnce();
+});
+
+it('keeps focus and the latest Escape callback through a ConfirmDialog rerender', async () => {
+  const firstCancel = vi.fn();
+  const latestCancel = vi.fn();
+  const props = { open: true, title: 'Latest confirmation', confirmLabel: 'Confirm' } as const;
+  await act(async () => root.render(<I18nProvider>
+    <ConfirmDialog {...props} onConfirm={() => {}} onCancel={firstCancel} />
+  </I18nProvider>));
+  const cancel = document.querySelector<HTMLButtonElement>('[role="alertdialog"] button')!;
+  expect(document.activeElement).toBe(cancel);
+
+  await act(async () => root.render(<I18nProvider>
+    <ConfirmDialog {...props} onConfirm={() => {}} onCancel={latestCancel} />
+  </I18nProvider>));
+  expect(document.activeElement).toBe(cancel);
+  await escape();
+  expect(firstCancel).not.toHaveBeenCalled();
+  expect(latestCancel).toHaveBeenCalledOnce();
+});
+
 it('leaves an Escape that ends an IME composition to the field', async () => {
   const onClose = vi.fn();
   await act(async () => root.render(<Dialog ariaLabel="Compose" overlayId="ime-dialog" onClose={onClose}>

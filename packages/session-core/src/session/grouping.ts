@@ -179,7 +179,8 @@ export function subagentLive(
 export function isMediaTool(block: Block): block is ToolBlock {
   if (block.kind !== 'tool' || block.status === 'running') return false;
   const media = toolResultMedia(block.media, extractToolOutputMedia(block.output)?.media, undefined, true, block.outputPending === true);
-  return media.some((item) => item.kind === 'image');
+  return media.some((item) => item.kind === 'image' ||
+    item.kind === 'file' && item.detail !== undefined && /ReadMediaFile|read_media_file|screenshot|screen_capture/i.test(block.name));
 }
 
 /**

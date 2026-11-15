@@ -123,10 +123,10 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(tree.textContent).toContain('全树');
     expect(tree.disabled).toBe(false);
     expect(tree.hasAttribute('data-usage-scope-incomplete')).toBe(true);
-    expect(tree.title).toContain('部分用量或费用不完整');
+    expect(tree.title).toContain('整棵树部分统计');
   });
 
-  it('says in words which counts the partial tree left out, and only while it is shown', async () => {
+  it('keeps the partial tree state as a quiet icon, and only while it is shown', async () => {
     const partial = await render({
       figures: { totalTokens: 1_200 },
       treeFigures: { totalTokens: 1_200, incomplete: true },
@@ -134,7 +134,9 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     });
     const note = partial.querySelector<HTMLElement>('[data-overview-tree-incomplete]')!;
     expect(note).not.toBeNull();
-    expect(note.textContent).toContain('部分用量或费用仍不完整');
+    expect(note.textContent).toBe('');
+    expect(note.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(note.getAttribute('aria-label')).toContain('整棵树');
     expect(partial.querySelector('[data-metrics-counting]')).toBeNull();
     // The agent scope is a full count; it claims nothing it cannot back.
     const agent = await render({
@@ -200,9 +202,12 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(one.querySelectorAll('[data-overview-fact]')).toHaveLength(1);
   });
 
-  it('keeps a partial count labelled as partial', async () => {
+  it('keeps a partial count as a quiet icon', async () => {
     const container = await render({ figures: { totalTokens: 1_200, partial: true } });
-    expect(container.textContent).toContain('部分统计');
+    const status = container.querySelector('[data-agent-usage] [role="status"]');
+    expect(status?.textContent).toBe('');
+    expect(status?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(status?.getAttribute('aria-label')).toContain('部分统计');
   });
 });
 

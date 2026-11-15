@@ -929,9 +929,9 @@ describe('UsagePage (V2)', () => {
   });
 
   it.each([
-    ['en', 'Some usage is unknown', 'Rescan all'],
-    ['zh', '部分用量未知', '全量重扫'],
-  ])('collapses all reliability warnings into one disclosure in %s', async (locale, label, action) => {
+    ['en', 'About these totals', 'Rescan all'],
+    ['zh', '统计说明', '全量重扫'],
+  ])('keeps the reliability status as a compact disclosure in %s', async (locale, label, action) => {
     localStorage.setItem('kiki.locale', locale);
     getUsage.mockImplementation(async () => usageResponse({
       costUnknown: true,
@@ -952,9 +952,9 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
     await openReliability(container);
     expect(container.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('example-model-a');
-    expect(container.querySelector('[data-usage-incomplete]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
-    expect(container.querySelector('[data-usage-reliability] [data-usage-accounting-known-subtotal]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-reliability] [data-usage-accounting-known-subtotal]')).toBeNull();
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.textContent).not.toContain('example-model-a');
@@ -1081,7 +1081,7 @@ describe('UsagePage (V2)', () => {
       usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
     );
     const { container } = await renderPage();
-    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('Some usage is unknown');
+    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('About these totals');
     expect(container.textContent).not.toContain('mystery-1');
     expect(container.textContent).not.toContain('partially unknown');
     // Cost and token provenance are judged separately, so the priced part is
@@ -1093,15 +1093,16 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
   });
 
-  it('shows the incomplete notice when the server reports one', async () => {
+  it('keeps incomplete accounting as a compact disclosure state', async () => {
     getUsage.mockImplementation(async () =>
       usageResponse({ defaulted: true, incompleteReason: 'session_cap', incompleteSessions: 4 }),
     );
     const { container } = await renderPage();
-    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('Some usage is unknown');
+    const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
+    expect(toggle.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(toggle.textContent).toContain('About these totals');
     await openReliability(container);
-    expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain('session limit');
-    expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain('4 sessions');
+    expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
   });
 
   it('does not present an unfinished zero scan as empty usage and resumes counting on demand', async () => {

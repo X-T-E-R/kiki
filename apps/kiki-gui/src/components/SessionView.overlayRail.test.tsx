@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
 import { resetLayoutPreferencesForTests } from '@kiki/session-core/settings';
+import { ApiError } from '@kiki/session-core/transport';
 import { I18nProvider } from '../i18n';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import { readTimelineView, writeTimelineView } from './message/messageViewMode';
@@ -22,6 +23,8 @@ const { opened, fixture } = vi.hoisted(() => ({
   fixture: {
     session: undefined as Session | undefined,
     partialPrompts: false,
+    readMediaPreview: vi.fn(),
+    loadEditAttachments: undefined as import('./Transcript').TranscriptRowActions['loadEditAttachments'],
     seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   },
 }));
@@ -32,6 +35,8 @@ vi.mock('../state/connection', () => {
     klient: { session: () => ({ agent: () => ({ isCompacting: async () => false, getLoopStatus: async () => ({ state: 'idle' }), events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }), onError: () => ({ dispose: () => {} }) } }) }) },
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({}),
+    readingOptions: () => ({}),
+    readSessionMediaPreviewBytes: fixture.readMediaPreview,
     listModels: () => Promise.resolve({ items: [] }),
     listAgentModelSwitches: () => Promise.resolve([]),
     subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
@@ -95,7 +100,10 @@ vi.mock('./ConversationShell', () => ({
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 vi.mock('./Transcript', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./Transcript')>();
-  return { ...actual, Transcript: () => <div data-transcript /> };
+  return { ...actual, Transcript: (props: { rowActions?: import('./Transcript').TranscriptRowActions }) => {
+    fixture.loadEditAttachments = props.rowActions?.loadEditAttachments;
+    return <div data-transcript />;
+  } };
 });
 vi.mock('./SelectionQuoteButton', () => ({ SelectionQuoteButton: () => null }));
 // The preview: a tab strip that opens (and selects) an agent tab.
@@ -410,4 +418,28 @@ describe('right rail responsive layout', () => {
       await view.unmount();
     }
   });
+});
+
+it.each([
+  new Error('Media preview exceeds its byte budget'),
+  new ApiError({ code: 413, msg: 'Payload too large', data: null }),
+  new ApiError({ code: -3, msg: 'preview_budget_exceeded', data: null }),
+])('retains the original image when an edit preview is too large: %s', async (error) => {
+  fixture.readMediaPreview.mockRejectedValue(error);
+  const mounted = await mountAt('wide');
+  try {
+    expect(fixture.loadEditAttachments).toBeDefined();
+    const attachments = await fixture.loadEditAttachments!({
+      kind: 'user', id: 'user-large', text: 'image', createdAt: '2026-01-01T00:00:00.000Z',
+      media: [{ kind: 'image', fileId: 'large-image', name: 'large.png', mime: 'image/png' }],
+    }, new AbortController().signal);
+    expect(attachments).toEqual([{
+      kind: 'retained', name: 'large.png',
+      content: { type: 'image', name: 'large.png', source: { kind: 'session_media', file_id: 'large-image' } },
+    }]);
+    expect(fixture.readMediaPreview).toHaveBeenCalledWith('session-a', 'large-image', expect.anything());
+  } finally {
+    await mounted.unmount();
+    fixture.readMediaPreview.mockReset();
+  }
 });

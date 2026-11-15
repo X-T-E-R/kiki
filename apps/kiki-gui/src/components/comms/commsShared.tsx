@@ -23,6 +23,7 @@ import {
 } from '../../lib/threadMessages';
 import { useOptionalConnection } from '../../state/connection';
 import { useThreadTitleResolver } from '../../lib/threadTitles';
+import { Spinner } from '../icons';
 
 export const THREAD_MESSAGES_QUERY_KEY = ['thread-messages'] as const;
 
@@ -59,8 +60,10 @@ export function useThreadMessages(filter: ThreadMessagesFilter, enabled = true) 
 
 export function HistoryNote({ state }: { readonly state: 'preparing' | 'error' }) {
   const { t } = useI18n();
-  return <p role="status" data-comms-history={state} className="text-[12.5px] text-ink-faint">
-    {t(state === 'error' ? 'comms.historyFailed' : 'comms.historyPreparing')}
+  const label = t(state === 'error' ? 'comms.historyFailed' : 'comms.historyPreparing');
+  return <p role="status" data-comms-history={state} className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-faint">
+    {state === 'preparing' ? <Spinner label={label} size={12} /> : null}
+    {label}
   </p>;
 }
 

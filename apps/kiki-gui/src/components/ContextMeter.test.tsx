@@ -237,7 +237,7 @@ describe('canonical current-agent cumulative usage', () => {
     expect(detail?.textContent).toContain('Input10');
     expect(detail?.textContent).toContain('$0.010');
     expect(detail?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
-    expect(detail?.querySelector('[data-context-usage-freshness="stale"]')?.textContent).toBe('May be out of date');
+    expect(detail?.querySelector('[data-context-usage-freshness]')).toBeNull();
 
     await act(async () => {
       root.render(
@@ -252,6 +252,39 @@ describe('canonical current-agent cumulative usage', () => {
     expect(signals[1]?.aborted).toBe(false);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
     expect(signals[1]?.aborted).toBe(true);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('marks complete stale session accounting with a quiet cached icon', async () => {
+    canonicalMocks.connection = {
+      spaceKey: 'main', scopeId: 'local',
+      client: { klient: { rest: { sessionUsageAccounting: canonicalMocks.read }, events: { on: () => ({ dispose: () => {} }) } } },
+    };
+    canonicalMocks.read.mockResolvedValue({
+      version: 2,
+      subject: { session_id: 'session_a', scope: 'session' },
+      covered_at: 1,
+      complete: true,
+      freshness: 'stale',
+      tokens: { input_other: 10, output: 2, input_cache_read: 0, input_cache_creation: 0 },
+      tokens_unknown: false,
+      cost_usd_estimated: 0.01,
+      cost_unknown: false,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} sessionId="session_a" /></MemoryRouter></I18nProvider>);
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    const status = container.querySelector('[data-context-usage-status="stale"]');
+    expect(status?.textContent).toBe('');
+    expect(status?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(status?.getAttribute('title')).toBe('Cached');
+    expect(status?.getAttribute('aria-label')).toBe('Cached');
     await act(async () => { root.unmount(); });
   });
 
@@ -281,14 +314,14 @@ describe('canonical current-agent cumulative usage', () => {
       await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_a" /></MemoryRouter></I18nProvider>); });
       expect(canonicalMocks.read).not.toHaveBeenCalled();
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
-      expect(container.querySelector('[data-context-usage-freshness="unverified"]')?.textContent).toBe('Not yet checked');
+      expect(container.querySelector('[data-context-usage-freshness]')).toBeNull();
 
       for (const [delay, expectedCalls] of [[249, 1], [1, 2], [999, 2], [1, 3], [2_999, 3], [1, 4], [9_999, 4], [1, 5], [9_999, 5], [1, 6]] as const) {
         await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
         expect(canonicalMocks.read).toHaveBeenCalledTimes(expectedCalls);
       }
       expect(container.querySelector('[data-context-usage-freshness]')).toBeNull();
-      expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('Some usage or prices are unknown');
+      expect(container.querySelector('[data-context-usage-error]')).toBeNull();
       await act(async () => { await vi.advanceTimersByTimeAsync(14_999); });
       expect(canonicalMocks.read).toHaveBeenCalledTimes(6);
     } finally {
@@ -527,7 +560,7 @@ describe('canonical current-agent cumulative usage', () => {
         metrics_only: true, metrics_agent_ids: ['child_7'],
       }, { signal: expect.any(AbortSignal) });
       expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Input100');
-      expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('incomplete');
+      expect(container.querySelector('[data-context-usage-error]')).toBeNull();
       await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
       expect(canonicalMocks.read).toHaveBeenNthCalledWith(4, {
         session_id: 'session_abc', agent_id: 'child_7', metrics_settle: false, metrics_only: true,
@@ -629,7 +662,7 @@ describe('canonical current-agent cumulative usage', () => {
     await act(async () => { await pending.promise; });
     const usage = container.querySelector('[data-context-usage]');
     expect(usage?.textContent).toContain('Agent cumulative');
-    expect(usage?.textContent).toContain('incomplete');
+    expect(container.querySelector('[data-context-usage-error]')).toBeNull();
     expect(usage?.textContent).toContain('Not reported');
     expect(usage?.textContent).not.toContain('$0.00');
     expect(usage?.textContent).not.toContain('Session cumulative');
@@ -904,7 +937,12 @@ describe('ContextMeter interaction', () => {
     });
 
     const usage = container.querySelector('[data-context-usage]');
-    expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('incomplete');
+    expect(container.querySelector('[data-context-usage-error]')).toBeNull();
+    const status = container.querySelector('[data-context-usage-status="partial"]');
+    expect(status?.textContent).toBe('');
+    expect(status?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(status?.getAttribute('title')).toBe('Partial');
+    expect(status?.getAttribute('aria-label')).toBe('Partial');
     expect(usage?.textContent).toContain('Input');
     expect(usage?.textContent).toContain('Total tokens');
     await act(async () => { root.unmount(); });

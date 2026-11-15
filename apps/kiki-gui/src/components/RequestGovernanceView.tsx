@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { RequestGovernanceSnapshot } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -27,7 +28,7 @@ import {
 } from '../lib/liveAgentGovernance';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useSessionNames } from '../lib/threadTitles';
-import { DisclosureChevron } from './icons';
+import { DisclosureChevron, Icon } from './icons';
 import { ConcurrencyRulesEditor } from './usage/ConcurrencyRulesEditor';
 import { ExecutionSessionList, PauseAllExecutions, sessionLabelOf, sessionLabelText } from './usage/ExecutionControls';
 import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
@@ -38,8 +39,8 @@ export const CONCURRENCY_RULES_SETTINGS_HREF = '/settings/ai?tab=defaults#st-car
  * The sidebar's Activity badge: live active and queued model request counts in
  * quiet tabular figures (`3`, `3 · +1`, `+1` in the expanded sidebar; `3`,
  * `3+1`, `+1` in the collapsed rail) while work is running or waiting, and
- * silent when idle. A stale read keeps the last non-idle counts with a hollow
- * mark (`◦`) rather than claiming they are current.
+ * silent when idle. A stale read keeps the last non-idle counts and exposes a
+ * concise refresh hint in its title.
  */
 export function RequestGovernanceBadge({ compact = false }: { compact?: boolean }) {
   const { snapshot, stale } = useRequestGovernance();
@@ -62,14 +63,14 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
         : 'ml-auto shrink-0 font-mono text-[11px] text-ink-faint tabular-nums'}
     >
       {label}
-      {!compact && stale ? ' ◦' : ''}
     </span>
   );
 }
 
 export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime' | 'limits' } = {}) {
   const { snapshot, stale, loading } = useRequestGovernance();
-  const { t, tp, time } = useI18n();
+  const { t, tp } = useI18n();
+  const queryClient = useQueryClient();
   const limitsRef = useRef<HTMLDivElement>(null);
   const ready = snapshot !== undefined;
   const [userOpen, setUserOpen] = useState<boolean | null>(view === 'limits' ? true : null);
@@ -90,12 +91,11 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
   const enabledRules = snapshot.rules.filter((rule) => rule.enabled).length;
   return (
     <div className="space-y-6" data-request-governance>
-      {stale ? (
-        <p role="status" data-governance-stale className="text-[12px] text-amber-ink">
-          {t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })}
-        </p>
-      ) : null}
-      <RealtimePanel snapshot={snapshot} />
+      <RealtimePanel
+        snapshot={snapshot}
+        stale={stale}
+        onRefresh={() => { void queryClient.invalidateQueries({ queryKey: ['request-governance'] }); }}
+      />
       <div
         ref={limitsRef}
         id="usage-limits"
@@ -132,7 +132,11 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
 // Live — running and queued right now
 // ---------------------------------------------------------------------------
 
-function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
+function RealtimePanel({ snapshot, stale, onRefresh }: {
+  readonly snapshot: RequestGovernanceSnapshot;
+  readonly stale: boolean;
+  readonly onRefresh: () => void;
+}) {
   const { t, time } = useI18n();
   const phone = usePhoneMode();
   const liveAgent = useLiveAgentGovernance();
@@ -239,6 +243,18 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           help={requestSummary}
           actions={(
             <>
+              {stale ? (
+                <button
+                  type="button"
+                  data-governance-stale
+                  aria-label={`${t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
+                  title={`${t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
+                  onClick={onRefresh}
+                  className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                >
+                  <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
+                </button>
+              ) : null}
               <span className="sr-only" data-governance-active>{snapshot.active}</span>
               <span className="sr-only" data-governance-queued>{snapshot.queued}</span>
             </>
@@ -319,6 +335,19 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           help={agentSummary}
           actions={agentSnapshot === undefined ? undefined : (
             <>
+              {liveAgent.stale ? (
+                <button
+                  type="button"
+                  data-governance-agents-stale
+                  data-governance-agents-retry
+                  aria-label={`${t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
+                  title={`${t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
+                  onClick={() => { void liveAgent.refetch(); }}
+                  className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                >
+                  <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
+                </button>
+              ) : null}
               <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
               <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
@@ -339,14 +368,6 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           </p>
         ) : (
           <>
-            {liveAgent.stale ? (
-              <p role="status" data-governance-agents-stale className="mb-3 text-[12px] text-amber-ink">
-                {t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })}
-                <button type="button" data-governance-agents-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { void liveAgent.refetch(); }}>
-                  {t('usage.execution.retryRefresh')}
-                </button>
-              </p>
-            ) : null}
             <div className="mb-3 flex flex-wrap items-center gap-3">
               <AxisGroup
                 label={t('usage.governance.byDimension')}
@@ -412,12 +433,18 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
         )}
         <ExecutionSessionList liveSessionIds={liveSessionIds} states={executionStates} onRetryRead={refetchExecutions} labelOf={labelOf} />
         {executionVisibleError !== undefined ? (
-          <p role="status" data-execution-stale className="mt-2 text-[12px] text-amber-ink">
-            {t('usage.execution.staleState')}
-            <button type="button" data-execution-stale-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={retryExecutionReads}>
-              {t('usage.execution.retryRefresh')}
+          <span role="status" data-execution-stale className="mt-2 inline-flex text-amber-ink">
+            <button
+              type="button"
+              data-execution-stale-retry
+              aria-label={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
+              title={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
+              onClick={retryExecutionReads}
+              className="inline-flex items-center transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+            >
+              <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
             </button>
-          </p>
+          </span>
         ) : null}
       </section>
     </div>

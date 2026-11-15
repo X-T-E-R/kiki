@@ -227,7 +227,10 @@ describe('PluginPanelHost document source', () => {
     queryClient.clear();
   });
 
-  it.each([false, true])('replaces the previous server grant after server generation recovery (endpoint changed: %s)', async (changeEndpoint) => {
+  it.each([
+    { changeServer: true, changeEndpoint: false },
+    { changeServer: false, changeEndpoint: true },
+  ])('replaces the previous server grant after server generation recovery: %j', async ({ changeServer, changeEndpoint }) => {
     const bag = connection as typeof connection & { scopeId?: string; meta?: { server_id: string } };
     bag.scopeId = 'local';
     bag.meta = { server_id: 'server-a' };
@@ -264,13 +267,16 @@ describe('PluginPanelHost document source', () => {
     });
     expect(container.querySelector('iframe')?.getAttribute('src')).toBe('http://grant-a.kiki-document.localhost:1234/plugin-panel/a');
 
-    bag.meta = { server_id: 'server-b' };
+    bag.meta = { server_id: changeServer ? 'server-b' : 'server-a' };
     if (changeEndpoint) bag.client.baseUrl = 'https://new-server.example.test/root/';
-    await act(async () => { render(); });
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ['plugin-panel-document'] });
+      render();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (container.querySelector('iframe')?.getAttribute('src') === 'http://grant-b.kiki-document.localhost:5678/plugin-panel/b') break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
     expect(getPluginPanelDocument).toHaveBeenCalledTimes(3);
     expect(container.querySelector('iframe')?.getAttribute('src')).toBe('http://grant-b.kiki-document.localhost:5678/plugin-panel/b');
     queryClient.clear();

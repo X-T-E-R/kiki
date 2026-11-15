@@ -1,5 +1,5 @@
 /**
- * Media helpers for the transcript: structured refs for image/video/file
+ * Media helpers for the transcript: structured refs for image/video/audio/file
  * content parts (replacing the old `[image]` placeholder flattening), tool
  * result media extraction (ReadMediaFile-style engine part arrays), and the
  * local-file link resolution behind clickable file paths + previews.
@@ -44,6 +44,11 @@ export interface MediaRef {
 
 type ContentPart = Message['content'][number];
 
+function parseComposerBlobRef(url: string): ReturnType<typeof parseMediaBlobRef> {
+  const audio = /^blobref:(audio\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
+  return audio === null ? parseMediaBlobRef(url) : { kind: 'mime', mime: audio[1]!, hash: audio[2]! };
+}
+
 function mimeFromDataUrl(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   const match = /^data:([^;,]+)/.exec(url);
@@ -85,7 +90,7 @@ export function mediaRefFromUrl(
   url: string,
   extra?: Pick<MediaRef, 'name' | 'mime' | 'size'>,
 ): MediaRef {
-  const blobref = parseMediaBlobRef(url);
+  const blobref = parseComposerBlobRef(url);
   if (blobref?.kind === 'mime') {
     return { kind, name: extra?.name, size: extra?.size, mime: blobref.mime, blobHash: blobref.hash };
   }
@@ -101,7 +106,7 @@ export function mediaRefFromUrl(
 /**
  * Refine a media ref with the attachment detail read for it. A transcript
  * window that omitted an attachment only knows its id and projects it as a
- * `file`; the detail's media type says whether it is an image or a video, so
+ * `file`; the detail's media type identifies images, video and audio, so
  * an edited message re-sends it as session media instead of an upload id.
  */
 export function mediaRefWithAttachmentDetail(
@@ -110,7 +115,8 @@ export function mediaRefWithAttachmentDetail(
 ): MediaRef {
   if (media.kind !== 'file') return media;
   const kind = attachment.mediaType.startsWith('image/') ? 'image'
-    : attachment.mediaType.startsWith('video/') ? 'video' : undefined;
+    : attachment.mediaType.startsWith('video/') ? 'video'
+    : attachment.mediaType.startsWith('audio/') ? 'audio' : undefined;
   if (kind === undefined) return media;
   return {
     ...media,
@@ -178,7 +184,7 @@ export function toolResultMedia(
   const paired = sameFrameOrder && (fullFrame || boundedPrefix) && parts !== undefined && references !== undefined &&
     parts.every((part, index) => {
       const item = references[index]!;
-      const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
+      const blob = item.fileId === undefined ? undefined : parseComposerBlobRef(item.fileId);
       const referenceHash = item.blobHash ?? blob?.hash;
       const omittedTypedPlaceholder =
         item.kind === 'file' &&
@@ -223,7 +229,7 @@ export function toolResultMedia(
   const merged: MediaRef[] = [];
   const positions = new Map<string, number>();
   for (const item of inputs) {
-    const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
+    const blob = item.fileId === undefined ? undefined : parseComposerBlobRef(item.fileId);
     const owner = blob?.kind === 'agent' ? blob.agentId : item.detail?.agentId ?? agentId;
     const hash = item.blobHash ?? blob?.hash;
     // One ref can name both a canonical file and its original bytes. Paths and
@@ -258,19 +264,19 @@ export function toolResultMedia(
 }
 
 export interface ToolOutputMedia {
-  /** Text parts joined, with image/video wrapper tags stripped. */
+  /** Text parts joined, with image/video/audio wrapper tags stripped. */
   readonly text: string;
   readonly media: readonly MediaRef[];
 }
 
-const MEDIA_TAG_RE = /<(\/?)(image|video)\b([^>]*)>/gi;
+const MEDIA_TAG_RE = /<(\/?)(image|video|audio)\b([^>]*)>/gi;
 const MEDIA_PATH_RE = /\bpath=(?:"([^"]*)"|'([^']*)')/i;
 const BROWSER_MEDIA_URL_RE = /^(?:data:|blob:|https?:\/\/)/i;
 
 function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
   const url = ref.url;
   if (url?.startsWith('blobref:')) {
-    const match = parseMediaBlobRef(url);
+    const match = parseComposerBlobRef(url);
     if (match?.kind === 'mime' && match.mime.startsWith(`${ref.kind}/`)) {
       return { ...ref, url: undefined, path, mime: match.mime, blobHash: match.hash };
     }
@@ -302,7 +308,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
   if (!Array.isArray(output)) return undefined;
   const media: MediaRef[] = [];
   const texts: string[] = [];
-  let pending: { kind: 'image' | 'video'; path: string } | undefined;
+  let pending: { kind: 'image' | 'video' | 'audio'; path: string } | undefined;
   for (const item of output) {
     if (typeof item !== 'object' || item === null) continue;
     const part = item as Record<string, unknown>;
@@ -313,7 +319,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
     if (typeof metadata === 'object' && metadata !== null) {
       const attachment = metadata as Record<string, unknown>;
       if (typeof attachment['fileId'] === 'string') {
-        media.push({ kind: type === 'image_url' ? 'image' : type === 'video_url' ? 'video' : type === 'audio_url' ? 'audio' : 'file',
+        media.push({ kind: type === 'image_url' || type === 'image' ? 'image' : type === 'video_url' || type === 'video' ? 'video' : type === 'audio_url' || type === 'audio' ? 'audio' : 'file',
           fileId: attachment['fileId'], name: typeof attachment['name'] === 'string' ? attachment['name'] : undefined,
           mime: typeof attachment['mimeType'] === 'string' ? attachment['mimeType'] : undefined,
           size: typeof attachment['size'] === 'number' ? attachment['size'] : undefined });
@@ -324,7 +330,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
       const text = part['text'];
       if (typeof text !== 'string') continue;
       for (const tag of text.matchAll(MEDIA_TAG_RE)) {
-        const kind = tag[2]?.toLowerCase() as 'image' | 'video';
+        const kind = tag[2]?.toLowerCase() as 'image' | 'video' | 'audio';
         if (tag[1] === '/') {
           if (pending?.kind === kind) pending = undefined;
         } else {
@@ -336,7 +342,9 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
       if (cleaned !== '') texts.push(cleaned);
       continue;
     }
-    const engineRef = part['type'] === 'image_url' || part['type'] === 'video_url' ? mediaUrlFromPart(part) : undefined;
+    const engineRef = type === 'audio_url' && typeof ref?.['url'] === 'string'
+      ? { kind: 'audio' as const, url: ref['url'] }
+      : type === 'image_url' || type === 'video_url' ? mediaUrlFromPart(part) : undefined;
     if (engineRef !== undefined) {
       media.push(toolMediaRef({
         kind: engineRef.kind,
@@ -346,7 +354,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
       pending = undefined;
       continue;
     }
-    if (part['type'] === 'image' || part['type'] === 'video') {
+    if (part['type'] === 'image' || part['type'] === 'video' || part['type'] === 'audio') {
       const source = part['source'];
       if (typeof source === 'object' && source !== null) {
         media.push(toolMediaRef(
@@ -532,21 +540,23 @@ function parseFileUrl(value: string): { readonly path: string; readonly suffix: 
 }
 
 /** Join a workspace cwd with a relative reference, resolving . and .. segments. */
-export function joinPath(base: string, relative: string): string {
-  const combined = `${base.replace(/[\\/]+$/, '')}/${relative}`.replaceAll('\\', '/');
-  const absolute = combined.startsWith('/');
+export function joinPath(base: string, ...relative: string[]): string {
+  const combined = `${base.replace(/[\\/]+$/, '')}/${relative.join('/')}`.replaceAll('\\', '/');
+  const drive = WINDOWS_ABS_RE.test(combined);
+  const absolute = drive || combined.startsWith('/');
   const unc = combined.startsWith('//');
+  const rootDepth = unc ? 2 : drive ? 1 : 0;
   const stack: string[] = [];
   for (const segment of combined.split('/')) {
     if (segment === '' || segment === '.') continue;
     if (segment === '..') {
-      if (stack.length > (unc ? 2 : 0) && stack.at(-1) !== '..') stack.pop();
+      if (stack.length > rootDepth && stack.at(-1) !== '..') stack.pop();
       else if (!absolute) stack.push('..');
       continue;
     }
     stack.push(segment);
   }
-  return `${unc ? '//' : absolute ? '/' : ''}${stack.join('/')}`;
+  return `${unc ? '//' : absolute && !drive ? '/' : ''}${stack.join('/')}${drive && stack.length === 1 ? '/' : ''}`;
 }
 
 /**

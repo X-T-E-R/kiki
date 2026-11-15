@@ -3527,11 +3527,12 @@ function SearchResults({
             ) : null}
           </div>
         ) : search.building !== undefined ? (
-          <p data-search-building className="px-2 pt-1.5 text-[12px] text-ink-faint">
+          <p data-search-building role="status" className="flex items-center gap-1.5 px-2 pt-1.5 text-[12px] text-ink-faint">
+            <Spinner label={t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })} size={12} />
             {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
           </p>
         ) : search.incomplete ? (
-          <p data-search-incomplete className="px-2 pt-1.5 text-[12px] text-ink-faint">{t('sidebar.results.incomplete')}</p>
+          <p data-search-incomplete role="status" className="px-2 pt-1.5 text-[12px] text-ink-faint">{t('sidebar.results.incomplete')}</p>
         ) : null}
         {search.hasNextPage ? (
           <button

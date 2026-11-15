@@ -164,11 +164,7 @@ export function ContextMeter({
   limit: number;
   /** Lifetime cumulative usage for the detail card (session record, or an agent's projected totals). */
   usage?: ContextMeterUsage;
-  /**
-   * Why the cumulative numbers are missing or short. `read-failed` means they
-   * are placeholders and the card says so instead of showing zeros;
-   * `agent-read-failed` keeps the numbers and marks them incomplete.
-   */
+  /** Why the cumulative numbers are missing or partial. */
   usageError?: SessionUsageError;
   /**
    * Whose cumulative usage the detail card reads and reports: the whole
@@ -229,6 +225,12 @@ export function ContextMeter({
   const costUnknown = hasCanonicalIdentity ? canonicalUsage.partial : sessionAccounting?.cost_unknown === true;
   const canonicalUsageLoading = hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined || canonicalSession.loading && sessionAccounting === undefined;
   const canonicalUsageUnknown = hasCanonicalIdentity && canonicalUsage.state === 'unavailable';
+  const sessionAccountingStale = !hasCanonicalIdentity && sessionAccounting?.freshness !== undefined && sessionAccounting.freshness !== 'current';
+  const usageStatus = detailUsageError === 'agent-read-failed'
+    ? { kind: 'partial' as const, label: t('agentPanel.partialBadge') }
+    : sessionAccountingStale
+      ? { kind: 'stale' as const, label: t('usage.quota.status.stale') }
+      : undefined;
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Same dismissal and placement as the other status-line panels: outside
@@ -425,25 +427,31 @@ export function ContextMeter({
               className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
             >
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-[12px] font-medium text-ink-soft">
+                <p className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
                   {t(hasCanonicalIdentity ? 'context.agentUsage' : usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
+                  {usageStatus !== undefined ? (
+                    <span
+                      role="img"
+                      data-context-usage-status={usageStatus.kind}
+                      title={usageStatus.label}
+                      aria-label={usageStatus.label}
+                      className="inline-flex text-ink-faint"
+                    >
+                      <Icon name="partial" size={12} />
+                    </span>
+                  ) : null}
                 </p>
                 <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
-              {!hasCanonicalIdentity && sessionAccounting?.freshness !== undefined && sessionAccounting.freshness !== 'current' ? (
-                <p role="status" data-context-usage-freshness={sessionAccounting.freshness} className="text-[12px] text-ink-faint">
-                  {t(sessionAccounting.freshness === 'stale' ? 'context.usageStale' : 'context.usageUnverified')}
-                </p>
-              ) : null}
               {canonicalUsageLoading ? (
                 <p role="status" data-context-usage-loading className="text-[12px] text-ink-faint">{t('diagnostics.loading')}</p>
               ) : null}
               {canonicalUsageUnknown ? (
                 <p role="status" data-context-usage-unknown className="text-[12px] text-ink-faint">{t('diagnostics.unknown')}</p>
               ) : null}
-              {detailUsageError !== undefined ? (
-                <p data-context-usage-error title={detailUsageError} className="text-[12px] text-amber-ink">
-                  {t(detailUsageError === 'read-failed' ? 'context.usageReadFailed' : 'context.agentUsageIncomplete')}
+              {detailUsageError === 'read-failed' ? (
+                <p role="status" data-context-usage-error title={detailUsageError} className="text-[12px] text-amber-ink">
+                  {t('context.usageReadFailed')}
                 </p>
               ) : null}
               {detailUsageError === 'read-failed' || canonicalUsageLoading ? null : detailUsage !== undefined ? (

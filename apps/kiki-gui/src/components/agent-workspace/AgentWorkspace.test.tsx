@@ -45,6 +45,8 @@ const harness = vi.hoisted(() => ({
   sendAgentMessage: vi.fn(),
   isNativeAgent: vi.fn(),
   stopAgentTask: vi.fn(),
+  cancelAgent: vi.fn(),
+  getAutoCompact: vi.fn(),
   setAgentModel: vi.fn(),
   setAgentEffort: vi.fn(),
   switchAgentModel: vi.fn(),
@@ -83,6 +85,7 @@ vi.mock('../../state/connection', () => {
       sendAgentMessage: harness.sendAgentMessage,
       isNativeAgent: harness.isNativeAgent,
       stopAgentTask: harness.stopAgentTask,
+      getAutoCompact: harness.getAutoCompact,
       setAgentModel: harness.setAgentModel,
       setAgentEffort: harness.setAgentEffort,
       // Model-switch surface the workspace now mounts (panel + queue state).
@@ -202,8 +205,9 @@ beforeEach(() => {
   harness.listModels.mockResolvedValue({ items: [] });
   harness.getAgentExecutor.mockResolvedValue('native');
   harness.switchAgentModel.mockImplementation(async (_sessionId, agentId, input) => ({ operationId: input.operationId, agentId, state: 'pending', fromModel: input.model, toModel: input.model, mode: input.mode }));
-  harness.agent.mockReturnValue({ setPermission: harness.setPermission, getPermission: harness.getPermission, enterPlan: harness.enterPlan, exitPlan: harness.exitPlan });
+  harness.agent.mockReturnValue({ setPermission: harness.setPermission, getPermission: harness.getPermission, enterPlan: harness.enterPlan, exitPlan: harness.exitPlan, cancel: harness.cancelAgent });
   harness.getPermission.mockResolvedValue('auto');
+  harness.getAutoCompact.mockRejectedValue(new Error('auto-compact unavailable'));
   harness.setPermission.mockResolvedValue(undefined);
   harness.enterPlan.mockResolvedValue(undefined);
   harness.exitPlan.mockResolvedValue(undefined);
@@ -388,6 +392,32 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(workingLine?.textContent).toContain('Working');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Stop this turn"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+});
+
+it('stops an initial branch turn without a parent task through the selected agent facade', async () => {
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  const stop = dock.querySelector<HTMLButtonElement>('[aria-label="Stop this turn"]');
+  expect(stop).not.toBeNull();
+  await act(async () => { stop!.click(); });
+  expect(harness.agent).toHaveBeenCalledWith('child');
+  expect(harness.cancelAgent).toHaveBeenCalledExactlyOnceWith();
+  expect(harness.stopAgentTask).not.toHaveBeenCalled();
+});
+
+it.each(['approval', 'question'] as const)('preserves child pending %s state instead of showing working', async (pendingInteraction) => {
+  const forest = testForest('running', true);
+  await renderWorkspace({
+    forest,
+    railOpen: true,
+    slots: { header, dock, rail: document.createElement('div'), heroFooter: null, footer: null, preview: null },
+    controller: controllerStub({ forest, agentStates: { child: {
+      ...createViewState('session'), loaded: true, busy: true, pendingInteraction,
+    } } }),
+  });
+  await settle();
+  expect(harness.railState?.pendingInteraction).toBe(pendingInteraction);
+  expect(dock.querySelector('[data-composer-working]')).toBeNull();
 });
 
 it('tracks child agent working line and last response dynamically', async () => {
@@ -1581,20 +1611,21 @@ it('applies a picked thinking effort through the agent facade and refreshes the 
   });
 });
 
-it('keeps the effort pick disabled for a terminal subagent', async () => {
+it.each(['completed', 'cancelled', 'failed'] as const)('keeps effort and auto-compact available for a resumable %s subagent', async (status) => {
   harness.listModels.mockResolvedValue(EFFORT_CATALOG);
   await renderWorkspace({
-    forest: testForest('completed', false, { model: 'kiki-pro', thinkingEffort: 'medium' }),
+    forest: testForest(status, false, { model: 'kiki-pro', thinkingEffort: 'medium' }),
   });
   await settle();
+  expect(harness.getAutoCompact).toHaveBeenCalledWith('session', 'child', true);
   const modelSelect = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
-  // A finished child stays wakeable, so the model rebind and the panel are
-  // still offered; only the effort ladder is withheld.
   expect(modelSelect.disabled).toBe(false);
   await act(async () => { modelSelect.click(); });
   expect(dock.querySelector('[role="option"][data-option-value="fixture/kiki-pro"]')).not.toBeNull();
-  expect(dock.querySelector('[data-effort]')).toBeNull();
-  expect(harness.setAgentEffort).not.toHaveBeenCalled();
+  const high = dock.querySelector<HTMLButtonElement>('[data-effort="high"]');
+  expect(high).not.toBeNull();
+  await act(async () => { high!.click(); });
+  expect(harness.switchAgentModel).toHaveBeenCalledWith('session', 'child', expect.objectContaining({ thinking: 'high', intent: 'setting' }));
 });
 
 it('toasts a failed effort change and leaves the live effort selected', async () => {

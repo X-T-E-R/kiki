@@ -1,8 +1,9 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TranscriptTodoNotes, TranscriptTodoNotesMeta, TranscriptTodoNotesStatus } from '@kiki/transcript';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { InspectorChevron, INSPECTOR_HEAD } from './InspectorSection';
+import { Icon } from '../icons';
 
 export const NOTE_SECTION_LABELS = {
   goal: 'agentPanel.notes.goal', directives: 'agentPanel.notes.directives', decided: 'agentPanel.notes.decided',
@@ -28,9 +29,9 @@ function firstLine(text: string): string {
   return text.split('\n').map((line) => line.trim()).find((line) => line !== '') ?? '';
 }
 
-function QuietHead() {
+function QuietHead({ children }: { children?: ReactNode }) {
   const { t } = useI18n();
-  return <h3 className="flex h-8 items-center gap-1.5"><span className={INSPECTOR_HEAD}>{t('agentPanel.notes')}</span></h3>;
+  return <h3 className="flex h-8 items-center gap-1.5"><span className={INSPECTOR_HEAD}>{t('agentPanel.notes')}</span>{children}</h3>;
 }
 
 export const AgentNotesSection = memo(function AgentNotesSection({
@@ -72,6 +73,19 @@ export const AgentNotesSection = memo(function AgentNotesSection({
       read.current?.retry();
     }
   };
+  const quietLabel = t(status !== undefined ? 'agentPanel.notes.stale' : 'agentPanel.notes.partial');
+  const quietNotice = (
+    <span role="status" data-agent-notes-read-status={status !== undefined ? 'stale' : 'partial'} className="inline-flex shrink-0 text-ink-faint">
+      {status === undefined && effectiveContentStatus === 'partial' && onRetry !== undefined ? (
+        <button type="button" title={`${quietLabel} · ${t('common.retry')}`} aria-label={`${quietLabel} · ${t('common.retry')}`}
+          onClick={onRetry} className="inline-flex transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+          <Icon name="refresh" size={12} />
+        </button>
+      ) : (
+        <span role="img" title={quietLabel} aria-label={quietLabel} className="inline-flex"><Icon name="partial" size={12} /></span>
+      )}
+    </span>
+  );
   if (!readable) {
     const isError = viewStatus === 'error' || (!loaded && loadError !== undefined);
     const isUnknown = viewStatus === 'unknown';
@@ -104,10 +118,10 @@ export const AgentNotesSection = memo(function AgentNotesSection({
     const isStatus = status !== undefined || isError || isUnknown || isPartial || isLoading;
     return (
       <section data-agent-notes-section data-agent-notes-state={state}>
-        <QuietHead />
-        <p role={isStatus ? 'status' : undefined} className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
+        <QuietHead>{state === 'partial' ? quietNotice : null}</QuietHead>
+        {state === 'partial' ? null : <p role={isStatus ? 'status' : undefined} className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
           {message}
-          {(isError || isPartial) && onRetry !== undefined ? (
+          {isError && onRetry !== undefined ? (
             <button
               type="button"
               className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
@@ -116,7 +130,7 @@ export const AgentNotesSection = memo(function AgentNotesSection({
               {t('common.retry')}
             </button>
           ) : null}
-        </p>
+        </p>}
       </section>
     );
   }
@@ -128,32 +142,32 @@ export const AgentNotesSection = memo(function AgentNotesSection({
       : 'written';
   return (
     <section data-agent-notes-section data-agent-notes-state={readState} aria-busy={open && effectiveContentStatus === 'loading' ? true : undefined}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => { setOpen((value) => !value); }}
-        className="group -ml-1.5 flex min-h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-      >
-        <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('agentPanel.notes')}</span>
-        {!open && goal !== undefined ? (
-          <span data-agent-notes-goal className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{goal}</span>
-        ) : <span className="flex-1" />}
-        <InspectorChevron open={open} />
-      </button>
-      {status !== undefined ? <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.stale')}</p> : null}
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => { setOpen((value) => !value); }}
+          className="group -ml-1.5 flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('agentPanel.notes')}</span>
+          {!open && goal !== undefined ? (
+            <span data-agent-notes-goal className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{goal}</span>
+          ) : <span className="flex-1" />}
+          <InspectorChevron open={open} />
+        </button>
+        {status !== undefined || effectiveContentStatus === 'partial' ? quietNotice : null}
+      </div>
       {!open && effectiveContentStatus !== undefined && present.length === 0 ? <p className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.readOnOpen')}</p> : null}
       {open ? (
         <div className="pt-1">
-          {effectiveContentStatus !== undefined ? (
+          {effectiveContentStatus !== undefined && effectiveContentStatus !== 'partial' ? (
             <p role="status" data-agent-notes-read-status={effectiveContentStatus} className="mb-2 text-[12px] leading-relaxed text-ink-faint">
               {t(effectiveContentStatus === 'error'
                 ? 'agentPanel.notes.loadFailed'
-                : effectiveContentStatus === 'partial'
-                  ? 'agentPanel.notes.partial'
-                  : effectiveContentStatus === 'unknown'
-                    ? 'agentPanel.notes.notRead'
-                    : 'agentPanel.notes.loading')}
-              {((effectiveContentStatus === 'error' && (onRetry !== undefined || beginRead !== undefined)) || (effectiveContentStatus === 'partial' && onRetry !== undefined)) ? (
+                : effectiveContentStatus === 'unknown'
+                  ? 'agentPanel.notes.notRead'
+                  : 'agentPanel.notes.loading')}
+              {effectiveContentStatus === 'error' && (onRetry !== undefined || beginRead !== undefined) ? (
                 <button
                   type="button"
                   className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"

@@ -39,6 +39,9 @@ import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
 import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
+import { PreviewWebView } from './preview/WebTabView';
+import { readWorkspaceTextViaSession } from './preview/shared';
+import type { KikiClient } from '../lib/client';
 import { anyOverlayOpen } from '../lib/uiBusy';
 import { ConversationShell, useRegisterSeat } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
@@ -2401,8 +2404,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     const webFrame = workspace().querySelector<HTMLIFrameElement>('iframe[data-preview-web]');
     expect(webFrame).not.toBeNull();
     expect(webFrame?.getAttribute('src')).toBe('https://docs.example.com/guide');
-    expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups');
-    expect(webFrame?.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-same-origin');
     expect(workspace().querySelector('[data-web-open-external]')).not.toBeNull();
   });
 });
@@ -3679,5 +3681,45 @@ describe('PreviewWorkspace plugin panel tabs & session bridge', () => {
     expect(workspace().querySelector('[data-preview-tab="plugin:kiki-phone:preview"]')?.textContent).toContain(
       'Phone Preview',
     );
+  });
+});
+
+describe('preview input boundaries', () => {
+  it.each([
+    ['https://external.example.test/page', true],
+    [window.location.origin, false],
+    ['http://127.0.0.1:5177/api/sessions', false],
+    ['http://localhost:5177/api', false],
+    ['http://[::1]:5177/api', false],
+    ['http://localhost.:5177/api', false],
+    ['http://app.localhost.:5177/api', false],
+    ['http://[::ffff:127.0.0.1]:5177/api', false],
+    ['http://[::ffff:127.255.255.255]:5177/api', false],
+    ['http://0.0.0.0:5177/api', false],
+    ['http://[::]:5177/api', false],
+    ['http://[::ffff:0.0.0.0]:5177/api', false],
+    ['https://server.example.test/api', false],
+    ['blob:https://external.example.test/id', false],
+    ['data:text/html,hello', false],
+    ['not a URL', false],
+  ])('grants same-origin sandbox capability only to external http(s): %s', async (url, allowed) => {
+    connectionMock.activeClient = { ...(connectionMock.defaultClient as object), baseUrl: 'https://server.example.test' };
+    const probe = makeRoot();
+    await renderSettled(probe.root, <PreviewWebView tabKey="web" url={url} visible />);
+    const sandbox = probe.container.querySelector('iframe')!.getAttribute('sandbox')!;
+    expect(sandbox.includes('allow-same-origin')).toBe(allowed);
+  });
+
+  it.each(['文字', '😀'])('decodes truncated workspace UTF-8 ending mid-codepoint: %s', async (text) => {
+    const bytes = new TextEncoder().encode(`before ${text}`).slice(0, -1);
+    const client = { fsRead: vi.fn(async () => ({
+      content: btoa(String.fromCharCode(...bytes)), encoding: 'base64', is_binary: true, truncated: true,
+    })) } as unknown as KikiClient;
+    const result = await readWorkspaceTextViaSession(client, 'session', '/work/file.txt', '/work');
+    expect(result.lossless).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result.text).not.toContain('\uFFFD');
+    client.fsRead = vi.fn(async () => ({ content: btoa(String.fromCharCode(...bytes)), encoding: 'base64', is_binary: false, truncated: false })) as unknown as KikiClient['fsRead'];
+    expect((await readWorkspaceTextViaSession(client, 'session', '/work/file.txt', '/work')).lossless).toBe(false);
   });
 });

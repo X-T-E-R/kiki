@@ -98,21 +98,13 @@ export class DaemonTranscriptRenderer {
       (item.admission === 'failed' || item.admission === 'cancelled' || item.admission === 'held') &&
       !blocks.some((block) => block.kind === 'user' && block.promptId === item.prompt_id),
     ).map((item) => {
-      const itemWithOrigin = item as {
-        readonly origin?: unknown;
-        readonly via?: { readonly client?: unknown };
-      };
-      const viaClient =
-        extractViaClientFromOrigin(itemWithOrigin.origin) ??
-        extractViaClientField(itemWithOrigin.via);
-      const receipt: UserBlockWithVia = {
+      const receipt: UserBlock = {
         kind: 'user',
         id: `ingress-${item.prompt_id}`,
         promptId: item.prompt_id,
         createdAt: item.created_at,
         ...projectMessageContent(item.content),
-        sourceOrigin: itemWithOrigin.origin,
-        via: viaClient === undefined ? undefined : { client: viaClient },
+        sourceOrigin: item.origin,
         steerStatus: item.admission === 'held' ? 'held' : undefined,
         promptOutcome: item.admission === 'held' ? undefined : {
           status: item.admission === 'cancelled' ? 'aborted' : 'failed',
@@ -878,8 +870,6 @@ function disposeComponent(component: Component): void {
   disposable.dispose?.();
 }
 
-type UserBlockWithVia = UserBlock & { readonly via?: { readonly client?: unknown } };
-
 function extractViaClientField(via: unknown): string | undefined {
   if (typeof via !== 'object' || via === null) return undefined;
   const client = (via as { readonly client?: unknown }).client;
@@ -893,7 +883,7 @@ function extractViaClientFromOrigin(origin: unknown): string | undefined {
 
 function readViaClient(block: UserBlock): string | undefined {
   return (
-    extractViaClientField((block as UserBlockWithVia).via) ??
+    extractViaClientField(block.via) ??
     extractViaClientFromOrigin(block.sourceOrigin)
   );
 }

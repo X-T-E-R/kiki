@@ -85,6 +85,7 @@ export function ProvidersSection() {
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['models'] }),
       queryClient.invalidateQueries({ queryKey: ['generation-entity'] }),
+      queryClient.invalidateQueries({ queryKey: ['provider-entity'] }),
       queryClient.invalidateQueries({ queryKey: ['auth'] }),
       queryClient.invalidateQueries({ queryKey: ['config'] }),
       queryClient.invalidateQueries({ queryKey: OAUTH_METHODS_QUERY_KEY }),
