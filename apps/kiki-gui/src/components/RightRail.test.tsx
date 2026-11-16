@@ -1476,3 +1476,62 @@ describe('RightRail Todos resilient baseline and fallback', () => {
     expect(stripMount.querySelector('[data-agent-id="worker-1"]')?.hasAttribute('data-branch-chip')).toBe(false);
   });
 });
+
+describe('RightRail sibling-aware resize clamp', () => {
+  it('caps docked rail drag width so conversation-center keeps its reading floor alongside preview', async () => {
+    if (typeof globalThis.PointerEvent === 'undefined') {
+      vi.stubGlobal('PointerEvent', MouseEvent);
+    }
+    Element.prototype.setPointerCapture ??= () => {};
+    Element.prototype.releasePointerCapture ??= () => {};
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const row = document.createElement('div');
+      row.className = 'conversation-row';
+      row.style.columnGap = '8px';
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        left: 264, right: 1592, top: 0, bottom: 900, width: 1328, height: 900, x: 264, y: 0, toJSON: () => ({}),
+      });
+      const previewStub = document.createElement('aside');
+      previewStub.setAttribute('data-preview-workspace', '');
+      vi.spyOn(previewStub, 'getBoundingClientRect').mockReturnValue({
+        left: 864, right: 1284, top: 0, bottom: 900, width: 420, height: 900, x: 864, y: 0, toJSON: () => ({}),
+      });
+      const railSlot = document.createElement('div');
+      railSlot.className = 'conversation-rail-slot';
+      row.append(previewStub, railSlot);
+      document.body.append(row);
+      const root = createRoot(railSlot);
+      mounts.push({ container: row, root });
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <I18nProvider>
+              <RightRail
+                state={{ ...createViewState('sess-1'), tasks: [] }}
+                forest={forest}
+                onCancelTask={() => {}}
+                onStopAgentTask={async () => {}}
+                onOpenSubagent={() => {}}
+              />
+            </I18nProvider>
+          </MemoryRouter>,
+        );
+      });
+      const railAside = railSlot.querySelector<HTMLElement>('[data-session-rail]')!;
+      vi.spyOn(railAside, 'getBoundingClientRect').mockReturnValue({
+        left: 1292, right: 1592, top: 0, bottom: 900, width: 300, height: 900, x: 1292, y: 0, toJSON: () => ({}),
+      });
+      const handle = railSlot.querySelector<HTMLElement>('[data-rail-resizer]')!;
+      await act(async () => {
+        handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 1292, bubbles: true }));
+        handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 900, bubbles: true }));
+        handle.dispatchEvent(new PointerEvent('pointerup', { clientX: 900, bubbles: true }));
+      });
+      // Available width: 1328 (row) - 480 (center floor at >=1360) - 420 (preview) - 16 (2 gaps) = 412px.
+      expect(railAside.style.getPropertyValue('--kiki-rail-width')).toBe('412px');
+    } finally {
+      innerWidthSpy.mockRestore();
+    }
+  });
+});

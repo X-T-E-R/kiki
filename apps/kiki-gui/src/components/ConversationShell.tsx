@@ -62,6 +62,16 @@ export interface ConversationSeat {
   readonly cockpit?: boolean;
 }
 
+export interface ConversationPreviewPresentation {
+  readonly open: boolean;
+  readonly maximized: boolean;
+}
+
+export const DEFAULT_PREVIEW_PRESENTATION: ConversationPreviewPresentation = {
+  open: false,
+  maximized: false,
+};
+
 /** Shell-owned portal targets, one per chrome region outside the column flow. */
 export interface ConversationShellSlots {
   readonly header: HTMLElement | null;
@@ -76,6 +86,9 @@ export interface ConversationShellSlots {
 interface ConversationShellContextValue {
   readonly slots: ConversationShellSlots;
   readonly cockpit?: boolean;
+  readonly previewPresentation?: ConversationPreviewPresentation;
+  readonly registerPreview?: (owner: object, presentation: ConversationPreviewPresentation) => void;
+  readonly unregisterPreview?: (owner: object) => void;
   readonly registerSeat: (seat: ConversationSeat) => void;
   readonly unregisterSeat: (seat: ConversationSeat) => void;
 }
@@ -220,6 +233,27 @@ export function ConversationShell() {
   const [preview, previewRef] = useSlotRef();
   const [column, columnRef] = useSlotRef();
 
+  const [previewPresentation, setPreviewPresentation] = useState<ConversationPreviewPresentation>(
+    DEFAULT_PREVIEW_PRESENTATION,
+  );
+  const previewOwnerRef = useRef<object | null>(null);
+  const registerPreview = useCallback(
+    (owner: object, next: ConversationPreviewPresentation) => {
+      previewOwnerRef.current = owner;
+      setPreviewPresentation((current) =>
+        current.open === next.open && current.maximized === next.maximized ? current : next,
+      );
+    },
+    [],
+  );
+  const unregisterPreview = useCallback((owner: object) => {
+    if (previewOwnerRef.current !== owner) return;
+    previewOwnerRef.current = null;
+    setPreviewPresentation((current) =>
+      !current.open && !current.maximized ? current : DEFAULT_PREVIEW_PRESENTATION,
+    );
+  }, []);
+
   const dropRef = useRef<((files: readonly File[]) => void) | null>(null);
   const registerDrop = useCallback((drop: (files: readonly File[]) => void) => {
     dropRef.current = drop;
@@ -238,14 +272,31 @@ export function ConversationShell() {
     () => ({
       slots: { header, dock, heroFooter, rail, footer, preview },
       cockpit: seat?.cockpit === true,
+      previewPresentation,
+      registerPreview,
+      unregisterPreview,
       registerSeat,
       unregisterSeat,
     }),
-    [header, dock, heroFooter, rail, footer, preview, seat?.cockpit, registerSeat, unregisterSeat],
+    [
+      header,
+      dock,
+      heroFooter,
+      rail,
+      footer,
+      preview,
+      seat?.cockpit,
+      previewPresentation,
+      registerPreview,
+      unregisterPreview,
+      registerSeat,
+      unregisterSeat,
+    ],
   );
 
   const isNewRoute = useMatch('/new') !== null;
   const phase = seat?.phase ?? resolveFallbackPhase(isNewRoute);
+  const centerCovered = previewPresentation.maximized && preview !== null;
 
   return (
     <ConversationShellContext.Provider value={contextValue}>
@@ -268,6 +319,8 @@ export function ConversationShell() {
           <div
             ref={columnRef}
             className="conversation-center"
+            inert={centerCovered || undefined}
+            data-center-covered={centerCovered ? '' : undefined}
             // Taken only while a seated composer is there to receive it (a
             // subagent page seats none); otherwise the shell root refuses it.
             onDragEnter={(event) => {
@@ -311,13 +364,15 @@ export function ConversationShell() {
                 </SeatFileDropContext.Provider>
                 <div ref={heroFooterRef} className="conversation-herofooter-slot" />
                 {/* Docked: toasts rise from just above the card, inside this
-                    column, so they cover neither the rail nor the tray. */}
-                {phase === 'hero' ? null : <ToastAnchor className="toast-anchor" />}
+                    column, so they cover neither the rail nor the tray. When
+                    maximized preview covers this column, unregister the anchor
+                    so toasts rise at viewport level above the preview. */}
+                {phase === 'hero' || centerCovered ? null : <ToastAnchor className="toast-anchor" />}
               </div>
             </div>
             <div ref={footerRef} className="conversation-footer-slot" />
             {/* Hero: the card floats mid-column, so the column's own corner. */}
-            {phase === 'hero' ? <ToastAnchor className="toast-anchor" /> : null}
+            {phase === 'hero' && !centerCovered ? <ToastAnchor className="toast-anchor" /> : null}
           </div>
           <div ref={previewRef} className="conversation-preview-slot" />
           <div ref={railRef} className="conversation-rail-slot" />

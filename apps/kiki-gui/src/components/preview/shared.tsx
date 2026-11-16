@@ -33,10 +33,57 @@ import { attachmentName } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 
 const MIN_WIDTH = 320;
+export const DEFAULT_PREVIEW_WIDTH = 420;
 export const MAX_PREVIEW_WIDTH = 760;
 
-export function clampPreviewWidth(width: number, viewport: number): number {
-  return Math.max(MIN_WIDTH, Math.min(width, Math.min(MAX_PREVIEW_WIDTH, Math.floor(viewport * 0.6))));
+export function conversationCenterFloor(viewport: number): number {
+  return viewport >= 1360 ? 480 : 420;
+}
+
+export function clampPreviewWidth(
+  width: number,
+  viewport: number,
+  maxAvailableWidth?: number,
+): number {
+  const viewportCap = Math.min(MAX_PREVIEW_WIDTH, Math.floor(viewport * 0.6));
+  const upper =
+    maxAvailableWidth !== undefined && Number.isFinite(maxAvailableWidth)
+      ? Math.min(viewportCap, Math.floor(maxAvailableWidth))
+      : viewportCap;
+  return Math.max(MIN_WIDTH, Math.min(width, Math.max(MIN_WIDTH, upper)));
+}
+
+/**
+ * Compute the maximum preview width that fits inside `.conversation-row`
+ * without compressing `.conversation-center` below its reading floor or
+ * colliding with a docked `.app-rail`. Returns `undefined` when unmeasured
+ * (such as outside the shell or in non-layout unit tests).
+ */
+export function measurePreviewMaxAvailableWidth(
+  workspaceEl: HTMLElement | null,
+  viewportWidth: number,
+  zoom = 1,
+): number | undefined {
+  if (workspaceEl === null || viewportWidth < 1024) return undefined;
+  const rowEl = workspaceEl.closest<HTMLElement>('.conversation-row');
+  if (rowEl === null) return undefined;
+  const rowWidth = rowEl.getBoundingClientRect().width / zoom;
+  if (!(rowWidth > 0)) return undefined;
+  const style = typeof window !== 'undefined' ? window.getComputedStyle(rowEl) : null;
+  const parsedGap = style === null ? Number.NaN : Number.parseFloat(style.columnGap || style.gap || '');
+  const rowGap = Number.isFinite(parsedGap) ? parsedGap : 8;
+  const railSlot =
+    Array.from(rowEl.children).find(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.classList.contains('conversation-rail-slot'),
+    ) ?? null;
+  const railIsOverlay = (railSlot?.querySelector('[data-rail-backdrop]') ?? null) !== null;
+  const dockedRailEl = !railIsOverlay
+    ? railSlot?.querySelector<HTMLElement>('[data-session-rail], .app-rail') ?? null
+    : null;
+  const dockedRailWidth = dockedRailEl !== null ? dockedRailEl.getBoundingClientRect().width / zoom : 0;
+  const totalGaps = dockedRailWidth > 0 ? rowGap * 2 : rowGap;
+  return rowWidth - conversationCenterFloor(viewportWidth) - dockedRailWidth - totalGaps;
 }
 
 /**

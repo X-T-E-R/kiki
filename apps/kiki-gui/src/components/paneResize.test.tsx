@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -9,6 +11,7 @@ import { I18nProvider } from '../i18n';
 import { MemoryRouter } from 'react-router-dom';
 import { usePaneResize } from '../lib/layoutHooks';
 import { clampPreviewWidth } from './PreviewWorkspace';
+import { DEFAULT_PREVIEW_WIDTH } from './preview/shared';
 import { Sidebar } from './Sidebar';
 
 /**
@@ -23,7 +26,10 @@ vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useOptionalConnection: () => null,
   useConnection: () => ({
-    client: { searchMessages: () => Promise.resolve({ items: [], has_more: false }) },
+    client: {
+      klient: {},
+      searchMessages: () => Promise.resolve({ items: [], has_more: false }),
+    },
     meta: {
       server_version: '1.0.0',
       server_id: 'srv_test',
@@ -46,9 +52,9 @@ beforeAll(() => {
   Element.prototype.setPointerCapture ??= () => {};
   Element.prototype.releasePointerCapture ??= () => {};
   const navigatorWithLanguage = Object.create(navigator);
-  Object.defineProperty(navigatorWithLanguage, 'language', {
-    value: 'en-US',
-    configurable: true,
+  Object.defineProperties(navigatorWithLanguage, {
+    language: { value: 'en-US', configurable: true },
+    userAgent: { value: navigator.userAgent, configurable: true },
   });
   vi.stubGlobal('navigator', navigatorWithLanguage);
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -231,5 +237,44 @@ describe('clampPreviewWidth', () => {
     expect(clampPreviewWidth(100, 1920)).toBe(320);
     expect(clampPreviewWidth(2000, 1920)).toBe(760);
     expect(clampPreviewWidth(600, 400)).toBe(320);
+    expect(DEFAULT_PREVIEW_WIDTH).toBe(420);
+  });
+
+  it('additionally clamps against available conversation-row space', () => {
+    expect(clampPreviewWidth(700, 1600, 532)).toBe(532);
+    expect(clampPreviewWidth(700, 1600, 280)).toBe(320);
+  });
+});
+
+describe('usePaneResize dynamic bounds and iframe drag shield', () => {
+  it('resolves live startValue and max bounds at pointerdown', async () => {
+    const events: { value: number; final: boolean }[] = [];
+    function DynamicHarness() {
+      const { startResize } = usePaneResize({
+        value: 520,
+        min: 240,
+        max: 520,
+        direction: -1,
+        resolveBounds: () => ({ startValue: 340, min: 240, max: 410 }),
+        onChange: (value, final) => { events.push({ value, final }); },
+      });
+      return <div data-dynamic-handle onPointerDown={startResize} />;
+    }
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    await act(async () => { root.render(<I18nProvider><DynamicHarness /></I18nProvider>); });
+    dragSequence(container.querySelector('[data-dynamic-handle]')!, [-30, -200], -200);
+    expect(events[0]).toEqual({ value: 370, final: false });
+    expect(events.at(-1)).toEqual({ value: 410, final: true });
+  });
+
+  it('shields iframes from pointer events and disables pane transitions while resizing', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../index.css'), 'utf8');
+    expect(css).toMatch(/body\[data-pane-resizing='true'\]\s+iframe\s*\{\s*pointer-events:\s*none\s*!important;/);
+    expect(css).toContain('--kiki-pane-duration: 180ms;');
+    expect(css).toContain('--kiki-pane-ease: cubic-bezier(0.2, 0, 0, 1);');
+    expect(css).toMatch(/body\[data-pane-resizing='true'\]\s+\.preview-workspace[\s\S]*?transition:\s*none\s*!important;/);
   });
 });

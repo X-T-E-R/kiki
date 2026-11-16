@@ -26,6 +26,7 @@ const { opened, fixture } = vi.hoisted(() => ({
     readMediaPreview: vi.fn(),
     loadEditAttachments: undefined as import('./Transcript').TranscriptRowActions['loadEditAttachments'],
     seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
+    previewPresentation: { open: false, maximized: false } as import('./ConversationShell').ConversationPreviewPresentation,
   },
 }));
 
@@ -93,8 +94,8 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
 const slots = vi.hoisted(() => ({ header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null } as Record<string, HTMLElement | null>));
 vi.mock('./ConversationShell', () => ({
   EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
-  useConversationShell: () => ({ slots }),
-  useOptionalConversationShell: () => ({ slots }),
+  useConversationShell: () => ({ slots, previewPresentation: fixture.previewPresentation }),
+  useOptionalConversationShell: () => ({ slots, previewPresentation: fixture.previewPresentation }),
   useRegisterSeat: (seat: import('./ConversationShell').ConversationSeat) => { fixture.seat = seat; },
 }));
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
@@ -143,49 +144,58 @@ function StubRail({ onOpenSubagent }: { onOpenSubagent: (agentId: string) => voi
 }
 vi.mock('./RightRail', () => ({ RightRail: StubRail }));
 
-let narrow = true;
+let viewportBand: 'narrow' | 'priority' | 'wide' = 'narrow';
 type MediaChangeListener = (event: MediaQueryListEvent) => void;
-const narrowListeners = new Set<MediaChangeListener>();
+const mediaListeners = new Set<{ query: string; listener: MediaChangeListener }>();
+
+function matchesBandQuery(query: string): boolean {
+  if (query.includes('min-width: 1024px') && query.includes('max-width: 1359px')) {
+    return viewportBand === 'priority';
+  }
+  if (query.includes('max-width: 1023px') || query.includes('max-width: 639px')) {
+    return viewportBand === 'narrow';
+  }
+  if (query.includes('min-width: 1024px')) {
+    return viewportBand !== 'narrow';
+  }
+  return false;
+}
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.setItem('kiki.locale', 'en');
-  vi.stubGlobal('matchMedia', (query: string) => {
-    const isNarrowQuery = query.includes('max-width: 1023px');
-    const isWideQuery = query.includes('min-width: 1024px');
-    const isSmallQuery = query.includes('max-width: 639px');
-    return {
-      // A live getter: effects that re-read `matches` after a resize see the
-      // new width instead of the snapshot taken when the list was created.
-      get matches() { return isWideQuery ? !narrow : isNarrowQuery || isSmallQuery ? narrow : false; },
-      media: query,
-      addEventListener: (event: string, listener: MediaChangeListener) => {
-        if ((isNarrowQuery || isWideQuery) && event === 'change') narrowListeners.add(listener);
-      },
-      removeEventListener: (event: string, listener: MediaChangeListener) => {
-        if ((isNarrowQuery || isWideQuery) && event === 'change') narrowListeners.delete(listener);
-      },
-    };
-  });
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    get matches() { return matchesBandQuery(query); },
+    media: query,
+    addEventListener: (event: string, listener: MediaChangeListener) => {
+      if (event === 'change') mediaListeners.add({ query, listener });
+    },
+    removeEventListener: (event: string, listener: MediaChangeListener) => {
+      if (event === 'change') {
+        for (const entry of mediaListeners) {
+          if (entry.query === query && entry.listener === listener) mediaListeners.delete(entry);
+        }
+      }
+    },
+  }));
 });
 afterAll(() => {
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   vi.unstubAllGlobals();
 });
 
-async function resizeTo(width: 'narrow' | 'wide'): Promise<void> {
+async function resizeTo(width: 'narrow' | 'priority' | 'wide'): Promise<void> {
   await act(async () => {
-    narrow = width === 'narrow';
-    const snapshot = [...narrowListeners];
-    for (const listener of snapshot) {
-      listener({ matches: narrow, media: '(max-width: 1023px)' } as MediaQueryListEvent);
-      listener({ matches: !narrow, media: '(min-width: 1024px)' } as MediaQueryListEvent);
+    viewportBand = width;
+    for (const { query, listener } of [...mediaListeners]) {
+      listener({ matches: matchesBandQuery(query), media: query } as MediaQueryListEvent);
     }
   });
 }
 
-async function mountAt(width: 'narrow' | 'wide', railOpenByDefault = true) {
-  narrow = width === 'narrow';
+async function mountAt(width: 'narrow' | 'priority' | 'wide', railOpenByDefault = true) {
+  viewportBand = width;
+  fixture.previewPresentation = { open: false, maximized: false };
   localStorage.setItem('kiki.settings', JSON.stringify({ railOpenByDefault }));
   // The docked rail's open/closed choice now persists; each mount here starts
   // from no saved choice, so the Settings default decides.
@@ -218,12 +228,28 @@ async function mountAt(width: 'narrow' | 'wide', railOpenByDefault = true) {
   });
   const rail = () => host.querySelector('[data-session-rail]');
   const toggle = () => host.querySelector<HTMLButtonElement>('[data-rail-toggle]');
+  const rerender = async () => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider>
+            <MemoryRouter initialEntries={['/s/session-a']}>
+              <Routes>
+                <Route path="/s/:id" element={<SessionRouteView sessionId="session-a" sessions={[]} onToggleSidebar={() => {}} />} />
+              </Routes>
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+  };
   const unmount = async () => {
     await act(async () => { root.unmount(); });
     host.remove();
+    fixture.previewPresentation = { open: false, maximized: false };
     for (const name of Object.keys(slots)) slots[name] = null;
   };
-  return { host, rail, toggle, unmount };
+  return { host, rail, toggle, rerender, unmount };
 }
 
 async function mountTitleWithoutRail() {
@@ -397,10 +423,8 @@ describe('right rail responsive layout', () => {
       expect(view.rail()).toBeNull();
       await resizeTo('wide');
       expect(view.host.querySelector('[data-transcript]')).toBe(transcript);
-      // The rail's own narrow gate is the same query; whether the inline rail
-      // returns on widen is pinned by the preference round-trip test above.
-      expect(view.rail()).toBeNull();
-      expect(view.toggle()?.getAttribute('aria-expanded')).not.toBeNull();
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
     } finally {
       await view.unmount();
       localStorage.removeItem('kiki.railMode');
@@ -416,6 +440,83 @@ describe('right rail responsive layout', () => {
       expect(view.host.querySelector('[data-session-rail]')).toBeNull();
     } finally {
       await view.unmount();
+    }
+  });
+
+  it('yields docked rail at 1024–1359px when preview opens and summons overlay on first header toggle click', async () => {
+    fixture.session = { id: 'session-a', title: 'Priority band', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
+    const view = await mountAt('priority', true);
+    try {
+      // Without an open preview, docked rail stays inline at 1024–1359px.
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+
+      // Opening docked preview at 1024–1359px yields the docked rail without mutating layoutPrefs.
+      fixture.previewPresentation = { open: true, maximized: false };
+      await view.rerender();
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // First click summons the Inspector overlay + stage scrim inside slots.rail.
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+      const scrim = slots['rail']?.querySelector<HTMLElement>('[data-rail-backdrop]');
+      expect(scrim).not.toBeNull();
+      expect(scrim?.classList.contains('app-overlay-backdrop--row')).toBe(true);
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // Clicking the scrim closes the transient overlay while keeping stored railOpen untouched.
+      await act(async () => { scrim!.click(); });
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
+
+      // Widening to >=1360px restores the docked rail inline automatically.
+      await resizeTo('wide');
+      expect(view.rail()).not.toBeNull();
+      expect(slots['rail']?.querySelector('[data-rail-backdrop]')).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      await view.unmount();
+      fixture.session = undefined;
+    }
+  });
+
+  it('yields docked rail when preview maximizes at >=1360px, resets transient overlay across regimes, and restores docked rail on unmaximize', async () => {
+    fixture.session = { id: 'session-a', title: 'Maximized choreography', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
+    const view = await mountAt('wide', true);
+    try {
+      expect(view.rail()).not.toBeNull();
+
+      // Maximizing preview yields docked rail automatically; zero floating rail left behind.
+      fixture.previewPresentation = { open: true, maximized: true };
+      await view.rerender();
+      expect(view.rail()).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // Summoning overlay while maximized opens rail + scrim, and Escape dismisses it without mutating layoutPrefs.
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).not.toBeNull();
+      expect(slots['rail']?.querySelector('[data-rail-backdrop]')).not.toBeNull();
+
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+      });
+      expect(view.rail()).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // Summon again, then unmaximize preview: transient overlay clears and docked rail returns inline (no scrim).
+      await act(async () => { view.toggle()!.click(); });
+      expect(slots['rail']?.querySelector('[data-rail-backdrop]')).not.toBeNull();
+      fixture.previewPresentation = { open: true, maximized: false };
+      await view.rerender();
+      expect(view.rail()).not.toBeNull();
+      expect(slots['rail']?.querySelector('[data-rail-backdrop]')).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+    } finally {
+      await view.unmount();
+      fixture.session = undefined;
     }
   });
 });

@@ -2198,7 +2198,7 @@ export function SessionView({
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client, socket, meta, wsStatus, scopeId } = useConnection();
-  const { slots } = useConversationShell();
+  const { slots, previewPresentation } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
@@ -2263,6 +2263,7 @@ export function SessionView({
   // external engine is run as it is, so an untouched mode is not sent.
   const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
+  const isPreviewPriorityBand = useMediaQuery('(min-width: 1024px) and (max-width: 1359px)');
 
   // The inline rail (lg and up) keeps the user's last open/closed choice in
   // the layout preferences, like the sidebar's collapse and the rail's width:
@@ -2275,29 +2276,84 @@ export function SessionView({
   // a deep link must land on the conversation, not under a drawer. The wide
   // preference is untouched, so widening the window restores the inline rail.
   const [narrowRailOpen, setNarrowRailOpen] = useState(false);
-  const railOpen = isNarrowScreen ? narrowRailOpen : userRailOpen;
+
+  const cockpit = !isNarrowScreen && userRailOpen && railMode === 'cockpit';
+  const previewOpen = previewPresentation?.open === true && !cockpit;
+  const previewMaximized = previewPresentation?.maximized === true && !cockpit;
+  // Docked rail yields automatically when preview maximizes or when viewport
+  // is in the 1024–1359px preview-priority band with an open docked preview,
+  // without mutating `layoutPrefs.railOpen`.
+  const dockedRailYielded =
+    !isNarrowScreen && (previewMaximized || (isPreviewPriorityBand && previewOpen));
+  const railRegimeKey = isNarrowScreen
+    ? 'narrow'
+    : previewMaximized
+      ? 'maximized'
+      : isPreviewPriorityBand && previewOpen
+        ? 'priority-docked'
+        : 'docked';
+  const [yieldedRailState, setYieldedRailState] = useState<{ regime: string; open: boolean }>({
+    regime: railRegimeKey,
+    open: false,
+  });
+  const yieldedRailOverlayOpen =
+    dockedRailYielded && yieldedRailState.regime === railRegimeKey && yieldedRailState.open;
+
+  useEffect(() => {
+    if (yieldedRailOverlayOpen && railMode === 'cockpit') {
+      setYieldedRailState({ regime: railRegimeKey, open: false });
+      if (!userRailOpen) writeLayoutPreferences({ railOpen: true });
+    }
+  }, [yieldedRailOverlayOpen, railMode, railRegimeKey, userRailOpen]);
+
+  const railOpen = isNarrowScreen
+    ? narrowRailOpen
+    : dockedRailYielded
+      ? yieldedRailOverlayOpen
+      : userRailOpen;
   // The rail works at every width now (an overlay layer below lg), so its
   // entry points — the header toggle, the session title, the preview tab —
   // render unconditionally.
   const railAvailable = true;
   const toggleRail = useCallback(() => {
-    // Wide and narrow remember separately: the overlay layer's open state is
-    // per-visit, the inline rail writes the saved preference.
-    if (isNarrowScreen) setNarrowRailOpen((value) => !value);
-    else writeLayoutPreferences({ railOpen: !userRailOpen });
-  }, [isNarrowScreen, userRailOpen]);
+    // Wide, yielded-overlay, and narrow remember separately: overlay layers
+    // are transient per regime/visit, while docked rail writes layoutPrefs.
+    if (isNarrowScreen) {
+      setNarrowRailOpen((value) => !value);
+      return;
+    }
+    if (dockedRailYielded) {
+      setYieldedRailState((current) => ({
+        regime: railRegimeKey,
+        open: current.regime === railRegimeKey ? !current.open : true,
+      }));
+      return;
+    }
+    writeLayoutPreferences({ railOpen: !userRailOpen });
+  }, [isNarrowScreen, dockedRailYielded, railRegimeKey, userRailOpen]);
   const closeRail = useCallback(() => {
-    if (isNarrowScreen) setNarrowRailOpen(false);
-    else writeLayoutPreferences({ railOpen: false });
-  }, [isNarrowScreen]);
+    if (isNarrowScreen) {
+      setNarrowRailOpen(false);
+      return;
+    }
+    if (dockedRailYielded) {
+      setYieldedRailState({ regime: railRegimeKey, open: false });
+      return;
+    }
+    writeLayoutPreferences({ railOpen: false });
+  }, [isNarrowScreen, dockedRailYielded, railRegimeKey]);
+  const ensureDockedRailOpen = useCallback(() => {
+    setYieldedRailState({ regime: railRegimeKey, open: false });
+    if (!userRailOpen) writeLayoutPreferences({ railOpen: true });
+  }, [railRegimeKey, userRailOpen]);
   // The phone's back closes the rail layer before route navigation. The
   // session shell's rail never opens below lg, so the layer only arms where
   // an open is possible — otherwise its unwinding `history.back()` would
   // consume the route itself on a narrow → wide hop.
   useLayerHistory('session-rail', narrowRailOpen && isNarrowScreen, closeRail);
-  const cockpit = railOpen && railMode === 'cockpit';
-  const railIsOverlay = isNarrowScreen;
+  const railIsOverlay = isNarrowScreen || dockedRailYielded;
   const overlayRailOpen = railIsOverlay && railOpen;
+  const previewCoversMain = isNarrowScreen || previewMaximized;
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
   // rail's owner when the user is looking at an embedded subagent view — the
@@ -2547,6 +2603,7 @@ export function SessionView({
   // other listener and stands down while either is open, so whichever of the
   // two runs first, one Escape does one thing.
   useEffect(() => {
+    const visibleTerminalOpen = terminalOpen && !previewMaximized;
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         !shouldCloseSessionChromeOnEscape({
@@ -2554,7 +2611,7 @@ export function SessionView({
           defaultPrevented: event.defaultPrevented,
           overlayOpen: anyOverlayOpen(),
           terminalFocused: isTerminalEscapeTarget(event.target),
-          terminalOpen,
+          terminalOpen: visibleTerminalOpen,
           railOpen: overlayRailOpen,
         })
       ) {
@@ -2562,11 +2619,11 @@ export function SessionView({
       }
       event.preventDefault();
       if (overlayRailOpen) closeRail();
-      if (terminalOpen) toggleTerminalPanel();
+      else if (visibleTerminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [overlayRailOpen, terminalOpen, closeRail, toggleTerminalPanel]);
+  }, [overlayRailOpen, terminalOpen, previewMaximized, closeRail, toggleTerminalPanel]);
 
   // Per-session composer drafts + chrome. Attachments and pill overrides are
   // seeded by the initializers on first mount (the /new hand-off wins, then
@@ -3363,7 +3420,7 @@ export function SessionView({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (controller === null) return;
-      const target = event.target as HTMLElement | null;
+      const target = event.target instanceof HTMLElement ? event.target : null;
       if (event.key === 'Escape') {
         // Escape that dismisses an IME candidate window belongs to the IME.
         if (event.isComposing || event.keyCode === 229) return;
@@ -3371,7 +3428,7 @@ export function SessionView({
         // Escape there must never abort the main agent behind the panel.
         if (selectedAgentId !== undefined ||
           (target?.closest('[data-preview-workspace]') as HTMLElement | null)?.hidden === false ||
-          (railIsOverlay && document.querySelector('[data-preview-workspace]:not([hidden])') !== null)) return;
+          (previewCoversMain && document.querySelector('[data-preview-workspace]:not([hidden])') !== null)) return;
         if (!shouldHandleGlobalAbortOnEscape({
           key: event.key,
           defaultPrevented: event.defaultPrevented,
@@ -3382,7 +3439,7 @@ export function SessionView({
           inFormField: isFormFieldEscapeTarget(event.target),
           // Focus falls back to body when Hide panel unmounts its button. The
           // visible fullscreen preview still owns Escape at desktop widths.
-          fullscreenPreviewOpen: document.querySelector('[data-preview-workspace][data-preview-fullscreen]:not([hidden])') !== null,
+          fullscreenPreviewOpen: previewMaximized || document.querySelector('[data-preview-workspace][data-preview-fullscreen]:not([hidden])') !== null,
         })) return;
         const current = controller.getState();
         if (canAbortActiveTurn(current)) {
@@ -3420,7 +3477,7 @@ export function SessionView({
       ) {
         return;
       }
-      const shortcutRoot = approvalShortcutRoot(document, event.target, selectedAgentId, railIsOverlay);
+      const shortcutRoot = approvalShortcutRoot(document, event.target, selectedAgentId, previewCoversMain);
       if (shortcutRoot === null) return;
       const cards = collectApprovalShortcutCards(shortcutRoot);
       const approvalId = resolveApprovalShortcutTarget(cards);
@@ -3448,7 +3505,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [controller, t, terminalOpen, overlayRailOpen, selectedAgentId, railIsOverlay, trackAbort]);
+  }, [controller, t, terminalOpen, overlayRailOpen, selectedAgentId, previewCoversMain, previewMaximized, trackAbort]);
 
   const skillSelection = skillControlSelectionKey({ pendingProfile, pendingExecution, modelOverride, effortOverride,
     modelChoice, effortChoice, modelSwitchMode, permissionOverride });
@@ -4534,8 +4591,28 @@ boundExecution,
     [location.pathname, navigateVisits, sessionId],
   );
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
-    () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail, available: railAvailable } }),
-    [openAgent, openAgentRoute, openSession, railOpen, toggleRail, railAvailable],
+    () => ({
+      openAgent,
+      openAgentRoute,
+      openSession,
+      sharedRail: {
+        open: railOpen,
+        toggle: toggleRail,
+        available: railAvailable,
+        yielded: dockedRailYielded,
+        ensureDockedOpen: ensureDockedRailOpen,
+      },
+    }),
+    [
+      openAgent,
+      openAgentRoute,
+      openSession,
+      railOpen,
+      toggleRail,
+      railAvailable,
+      dockedRailYielded,
+      ensureDockedRailOpen,
+    ],
   );
 
   // ---- shared-rail focus (panel-tab subagent) ----

@@ -107,6 +107,8 @@ export interface AgentWorkspaceNavigation {
     readonly open: boolean;
     readonly toggle: () => void;
     readonly available?: boolean;
+    readonly yielded?: boolean;
+    readonly ensureDockedOpen?: () => void;
   };
 }
 
@@ -331,13 +333,48 @@ function WorkspaceSurface({
       {slots.dock !== null ? createPortal(dock, slots.dock) : null}
       {/* Below lg the session shell's shared rail never mounts: the routed
           agent page carries it as its own drawer there, so a header toggle
-          would open an inspector with no agent context behind it. */}
-      {slots.rail !== null && railOpen && railAsDrawer ? createPortal(rail, slots.rail) : null}
-      {(railIsOverlay || narrowOverlay) && railOpen ? (
-        <div role="button" tabIndex={-1} aria-label={t('sv.closePanel')}
-          className="app-overlay-backdrop lg:hidden" onClick={onCloseRail}
-          onKeyDown={(event) => { if (event.key === 'Escape') onCloseRail(); }} />
-      ) : null}
+          would open an inspector with no agent context behind it. When the
+          docked rail yields to maximized or priority-band preview, both the
+          scrim and the drawer portal into `slots.rail` so they sit outside
+          an inert `.conversation-center` and add zero flex gap to the row. */}
+      {slots.rail !== null && railOpen && railAsDrawer
+        ? createPortal(
+            <>
+              {railIsOverlay || narrowOverlay ? (
+                <div
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={t('sv.closePanel')}
+                  data-rail-backdrop=""
+                  className={
+                    narrowOverlay
+                      ? 'app-overlay-backdrop'
+                      : 'app-overlay-backdrop app-overlay-backdrop--row'
+                  }
+                  onClick={onCloseRail}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') onCloseRail();
+                  }}
+                />
+              ) : null}
+              {rail}
+            </>,
+            slots.rail,
+          )
+        : slots.rail === null && (railIsOverlay || narrowOverlay) && railOpen ? (
+            <div
+              role="button"
+              tabIndex={-1}
+              aria-label={t('sv.closePanel')}
+              data-rail-backdrop=""
+              className="app-overlay-backdrop lg:hidden"
+              onClick={onCloseRail}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') onCloseRail();
+              }}
+            />
+          )
+        : null}
     </TranscriptDetailProvider>
   );
 }

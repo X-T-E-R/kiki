@@ -87,6 +87,8 @@ export interface PreviewTabStripProps {
   readonly phoneMode: boolean;
   readonly isFullscreen: boolean;
   readonly onToggleFullscreen: () => void;
+  readonly railOpen?: boolean;
+  readonly onToggleRail?: () => void;
   readonly onCollapse: () => void;
   readonly onOpenCockpit?: () => void;
   readonly onActivate: (key: string) => void;
@@ -106,6 +108,8 @@ export function PreviewTabStrip({
   phoneMode,
   isFullscreen,
   onToggleFullscreen,
+  railOpen,
+  onToggleRail,
   onCollapse,
   onOpenCockpit,
   onActivate,
@@ -209,6 +213,7 @@ export function PreviewTabStrip({
           onClick={onCollapse}
           title={t('preview.collapse')}
           aria-label={t('preview.collapse')}
+          data-preview-collapse
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           »
@@ -288,7 +293,16 @@ export function PreviewTabStrip({
   }
 
   return (
-    <div className="flex h-11 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1 lg:h-9">
+    <div
+      data-preview-tab-strip
+      onDoubleClick={(event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest('button, [role="tab"], a, input, select, textarea') !== null) return;
+        onToggleFullscreen();
+      }}
+      className="flex h-11 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1 lg:h-9"
+    >
       <div className="relative flex min-w-0 flex-1 items-center">
         <div
           ref={tabListRef}
@@ -406,9 +420,28 @@ export function PreviewTabStrip({
             type="button"
             data-preview-open-cockpit
             onClick={onOpenCockpit}
-            className="hidden h-7 shrink-0 items-center rounded-md px-2 text-[12px] text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:flex min-[85rem]:hidden"
+            className={`hidden h-7 shrink-0 items-center rounded-md px-1.5 text-[12px] text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              isFullscreen ? 'lg:flex' : 'lg:flex min-[85rem]:hidden'
+            }`}
           >
             {t('rail.mode.cockpit')}
+          </button>
+        ) : null}
+        {onToggleRail !== undefined ? (
+          <button
+            type="button"
+            onClick={onToggleRail}
+            title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+            aria-label={t('sv.togglePanelAria')}
+            aria-expanded={Boolean(railOpen)}
+            data-preview-toggle-rail
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7 ${
+              railOpen
+                ? 'bg-canvas text-ink'
+                : 'text-ink-faint hover:bg-canvas hover:text-ink'
+            }`}
+          >
+            <Icon name="panel" />
           </button>
         ) : null}
         <button
@@ -426,6 +459,7 @@ export function PreviewTabStrip({
           onClick={onCollapse}
           title={t('preview.collapse')}
           aria-label={t('preview.collapse')}
+          data-preview-collapse
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
         >
           »

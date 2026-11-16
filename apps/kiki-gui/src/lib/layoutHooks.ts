@@ -132,6 +132,12 @@ function clearDragging() {
   delete document.body.dataset['paneResizing'];
 }
 
+export interface PaneResizeDynamicBounds {
+  readonly min?: number;
+  readonly max?: number;
+  readonly startValue?: number;
+}
+
 export function usePaneResize(options: {
   value: number;
   min: number;
@@ -139,8 +145,9 @@ export function usePaneResize(options: {
   onChange: (value: number, final: boolean) => void;
   onReset?: () => void;
   direction?: 1 | -1;
+  resolveBounds?: (handle: HTMLElement) => PaneResizeDynamicBounds | undefined;
 }) {
-  const { value, min, max, onChange, onReset, direction = 1 } = options;
+  const { value, min, max, onChange, onReset, direction = 1, resolveBounds } = options;
 
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
@@ -148,14 +155,17 @@ export function usePaneResize(options: {
       event.preventDefault();
       const handle = event.currentTarget;
       const startX = event.clientX;
-      const startValue = value;
+      const resolved = resolveBounds?.(handle);
+      const activeMin = resolved?.min ?? min;
+      const activeMax = Math.max(activeMin, resolved?.max ?? max);
+      const startValue = resolved?.startValue ?? value;
       handle.setPointerCapture(event.pointerId);
       handle.dataset['dragging'] = 'true';
       setDragging(true);
 
       const up = () => {
         clearDragging();
-        onChange(clamp(valueRef, min, max), true);
+        onChange(clamp(valueRef, activeMin, activeMax), true);
         handle.dataset['dragging'] = 'false';
         handle.removeEventListener('pointermove', trackedMove);
         handle.removeEventListener('pointerup', up);
@@ -164,14 +174,14 @@ export function usePaneResize(options: {
       let valueRef = startValue;
       const trackedMove = (moveEvent: Event) => {
         const clientX = (moveEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, min, max);
+        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, activeMin, activeMax);
         onChange(valueRef, false);
       };
       handle.addEventListener('pointermove', trackedMove);
       handle.addEventListener('pointerup', up);
       handle.addEventListener('pointercancel', up);
     },
-    [value, min, max, onChange, direction],
+    [value, min, max, onChange, direction, resolveBounds],
   );
 
   const reset = useCallback(() => {

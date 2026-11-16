@@ -16,6 +16,7 @@ import type { AgentForest, SessionController, SessionViewState } from '@kiki/ses
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
 import { usePhoneMode } from '#/lib/layoutHooks';
+import { anyOverlayOpen } from '#/lib/uiBusy';
 import { cssZoomFactor, unzoomedViewport } from '#/lib/uiZoom';
 import { useOptionalConnection } from '#/state/connection';
 import {
@@ -41,10 +42,11 @@ import { TabContextMenu } from './preview/ResourceHeader';
 import {
   clampPreviewWidth,
   computeFileWriteCounts,
+  DEFAULT_PREVIEW_WIDTH,
   downloadHostFile,
   fileWriteEpochFor,
   isLocalKikiComputer,
-  MAX_PREVIEW_WIDTH,
+  measurePreviewMaxAvailableWidth,
   relativeToCwd,
   useFileOpeners,
   usePreviewReadingScroll,
@@ -108,6 +110,9 @@ export interface PreviewWorkspaceProps {
    */
   readonly hidden?: boolean;
   readonly overlay?: boolean;
+  readonly isFullscreen?: boolean;
+  readonly onToggleFullscreen?: () => void;
+  readonly onExitFullscreen?: () => void;
   /** Session workspace cwd — anchors "Copy relative path" and the @-mention. */
   readonly cwd?: string;
   /** Owning session — the @-mention target composer. Absent without a session. */
@@ -141,12 +146,35 @@ export function PreviewWorkspace({
   onScrollPosition,
   hidden = false,
   overlay = false,
+  isFullscreen: controlledFullscreen,
+  onToggleFullscreen,
+  onExitFullscreen,
   cwd,
   sessionId,
 }: PreviewWorkspaceProps) {
   const { t } = useI18n();
+  const workspaceRef = useRef<HTMLElement | null>(null);
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [uncontrolledFullscreen, setUncontrolledFullscreen] = useState(false);
+  const isFullscreen = controlledFullscreen ?? uncontrolledFullscreen;
+  const toggleFullscreen = useCallback(() => {
+    if (onToggleFullscreen !== undefined) {
+      onToggleFullscreen();
+      return;
+    }
+    setUncontrolledFullscreen((current) => !current);
+  }, [onToggleFullscreen]);
+  const exitFullscreen = useCallback(() => {
+    if (onExitFullscreen !== undefined) {
+      onExitFullscreen();
+      return;
+    }
+    if (onToggleFullscreen !== undefined) {
+      if (controlledFullscreen) onToggleFullscreen();
+      return;
+    }
+    setUncontrolledFullscreen(false);
+  }, [controlledFullscreen, onExitFullscreen, onToggleFullscreen]);
   const phoneMode = usePhoneMode();
   const [narrow, setNarrow] = useState(() =>
     typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches,
@@ -232,35 +260,49 @@ export function PreviewWorkspace({
   useEffect(() => {
     if (!isFullscreen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.key !== 'Escape' || event.defaultPrevented || anyOverlayOpen()) return;
       if (workspaceNavigation?.sharedRail?.open) {
         event.preventDefault();
         workspaceNavigation.sharedRail.toggle();
         return;
       }
       event.preventDefault();
-      setIsFullscreen(false);
+      exitFullscreen();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [isFullscreen, workspaceNavigation?.sharedRail]);
+  }, [exitFullscreen, isFullscreen, workspaceNavigation?.sharedRail]);
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (isFullscreen) return;
+    if (isFullscreen || event.button !== 0) return;
     event.preventDefault();
     const handle = event.currentTarget;
+    const workspaceEl = workspaceRef.current ?? handle.closest<HTMLElement>('[data-preview-workspace]');
+    const initialZoom = cssZoomFactor();
+    const initialRect = workspaceEl?.getBoundingClientRect();
+    const anchorRight =
+      initialRect !== undefined && initialRect.width > 0 ? initialRect.right / initialZoom : undefined;
+    const startX = event.clientX / initialZoom;
+    const startWidth = width;
     handle.setPointerCapture(event.pointerId);
     handle.dataset['dragging'] = 'true';
     document.body.dataset['paneResizing'] = 'true';
-    const onMovePointer = (move: Event) => {
-      const x = (move as PointerEvent).clientX / cssZoomFactor();
+    const computeNextWidth = (clientX: number) => {
+      const zoom = cssZoomFactor();
+      const x = clientX / zoom;
       const viewportWidth = unzoomedViewport().width;
-      onWidthChange(clampPreviewWidth(viewportWidth - x, viewportWidth), false);
+      const liveRect = workspaceEl?.getBoundingClientRect();
+      const rightEdge =
+        liveRect !== undefined && liveRect.width > 0 ? liveRect.right / zoom : anchorRight;
+      const desiredWidth = rightEdge !== undefined ? rightEdge - x : startWidth + (startX - x);
+      const maxAvailable = measurePreviewMaxAvailableWidth(workspaceEl ?? null, viewportWidth, zoom);
+      return clampPreviewWidth(desiredWidth, viewportWidth, maxAvailable);
+    };
+    const onMovePointer = (move: Event) => {
+      onWidthChange(computeNextWidth((move as PointerEvent).clientX), false);
     };
     const onUp = (up: Event) => {
-      const x = (up as PointerEvent).clientX / cssZoomFactor();
-      const viewportWidth = unzoomedViewport().width;
-      onWidthChange(clampPreviewWidth(viewportWidth - x, viewportWidth), true);
+      onWidthChange(computeNextWidth((up as PointerEvent).clientX), true);
       handle.dataset['dragging'] = 'false';
       delete document.body.dataset['paneResizing'];
       handle.removeEventListener('pointermove', onMovePointer);
@@ -287,8 +329,16 @@ export function PreviewWorkspace({
     ...hiddenStyle,
   };
 
+  const sharedRail = workspaceNavigation?.sharedRail;
+  const showStripRailToggle =
+    !phoneMode &&
+    sharedRail !== undefined &&
+    sharedRail.available !== false &&
+    (sharedRail.yielded === true || (isFullscreen && !narrow));
+
   return (
     <aside
+      ref={workspaceRef}
       data-preview-workspace
       data-preview-fullscreen={isFullscreen ? '' : undefined}
       hidden={hidden}
@@ -303,8 +353,11 @@ export function PreviewWorkspace({
           title={t('preview.resetWidth')}
           onPointerDown={startResize}
           onDoubleClick={() => {
+            const zoom = cssZoomFactor();
+            const viewportWidth = unzoomedViewport().width;
+            const maxAvailable = measurePreviewMaxAvailableWidth(workspaceRef.current, viewportWidth, zoom);
             onWidthChange(
-              clampPreviewWidth(Math.min(MAX_PREVIEW_WIDTH, Math.floor(window.innerWidth * 0.6)), window.innerWidth),
+              clampPreviewWidth(DEFAULT_PREVIEW_WIDTH, viewportWidth, maxAvailable),
               true,
             );
           }}
@@ -320,7 +373,9 @@ export function PreviewWorkspace({
         sessionId={sessionId}
         phoneMode={phoneMode}
         isFullscreen={isFullscreen}
-        onToggleFullscreen={() => { setIsFullscreen(!isFullscreen); }}
+        onToggleFullscreen={toggleFullscreen}
+        railOpen={sharedRail?.open}
+        onToggleRail={showStripRailToggle ? sharedRail.toggle : undefined}
         onCollapse={onCollapse}
         onOpenCockpit={onOpenCockpit}
         onActivate={onActivate}
@@ -363,6 +418,7 @@ export function PreviewWorkspace({
                   forest={agentForest}
                   navigation={workspaceNavigation}
                   visible={isTabActive && !hidden}
+                  suppressRailToggle={showStripRailToggle}
                   onCancelTask={onCancelTask}
                   onStopAgentTask={onStopAgentTask}
                 />
@@ -411,7 +467,7 @@ export function PreviewWorkspace({
               sessionId={sessionId}
               visible={isTabActive && !hidden}
               isFullscreen={isFullscreen}
-              onToggleFullscreen={() => { setIsFullscreen(!isFullscreen); }}
+              onToggleFullscreen={toggleFullscreen}
               onCollapse={onCollapse}
               onCloseTab={() => { onClose(key); }}
               externalReloadNonce={reloadNonces[key]}
@@ -483,6 +539,7 @@ function AgentTabWorkspace({
   forest,
   navigation,
   visible,
+  suppressRailToggle = false,
   onCancelTask,
   onStopAgentTask,
 }: {
@@ -494,6 +551,7 @@ function AgentTabWorkspace({
   readonly forest: AgentForest;
   readonly navigation: AgentWorkspaceNavigation;
   readonly visible: boolean;
+  readonly suppressRailToggle?: boolean;
   readonly onCancelTask: ((taskId: string, ownerAgentId?: string) => void) | undefined;
   readonly onStopAgentTask: ((ownerAgentId: string, taskId: string) => Promise<void>) | undefined;
 }) {
@@ -541,7 +599,7 @@ function AgentTabWorkspace({
           inheritMediaPreview
           transcriptVisible={visible}
           showPreviewToggle={false}
-          showRailToggle={navigation.sharedRail !== undefined && navigation.sharedRail.available !== false}
+          showRailToggle={!suppressRailToggle && navigation.sharedRail !== undefined && navigation.sharedRail.available !== false}
           showBreadcrumb={false}
         />
       </div>

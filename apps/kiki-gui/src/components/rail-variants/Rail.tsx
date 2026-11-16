@@ -47,6 +47,7 @@ import {
 import { useI18n } from '../../i18n';
 import { useLayoutPreferences, usePaneResize } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
+import { cssZoomFactor, unzoomedViewport } from '../../lib/uiZoom';
 import { usePromoteAgent } from '../../lib/usePromoteAgent';
 import { usageSessionDeepLink } from '../../lib/usageV2';
 import { AgentPanelContainer } from '../AgentPanelContainer';
@@ -67,6 +68,7 @@ import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
 import { useMediaPreview } from '../mediaPreviewContext';
+import { conversationCenterFloor } from '../preview/shared';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
 import { FOCUS_RING, ModeSwitch, useMediaQuery, useRailMode } from './shell';
 import type { RailProps } from './types';
@@ -465,11 +467,51 @@ export function Rail({
   const effectiveWidth = mode === 'cockpit'
     ? cockpitWidth ?? Math.min(760, Math.max(480, railWidthValue + (preview?.previewPanelWidth ?? 0)))
     : railWidthValue;
+  const railRef = useRef<HTMLElement>(null);
+  const baseMinWidth = mode === 'cockpit' ? 360 : RAIL_MIN_WIDTH;
+  const baseMaxWidth = mode === 'cockpit' ? 760 : RAIL_MAX_WIDTH;
   const { startResize, reset } = usePaneResize({
     value: effectiveWidth,
-    min: mode === 'cockpit' ? 360 : RAIL_MIN_WIDTH,
-    max: mode === 'cockpit' ? 760 : RAIL_MAX_WIDTH,
+    min: baseMinWidth,
+    max: baseMaxWidth,
     direction: -1,
+    resolveBounds: () => {
+      const railEl = railRef.current;
+      if (railEl === null) return undefined;
+      const zoom = cssZoomFactor();
+      const renderedWidth = railEl.getBoundingClientRect().width / zoom;
+      const startValue = renderedWidth > 0 ? Math.round(renderedWidth) : undefined;
+      const rowEl = railEl.closest<HTMLElement>('.conversation-row');
+      if (rowEl === null) return { startValue };
+      const rowWidth = rowEl.getBoundingClientRect().width / zoom;
+      if (!(rowWidth > 0)) return { startValue };
+      const railSlot = railEl.closest<HTMLElement>('.conversation-rail-slot');
+      const isOverlayRail = (railSlot?.querySelector('[data-rail-backdrop]') ?? null) !== null;
+      if (isOverlayRail) {
+        return {
+          min: baseMinWidth,
+          max: Math.max(baseMinWidth, Math.min(baseMaxWidth, Math.floor(rowWidth - 48))),
+          startValue,
+        };
+      }
+      const viewportWidth = unzoomedViewport().width;
+      const style = typeof window !== 'undefined' ? window.getComputedStyle(rowEl) : null;
+      const parsedGap = style === null ? Number.NaN : Number.parseFloat(style.columnGap || style.gap || '');
+      const rowGap = Number.isFinite(parsedGap) ? parsedGap : 8;
+      const previewEl = rowEl.querySelector<HTMLElement>(
+        '[data-preview-workspace]:not([hidden]):not([data-preview-fullscreen])',
+      );
+      const dockedPreviewWidth =
+        previewEl !== null ? Math.max(0, previewEl.getBoundingClientRect().width / zoom) : 0;
+      const totalGaps = dockedPreviewWidth > 0 ? rowGap * 2 : rowGap;
+      const availableForRail =
+        rowWidth - conversationCenterFloor(viewportWidth) - dockedPreviewWidth - totalGaps;
+      return {
+        min: baseMinWidth,
+        max: Math.max(baseMinWidth, Math.min(baseMaxWidth, Math.floor(availableForRail))),
+        startValue,
+      };
+    },
     onChange: (value, final) => {
       if (mode === 'cockpit') { setCockpitWidth(value); return; }
       setRailWidthValue(value);
@@ -486,7 +528,6 @@ export function Rail({
   // Turning the page remounts every control on it, so a press that turned it
   // (opening an agent from a row or a Needs-you link) would leave focus on
   // <body>. Keep keyboard users in place: the new page's heading takes it.
-  const railRef = useRef<HTMLElement>(null);
   const focusInRail = useRef(false);
   useLayoutEffect(() => {
     if (!focusInRail.current) return;

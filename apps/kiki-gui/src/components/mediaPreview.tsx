@@ -15,7 +15,7 @@
  * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
@@ -197,6 +197,7 @@ export function MediaPreviewProvider({
   );
   const [tabsState, setTabsState] = useState<PreviewTabsState>(() => initialSnapshot?.tabsState ?? EMPTY_PREVIEW_TABS);
   const [panelOpen, setPanelOpen] = useState(() => Boolean(initialSnapshot?.panelOpen && initialSnapshot.tabsState.tabs.length > 0));
+  const [previewMaximized, setPreviewMaximized] = useState(false);
   const [width, setWidth] = useState(readStoredWidth);
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
   const [positions, setPositions] = useState<Readonly<Record<string, { top: number; left?: number }>>>(() => initialSnapshot?.positions ?? {});
@@ -231,18 +232,56 @@ export function MediaPreviewProvider({
         return { tabs: [...snapshot.tabsState.tabs, ...kept], active };
       });
       setPanelOpen(snapshot.panelOpen && snapshot.tabsState.tabs.length > 0);
+      setPreviewMaximized(false);
       setPositions(snapshot.positions);
     },
   });
   const [, chooseMode] = useRailMode();
   const cockpit = shell?.cockpit === true;
   const overlayStage = useMediaQuery('(max-width: 1023px)');
-  const collapsePanel = useCallback(() => { setPanelOpen(false); }, []);
+  const collapsePanel = useCallback(() => {
+    setPanelOpen(false);
+    setPreviewMaximized(false);
+  }, []);
   useLayerHistory('preview-workspace', panelOpen && !cockpit && tabsState.tabs.length > 0 && overlayStage, collapsePanel);
   const revealPreview = useCallback(() => {
     if (cockpit) chooseMode('default');
     setPanelOpen(true);
   }, [cockpit, chooseMode]);
+  const togglePreviewMaximized = useCallback(() => {
+    setPreviewMaximized((current) => !current);
+  }, []);
+  const exitPreviewMaximized = useCallback(() => {
+    setPreviewMaximized(false);
+  }, []);
+
+  useEffect(() => {
+    setPreviewMaximized(false);
+  }, [sessionId, snapshotAgentId]);
+
+  useEffect(() => {
+    if (!panelOpen || cockpit || tabsState.tabs.length === 0) {
+      setPreviewMaximized(false);
+    }
+  }, [panelOpen, cockpit, tabsState.tabs.length]);
+
+  const previewVisible = panelOpen && !cockpit && tabsState.tabs.length > 0;
+  const effectiveMaximized = previewVisible && previewMaximized;
+  const shellPreviewOwner = useMemo(() => ({}), []);
+  const ownsShellPreview =
+    registerSessionOpener && shell?.slots.preview !== null && shell?.slots.preview !== undefined;
+  const registerShellPreview = shell?.registerPreview;
+  const unregisterShellPreview = shell?.unregisterPreview;
+  useLayoutEffect(() => {
+    if (!ownsShellPreview || registerShellPreview === undefined) return;
+    registerShellPreview(shellPreviewOwner, { open: previewVisible, maximized: effectiveMaximized });
+  }, [ownsShellPreview, registerShellPreview, shellPreviewOwner, previewVisible, effectiveMaximized]);
+  useLayoutEffect(() => {
+    if (!ownsShellPreview || unregisterShellPreview === undefined) return;
+    return () => {
+      unregisterShellPreview(shellPreviewOwner);
+    };
+  }, [ownsShellPreview, unregisterShellPreview, shellPreviewOwner]);
 
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openResource = useCallback(
@@ -318,8 +357,14 @@ export function MediaPreviewProvider({
   }, [cwd, revealPreview]);
 
   const togglePanel = useCallback(() => {
-    if (cockpit) revealPreview();
-    else setPanelOpen((value) => !value);
+    if (cockpit) {
+      revealPreview();
+      return;
+    }
+    setPanelOpen((value) => {
+      if (value) setPreviewMaximized(false);
+      return !value;
+    });
   }, [cockpit, revealPreview]);
 
   const reportDirty = useCallback((path: string, dirty: boolean) => {
@@ -343,7 +388,10 @@ export function MediaPreviewProvider({
       }
       setTabsState((state) => {
         const next = applyCloseAction(state, action, cwd);
-        if (next.tabs.length === 0) setPanelOpen(false);
+        if (next.tabs.length === 0) {
+          setPanelOpen(false);
+          setPreviewMaximized(false);
+        }
         return next;
       });
     },
@@ -355,7 +403,10 @@ export function MediaPreviewProvider({
       if (pending !== null) {
         setTabsState((state) => {
           const next = applyCloseAction(state, pending.action, cwd);
-          if (next.tabs.length === 0) setPanelOpen(false);
+          if (next.tabs.length === 0) {
+            setPanelOpen(false);
+            setPreviewMaximized(false);
+          }
           return next;
         });
       }
@@ -470,6 +521,9 @@ export function MediaPreviewProvider({
       previewTabCount: tabsState.tabs.length,
       previewPanelOpen: panelOpen && !cockpit,
       previewPanelWidth: panelOpen ? width : undefined,
+      previewMaximized: effectiveMaximized,
+      togglePreviewMaximized,
+      setPreviewMaximized,
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
       activePluginPanelKey,
@@ -492,6 +546,8 @@ export function MediaPreviewProvider({
       panelOpen,
       cockpit,
       width,
+      effectiveMaximized,
+      togglePreviewMaximized,
       togglePanel,
       activeAgentPanelId,
       activePluginPanelKey,
@@ -518,7 +574,7 @@ export function MediaPreviewProvider({
           width={width}
           hidden={panelHidden}
           overlay={panelOverlay}
-          onCollapse={() => { setPanelOpen(false); }}
+          onCollapse={collapsePanel}
         />
       )}
     >
@@ -530,6 +586,9 @@ export function MediaPreviewProvider({
           dirtyPaths={dirtyPaths}
           width={width}
           hidden={panelHidden}
+          isFullscreen={effectiveMaximized}
+          onToggleFullscreen={togglePreviewMaximized}
+          onExitFullscreen={exitPreviewMaximized}
           sessionViewState={workspaceSessionState ?? sessionViewState}
           agentForest={agentForest}
           onOpenSubagent={onOpenSubagent}
@@ -542,10 +601,17 @@ export function MediaPreviewProvider({
           onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
           onCloseAll={() => { requestClose({ kind: 'all' }); }}
           onMove={handleMove}
-          onCollapse={() => { setPanelOpen(false); }}
+          onCollapse={collapsePanel}
           onOpenCockpit={shell?.slots.preview !== null && shell?.slots.preview !== undefined && workspaceNavigation?.sharedRail !== undefined ? () => {
+            setPreviewMaximized(false);
             const sharedRail = workspaceNavigation.sharedRail;
-            if (sharedRail !== undefined && !sharedRail.open) sharedRail.toggle();
+            if (sharedRail !== undefined) {
+              if (sharedRail.ensureDockedOpen !== undefined) {
+                sharedRail.ensureDockedOpen();
+              } else if (!sharedRail.open) {
+                sharedRail.toggle();
+              }
+            }
             chooseMode('cockpit');
           } : undefined}
           onWidthChange={handleWidthChange}

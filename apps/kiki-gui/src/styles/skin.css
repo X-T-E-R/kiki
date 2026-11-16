@@ -555,10 +555,11 @@
     :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-tab-workspace] {
       background-color: transparent;
     }
-    /* A fullscreen preview lifts the rail over the picture: that one is a
-     * floating piece, so it keeps the solid panel token and the drawer's own
-     * lift rather than the flat-sheet treatment of the docked regions. */
-    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden])) .app-rail {
+    /* A fullscreen or yielded preview lifts the summoned inspector over the
+     * picture: that one is a floating piece, so it keeps the solid panel token
+     * and the drawer's own lift rather than the flat-sheet treatment of the docked regions. */
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden])) .app-rail,
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell .conversation-rail-slot:has([data-rail-backdrop]) .app-rail {
       background-color: var(--kiki-solid-panel);
       box-shadow: var(--kiki-sheet-shadow), -12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
     }
@@ -581,7 +582,8 @@
     background-color: var(--kiki-surface-paper);
     box-shadow: none;
   }
-  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle])[aria-expanded='true'] {
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle])[aria-expanded='true'],
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-preview-toggle-rail][aria-expanded='true'] {
     background-color: var(--kiki-surface-panel);
   }
   :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-preview-tab][aria-selected='true'] {
@@ -591,7 +593,8 @@
     :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-new-session]:hover {
       background-color: var(--kiki-surface-panel);
     }
-    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle]):not([aria-expanded='true']):hover {
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle]):not([aria-expanded='true']):hover,
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-preview-toggle-rail]:not([aria-expanded='true']):hover {
       background-color: var(--kiki-surface-panel);
     }
   }

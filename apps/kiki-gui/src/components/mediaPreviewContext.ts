@@ -53,6 +53,12 @@ export interface MediaPreviewApi {
   readonly previewPanelOpen: boolean;
   /** Desired width of an expanded preview, also while the cockpit hides it. */
   readonly previewPanelWidth?: number;
+  /** Whether the expanded preview workspace is maximized across the conversation row. */
+  readonly previewMaximized?: boolean;
+  /** Toggle maximized mode on the preview workspace. */
+  readonly togglePreviewMaximized?: () => void;
+  /** Explicitly set maximized mode on the preview workspace. */
+  readonly setPreviewMaximized?: (maximized: boolean) => void;
   /** Collapse/expand the preview workspace (tabs are preserved). */
   readonly togglePreviewPanel: () => void;
   /**

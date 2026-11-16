@@ -241,6 +241,8 @@ body {
   --focus-ring-width: 2px;
   --kiki-safe-top-inset: max(var(--kiki-safe-top, 0px), env(safe-area-inset-top, 0px));
   --kiki-safe-bottom-inset: max(var(--kiki-safe-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  --kiki-pane-duration: 180ms;
+  --kiki-pane-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 :root[data-skin='contrast'] {
   --focus-ring-width: 3px;
@@ -452,6 +454,12 @@ body {
   background-color: var(--color-canvas);
 }
 
+@media (min-width: 768px) {
+  .app-sidebar {
+    transition: width var(--kiki-pane-duration) var(--kiki-pane-ease);
+  }
+}
+
 /* ---- stage: the canvas-side frame that holds the raised sheets ----
  * Desktop: the main column is inset from the window edge by the stage gap
  * (the sidebar supplies its own inner padding on the left), and every pane —
@@ -548,12 +556,29 @@ body {
   background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
 }
 
-/* While any pane handle is being dragged: global col-resize cursor and no
- * text selection under the pointer (body[data-pane-resizing]). */
+/* While any pane handle is being dragged: global resize cursor, no text
+ * selection, iframe pointer-events shield, and zero transition lag. */
 body[data-pane-resizing='true'] {
   cursor: col-resize !important;
   user-select: none !important;
   -webkit-user-select: none !important;
+}
+
+body[data-pane-resizing='true'][data-pane-resize-axis='row'] {
+  cursor: row-resize !important;
+}
+
+body[data-pane-resizing='true'] iframe {
+  pointer-events: none !important;
+}
+
+body[data-pane-resizing='true'] .app-sidebar,
+body[data-pane-resizing='true'] .app-rail,
+body[data-pane-resizing='true'] .app-rail-shell,
+body[data-pane-resizing='true'] .preview-workspace,
+body[data-pane-resizing='true'] [data-terminal-panel] {
+  transition: none !important;
+  animation: none !important;
 }
 
 /* Wrapper around the rail + its grab strip: the aside is a scroll container
@@ -587,6 +612,9 @@ body[data-pane-resizing='true'] {
   .app-rail {
     border-radius: var(--kiki-sheet-radius);
     box-shadow: var(--kiki-sheet-shadow);
+    transition:
+      width var(--kiki-pane-duration) var(--kiki-pane-ease),
+      box-shadow var(--kiki-pane-duration) var(--kiki-pane-ease);
   }
 }
 
@@ -653,7 +681,9 @@ body[data-pane-resizing='true'] {
     padding-bottom: var(--kiki-safe-bottom-inset);
     padding-left: env(safe-area-inset-left, 0px);
     transform: translateX(-100%);
-    transition: transform 200ms ease-out, box-shadow 200ms ease-out;
+    transition:
+      transform var(--kiki-pane-duration) var(--kiki-pane-ease),
+      box-shadow var(--kiki-pane-duration) var(--kiki-pane-ease);
   }
   .app-sidebar.open {
     transform: translateX(0);
@@ -687,7 +717,7 @@ body[data-pane-resizing='true'] {
     padding-right: env(safe-area-inset-right, 0px);
     padding-bottom: var(--kiki-safe-bottom-inset);
     transform: translateX(100%);
-    transition: transform 200ms ease-out;
+    transition: transform var(--kiki-pane-duration) var(--kiki-pane-ease);
   }
   .app-rail.open,
   .app-rail-shell:has(> .app-rail.open) {
@@ -713,19 +743,38 @@ body[data-pane-resizing='true'] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root:not([data-kiki-motion='full']) {
+    --kiki-pane-duration: 0ms;
+  }
   .app-sidebar,
   .app-rail-shell,
-  .app-rail {
+  .app-rail,
+  .preview-workspace,
+  .app-overlay-backdrop--row {
     transition: none;
+    animation: none;
   }
 }
 
-/* Backdrop for mobile drawers/overlays. */
+:root[data-kiki-motion='reduce'] {
+  --kiki-pane-duration: 0ms;
+}
+
+/* Backdrop for mobile and stage-level overlay drawers. */
 .app-overlay-backdrop {
   position: fixed;
   inset: 0;
   z-index: 25;
   background-color: rgb(var(--kiki-shadow-ink) / 0.22);
+}
+
+.app-overlay-backdrop.app-overlay-backdrop--row {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  border-radius: var(--kiki-sheet-radius);
+  background-color: rgb(var(--kiki-shadow-ink) / 0.16);
+  animation: kiki-scrim-in var(--kiki-pane-duration) var(--kiki-pane-ease) both;
 }
 
 /* ---- interactive rows ----
@@ -895,9 +944,9 @@ body[data-pane-resizing='true'] {
 
 /* Fullscreen preview fills the conversation row — the main content area —
  * and never the window: the app sidebar stays visible and usable beside it.
- * The shell's one rail is lifted over the preview's right edge (its drawer
- * backdrop between the two); dialogs at z-50 and the mobile sidebar drawer
- * (z-40) still take precedence. */
+ * Docked inspector yields automatically; when explicitly summoned over a
+ * maximized or priority-band preview, its slot renders out-of-flow with a
+ * stage-scoped scrim and full-height sheet at z-36. */
 .conversation-row:has(> .conversation-preview-slot > [data-preview-fullscreen]:not([hidden])) {
   position: relative;
 }
@@ -907,24 +956,30 @@ body[data-pane-resizing='true'] {
   inset: 0;
   z-index: 34;
   width: auto;
+  height: auto;
   max-width: none;
 }
 
-/* Floating inspector over a fullscreen preview: it keeps the preview's right
- * edge but starts below the preview's own header, so both top rows stay clickable. */
-.conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
-  .conversation-rail-slot:has(.app-rail-shell) {
-  position: absolute;
-  top: 2.75rem;
-  right: 0;
-  bottom: 0;
-  z-index: 36;
+@media (min-width: 768px) {
+  .preview-workspace.preview-workspace--fullscreen:not(.preview-workspace--overlay) {
+    overflow: hidden;
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: var(--kiki-sheet-shadow);
+    transform-origin: right center;
+    animation: kiki-preview-maximize var(--kiki-pane-duration) var(--kiki-pane-ease) both;
+  }
+}
+
+.conversation-rail-slot:has([data-rail-backdrop]) {
+  display: contents;
 }
 
 @media (max-width: 1023px) {
-  .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
-    .app-overlay-backdrop {
+  .conversation-shell:has(.preview-workspace:not([hidden])) .app-overlay-backdrop {
     z-index: 35;
+  }
+  .conversation-shell:has(.preview-workspace:not([hidden])) :is(.app-rail-shell, .app-rail) {
+    z-index: 36;
   }
 }
 
@@ -947,6 +1002,23 @@ body[data-pane-resizing='true'] {
     overflow: hidden;
     border-radius: var(--kiki-sheet-radius);
     box-shadow: var(--kiki-sheet-shadow);
+    transition:
+      width var(--kiki-pane-duration) var(--kiki-pane-ease),
+      box-shadow var(--kiki-pane-duration) var(--kiki-pane-ease);
+  }
+  .preview-workspace:not(.preview-workspace--overlay):not(.preview-workspace--fullscreen):not([hidden]) {
+    animation: kiki-preview-enter var(--kiki-pane-duration) var(--kiki-pane-ease) both;
+  }
+  .conversation-rail-slot:has([data-rail-backdrop]) > .app-rail-shell {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 36;
+    animation: kiki-pane-drawer-in var(--kiki-pane-duration) var(--kiki-pane-ease) both;
+  }
+  .conversation-rail-slot:has([data-rail-backdrop]) > .app-rail-shell > .app-rail {
+    box-shadow: var(--kiki-sheet-shadow), -12px 0 36px -16px rgb(var(--kiki-shadow-ink) / 0.34);
   }
   /* The sheet clips its corners, so the grab strip lives on its inner edge. */
   .preview-workspace:not(.preview-workspace--overlay) > .preview-workspace__resizer {
@@ -984,24 +1056,21 @@ body[data-pane-resizing='true'] {
   }
 }
 
-/* 1360–1679px keeps a docked preview and the inspector side by side. The
+/* 1360px and up keeps a docked preview and the inspector side by side. The
  * preview yields width first and the inspector second, so the conversation
- * keeps its reading minimum and the preview toolbar and body stay reachable.
- * Fullscreen still lifts the inspector below the preview header. */
+ * keeps its reading minimum and the preview toolbar and body stay reachable. */
 
 /* Room for the preview, between md and 1360px. Sidebar + conversation +
  * preview + inspector cannot all dock at a readable width, so an open docked
  * preview takes the room it needs instead of anything floating over it:
- *   - the inspector steps aside (it comes back when the preview closes);
+ *   - SessionView yields the docked inspector automatically (and summons it as
+ *     an explicit overlay sheet over a scrim when toggled);
  *   - the sidebar folds away (its own open/closed choice is untouched, so it
  *     returns as it was when the preview closes). Opening it by hand while
  *     the preview is open lays it over the page, over a scrim that closes it
  *     on click (App renders the scrim).
  * Priority: preview first, then the conversation, then the inspector. */
 @media (min-width: 768px) and (max-width: 1359px) {
-  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-sheet > .conversation-shell .conversation-rail-slot {
-    display: none;
-  }
   html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])) .app-sidebar:not(.open) {
     width: 0;
     overflow: hidden;
@@ -1014,7 +1083,7 @@ body[data-pane-resizing='true'] {
     z-index: 40;
     max-width: calc(100% - 3rem);
     box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
-    animation: kiki-sidebar-in 200ms ease-out both;
+    animation: kiki-sidebar-in var(--kiki-pane-duration) var(--kiki-pane-ease) both;
   }
   /* With the sidebar folded away the stage needs its own left margin, and
    * the header offers the menu button that brings the sidebar back. */
@@ -1037,7 +1106,45 @@ body[data-pane-resizing='true'] {
 
 @keyframes kiki-sidebar-in {
   from { transform: translateX(-100%); }
-  to { transform: translateX(0); }
+  to { transform: none; }
+}
+
+@keyframes kiki-pane-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes kiki-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes kiki-preview-maximize {
+  from {
+    opacity: 0.94;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes kiki-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

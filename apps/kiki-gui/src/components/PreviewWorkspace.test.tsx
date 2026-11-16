@@ -10,7 +10,7 @@
  */
 
 import { act, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -40,10 +40,10 @@ import { Markdown } from './Markdown';
 import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
 import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { PreviewWebView } from './preview/WebTabView';
-import { readWorkspaceTextViaSession } from './preview/shared';
+import { DEFAULT_PREVIEW_WIDTH, readWorkspaceTextViaSession } from './preview/shared';
 import type { KikiClient } from '../lib/client';
 import { anyOverlayOpen } from '../lib/uiBusy';
-import { ConversationShell, useRegisterSeat } from './ConversationShell';
+import { ConversationShell, useConversationShell, useRegisterSeat } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 
 const FILES: Record<string, string> = {
@@ -3723,5 +3723,326 @@ describe('preview input boundaries', () => {
     expect(result.text).not.toContain('\uFFFD');
     client.fsRead = vi.fn(async () => ({ content: btoa(String.fromCharCode(...bytes)), encoding: 'base64', is_binary: false, truncated: false })) as unknown as KikiClient['fsRead'];
     expect((await readWorkspaceTextViaSession(client, 'session', '/work/file.txt', '/work')).lossless).toBe(false);
+  });
+});
+
+describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () => {
+  beforeAll(async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    await Promise.all([LazyPreviewWorkspace.preload(), LazyMediaLightbox.preload()]);
+    if (typeof globalThis.PointerEvent === 'undefined') {
+      vi.stubGlobal('PointerEvent', MouseEvent);
+    }
+    Element.prototype.setPointerCapture ??= () => {};
+    Element.prototype.releasePointerCapture ??= () => {};
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    FILES['/work/src/server.ts'] = "import { boot } from './boot';\nboot(5801);\n";
+    FILES['/work/docs/design.md'] = '# Design\n\nSome **notes**.\n';
+    connectionMock.activeClient = connectionMock.defaultClient;
+    connectionMock.scopeId = 'local';
+    connectionMock.connectionSource = 'desktop';
+    localStorage.setItem('kiki.railMode', 'default');
+    localStorage.removeItem('kiki.layout');
+    localStorage.removeItem('kiki.previewPanelWidth');
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+    localStorage.removeItem('kiki.railMode');
+    localStorage.removeItem('kiki.layout');
+    localStorage.removeItem('kiki.previewPanelWidth');
+  });
+
+  function ChoreographySessionHarness() {
+    const { slots, previewPresentation } = useConversationShell();
+    const [mode, choose] = useRailMode();
+    const [userRailOpen, setUserRailOpen] = useState(true);
+    const previewMaximized = previewPresentation?.maximized === true;
+    const [yieldedOverlay, setYieldedOverlay] = useState<{ regime: string; open: boolean }>({
+      regime: 'docked',
+      open: false,
+    });
+    const regime = previewMaximized ? 'maximized' : 'docked';
+    const yieldedRailOpen = yieldedOverlay.regime === regime ? yieldedOverlay.open : false;
+    const effectiveRailOpen = previewMaximized ? yieldedRailOpen : userRailOpen;
+    const overlayRailOpen = previewMaximized && effectiveRailOpen;
+    const toggleRail = () => {
+      if (previewMaximized) {
+        setYieldedOverlay((prev) => ({
+          regime,
+          open: prev.regime === regime ? !prev.open : true,
+        }));
+      } else {
+        setUserRailOpen((prev) => {
+          const next = !prev;
+          localStorage.setItem('kiki.layout', JSON.stringify({ railOpen: next }));
+          return next;
+        });
+      }
+    };
+    const ensureDockedOpen = () => {
+      setUserRailOpen(true);
+    };
+    const seat = useMemo(
+      () => ({
+        phase: 'active' as const,
+        composer: <textarea data-test-composer />,
+        cockpit: userRailOpen && mode === 'cockpit',
+      }),
+      [userRailOpen, mode],
+    );
+    useRegisterSeat(seat);
+    const workspaceNavigation = useMemo(
+      () => ({
+        openAgent: vi.fn(),
+        openAgentRoute: vi.fn(),
+        openSession: vi.fn(),
+        sharedRail: {
+          open: effectiveRailOpen,
+          toggle: toggleRail,
+          available: true,
+          yielded: previewMaximized,
+          ensureDockedOpen,
+        },
+      }),
+      [effectiveRailOpen, previewMaximized],
+    );
+    return (
+      <MediaPreviewProvider sessionId="sess-choreo" cwd="/work" workspaceNavigation={workspaceNavigation} registerSessionOpener>
+        <div data-test-timeline />
+        <button type="button" data-close-docked-rail onClick={() => setUserRailOpen(false)}>
+          close docked rail
+        </button>
+        <button type="button" data-cockpit-off onClick={() => choose('default')}>
+          standard
+        </button>
+        <PreviewToggleButton />
+        <OpenButton path="/work/src/server.ts" />
+        <OpenButton path="/work/docs/design.md" />
+        {slots.rail && effectiveRailOpen
+          ? createPortal(
+              <>
+                {overlayRailOpen ? (
+                  <div
+                    data-rail-backdrop
+                    className="app-overlay-backdrop--row"
+                    onClick={() => setYieldedOverlay({ regime, open: false })}
+                  />
+                ) : null}
+                <aside data-session-rail className="app-rail-shell">
+                  Inspector
+                </aside>
+              </>,
+              slots.rail,
+            )
+          : null}
+      </MediaPreviewProvider>
+    );
+  }
+
+  async function mountChoreography() {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MemoryRouter initialEntries={['/s/sess-choreo']}>
+        <Routes>
+          <Route element={<ConversationShell />}>
+            <Route path="/s/:id" element={<ChoreographySessionHarness />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    return probe;
+  }
+
+  it('maximizes cleanly: marks center inert without unmounting, yields docked rail without mutating prefs, summons overlay rail, and unwinds Escape in two steps', async () => {
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const probe = await mountChoreography();
+      await openFile(probe.container, '/work/src/server.ts');
+
+      const center = document.querySelector<HTMLElement>('.conversation-center')!;
+      expect(center.hasAttribute('inert')).toBe(false);
+      expect(document.querySelector('[data-session-rail]')).not.toBeNull();
+      expect(document.querySelector('[data-preview-toggle-rail]')).toBeNull();
+
+      // Maximize preview: docked rail yields cleanly, center becomes inert while staying mounted.
+      await pressPreviewControl('[data-preview-fullscreen-toggle]');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      expect(center.hasAttribute('inert')).toBe(true);
+      expect(center.hasAttribute('data-center-covered')).toBe(true);
+      expect(document.querySelector('[data-test-timeline]')).not.toBeNull();
+      expect(document.querySelector('[data-session-rail]')).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // PreviewTabStrip exposes the Inspector drawer button while maximized.
+      const stripRailBtn = workspace().querySelector<HTMLButtonElement>('[data-preview-toggle-rail]')!;
+      expect(stripRailBtn).not.toBeNull();
+      expect(stripRailBtn.getAttribute('aria-expanded')).toBe('false');
+
+      // Summon Inspector overlay drawer over maximized preview.
+      await act(async () => { stripRailBtn.click(); });
+      expect(document.querySelector('[data-session-rail]')).not.toBeNull();
+      expect(document.querySelector('[data-rail-backdrop]')).not.toBeNull();
+      expect(stripRailBtn.getAttribute('aria-expanded')).toBe('true');
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // 1st Escape dismisses the Inspector overlay while keeping preview maximized.
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      expect(document.querySelector('[data-session-rail]')).toBeNull();
+      expect(document.querySelector('[data-rail-backdrop]')).toBeNull();
+
+      // 2nd Escape exits fullscreen, un-inerts center, and restores docked rail inline.
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+      expect(center.hasAttribute('inert')).toBe(false);
+      expect(document.querySelector('[data-session-rail]')).not.toBeNull();
+      expect(document.querySelector('[data-rail-backdrop]')).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+    } finally {
+      innerWidthSpy.mockRestore();
+    }
+  });
+
+  it('toggles maximize on empty PreviewTabStrip double-click and ignores tab/button double-clicks', async () => {
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const probe = await mountChoreography();
+      await openFile(probe.container, '/work/src/server.ts');
+
+      const strip = workspace().querySelector<HTMLElement>('[data-preview-tab-strip]')!;
+      const tab = workspace().querySelector<HTMLElement>('[role="tab"]')!;
+
+      // Double-clicking a tab itself never toggles fullscreen.
+      await act(async () => {
+        tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+
+      // Double-clicking empty strip chrome toggles fullscreen on and off.
+      await act(async () => {
+        strip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+
+      await act(async () => {
+        strip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+    } finally {
+      innerWidthSpy.mockRestore();
+    }
+  });
+
+  it('auto-resets maximize when collapsing, closing the last tab, or switching to Cockpit', async () => {
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const probe = await mountChoreography();
+      await openFile(probe.container, '/work/src/server.ts');
+
+      // 1. Collapse while maximized -> un-inerts center immediately and reopens docked.
+      await pressPreviewControl('[data-preview-fullscreen-toggle]');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      await pressPreviewControl('[data-preview-collapse]');
+      expect(workspace().hidden).toBe(true);
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
+      await pressPreviewControl('[data-preview-toggle]');
+      expect(workspace().hidden).toBe(false);
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+
+      // 2. Close the last tab while maximized -> resets maximize for the next opened tab.
+      await pressPreviewControl('[data-preview-fullscreen-toggle]');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      await act(async () => {
+        workspace().querySelector<HTMLButtonElement>('[aria-label^="Close "]')!.click();
+      });
+      expect(document.querySelector('[data-preview-workspace]')).toBeNull();
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
+      await openFile(probe.container, '/work/docs/design.md');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+
+      // 3. Switch to Cockpit from maximized preview even when docked rail had been closed earlier.
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-close-docked-rail]')!.click();
+      });
+      expect(document.querySelector('[data-session-rail]')).toBeNull();
+      await pressPreviewControl('[data-preview-fullscreen-toggle]');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      const openCockpitBtn = workspace().querySelector<HTMLButtonElement>('[data-preview-open-cockpit]')!;
+      expect(openCockpitBtn).not.toBeNull();
+      await act(async () => { openCockpitBtn.click(); });
+      expect(localStorage.getItem('kiki.railMode')).toBe('cockpit');
+      expect(workspace().hidden).toBe(true);
+      expect(document.querySelector('[data-session-rail]')).not.toBeNull();
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-cockpit-off]')!.click();
+      });
+      expect(workspace().hidden).toBe(false);
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+    } finally {
+      innerWidthSpy.mockRestore();
+    }
+  });
+
+  it('computes sibling-aware drag width without jumping when RightRail is open and resets to 420px on resizer double-click', async () => {
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const probe = await mountChoreography();
+      await openFile(probe.container, '/work/src/server.ts');
+
+      const row = document.querySelector<HTMLElement>('.conversation-row')!;
+      row.style.columnGap = '8px';
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        left: 264, right: 1592, top: 0, bottom: 900, width: 1328, height: 900, x: 264, y: 0, toJSON: () => ({}),
+      });
+      const railEl = document.querySelector<HTMLElement>('[data-session-rail]')!;
+      vi.spyOn(railEl, 'getBoundingClientRect').mockReturnValue({
+        left: 1292, right: 1592, top: 0, bottom: 900, width: 300, height: 900, x: 1292, y: 0, toJSON: () => ({}),
+      });
+      const previewEl = workspace();
+      vi.spyOn(previewEl, 'getBoundingClientRect').mockReturnValue({
+        left: 864, right: 1284, top: 0, bottom: 900, width: 420, height: 900, x: 864, y: 0, toJSON: () => ({}),
+      });
+      const resizer = previewEl.querySelector<HTMLElement>('.preview-workspace__resizer')!;
+
+      // Drag left edge by 40px (864 -> 824) with a 300px RightRail open: width becomes 460px, NOT 1600 - 824 = 776px!
+      await act(async () => {
+        resizer.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 864, bubbles: true }));
+        resizer.dispatchEvent(new PointerEvent('pointermove', { clientX: 824, bubbles: true }));
+        resizer.dispatchEvent(new PointerEvent('pointerup', { clientX: 824, bubbles: true }));
+      });
+      expect(previewEl.style.width).toBe('460px');
+
+      // Dragging far left clamps to available row space: 1328 (row) - 480 (center floor) - 300 (rail) - 16 (2 gaps) = 532px.
+      await act(async () => {
+        resizer.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 824, bubbles: true }));
+        resizer.dispatchEvent(new PointerEvent('pointermove', { clientX: 400, bubbles: true }));
+        resizer.dispatchEvent(new PointerEvent('pointerup', { clientX: 400, bubbles: true }));
+      });
+      expect(previewEl.style.width).toBe('532px');
+
+      // Double-clicking the resizer resets to DEFAULT_PREVIEW_WIDTH (420px), not MAX_PREVIEW_WIDTH (760px).
+      await act(async () => {
+        resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      });
+      expect(previewEl.style.width).toBe(`${DEFAULT_PREVIEW_WIDTH}px`);
+      expect(localStorage.getItem('kiki.previewPanelWidth')).toBe(String(DEFAULT_PREVIEW_WIDTH));
+    } finally {
+      innerWidthSpy.mockRestore();
+    }
   });
 });

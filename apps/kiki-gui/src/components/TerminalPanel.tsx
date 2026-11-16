@@ -323,10 +323,22 @@ export function TerminalPanel({
     return () => { clearTimeout(timer); };
   }, [confirmKillId]);
 
+  useEffect(() => {
+    return () => {
+      if (dragRef.current !== null) {
+        delete document.body.dataset['paneResizing'];
+        delete document.body.dataset['paneResizeAxis'];
+      }
+    };
+  }, []);
+
   const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     dragRef.current = { startY: event.clientY, startHeight: height };
     setDragging(true);
+    document.body.dataset['paneResizing'] = 'true';
+    document.body.dataset['paneResizeAxis'] = 'row';
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
   };
@@ -340,6 +352,8 @@ export function TerminalPanel({
     if (drag === null) return;
     dragRef.current = null;
     setDragging(false);
+    delete document.body.dataset['paneResizing'];
+    delete document.body.dataset['paneResizeAxis'];
     onHeightChange(clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY)), true);
   };
 
