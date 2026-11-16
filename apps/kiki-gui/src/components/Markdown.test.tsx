@@ -852,4 +852,62 @@ describe('mobile reading & containment', () => {
     expect(coarseBlock![0]).toContain('margin-block: -0.25em;');
     expect(coarseBlock![0]).not.toContain('line-height');
   });
+
+  it('preserves unencoded CJK #heading links and scrolls matching headings in-container without documentPath', async () => {
+    const probe = makeRoot();
+    const md = ['[跳到概述](#概述)', '', '## 概述', '', '正文内容'].join('\n');
+    await renderSettled(probe.root, <Markdown mode="static" text={md} />);
+
+    expect(probe.container.textContent).not.toContain('[blocked]');
+    const anchor = probe.container.querySelector<HTMLAnchorElement>('a')!;
+    expect(anchor).not.toBeNull();
+    expect(anchor.textContent).toBe('跳到概述');
+
+    const heading = probe.container.querySelector<HTMLElement>('[data-markdown-heading="概述"]')!;
+    expect(heading).not.toBeNull();
+    const scrollIntoView = vi.fn();
+    heading.scrollIntoView = scrollIntoView;
+
+    await act(async () => {
+      anchor.click();
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+  });
+
+  it('opens explicit relative extensionless files (./LICENSE) in preview instead of navigating the SPA router', async () => {
+    const openFile = vi.fn();
+    const preview: MediaPreviewApi = {
+      cwd: '/work/repo',
+      sessionId: 'session_test',
+      openFile,
+      openImage: vi.fn(),
+      openAttachment: vi.fn(),
+      previewTabCount: 0,
+      previewPanelOpen: false,
+      togglePreviewPanel: vi.fn(),
+      openAgentPanel: vi.fn(),
+      openBuiltinSkill: vi.fn(),
+      activeAgentPanelId: undefined,
+    };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewContext.Provider value={preview}>
+        <Markdown mode="static" text={'See [license](./LICENSE) and [parent makefile](../Makefile).'} documentDirectory="/work/repo/docs" />
+      </MediaPreviewContext.Provider>,
+    );
+
+    const links = Array.from(probe.container.querySelectorAll<HTMLAnchorElement>('a'));
+    expect(links).toHaveLength(2);
+    expect(links[0]!.getAttribute('title')).toBe('/work/repo/docs/LICENSE');
+    expect(links[1]!.getAttribute('title')).toBe('/work/repo/Makefile');
+    expect(probe.container.querySelector('[data-internal-link]')).toBeNull();
+
+    await act(async () => {
+      links[0]!.click();
+      links[1]!.click();
+    });
+    expect(openFile).toHaveBeenNthCalledWith(1, { path: '/work/repo/docs/LICENSE' });
+    expect(openFile).toHaveBeenNthCalledWith(2, { path: '/work/repo/Makefile' });
+  });
 });

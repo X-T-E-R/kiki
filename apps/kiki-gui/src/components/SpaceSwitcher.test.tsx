@@ -167,15 +167,19 @@ const TWO = { items: [
 ] };
 
 describe('SpaceSwitcher', () => {
-  it('keeps the wordmark a two-line position bar with Main space and This computer for a single-home user', async () => {
+  it('renders only the clean kiki. wordmark at rest in default local main space while keeping the menu clickable', async () => {
     list.mockResolvedValue({ items: [TWO.items[0]] });
     await render();
     const trigger = document.querySelector<HTMLButtonElement>('[data-space-switcher="main"]');
     expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
     expect(trigger?.getAttribute('aria-expanded')).toBe('false');
-    expect(trigger?.querySelector('[data-space-switcher-name]')?.textContent).toBe('Main space');
-    expect(trigger?.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('This computer');
+    expect(trigger?.textContent).toBe('kiki');
+    expect(trigger?.querySelector('[data-space-dot]')).toBeNull();
+    expect(trigger?.querySelector('[data-space-switcher-name]')).toBeNull();
+    expect(trigger?.querySelector('[data-space-switcher-subtitle]')).toBeNull();
     expect(trigger?.querySelector('[data-space-remote-tag]')).toBeNull();
+    const chevron = trigger?.querySelector('svg:last-of-type');
+    expect(chevron?.getAttribute('class')).toContain('opacity-0');
     await act(async () => { trigger!.click(); });
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(document.querySelector('[data-space-single-hint]')).not.toBeNull();
@@ -489,7 +493,7 @@ describe('SpaceSwitcher', () => {
     expect(host.openSpace).not.toHaveBeenCalled();
   });
 
-  it('resolves browser computer name from handshake, shows connection states on line 2, and never exposes raw remote: keys or UUIDs', async () => {
+  it('resolves browser computer name from handshake, hides routine subtitle in default main while surfacing drop notices, and never exposes raw remote: keys or UUIDs', async () => {
     host.kind = 'browser';
     const remoteConnId = '11111111-1111-4111-8111-111111111111';
     const handshake = vi.fn().mockResolvedValue({ targetLabel: 'Office Mac Studio', homeId: 'main' });
@@ -501,8 +505,9 @@ describe('SpaceSwitcher', () => {
     connection.localClient = null;
     const view = await render();
     const trigger = document.querySelector<HTMLElement>('[data-space-switcher="main"]')!;
-    expect(trigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('Main space');
-    expect(trigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio');
+    expect(trigger.querySelector('[data-space-dot]')).toBeNull();
+    expect(trigger.querySelector('[data-space-switcher-name]')).toBeNull();
+    expect(trigger.querySelector('[data-space-switcher-subtitle]')).toBeNull();
 
     connection.wsStatus = 'connecting';
     await view.rerender();
@@ -511,6 +516,16 @@ describe('SpaceSwitcher', () => {
     connection.wsStatus = 'closed';
     await view.rerender();
     expect(trigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio · Disconnected');
+
+    // Non-default local space keeps space dot, space name, and machine subtitle when connected.
+    connection.wsStatus = 'open';
+    configureSpaceStorage({ homeId: 'h-a', name: 'ACME', color: '#295c58' });
+    await view.rerender();
+    const nonMainTrigger = document.querySelector<HTMLElement>('[data-space-switcher="h-a"]')!;
+    expect(nonMainTrigger.querySelector('[data-space-dot]')).not.toBeNull();
+    expect(nonMainTrigger.querySelector('[data-space-switcher-name]')?.textContent).toBe('ACME');
+    expect(nonMainTrigger.querySelector('[data-space-switcher-subtitle]')?.textContent).toBe('Office Mac Studio');
+    configureSpaceStorage(null);
 
     // Unlisted paired connection falls back to human label, never remote:<uuid> or UUID.
     connection.connectionId = remoteConnId;

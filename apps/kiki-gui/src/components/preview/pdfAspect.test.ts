@@ -7,7 +7,9 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { browserHost, HostProvider } from '../../host';
 import { I18nProvider } from '../../i18n';
+import { MediaPreviewContext, type MediaPreviewApi } from '../mediaPreviewContext';
 import { PdfPageView } from './PdfPageView';
 
 const pdfMocks = vi.hoisted(() => ({ getDocument: vi.fn() }));
@@ -408,5 +410,100 @@ describe('pdf page document lifecycle', () => {
     expect(pdfMocks.getDocument).toHaveBeenCalledTimes(2);
     expect(secondDocument.getPage).toHaveBeenCalledWith(1);
     expect(container.querySelector('[data-pdf-page]')?.getAttribute('data-state')).toBe('ready');
+  });
+
+  it('renders Link annotation overlays and routes external URLs, internal destinations, named actions, and relative files while ignoring unsafe schemes', async () => {
+    const openUrl = vi.fn(async () => undefined);
+    const openFile = vi.fn();
+    const onNavigatePage = vi.fn();
+    const documentProxy = {
+      numPages: 5,
+      getDestination: vi.fn(async (name: string) => (name === 'sec-3' ? [{ num: 9, gen: 0 }] : null)),
+      getPageIndex: vi.fn(async () => 2),
+      getPage: vi.fn(async () => ({
+        getViewport: ({ scale }: { readonly scale: number }) => ({
+          width: 600 * scale,
+          height: 800 * scale,
+          convertToViewportRectangle: (rect: number[]) => [rect[0]!, 800 - rect[3]!, rect[2]!, 800 - rect[1]!],
+        }),
+        getAnnotations: vi.fn(async () => [
+          { id: 'ext', subtype: 'Link', rect: [60, 700, 240, 740], url: 'https://example.com/paper' },
+          { id: 'dest', subtype: 'Link', rect: [60, 620, 240, 660], dest: 'sec-3' },
+          { id: 'next', subtype: 'Link', rect: [60, 540, 240, 580], action: 'NextPage' },
+          { id: 'file', subtype: 'Link', rect: [60, 460, 240, 500], unsafeUrl: './appendix.md' },
+          { id: 'bad', subtype: 'Link', rect: [60, 380, 240, 420], unsafeUrl: 'javascript:alert(1)' },
+        ]),
+        render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+        cleanup: vi.fn(),
+      })),
+      destroy: vi.fn(async () => undefined),
+    };
+    pdfMocks.getDocument.mockReturnValue({ promise: Promise.resolve(documentProxy), destroy: vi.fn(async () => undefined) });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D);
+
+    const client = {
+      readDocumentPreviewAsset: vi.fn(async () => ({ bytes: Uint8Array.of(1, 2, 3), mime: 'application/pdf' })),
+    } as never;
+    const preview: MediaPreviewApi = {
+      cwd: '/work',
+      sessionId: 'sess-1',
+      openFile,
+      openImage: vi.fn(),
+      openAttachment: vi.fn(),
+      previewTabCount: 1,
+      previewPanelOpen: true,
+      togglePreviewPanel: vi.fn(),
+      openAgentPanel: vi.fn(),
+      openBuiltinSkill: vi.fn(),
+      activeAgentPanelId: undefined,
+    };
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      const inner = createElement(
+        I18nProvider,
+        null,
+        createElement(
+          MediaPreviewContext.Provider,
+          { value: preview },
+          createElement(PdfPageView, {
+            client,
+            assetUrl: '/asset/paper.pdf',
+            sourceKey: 'paper-source',
+            page: 1,
+            name: 'paper.pdf',
+            documentDirectory: '/work/papers',
+            onNavigatePage,
+          }),
+        ),
+      );
+      root.render(createElement(HostProvider, { host: { ...browserHost, openUrl }, children: inner }));
+    });
+    await flush();
+
+    const links = Array.from(container.querySelectorAll<HTMLAnchorElement>('[data-pdf-links] a'));
+    expect(links).toHaveLength(4);
+    expect(links.map((el) => el.dataset['pdfLink'])).toEqual(['external', 'dest', 'action', 'file']);
+    expect(links[0]!.getAttribute('href')).toBe('https://example.com/paper');
+    expect(links[0]!.style.left).toBe('10%');
+    expect(links[0]!.style.width).toBe('30%');
+
+    await act(async () => {
+      links[0]!.click();
+      links[1]!.click();
+      links[2]!.click();
+      links[3]!.click();
+    });
+    await flush();
+
+    expect(openUrl).toHaveBeenCalledWith('https://example.com/paper');
+    expect(onNavigatePage).toHaveBeenCalledWith(3);
+    expect(onNavigatePage).toHaveBeenCalledWith(2);
+    expect(openFile).toHaveBeenCalledWith({ path: '/work/papers/appendix.md' });
   });
 });

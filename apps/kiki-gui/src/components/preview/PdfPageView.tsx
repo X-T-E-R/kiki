@@ -20,10 +20,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
+import { joinPath, resolveFileReference } from '@kiki/session-core/composer/media';
 import { cMapUrl, standardFontDataUrl, workerSrc } from 'virtual:kiki-pdf-assets';
 
+import { openExternalUrl, useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
+import { runToastAction } from '../../lib/toasts';
+import { useMediaPreview } from '../mediaPreviewContext';
 
 type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
 
@@ -120,6 +124,97 @@ function isRenderCancellation(error: unknown): boolean {
 
 export type PdfPageState = 'loading' | 'ready' | 'failed';
 
+type PdfNamedAction = 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage';
+
+type PdfLinkTarget =
+  | { readonly kind: 'external'; readonly url: string }
+  | { readonly kind: 'file'; readonly rawTarget: string }
+  | { readonly kind: 'dest'; readonly dest: unknown }
+  | { readonly kind: 'action'; readonly action: PdfNamedAction };
+
+interface PdfLinkOverlayItem {
+  readonly id: string;
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  readonly target: PdfLinkTarget;
+}
+
+function parseExternalPdfUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+      return parsed.href;
+    }
+  } catch {}
+  return undefined;
+}
+
+function extractPdfPageLinks(
+  annotations: readonly unknown[],
+  unit: { readonly width: number; readonly height: number; readonly convertToViewportRectangle?: (rect: number[]) => number[] },
+): readonly PdfLinkOverlayItem[] {
+  if (unit.width <= 0 || unit.height <= 0) return [];
+  const items: PdfLinkOverlayItem[] = [];
+  for (let index = 0; index < annotations.length; index += 1) {
+    const entry = annotations[index] as {
+      readonly id?: unknown;
+      readonly subtype?: unknown;
+      readonly rect?: unknown;
+      readonly url?: unknown;
+      readonly unsafeUrl?: unknown;
+      readonly dest?: unknown;
+      readonly action?: unknown;
+    } | null | undefined;
+    if (entry === null || entry === undefined || entry.subtype !== 'Link' || !Array.isArray(entry.rect) || entry.rect.length < 4) continue;
+    const rawRect = entry.rect.map(Number);
+    if (rawRect.slice(0, 4).some((coord) => !Number.isFinite(coord))) continue;
+    const converted = typeof unit.convertToViewportRectangle === 'function'
+      ? unit.convertToViewportRectangle(rawRect)
+      : [rawRect[0]!, unit.height - rawRect[3]!, rawRect[2]!, unit.height - rawRect[1]!];
+    const minX = Math.max(0, Math.min(converted[0]!, converted[2]!));
+    const maxX = Math.min(unit.width, Math.max(converted[0]!, converted[2]!));
+    const minY = Math.max(0, Math.min(converted[1]!, converted[3]!));
+    const maxY = Math.min(unit.height, Math.max(converted[1]!, converted[3]!));
+    if (maxX <= minX || maxY <= minY) continue;
+
+    let target: PdfLinkTarget | undefined;
+    const externalUrl = parseExternalPdfUrl(entry.url) ?? parseExternalPdfUrl(entry.unsafeUrl);
+    if (externalUrl !== undefined) {
+      target = { kind: 'external', url: externalUrl };
+    } else if (
+      typeof entry.unsafeUrl === 'string' &&
+      entry.unsafeUrl.trim() !== '' &&
+      !/^[a-z][a-z\d+.-]*:/iu.test(entry.unsafeUrl.trim()) &&
+      !entry.unsafeUrl.trim().startsWith('//')
+    ) {
+      target = { kind: 'file', rawTarget: entry.unsafeUrl.trim() };
+    } else if (entry.dest !== undefined && entry.dest !== null && entry.dest !== '') {
+      target = { kind: 'dest', dest: entry.dest };
+    } else if (
+      entry.action === 'NextPage' ||
+      entry.action === 'PrevPage' ||
+      entry.action === 'FirstPage' ||
+      entry.action === 'LastPage'
+    ) {
+      target = { kind: 'action', action: entry.action };
+    }
+    if (target === undefined) continue;
+
+    items.push({
+      id: typeof entry.id === 'string' && entry.id !== '' ? entry.id : `pdf-link-${index}`,
+      left: (minX / unit.width) * 100,
+      top: (minY / unit.height) * 100,
+      width: ((maxX - minX) / unit.width) * 100,
+      height: ((maxY - minY) / unit.height) * 100,
+      target,
+    });
+  }
+  return items;
+}
+
 export interface PdfPageViewProps {
   /** The connection that owns the file; its client carries the bearer token. */
   readonly client: KikiClient | undefined;
@@ -138,12 +233,18 @@ export interface PdfPageViewProps {
   readonly page: number;
   /** Name for the alternative text and the failure message. */
   readonly name: string;
+  /** Optional directory containing the PDF when previewing a workspace file, for relative file links. */
+  readonly documentDirectory?: string;
   /** Real page count, once the document has loaded. */
   readonly onPageCount?: (numPages: number) => void;
+  /** Navigate to another 1-based page when an internal PDF link or named action is clicked. */
+  readonly onNavigatePage?: (page: number) => void;
   readonly onRetry?: () => void;
 }
 
-export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCount, onRetry }: PdfPageViewProps) {
+export function PdfPageView({ client, assetUrl, sourceKey, page, name, documentDirectory, onPageCount, onNavigatePage, onRetry }: PdfPageViewProps) {
+  const host = useHost();
+  const preview = useMediaPreview();
   const { t } = useI18n();
   const frame = useRef<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
@@ -154,9 +255,11 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
   const lastError = useRef<string | undefined>(undefined);
   const assetUrlRef = useRef(assetUrl);
   const onPageCountRef = useRef(onPageCount);
+  const onNavigatePageRef = useRef(onNavigatePage);
   const tRef = useRef(t);
   const [state, setState] = useState<PdfPageState>('loading');
   const [aspect, setAspect] = useState<number | null>(null);
+  const [links, setLinks] = useState<readonly PdfLinkOverlayItem[]>([]);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
   const [documentVersion, setDocumentVersion] = useState(0);
@@ -168,6 +271,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
 
   assetUrlRef.current = assetUrl;
   onPageCountRef.current = onPageCount;
+  onNavigatePageRef.current = onNavigatePage;
   tRef.current = t;
 
   const cancelActiveRender = useCallback(() => {
@@ -218,6 +322,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
     setState('loading');
     setFailure(undefined);
     setAspect(null);
+    setLinks([]);
     lastError.current = undefined;
 
     if (client === undefined) {
@@ -283,6 +388,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
     setFailure(undefined);
     clearCanvas(node);
     setAspect(null);
+    setLinks([]);
 
     const run = async (): Promise<void> => {
       try {
@@ -301,11 +407,15 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
         const context = node.getContext('2d');
         if (context === null) throw new Error('PDF canvas is unavailable.');
         if (cancelled || session.current !== currentSession) return;
+        const annotationsPromise = typeof (pageProxy as { getAnnotations?: unknown }).getAnnotations === 'function'
+          ? pageProxy.getAnnotations({ intent: 'display' }).catch(() => [])
+          : Promise.resolve([]);
         const renderTask = pageProxy.render({ canvasContext: context, viewport });
         render = { cancel: () => { renderTask.cancel(); } };
         activeRender.current = render;
-        await renderTask.promise;
+        const [, rawAnnotations] = await Promise.all([renderTask.promise, annotationsPromise]);
         if (cancelled || session.current !== currentSession) return;
+        setLinks(extractPdfPageLinks(Array.isArray(rawAnnotations) ? rawAnnotations : [], unit));
         renderedKey.current = renderKey;
         setState('ready');
       } catch (error: unknown) {
@@ -332,6 +442,45 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
     };
   }, [cancelActiveRender, documentVersion, layoutWidth, page, renderKey, sourceIdentity]);
 
+  const navigateDestination = useCallback(async (dest: unknown): Promise<void> => {
+    const doc = session.current?.document as (PDFDocumentProxy & {
+      getDestination?: (id: string) => Promise<unknown[] | null>;
+      getPageIndex?: (ref: unknown) => Promise<number>;
+    }) | undefined;
+    if (doc === undefined || onNavigatePageRef.current === undefined) return;
+    try {
+      const explicit = typeof dest === 'string'
+        ? (typeof doc.getDestination === 'function' ? await doc.getDestination(dest) : null)
+        : Array.isArray(dest)
+          ? dest
+          : null;
+      const ref = explicit?.[0];
+      let targetPage: number | undefined;
+      if (typeof ref === 'number' && Number.isFinite(ref)) {
+        targetPage = ref + 1;
+      } else if (typeof ref === 'object' && ref !== null && typeof doc.getPageIndex === 'function') {
+        targetPage = (await doc.getPageIndex(ref as Parameters<PDFDocumentProxy['getPageIndex']>[0])) + 1;
+      }
+      if (targetPage !== undefined && targetPage >= 1 && targetPage <= doc.numPages) {
+        onNavigatePageRef.current(targetPage);
+      }
+    } catch {}
+  }, []);
+
+  const navigateAction = useCallback((action: PdfNamedAction): void => {
+    const doc = session.current?.document;
+    if (doc === undefined || onNavigatePageRef.current === undefined) return;
+    const current = Math.min(Math.max(1, page), doc.numPages);
+    const next = action === 'FirstPage'
+      ? 1
+      : action === 'LastPage'
+        ? doc.numPages
+        : action === 'PrevPage'
+          ? Math.max(1, current - 1)
+          : Math.min(doc.numPages, current + 1);
+    onNavigatePageRef.current(next);
+  }, [page]);
+
   return (
     <div ref={frame} className="mx-auto w-full max-w-[900px]" data-pdf-page data-page={page} data-state={state} title={lastError.current}>
       {state === 'failed' ? (
@@ -348,12 +497,81 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
         </div>
       ) : (
         <>
-          <canvas
-            ref={canvas}
-            className="block w-full rounded-[3px] bg-white shadow-[var(--kiki-sheet-shadow)]"
-            style={{ visibility: isCurrentRender ? 'visible' : 'hidden', ...(aspect === null ? {} : { aspectRatio: String(aspect) }) }}
-            aria-label={t('preview.pageAlt', { name, page: String(page) })}
-          />
+          <div className="relative w-full">
+            <canvas
+              ref={canvas}
+              className="block w-full rounded-[3px] bg-white shadow-[var(--kiki-sheet-shadow)]"
+              style={{ visibility: isCurrentRender ? 'visible' : 'hidden', ...(aspect === null ? {} : { aspectRatio: String(aspect) }) }}
+              aria-label={t('preview.pageAlt', { name, page: String(page) })}
+            />
+            {isCurrentRender && links.length > 0 ? (
+              <div className="pointer-events-none absolute inset-0" data-pdf-links>
+                {links.map((item) => {
+                  const target = item.target;
+                  const style = {
+                    left: `${item.left}%`,
+                    top: `${item.top}%`,
+                    width: `${item.width}%`,
+                    height: `${item.height}%`,
+                  };
+                  if (target.kind === 'external') {
+                    const url = target.url;
+                    return (
+                      <a
+                        key={item.id}
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-pdf-link="external"
+                        style={style}
+                        onClickCapture={(event) => {
+                          if (host.openUrl === undefined) return;
+                          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                          event.preventDefault();
+                          void openExternalUrl(host, url, t('common.popupBlocked')).catch(() => {
+                            runToastAction(t('link.open'), () => Promise.reject(new Error(t('common.popupBlocked'))));
+                          });
+                        }}
+                        className="pointer-events-auto absolute block rounded-[2px] hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-selected-ink"
+                      />
+                    );
+                  }
+                  return (
+                    <a
+                      key={item.id}
+                      href="#"
+                      data-pdf-link={target.kind}
+                      style={style}
+                      onClick={(event) => {
+                        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                        event.preventDefault();
+                        if (target.kind === 'dest') {
+                          void navigateDestination(target.dest);
+                          return;
+                        }
+                        if (target.kind === 'action') {
+                          navigateAction(target.action);
+                          return;
+                        }
+                        if (preview === null) return;
+                        const baseDir = documentDirectory ?? preview.cwd;
+                        const resolved = resolveFileReference(target.rawTarget, baseDir);
+                        if (resolved !== undefined) {
+                          preview.openFile(resolved);
+                        } else if (/^\.\.?\//.test(target.rawTarget) && baseDir !== undefined && baseDir.trim() !== '') {
+                          const rawPathPart = target.rawTarget.split(/[?#]/, 1)[0]!;
+                          if (rawPathPart !== '' && !rawPathPart.endsWith('/')) {
+                            preview.openFile({ path: joinPath(baseDir, rawPathPart) });
+                          }
+                        }
+                      }}
+                      className="pointer-events-auto absolute block rounded-[2px] hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-selected-ink"
+                    />
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
           {state === 'loading' ? (
             <div className="mt-2 flex items-center justify-center gap-2 text-[11.5px] text-ink-faint" role="status">
               <span className="h-1 w-1 animate-pulse rounded-full bg-ink-faint" aria-hidden />

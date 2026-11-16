@@ -25,6 +25,11 @@ import { webPrincipal, type WebAccess } from '../services/webAccess';
 const PREVIEW_RESOURCE_CSP = "default-src 'none'; connect-src 'self' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:; style-src 'self' 'unsafe-inline' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; worker-src 'self' blob: data:; frame-src 'self' blob: data:; form-action 'none'; base-uri 'self'; object-src 'none'";
 export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; ${PREVIEW_RESOURCE_CSP}`;
 export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace(' allow-same-origin', '')}; ${PREVIEW_RESOURCE_CSP}`;
+const MAX_SHIM_HTML_BYTES = 16 * 1024 * 1024;
+const PREVIEW_LINK_SHIM = Buffer.from(
+  '<script>(()=>{addEventListener("click",e=>{if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;let a=null;const p=typeof e.composedPath==="function"?e.composedPath():[];for(let i=0;i<p.length;i++){const n=p[i];if(n&&typeof n.tagName==="string"&&n.tagName.toLowerCase()==="a"){a=n;break}}if(!a||typeof a.hasAttribute==="function"&&a.hasAttribute("download"))return;const h=typeof a.getAttribute==="function"?a.getAttribute("href")||a.getAttribute("xlink:href"):null;if(!h)return;const s=h.trim();if(!s||/^javascript:/i.test(s))return;const t=(a.getAttribute("target")||document.querySelector("base[target]")?.getAttribute("target")||"").trim().toLowerCase();if(s.startsWith("#")){if(t==="_top"||t==="_parent"||!a.hasAttribute("target")&&t==="_blank"){e.preventDefault();if(location.hash===s){try{document.getElementById(decodeURIComponent(s.slice(1)))?.scrollIntoView()}catch{}}else location.hash=s}return}let u;try{u=new URL(s,document.baseURI)}catch{return}if(u.origin===location.origin&&u.pathname.startsWith("/html-preview/")){if(t==="_top"||t==="_parent"){e.preventDefault();location.assign(u.href)}return}if(u.protocol==="http:"||u.protocol==="https:"||u.protocol==="mailto:"){e.preventDefault();open(u.href,"_blank","noopener,noreferrer")}})})()</script>',
+  'utf8',
+);
 const TTL = 30 * 60 * 1000;
 const resourceOptions = { config: { htmlPreviewResource: true } };
 interface SessionHtmlResource { bytes: Buffer; mime: string; entryPath: string }
@@ -81,6 +86,17 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
 }
 function requireLocalClient(req: FastifyRequest): void {
   if (!isLoopbackPreviewClient(req)) throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
+}
+function isDocumentNavigation(req: FastifyRequest): boolean {
+  return req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate' && req.headers.range === undefined;
+}
+function injectPreviewLinkShim(bytes: Buffer): Buffer {
+  if (bytes.byteLength >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))) return bytes;
+  const ascii = bytes.toString('latin1').toLowerCase();
+  let index = ascii.lastIndexOf('</body>');
+  if (index < 0) index = ascii.lastIndexOf('</html>');
+  if (index < 0) return Buffer.concat([bytes, PREVIEW_LINK_SHIM]);
+  return Buffer.concat([bytes.subarray(0, index), PREVIEW_LINK_SHIM, bytes.subarray(index)]);
 }
 
 export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, manager: RemoteConnectionManager, options: HtmlPreviewOptions = {}): void {
@@ -340,6 +356,44 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     document.addHook('onRequest', async (req, reply) => {
       security(reply, true);
       if (stripPort(req.headers.host ?? '') !== hostname) return reply.code(403).send();
+      if (isDocumentNavigation(req) && typeof req.headers['if-none-match'] === 'string') {
+        const match = req.headers['if-none-match'];
+        req.headers['if-none-match'] = match.endsWith('-nav"')
+          ? `${match.slice(0, -5)}"`
+          : match.endsWith('-nav')
+            ? match.slice(0, -4)
+            : '';
+      }
+    });
+    document.addHook('onSend', async (req, reply, payload) => {
+      if (!isDocumentNavigation(req)) return payload;
+      const contentType = String(reply.getHeader('content-type') ?? '').toLowerCase();
+      if (!contentType.startsWith('text/html')) return payload;
+      const declaredLength = Number(reply.getHeader('content-length') ?? 0);
+      if (declaredLength > MAX_SHIM_HTML_BYTES) return payload;
+      const etag = reply.getHeader('etag');
+      if (typeof etag === 'string' && etag !== '') {
+        reply.header('etag', etag.endsWith('"') ? `${etag.slice(0, -1)}-nav"` : `${etag}-nav`);
+      }
+      if (reply.statusCode !== 200 || payload === null || payload === undefined) return payload;
+      let raw: Buffer;
+      if (Buffer.isBuffer(payload)) raw = payload;
+      else if (typeof payload === 'string') raw = Buffer.from(payload, 'utf8');
+      else if (payload instanceof Readable) {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of payload) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+          total += buf.byteLength;
+          chunks.push(buf);
+          if (total > MAX_SHIM_HTML_BYTES) return Buffer.concat(chunks);
+        }
+        raw = Buffer.concat(chunks);
+      } else return payload;
+      if (raw.byteLength > MAX_SHIM_HTML_BYTES) return raw;
+      const injected = injectPreviewLinkShim(raw);
+      reply.header('content-length', injected.byteLength);
+      return injected;
     });
     document.get('/html-preview/:previewId/*', async (req, reply) => {
       if ((req.params as { previewId: string }).previewId !== id) return reply.code(404).send();

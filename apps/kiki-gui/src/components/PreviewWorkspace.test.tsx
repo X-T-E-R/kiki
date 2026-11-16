@@ -2404,7 +2404,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
     const webFrame = workspace().querySelector<HTMLIFrameElement>('iframe[data-preview-web]');
     expect(webFrame).not.toBeNull();
     expect(webFrame?.getAttribute('src')).toBe('https://docs.example.com/guide');
-    expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-same-origin');
+    expect(webFrame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin');
     expect(workspace().querySelector('[data-web-open-external]')).not.toBeNull();
   });
 });
@@ -3708,6 +3708,8 @@ describe('preview input boundaries', () => {
     await renderSettled(probe.root, <PreviewWebView tabKey="web" url={url} visible />);
     const sandbox = probe.container.querySelector('iframe')!.getAttribute('sandbox')!;
     expect(sandbox.includes('allow-same-origin')).toBe(allowed);
+    expect(sandbox.includes('allow-popups-to-escape-sandbox')).toBe(true);
+    expect(sandbox.includes('allow-top-navigation')).toBe(false);
   });
 
   it.each(['文字', '😀'])('decodes truncated workspace UTF-8 ending mid-codepoint: %s', async (text) => {

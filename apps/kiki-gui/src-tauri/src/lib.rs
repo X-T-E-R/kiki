@@ -55,6 +55,7 @@ use tauri::image::Image;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
+    webview::NewWindowResponse,
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -2497,13 +2498,41 @@ async fn open_host_path(
 /// unreliable in the desktop webview (wry rejects unhandled new-window
 /// requests), so device-code sign-in routes through this command instead.
 /// Only plain `http:`/`https:` URLs pass — every other scheme stays closed.
+fn is_allowed_external_url(parsed: &Url) -> bool {
+    let raw = parsed.as_str();
+    if raw.chars().any(char::is_control) {
+        return false;
+    }
+    match parsed.scheme() {
+        "http" | "https" => {
+            let Some(host) = parsed.host_str() else {
+                return false;
+            };
+            let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+            !normalized.is_empty()
+                && normalized != "tauri.localhost"
+                && normalized != "ipc.localhost"
+        }
+        "mailto" => !raw["mailto:".len()..].trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn validate_external_url_str(raw: &str) -> Result<String, &'static str> {
+    if raw.chars().any(char::is_control) {
+        return Err("Invalid URL");
+    }
+    let parsed = Url::parse(raw).map_err(|_| "Invalid URL")?;
+    if !is_allowed_external_url(&parsed) {
+        return Err("Only external http(s) and mailto URLs can be opened");
+    }
+    Ok(parsed.into())
+}
+
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
-    let parsed = Url::parse(&url).map_err(|_| "Invalid URL".to_string())?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err("Only http(s) URLs can be opened".to_string());
-    }
-    tauri::async_runtime::spawn_blocking(move || open_url_in_browser(&url))
+    let target = validate_external_url_str(&url).map_err(str::to_string)?;
+    tauri::async_runtime::spawn_blocking(move || open_url_in_browser(&target))
         .await
         .map_err(|error| format!("Kiki open-url task failed: {error}"))?
 }
@@ -4230,6 +4259,17 @@ pub fn run() {
                 .map_err(std::io::Error::other)?
                 .enable_clipboard_access()
                 .initialization_script(&window_mode_script)
+                .on_new_window(|url, _features| {
+                    if is_allowed_external_url(&url) {
+                        let target = url.to_string();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = open_url_in_browser(&target) {
+                                eprintln!("Kiki could not open external URL {target}: {error}");
+                            }
+                        });
+                    }
+                    NewWindowResponse::Deny
+                })
                 .build()
                 .map_err(std::io::Error::other)?;
             #[cfg(windows)]
@@ -5732,22 +5772,37 @@ mod tests {
     }
 
     #[test]
-    fn open_external_url_accepts_http_and_https_only() {
-        // The happy paths parse and pass the scheme gate; the spawn itself is
+    fn open_external_url_accepts_external_http_https_and_mailto_only() {
+        // The happy paths parse and pass the scheme/host gate; the spawn itself is
         // not exercised here (it would launch a real browser).
-        assert!(Url::parse("https://example.com/device").is_ok());
-        assert!(Url::parse("http://example.com/device").is_ok());
+        for allowed in [
+            "https://example.com/device",
+            "http://example.com/device",
+            "mailto:team@example.com",
+        ] {
+            let normalized = validate_external_url_str(allowed).expect("valid external URL");
+            let parsed = Url::parse(&normalized).expect("normalized external URL");
+            assert!(
+                is_allowed_external_url(&parsed),
+                "{allowed} should pass the external URL gate"
+            );
+        }
         for raw in [
             "file:///C:/Windows/System32/calc.exe",
             "ms-msdt:test",
             "search-ms:query=x",
             "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "about:blank",
+            "http://tauri.localhost/settings",
+            "http://ipc.localhost/plugin",
+            "mailto:",
+            "https://example.com/\r\n",
             "not a url",
         ] {
-            let parsed = Url::parse(raw);
             assert!(
-                parsed.is_err() || !matches!(parsed.unwrap().scheme(), "http" | "https"),
-                "{raw} must not pass the scheme gate"
+                validate_external_url_str(raw).is_err(),
+                "{raw:?} must not pass the external URL gate"
             );
         }
     }

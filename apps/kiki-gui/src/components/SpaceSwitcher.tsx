@@ -303,8 +303,11 @@ export function SpaceSwitcher() {
   const title = pending > 0 ? `${t('sidebar.space.switcherAria')} · ${tp('sidebar.space.otherPending', pending)}` : t('sidebar.space.switcherAria');
   const enteringName = entering === null ? null : label(items.find((item) => item.id === entering) ?? { id: entering, name: entering } as SpaceListItem);
   const location = useSpaceLocation({ openingSpaceName: enteringName, includeLocalMachine: open && !desktop });
+  const isDefaultMain = !location.inRemoteScope && currentSpaceId() === MAIN_SPACE_ID && entering === null;
   const barSpaceName = location.spaceName;
-  const barSubtitle = location.subtitle;
+  const barSubtitle = isDefaultMain
+    ? (location.state === 'connected' ? '' : location.subtitle)
+    : location.subtitle;
   const switchComputerUrl = appShellConnectUrl();
 
   return (
@@ -324,16 +327,30 @@ export function SpaceSwitcher() {
             return !value;
           });
         }}
-        className="group -ml-2 flex h-11 w-[calc(100%+0.5rem)] min-w-0 flex-col justify-center rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+        className={`group -ml-2 flex h-11 min-w-0 flex-col justify-center rounded-md px-2 text-left text-ink transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink ${
+          isDefaultMain && barSubtitle === '' ? 'w-fit max-w-[calc(100%+0.5rem)]' : 'w-[calc(100%+0.5rem)]'
+        }`}
       >
-        <span className="flex w-full min-w-0 items-center gap-1.5 leading-tight">
+        <span className={`flex min-w-0 items-center gap-1.5 leading-tight ${isDefaultMain && barSubtitle === '' ? '' : 'w-full'}`}>
           <span aria-hidden className="shrink-0"><Wordmark /></span>
-          <SpaceDot color={location.spaceColor ?? (location.inRemoteScope || here === null ? 'var(--color-ink-faint)' : undefined)} className="ml-0.5" />
-          <span data-space-switcher-name title={barSpaceName} className="min-w-0 flex-1 truncate text-[13px] font-medium leading-[18px]">{barSpaceName}</span>
-          <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-hover:text-ink-soft group-aria-expanded:-rotate-90" />
+          {!isDefaultMain ? (
+            <>
+              <SpaceDot color={location.spaceColor ?? (location.inRemoteScope || here === null ? 'var(--color-ink-faint)' : undefined)} className="ml-0.5" />
+              <span data-space-switcher-name title={barSpaceName} className="min-w-0 flex-1 truncate text-[13px] font-medium leading-[18px]">{barSpaceName}</span>
+            </>
+          ) : pending > 0 && barSubtitle === '' ? (
+            <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent">{pending}</span>
+          ) : null}
+          <Icon
+            name="chevron"
+            size={12}
+            className={`shrink-0 rotate-90 text-ink-faint transition-all group-hover:text-ink-soft group-aria-expanded:-rotate-90 ${
+              isDefaultMain ? 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 group-aria-expanded:opacity-100' : ''
+            }`}
+          />
         </span>
-        {barSubtitle !== '' || pending > 0 ? (
-          <span className="flex w-full min-w-0 items-center gap-1.5 pl-[42px] leading-tight">
+        {barSubtitle !== '' || (!isDefaultMain && pending > 0) ? (
+          <span className={`flex w-full min-w-0 items-center gap-1.5 leading-tight ${isDefaultMain ? '' : 'pl-[42px]'}`}>
             <span data-space-switcher-subtitle title={barSubtitle || undefined} className="min-w-0 flex-1 truncate text-[11px] leading-[15px] text-ink-faint">
               {barSubtitle}
             </span>

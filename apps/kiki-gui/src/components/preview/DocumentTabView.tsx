@@ -282,6 +282,10 @@ export function DocumentTabView({
         );
       }
       const page = response.navigation.kind === 'page' ? response.navigation.page : (controller.page ?? 1);
+      const normalizedSourcePath = source.kind === 'workspace' ? source.path.replaceAll('\\', '/') : undefined;
+      const pdfDirectory = normalizedSourcePath === undefined
+        ? undefined
+        : normalizedSourcePath.slice(0, normalizedSourcePath.lastIndexOf('/')) || '/';
       return (
         <>
           {header}
@@ -299,7 +303,9 @@ export function DocumentTabView({
               sourceKey={JSON.stringify({ sessionId: sessionId ?? null, source: documentSource })}
               page={page}
               name={name}
+              documentDirectory={pdfDirectory}
               onPageCount={controller.setNumPages}
+              onNavigatePage={(nextPage) => { controller.goTo({ page: nextPage }); }}
               onRetry={controller.retry}
             />
           </div>

@@ -37,7 +37,7 @@ export function PreviewWebView({
 }) {
   const host = useHost();
   const connection = useOptionalConnection();
-  let sandbox = 'allow-scripts allow-forms allow-popups';
+  let sandbox = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox';
   try {
     const target = new URL(url);
     const server = new URL(connection?.client.baseUrl || window.location.origin, window.location.href);

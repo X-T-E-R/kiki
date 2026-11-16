@@ -73,7 +73,8 @@ describe('browser document resource tree', () => {
     expect(document.headers['content-security-policy']).toContain("img-src 'self' data: blob:");
     expect(document.headers['content-security-policy']).toContain("form-action 'none'");
     expect(document.headers['content-security-policy']).not.toContain('allow-same-origin');
-    expect(data.sandbox).toBe('allow-scripts allow-same-origin');
+    expect(data.sandbox).toBe('allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
+    expect(data.sandbox).not.toContain('allow-top-navigation');
     const privateResponse = await app.inject({ url: '/api/private', headers: { origin: 'null' } });
     expect(privateResponse.statusCode).toBe(403);
     expect(privateResponse.headers['access-control-allow-origin']).toBeUndefined();
@@ -1021,4 +1022,131 @@ describe('canonical session HTML attachment preview', () => {
     expect((await f.app.inject(crossUrl)).body).toBe(f.crossSessionHtml);
     expect((await f.app.inject(new URL('./style.css', crossUrl).pathname)).statusCode).toBe(404);
   });
+});
+
+it('injects link navigation shim only on document navigations and handles hash, relative, and external links cleanly', async () => {
+  const { app, root } = await fixture();
+  const pageHtml = '<!doctype html><html><head><title>中文预览</title></head><body><h1>中文标题</h1><a id="ext" href="https://example.com/docs">Docs</a></body></html>';
+  await writeFile(join(root, 'slides/nav.html'), pageHtml, 'utf8');
+  const opened = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root, path: join(root, 'slides/nav.html') } });
+  expect(opened.statusCode).toBe(200);
+  const { url } = opened.json().data as { url: string };
+  const target = new URL(url);
+  const host = target.host;
+  target.hostname = '127.0.0.1';
+  const { get } = await import('node:http');
+  const { runInNewContext } = await import('node:vm');
+  const fetchDoc = (headers: Record<string, string>) => new Promise<{ status: number | undefined; headers: Record<string, string | string[] | undefined>; body: Buffer }>((resolve, reject) => {
+    get(target, { headers: { host, ...headers } }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+
+  const rawRes = await fetchDoc({});
+  expect(rawRes.status).toBe(200);
+  expect(rawRes.body.toString('utf8')).toBe(pageHtml);
+
+  const rangeRes = await fetchDoc({ 'sec-fetch-mode': 'navigate', range: 'bytes=0-14' });
+  expect(rangeRes.status).toBe(206);
+  expect(rangeRes.body.toString('utf8')).toBe('<!doctype html>');
+
+  const navRes = await fetchDoc({ 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' });
+  expect(navRes.status).toBe(200);
+  const navHtml = navRes.body.toString('utf8');
+  expect(Number(navRes.headers['content-length'])).toBe(navRes.body.byteLength);
+  expect(navHtml.startsWith('<!doctype html><html><head><title>中文预览</title></head><body><h1>中文标题</h1>')).toBe(true);
+  expect(navHtml.endsWith('</body></html>')).toBe(true);
+  const etag = navRes.headers['etag'];
+  expect(typeof etag).toBe('string');
+  expect(String(etag).endsWith('-nav') || String(etag).endsWith('-nav"')).toBe(true);
+  const cachedRes = await fetchDoc({ 'sec-fetch-mode': 'navigate', 'if-none-match': String(etag) });
+  expect(cachedRes.status).toBe(304);
+
+  const scriptMatch = /<script>([\s\S]+?)<\/script><\/body><\/html>$/u.exec(navHtml);
+  expect(scriptMatch).not.toBeNull();
+
+  let clickListener: ((event: Record<string, unknown>) => void) | undefined;
+  const openedPopups: Array<{ url: string; target: string; features: string }> = [];
+  const assignedUrls: string[] = [];
+  let baseTarget: string | null = null;
+  const locationState = {
+    origin: `http://${host}`,
+    href: url,
+    hash: '',
+    assign: (next: string) => { assignedUrls.push(next); },
+  };
+  let scrolledId: string | null = null;
+  runInNewContext(scriptMatch![1]!, {
+    URL,
+    decodeURIComponent,
+    location: locationState,
+    document: {
+      baseURI: url,
+      querySelector: (sel: string) => sel === 'base[target]' && baseTarget !== null ? { getAttribute: () => baseTarget } : null,
+      getElementById: (id: string) => ({ scrollIntoView: () => { scrolledId = id; } }),
+    },
+    addEventListener: (type: string, fn: (event: Record<string, unknown>) => void) => {
+      if (type === 'click') clickListener = fn;
+    },
+    open: (popupUrl: string, popupTarget: string, features: string) => {
+      openedPopups.push({ url: popupUrl, target: popupTarget, features });
+    },
+  });
+  expect(clickListener).toBeDefined();
+
+  const dispatchLinkClick = (attrs: Record<string, string>, overrides: Record<string, unknown> = {}) => {
+    let prevented = Boolean(overrides['defaultPrevented']);
+    const anchor = {
+      tagName: 'A',
+      hasAttribute: (k: string) => Object.hasOwn(attrs, k),
+      getAttribute: (k: string) => attrs[k] ?? null,
+    };
+    clickListener!({
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      get defaultPrevented() { return prevented; },
+      preventDefault: () => { prevented = true; },
+      composedPath: () => [{ tagName: 'SPAN' }, anchor],
+      ...overrides,
+    });
+    return prevented;
+  };
+
+  expect(dispatchLinkClick({ href: '#section-1' })).toBe(false);
+  expect(openedPopups).toHaveLength(0);
+
+  baseTarget = '_blank';
+  expect(dispatchLinkClick({ href: '#section-1' })).toBe(true);
+  expect(locationState.hash).toBe('#section-1');
+  expect(dispatchLinkClick({ href: '#section-1' })).toBe(true);
+  expect(scrolledId).toBe('section-1');
+  baseTarget = null;
+
+  expect(dispatchLinkClick({ href: '../systems/index.html?shot=2#slide' })).toBe(false);
+  expect(assignedUrls).toHaveLength(0);
+
+  expect(dispatchLinkClick({ href: '../systems/index.html', target: '_top' })).toBe(true);
+  expect(assignedUrls).toEqual([new URL('../systems/index.html', url).href]);
+
+  expect(dispatchLinkClick({ href: 'https://example.com/docs' })).toBe(true);
+  expect(openedPopups.at(-1)).toEqual({ url: 'https://example.com/docs', target: '_blank', features: 'noopener,noreferrer' });
+
+  expect(dispatchLinkClick({ href: 'https://example.com/top', target: '_top' })).toBe(true);
+  expect(openedPopups.at(-1)).toEqual({ url: 'https://example.com/top', target: '_blank', features: 'noopener,noreferrer' });
+
+  expect(dispatchLinkClick({ href: 'mailto:team@example.com' })).toBe(true);
+  expect(openedPopups.at(-1)).toEqual({ url: 'mailto:team@example.com', target: '_blank', features: 'noopener,noreferrer' });
+
+  const countBefore = openedPopups.length;
+  expect(dispatchLinkClick({ href: 'https://example.com/modal' }, { defaultPrevented: true })).toBe(true);
+  expect(dispatchLinkClick({ href: 'https://example.com/ctrl' }, { ctrlKey: true })).toBe(false);
+  expect(dispatchLinkClick({ href: 'https://example.com/file.zip', download: '' })).toBe(false);
+  expect(dispatchLinkClick({ href: 'javascript:alert(1)' })).toBe(false);
+  expect(openedPopups).toHaveLength(countBefore);
 });

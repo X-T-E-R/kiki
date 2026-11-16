@@ -758,7 +758,6 @@ export function PreviewAttachmentView({
                         mode="static"
                         text={text}
                         documentDirectory={trustedDirectory}
-                        documentPath={trustedPath}
                       />
                     </div>
                   );

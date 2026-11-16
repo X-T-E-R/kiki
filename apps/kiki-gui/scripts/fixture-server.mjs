@@ -2236,7 +2236,7 @@ class FixtureServer {
         res.end(JSON.stringify({ code: 40409, msg: 'html_preview_expired', data: null }));
         return;
       }
-      const csp = "sandbox allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads; object-src 'none'";
+      const csp = "sandbox allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads; object-src 'none'";
       if (entry.sessionHtml !== undefined) {
         if (relPath === entry.sessionHtml.entryPath) {
           res.writeHead(200, {
@@ -4188,7 +4188,7 @@ class FixtureServer {
       this.htmlPreviews ??= new Map();
       const previewId = `${(++this.fileCounter).toString(16).padStart(32, 'a')}`;
       const expiresAt = Date.now() + 30 * 60 * 1000;
-      const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads';
+      const sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads';
       const hostHeader = typeof req.headers.host === 'string' ? req.headers.host : '127.0.0.1:5177';
       const port = hostHeader.includes(':') ? hostHeader.split(':')[1] : '5177';
       const hostname = `${previewId.slice(0, 32)}.kiki-document.localhost`;

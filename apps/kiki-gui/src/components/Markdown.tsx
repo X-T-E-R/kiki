@@ -7,7 +7,7 @@
  * Streamdown engine. Typography lives in `.kiki-md` (`index.css` + `markdown.css`).
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
@@ -22,6 +22,8 @@ import { sourceTextVersion, type TimelineAnnotation } from '@kiki/session-core/c
 import {
   resolveFileReference,
   findFileReferences,
+  joinPath,
+  FILE_LINK_SENTINEL,
   FILE_TEXT_REFERENCE_SENTINEL,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
@@ -29,7 +31,7 @@ import {
 import { KikiMarkdownPre } from './markdown/KikiCodeBlock';
 import { KikiMarkdownTable } from './markdown/KikiMarkdownTable';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
-import { indexMarkdownHeadings } from './markdown/headingNavigation';
+import { findMarkdownHeading, indexMarkdownHeadings, slugifyMarkdownHeading } from './markdown/headingNavigation';
 import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
@@ -138,7 +140,16 @@ function remarkLocalFileLinks(includeImages = true) {
       if ((node.type === 'link' || (includeImages && node.type === 'image')) && typeof node.url === 'string') {
         const target = node.type === 'image' ? node.url.split(/[?#]/, 1)[0]! : node.url;
         const wrapped = wrapFileLinkTarget(target);
-        if (wrapped !== undefined) node.url = wrapped;
+        if (wrapped !== undefined) {
+          node.url = wrapped;
+        } else if (node.type === 'link' && node.url.startsWith('#') && node.url.length > 1) {
+          try {
+            const normalizedHash = new URL(node.url, 'http://example.com').hash;
+            if (normalizedHash.startsWith('#')) node.url = normalizedHash;
+          } catch {}
+        } else if (node.type === 'link' && /^\.\.?\//.test(node.url)) {
+          node.url = `${FILE_LINK_SENTINEL}${encodeURIComponent(node.url)}`;
+        }
       }
       if (node.type === 'link' || node.type === 'code' || node.type === 'html') return;
       if (node.children !== undefined) {
@@ -328,8 +339,12 @@ const DOCUMENT_REMARK_PLUGINS = [
  * Right-click raises a small menu (G-1): file links get preview/copy-path/
  * copy-absolute plus the desktop opener pair; external links get open/copy.
  */
-function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
-  href?: string; children?: ReactNode; documentDirectory?: string; documentPath?: string;
+function MarkdownAnchor({ href, children, documentDirectory, documentPath, rootRef }: {
+  href?: string;
+  children?: ReactNode;
+  documentDirectory?: string;
+  documentPath?: string;
+  rootRef?: RefObject<HTMLDivElement | null>;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -339,8 +354,19 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
   const sameDocument = target?.startsWith('#') === true && documentPath !== undefined;
-  const resolved = preview !== null && target !== undefined
-    ? resolveFileReference(sameDocument ? `document.md${target}` : target, documentDirectory ?? preview.cwd, href?.startsWith(FILE_TEXT_REFERENCE_SENTINEL)) : undefined;
+  const baseDirectory = documentDirectory ?? preview?.cwd;
+  let resolved = preview !== null && target !== undefined
+    ? resolveFileReference(sameDocument ? `document.md${target}` : target, baseDirectory, href?.startsWith(FILE_TEXT_REFERENCE_SENTINEL))
+    : undefined;
+  if (resolved === undefined && preview !== null && target !== undefined && /^\.\.?\//.test(target) && baseDirectory !== undefined && baseDirectory.trim() !== '') {
+    const rawPathPart = target.split(/[?#]/, 1)[0]!;
+    if (rawPathPart !== '' && !rawPathPart.endsWith('/')) {
+      let decodedPath = rawPathPart;
+      try { decodedPath = decodeURIComponent(rawPathPart); } catch {}
+      const cleanBase = /^\/[A-Za-z]:[\\/]/.test(baseDirectory) ? baseDirectory.slice(1) : baseDirectory;
+      resolved = { path: joinPath(cleanBase, decodedPath) };
+    }
+  }
   const fileReference = sameDocument && resolved !== undefined ? { ...resolved, path: documentPath! } : resolved;
   const filePath = fileReference?.path;
 
@@ -395,7 +421,23 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
   if (href !== undefined && unwrapFileLinkTarget(href) !== undefined) {
     return <span>{children}</span>;
   }
-  if (isInAppHref(href)) {
+  if (target?.startsWith('#') === true) {
+    return (
+      <a
+        href={target}
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+          event.preventDefault();
+          const root = rootRef?.current;
+          if (root === null || root === undefined) return;
+          findMarkdownHeading(root, target.slice(1))?.scrollIntoView({ block: 'start' });
+        }}
+      >
+        {children}
+      </a>
+    );
+  }
+  if (isInAppHref(href) && href.startsWith('/')) {
     return <InternalLink to={href}>{children}</InternalLink>;
   }
   const url = href ?? '';
@@ -492,13 +534,13 @@ export const Markdown = memo(function Markdown({
   headingResultRef.current = onHeadingResult;
   useEffect(() => {
     const root = rootRef.current;
-    if (root === null || documentPath === undefined) return;
+    if (root === null || (documentPath === undefined && mode !== 'static')) return;
     let applied = false;
     let frame = 0;
     const locate = () => {
       const headings = indexMarkdownHeadings(root);
       if (headingNavigation?.heading === undefined || applied) return;
-      const target = headings.get(headingNavigation.heading);
+      const target = headings.get(headingNavigation.heading) ?? headings.get(slugifyMarkdownHeading(headingNavigation.heading));
       if (target === undefined && root.querySelector('[aria-busy="true"]') !== null) return;
       headingResultRef.current?.(target !== undefined);
       if (target !== undefined) {
@@ -510,7 +552,7 @@ export const Markdown = memo(function Markdown({
     const observer = new MutationObserver(locate);
     observer.observe(root, { childList: true, subtree: true });
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [documentPath, headingNavigation, text]);
+  }, [documentPath, headingNavigation, mode, text]);
   const plain = isPlainProse(text) && findFileReferences(text).length === 0;
   const plugins = useStreamdownPlugins(plain ? null : text);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
@@ -528,9 +570,11 @@ export const Markdown = memo(function Markdown({
   // annotation content or the document's relative-reference scope changes.
   const renderKey = JSON.stringify([annotationTargets ?? [], documentDirectory, documentPath]);
   const renderers = useMemo<Components>(() => {
-    const next: Components = { ...components };
+    const next: Components = {
+      ...components,
+      a: (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} documentPath={documentPath} rootRef={rootRef} />,
+    };
     if (documentDirectory !== undefined) {
-      next.a = (props) => <MarkdownAnchor {...props} documentDirectory={documentDirectory} documentPath={documentPath} />;
       next.img = (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />;
     }
     if (annotationTargets?.length) next.code = ({ children, className }) => <code className={className}>{children}</code>;
