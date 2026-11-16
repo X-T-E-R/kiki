@@ -3,7 +3,6 @@ import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { frozenExtensionSnapshot } from '#/agent/extensionPorts/frozenSnapshot';
 
 import { Service } from "#/_base/di/service";
@@ -1003,8 +1002,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
       }
       const extensions = this.extensions?.current;
-      const guidance = extensions?.hasCompactionPolicies === true ? await this.instantiation.invokeFunction(accessor => {
-        const model = accessor.get(IModelCatalog).get(resolvedModel.modelAlias, this.profile.getRecipeModelSettings(resolvedModel.modelAlias));
+      const guidance = extensions?.hasCompactionPolicies === true ? await this.instantiation.invokeFunction(() => {
+        const model = this.profile.getRuntimeModel(resolvedModel.modelAlias, this.profile.getRecipeModelSettings(resolvedModel.modelAlias));
         return extensions.buildCompactionGuidance({
           modelAlias: resolvedModel.modelAlias, protocol: model.protocol, providerType: model.providerType, source: data.source,
         }, {

@@ -1,7 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { castDraft, nothing, original } from 'immer';
 import { z } from 'zod';
-import { executionBindingSchema, executorLaunchSchema, type ExecutionBinding, type ExecutorLaunch } from '@kiki/protocol';
+import { boundEndpointSchema, executionBindingSchema, executorLaunchSchema, type ExecutionBinding, type ExecutorLaunch } from '@kiki/protocol';
 
 import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
 import { upgradePersistedSubagentPermissions } from '@kiki/agent-profiles/persistedSubagentPermissions';
@@ -27,6 +27,7 @@ const ExecutorOptionsSchema = z.record(
 );
 
 export interface ProfileModelState {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   readonly driver?: 'external';
   readonly toolOverride?: import('./profile').ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
@@ -86,6 +87,7 @@ const toolOverrideSchema = z.object({ tools: z.array(z.string()).readonly().opti
 const memoryReadContextSchema = z.object({ id: z.string(), shared: z.array(z.enum(['global', 'workspace'])).readonly().optional() }).readonly();
 
 const profileBindSchema = z.object({
+  endpoint: boundEndpointSchema.optional(),
   driver: z.literal('external').optional(),
   execution: executionBindingSchema.optional(),
   toolOverride: toolOverrideSchema.optional(),
@@ -148,6 +150,7 @@ export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
 export interface ProfileBind extends z.infer<typeof profileBindSchema> {}
 
 const configUpdateSchema = z.object({
+  endpoint: boundEndpointSchema.nullable().optional(),
   execution: executionBindingSchema.optional(),
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
@@ -239,6 +242,7 @@ export const profileKey = defineState(
   }),
 ).replayable({ schema: z.custom<ProfileModelState>() })
   .on(ProfileBind, (s, e) => ({
+    endpoint: e.endpoint,
     driver: e.driver,
     toolOverride: e.toolOverride,
     memoryReadContext: e.memoryReadContext,
@@ -318,6 +322,12 @@ function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: Confi
     if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: castDraft(e.promptBase), promptContextPending: undefined };
     if (e.modelAlias !== undefined && e.modelAlias !== s.modelAlias) {
       s.modelAlias = e.modelAlias;
+      s.endpoint = undefined;
+      if (s.boundProfile !== undefined) s.boundProfile.endpoint = undefined;
+    }
+    if (e.endpoint !== undefined) {
+      s.endpoint = e.endpoint === null ? undefined : castDraft(e.endpoint);
+      if (s.boundProfile !== undefined) s.boundProfile.endpoint = s.endpoint;
     }
     if (e.profileName !== undefined && e.profileName !== s.profileName) {
       s.profileName = e.profileName;

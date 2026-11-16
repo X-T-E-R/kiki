@@ -10,6 +10,7 @@ import type { AgentFileDefinition, AgentFileDiscoveryResult } from './agentFileT
 import type { ExecutorValidator } from './ports';
 import { renderPromptTemplateResult } from './profileShared';
 import { isToolActive } from './toolPolicy';
+import { redactProfileEndpoint } from './endpointCredential';
 
 export function agentProfileFromFile(
   definition: AgentFileDefinition,
@@ -17,8 +18,12 @@ export function agentProfileFromFile(
   builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfile {
   const skillActive = isToolActive(definition, 'Skill');
+  const endpoint = definition.endpoint === undefined ? undefined : redactProfileEndpoint(definition.endpoint);
+  const fileDefinition = endpoint === undefined
+    ? structuredClone(definition)
+    : { ...structuredClone(definition), endpoint };
   return normalizeAgentProfile({
-    fileDefinition: structuredClone(definition),
+    fileDefinition,
     name: definition.name,
     definitionId: definition.definitionId,
     description: definition.description,
@@ -49,6 +54,7 @@ export function agentProfileFromFile(
     injectKikiMcp: definition.injectKikiMcp,
     recipe: definition.recipe,
     recipeOptions: definition.recipeOptions,
+    endpoint,
     modelAlias: definition.modelAlias,
     modelSelection: definition.modelSelection,
     restrictModelsToMenu: definition.restrictModelsToMenu ?? false,

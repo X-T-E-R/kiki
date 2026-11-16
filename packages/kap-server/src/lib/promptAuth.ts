@@ -12,6 +12,9 @@ import {
 } from '@kiki/agent-core-v2';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { resolveSelectedExecutionBinding } from '@kiki/agent-core-v2/agent/profile/executionBinding';
+import { IAdhocEndpointVault } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointVault';
+import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
+import { resolveEndpointBinding } from '@kiki/agent-core-v2/session/adhocEndpoint/endpointBinding';
 import type { ExecutionSelection } from '@kiki/protocol';
 
 export async function ensurePromptAuthReady(
@@ -21,11 +24,31 @@ export async function ensurePromptAuthReady(
 ): Promise<void> {
   const profile = accessor.get(IAgentProfileService);
   const execution = overrides.execution;
+  const bound = profile.data().endpoint;
+  if (bound !== undefined && execution === undefined && overrides.profile === undefined && (overrides.model === undefined || overrides.model === profile.data().modelAlias)) {
+    await materializeAdhocModel(bound, session.accessor.get(IAdhocEndpointVault)).authProvider.getAuth();
+    return;
+  }
+  const endpointReady = async (selected: import('@kiki/agent-core-v2').AgentProfile): Promise<boolean> => {
+    if (selected.endpoint === undefined || overrides.model !== undefined || execution?.overrides?.model !== undefined) return false;
+    const vault = session.accessor.get(IAdhocEndpointVault);
+    const endpoint = resolveEndpointBinding(selected, undefined, undefined, vault)!;
+    await materializeAdhocModel(endpoint, vault).authProvider.getAuth();
+    return true;
+  };
   const fileProfile = execution?.profile_file === undefined ? undefined
     : await profile.resolveFile(execution.profile_file);
   if (execution !== undefined && execution.executor !== 'native') return;
   if (execution === undefined && overrides.profile === undefined && (profile.data().executorId ?? 'native') !== 'native') return;
+  if (fileProfile !== undefined && await endpointReady(fileProfile)) return;
   if (execution !== undefined) {
+    const selectedName = execution.profile;
+    if (selectedName !== undefined) {
+      const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+      await catalog.ready;
+      const selected = selectedName === DEFAULT_AGENT_PROFILE_NAME ? catalog.getDefault() : catalog.get(selectedName);
+      if (selected !== undefined && await endpointReady(selected)) return;
+    }
     await accessor.get(IAuthSummaryService).ensureReady(await nativeExecutionAuthModel(
       session, accessor, profile, execution, fileProfile, overrides.model,
     ));
@@ -40,6 +63,7 @@ export async function ensurePromptAuthReady(
       const selected = selectedProfile === DEFAULT_AGENT_PROFILE_NAME ? catalog.getDefault() : catalog.get(selectedProfile);
       if (selected === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, `Unknown agent profile: "${selectedProfile}"`);
       if ((selected.executor ?? 'native') !== 'native') return;
+      if (await endpointReady(selected)) return;
       model = selected.modelAlias;
     } else {
       model = profile.getModel() || undefined;
@@ -48,6 +72,7 @@ export async function ensurePromptAuthReady(
         await catalog.ready;
         const selected = catalog.getDefault();
         if ((selected.executor ?? 'native') !== 'native') return;
+        if (await endpointReady(selected)) return;
         model = selected.modelAlias;
       }
     }

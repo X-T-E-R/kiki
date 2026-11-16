@@ -220,6 +220,7 @@ interface BranchBasePayload {
  */
 interface ConfigUpdatePayload {
   _name: 'config.update';
+  endpoint?: import('@kiki/protocol').boundEndpointSchema;
   execution?: import('@kiki/protocol').executionBindingSchema;
   executorId?: string;
   executorProtocol?: string;
@@ -907,6 +908,7 @@ interface PluginSessionStartPayload {
  */
 interface ProfileBindPayload {
   _name: 'profile.bind';
+  endpoint?: import('@kiki/protocol').boundEndpointSchema;
   driver?: 'external';
   execution?: import('@kiki/protocol').executionBindingSchema;
   toolOverride?: {

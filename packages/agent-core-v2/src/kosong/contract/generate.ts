@@ -1,3 +1,4 @@
+import { toolCallIngress } from './toolCallIngress';
 import { APIEmptyResponseError, createAbortError, isAbortError, noteExecutedRequestDelivery, readProviderEventErrorCode } from './errors';
 import { attachErrorDetails, Error2 } from '#/_base/errors/errors';
 import type { StreamTapAbortControl } from './extensionHooks';
@@ -144,7 +145,7 @@ export async function generate(
     const taps = options?.streamTaps;
     const tapControl = taps !== undefined && taps.length > 0 ? new RecoveryTapControl() : undefined;
 
-    for await (const part of stream) {
+    for await (const part of toolCallIngress(stream, options?.toolCallIngress)) {
       const arrivedAt = Date.now();
       if (firstPartAt === undefined) {
         firstPartAt = arrivedAt;

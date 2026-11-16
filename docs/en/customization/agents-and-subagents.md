@@ -336,6 +336,7 @@ Model-list rejection and advisories below describe **subagent bindings**. For a 
 | `permission_mode` | no | Permission mode for this profile: `manual`, `auto`, `review`, or `yolo`. It overrides `default_permission_mode` when the profile starts a new agent; an explicit CLI `--permission-mode` takes precedence. |
 | `model_alias` | no | Exact, case-sensitive alias from `[models]`, or configured `inherit` to bind a subagent to its caller's model in static mode. Pins are soft defaults and cannot bypass hard lists. A main-agent profile cannot use `inherit` because it has no caller |
 | `model_selection` | no | `auto` or `static`. Overrides the global default for new children when `AgentRun` omits `model_alias`; does not affect main-agent binding or ordinary resume. See [automatic model selection](../configuration/config-files.md#automatic-model-selection) |
+| `endpoint` / flat endpoint fields | no | Native-only evaluation endpoint. Use the structured `endpoint` mapping for request parameters and capability settings, or the flat `base_url` / `provider_type` / `model` / `api_key_env` / `api_key` shorthand; do not mix forms |
 | `restrict_models_to_menu` | no | Boolean, default `false`, top-level profile field only. When `true`, adds a **hard** model ceiling from the author's original default `model_alias` plus `model_profiles[].alias`, captured before route / lease rewrites and frozen with the binding. Other hard allowsets still intersect and denials still apply; explicit pins and resume cannot bypass it. See [Model menus and hard boundaries](./agent-profiles.md#model-menus-and-hard-boundaries) |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. With `model_alias: inherit`, an explicit effort pin takes priority over the caller's effective effort |
 | `executor` | no | Executor id from `agent-executors.toml`; omit it to use the native engine. Named-child dispatch uses this binding from both in-process and external delegation surfaces. For an external delegation, harness approval requests are exposed through that root's `interactions` / `respond` operations and scoped to its own children. Example profiles live in the repository under `docs/examples/agent-profiles/external-harnesses/` |
@@ -366,6 +367,55 @@ Model-list rejection and advisories below describe **subagent bindings**. For a 
 | `deny_subagents` | no | **Hard** preset exclusions, checked even when allowed elsewhere. `"*"` excludes all presets, not explicit Markdown definitions. Empty or omitted means no exclusions |
 | `spawn_constraints` | no | Rules inherited by descendants: hard `allowed_models`, `deny_models`, `allowed_efforts`, and `disallowed_tools`; soft `preferred_models`, `discouraged_models`, and `preferred_efforts`. Allowsets intersect and denials accumulate along the tree; pins cannot widen hard rules |
 | `private` | no | Hide this profile from dispatch and selection lists (`AgentRun`, Settings pickers). A private profile stays registered: agents already running or resumed on it keep working from their bound snapshot, while any **new** dispatch to it fails with an explicit "profile is private" error. Use it to retire a role without breaking live sessions |
+
+### Native evaluation endpoints
+
+To use an endpoint with an existing role, pass it to `AgentRun`:
+
+```json
+{"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY"},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
+```
+
+To reuse the endpoint across dispatches, put it in a Markdown profile. Use the structured form for request parameters or explicit capability settings:
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+endpoint:
+  base_url: https://eval.example.test/v1
+  model: eval-preview-model
+  api_key_env: EVAL_API_KEY
+  capabilities: [tool_use, image_in, thinking]
+  support_efforts: [low, medium, high, xhigh]
+  request_params:
+    preserve_thinking: true
+---
+
+Run the frontend evaluation.
+```
+
+The flat shorthand is limited to the endpoint identity and credential fields:
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+base_url: https://eval.example.test/v1
+model: eval-preview-model
+api_key_env: EVAL_API_KEY
+---
+
+Run the frontend evaluation.
+```
+
+The provider defaults to `openai`. A bound endpoint defaults to capabilities `[tool_use, image_in, thinking]`, `max_context_size: 131072`, and, while `thinking` is enabled, efforts `[low, medium, high, xhigh]`. Explicit capability arrays accept only `image_in`, `video_in`, `audio_in`, `thinking`, and `tool_use`; `request_params` values are scalar and are sent to the endpoint.
+
+Prefer `api_key_env` and keep literal API keys out of profile files. A literal `api_key` is held only in session memory and requires reauthentication after restart. Changing the destination requires its own credential instead of reusing the previous endpoint's auth.
+
+Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Endpoint declarations from untrusted project or plugin profiles are denied.
+
+Endpoints run only with the native executor and do not mutate the model catalog or configuration. Selecting a catalog `model_alias` discards a profile endpoint, and a call-level endpoint override cannot be combined with `model_alias`; put the upstream model ID in `endpoint.model` instead.
 
 Use `preferred_subagents: [explore]` for a recommendation rather than a closed role list. Across a base profile, a route and a caller lease, allowed sets intersect, denials accumulate, `false` stays closed, and the nearest explicit preference list replaces the earlier one. A `"*"` can share an `allowed_subagents` list with names and source or lease mappings: it leaves this layer open while keeping those mappings. Repeated bare names are ignored, and two different mappings for one alias are an error.
 

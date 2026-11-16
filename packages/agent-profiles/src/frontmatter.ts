@@ -36,8 +36,7 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
 
   try {
     return { data: loadYaml(yamlText) ?? {}, body };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new FrontmatterError(message, error);
+  } catch {
+    throw new FrontmatterError('Invalid YAML frontmatter');
   }
 }

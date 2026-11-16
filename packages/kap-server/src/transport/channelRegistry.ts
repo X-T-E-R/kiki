@@ -54,7 +54,7 @@ function scopedServiceNameIndex(): Map<string, ServiceIdentifier<unknown>> {
     ]) {
       for (const entry of getScopedServiceDescriptors(scope)) {
         const name = entry.id.toString();
-        if (!map.has(name)) map.set(name, entry.id);
+        if (name !== 'adhocEndpointVault' && !map.has(name)) map.set(name, entry.id);
       }
     }
     return map;
@@ -67,6 +67,7 @@ export function resolveAnyScopedServiceId(
   core: Scope,
   name: string,
 ): ServiceIdentifier<unknown> | undefined {
+  if (name === 'adhocEndpointVault') return undefined;
   return (
     scopedServiceNameIndex().get(name) ??
     core.accessor
@@ -128,7 +129,7 @@ export function describeAllChannels(): readonly ChannelDescriptor[] {
   for (const scope of [LifecycleScope.App, LifecycleScope.Session, LifecycleScope.Agent]) {
     for (const entry of getScopedServiceDescriptors(scope)) {
       const name = entry.id.toString();
-      if (!byName.has(name)) byName.set(name, entry);
+      if (name !== 'adhocEndpointVault' && !byName.has(name)) byName.set(name, entry);
     }
   }
   return [...byName.entries()]

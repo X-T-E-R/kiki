@@ -604,6 +604,23 @@ export interface SessionStateSnapshot {
       readonly promotedAt?: number;
     };
     readonly agents?: Readonly<Record<string, /* AgentMeta — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
+      readonly endpoint?: {
+        provider_type: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+        base_url: string;
+        model: string;
+        capabilities: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+        max_context_size: number;
+        credential: {
+          kind: 'env';
+          env: string;
+        } | {
+          kind: 'ephemeral';
+          secretRef: string;
+        };
+        support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+        max_completion_tokens?: number;
+        request_params?: Record<string, boolean | string | number>;
+      };
       readonly createdAt?: number;
       readonly execution?: {
         version: 1;
@@ -2873,6 +2890,21 @@ export interface AgentStateSnapshot {
       readonly compactionSoftContextSize: number | undefined;
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
+      readonly toolCallIngress?: (call: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'function';
+        id: string;
+        name: string;
+        arguments: string | null;
+        extras?: Record<string, unknown>;
+        _streamIndex?: string | number;
+      }) => /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        type: 'function';
+        id: string;
+        name: string;
+        arguments: string | null;
+        extras?: Record<string, unknown>;
+        _streamIndex?: string | number;
+      };
       readonly preBaselinePatch?: /* PreBaselineRequestPatch — packages/agent-core-v2/src/kosong/contract/extensionHooks.ts */ {
         readonly extraHeaders?: Readonly<Record<string, string>>;
         readonly sampling?: Readonly</* SamplingOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
@@ -2978,6 +3010,10 @@ export interface AgentStateSnapshot {
         }) => void;
       }) => undefined)[];
       readonly cacheKey?: string;
+      readonly toolChoice?: 'none' | 'auto' | 'required' | {
+        readonly type: 'function';
+        readonly name: string;
+      };
       readonly googleContinuationToken?: string;
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
         kind: 'api_default';
@@ -3030,6 +3066,7 @@ export interface AgentStateSnapshot {
           apiKey: string;
           headers: Readonly<Record<string, string>>;
           signal?: AbortSignal;
+          suppressUserAgent?: boolean;
           forceFullInput?: boolean;
           baselinePolicyKey?: string;
           canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
@@ -3058,6 +3095,7 @@ export interface AgentStateSnapshot {
             apiKey: string;
             headers: Readonly<Record<string, string>>;
             signal?: AbortSignal;
+            suppressUserAgent?: boolean;
             forceFullInput?: boolean;
             baselinePolicyKey?: string;
             canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
@@ -3104,7 +3142,7 @@ export interface AgentStateSnapshot {
         readonly value: string;
         readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
         readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
+          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
           readonly path?: string;
           readonly fileIndex?: number;
@@ -3515,7 +3553,7 @@ export interface AgentStateSnapshot {
             path?: string;
           }[];
           layers?: readonly {
-            surface: 'profile' | 'model';
+            surface: 'model' | 'profile';
             installation_id: string;
             resolved: {
               revision: string;
@@ -4309,6 +4347,23 @@ export interface AgentStateSnapshot {
   // src/agent/profile/profileOps.ts
   // replayable · durable — folds: ProfileBind, ConfigUpdate, ToolsSetActiveTools, ToolsResetActiveTools, ToolsPolicyRefreshed, AgentModelSwitch
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
+    readonly endpoint?: {
+      provider_type: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+      base_url: string;
+      model: string;
+      capabilities: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+      max_context_size: number;
+      credential: {
+        kind: 'env';
+        env: string;
+      } | {
+        kind: 'ephemeral';
+        secretRef: string;
+      };
+      support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+      max_completion_tokens?: number;
+      request_params?: Record<string, boolean | string | number>;
+    };
     readonly driver?: 'external';
     readonly toolOverride?: /* ToolBindingOverride — packages/agent-core-v2/src/agent/profile/profile.ts */ {
       readonly tools?: readonly string[];
@@ -4917,6 +4972,18 @@ export interface AgentStateSnapshot {
       }) => Promise<string>;
       readonly recipe?: string;
       readonly recipeOptions?: Readonly<Record<string, boolean>>;
+      readonly endpoint?: {
+        provider_type?: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+        base_url?: string;
+        model?: string;
+        api_key?: string;
+        api_key_env?: string;
+        capabilities?: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+        support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+        max_context_size?: number;
+        max_completion_tokens?: number;
+        request_params?: Record<string, boolean | string | number>;
+      };
       readonly restrictModelsToMenu?: boolean;
       readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
@@ -4971,6 +5038,18 @@ export interface AgentStateSnapshot {
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly recipe?: string;
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
+        readonly endpoint?: {
+          provider_type?: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+          base_url?: string;
+          model?: string;
+          api_key?: string;
+          api_key_env?: string;
+          capabilities?: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+          support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+          max_context_size?: number;
+          max_completion_tokens?: number;
+          request_params?: Record<string, boolean | string | number>;
+        };
         readonly autoCompact?: number;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly contextBudget?: number;
@@ -5768,11 +5847,40 @@ export interface AgentStateSnapshot {
       readonly preferredModels?: readonly string[];
       readonly discouragedModels?: readonly string[];
       readonly preferredEfforts?: readonly string[];
-    }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
+    }, 'endpoint' | 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
+      readonly endpoint?: {
+        provider_type: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+        base_url: string;
+        model: string;
+        capabilities: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+        max_context_size: number;
+        credential: {
+          kind: 'env';
+          env: string;
+        } | {
+          kind: 'ephemeral';
+          secretRef: string;
+        };
+        support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+        max_completion_tokens?: number;
+        request_params?: Record<string, boolean | string | number>;
+      };
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
+          readonly endpoint?: {
+            provider_type?: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+            base_url?: string;
+            model?: string;
+            api_key?: string;
+            api_key_env?: string;
+            capabilities?: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+            support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+            max_context_size?: number;
+            max_completion_tokens?: number;
+            request_params?: Record<string, boolean | string | number>;
+          };
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -6646,6 +6754,23 @@ export interface AgentStateSnapshot {
             };
           };
           readonly renderGeneration?: number;
+          readonly endpoint?: {
+            provider_type: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+            base_url: string;
+            model: string;
+            capabilities: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+            max_context_size: number;
+            credential: {
+              kind: 'env';
+              env: string;
+            } | {
+              kind: 'ephemeral';
+              secretRef: string;
+            };
+            support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+            max_completion_tokens?: number;
+            request_params?: Record<string, boolean | string | number>;
+          };
           driver?: 'external';
           modelAlias?: string;
           modelCapabilities: /* ModelCapability — packages/agent-core-v2/src/kosong/contract/capability.ts */ {
@@ -6744,6 +6869,18 @@ export interface AgentStateSnapshot {
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly recipe?: string;
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
+            readonly endpoint?: {
+              provider_type?: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+              base_url?: string;
+              model?: string;
+              api_key?: string;
+              api_key_env?: string;
+              capabilities?: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+              support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+              max_context_size?: number;
+              max_completion_tokens?: number;
+              request_params?: Record<string, boolean | string | number>;
+            };
             readonly autoCompact?: number;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly contextBudget?: number;
@@ -7058,6 +7195,18 @@ export interface AgentStateSnapshot {
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
+          readonly endpoint?: {
+            provider_type?: 'openai' | 'openai_responses' | 'anthropic' | 'google-genai';
+            base_url?: string;
+            model?: string;
+            api_key?: string;
+            api_key_env?: string;
+            capabilities?: ('image_in' | 'video_in' | 'audio_in' | 'thinking' | 'tool_use')[];
+            support_efforts?: ('low' | 'medium' | 'high' | 'xhigh')[];
+            max_context_size?: number;
+            max_completion_tokens?: number;
+            request_params?: Record<string, boolean | string | number>;
+          };
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -7453,7 +7602,7 @@ export interface AgentStateSnapshot {
               path?: string;
             }[];
             references?: readonly {
-              surface: 'profile' | 'model';
+              surface: 'model' | 'profile';
               installation_id: string;
               revision: string;
               name?: string;
@@ -7491,7 +7640,7 @@ export interface AgentStateSnapshot {
               readonly value: string;
               readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
               readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
+                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
                 readonly kind: 'file' | 'inline';
                 readonly path?: string;
                 readonly fileIndex?: number;
@@ -7901,7 +8050,7 @@ export interface AgentStateSnapshot {
                   path?: string;
                 }[];
                 layers?: readonly {
-                  surface: 'profile' | 'model';
+                  surface: 'model' | 'profile';
                   installation_id: string;
                   resolved: {
                     revision: string;

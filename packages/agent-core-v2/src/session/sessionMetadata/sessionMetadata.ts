@@ -6,6 +6,7 @@ import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export interface AgentMeta {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   /** Immutable entity creation time in epoch milliseconds; absent for legacy identities. */
   readonly createdAt?: number;
   readonly execution?: import('@kiki/protocol').ExecutionBinding;

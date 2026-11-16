@@ -12,6 +12,7 @@ export interface DispatchResumeRecord {
   readonly request: AgentRunRequest;
   readonly switchInput: ModelSwitchInput | { readonly operationId: string; readonly mode: 'direct'; readonly model?: undefined; readonly thinking?: undefined };
   readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   readonly state: 'accepted' | 'ready' | 'started';
   readonly externalStart?: 'attempting' | 'not_sent' | 'unknown' | 'started';
   readonly turnId?: number;
@@ -25,6 +26,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
   return createHash('sha256').update(JSON.stringify({
     request,
     requesterAgentId: options.requesterAgentId,
+    endpoint: options.endpoint,
     sourceRef: options.sourceRef,
     selectorDescription: options.bindingOverride?.modelAlias?.trim() === 'auto' ? options.description : undefined,
     bindingOverride: {

@@ -6,6 +6,7 @@ import {
   type Scope,
   type ThinkingEffort,
 } from '@kiki/agent-core-v2';
+import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import {
   drivesThinkingThroughTraits,
   requiresStrictThinkingValidation,
@@ -28,6 +29,11 @@ export function projectPersistedAgentThinking(
   _profile: PanelProfileDefinition,
 ): PersistedAgentThinkingProjection {
   const stored = snapshot.thinkingLevel as ThinkingEffort | undefined;
+  if (snapshot.endpoint !== undefined) {
+    const model = materializeAdhocModel(snapshot.endpoint);
+    return { effectiveThinkingLevel: model.capabilities.thinking ? stored ?? 'medium' : 'off',
+      thinkingEffortSource: snapshot.thinkingEffortAdjusted === true ? 'adjusted' : undefined };
+  }
   if (stored === undefined) return {};
   if (snapshot.executorId !== undefined && snapshot.executorId !== 'native') {
     return {
@@ -37,15 +43,11 @@ export function projectPersistedAgentThinking(
   }
   const config = scope.accessor.get(IConfigService);
   const models = scope.accessor.get(IModelService);
-  const modelCatalog = scope.accessor.get(IModelCatalog);
   const protocols = scope.accessor.get(IProtocolAdapterRegistry);
   const modelAlias = snapshot.modelAlias;
   const model = modelAlias === undefined ? undefined : (() => {
-    try {
-      return modelCatalog.get(modelAlias);
-    } catch {
-      return undefined;
-    }
+    try { return scope.accessor.get(IModelCatalog).get(modelAlias); }
+    catch { return undefined; }
   })();
   const thinkingConfig = config.get<ThinkingConfig>('thinking');
   const strict = model === undefined ? false

@@ -26,7 +26,7 @@ import { McpToolsDiscovered } from '#/agent/mcp/mcpDiscoveryOps';
 
 type PersistedProfileFields = Pick<ProfileModelState,
   'driver' | 'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
-  'execution' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
+  'endpoint' | 'execution' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortExplicit' | 'thinkingEffortAdjusted' |
   'bindingAdvisories' | 'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
@@ -253,6 +253,7 @@ async function scanPersistedAgentProfileSnapshot(
     personaOverrides: state.personaOverrides,
     persona: state.persona,
     roomPrompt: state.roomPrompt,
+    endpoint: state.endpoint,
     modelAlias: state.modelAlias,
     profileName: state.profileName,
     profileDefinitionId: state.profileDefinitionId,
@@ -362,6 +363,7 @@ function persistedMetadataKey(metadata: AgentMeta | undefined): string {
     metadataProfileName(metadata),
     metadata?.execution,
     metadata?.model,
+    metadata?.endpoint,
     metadata?.thinkingEffort,
     metadata?.thinkingEffortExplicit,
     metadata?.executor,
@@ -378,6 +380,7 @@ function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfil
   if (metadata === undefined) return undefined;
   return {
     source: 'metadata',
+    endpoint: metadata.endpoint,
     execution: metadata.execution,
     profileName: metadataProfileName(metadata),
     modelAlias: metadata.model,

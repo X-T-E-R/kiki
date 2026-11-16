@@ -30,6 +30,23 @@ describe('readPersistedAgentProfileSnapshot', () => {
     });
     expect(snapshot?.profileName).toBeUndefined();
   });
+  it('extracts the frozen bound endpoint from a persisted profile binding', async () => {
+    const endpoint = {
+      provider_type: 'openai', base_url: 'https://api.example.test/v1', model: 'chat',
+      capabilities: ['thinking', 'tool_use'], support_efforts: ['low', 'high'],
+      max_context_size: 8192, max_completion_tokens: 512, request_params: { temperature: 0.2 },
+      credential: { kind: 'ephemeral', secretRef: 'secret-ref' },
+    };
+    const bytes = Buffer.from(JSON.stringify({ type: 'profile.bind', endpoint, thinkingEffort: 'high', systemPrompt: '', disallowedTools: [], time: 1 }) + '\n');
+    const host = {
+      storage: { size: async () => bytes.length, mtime: async () => 1, pathFor: () => undefined, read: async () => undefined,
+        readStream: async function* () { yield bytes; } },
+      appendLog: { flush: async () => undefined },
+    };
+    const snapshot = await readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined);
+    expect(snapshot).toMatchObject({ source: 'wire', endpoint });
+  });
+
   it('returns metadata for an oversized wire and does not start a scan', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

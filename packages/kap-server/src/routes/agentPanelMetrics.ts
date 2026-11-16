@@ -12,6 +12,7 @@ import {
   type Scope,
   type TokenUsage,
 } from '@kiki/agent-core-v2';
+import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
@@ -96,11 +97,25 @@ const persistedMetricsStates = new WeakMap<Scope, PersistedMetricsState>();
 export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService, isPrivate = false): AgentPanelMetrics {
   const usage = agent.accessor.get(IAgentUsageService).status();
   const accounting = agent.accessor.get(IAgentStateService).get(panelAccountingKey);
-  const profile = agent.accessor.get(IAgentProfileService).data();
+  const profileService = agent.accessor.get(IAgentProfileService);
+  const profile = profileService.data();
   const native = profile.executorId === undefined || profile.executorId === 'native';
+  const runtimeModel = native ? (() => {
+    try {
+      return profileService.getRuntimeModel(profile.modelAlias);
+    } catch {
+      return profile.endpoint === undefined ? undefined : materializeAdhocModel(profile.endpoint);
+    }
+  })() : undefined;
+  const contextLimit = runtimeModel?.capabilities.max_input_tokens
+    ?? runtimeModel?.capabilities.max_context_tokens
+    ?? runtimeModel?.maxContextSize
+    ?? profile.modelCapabilities.max_input_tokens
+    ?? profile.modelCapabilities.max_context_tokens
+    ?? null;
   const context = {
     contextTokens: native ? agent.accessor.get(IAgentTokenCountingService).statusSize() : null,
-    contextLimit: (profile.modelCapabilities.max_input_tokens ?? profile.modelCapabilities.max_context_tokens) || null,
+    contextLimit,
   };
   if (isPrivate) {
     return { ...toPersistedMetrics(emptyPersistedUsage(false), pricing), ...context, usageSource: 'live' };

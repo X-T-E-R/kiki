@@ -720,6 +720,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             thinking: override.thinking ?? (override.execution === undefined ? sourceData.thinkingLevel : undefined),
           }
         : undefined;
+    if (overrideBinding === undefined && sourceData.endpoint !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Ad-hoc endpoint credentials cannot be inherited by a session branch. Select a catalog model before branching.');
     const child = await this.create({
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,

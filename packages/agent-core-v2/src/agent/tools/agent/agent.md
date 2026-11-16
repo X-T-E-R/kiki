@@ -5,3 +5,11 @@ Start a subagent with its own context for a bounded piece of work that benefits 
 To continue an idle child, pass `resume` with its name or id. `context_mode` selects what it keeps: `direct` keeps its context, `compact` summarizes it with its current model first, and `fresh` rebuilds it from saved task state without calling the old model. The child's id, notes, todo list, history and workspace are kept in every mode. Leave out `model_alias` and `effort` to keep the saved ones. Changing the model on resume needs an explicit `context_mode` (or the legacy `allow_model_change=true`); `model_alias: "auto"` needs it only when it picks a different model. `compact` and `fresh` work only with the native executor.
 
 Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.
+
+Use a native evaluation endpoint with the structured form when you need request parameters or capability settings:
+
+```json
+{"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY","request_params":{"preserve_thinking":true}},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
+```
+
+The flat shorthand accepts the same endpoint identity and credential fields without `endpoint`: `{ "profile": "frontend", "base_url": "https://eval.example.test/v1", "model": "eval-preview-model", "api_key_env": "EVAL_API_KEY", "effort": "high", "prompt": "Run the frontend evaluation.", "description": "Run frontend evaluation" }`. Do not combine the two forms or pass `model_alias` with an endpoint; `endpoint.model` is the upstream model ID.

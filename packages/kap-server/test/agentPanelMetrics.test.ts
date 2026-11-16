@@ -110,6 +110,7 @@ function liveAgent(
     knownByModelMask?: Readonly<Record<string, Readonly<Record<string, TokenUsage>>>>;
     incomplete: boolean;
   },
+  profileOverrides?: Readonly<Record<string, unknown>>,
 ): IAgentScopeHandle {
   const total = Object.values(byModel).reduce<TokenUsage>(
     (sum, value) => ({
@@ -129,7 +130,10 @@ function liveAgent(
   const services = {
     usage: { status: () => ({ byModel, total }) },
     state: { get: () => ({ ...effectiveAccounting, successfulCompactions: 0 }) },
-    profile: { data: () => ({ executorId: 'native', modelCapabilities: { max_context_tokens: 4096 } }) },
+    profile: {
+      data: () => ({ executorId: 'native', modelCapabilities: { max_context_tokens: 4096 }, ...profileOverrides }),
+      getRuntimeModel: () => { throw new Error('fixture runtime model unavailable'); },
+    },
     tokens: { statusSize: () => 0 },
   };
   return {
@@ -433,6 +437,22 @@ describe('session accounting from typed source totals', () => {
 });
 
 describe('agent panel metrics cost provenance', () => {
+  it('uses the live ad-hoc endpoint context bound without catalog pricing', () => {
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ endpointModel: usage(1, 1) }, undefined, {
+        modelAlias: 'adhoc:openai@https://api.example.test/v1#endpoint-model',
+        endpoint: {
+          provider_type: 'openai', base_url: 'https://api.example.test/v1', model: 'endpoint-model',
+          capabilities: ['thinking', 'tool_use'], support_efforts: ['low', 'high'], max_context_size: 777,
+          credential: { kind: 'env', env: 'EXAMPLE_API_KEY' },
+        },
+        modelCapabilities: { max_context_tokens: 0 },
+      }),
+      pricing({ endpointModel: undefined }),
+    );
+    expect(metrics).toMatchObject({ contextLimit: 777, totalCostUsd: null, costPartial: true });
+  });
+
   it('keeps the known live token and cost subtotals when another usage record is missing', () => {
     const known = usage(4, 3);
     const metrics = readAgentPanelMetrics(

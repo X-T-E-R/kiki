@@ -9,6 +9,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentProfileService } from '#/index';
@@ -664,6 +665,7 @@ describe('Agent loop', () => {
 
   it('runs a text-only agent turn from prompt to completion', async () => {
     profile.update({ activeToolNames: [] });
+    await ctx.get(IAgentPluginService).refreshSessionStartAtSafeBoundary();
 
     ctx.mockNextResponse({ type: 'think', think: '<think-1>' }, { type: 'text', text: '<text-1>' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
@@ -1170,6 +1172,7 @@ describe('Agent loop', () => {
       parts: [{ type: 'text', text: 'blocked' }],
       finishReason: 'filtered',
     });
+    await ctx.get(IAgentPluginService).refreshSessionStartAtSafeBoundary();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
 
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
@@ -1463,6 +1466,7 @@ describe('Agent loop', () => {
     ctx.get(IAgentToolRegistryService).register(lookupTool);
 
     ctx.mockNextResponse({ type: 'text', text: 'I will look it up.' }, lookupCall);
+    await ctx.get(IAgentPluginService).refreshSessionStartAtSafeBoundary();
     await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'Look up moon' }],
     });

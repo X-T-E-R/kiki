@@ -111,6 +111,7 @@ export interface RawResponseObserver {
 }
 
 export interface GenerateOptions {
+  readonly toolCallIngress?: (call: import('./message').ToolCall) => import('./message').ToolCall;
   rawResponseObserver?: RawResponseObserver;
   streamTaps?: readonly LLMStreamTapObserver[];
   deterministicVendorFields?: Readonly<Record<string, TransportJsonValue>>;

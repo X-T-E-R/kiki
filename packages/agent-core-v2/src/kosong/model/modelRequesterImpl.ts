@@ -192,6 +192,7 @@ export class ModelRequesterImpl implements ModelRequester {
     let decodeStats: StreamDecodeStats | undefined;
 
     const baseOptions: GenerateOptions = {
+      toolCallIngress: params.toolCallIngress,
       signal,
       streamTaps: params.streamTaps,
       cacheKey: params?.cacheKey,

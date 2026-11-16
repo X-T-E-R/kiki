@@ -12,7 +12,6 @@ import type { AttemptDeliveryPhase, LoopBoundarySnapshot } from '#/app/plugin/ex
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { sleepForRetry, retryErrorFields } from '#/_base/utils/retry';
 import { ILogService } from '#/_base/log/log';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
@@ -44,6 +43,7 @@ import { IConfigService } from '#/app/config/config';
 import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { type FinishReason } from '#/kosong/contract/provider';
 import {
+  isContentPart,
   mergeInPlace,
   type ContentPart,
   type StreamedMessagePart,
@@ -1249,7 +1249,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const snapshot = this.instantiation.invokeFunction(accessor => {
       const profile = accessor.get(IAgentProfileService);
       const modelAlias = profile.data().modelAlias ?? '';
-      const model = accessor.get(IModelCatalog).get(modelAlias, profile.getRecipeModelSettings(modelAlias));
+      const model = profile.getRuntimeModel(modelAlias, profile.getRecipeModelSettings(modelAlias));
       return {
         sessionId: accessor.get(ISessionContext).sessionId, agentId: this.scope.agentId,
         turnId: runtime.turnId, step: current.number,
@@ -2250,6 +2250,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return {
       handle: (part, instanceId) => {
         signal.throwIfAborted();
+        if (!replaying && isContentPart(part)) beginResponseEvent();
         if (instanceId !== responseInstanceId) {
           if (retryMode === undefined) discardAttemptParts();
           responseInstanceId = instanceId;

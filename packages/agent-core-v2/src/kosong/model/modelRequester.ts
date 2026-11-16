@@ -53,6 +53,7 @@ export type ModelRequestEvent =
   | ({ readonly type: 'timing' } & ModelRequestTiming);
 
 export interface ModelRequestParams {
+  readonly toolCallIngress?: (call: import('#/kosong/contract/message').ToolCall) => import('#/kosong/contract/message').ToolCall;
   readonly preBaselinePatch?: PreBaselineRequestPatch;
   readonly streamTaps?: readonly LLMStreamTapObserver[];
   readonly cacheKey?: string;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicResponseCapture } from '#/agent/llmRequester/anthropicResponseCapture';
+import { AnthropicResponseCapture, DeferredResponseCapture } from '#/agent/llmRequester/anthropicResponseCapture';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { observeResponseFetch } from '#/kosong/provider/bases/observe-response';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -16,6 +16,18 @@ function fixture(fail = false) {
 afterEach(() => vi.restoreAllMocks());
 
 describe('scoped Anthropic raw response capture', () => {
+  it.each([true, false])('withholds raw bytes until credential scrubbing settles (%s)', (safe) => {
+    const { capture, records } = fixture();
+    const deferred = new DeferredResponseCapture(capture.observe(match));
+    deferred.chunk(encoder.encode('sk-test-ephemeral-123'));
+    deferred.end('eof');
+    expect(records.some((record) => record['type'] === 'response.chunk')).toBe(false);
+    deferred.settle(safe);
+    const chunks = records.filter((record) => record['type'] === 'response.chunk');
+    expect(chunks).toHaveLength(safe ? 1 : 0);
+    if (safe) expect(Buffer.from(chunks[0]!['base64'] as string, 'base64').toString()).toBe('sk-test-ephemeral-123');
+    else expect(JSON.stringify(records)).not.toContain(Buffer.from('sk-test-ephemeral-123').toString('base64'));
+  });
   it('preserves actual SDK thinking-only SSE bytes and IDs without observing auth or rewriting finish', async () => {
     const { capture, records } = fixture();
     const raw = [

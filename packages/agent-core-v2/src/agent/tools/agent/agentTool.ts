@@ -1,3 +1,5 @@
+import { normalizeEndpointLayer } from '@kiki/protocol';
+import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
@@ -150,6 +152,7 @@ export class SubagentTool implements ISubagentTool {
     @IModelService private readonly models: IModelService,
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
+    @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
@@ -546,6 +549,8 @@ export class SubagentTool implements ISubagentTool {
             description: args.description,
             selectorCall: { turnId: parentTurnId, toolCallId },
             name: args.name?.trim(),
+            endpoint: normalizeEndpointLayer(args as unknown as Record<string, unknown>),
+            endpointSecretRef: this.endpointVault.claim(this.callerAgentId, toolCallId),
             modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
             thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
             executorInstance: args.executor_instance,
@@ -563,6 +568,8 @@ export class SubagentTool implements ISubagentTool {
             prepared.existingChild,
             args.prompt,
             {
+              endpoint: normalizeEndpointLayer(args as unknown as Record<string, unknown>),
+              endpointSecretRef: this.endpointVault.claim(this.callerAgentId, toolCallId),
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: prepared.policy,
               allowParentNotify: args.allow_parent_notify,
               description: args.description,

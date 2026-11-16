@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { ToolCallIdNormalizer } from '#/agent/llmRequester/toolCallIdNormalizer';
 
 import { APIEmptyResponseError, ChatProviderError, isRetryableGenerateError, markProviderEventError } from '#/kosong/contract/errors';
 import { generate, readGenerateFailureFacts, readGenerateFailureUsage, type GenerateResult } from '#/kosong/contract/generate';
@@ -543,5 +545,63 @@ describe('locally observed thinking-only failure facts', () => {
     expect(readGenerateFailureFacts(error)).toBeUndefined();
     expect(readGenerateFailureUsage(error)).toBe(usage ?? undefined);
     expect(JSON.stringify(error)).not.toMatch(/private thought|signature-fixture/);
+  });
+});
+
+
+describe('endpoint credential ingress', () => {
+  it.each(['AgentRun', 'CallTool'])('scrubs split %s arguments before stream taps, callbacks, and finalized history', async (name) => {
+    const secret = 'sk-test-ephemeral-123';
+    const vault = new AdhocEndpointVault();
+    const args = { profile: 'frontend', endpoint: { base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key: secret } };
+    const json = JSON.stringify(name === 'AgentRun' ? args : { name: 'AgentRun', arguments: args });
+    const split = json.indexOf(secret) + 7;
+    const stream = new FakeStreamedMessage([
+      { type: 'function', id: 'reused', name, arguments: json.slice(0, split), _streamIndex: 0 },
+      { type: 'tool_call_part', index: 0, argumentsPart: json.slice(split, split + 5) },
+      { type: 'text', text: 'Launching evaluation.' },
+      { type: 'tool_call_part', index: 0, argumentsPart: json.slice(split + 5) },
+    ]);
+    const observed: StreamedMessagePart[] = [];
+    const tapped: StreamedMessagePart[] = [];
+    const { provider } = createFakeProvider(stream);
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY,
+      { onMessagePart: (part) => { observed.push(part); } },
+      { toolCallIngress: (call) => vault.scrub('parent', call), streamTaps: [(part) => { tapped.push(part); }] });
+    const publicData = JSON.stringify({ observed, tapped, message: result.message });
+    expect(publicData).not.toContain(secret);
+    expect(publicData).toContain('[REDACTED]');
+    expect(observed.filter((part) => part.type === 'tool_call_part')).toHaveLength(0);
+    const normalizer = new ToolCallIdNormalizer();
+    normalizer.seedFrom([{ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'reused', name: 'Lookup', arguments: '{}' }] }]);
+    const response = normalizer.beginResponse();
+    const assigned = response.remapStreamedId('reused', 0);
+    vault.remap('parent', 'reused', 0, assigned);
+    const ref = vault.claim('parent', assigned)!;
+    const bound = vault.bind({ ...args.endpoint, api_key: '[REDACTED]' }, ref);
+    expect(vault.read(bound.credential.kind === 'ephemeral' ? bound.credential.secretRef : '')).toBe(secret);
+    expect(JSON.stringify(bound)).not.toContain(secret);
+    vault.discard('parent', [assigned]);
+    expect(vault.read(ref)).toBeUndefined();
+    expect(() => vault.bind({ ...args.endpoint, api_key: '[REDACTED]' })).toThrow('credential_unavailable');
+  });
+
+  it('drops malformed and cancelled argument buffers without exposing secret fragments', async () => {
+    const vault = new AdhocEndpointVault();
+    const malformed = new FakeStreamedMessage([{ type: 'function', id: 'bad', name: 'AgentRun', arguments: '{"api_key":"sk-test-incomplete', _streamIndex: 0 }]);
+    const observed: StreamedMessagePart[] = [];
+    const result = await generate(createFakeProvider(malformed).provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY,
+      { onMessagePart: (part) => { observed.push(part); } }, { toolCallIngress: (call) => vault.scrub('parent', call) });
+    expect(JSON.stringify({ result, observed })).not.toContain('sk-test-incomplete');
+    expect(result.message.toolCalls[0]?.arguments).toBe('{}');
+    const controller = new AbortController();
+    const cancelled = new FakeStreamedMessage([
+      { type: 'function', id: 'cancelled', name: 'AgentRun', arguments: '{"api_key":"sk-test-incomplete', _streamIndex: 0 },
+      { type: 'tool_call_part', index: 0, argumentsPart: '"}' },
+    ], { onBeforeYield: (index) => { if (index === 1) controller.abort(); } });
+    observed.length = 0;
+    await expect(generate(createFakeProvider(cancelled).provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY,
+      { onMessagePart: (part) => { observed.push(part); } }, { signal: controller.signal, toolCallIngress: (call) => vault.scrub('parent', call) })).rejects.toThrow();
+    expect(observed).toEqual([]);
   });
 });

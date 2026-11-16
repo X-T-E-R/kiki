@@ -2318,6 +2318,7 @@ describe('FullCompaction', () => {
       );
     }
     const initialTokens = estimateTokensForMessages(ctx.context.get());
+    const initialRequestTokens = await fixtureRequestTokens(ctx, ctx.context.get().map(messageText));
     const completed = ctx.once('compaction.completed');
     ctx.mockNextResponse({ type: 'text', text: 'Auto summary.' });
 
@@ -2335,7 +2336,8 @@ describe('FullCompaction', () => {
     expect(compactedPrefixSizes).toHaveLength(1);
     expect(compactedPrefixSizes[0]).toBeLessThan(initialTokens);
     expect(compactedPrefixSizes[0]).toBeLessThanOrEqual(maxContextTokens);
-    expect(ctx.contextData().tokenCount).toBeLessThan(initialTokens);
+    expect(estimateTokensForMessages(ctx.context.get())).toBeLessThan(initialTokens);
+    expect(ctx.contextData().tokenCount).toBeLessThan(initialRequestTokens);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 

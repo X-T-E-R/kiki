@@ -12,7 +12,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IFlagService } from '#/app/flag/flag';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
-import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import type { Model } from '#/kosong/model/catalog';
 import { type ModelRequester } from '#/kosong/model/modelRequester';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -38,7 +38,6 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
   constructor(
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IEventBus eventBus: IEventBus,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
@@ -68,7 +67,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
   private tryResolveModel(alias: string): Model | undefined {
     if (alias === '') return undefined;
     try {
-      return this.modelCatalog.get(alias);
+      return this.profile.getRuntimeModel(alias, this.profile.getRecipeModelSettings(alias));
     } catch {
       return undefined;
     }
@@ -132,7 +131,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
       try {
-        requester = this.modelCatalog.getRequester(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
+        requester = this.profile.getRuntimeRequester(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
       } catch {
         requester = undefined;
       }

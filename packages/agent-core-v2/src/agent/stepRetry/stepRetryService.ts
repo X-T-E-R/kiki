@@ -23,7 +23,6 @@ import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSecti
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { RETRY_SECTION, type RetryConfig } from './configSection';
@@ -84,7 +83,6 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
-    @IModelCatalog private readonly models: IModelCatalog,
     @ILogService private readonly log: ILogService,
   ) {
     super();
@@ -135,7 +133,7 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     const modelAlias = this.profile.data().modelAlias;
     if (modelAlias === undefined) return undefined;
     try {
-      const model = this.models.get(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
+      const model = this.profile.getRuntimeModel(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
       return { model: model.id, provider: model.providerName };
     } catch (error) {
       this.log.error(

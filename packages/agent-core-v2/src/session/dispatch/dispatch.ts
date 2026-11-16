@@ -37,6 +37,8 @@ export interface DispatchLaunchInput {
   readonly description?: string;
   readonly selectorCall?: DispatchSelectorCall;
   readonly name?: string;
+  readonly endpoint?: import('@kiki/protocol').AdhocEndpointInput;
+  readonly endpointSecretRef?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly executorInstance?: import('@kiki/protocol').ExecutorInstanceChoice | null;
@@ -70,6 +72,8 @@ export interface DispatchLaunchInput {
 export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
+  readonly endpoint?: import('@kiki/protocol').AdhocEndpointInput;
+  readonly endpointSecretRef?: string;
   readonly operationId?: string;
   readonly description?: string;
   readonly selectorCall?: DispatchSelectorCall;

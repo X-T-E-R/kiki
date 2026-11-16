@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { AdhocEndpointInput } from '@kiki/protocol';
+
 import type { ExecutorPrompt } from './executorPrompt';
 import type { PromptOverrides } from './promptOverrides';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
@@ -169,6 +171,7 @@ export function captureProfileModelMenu<T extends Pick<AgentProfile,
 export interface AgentProfile extends AgentModelParameters, AgentModelConstraints {
   readonly recipe?: string;
   readonly recipeOptions?: Readonly<Record<string, boolean>>;
+  readonly endpoint?: AdhocEndpointInput;
   readonly restrictModelsToMenu?: boolean;
   readonly modelMenuConstraint?: ProfileModelMenuConstraint;
   readonly effectiveModelAliases?: readonly string[];

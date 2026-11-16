@@ -136,3 +136,29 @@ export class AnthropicResponseCapture {
     }
   }
 }
+
+
+export class DeferredResponseCapture implements RawResponseObserver {
+  private chunks: Uint8Array[] = [];
+  private bytes = 0;
+  private outcome = 'request-finished-without-raw-eof';
+  private exceeded = false;
+
+  constructor(private readonly target: RawResponseObserver | undefined) {}
+
+  start(response: Parameters<RawResponseObserver['start']>[0]): void { this.target?.start(response); }
+  chunk(bytes: Uint8Array): void {
+    if (this.target === undefined || this.exceeded) return;
+    this.bytes += bytes.byteLength;
+    if (this.bytes > 8 * 1024 * 1024) {
+      this.exceeded = true;
+      this.chunks = [];
+    } else this.chunks.push(bytes.slice());
+  }
+  end(outcome: string): void { this.outcome = outcome; }
+  settle(safe: boolean): void {
+    if (safe && !this.exceeded) for (const bytes of this.chunks) this.target?.chunk(bytes);
+    this.chunks = [];
+    this.target?.end(!safe ? 'credentials-redacted-or-incomplete' : this.exceeded ? 'byte-limit' : this.outcome);
+  }
+}

@@ -69,7 +69,8 @@ export interface BoundPromptBase {
   readonly inputs?: BoundPromptInputs;
 }
 
-export type BoundProfile = Omit<AgentProfile, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
+export type BoundProfile = Omit<AgentProfile, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix' | 'endpoint'> & {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   readonly fileSources?: import('#/session/dispatch/profileFile').FrozenProfileFileSources;
   readonly promptBase?: BoundPromptBase;
   readonly promptContextPending?: boolean;
@@ -113,7 +114,7 @@ export function applyFileCallerCeiling(profile: AgentProfile): AgentProfile {
   };
 }
 
-export function freezeBoundProfile(profile: AgentProfile, promptBase?: BoundPromptBase): BoundProfile {
-  const { systemPrompt: _systemPrompt, renderSystemPrompt: _renderSystemPrompt, promptPrefix: _promptPrefix, ...definition } = profile;
-  return structuredClone({ ...definition, promptBase });
+export function freezeBoundProfile(profile: AgentProfile, promptBase?: BoundPromptBase, endpoint?: import('@kiki/protocol').BoundEndpoint): BoundProfile {
+  const { systemPrompt: _systemPrompt, renderSystemPrompt: _renderSystemPrompt, promptPrefix: _promptPrefix, endpoint: _endpoint, ...definition } = profile;
+  return structuredClone({ ...definition, endpoint, promptBase });
 }

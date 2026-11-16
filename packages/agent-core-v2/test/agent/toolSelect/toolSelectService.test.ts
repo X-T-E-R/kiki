@@ -7,7 +7,6 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { Event2, Event2Class } from '#/app/event/event2';
 import { IFlagService } from '#/app/flag/flag';
 import type { ModelCapability } from '#/kosong/contract/capability';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
@@ -367,10 +366,8 @@ function registerSharedServices(
   reg.definePartialInstance(IAgentProfileService, {
     getModelCapabilities: () => capabilities,
     getRecipeModelSettings: () => undefined,
+    getRuntimeRequester: () => ({ model: { protocol: 'openai', providerType } }) as ReturnType<IAgentProfileService['getRuntimeRequester']>,
     resolveModelContext: modelContext,
-  });
-  reg.definePartialInstance(IModelCatalog, {
-    getRequester: () => ({ model: { protocol: 'openai', providerType } }) as ReturnType<IModelCatalog['getRequester']>,
   });
   reg.definePartialInstance(IAgentToolPolicyService, {
     isToolActive: (name: string) => {
@@ -859,6 +856,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
       reg.definePartialInstance(IAgentProfileService, {
         getModelCapabilities: () => capabilities,
         getRecipeModelSettings: () => undefined,
+        getRuntimeRequester: () => ({ model: { protocol: 'openai', providerType } }) as ReturnType<IAgentProfileService['getRuntimeRequester']>,
         resolveModelContext: modelContext,
         data: () => ({ modelCapabilities: capabilities, thinkingLevel: 'off', systemPrompt: '' }),
       });

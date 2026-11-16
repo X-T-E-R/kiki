@@ -79,6 +79,7 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `private` | Hidden from dispatch and selection lists; running agents keep working, new dispatches fail |
 | `model_alias` | Exact alias from `[models]` for a fixed model, or `inherit` to follow the dispatch caller's model (subagents only) |
 | `model_selection` | `auto` to select once when a new `AgentRun` omits `model_alias`; `static` to use the usual binding defaults. Omitting the field follows `[subagent].model_selection`. This field does not select models for main agents or existing children |
+| `endpoint` / flat endpoint fields | Native-only evaluation endpoint. Use the structured `endpoint` mapping for request parameters and capability settings, or the flat `base_url` / `provider_type` / `model` / `api_key_env` / `api_key` shorthand; do not mix forms |
 | `allowed_models` / `deny_models` | **Hard** model allow/deny lists: out-of-list or denied bindings are rejected. Native aliases match canonical identity; external executors use the effective model ID. Machine `[subagent].deny_models` is an additional hard boundary |
 | `restrict_models_to_menu` | **Hard** menu ceiling when `true`; boolean, default `false`, profile top level only. Permits the author's original default `model_alias` plus `model_profiles[].alias`, captured before route / lease rewrites and frozen with the binding. Other hard allowsets intersect; denials still apply |
 | `thinking_effort` | Default effort pin; explicit choices may override it only within hard rules and provider/executor capabilities |
@@ -98,6 +99,49 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 | `context_budget` / `max_completion_tokens` | Caps only; the smallest declared layer wins |
 | `prompt_overrides` | Field-level prompt overrides; see below |
 | `delegation_notice` | For native execution, `auto` (default) injects a position-based handoff notice for subagents or independent host agents unless `[agents.delegation] sub = false` / `independent = false`; main binds never inject it; `off` skips it. External prompt composition uses `executor_prompt`; its default `include: []` adds no delegation notice automatically |
+
+### Native evaluation endpoints
+
+Use the structured form when a profile needs a native evaluation endpoint, request parameters, or explicit capabilities:
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+endpoint:
+  base_url: https://eval.example.test/v1
+  model: eval-preview-model
+  api_key_env: EVAL_API_KEY
+  capabilities: [tool_use, image_in, thinking]
+  support_efforts: [low, medium, high, xhigh]
+  request_params:
+    preserve_thinking: true
+---
+
+Run the frontend evaluation.
+```
+
+The flat shorthand is limited to the endpoint identity and credential fields:
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+base_url: https://eval.example.test/v1
+model: eval-preview-model
+api_key_env: EVAL_API_KEY
+---
+
+Run the frontend evaluation.
+```
+
+The provider defaults to `openai`. A bound endpoint defaults to capabilities `[tool_use, image_in, thinking]`, `max_context_size: 131072`, and, while `thinking` is enabled, efforts `[low, medium, high, xhigh]`. Explicit capability arrays accept only `image_in`, `video_in`, `audio_in`, `thinking`, and `tool_use`; use the structured form for `request_params` such as `preserve_thinking: true`.
+
+Prefer `api_key_env` and keep literal API keys out of profile files. A literal `api_key` is held only in session memory and requires reauthentication after restart. Changing the destination requires its own credential instead of reusing the previous endpoint's auth.
+
+Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Endpoint declarations from untrusted project or plugin profiles are denied.
+
+Endpoints run only with the native executor and do not mutate the model catalog or configuration. Selecting a catalog `model_alias` discards a profile endpoint, and a call-level endpoint override cannot be combined with `model_alias`; put the upstream model ID in `endpoint.model` instead.
 
 For child-role guidance, prefer `preferred_subagents`; write hard preset boundaries only when the user requests them. Across base profile, route and caller lease, allowed preset sets intersect, denials accumulate and `false` remains closed; the nearest explicit preference replaces earlier recommendations. `allowed_subagents` may mix `"*"`, bare names and name/source/lease mappings: normalize the open domain, retain mappings and ignore repeated bare names. Two mappings for one alias are ambiguous and fail validation.
 

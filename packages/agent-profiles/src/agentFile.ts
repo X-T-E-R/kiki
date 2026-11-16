@@ -1,5 +1,5 @@
 import { dirname } from 'pathe';
-import { executorInstanceChoiceSchema, executorLaunchPatchSchema, recipeOptionValuesSchema } from '@kiki/protocol';
+import { executorInstanceChoiceSchema, executorLaunchPatchSchema, normalizeEndpointLayer, recipeOptionValuesSchema } from '@kiki/protocol';
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
 import { AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
@@ -10,6 +10,7 @@ import { parsePromptOverrides, type PromptOverrides } from './promptOverrides';
 import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubagentList, parseSubagentPermissions, SubagentLeaseParseError } from './subagentLease';
 import { isToolGroupId } from './toolGroups';
 import { MODEL_CONSTRAINT_KEYS, ModelConstraintParseError, parseModelConstraintFields } from './modelConstraintFields';
+import { redactProfileEndpoint } from './endpointCredential';
 
 export class AgentFileParseError extends Error {
   readonly code = 'validation.failed';
@@ -68,6 +69,12 @@ const AGENT_FILE_KEYS = new Set([
   'model_selection',
   'recipe',
   'recipe_options',
+  'endpoint',
+  'base_url',
+  'provider_type',
+  'api_key',
+  'api_key_env',
+  'model',
   'restrict_models_to_menu',
   'thinking_effort',
   'preferred_models',
@@ -304,6 +311,19 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
       `Frontmatter field "system_prompt_mode" in ${options.path} must be replace, prepend, append, or inherit`,
     );
   }
+  const endpointDeclared = ['endpoint', 'base_url', 'provider_type', 'api_key', 'api_key_env', 'model']
+    .some((key) => Object.hasOwn(frontmatter, key));
+  let endpoint;
+  try {
+    endpoint = normalizeEndpointLayer(frontmatter);
+  } catch {
+    throw new AgentFileParseError(`Invalid endpoint configuration in ${options.path}`);
+  }
+  if (endpointDeclared && (endpoint === undefined || endpoint.base_url === undefined || endpoint.model === undefined)) {
+    throw new AgentFileParseError(`Profile endpoint in ${options.path} requires base_url and model`);
+  }
+  endpoint = endpoint === undefined ? undefined : redactProfileEndpoint(endpoint);
+
   const prompt = parsed.body.trim();
   const resolvedSystemPromptMode = systemPromptMode?.data;
   if (resolvedSystemPromptMode === 'inherit') {
@@ -360,6 +380,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     modelSelection,
     recipe: optionalNonEmptyStringField(frontmatter['recipe'], 'recipe', options.path),
     recipeOptions,
+    endpoint,
     restrictModelsToMenu: parseOptionalBoolean(frontmatter['restrict_models_to_menu'], 'restrict_models_to_menu', options.path) ?? false,
     thinkingEffort,
     ...parseModelConstraintFields(frontmatter, options.path),

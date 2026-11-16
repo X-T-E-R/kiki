@@ -32,7 +32,7 @@ import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepR
 import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
 import { resolveRetryDelay, resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
-import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import type { Model } from '#/kosong/model/catalog';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { ILogService } from '#/_base/log/log';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
@@ -1425,7 +1425,7 @@ describe('stepRetry binding lookup', () => {
   let config: StubConfigService;
   let handler: LoopErrorHandler;
   let context: LoopErrorContext;
-  let getModel: ReturnType<typeof vi.fn<IModelCatalog['get']>>;
+  let getRuntimeModel: ReturnType<typeof vi.fn<IAgentProfileService['getRuntimeModel']>>;
   let logError: ReturnType<typeof vi.fn<ILogService['error']>>;
   let dispatch: ReturnType<typeof vi.fn<IEventDispatcher['dispatch']>>;
   const lookupFailure = new Error('catalog unavailable');
@@ -1436,7 +1436,7 @@ describe('stepRetry binding lookup', () => {
     config = new StubConfigService();
     const loop = stubLoopWithHooks();
     const register = vi.spyOn(loop, 'registerLoopErrorHandler');
-    getModel = vi.fn<IModelCatalog['get']>(() => {
+    getRuntimeModel = vi.fn<IAgentProfileService['getRuntimeModel']>(() => {
       throw lookupFailure;
     });
     logError = vi.fn<ILogService['error']>();
@@ -1454,8 +1454,8 @@ describe('stepRetry binding lookup', () => {
             thinkingLevel: 'off', systemPrompt: '',
           }),
           getRecipeModelSettings: () => undefined,
+          getRuntimeModel,
         });
-        reg.definePartialInstance(IModelCatalog, { get: getModel });
         reg.define(IAgentStepRetryService, AgentStepRetryService);
       },
     });
@@ -1520,7 +1520,7 @@ describe('stepRetry binding lookup', () => {
 
     expect(await exhaustAttempts()).toBe(attempts);
     expect(dispatch).toHaveBeenCalledTimes(attempts - 1);
-    expect(getModel).not.toHaveBeenCalled();
+    expect(getRuntimeModel).not.toHaveBeenCalled();
     expect(logError).not.toHaveBeenCalled();
   });
 
@@ -1538,7 +1538,7 @@ describe('stepRetry binding lookup', () => {
       expect(await exhaustAttempts()).toBe(5);
       expect(context.error).toBe(failure);
       expect(dispatch).toHaveBeenCalledTimes(4);
-      expect(getModel).toHaveBeenCalled();
+      expect(getRuntimeModel).toHaveBeenCalled();
       expect(logError).toHaveBeenCalledWith(
         'failed to resolve model identity for retry policy selectors; selector policies are skipped',
         { modelAlias: 'model-alias', error: lookupFailure },
@@ -1554,7 +1554,7 @@ describe('stepRetry binding lookup', () => {
     ] });
 
     expect(await exhaustAttempts()).toBe(3);
-    expect(getModel).toHaveBeenCalledTimes(6);
+    expect(getRuntimeModel).toHaveBeenCalledTimes(6);
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 3, delayMs: 17 }));
   });
@@ -1567,14 +1567,14 @@ describe('stepRetry binding lookup', () => {
       authProvider: { getAuth: async () => undefined },
       imagePolicy: { acceptedTypes: new Set(), convertUnsupported: 'off' },
     };
-    getModel.mockReturnValue(model);
+    getRuntimeModel.mockReturnValue(model);
     config.setSilent(RETRY_SECTION, { policies: [{
       match: '^provider\\.rate_limit$', models: ['canonical-model'], providers: ['test-provider'],
       maxAttempts: 2, backoff: 23, retry: true,
     }] });
 
     expect(await exhaustAttempts()).toBe(2);
-    expect(getModel).toHaveBeenCalledWith('model-alias', undefined);
+    expect(getRuntimeModel).toHaveBeenCalledWith('model-alias', undefined);
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 2, delayMs: 23 }));
     expect(logError).not.toHaveBeenCalled();
   });
@@ -1589,7 +1589,7 @@ describe('stepRetry binding lookup', () => {
     expect(handler.match(context)).toBe(false);
     expect(await handler.handle(context)).toBe(false);
     expect(requestDeliveryProvenance(context.error)).toBe('executed');
-    expect(getModel).not.toHaveBeenCalled();
+    expect(getRuntimeModel).not.toHaveBeenCalled();
     expect(context.retry).not.toHaveBeenCalled();
   });
 

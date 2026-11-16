@@ -17,6 +17,7 @@ import {
   type Scope,
   type SessionMcpToolPredicate,
 } from '@kiki/agent-core-v2';
+import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { spawnConstraintOrigin } from '@kiki/agent-core-v2/app/agentProfileCatalog/applySubagentLease';
 import type { SkillDefinition } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import { IAgentToolActivationService } from '@kiki/agent-core-v2/agent/toolActivation/toolActivation';
@@ -48,9 +49,10 @@ import { projectPersistedAgentThinking } from './agentProfileThinking';
 import { projectAgentModelMenu } from './agentModelMenu';
 
 type BindingAdvisory = NonNullable<ProfileData['bindingAdvisories']>[number];
+type PanelRuntimeModel = ReturnType<IAgentProfileService['getRuntimeModel']>;
 
 type PanelBindingData = Partial<Pick<ProfileData,
-  'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
+  'endpoint' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'thinkingLevel' |
   'effectiveThinkingLevel' | 'thinkingEffortSource' | 'thinkingEffortExplicit' | 'routeDetached' |
   'profileSource' | 'bindingAdvisories' | 'executorId' | 'serviceTier' | 'activeToolNames' |
@@ -377,8 +379,11 @@ export async function livePanelCapabilities(
   }
   const skills = agent.accessor.get(ISessionSkillCatalog);
   await skills.ready;
+  const runtimeModel = (data.executorId === undefined || data.executorId === 'native') ? (() => {
+    try { return agent.accessor.get(IAgentProfileService).getRuntimeModel(data.modelAlias); } catch { return undefined; }
+  })() : undefined;
   return {
-    profile: panelProfile(agent, data, resolution, delegationPosition),
+    profile: panelProfile(agent, data, resolution, delegationPosition, runtimeModel),
     tools: [...tools.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
     skills: panelSkills(skills.catalog.listSkills(), !toolsLocked && policy.isToolActive('Skill')),
   };
@@ -453,7 +458,22 @@ export function frozenPanelModelProfile(
     model: data.modelAlias,
     executor: data.executorId ?? profile.executor,
     definition_id: data.profileDefinitionId,
-    ...projectAgentModelMenu(scope, profile, position, true),
+    ...(data.endpoint === undefined
+      ? projectAgentModelMenu(scope, profile, position, true)
+      : endpointModelMenu(data, profile)),
+  };
+}
+
+function endpointModelMenu(
+  data: PanelBindingData,
+  profile: PanelBindingData['boundProfile'],
+): ReturnType<typeof projectAgentModelMenu> {
+  const alias = data.modelAlias ?? materializeAdhocModel(data.endpoint!).id;
+  return {
+    restrict_models_to_menu: profile?.restrictModelsToMenu ?? false,
+    declared_model_menu: { aliases: [alias], default_alias: alias, identities: [alias] },
+    effective_model_aliases: [alias],
+    model_constraints_active: profile?.allowedModels !== undefined || profile?.denyModels !== undefined || profile?.allowedEfforts !== undefined,
   };
 }
 
@@ -462,6 +482,7 @@ function panelProfile(
   data: PanelBindingData,
   resolution: PanelProfileResolution,
   position: 'main' | 'sub',
+  runtimeModel?: PanelRuntimeModel,
 ): AgentPanelProfile {
   const definition = resolution.profile ?? data.boundProfile;
   const caller = {
@@ -485,7 +506,7 @@ function panelProfile(
         : data.lockedModelAlias !== undefined && routeDetached !== true ? 'route' : 'profile',
     thinking_effort: thinkingEffort,
     thinking_effort_explicit: data.thinkingEffortExplicit,
-    effort_source: panelEffortSource(scope, data, definition, thinkingEffort, routeDetached),
+    effort_source: panelEffortSource(scope, data, definition, thinkingEffort, routeDetached, runtimeModel),
     thinking_effort_source: data.thinkingEffortSource,
     route_detached: routeDetached,
     profile_source: data.profileSource,
@@ -540,6 +561,7 @@ function panelEffortSource(
   definition: PanelProfileDefinition | undefined,
   effort: string | undefined,
   routeDetached: boolean | undefined,
+  runtimeModel?: PanelRuntimeModel,
 ): AgentPanelProfile['effort_source'] {
   if (effort === undefined) return undefined;
   if (data.appliedLease?.thinkingEffort !== undefined) return 'caller-lease';
@@ -555,11 +577,11 @@ function panelEffortSource(
   }
   if (definition?.thinkingEffort !== undefined) return 'profile';
   if (data.executorId !== undefined && data.executorId !== 'native') return 'executor';
+  if (data.endpoint !== undefined) return 'model';
   const thinking = scope.accessor.get(IConfigService).get<ThinkingConfig>('thinking');
   if (data.modelAlias !== undefined) {
     try {
-      const modelId = scope.accessor.get(IModelService).resolveId(data.modelAlias) ?? data.modelAlias;
-      const model = scope.accessor.get(IModelCatalog).get(modelId);
+      const model = runtimeModel ?? scope.accessor.get(IModelCatalog).get(scope.accessor.get(IModelService).resolveId(data.modelAlias) ?? data.modelAlias);
       if (model.overrides?.defaultEffort !== undefined) return 'model';
     } catch {}
   }

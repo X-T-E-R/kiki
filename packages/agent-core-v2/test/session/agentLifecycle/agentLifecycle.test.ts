@@ -2639,6 +2639,25 @@ describe('AgentLifecycleService', () => {
     await expect(svc.fork('missing')).rejects.toThrow('Source agent "missing" does not exist');
   });
 
+  it('rejects implicit endpoint inheritance before allocating a branch', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    const source = await svc.create({ agentId: 'main' });
+    source.accessor.get(IAgentProfileService).applyBindingSnapshot({
+      profileName: 'eval', thinkingLevel: 'high', systemPrompt: 'Evaluate.', activeToolNames: [],
+      endpoint: { provider_type: 'openai', base_url: 'https://eval.example.test/v1', model: 'eval-preview-model',
+        credential: { kind: 'env', env: 'EVAL_API_KEY' }, capabilities: ['tool_use', 'image_in', 'thinking'],
+        support_efforts: ['low', 'medium', 'high', 'xhigh'], max_context_size: 131072 },
+    });
+    const created = vi.fn();
+    disposables.add(svc.onWillCreate(created));
+    registerAgent.mockClear();
+    await expect(svc.fork('main', { agentId: 'rejected-branch' })).rejects.toThrow('cannot be inherited');
+    expect(svc.get('rejected-branch')).toBeUndefined();
+    expect(created).not.toHaveBeenCalled();
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
   it('fork copies the bound profile snapshot without catalog resolution', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const source = await svc.create({ agentId: 'main' });

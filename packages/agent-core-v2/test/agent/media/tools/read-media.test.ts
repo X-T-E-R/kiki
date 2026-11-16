@@ -38,7 +38,6 @@ import {
 import { EventBusService } from '#/app/event/eventBusService';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { IAgentProfileService } from '#/agent/profile/profile';
-import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -918,26 +917,20 @@ describe('AgentMediaToolsRegistrar', () => {
       alias: '',
       capabilities: capabilities({ image_in: false, video_in: false }),
     };
+    const brokenAliases = new Set<string>();
+    const resolveModel = (id: string) => {
+      if (brokenAliases.has(id)) {
+        throw new Error(`Model "${id}" is not configured in config.toml.`);
+      }
+      return { id, name: id, providerName: 'test', protocol: 'openai' };
+    };
     const profile = {
       getModelCapabilities: () => state.capabilities,
       getModel: () => state.alias,
       getModelProviderType: () => state.providerType,
+      getRuntimeModel: (id: string) => resolveModel(id),
+      getRuntimeRequester: (id: string) => ({ model: resolveModel(id) }),
     } as unknown as IAgentProfileService;
-    const brokenAliases = new Set<string>();
-    const modelCatalog = {
-      get: (id: string) => {
-        if (brokenAliases.has(id)) {
-          throw new Error(`Model "${id}" is not configured in config.toml.`);
-        }
-        return { id, name: id, providerName: 'test', protocol: 'openai' };
-      },
-      getRequester: (id: string) => {
-        if (brokenAliases.has(id)) {
-          throw new Error(`Model "${id}" is not configured in config.toml.`);
-        }
-        return { model: { id, name: id, providerName: 'test', protocol: 'openai' } };
-      },
-    } as unknown as IModelCatalog;
     const workspaceCtx = {
       workDir: '/workspace',
       additionalDirs: [],
@@ -955,7 +948,6 @@ describe('AgentMediaToolsRegistrar', () => {
     const registrar = new AgentMediaToolsRegistrar(
       registry,
       profile,
-      modelCatalog,
       eventBus,
       runtime,
       workspaceCtx,

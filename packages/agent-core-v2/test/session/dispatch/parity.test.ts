@@ -11,6 +11,8 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { AdhocEndpointVault, IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { IWorkspaceService } from '#/app/workspace/workspace';
 import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -28,6 +30,7 @@ import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile'
 import { assertNativeToolOverride, mergeToolBindingOverride } from '#/agent/profile/toolBinding';
 import { resumeFingerprint } from '#/session/dispatch/resume';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -73,6 +76,7 @@ import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import {
   IAgentCollaborationMessagingService,
   type AgentMessageAcceptance,
@@ -492,6 +496,8 @@ interface LaneOptions {
   readonly externalPermissionCeiling?: PermissionMode;
   readonly notifyParent?: boolean;
   readonly callerMessages?: readonly import('#/agent/contextMemory/types').ContextMessage[];
+  readonly runtimeWorkspaceRoots?: RuntimeWorkspaceRoots;
+  readonly mapWorkspaceRoots?: (roots: RuntimeWorkspaceRoots) => RuntimeWorkspaceRoots;
 }
 
 type SubagentRun = (agentId: string, request: AgentRunRequest, options: RunAgentOptions) => Promise<AgentRunHandle>;
@@ -505,6 +511,7 @@ interface ParityLane {
   readonly metadataAgents: Record<string, AgentMeta>;
   readonly handles: Map<string, IAgentScopeHandle>;
   readonly taskRecords: Map<string, TaskRecord>;
+  readonly documentReads: Array<{ readonly scope: string; readonly key: string }>;
   readonly external: ISessionExternalDelegationService;
   readonly externalM1: M1ExternalService;
   readonly profile: AgentProfile;
@@ -526,7 +533,9 @@ function createLane(
   const profile = options.profile ?? parityProfile;
   const probe = new ParityProbe();
   const ix = disposables.add(new TestInstantiationService());
+  const endpointVault = disposables.add(new AdhocEndpointVault());
   const documents = new Map<string, unknown>();
+  const documentReads: Array<{ readonly scope: string; readonly key: string }> = [];
   const handles = new Map<string, IAgentScopeHandle>();
   const metadataAgents: Record<string, AgentMeta> = {};
   const completions: Deferred<{ summary: string; usage?: TokenUsage }>[] = [];
@@ -558,7 +567,7 @@ function createLane(
 
   const runtime = new FakeRuntime(
     { workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' },
-    { capabilities: ['process'], pathClass: options.pathClass },
+    { capabilities: ['process'], pathClass: options.pathClass, mapWorkspaceRoots: options.mapWorkspaceRoots },
   );
 
   const runtimeService = {
@@ -567,6 +576,7 @@ function createLane(
     inspect: () => runtime,
     isAvailable: () => true,
     acquire: () => ({ runtime, dispose: () => {}, track: () => {} }),
+    workspaceRoots: options.runtimeWorkspaceRoots === undefined ? undefined : () => options.runtimeWorkspaceRoots!,
   } as unknown as IAgentRuntimeService;
 
   const userTools = [{ name: 'SharedTool', description: 'Shared tool', parameters: {} }];
@@ -697,6 +707,8 @@ function createLane(
           };
         }
         if (serviceId === IAgentRuntimeService) return runtimeService;
+        if (serviceId === ISessionContext) return ix.get(ISessionContext);
+        if (serviceId === ISessionWorkspaceContext) return ix.get(ISessionWorkspaceContext);
         if (serviceId === IAgentExecutionService) {
           return {
             _serviceBrand: undefined,
@@ -1079,9 +1091,17 @@ function createLane(
     resolve: (id = 'native') => ({ descriptor: { id, protocol: id === 'native' ? 'native' : 'acp-v1', args: [], revision: 'fixture' }, options: {} }),
     validateBinding: (_id, _options, binding) => options.validateBinding?.(binding) ?? { ok: true, binding },
   });
+  ix.set(IAdhocEndpointVault, endpointVault);
+  ix.stub(IWorkspaceService, { findRegisteredByRoot: async () => undefined });
+  ix.stub(IAgentSystemReminderService, {
+    appendSystemReminder: () => ({ role: 'user', content: [], toolCalls: [] }),
+  });
   ix.stub(IAtomicDocumentStore, {
     _serviceBrand: undefined,
-    get: async <T>(_scope: string, key: string) => documents.get(key) as T | undefined,
+    get: async <T>(scope: string, key: string) => {
+      documentReads.push({ scope, key });
+      return documents.get(key) as T | undefined;
+    },
     set: async (_scope, key, value) => {
       documents.set(key, structuredClone(value));
     },
@@ -1235,6 +1255,7 @@ function createLane(
     metadataAgents,
     handles,
     taskRecords,
+    documentReads,
     external,
     externalM1: external as unknown as M1ExternalService,
     profile,
@@ -1901,6 +1922,26 @@ describe('AgentRun and dispatch parity golden', () => {
     await expect(execution.execute({ toolCallId: 'profile-file', turnId: 1, signal: new AbortController().signal }))
       .resolves.toMatchObject({ isError: true, output: expect.stringContaining('Profile file target changed after path admission') });
     expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('checks endpoint trust for profile_file paths admitted by mapped runtime roots', async () => {
+    const lane = createLane(disposables, 'internal', {
+      runtimeWorkspaceRoots: { workDir: '', additionalDirs: [] },
+      mapWorkspaceRoots: () => ({ workDir: '/repo', additionalDirs: ['/extra'] }),
+    });
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const readText = vi.fn(async () => '---\nname: eval\ndescription: Evaluation profile\nendpoint:\n  base_url: https://eval.example.test/v1\n  model: eval-preview-model\n  api_key_env: EVAL_API_KEY\n---\nEVALUATION PROFILE');
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
+
+    const result = await lane.runInternal({
+      profile_file: '/extra/eval.md', prompt: 'Evaluate this change', description: 'Evaluation profile', background: true,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(outputText(result.output)).toContain('Endpoint declarations in untrusted workspace or plugin profiles cannot be used.');
+    expect(readText).toHaveBeenCalledWith('/extra/eval.md');
+    expect(lane.documentReads).toContainEqual(expect.objectContaining({ scope: 'workspace-trust' }));
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
   });
 
   it('loads profile_file through AgentRun without registering its name or hardening unmarked recommendations', async () => {

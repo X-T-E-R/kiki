@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { adhocEndpointInputSchema, normalizeEndpointLayer } from '@kiki/protocol';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { agentNameIssue } from '#/session/agentCollaboration/directChildren';
@@ -15,6 +16,12 @@ export const SubagentToolInputSchema = z.preprocess(
     }
     const record = input as Record<string, unknown>;
     const normalized = { ...record };
+    const endpoint = normalizeEndpointLayer(record);
+    if (record['model'] !== undefined && endpoint === undefined) throw new Error('model requires an endpoint override; use model_alias for catalog models.');
+    if (endpoint !== undefined) {
+      normalized['endpoint'] = endpoint;
+      for (const key of ['base_url', 'provider_type', 'api_key', 'api_key_env', 'model']) delete normalized[key];
+    }
     const hasProfile =
       typeof normalized['profile'] === 'string' && normalized['profile'].length > 0;
     if (!hasProfile) {
@@ -69,6 +76,12 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'Omitted: main runs in background; subagents wait in foreground, including resume and goal mode. Set false explicitly for a genuine same-turn dependency, or true to return a task receipt and receive automatic completion notification. New steer input releases a main foreground wait without stopping the child.',
       ),
+    endpoint: adhocEndpointInputSchema.optional().describe('Ad-hoc native API endpoint. Use base_url, upstream model, and api_key_env (recommended) or api_key. Credentials are session-local; never combined with model_alias. A credential-only override can reauthenticate a saved child.'),
+    base_url: z.string().optional(),
+    provider_type: z.string().optional(),
+    api_key: z.string().min(1).optional(),
+    api_key_env: z.string().optional(),
+    model: z.string().optional(),
     model_alias: z
       .string()
       .trim()
@@ -95,6 +108,7 @@ export const SubagentToolInputSchema = z.preprocess(
       args: z.array(z.string()).nullable().optional(),
     }).strict().optional().describe('Launch patch for a new agent, applied after the selected instance. Null clears one field. env merges by key. args replaces extra arguments. Resume keeps the saved launch.'),
   }).superRefine((args, ctx) => {
+    if (args.endpoint !== undefined && args.model_alias !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'model_alias cannot be combined with an endpoint override.' });
     if (args.model_alias === 'inherit') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: INHERIT_MODEL_ALIAS_UNAVAILABLE, path: ['model_alias'] });
     }

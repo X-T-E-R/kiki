@@ -34,6 +34,7 @@ export class ProfileError extends Error2 {
 }
 
 export interface AgentConfigData {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   driver?: 'external';
   modelAlias?: string;
   modelCapabilities: ModelCapability;
@@ -138,6 +139,7 @@ export interface ProfileData extends AgentConfigData {
 }
 
 export type ProfileUpdateData = Partial<{
+  endpoint: import('@kiki/protocol').BoundEndpoint | null;
   execution: import('@kiki/protocol').ExecutionBinding;
   executorId: string;
   executorProtocol: string;
@@ -162,6 +164,7 @@ export type ProfileUpdateData = Partial<{
 }>;
 
 export interface ProfileBindingSnapshot {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   readonly driver?: 'external';
   readonly toolOverride?: ToolBindingOverride;
   readonly toolPolicyBase?: ProfileToolPolicyBase;
@@ -278,6 +281,7 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
   readonly deferPromptContext?: boolean;
   readonly driver?: 'external' | 'local';
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
@@ -330,6 +334,7 @@ export interface IAgentProfileService {
   resolveCurrentRoleProfile(): ResolvedAgentProfile | import('./boundProfile').BoundProfile | undefined;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {
+    readonly endpoint?: import('@kiki/protocol').BoundEndpoint;
     readonly toolOverride?: ToolBindingOverride;
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
@@ -346,6 +351,8 @@ export interface IAgentProfileService {
   inspectToolPolicy(): Promise<ProfileToolPolicyStatus>;
   refreshToolPolicy(revision: string): Promise<ProfileToolPolicyStatus>;
   getModel(): string;
+  getRuntimeModel(alias?: string, settings?: Record<string, unknown>): import('#/kosong/model/catalog').Model;
+  getRuntimeRequester(alias?: string, settings?: Record<string, unknown>): import('#/kosong/model/modelRequester').ModelRequester;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;
   refreshSystemPrompt(): Promise<void>;

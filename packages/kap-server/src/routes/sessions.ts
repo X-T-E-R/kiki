@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { persistedAgentContextLimit } from './persistedAgentContext';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
@@ -37,7 +38,6 @@ import {
   IAgentExecutionService,
   IAgentLifecycleService,
   IAgentUsageService,
-  IAtomicDocumentStore,
   ILogService,
   IModelService,
   ISessionActivityView,
@@ -2024,16 +2024,21 @@ export async function resolveSessionBindingFacts(
   const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal,
     { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
   const externallyDriven = profile?.driver === 'external' || saved !== undefined && isExternalClientMain(saved, MAIN_AGENT_ID);
-  const preview = !externallyDriven && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
+  const preview = !externallyDriven && profile?.endpoint === undefined && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
     ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService),
       (await core.accessor.get(IWorkspaceService).get(workspaceId))?.root, workspaceId, false) : undefined;
   let binding: { model: string | undefined; executorId: string };
   try {
     await preview?.catalog.ready;
-    const models = core.accessor.get(IModelService);
-    await models.ready;
-    binding = externallyDriven ? { model: profile?.modelAlias, executorId: profile?.executorId ?? 'native' }
-      : resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+    if (externallyDriven) {
+      binding = { model: profile?.modelAlias, executorId: profile?.executorId ?? 'native' };
+    } else if (profile?.endpoint !== undefined) {
+      binding = { model: profile.modelAlias ?? materializeAdhocModel(profile.endpoint).id, executorId: 'native' };
+    } else {
+      const models = core.accessor.get(IModelService);
+      await models.ready;
+      binding = resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+    }
   } finally { await preview?.dispose(); }
   const runtime = await readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal);
   const contextLimit = !externallyDriven && binding.executorId === 'native' ? persistedAgentContextLimit(core, profile, binding.model) : undefined;

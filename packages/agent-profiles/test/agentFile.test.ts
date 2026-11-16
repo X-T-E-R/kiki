@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentFileParseError, parseAgentFileText } from '#/agentFile';
 import type { AgentFileDefinition, AgentFileDiscoveryResult } from '#/agentFileTypes';
 import { agentProfileFromFile, profilesFromDiscovery } from '#/agentProfileFromFile';
+import { readProfileEndpointSecret } from '#/endpointCredential';
 import type { SystemPromptRenderResult } from '#/agentProfile';
 
 const FULL_FILE = `---
@@ -158,6 +159,78 @@ body`)).toThrow(/recipe_options.*mapping of recipe ids to booleans/);
     expect(profile.modelProfiles?.[0]?.contextStrategy).toBe('fresh');
     expect(() => parse('---\nname: solo\ndescription: d\ncontext_strategy: relay\n---\nbody\n')).toThrow(/"context_strategy".*must be/);
     expect(() => parse('---\nname: solo\ndescription: d\nmodel_profiles:\n  - alias: opus\n    context_strategy: invalid\n---\nbody\n')).toThrow(/model_profiles\[0\]\.context_strategy.*must be/);
+  });
+
+  it('normalizes structured and flat profile endpoints and keeps literal credentials private', () => {
+    const structured = parse(`---
+name: structured
+description: d
+endpoint:
+  provider_type: openai-chat
+  base_url: https://api.example.test/v1
+  model: chat
+  api_key: structured-secret
+---
+body`);
+    expect(structured.endpoint).toEqual({
+      provider_type: 'openai',
+      base_url: 'https://api.example.test/v1',
+      model: 'chat',
+      api_key: '[REDACTED]',
+    });
+    expect(readProfileEndpointSecret(structured.endpoint!)).toBe('structured-secret');
+    expect(JSON.stringify(structured)).not.toContain('structured-secret');
+
+    const flat = parse(`---
+name: flat
+description: d
+provider_type: openai-legacy
+base_url: https://api.example.test/v1
+model: chat
+api_key_env: PROFILE_API_KEY
+---
+body`);
+    expect(flat.endpoint).toEqual({
+      provider_type: 'openai',
+      base_url: 'https://api.example.test/v1',
+      model: 'chat',
+      api_key_env: 'PROFILE_API_KEY',
+    });
+    expect(flat.endpoint?.api_key).toBeUndefined();
+
+    const profile = agentProfileFromFile(structured, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } }));
+    expect(profile.endpoint).toBe(structured.endpoint);
+    expect(readProfileEndpointSecret(profile.endpoint!)).toBe('structured-secret');
+    expect(JSON.stringify(profile)).not.toContain('structured-secret');
+  });
+
+  it('requires a complete endpoint when profile endpoint fields are declared', () => {
+    expect(() => parse('---\nname: helper\ndescription: d\napi_key: partial-secret\n---\nbody')).toThrow(/requires base_url and model/);
+    expect(() => parse('---\nname: helper\ndescription: d\nendpoint:\n  base_url: https://api.example.test/v1\n---\nbody')).toThrow(/requires base_url and model/);
+  });
+
+  it('does not expose endpoint secrets in malformed YAML or endpoint schema errors', () => {
+    const secret = 'yaml-secret-value';
+    let yamlError: unknown;
+    try {
+      parse(`---\nname: helper\ndescription: d\napi_key: "${secret}\n---\nbody`);
+    } catch (error) {
+      yamlError = error;
+    }
+    expect(yamlError).toBeInstanceOf(AgentFileParseError);
+    expect(String(yamlError)).not.toContain(secret);
+    expect(JSON.stringify(yamlError)).not.toContain(secret);
+
+    const schemaSecret = 'schema-secret-value';
+    let schemaError: unknown;
+    try {
+      parse(`---\nname: helper\ndescription: d\nendpoint:\n  base_url: https://api.example.test/v1\n  model: chat\n  api_key: [${schemaSecret}]\n---\nbody`);
+    } catch (error) {
+      schemaError = error;
+    }
+    expect(schemaError).toBeInstanceOf(AgentFileParseError);
+    expect(String(schemaError)).not.toContain(schemaSecret);
+    expect(JSON.stringify(schemaError)).not.toContain(schemaSecret);
   });
 
   it('parses a full agent file', () => {

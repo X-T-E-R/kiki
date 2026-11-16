@@ -1,3 +1,5 @@
+import { ToolResultEvent } from '#/agent/toolExecutor/toolExecutorEvents';
+import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import { createHash, randomUUID } from 'node:crypto';
 import { isRequestGovernanceError } from '#/app/requestGovernance/errors';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
@@ -74,7 +76,7 @@ import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
 import { emptyUsage, inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { ILogService, type LogContext } from '#/_base/log/log';
-import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { type Model } from '#/kosong/model/catalog';
 import {
   effectiveMaxCompletionTokens,
   stripKikiReservedRequestParams,
@@ -139,7 +141,7 @@ import {
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
-import { AnthropicResponseCapture, type AnthropicResponseCaptureInput, type AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
+import { AnthropicResponseCapture, DeferredResponseCapture, type AnthropicResponseCaptureInput, type AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
 
 import {
   IAgentLLMRequesterService,
@@ -335,7 +337,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly modelService: IModelService,
     @IProviderService private readonly providers: IProviderService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -364,6 +366,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     this.states.contributeState(llmRequesterMediaDegradedTurnsKey);
     this.states.contributeState(llmRequesterMediaStrippedTurnsKey);
     this.states.contributeState(llmRequesterEmittedThinkingEffortWarningsKey);
+    this._register(this.eventBus.subscribe(ToolResultEvent, (event) => { this.endpointVault.discard(this.agentContext.agentId, [event.toolCallId]); }));
     this._register(this.eventBus.subscribe(ContextSpliced, (event) => {
       if (event.deleteCount > 0) {
         this.closeResponsesTransport();
@@ -426,7 +429,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     if (this._store.isDisposed) throw createAbortError();
     const model = request.model;
     const current = request.source?.type === 'turn' && model.protocol === 'openai_responses'
-      ? this.modelCatalog.get(request.modelAlias, this.profile.getRecipeModelSettings(request.modelAlias)) : undefined;
+      ? this.profile.getRuntimeModel(request.modelAlias, this.profile.getRecipeModelSettings(request.modelAlias)) : undefined;
     const config = current?.responsesWebSocket;
     if (current?.protocol !== 'openai_responses' || config === undefined || config.targets.length === 0 ||
       (model.baseUrl !== undefined && !matchesProviderTarget(`${model.baseUrl.replace(/\/$/, '')}/responses`, config.targets))) {
@@ -453,7 +456,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     try {
       if (!this.profile.hasProvider()) return true;
       const alias = this.profile.resolveModelContext().modelAlias;
-      const model = this.modelCatalog.get(alias);
+      const model = this.profile.getRuntimeModel(alias);
       if (model.protocol !== 'google-genai') return true;
       return !googleGenAIRejectsTrailingModelTurn(model.name);
     } catch {
@@ -578,7 +581,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const modelAlias = this.profile.data().modelAlias;
     if (modelAlias === undefined) return undefined;
     try {
-      return this.modelCatalog.get(modelAlias);
+      return this.profile.getRuntimeModel(modelAlias);
     } catch {
       return undefined;
     }
@@ -713,9 +716,11 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         onRequestTrace(normalized);
       };
 
-      const rawResponseObserver = this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
+      let responseRedacted = false;
+      let responseComplete = false;
+      const rawResponseObserver = new DeferredResponseCapture(this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
         thinkingEffort: request.thinkingEffort, protocol: request.model.protocol,
-        turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey });
+        turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey }));
       const extensions = this.extensions?.current;
       const extensionSignal = signal ?? new AbortController().signal;
       try {
@@ -745,6 +750,11 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           onTraceId: setTraceId,
           onRequestAttempt,
           rawResponseObserver,
+          toolCallIngress: (call) => {
+            const sanitized = this.endpointVault.scrub(this.agentContext.agentId, call);
+            responseRedacted ||= sanitized.arguments !== call.arguments;
+            return sanitized;
+          },
           attribution,
           retry,
         };
@@ -752,6 +762,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           signal?.throwIfAborted();
           switch (event.type) {
             case 'attempt.discarded':
+              responseRedacted = true;
+              this.endpointVault.discard(this.agentContext.agentId, []);
               attemptObservedOutput = false;
               attemptObservedSubstantiveOutput = false;
               attemptObservedVisibleContent = false;
@@ -797,6 +809,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (finalizedCalls !== message.toolCalls || routedCalls.some((call, index) => call !== finalizedCalls[index])) {
           message = { ...message, toolCalls: routedCalls };
         }
+        responseComplete = true;
         for (const { raw, assigned } of toolCallIds.remapped) {
           this.log.warn('Rewrote a duplicate provider tool call id into an agent-unique one.', {
             raw,
@@ -805,6 +818,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           });
         }
       } catch (error) {
+        this.endpointVault.discard(this.agentContext.agentId, []);
         toolCallIds.rollback();
         if (handlingPart || finish !== undefined) attachErrorDetails(error, { retry: false });
         const failureUsage = readGenerateFailureUsage(error);
@@ -818,7 +832,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
         throw error;
       } finally {
-        rawResponseObserver?.end('request-finished-without-raw-eof');
+        rawResponseObserver.settle(responseComplete && !responseRedacted);
       }
 
       this.usage.record(request.modelAlias, usage ?? emptyUsage(), request.source, {
@@ -1044,6 +1058,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   ): StreamedMessagePart {
     if (!isToolCall(part)) return part;
     const assigned = toolCallIds.remapStreamedId(part.id, part._streamIndex);
+    this.endpointVault.remap(this.agentContext.agentId, part.id, part._streamIndex, assigned);
     return assigned === part.id ? part : { ...part, id: assigned };
   }
 
@@ -1199,7 +1214,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
-    const requester = this.modelCatalog.getRequester(resolved.modelAlias,
+    const requester = this.profile.getRuntimeRequester(resolved.modelAlias,
       turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
       !isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
@@ -1249,7 +1264,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       isBranch,
       ...requestIdentitySpawnContext(agentMeta),
       isKimiProvider,
-      hostRequestHeaders: isKimiProvider
+      hostRequestHeaders: this.profile.data().endpoint !== undefined ? {} : isKimiProvider
         ? hostIdentity.upstreamRequestHeaders
         : hostIdentity.requestHeaders,
     };
@@ -1373,7 +1388,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     }
     if (snapshot === undefined) {
       const resolved = this.profile.resolveModelContext();
-      const requester = this.modelCatalog.getRequester(resolved.modelAlias, this.profile.getRecipeModelSettings(resolved.modelAlias));
+      const requester = this.profile.getRuntimeRequester(resolved.modelAlias, this.profile.getRecipeModelSettings(resolved.modelAlias));
       const providerConfig =
         this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
       snapshot = {
@@ -1395,6 +1410,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     resolved: ProfileModelContext,
     providerConfig: ProviderConfig | undefined,
   ): ResolvedRequestIdentityPolicy {
+    if (this.profile.data().endpoint !== undefined) return this.identityCatalog.resolveLayers({ preset: 'none' });
     const modelId = this.modelService.resolveId(resolved.modelAlias) ?? resolved.modelAlias;
     const modelConfig = this.modelService.get(modelId);
     return this.identityCatalog.resolveLayers(

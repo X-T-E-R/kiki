@@ -7,7 +7,6 @@ import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import type { Tool } from '#/kosong/contract/tool';
 import type { ToolCall } from '#/kosong/contract/message';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
@@ -54,7 +53,6 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IFlagService private readonly flags: IFlagService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IEventBus eventBus: IEventBus,
     @IAgentStateService private readonly states: IAgentStateService,
   ) {
@@ -95,7 +93,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   enabled(): boolean {
     if (!this.flags.enabled(TOOL_SELECT_FLAG_ID) || !this.profile.getModelCapabilities().tool_use) return false;
     try {
-      const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
+      const model = this.profile.getRuntimeRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
       return model.protocol === 'openai' || model.protocol === 'openai_responses' || model.protocol === 'anthropic';
     } catch {
       return false;
@@ -108,7 +106,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     if (!disclosure) return activeEntries;
     const hasLoadableTools = activeEntries.some((entry) => this.isDynamicallyLoadable(entry));
     const loaded = this.loadedToolNames();
-    const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
+    const model = this.profile.getRuntimeRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
     const kimiProvider = usesKimiToolSchema(model.providerType);
     const shaped: ShapedToolEntry[] = [];
     for (const entry of activeEntries) {
@@ -191,7 +189,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     if (input === null || typeof input !== 'object' || Array.isArray(input)) return call;
     const { name, arguments: args } = input as { name?: unknown; arguments?: unknown };
     if (typeof name !== 'string' || args === null || typeof args !== 'object' || Array.isArray(args) ||
-      !this.activeLoadedToolNames().has(name) || this.toolRegistry.resolve(name) === undefined) return call;
+      (!this.activeLoadedToolNames().has(name) && !this.residentToolNames().has(name)) || this.toolRegistry.resolve(name) === undefined) return call;
     return { ...call, name, arguments: JSON.stringify(args) };
   }
 

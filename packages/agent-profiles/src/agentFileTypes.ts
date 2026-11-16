@@ -1,3 +1,5 @@
+import type { AdhocEndpointInput } from '@kiki/protocol';
+
 import type {
   AgentModelProfile,
   AgentProfile,
@@ -29,6 +31,7 @@ export interface AgentFileRoot {
 export interface AgentFileDefinition {
   readonly recipe?: string;
   readonly recipeOptions?: Readonly<Record<string, boolean>>;
+  readonly endpoint?: AdhocEndpointInput;
   readonly autoCompact?: number;
   readonly contextStrategy?: ContextStrategy;
   readonly contextBudget?: number;

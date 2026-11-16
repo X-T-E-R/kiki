@@ -1,3 +1,9 @@
+import { adhocEndpointModelId, mergeEndpointInputs } from '@kiki/protocol';
+import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { resolveEndpointBinding, endpointThinking, assertEndpointConstraints } from '#/session/adhocEndpoint/endpointBinding';
+import { assertEndpointSourceTrusted, authorizeEndpoint } from '#/session/adhocEndpoint/endpointConsent';
+import { IWorkspaceService } from '#/app/workspace/workspace';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
@@ -82,7 +88,8 @@ import { resolveAutoModelScript, runAutoModelScript } from '#/session/subagent/a
 import { resolveAutoModelPlugin, runAutoModelPlugin } from '#/session/subagent/autoModelPlugin';
 import { autoModelApprovalContext, authorizeAutoModelSelector } from '#/session/subagent/autoModelApproval';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
 import {
@@ -127,6 +134,9 @@ export class SessionDispatchService implements ISessionDispatchService {
     @IAgentCollaborationRegistry private readonly names: IAgentCollaborationRegistry,
     @IConfigService private readonly config: IConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @IWorkspaceService private readonly registeredWorkspaces: IWorkspaceService,
     @IModelService private readonly models: IModelService,
     @ILogService private readonly log: ILogService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
@@ -228,7 +238,17 @@ export class SessionDispatchService implements ISessionDispatchService {
       );
     }
     const callerBinding = requester.accessor.get(IAgentProfileService).data();
-    const auto = input.resolvedBinding === undefined && usesAutoModel(this.config, profile, input.modelAlias);
+    const endpoint = resolveEndpointBinding(profile, input.endpoint, input.modelAlias, this.endpointVault, input.endpointSecretRef);
+    const endpointEffort = endpoint === undefined ? undefined : endpointThinking(endpoint, input.thinkingEffort, profile.thinkingEffort);
+    if (endpoint !== undefined) {
+      await assertEndpointSourceTrusted(profile, requester.accessor.get(ISessionContext).cwd, this.documents, this.registeredWorkspaces,
+        { path: input.runtime.path, realpath: (path) => input.runtime.fs!.realpath(path), roots: input.workspaceRoots ?? new RuntimeWorkspaceView(input.runtime,
+          inspectAgentWorkspaceRoots(requester.accessor.get(IAgentRuntimeService), requester.accessor.get(ISessionWorkspaceContext))) });
+      assertEndpointConstraints(endpoint, endpointEffort!, this.config, [profile, target.lease, target.spawnPolicy]);
+      if (selection.route?.lockedModelAlias !== undefined && selection.route.lockedModelAlias !== adhocEndpointModelId(endpoint)) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'The route model pin does not permit this endpoint.');
+      await authorizeEndpoint(endpoint, this.endpointVault, requester, input.workDir, input.signal, input.selectorCall);
+    }
+    const auto = endpoint === undefined && input.resolvedBinding === undefined && usesAutoModel(this.config, profile, input.modelAlias);
     const extensions = this.extensions?.current;
     const advice = extensions?.hasSubagentDispatchAdvisors !== true ? undefined : await extensions.proposeSubagentDispatch(Object.freeze({
       sessionId: requester.accessor.get(ISessionContext).sessionId,
@@ -240,7 +260,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     }), input.signal);
     checkLaunchPolicy(profile.executor);
     let advisedBinding: DispatchResolvedBinding | undefined;
-    if (!auto && input.resolvedBinding === undefined && advice !== undefined) {
+    if (endpoint === undefined && !auto && input.resolvedBinding === undefined && advice !== undefined) {
       const modelAlias = input.modelAlias === undefined && target.lease?.modelAlias === undefined && selection.route?.lockedModelAlias === undefined
         ? advice.recommendedModelAlias : undefined;
       const thinkingEffort = input.thinkingEffort === undefined && target.lease?.thinkingEffort === undefined && selection.route?.lockedThinkingEffort === undefined
@@ -255,7 +275,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         }
       }
     }
-    const staticBinding = auto ? undefined : advisedBinding ?? this.resolveBinding(input, target, callerBinding);
+    const staticBinding = endpoint !== undefined ? { model: adhocEndpointModelId(endpoint), thinking: endpointEffort } : auto ? undefined : advisedBinding ?? this.resolveBinding(input, target, callerBinding);
     const executor = profile.executor ?? 'native';
     const defaultInstance = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor]?.defaults?.executor_instance;
     const advisedInstance = executor !== 'native' && input.executorInstance === undefined && input.executorLaunch === undefined
@@ -264,7 +284,10 @@ export class SessionDispatchService implements ISessionDispatchService {
         && candidate.instance?.source_executor === executor
         && candidate.instance.quota_account_id === advice.recommendedExecutorAccountId)?.id
       : undefined;
-    const inheritAlias = (alias: string | undefined) => resolveInheritedModelAlias(alias, callerBinding.modelAlias);
+    const inheritAlias = (alias: string | undefined) => {
+      if (alias === INHERIT_MODEL_ALIAS && callerBinding.endpoint !== undefined) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'Ad-hoc endpoint bindings cannot be inherited by another child.');
+      return resolveInheritedModelAlias(alias, callerBinding.modelAlias);
+    };
     const resolvedProfile = isNativeTarget(profile) ? profile : selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
       ? { ...selection.baseProfile, modelAlias: inheritAlias(selection.baseProfile.modelAlias) }
       : selection.baseProfile;
@@ -310,6 +333,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       child = await this.lifecycle.create({
         deferCreateEvent: true,
         binding: {
+          endpoint,
           toolOverride: input.toolOverride,
           memoryReadContext: requester.accessor.get(IAgentMemorySnapshot).getPersona(),
           executionRestriction: researchReadonly ? 'research-readonly' : undefined,
@@ -630,12 +654,29 @@ export class SessionDispatchService implements ISessionDispatchService {
       ? this.requireHandle(options.requesterAgentId, 'Requester agent').accessor.get(IAgentProfileService)
       : undefined;
     const callerData = callerProfile?.data();
+    if (wantsInheritance && callerData?.endpoint !== undefined) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'Ad-hoc endpoint bindings cannot be inherited by another child.');
     const inheritedModel = wantsInheritance
       ? resolveInheritedModelAlias(INHERIT_MODEL_ALIAS, callerData?.modelAlias)
       : undefined;
     await this.profiles.ready;
     const childData = childProfile.data();
     const childRoleProfile = childProfile.resolveCurrentRoleProfile?.() ?? childData.boundProfile;
+    let endpoint = options.bindingOverride?.modelAlias === undefined ? childData.endpoint : undefined;
+    if (options.endpoint !== undefined) {
+      if (options.bindingOverride?.modelAlias !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'model_alias cannot be combined with endpoint overrides.');
+      if (endpoint === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'This child has no ad-hoc endpoint to override.');
+      const { credential, ...fields } = endpoint;
+      const base = { ...fields, api_key: credential.kind === 'ephemeral' ? '[REDACTED]' : undefined, api_key_env: credential.kind === 'env' ? credential.env : undefined };
+      const merged = mergeEndpointInputs(base, options.endpoint)!;
+      const ref = options.endpoint.api_key !== undefined ? options.endpointSecretRef : merged.api_key === '[REDACTED]' && credential.kind === 'ephemeral' ? credential.secretRef : undefined;
+      endpoint = this.endpointVault.bind(merged, ref);
+    }
+    if (endpoint !== undefined) {
+      assertEndpointConstraints(endpoint, endpointThinking(endpoint, options.bindingOverride?.thinkingEffort ?? childData.thinkingLevel), this.config,
+        [childRoleProfile, ...callerConstraints.map((layer) => layer.constraints)]);
+      const owner = options.requesterAgentId === undefined ? child.agent : this.requireHandle(options.requesterAgentId, 'Requester agent');
+      await authorizeEndpoint(endpoint, this.endpointVault, owner, owner.accessor.get(ISessionWorkspaceContext).workDir, options.signal, options.selectorCall);
+    }
     assertNativeToolOverride(childData.executorId, options.toolOverride);
     const modelProfileThinking = childRoleProfile === undefined || inheritedModel === undefined
       ? undefined
@@ -709,6 +750,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     }
     const binding = recoveringCommit ? undefined : await childProfile.prepareResumeBinding({
       ...options.bindingOverride,
+      endpoint,
       modelAlias: wantsAuto ? saved?.switchInput.model ?? autoChoice?.alias : inheritedModel ?? options.bindingOverride?.modelAlias,
       thinkingEffort: wantsAuto ? saved?.switchInput.thinking ?? autoChoice?.thinking_effort : inheritedThinking,
       allowParentNotify: options.allowParentNotify,
@@ -731,6 +773,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     assertAdmission();
     const record = saved ?? {
       operationId, fingerprint, request: originalRequest, state: 'accepted' as const,
+      endpoint,
       toolOverride: binding!.config.toolOverride,
       switchInput: { operationId, model: binding!.model, thinking: binding!.thinking,
         mode: contextMode },

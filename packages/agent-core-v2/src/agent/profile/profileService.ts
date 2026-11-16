@@ -1,9 +1,17 @@
+import { adhocEndpointModelId } from '@kiki/protocol';
+import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { materializeAdhocModel, materializeAdhocRequester } from '#/session/adhocEndpoint/adhocEndpointRuntime';
+import { resolveEndpointBinding, endpointThinking, assertEndpointConstraints } from '#/session/adhocEndpoint/endpointBinding';
+import { assertEndpointSourceTrusted } from '#/session/adhocEndpoint/endpointConsent';
+import { IWorkspaceService } from '#/app/workspace/workspace';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { captureProfileModelMenu, normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { resolveResumeContextMode } from '#/agent/modelSwitch/modelSwitch';
-import { dirname } from 'node:path';
+import * as hostPath from 'node:path';
 import { composeRecipeLayers, recipeReferences, recipeRevisionContent } from '#/app/recipes/recipeOverlay';
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
 import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
@@ -292,6 +300,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   declare readonly _serviceBrand: undefined;
 
   private optionsValue: ProfileServiceOptions = {};
+  private endpointRequester: { key: string; requester: import('#/kosong/model/modelRequester').ModelRequester } | undefined;
 
   private get activeToolNames(): ActiveToolsState {
     return (
@@ -335,6 +344,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IConfigService private readonly config: IConfigService,
     @IPromptFieldRegistry private readonly promptFields: IPromptFieldRegistry,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
+    @IRequestAdmission private readonly requestAdmission: IRequestAdmission,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @IWorkspaceService private readonly registeredWorkspaces: IWorkspaceService,
     @IModelService private readonly models: IModelService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
@@ -529,6 +542,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
     void this.dispatcher.dispatch(
       new ProfileBind({
+        endpoint: snapshot.endpoint,
         driver: snapshot.driver,
         execution: snapshot.execution,
         toolOverride: snapshot.toolOverride,
@@ -627,6 +641,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
+    const endpoint = input.endpoint ?? resolveEndpointBinding(selection.profile, undefined, input.model, this.endpointVault);
+    if (endpoint !== undefined && input.endpoint === undefined) await assertEndpointSourceTrusted(selection.profile, this.sessionContext.cwd, this.documents, this.registeredWorkspaces,
+      { path: { ...hostPath, separator: hostPath.sep }, realpath: (path) => this.hostFs.realpath(path), roots: { workDir: this.sessionContext.cwd } });
     if (isNativeTarget(selection.profile)) {
       if (input.route !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Native engine targets do not have profile routes');
       assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, selection.profile.executor);
@@ -639,7 +656,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       await this.bindExecution(native.execution.selection, { ...input, resolvedProfile: selection.profile }, assertCurrent);
       return;
     }
-    const inheritedAlias = [
+    const inheritedAlias = endpoint === undefined && [
       selection.baseProfile.modelAlias,
       selection.profile.modelAlias,
       selection.route?.lockedModelAlias,
@@ -692,7 +709,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ),
     };
     const leased = applyLease(routedProfile, input.lease, resolveId);
-    const effectiveProfile = applyFileCallerCeiling(applySpawnPolicy(leased, input.spawnPolicy, resolveId));
+    const constrainedProfile = applyFileCallerCeiling(applySpawnPolicy(leased, input.spawnPolicy, resolveId));
+    const effectiveProfile = endpoint === undefined ? constrainedProfile : { ...constrainedProfile,
+      modelAlias: adhocEndpointModelId(endpoint), modelProfiles: undefined, modelPromptLayers: undefined, modelPromptBase: undefined,
+    };
     const profile = executionRestriction === 'research-readonly'
       ? { ...effectiveProfile, toolAllowPolicies: [...(effectiveProfile.toolAllowPolicies ?? []), RESEARCH_READONLY_TOOLS] }
       : effectiveProfile;
@@ -722,7 +742,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const canonicalRouteModelAlias =
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
     const requested = resolveMainModelCandidate({
-      inputModel: input.model,
+      inputModel: endpoint === undefined ? input.model : adhocEndpointModelId(endpoint),
       personaModelAlias: persona?.definition.modelAlias,
       routeLockedAlias: routeModelAlias,
       profileModelAlias: profile.modelAlias,
@@ -741,7 +761,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const recipe = await this.selectedRecipe(alias, (profile.executor ?? 'native') !== 'native', profile);
     let model: Model;
     try {
-      model = this.resolveUsageModel(alias, recipe ?? null);
+      model = endpoint === undefined ? this.resolveUsageModel(alias, recipe ?? null) : materializeAdhocModel(endpoint, this.endpointVault);
     } catch (error) {
       if (routeModelAlias !== requestedAlias) throw error;
       throw new Error2(
@@ -776,7 +796,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
     });
-    const thinkingLevel = this.resolveThinkingEffort(requestedThinking, model, true);
+    const thinkingLevel = endpoint === undefined ? this.resolveThinkingEffort(requestedThinking, model, true) : endpointThinking(endpoint, requestedInputThinking, selection.profile.thinkingEffort);
+    if (endpoint !== undefined) assertEndpointConstraints(endpoint, thinkingLevel, this.config, [baseProfile, input.lease, input.spawnPolicy]);
     const normalizedRequestedThinking = requestedThinking === undefined
       ? undefined
       : normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
@@ -833,6 +854,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.promptFieldSnapshot = assembled.promptFields;
     this.promptConfigurationSignature = this.promptFieldSignature(profile, alias, assembled.promptFields);
     await this.dispatcher.dispatch(new ProfileBind({
+      endpoint,
       toolOverride: mergeToolBindingOverride(this.profileState.toolOverride, input.toolOverride),
       memoryReadContext: input.memoryReadContext ?? this.profileState.memoryReadContext,
       personaId: persona?.definition.id,
@@ -876,8 +898,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       dispatchDecision: input.dispatchDecision,
       spawnPolicy,
       appliedLease: input.lease,
-      boundProfile: { ...freezeBoundProfile(profile, assembled.promptBase), promptContextPending: input.deferPromptContext === true ? true : undefined },
+      boundProfile: { ...freezeBoundProfile(profile, assembled.promptBase, endpoint), promptContextPending: input.deferPromptContext === true ? true : undefined },
     }));
+    if (endpoint !== undefined) this.endpointVault.retain(endpoint);
     this.personaSnapshot = persona;
     this.memorySnapshot.configurePersona(this.profileState.memoryReadContext ?? memoryPersonaContext(persona));
     this.afterConfigDispatch({
@@ -1242,7 +1265,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const executor = binding.executorId ?? 'native';
     const parentSteering = this.getParentSteering() ?? null;
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
-      ...current, execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      ...current, endpoint: binding.endpoint, execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
       thinkingEffortExplicit: binding.thinkingEffortExplicit, parentSteering,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
@@ -1648,11 +1671,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const currentRoleProfile = this.resolveCurrentRoleProfile();
     assertNativeToolOverride(previous.executorId, input.toolOverride);
     const toolOverride = mergeToolBindingOverride(previousState.toolOverride, input.toolOverride);
-    const requestedModel = input.modelAlias ?? previous.modelAlias;
+    const requestedModel = input.endpoint === undefined ? input.modelAlias ?? previous.modelAlias : adhocEndpointModelId(input.endpoint);
     const canonical = requestedModel === undefined || this.isExternalExecutor ? requestedModel : this.resolveModelId(requestedModel);
     if (canonical === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'The resumed agent has no bound model.');
     const recipe = canonical !== undefined && canonical !== previous.modelAlias ? await this.selectedRecipe(canonical, this.isExternalExecutor, currentRoleProfile) : undefined;
-    const effectiveModel = canonical === undefined || this.isExternalExecutor ? undefined : this.resolveUsageModel(canonical, canonical === previous.modelAlias ? undefined : recipe ?? null);
+    const effectiveModel = input.endpoint !== undefined ? materializeAdhocModel(input.endpoint, this.endpointVault) : canonical === undefined || this.isExternalExecutor ? undefined : this.resolveUsageModel(canonical, canonical === previous.modelAlias ? undefined : recipe ?? null);
     const validated = this.requireValidBinding(this.isExternalExecutor ? this.validateBinding({ modelAlias: input.modelAlias, thinkingEffort: input.thinkingEffort }) : {
       ok: true, binding: { modelAlias: canonical, thinkingEffort: input.thinkingEffort ?? (canonical !== previous.modelAlias
         ? this.resolveThinkingEffort(resolveProfileThinkingDefault(currentRoleProfile, canonical, (id) => this.models.resolveId(id)), effectiveModel, true) : previous.thinkingLevel) },
@@ -1763,7 +1786,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }
     }
     const allowParentNotify = input.allowParentNotify ?? previous.allowParentNotify;
-    if (changedModel && input.modelAlias === undefined) {
+    if (changedModel && input.modelAlias === undefined && input.endpoint === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID,
         `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires an explicit model_alias.`,
         { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'model_alias' } });
@@ -1862,6 +1885,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       schedule: scheduledExecutor.schedule,
     };
     const config = this.resolveConfigPayload({
+      endpoint: input.endpoint,
       modelAlias: model, thinkingLevel: thinking,
       thinkingEffortExplicit: input.thinkingEffort === undefined ? previous.thinkingEffortExplicit : true,
       thinkingEffortAdjusted, bindingAdvisories,
@@ -1874,6 +1898,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorDescriptorRevision: scheduledExecutor?.executor.descriptor.revision,
       executorLaunch: scheduledExecutor === undefined ? undefined : scheduledExecutor.launch ?? null,
     }, effectiveModel);
+    if (input.endpoint !== undefined) this.endpointVault.retain(input.endpoint);
     if (toolOverride !== undefined) config.toolOverride = toolOverride;
     if (systemPrompt !== undefined) config.renderGeneration = previousState.renderGeneration + 1;
     const assertConstraints = () => {
@@ -2267,6 +2292,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
     try {
       await this.bind({
+        endpoint: sameProfile && overrides.model === previous.modelAlias ? previous.endpoint : undefined,
         persona: previous.personaId, personaSnapshot: persona, personaOverrides: overrides,
         profile: previous.routeId !== undefined && sameProfile ? undefined : overrides.profile,
         route: previous.routeId !== undefined && sameProfile ? previous.routeId : undefined,
@@ -2311,7 +2337,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       return;
     }
     if (current.execution?.selection.profile_file !== undefined) {
-      await this.bind({ execution: current.execution.selection, model: current.modelAlias, thinking: current.thinkingLevel,
+      await this.bind({ endpoint: current.endpoint, execution: current.execution.selection, model: current.modelAlias, thinking: current.thinkingLevel,
         personaSnapshot: current.persona ?? this.currentPersona, personaOverrides: current.personaOverrides,
         bindingSelection, delegationPosition: this.delegationPosition });
       return;
@@ -2320,6 +2346,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (current.modelAlias === undefined) return;
       await this.bind({
         profile: DEFAULT_AGENT_PROFILE_NAME,
+        endpoint: current.endpoint,
         model: current.modelAlias,
         thinking: current.thinkingLevel,
         bindingSelection,
@@ -2355,6 +2382,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.frozenPluginSections = undefined;
     this.promptConfigurationSignature = 'invalidated';
     await this.bind({
+      endpoint: current.endpoint,
       personaSnapshot: current.persona ?? this.currentPersona,
       personaOverrides: current.personaOverrides,
       profile: current.profileName,
@@ -2697,7 +2725,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private promptFieldSignature(
-    profile: BoundProfile,
+    profile: Omit<BoundProfile, 'endpoint'>,
     alias: string,
     snapshot: ResolvedPromptFieldOverrides,
   ): string {
@@ -2713,7 +2741,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
-  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile(), reportFailure = true): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
+  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile: Omit<BoundProfile, 'endpoint'> | undefined = this.profileState.boundProfile ?? this.resolveActiveProfile(), reportFailure = true): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
     const resolveId = (profile?.executor ?? 'native') === 'native' ? (id: string) => this.models.resolveId(id) : (id: string) => id;
@@ -2724,7 +2752,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const profileOptions = mergeRecipeOptions(profile?.recipeOptions, matchedRecipeOptions);
     const references = [{ surface: 'model' as const, id: model?.recipe, options: modelOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profileOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
-    const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
+    const profileBase = profile?.sourcePath === undefined ? undefined : hostPath.dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
     for (const reference of references) {
       const raw = reference.id!;
@@ -2750,7 +2778,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async resolvePromptFieldSnapshot(
-    profile: BoundProfile,
+    profile: Omit<BoundProfile, 'endpoint'>,
     alias: string,
     recipe?: import('@kiki/protocol').ResolvedRecipe | null,
   ): Promise<ResolvedPromptFieldOverrides> {
@@ -2916,7 +2944,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.delegationPositionResolved = true;
   }
 
-  private promptBindingRevision(profile: BoundProfile, alias: string, fields: ResolvedPromptFieldOverrides, cognitionRevision: string | undefined): string {
+  private promptBindingRevision(profile: Omit<BoundProfile, 'endpoint'>, alias: string, fields: ResolvedPromptFieldOverrides, cognitionRevision: string | undefined): string {
     return createHash('sha256').update(JSON.stringify({
       signature: this.promptFieldSignature(profile, alias, fields),
       modelPrompts: modelPromptLayers(profile),
@@ -2926,7 +2954,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     })).digest('hex');
   }
 
-  private buildPromptDiagnostics(profile: BoundProfile, alias: string, fields: ResolvedPromptFieldOverrides): AgentPromptDiagnostics {
+  private buildPromptDiagnostics(profile: Omit<BoundProfile, 'endpoint'>, alias: string, fields: ResolvedPromptFieldOverrides): AgentPromptDiagnostics {
     const model = this.models.get(alias);
     const layers = modelPromptLayers(profile);
     const leaseMode = profile.modelPromptBase === undefined ? undefined : layers.some((layer) => layer.source === 'profile') ? 'preserve' as const : 'replace' as const;
@@ -3119,6 +3147,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
     const toolPolicy = effectiveToolBinding(toolPolicyBase, this.profileState.toolOverride, this.profileState.boundProfile);
     return {
+      endpoint: this.profileState.endpoint,
       driver: this.profileState.driver,
       toolOverride: this.profileState.toolOverride,
       toolPolicyBase,
@@ -3490,6 +3519,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     effectiveModel?: Model,
   ): ConfigUpdatePayload {
     const payload: ConfigUpdatePayload = {};
+    if (changed.endpoint !== undefined) payload.endpoint = changed.endpoint;
     if (changed.execution !== undefined) payload.execution = changed.execution;
     else if (this.profileState.execution !== undefined && (changed.modelAlias !== undefined || changed.thinkingLevel !== undefined)) {
       const previous = this.profileState.execution;
@@ -3718,6 +3748,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     model: Model | undefined,
     modelAlias: string | undefined,
   ): ThinkingEffort | undefined {
+    if (model?.id.startsWith('adhoc:')) return undefined;
     const forced = resolveForcedThinkingEffort(
       this.config.get<ThinkingConfig>(THINKING_SECTION)?.forcedEffort,
       base,
@@ -3741,6 +3772,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     model: Model | undefined,
     requireModelDefault = false,
   ): ThinkingEffort {
+    if (model?.id.startsWith('adhoc:')) {
+      const effort = model.capabilities.thinking ? requested ?? model.defaultEffort ?? 'medium' : 'off';
+      if (effort !== 'off' && !model.supportEfforts?.includes(effort)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unsupported endpoint thinking effort.');
+      return effort as ThinkingEffort;
+    }
     return resolveThinkingEffortForModel(
       requested,
       this.config.get<ThinkingConfig>(THINKING_SECTION),
@@ -3802,7 +3838,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private resolveUsageModel(alias: string, recipe?: import('@kiki/protocol').ResolvedRecipe | null): Model {
     const settings = recipe === undefined ? this.getRecipeModelSettings(alias) : recipe?.model;
-    return modelWithUsage(this.modelCatalog.get(alias, settings), this.delegationPosition);
+    return modelWithUsage(this.getRuntimeModel(alias, settings), this.delegationPosition);
+  }
+
+  getRuntimeModel(alias = this.model, settings?: Record<string, unknown>): Model {
+    const endpoint = this.profileState.endpoint;
+    return endpoint !== undefined && alias === adhocEndpointModelId(endpoint)
+      ? materializeAdhocModel(endpoint, this.endpointVault) : this.modelCatalog.get(alias, settings);
+  }
+
+  getRuntimeRequester(alias = this.model, settings?: Record<string, unknown>): import('#/kosong/model/modelRequester').ModelRequester {
+    const endpoint = this.profileState.endpoint;
+    if (endpoint === undefined || alias !== adhocEndpointModelId(endpoint)) return this.modelCatalog.getRequester(alias, settings);
+    const key = JSON.stringify(endpoint);
+    if (this.endpointRequester?.key !== key) this.endpointRequester = { key,
+      requester: materializeAdhocRequester(endpoint, this.endpointVault, this.protocolAdapters, this.requestAdmission) };
+    return this.endpointRequester.requester;
   }
 
   private assertRouteBindable(requestedRoute?: string): void {

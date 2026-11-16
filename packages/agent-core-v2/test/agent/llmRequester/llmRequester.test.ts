@@ -12,6 +12,9 @@ import {
   type AgentLLMRequestFinish,
 } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import type { ModelRequester } from '#/kosong/model/modelRequester';
 import type { ILogger as Logger, LogPayload } from '#/_base/log/log';
 import {
   configServices,
@@ -46,6 +49,39 @@ function captureLogs(): { logger: Logger; entries: CapturedLogEntry[] } {
 }
 
 describe('LLMRequester service migration coverage', () => {
+  it('discards raw capture bytes from a failed attempt even when its retry succeeds', async () => {
+    const ctx = createTestAgent();
+    try {
+      const profile = ctx.get(IAgentProfileService);
+      const model = { ...profile.getRuntimeModel(), protocol: 'anthropic' as const, providerType: 'anthropic' };
+      const message = { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'safe retry' }], toolCalls: [] };
+      const requester: ModelRequester = {
+        model,
+        async *request(_input, _signal, params) {
+          params.rawResponseObserver!.chunk(new TextEncoder().encode('sk-test-ephemeral-123'));
+          params.rawResponseObserver!.end('stream-error');
+          yield { type: 'attempt.discarded', responseInstanceId: 'failed-attempt' };
+          params.rawResponseObserver!.chunk(new TextEncoder().encode('safe retry'));
+          params.rawResponseObserver!.end('eof');
+          yield { type: 'part', part: message.content[0]!, responseInstanceId: 'successful-attempt' };
+          yield { type: 'finish', message, providerFinishReason: 'completed' };
+        },
+      };
+      vi.spyOn(profile, 'getRuntimeModel').mockReturnValue(model);
+      vi.spyOn(profile, 'getRuntimeRequester').mockReturnValue(requester);
+      const service = ctx.get(IAgentLLMRequesterService);
+      service.armAnthropicResponseCapture({ sessionId: ctx.get(ISessionContext).sessionId, agentId: 'main',
+        providerId: model.providerName, model: model.name, thinkingEffort: 'off', expiresAt: Date.now() + 60_000, maxResponses: 2 });
+      const result = await service.request({ messages: [userMessage('retry safely')], systemPrompt: '', tools: [] });
+      expect(result.message).toEqual(message);
+      const capture = (await service.anthropicResponseCaptureStatus())!;
+      const records = [];
+      for await (const record of ctx.get(IAppendLogStore).read<Record<string, unknown>>(capture.scope, capture.key)) records.push(record);
+      expect(records.filter((record) => record['type'] === 'response.chunk')).toEqual([]);
+      expect(records.find((record) => record['type'] === 'response.end')).toMatchObject({ outcome: 'credentials-redacted-or-incomplete' });
+    } finally { await ctx.dispose(); }
+  });
+
   describe('wire observability records', () => {
     let ctx: TestAgentContext;
     let llmRequester: IAgentLLMRequesterService;

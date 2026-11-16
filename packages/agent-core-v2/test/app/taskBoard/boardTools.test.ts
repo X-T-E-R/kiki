@@ -3,6 +3,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -61,7 +62,7 @@ function fixture(options: FixtureOptions = {}) {
     disabledToolGroups: options.disabledToolGroups,
     toolAllowPolicies: options.toolAllowPolicies,
     executionRestriction: options.executionRestriction,
-    boundProfile: targetProfile,
+    boundProfile: freezeBoundProfile(targetProfile),
   }) });
   ix.stub(IConfigService, { get: <T>(section: string) => (section === 'subagent'
     ? { allowedTools: options.allowedTools }

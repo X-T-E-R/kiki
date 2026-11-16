@@ -336,6 +336,7 @@ disallowedTools:
 | `permission_mode` | 否 | 该 profile 的权限模式：`manual`、`auto`、`review` 或 `yolo`。profile 启动新 Agent 时会覆盖 `default_permission_mode`；显式 CLI 参数 `--permission-mode` 优先级更高。 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias，或写 `inherit`，让 subagent 在静态模式下绑定调用方模型。Pin 是软默认值，不能绕过硬列表。main agent 没有调用方，不可使用 `inherit` |
 | `model_selection` | 否 | `auto` 或 `static`。新建子 Agent 时，若 `AgentRun` 省略 `model_alias`，本字段覆盖全局默认方式。不影响主 Agent 绑定或普通恢复。见[自动选模](../configuration/config-files.md#自动选模) |
+| `endpoint` / flat endpoint 字段 | 否 | 仅供原生引擎使用的评测端点。需要请求参数或能力设置时使用结构化 `endpoint` mapping；也可用 flat `base_url` / `provider_type` / `model` / `api_key_env` / `api_key` 简写，但两种写法不能混用 |
 | `restrict_models_to_menu` | 否 | 布尔值，默认 `false`，仅放 profile 顶层。`true` 从作者原始默认 `model_alias` 与 `model_profiles[].alias` 派生一道**硬**模型上限，在 route / lease 改写前捕获并随绑定冻结。其他硬允许域继续求交，禁止项仍生效；显式 pin 与恢复不能绕过。见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界) |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
@@ -366,6 +367,55 @@ disallowedTools:
 | `deny_subagents` | 否 | **硬**预设禁止项，即使另一列表允许也会拒绝。`"*"` 禁止全部预设，不禁止显式 Markdown 定义。空列表或省略表示无禁止项 |
 | `spawn_constraints` | 否 | 后代继承的规则：`allowed_models`、`deny_models`、`allowed_efforts`、`disallowed_tools` 是硬规则；`preferred_models`、`discouraged_models`、`preferred_efforts` 是软建议。允许集合沿树求交，禁止项累积；pin 不得放宽硬规则 |
 | `private` | 否 | 在派遣与选择列表（`AgentRun`、设置页选择器）中隐藏该 profile。私有 profile 仍然注册在案：已在运行或恢复的 agent 继续按绑定快照工作，而**新的**派遣会以"profile is private"明确报错。用于下线某个角色而不打断进行中的会话 |
+
+### 原生评测端点
+
+要让现有角色使用评测端点，可以直接向 `AgentRun` 传入：
+
+```json
+{"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY"},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
+```
+
+要在多次派发中复用端点，将它写入 Markdown profile。需要请求参数或明确能力设置时，使用结构化写法：
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+endpoint:
+  base_url: https://eval.example.test/v1
+  model: eval-preview-model
+  api_key_env: EVAL_API_KEY
+  capabilities: [tool_use, image_in, thinking]
+  support_efforts: [low, medium, high, xhigh]
+  request_params:
+    preserve_thinking: true
+---
+
+Run the frontend evaluation.
+```
+
+flat 简写只包含端点身份和凭据字段：
+
+```markdown
+---
+name: frontend
+description: Frontend evaluation profile
+base_url: https://eval.example.test/v1
+model: eval-preview-model
+api_key_env: EVAL_API_KEY
+---
+
+Run the frontend evaluation.
+```
+
+Provider 默认是 `openai`。绑定后的端点默认使用 `[tool_use, image_in, thinking]` 能力，`max_context_size: 131072`；保留 `thinking` 时，effort 默认是 `[low, medium, high, xhigh]`。显式能力数组只能使用 `image_in`、`video_in`、`audio_in`、`thinking`、`tool_use`；`request_params` 的值必须是标量。
+
+优先使用 `api_key_env`，不要把 API 密钥直接写进 profile 文件。直接传入的 `api_key` 只保存在当前会话内存中，重启后需要重新认证。切换到不同目标时，必须为新目标提供自己的凭据，不能沿用之前端点的认证。
+
+在 `manual`、`auto` 或 `review` 模式下，每组端点与凭据在当前会话中需由用户批准一次；`yolo` 不弹出该提示。来自不受信任项目或 Plugin profile 的端点会被拒绝。
+
+端点只能由 native executor 执行，不会修改 model catalog 或配置。选择 catalog 的 `model_alias` 会丢弃 profile endpoint；调用时的 endpoint 覆盖不能与 `model_alias` 同时使用，应把上游模型 ID 写入 `endpoint.model`。
 
 只想推荐角色时，写 `preferred_subagents: [explore]`，不要写封闭名单。预设权限、推荐与模型 / 工具规则相互独立。基础 profile、route 与 caller lease 叠加时，允许集合求交、禁止项累积、`false` 保持关闭；最近一层显式推荐列表替换较早的推荐。`"*"` 可以与名字和 source / lease mapping 同列：本层保持开放，mapping 仍生效。重复的裸名字会忽略；同一别名的两份不同 mapping 会报错。
 
