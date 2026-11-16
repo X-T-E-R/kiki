@@ -13,6 +13,7 @@ import {
   IAgentLoopService,
   IAgentProfileService,
   IAgentPromptService,
+  IAgentStateService,
   IBootstrapService,
   IAgentContextMemoryService,
   IConfigService,
@@ -43,6 +44,7 @@ import {
   type SessionApprovalRequest,
 } from '@kiki/agent-core-v2';
 import { messageContentSchema, type AsrTranscribeInput, type ImProviderKind, type MessageContent } from '@kiki/protocol';
+import { promptIdentityKey } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { SEND_MESSAGE_SECTION, type SendMessageConfig } from '@kiki/agent-core-v2/agent/tools/message/configSection';
 import type { ImPolicy } from '@nb-corp/im-bridge-core/imSession';
 import { createSafeHttpTransport } from '@nb-corp/nb-im';
@@ -635,7 +637,12 @@ class NotificationSessionPorts implements ImSessionPorts {
       const prompt = agent.accessor.get(IAgentPromptService);
       const resolvedTurnId = turnId ?? prompt.lookup(promptId)?.turnId;
       const messages = agent.accessor.get(IAgentContextMemoryService).get();
-      const selected = visibleReplyMessages(messages, promptId, resolvedTurnId);
+      const identities = agent.accessor.get(IAgentStateService).get(promptIdentityKey);
+      let latestPromptId: string | undefined;
+      for (const identity of identities.values()) {
+        if (identity.turnId === resolvedTurnId) latestPromptId = identity.promptId;
+      }
+      const selected = visibleReplyMessages(messages, promptId, resolvedTurnId, latestPromptId);
       const text = selected.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('');
       const media: ImVisibleMedia[] = [];
       const store = session.accessor.get(ISessionMediaStore);
@@ -798,20 +805,51 @@ interface ReplySelectorMessage {
   readonly role: string;
   readonly origin?: { readonly kind?: string };
   readonly source?: { readonly turnId?: number };
+  readonly toolCalls?: readonly { readonly id: string; readonly name?: string; readonly function?: { readonly name: string } }[];
+  readonly toolCallId?: string;
+  readonly isError?: boolean;
+  readonly content?: readonly { readonly type: string; readonly text?: string }[];
 }
 
-export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number): T[] {
+function isReplyPrompt(message: ReplySelectorMessage): boolean {
+  return message.role === 'user' && (message.origin === undefined || message.origin.kind === 'user');
+}
+
+function deliveredToUser(output: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(output);
+  } catch {
+    return false;
+  }
+  const receipt = recordOf(value);
+  return Array.isArray(receipt?.['delivered_to']) && receipt['delivered_to'].includes('user') ||
+    Array.isArray(receipt?.['messages']) && receipt['messages'].some((item: unknown) => {
+      const message = recordOf(item);
+      return Array.isArray(message?.['delivered_to']) && message['delivered_to'].includes('user');
+    });
+}
+
+export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number, latestPromptId?: string): T[] {
   const promptIndex = messages.findIndex((message) => message.id === promptId);
   const resolved = turnId ?? (promptIndex >= 0 ? messages[promptIndex]?.source?.turnId : undefined);
-  if (typeof resolved === 'number') {
-    const scope = promptIndex >= 0 ? messages.slice(promptIndex + 1) : messages;
-    return scope.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
-  }
-  if (promptIndex < 0) return [];
+  if (promptIndex < 0 && (resolved === undefined || latestPromptId !== undefined && latestPromptId !== promptId ||
+    messages.some((message) => isReplyPrompt(message) && message.source?.turnId === resolved))) return [];
   const selected: T[] = [];
-  for (const message of messages.slice(promptIndex + 1)) {
-    if (message.role === 'user' && message.origin?.kind !== 'injection') break;
-    if (message.role === 'assistant') selected.push(message);
+  const sends = new Set<string>();
+  for (let index = promptIndex + 1; index < messages.length; index++) {
+    const message = messages[index]!;
+    if (promptIndex >= 0 && isReplyPrompt(message)) break;
+    if (resolved !== undefined && message.source?.turnId !== resolved) continue;
+    if (message.role === 'assistant') {
+      selected.push(message);
+      for (const call of message.toolCalls ?? []) {
+        if (call.name === 'SendMessage' || call.function?.name === 'SendMessage') sends.add(call.id);
+      }
+    } else if (message.role === 'tool' && message.isError !== true && message.toolCallId !== undefined && sends.has(message.toolCallId)) {
+      const output = (message.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('');
+      if (deliveredToUser(output)) return [];
+    }
   }
   return selected;
 }
