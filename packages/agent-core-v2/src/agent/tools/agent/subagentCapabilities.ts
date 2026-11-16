@@ -2,7 +2,8 @@ import type { BindingAdvisory, BindingValueSource } from '@kiki/agent-profiles/b
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
-import type { AgentCapabilityReasonCode } from '@kiki/protocol';
+import { adhocEndpointModelId, adhocEndpointModelSchema, type AgentCapabilityReasonCode } from '@kiki/protocol';
+import { assertEndpointConstraints, endpointThinking } from '#/session/adhocEndpoint/endpointBinding';
 
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
@@ -10,7 +11,7 @@ import { fillLeasePins, spawnConstraintOrigin, type CallerLeaseOwner } from '#/a
 import { evaluateSubagentDispatchDecision, resolveSubagentTarget, type SubagentDispatchCaller, type SubagentDispatchCatalog, type SubagentRecommendationStatus } from '#/app/agentProfileCatalog/subagentDispatch';
 import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import type { IConfigService } from '#/app/config/config';
-import { ErrorCodes, isError2 } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
 import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
@@ -114,6 +115,17 @@ export function projectSubagentCapabilities(
         snapshot: bindingSnapshot,
       }, services.models);
       const profile = target.effectiveProfile;
+      if (profile.endpoint !== undefined) {
+        if ((profile.executor ?? 'native') !== 'native') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Ad-hoc endpoints require the native executor.');
+        const { api_key: _key, api_key_env: _env, ...fields } = profile.endpoint;
+        const endpoint = adhocEndpointModelSchema.parse(fields);
+        const modelAlias = adhocEndpointModelId(endpoint);
+        const thinkingEffort = endpointThinking(endpoint, undefined, profile.thinkingEffort);
+        assertEndpointConstraints(endpoint, thinkingEffort, services.config, [profile, target.lease, target.spawnPolicy]);
+        if (target.selection.route?.lockedModelAlias !== undefined && target.selection.route.lockedModelAlias !== modelAlias) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'The route model pin does not permit this endpoint.');
+        return { ...identity, defaultsAvailable: true, modelAlias, modelSource: 'profile', thinkingEffort,
+          effortSource: profile.thinkingEffort === undefined ? 'model' : 'profile' };
+      }
       if (usesAutoModel(services.config, profile)) {
         const effort = target.selection.route?.lockedThinkingEffort ?? target.lease?.thinkingEffort;
         const candidates = autoModelCandidates({ ...profile, modelAlias: resolveInheritedModelAlias(profile.modelAlias, input.caller.modelAlias) }, effort, services);

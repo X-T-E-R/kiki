@@ -11,8 +11,11 @@ import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { projectProfileModelMenu, projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
+import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { applyLease } from '@kiki/agent-profiles/applySubagentLease';
 import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
+import { adhocEndpointModelId, adhocEndpointModelSchema } from '@kiki/protocol';
 
 describe('subagent capability final bindings', () => {
   let ix: TestInstantiationService;
@@ -54,9 +57,12 @@ describe('subagent capability final bindings', () => {
     vi.clearAllMocks();
   });
 
-  function project(profile: AgentProfile, route?: ResolvedAgentProfileRoute) {
+  function project(profile: AgentProfile, route?: ResolvedAgentProfileRoute, defaultProfile: AgentProfile = profile) {
+    const catalogProfiles = defaultProfile.name === profile.name ? [profile] : [profile, defaultProfile];
     const catalog = {
-      get: () => profile, list: () => [profile], getDefault: () => profile,
+      get: (name: string) => catalogProfiles.find((candidate) => candidate.name === name),
+      list: () => catalogProfiles,
+      getDefault: () => defaultProfile,
       resolveSelection: () => ({ profile: route?.effectiveProfile ?? profile, baseProfile: profile, route }),
     };
     return projectSubagentCapabilities({ catalog, caller: { profileName: 'lead', subagents: [profile.name] },
@@ -66,6 +72,64 @@ describe('subagent capability final bindings', () => {
   function helper(fields: Partial<AgentProfile> = {}): AgentProfile {
     return normalizeAgentProfile({ name: 'helper', modelAlias: 'example', systemPrompt: () => '', ...fields });
   }
+
+  function endpointProfile(fields: Partial<AgentProfile> = {}): AgentProfile {
+    const definition = parseAgentFileText({
+      path: '/profiles/endpoint-only.md',
+      source: 'explicit',
+      text: '---\nname: endpoint-only\ndescription: Endpoint-only profile\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nUse the declared endpoint.',
+    });
+    const profile = agentProfileFromFile(definition, () => ({
+      text: 'Base prompt', environment: { cwd: '/workspace', date: { disclosed: false } },
+    }));
+    return normalizeAgentProfile({ ...profile, ...fields });
+  }
+
+  function endpointModelAlias(profile: AgentProfile): string {
+    const { api_key: _key, api_key_env: _env, ...fields } = profile.endpoint!;
+    return adhocEndpointModelId(adhocEndpointModelSchema.parse(fields));
+  }
+
+  it('projects an endpoint-only markdown profile without requiring a catalog model or global default', () => {
+    const profile = endpointProfile();
+    expect(profile.sourcePath).toBe('/profiles/endpoint-only.md');
+    expect(profile.modelAlias).toBeUndefined();
+    expect(profile.endpoint?.api_key_env).toBe('EVAL_API_KEY');
+    expect(services.config.get<{ defaultModel?: string }>('subagent')).toBeUndefined();
+    const modelLookup = vi.spyOn(services.modelCatalog, 'get').mockImplementation(() => {
+      throw new Error('Unexpected model catalog lookup');
+    });
+    const modelAlias = endpointModelAlias(profile);
+    expect(project(profile)[0]).toMatchObject({
+      modelAlias, modelSource: 'profile', thinkingEffort: 'medium', effortSource: 'model', defaultsAvailable: true,
+    });
+    expect(modelLookup).not.toHaveBeenCalled();
+  });
+
+  it('keeps the profile endpoint ahead of the catalog default and global automatic model selection', () => {
+    const profile = endpointProfile();
+    const catalogDefault = helper({ name: 'catalog-default', modelAlias: 'catalog-model' });
+    vi.spyOn(services.config, 'get').mockImplementation((section: string) =>
+      section === 'subagent' ? { defaultModel: 'catalog-model', modelSelection: 'auto', autoModel: { weights: { 'catalog-model': 1 } } } : undefined);
+    const modelLookup = vi.spyOn(services.modelCatalog, 'get').mockImplementation(() => {
+      throw new Error('Unexpected model catalog lookup');
+    });
+    const modelAlias = endpointModelAlias(profile);
+    expect(project(profile, undefined, catalogDefault)[0]).toMatchObject({
+      modelAlias, modelSource: 'profile', thinkingEffort: 'medium', defaultsAvailable: true,
+    });
+    expect(modelLookup).not.toHaveBeenCalled();
+  });
+
+  it('keeps endpoint defaults unavailable when allowed-model or model-menu constraints reject them', () => {
+    const allowedModels = project(endpointProfile({ allowedModels: ['catalog-model'] }))[0];
+    expect(allowedModels).toMatchObject({ defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied' });
+    expect(allowedModels?.unavailableReason).toContain('allowed_models');
+
+    const restrictedMenu = project(endpointProfile({ restrictModelsToMenu: true }))[0];
+    expect(restrictedMenu).toMatchObject({ defaultsAvailable: false, unavailableReasonCode: 'binding_constraints_unsatisfied' });
+    expect(restrictedMenu?.unavailableReason).toContain('restrict_models_to_menu');
+  });
 
   it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('projects %s vendor defaults without borrowing a Kiki model', (id) => {
     const target = nativeTargets([{ id, protocol: 'external' }])[0]!;

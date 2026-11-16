@@ -9,19 +9,28 @@ export const RESUMED_LABEL = 'subagent';
 export const INHERIT_MODEL_ALIAS_UNAVAILABLE =
   'AgentRun does not accept model_alias: "inherit". Specify a concrete model name, or omit model_alias to use the target default model.';
 
+const FLAT_ENDPOINT_FIELDS = ['base_url', 'provider_type', 'api_key', 'api_key_env', 'model', 'capabilities', 'support_efforts', 'max_context_size', 'max_completion_tokens', 'request_params'] as const;
+
+export function normalizeSubagentEndpointInput(record: Record<string, unknown>): Record<string, unknown> {
+  const structured = record['endpoint'] !== undefined;
+  const flat = FLAT_ENDPOINT_FIELDS.some((key) => record[key] !== undefined);
+  if (structured && flat) throw new Error('Do not mix endpoint with flat endpoint fields.');
+  const endpointFields = Object.fromEntries(FLAT_ENDPOINT_FIELDS.filter((key) => record[key] !== undefined).map((key) => [key, record[key]]));
+  const endpoint = normalizeEndpointLayer(!structured && Object.keys(endpointFields).some((key) => key !== 'model') ? { endpoint: endpointFields } : record);
+  if (endpoint === undefined && (structured || flat)) throw new Error('Endpoint overrides require endpoint fields; model requires an endpoint override, not a catalog alias.');
+  if (endpoint !== undefined && record['model_alias'] !== undefined) throw new Error('model_alias cannot be combined with an endpoint override.');
+  const normalized: Record<string, unknown> = { ...record, endpoint };
+  for (const key of FLAT_ENDPOINT_FIELDS) delete normalized[key];
+  return normalized;
+}
+
 export const SubagentToolInputSchema = z.preprocess(
   (input) => {
     if (typeof input !== 'object' || input === null || Array.isArray(input)) {
       return input;
     }
     const record = input as Record<string, unknown>;
-    const normalized = { ...record };
-    const endpoint = normalizeEndpointLayer(record);
-    if (record['model'] !== undefined && endpoint === undefined) throw new Error('model requires an endpoint override; use model_alias for catalog models.');
-    if (endpoint !== undefined) {
-      normalized['endpoint'] = endpoint;
-      for (const key of ['base_url', 'provider_type', 'api_key', 'api_key_env', 'model']) delete normalized[key];
-    }
+    const normalized = normalizeSubagentEndpointInput(record);
     const hasProfile =
       typeof normalized['profile'] === 'string' && normalized['profile'].length > 0;
     if (!hasProfile) {
@@ -82,6 +91,11 @@ export const SubagentToolInputSchema = z.preprocess(
     api_key: z.string().min(1).optional(),
     api_key_env: z.string().optional(),
     model: z.string().optional(),
+    capabilities: adhocEndpointInputSchema.shape.capabilities,
+    support_efforts: adhocEndpointInputSchema.shape.support_efforts,
+    max_context_size: adhocEndpointInputSchema.shape.max_context_size,
+    max_completion_tokens: adhocEndpointInputSchema.shape.max_completion_tokens,
+    request_params: adhocEndpointInputSchema.shape.request_params,
     model_alias: z
       .string()
       .trim()

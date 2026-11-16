@@ -1,4 +1,3 @@
-import { relative, isAbsolute, dirname } from 'node:path';
 import type { BoundEndpoint } from '@kiki/protocol';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
@@ -11,36 +10,58 @@ import type { RuntimePath, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { IWorkspaceService } from '#/app/workspace/workspace';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { readWorkspaceTrust } from '#/workspace/workspaceTrust/trustRecord';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
+import { OsFsErrors } from '#/os/interface/hostFsErrors';
 
-export async function assertEndpointSourceTrusted(profile: AgentProfile, cwd: string, docs: IAtomicDocumentStore, workspaces?: IWorkspaceService, runtimeSource?: { readonly path: RuntimePath; readonly realpath: (path: string) => Promise<string>; readonly roots: RuntimeWorkspaceRoots }): Promise<void> {
+export async function assertEndpointSourceTrusted(profile: AgentProfile, cwd: string, docs: IAtomicDocumentStore,
+  workspaces: IWorkspaceService | undefined,
+  context: { readonly path: RuntimePath; readonly realpath: (path: string) => Promise<string>; readonly roots: RuntimeWorkspaceRoots; readonly operatorRoots: readonly string[] }): Promise<void> {
   const source = profile.fileDefinition?.source;
-  const path = profile.sourcePath ?? profile.fileDefinition?.path;
-  const rel = path === undefined ? undefined : relative(cwd, path);
-  let within = rel !== undefined && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..\\`) && !rel.startsWith('../');
-  if ((source === 'explicit' || source === 'extra') && path !== undefined && runtimeSource !== undefined) {
-    const { path: runtimePath, realpath, roots } = runtimeSource;
-    const realFile = await realpath(path);
-    within = false;
-    for (const root of [roots.workDir, ...(roots.additionalDirs ?? [])]) {
-      const realRoot = await realpath(root);
-      const relativeFile = runtimePath.relative(realRoot, realFile);
-      if (!runtimePath.isAbsolute(relativeFile) && relativeFile !== '..' && !relativeFile.startsWith(`..${runtimePath.separator}`)) within = true;
+  if (source === 'user' || (source === undefined && profile.fileDefinition === undefined)) return;
+  const reject = (): never => { throw new Error2(ErrorCodes.REQUEST_INVALID, 'Endpoint declarations in untrusted workspace or plugin profiles cannot be used. Trust the owning workspace before dispatch.'); };
+  if (source === 'plugin') reject();
+  const { path, realpath, roots } = context;
+  const contains = (root: string, file: string): boolean => {
+    const relative = path.relative(root, file);
+    return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.separator}`);
+  };
+  const file = profile.sourcePath ?? profile.fileDefinition?.path;
+  if (file === undefined) {
+    if (source === 'project' && await readWorkspaceTrust(docs, cwd)) return;
+    return reject();
+  }
+  const realFile = await realpath(file);
+  if (source === 'explicit' || source === 'extra' || source === 'inherited') {
+    for (const root of context.operatorRoots) {
+      let realRoot: string;
+      try { realRoot = await realpath(root); }
+      catch (error) {
+        if (isError2(error) && error.code === OsFsErrors.codes.OS_FS_NOT_FOUND) continue;
+        throw error;
+      }
+      if (contains(realRoot, realFile)) return;
     }
   }
-  let root = source === 'project' || source === 'plugin' || ((source === 'explicit' || source === 'extra') && within) ? cwd : undefined;
-  if (!within && (source === 'explicit' || source === 'extra') && path !== undefined && workspaces !== undefined) {
-    let directory = dirname(path);
+  let owner: { readonly realRoot: string; readonly trustRoot: string } | undefined;
+  for (const root of [roots.workDir, ...(roots.additionalDirs ?? [])]) {
+    const realRoot = await realpath(root);
+    if (contains(realRoot, realFile) && (owner === undefined || contains(owner.realRoot, realRoot))) owner = { realRoot, trustRoot: root };
+  }
+  if (workspaces !== undefined) {
+    let directory = path.dirname(realFile);
     for (;;) {
       const registered = await workspaces.findRegisteredByRoot(directory);
-      if (registered !== undefined) { root = registered.root; break; }
-      const parent = dirname(directory);
+      if (registered !== undefined) {
+        if (owner === undefined || contains(owner.realRoot, directory)) owner = { realRoot: directory, trustRoot: registered.root };
+        break;
+      }
+      const parent = path.dirname(directory);
       if (parent === directory) break;
       directory = parent;
     }
   }
-  if (root === undefined) return;
-  if (!await readWorkspaceTrust(docs, root)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Endpoint declarations in untrusted workspace or plugin profiles cannot be used. Trust the workspace before dispatch.');
+  if (owner !== undefined && await readWorkspaceTrust(docs, owner.trustRoot)) return;
+  reject();
 }
 
 export async function authorizeEndpoint(endpoint: BoundEndpoint, vault: IAdhocEndpointVault, owner: Pick<IAgentScopeHandle, 'accessor'>,

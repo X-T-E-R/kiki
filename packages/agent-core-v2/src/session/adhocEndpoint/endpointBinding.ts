@@ -20,14 +20,14 @@ export function resolveEndpointBinding(profile: AgentProfile, override: AdhocEnd
   return vault.bind(input, literal === undefined ? secretRef : vault.store(literal));
 }
 
-export function endpointThinking(endpoint: BoundEndpoint, explicit?: string | null, profileDefault?: string): string {
+export function endpointThinking(endpoint: Pick<BoundEndpoint, 'capabilities' | 'support_efforts'>, explicit?: string | null, profileDefault?: string): string {
   if (!endpoint.capabilities.includes('thinking')) return 'off';
   const effort = explicit ?? profileDefault ?? 'medium';
   if (!endpoint.support_efforts?.some((supported) => supported === effort)) throw new Error2(ErrorCodes.REQUEST_INVALID, `Unsupported endpoint thinking effort "${effort}".`);
   return effort;
 }
 
-export function assertEndpointConstraints(endpoint: BoundEndpoint, effort: string, config: IConfigService,
+export function assertEndpointConstraints(endpoint: Pick<BoundEndpoint, 'provider_type' | 'base_url' | 'model'>, effort: string, config: IConfigService,
   layers: readonly ((SubagentRoleModelConstraints & { readonly name?: string; readonly modelAlias?: string }) | undefined)[]): void {
   const model = adhocEndpointModelId(endpoint);
   for (const constraints of layers) {

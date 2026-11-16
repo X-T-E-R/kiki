@@ -188,6 +188,11 @@ provider_type: openai-legacy
 base_url: https://api.example.test/v1
 model: chat
 api_key_env: PROFILE_API_KEY
+capabilities: [tool_use, thinking]
+support_efforts: [low, high]
+max_context_size: 65536
+max_completion_tokens: 32768
+request_params: {preserve_thinking: true, temperature: 0}
 ---
 body`);
     expect(flat.endpoint).toEqual({
@@ -195,6 +200,11 @@ body`);
       base_url: 'https://api.example.test/v1',
       model: 'chat',
       api_key_env: 'PROFILE_API_KEY',
+      capabilities: ['tool_use', 'thinking'],
+      support_efforts: ['low', 'high'],
+      max_context_size: 65536,
+      max_completion_tokens: 32768,
+      request_params: { preserve_thinking: true, temperature: 0 },
     });
     expect(flat.endpoint?.api_key).toBeUndefined();
 

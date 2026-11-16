@@ -90,6 +90,7 @@ import { autoModelApprovalContext, authorizeAutoModelSelector } from '#/session/
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
 import {
@@ -137,6 +138,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @IWorkspaceService private readonly registeredWorkspaces: IWorkspaceService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly models: IModelService,
     @ILogService private readonly log: ILogService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
@@ -243,7 +245,9 @@ export class SessionDispatchService implements ISessionDispatchService {
     if (endpoint !== undefined) {
       await assertEndpointSourceTrusted(profile, requester.accessor.get(ISessionContext).cwd, this.documents, this.registeredWorkspaces,
         { path: input.runtime.path, realpath: (path) => input.runtime.fs!.realpath(path), roots: input.workspaceRoots ?? new RuntimeWorkspaceView(input.runtime,
-          inspectAgentWorkspaceRoots(requester.accessor.get(IAgentRuntimeService), requester.accessor.get(ISessionWorkspaceContext))) });
+          inspectAgentWorkspaceRoots(requester.accessor.get(IAgentRuntimeService), requester.accessor.get(ISessionWorkspaceContext))),
+          operatorRoots: input.runtime.identity.runtimeId === 'local'
+            ? [this.bootstrap.homeDir, this.bootstrap.userAgentProfileHomeDir, this.bootstrap.baseHomeDir].flatMap((home) => home === undefined ? [] : [input.runtime.path.join(home, 'agents')]) : [] });
       assertEndpointConstraints(endpoint, endpointEffort!, this.config, [profile, target.lease, target.spawnPolicy]);
       if (selection.route?.lockedModelAlias !== undefined && selection.route.lockedModelAlias !== adhocEndpointModelId(endpoint)) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'The route model pin does not permit this endpoint.');
       await authorizeEndpoint(endpoint, this.endpointVault, requester, input.workDir, input.signal, input.selectorCall);
@@ -795,6 +799,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'The agent binding changed after this resume was committed. Inspect the original operation before starting another run.');
       }
       const admission = await childProfile.prepareResumeBinding({ modelAlias: record.switchInput.model,
+        endpoint: record.endpoint,
         thinkingEffort: record.switchInput.thinking, executorInstance: options.bindingOverride?.executorInstance,
         allowModelChange: true, allowParentNotify: options.allowParentNotify,
         callerConstraints: readCallerConstraints() });

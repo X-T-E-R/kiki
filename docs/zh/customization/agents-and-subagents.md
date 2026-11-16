@@ -395,7 +395,7 @@ endpoint:
 Run the frontend evaluation.
 ```
 
-flat 简写只包含端点身份和凭据字段：
+也可以把相同的端点字段直接写在顶层：
 
 ```markdown
 ---
@@ -413,7 +413,7 @@ Provider 默认是 `openai`。绑定后的端点默认使用 `[tool_use, image_i
 
 优先使用 `api_key_env`，不要把 API 密钥直接写进 profile 文件。直接传入的 `api_key` 只保存在当前会话内存中，重启后需要重新认证。切换到不同目标时，必须为新目标提供自己的凭据，不能沿用之前端点的认证。
 
-在 `manual`、`auto` 或 `review` 模式下，每组端点与凭据在当前会话中需由用户批准一次；`yolo` 不弹出该提示。来自不受信任项目或 Plugin profile 的端点会被拒绝。
+在 `manual`、`auto` 或 `review` 模式下，每组端点与凭据在当前会话中需由用户批准一次；`yolo` 不弹出该提示。Plugin profile 的端点一律拒绝。工作区内的文件只使用所属工作区的信任记录；工作区外的显式文件必须位于用户或继承 home 的 agents 目录。
 
 端点只能由 native executor 执行，不会修改 model catalog 或配置。选择 catalog 的 `model_alias` 会丢弃 profile endpoint；调用时的 endpoint 覆盖不能与 `model_alias` 同时使用，应把上游模型 ID 写入 `endpoint.model`。
 

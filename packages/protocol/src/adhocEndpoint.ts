@@ -244,6 +244,11 @@ const boundEndpointBaseSchema = z.strictObject({
   credential: boundCredentialSchema,
 });
 
+export const adhocEndpointModelSchema = boundEndpointBaseSchema.omit({ credential: true }).transform((value) => {
+  if (value.support_efforts !== undefined || !value.capabilities.includes('thinking')) return value;
+  return { ...value, support_efforts: [...DEFAULT_THINKING_EFFORTS] };
+});
+
 export const boundEndpointSchema = boundEndpointBaseSchema.transform((value) => {
   if (value.support_efforts !== undefined || !value.capabilities.includes('thinking')) return value;
   return { ...value, support_efforts: [...DEFAULT_THINKING_EFFORTS] };

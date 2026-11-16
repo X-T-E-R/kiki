@@ -395,7 +395,7 @@ endpoint:
 Run the frontend evaluation.
 ```
 
-The flat shorthand is limited to the endpoint identity and credential fields:
+The same endpoint fields can be written at the top level instead:
 
 ```markdown
 ---
@@ -413,7 +413,7 @@ The provider defaults to `openai`. A bound endpoint defaults to capabilities `[t
 
 Prefer `api_key_env` and keep literal API keys out of profile files. A literal `api_key` is held only in session memory and requires reauthentication after restart. Changing the destination requires its own credential instead of reusing the previous endpoint's auth.
 
-Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Endpoint declarations from untrusted project or plugin profiles are denied.
+Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Plugin profiles cannot declare endpoints. Workspace files require trust in their owning workspace; explicit files outside a workspace must be in an operator's agents directory, including an inherited home.
 
 Endpoints run only with the native executor and do not mutate the model catalog or configuration. Selecting a catalog `model_alias` discards a profile endpoint, and a call-level endpoint override cannot be combined with `model_alias`; put the upstream model ID in `endpoint.model` instead.
 

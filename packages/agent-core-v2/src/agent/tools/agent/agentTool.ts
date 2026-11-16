@@ -89,6 +89,7 @@ import {
   BACKGROUND_AGENT_UNAVAILABLE,
   ISubagentTool,
   INHERIT_MODEL_ALIAS_UNAVAILABLE,
+  normalizeSubagentEndpointInput,
   mainProfileSubagentNotice,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -300,6 +301,8 @@ export class SubagentTool implements ISubagentTool {
     if (input.model_alias?.trim() === 'inherit') {
       return { output: INHERIT_MODEL_ALIAS_UNAVAILABLE, isError: true };
     }
+    try { input = normalizeSubagentEndpointInput(input as unknown as Record<string, unknown>) as SubagentToolInput; }
+    catch (error) { return { output: error instanceof Error ? error.message : 'Invalid endpoint override.', isError: true }; }
     const capturedLaunchPolicy = this.dispatch.readLaunchPolicy(this.callerAgentId);
     const admission = evaluateDispatchAdmission(capturedLaunchPolicy, input.resume?.trim() ? 'resume' : 'spawn');
     if (!admission.allowed) return { output: admission.reason!, isError: true };
@@ -706,6 +709,7 @@ export class SubagentTool implements ISubagentTool {
           assertResumeFingerprint(saved.fingerprint, resumeFingerprint({ kind: 'prompt', prompt: args.prompt }, {
             signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify, sourceRef: args.source_ref,
             description: args.description,
+            endpoint: args.endpoint,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             bindingOverride: { modelAlias: args.model_alias, thinkingEffort: args.effort,
               allowModelChange: args.allow_model_change, newWindow: args.new_window, contextMode: args.context_mode,

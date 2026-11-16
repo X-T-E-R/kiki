@@ -66,6 +66,63 @@ describe('ad-hoc endpoint bindings', () => {
     vault.discard('parent', ['second']);
     expect(vault.read(ref)).toBeUndefined();
   });
+  it('leaves non-AgentRun CallTool arguments and identity untouched', () => {
+    const vault = new AdhocEndpointVault();
+    const secret = 'sk-test-plugin-key-123';
+    const call = {
+      type: 'function' as const,
+      id: 'plugin-call',
+      name: 'CallTool',
+      arguments: JSON.stringify({ name: 'plugin__lookup', arguments: { api_key: secret } }),
+    };
+    expect(vault.scrub('parent', call)).toBe(call);
+    expect(vault.claim('parent', call.id)).toBeUndefined();
+    expect(vault.redact(secret)).toBe(secret);
+  });
+
+  it('preserves nonsensitive malformed tool arguments unchanged', () => {
+    const vault = new AdhocEndpointVault();
+    const call = { type: 'function' as const, id: 'malformed', name: 'AgentRun', arguments: '{"profile":' };
+    expect(vault.scrub('parent', call)).toBe(call);
+    expect(call.arguments).toBe('{"profile":');
+  });
+
+  it.each(['API_KEY', String.raw`api_\u006bey`, String.raw`\u0061pi_key`])('replaces sensitive truncated JSON key %s with an invalid secret-free diagnostic stub', (key) => {
+    const vault = new AdhocEndpointVault();
+    const secret = 'sk-test-truncated-secret';
+    const call = { type: 'function' as const, id: 'truncated', name: 'AgentRun', arguments: `{"${key}":"${secret}` };
+    const scrubbed = vault.scrub('parent', call);
+    expect(scrubbed.arguments).toBe('{"_redacted_truncated_json":');
+    expect(() => JSON.parse(scrubbed.arguments ?? '')).toThrow();
+    expect(scrubbed.arguments).not.toContain(secret);
+    expect(vault.claim('parent', call.id)).toBeUndefined();
+    expect(vault.redact(secret)).toBe(secret);
+  });
+
+  it('scrubs and claims a legitimate AgentRun CallTool wrapper', () => {
+    const vault = new AdhocEndpointVault();
+    const secret = 'sk-test-wrapped-endpoint-123';
+    const call = {
+      type: 'function' as const,
+      id: 'wrapped-call',
+      name: 'CallTool',
+      arguments: JSON.stringify({
+        name: 'AgentRun',
+        arguments: { profile: 'frontend', endpoint: { base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key: secret } },
+      }),
+    };
+    const scrubbed = vault.scrub('parent', call);
+    expect(scrubbed).not.toBe(call);
+    expect(JSON.parse(scrubbed.arguments ?? '{}')).toEqual({
+      name: 'AgentRun',
+      arguments: { profile: 'frontend', endpoint: { base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key: '[REDACTED]' } },
+    });
+    const ref = vault.claim('parent', call.id)!;
+    expect(vault.read(ref)).toBe(secret);
+    vault.discard('parent', [call.id]);
+    expect(vault.read(ref)).toBeUndefined();
+  });
+
   it('merges endpoint fields, isolates auth on destination changes, and never borrows auth for a catalog model', () => {
     const vault = new AdhocEndpointVault();
     const retained = resolveEndpointBinding(profile, { model: 'eval-next-model' }, undefined, vault)!;
@@ -128,7 +185,7 @@ describe('ad-hoc endpoint bindings', () => {
     const get = vi.fn().mockResolvedValue(undefined);
     ix.stub(IAtomicDocumentStore, { get });
     await expect(assertEndpointSourceTrusted(selected, 'E:/host/workspace', ix.get(IAtomicDocumentStore), undefined, {
-      path: { ...posix, separator: '/', delimiter: ':' }, roots,
+      path: { ...posix, separator: '/', delimiter: ':' }, roots, operatorRoots: [],
       realpath: async (path) => path === '/workspace-alias' ? '/repo' : path,
     })).rejects.toThrow('untrusted');
     expect(get).toHaveBeenCalled();
@@ -141,7 +198,10 @@ describe('ad-hoc endpoint bindings', () => {
       const definition = parseAgentFileText({ path: '/workspace/agents/eval.md', source,
         text: '---\nname: eval\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.' });
       const selected = normalizeAgentProfile({ name: 'eval', sourcePath: definition.path, fileDefinition: definition, endpoint: definition.endpoint, systemPrompt: () => '' });
-      await expect(assertEndpointSourceTrusted(selected, '/workspace', ix.get(IAtomicDocumentStore))).rejects.toThrow('untrusted');
+      await expect(assertEndpointSourceTrusted(selected, '/workspace', ix.get(IAtomicDocumentStore), undefined, {
+        path: { ...posix, separator: '/', delimiter: ':' }, realpath: async (path) => path,
+        roots: { workDir: '/workspace' }, operatorRoots: [],
+      })).rejects.toThrow('untrusted');
     }
     await ix.dispose();
   });

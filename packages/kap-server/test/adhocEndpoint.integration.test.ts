@@ -5,11 +5,13 @@ import { join } from 'node:path';
 
 import {
   getLiveSessionById,
+  ConfigTarget,
   IAgentContextMemoryService,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentProfileRegistry,
   IAgentProfileService,
+  IConfigService,
   IEventBus,
   IEventDispatcher,
   IModelCatalog,
@@ -118,6 +120,7 @@ function frontendProfile(baseUrl: string, model: string) {
     canSpawnSubagents: true,
     allowedSubagents: ['frontend'],
     modelAlias: 'stub',
+    requestParams: { preserve_thinking: false, temperature: 0.8 },
     modelProfiles: [{ alias: 'stub', promptMode: 'append', prompt: STUB_PROFILE_PROMPT }],
     endpoint: {
       provider_type: 'openai',
@@ -192,14 +195,19 @@ describe('native ad-hoc endpoint integration', () => {
           model: 'child-model',
           api_key_env: ENV_KEY,
           max_context_size: 131072,
-          max_completion_tokens: 1234,
-          request_params: { preserve_thinking: true },
+          max_completion_tokens: 32768,
+          request_params: { preserve_thinking: true, temperature: 0 },
         };
         finishSse(response, [
           { id: 'parent-1', choices: [{ index: 0, delta: { reasoning_content: 'parent-first-thought' }, finish_reason: null }] },
-          { id: 'parent-1', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'parent-agent-run', type: 'function', function: { name: 'AgentRun', arguments: JSON.stringify({ prompt: 'Inspect the fixture image.', description: 'Inspect image', profile: 'frontend', endpoint, effort: 'high', background: false }) } }] }, finish_reason: 'tool_calls' }] },
+          { id: 'parent-1', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'parent-agent-run', type: 'function', function: { name: 'AgentRun', arguments: JSON.stringify({ prompt: 'Inspect the fixture image.', description: 'Inspect image', profile: 'frontend', ...endpoint, effort: 'high', background: false }) } }] }, finish_reason: 'tool_calls' }] },
         ]);
       } else if (parentCount === 2) {
+        finishSse(response, [{ id: 'parent-invalid', choices: [{ index: 0, delta: { tool_calls: [
+          { index: 0, id: 'invalid-model', type: 'function', function: { name: 'AgentRun', arguments: JSON.stringify({ profile: 'frontend', model: 'foo', prompt: 'Must reject bare model.', description: 'Invalid model', background: false }) } },
+          { index: 1, id: 'invalid-empty', type: 'function', function: { name: 'AgentRun', arguments: JSON.stringify({ profile: 'frontend', endpoint: {}, prompt: 'Must reject empty endpoint.', description: 'Empty endpoint', background: false }) } },
+        ] }, finish_reason: 'tool_calls' }] }]);
+      } else if (parentCount === 3) {
         finishSse(response, [
           { id: 'parent-2', choices: [{ index: 0, delta: { reasoning_content: 'parent-final-thought', content: 'Parent final.' }, finish_reason: 'stop' }] },
         ]);
@@ -217,7 +225,10 @@ describe('native ad-hoc endpoint integration', () => {
       priority: 100,
       contribution: { profiles: [profile] },
     });
-    const configBefore = await readFile(join(fixture.home!, 'config.toml'));
+    const configPath = join(fixture.home!, 'config.toml');
+    await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n[model_overrides]\ntemperature = 1\n`);
+    await fixture.server!.core.accessor.get(IConfigService).reload();
+    const configBefore = await readFile(configPath);
     const catalog = fixture.server!.core.accessor.get(IModelCatalog);
     const modelsBefore = await catalog.listModels();
     const providersBefore = await catalog.listProviders();
@@ -235,10 +246,13 @@ describe('native ad-hoc endpoint integration', () => {
       expect(submitted.body.code, submitted.body.msg).toBe(0);
       await main.accessor.get(IAgentLoopService).settled();
       expect(main.accessor.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
-      const next = await fixture.call('POST', `/api/sessions/${sessionId}/prompts`, { prompt_id: 'adhoc-next', content: [{ type: 'text', text: 'Continue after the child.' }] });
+      const bound = main.accessor.get(IAgentProfileService).data();
+      await fixture.server!.core.accessor.get(IConfigService).set('agentExecutorOverrides', { native: { defaults: { model_alias: 'stub', thinking_effort: 'low' } } }, ConfigTarget.Memory);
+      const next = await fixture.call('POST', `/api/sessions/${sessionId}/prompts`, { prompt_id: 'adhoc-next', execution: { executor: 'native' }, content: [{ type: 'text', text: 'Continue after the child.' }] });
       expect(next.body.code, next.body.msg).toBe(0);
       await main.accessor.get(IAgentLoopService).settled();
-      expect(parentRequests).toHaveLength(3);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({ endpoint: bound.endpoint, modelAlias: bound.modelAlias, profileName: bound.profileName, thinkingLevel: bound.thinkingLevel });
+      expect(parentRequests).toHaveLength(4);
       expect(childRequests).toHaveLength(2);
       assertEndpointRequest(parentRequests[0]!, ENV_VALUE);
       assertEndpointRequest(childRequests[0]!, ENV_VALUE);
@@ -248,11 +262,13 @@ describe('native ad-hoc endpoint integration', () => {
         expect(JSON.stringify(request.body)).not.toContain('request_identity');
       }
       const childBody = childRequests[0]!.body;
-      expect(childBody).toMatchObject({ reasoning_effort: 'high', max_tokens: 1234, preserve_thinking: true });
+      expect(childBody).toMatchObject({ reasoning_effort: 'high', max_tokens: 32768, preserve_thinking: true, temperature: 0 });
       expect(childBody).not.toHaveProperty('max_completion_tokens');
       expect(JSON.stringify(childRequests[1]!.body)).toContain('child-thought');
       expect(JSON.stringify(childRequests[1]!.body)).toContain('image_url');
-      expect(JSON.stringify(parentRequests[2]!.body)).toContain('parent-final-thought');
+      expect(JSON.stringify(parentRequests[3]!.body)).toContain('parent-final-thought');
+      const rejections = parentRequests[2]!.body['messages'] as Array<{ role: string; tool_call_id?: string; content?: string }>;
+      for (const id of ['invalid-model', 'invalid-empty']) expect(rejections.find((message) => message.tool_call_id === id)?.content).toContain('Endpoint overrides require');
       expect(JSON.stringify(requests)).not.toContain(STUB_PROFILE_PROMPT);
       const registered = fixture.server!.core.accessor.get(IAgentProfileRegistry).entries()
         .flatMap((entry) => entry.contribution.profiles)
@@ -373,6 +389,7 @@ describe('native ad-hoc endpoint integration', () => {
         expect(dispatcher.saveReplayCheckpoint).toBeDefined();
         expect(await dispatcher.saveReplayCheckpoint!()).toBe(true);
       }
+      await fixture.server!.close();
       const persisted = await readFixtureFiles(fixture.home!);
       expect(persisted.length).toBeGreaterThan(0);
       for (const secret of [LITERAL_KEY, WRAPPER_LITERAL_KEY]) expect(persisted.includes(Buffer.from(secret))).toBe(false);

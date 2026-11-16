@@ -13,6 +13,9 @@ import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { AdhocEndpointVault, IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import { IWorkspaceService } from '#/app/workspace/workspace';
+import { writeWorkspaceTrust } from '#/workspace/workspaceTrust/trustRecord';
+import { assertEndpointSourceTrusted } from '#/session/adhocEndpoint/endpointConsent';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -136,6 +139,7 @@ import { IWireService } from '#/wire/wire';
 
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import { nativeTargets, isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { adhocEndpointModelId } from '@kiki/protocol';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 
 const authority: ExternalAuthority = {
@@ -1141,6 +1145,7 @@ function createLane(
     child: () => ix.get(ILogService),
   });
   ix.stub(IBootstrapService, {
+    homeDir: '/operator-home', userAgentProfileHomeDir: '/operator-home',
     getEnv: () => options.externalPermissionCeiling ?? 'yolo',
   });
   const subagentConfig = { ...options.capacity, defaultProfile: options.defaultProfile, ...options.subagentConfig };
@@ -1924,6 +1929,52 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
+  it.each(['workDir', 'additionalDirs'] as const)('checks the owning %s instead of borrowing primary workspace trust', async (rootKind) => {
+    const lane = createLane(disposables, 'internal');
+    await writeWorkspaceTrust(lane.ix.get(IAtomicDocumentStore), '/workspace', Date.now());
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.assign(runtime.workspace, { supportsExternalPaths: true });
+    const readText = vi.fn(async () => '---\nname: eval\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.');
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
+    const result = await lane.runInternal({ profile_file: '/untrusted/eval.md', prompt: 'Evaluate', description: 'Untrusted endpoint', background: true,
+      workDir: rootKind === 'workDir' ? '/untrusted' : undefined, additionalDirs: rootKind === 'additionalDirs' ? ['/untrusted'] : undefined });
+    expect(result.isError).toBe(true);
+    expect(outputText(result.output)).toContain('Trust the owning workspace');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+  });
+
+  it('rejects plugin endpoints even when the primary workspace is trusted', async () => {
+    const definition = parseAgentFileText({ path: '/workspace/plugins/eval.md', source: 'plugin',
+      text: '---\nname: coder\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.' });
+    const lane = createLane(disposables, 'internal', { profile: normalizeAgentProfile({ ...parityProfile,
+      fileDefinition: definition, sourcePath: definition.path, endpoint: definition.endpoint }) });
+    await writeWorkspaceTrust(lane.ix.get(IAtomicDocumentStore), '/workspace', Date.now());
+    const result = await lane.runInternal({ profile: 'coder', prompt: 'Evaluate', description: 'Plugin endpoint', background: true });
+    expect(result.isError).toBe(true);
+    expect(outputText(result.output)).toContain('untrusted workspace or plugin');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+  });
+
+  it('trusts operator agents but rejects unregistered files and untrusted nested workspace owners', async () => {
+    const lane = createLane(disposables, 'internal');
+    await writeWorkspaceTrust(lane.ix.get(IAtomicDocumentStore), '/workspace', Date.now());
+    lane.ix.stub(IWorkspaceService, { findRegisteredByRoot: async (root) => root === '/workspace/nested'
+      ? { id: 'nested', root, name: 'Nested', createdAt: 0, lastOpenedAt: 0, pinned: false } : undefined });
+    const workspaces = lane.ix.get(IWorkspaceService);
+    const path = lane.ix.get(IAgentRuntimeService).inspect().path;
+    const context = { path, realpath: async (file: string) => file, roots: { workDir: '/workspace' }, operatorRoots: ['/operator-home/agents'] };
+    const selected = (file: string) => {
+      const definition = parseAgentFileText({ path: file, source: 'explicit', text: '---\nname: eval\ndescription: Evaluation\n---\nEvaluate.' });
+      return normalizeAgentProfile({ name: 'eval', sourcePath: file, fileDefinition: definition, systemPrompt: () => 'Evaluate.' });
+    };
+    await expect(assertEndpointSourceTrusted(selected('/operator-home/agents/eval.md'), '/workspace', lane.ix.get(IAtomicDocumentStore), workspaces, context)).resolves.toBeUndefined();
+    for (const file of ['/outside/eval.md', '/workspace/nested/eval.md']) {
+      await expect(assertEndpointSourceTrusted(selected(file), '/workspace', lane.ix.get(IAtomicDocumentStore), workspaces, context)).rejects.toMatchObject({ code: 'request.invalid' });
+    }
+  });
+
   it('checks endpoint trust for profile_file paths admitted by mapped runtime roots', async () => {
     const lane = createLane(disposables, 'internal', {
       runtimeWorkspaceRoots: { workDir: '', additionalDirs: [] },
@@ -2494,6 +2545,28 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(internalReceipt.slice(5)).toEqual([false, false]);
     expect(externalReceipt.slice(5)).toEqual([true, true]);
     expect(fieldMap(outputText(internalResult.output))['automatic_notification']).toBe('true');
+  });
+
+  it('replays the same AgentRun credential-only resume without a fingerprint mismatch or another task', async () => {
+    const lane = createLane(disposables, 'internal', { profile: normalizeAgentProfile({ ...parityProfile, allowedModels: undefined }) });
+    lane.setPermissionMode('main', 'yolo');
+    const spawned = await lane.runInternal({ profile: 'coder', prompt: 'Initial work', description: 'Initial task', background: true });
+    expect(spawned.isError).not.toBe(true);
+    await complete(lane, 0);
+    await vi.waitFor(() => { expect(lane.taskRecords.get('task_1')?.status).toBe('completed'); });
+    const child = lane.handles.get('agent_child_1')!;
+    const endpoint = lane.ix.get(IAdhocEndpointVault).bind({ base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key_env: 'EVAL_API_KEY' });
+    Object.assign(child.accessor.get(IAgentProfileService).data(), { endpoint, modelAlias: adhocEndpointModelId(endpoint) });
+    const context = { turnId: 2, toolCallId: 'resume-credential', signal: new AbortController().signal,
+      args: { resume: child.id, api_key_env: 'OTHER_EVAL_KEY', prompt: 'Continue once', description: 'Reauthenticate endpoint', background: true } };
+    const first = await executeTool(lane.ix.get(ISubagentTool), context);
+    expect(first.isError).not.toBe(true);
+    const repeated = await executeTool(lane.ix.get(ISubagentTool), context);
+    expect(repeated.isError).not.toBe(true);
+    expect(fieldMap(outputText(repeated.output))['task_id']).toBe(fieldMap(outputText(first.output))['task_id']);
+    expect(lane.subagentRun).toHaveBeenCalledTimes(2);
+    expect(lane.taskRecords.size).toBe(2);
+    await complete(lane, 1);
   });
 
   it('P3 replays a dispatch key without starting a second run', async () => {

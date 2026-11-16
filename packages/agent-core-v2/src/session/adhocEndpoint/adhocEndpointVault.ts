@@ -59,10 +59,15 @@ export class AdhocEndpointVault extends Disposable implements IAdhocEndpointVaul
 
   scrub(agentId: string, call: ToolCall): ToolCall {
     if (call.name !== 'AgentRun' && call.name !== 'CallTool') return call;
+    const raw = call.arguments ?? '{}';
     let input: Record<string, unknown>;
-    try { input = JSON.parse(call.arguments ?? '{}') as Record<string, unknown>; }
-    catch { return { ...call, arguments: '{}' }; }
+    try { input = JSON.parse(raw) as Record<string, unknown>; }
+    catch {
+      const decoded = raw.replaceAll(/\\u([\da-f]{4})/gi, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)));
+      return /api_key/i.test(decoded) ? { ...call, arguments: '{"_redacted_truncated_json":' } : call;
+    }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) return call;
+    if (call.name === 'CallTool' && input['name'] !== 'AgentRun') return call;
     const args = call.name === 'CallTool' ? input['arguments'] : input;
     if (args === null || typeof args !== 'object' || Array.isArray(args)) return call;
     const record = args as Record<string, unknown>;

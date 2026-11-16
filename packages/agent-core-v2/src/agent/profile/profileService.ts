@@ -643,7 +643,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
     const endpoint = input.endpoint ?? resolveEndpointBinding(selection.profile, undefined, input.model, this.endpointVault);
     if (endpoint !== undefined && input.endpoint === undefined) await assertEndpointSourceTrusted(selection.profile, this.sessionContext.cwd, this.documents, this.registeredWorkspaces,
-      { path: { ...hostPath, separator: hostPath.sep }, realpath: (path) => this.hostFs.realpath(path), roots: { workDir: this.sessionContext.cwd } });
+      { path: { ...hostPath, separator: hostPath.sep }, realpath: (path) => this.hostFs.realpath(path), roots: { workDir: this.sessionContext.cwd, additionalDirs: this.workspace.additionalDirs },
+        operatorRoots: [this.bootstrap.homeDir, this.bootstrap.userAgentProfileHomeDir, this.bootstrap.baseHomeDir].flatMap((home) => home === undefined ? [] : [hostPath.join(home, 'agents')]) });
     if (isNativeTarget(selection.profile)) {
       if (input.route !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Native engine targets do not have profile routes');
       assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, selection.profile.executor);
@@ -1038,6 +1039,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
+    const bound = this.profileState.endpoint;
+    const selectedModel = input.model !== undefined ? input.model : requested.overrides?.model;
+    const retainedEndpoint = bound !== undefined && requested.executor === 'native'
+      && (this.profileState.executorId ?? 'native') === 'native' && this.profileState.driver !== 'external'
+      && requested.profile_file === undefined && (requested.profile === undefined || requested.profile === this.profileState.profileName)
+      && (input.resolvedProfile === undefined || input.resolvedProfile.name === this.profileState.profileName)
+      && (selectedModel === undefined || selectedModel === adhocEndpointModelId(bound)) ? bound : undefined;
     const retainedPolicy = this.profileState.boundProfile;
     const candidate = input.resolvedProfile ?? (retainedPolicy !== undefined && isNativeTarget(retainedPolicy)
       ? normalizeAgentProfile({ ...retainedPolicy, systemPrompt: () => '' }) : undefined);
@@ -1047,11 +1055,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: input.model ?? requested.overrides?.model ?? undefined,
       thinkingEffort: input.thinking ?? requested.overrides?.thinking ?? undefined,
     }, this.config, this.executors);
-    if (this.agentScope.agentId !== MAIN_AGENT_ID && input.delegationPosition !== 'main' && (policyProfile === undefined || requested.profile !== undefined || requested.profile_file !== undefined)) {
+    if (retainedEndpoint === undefined && this.agentScope.agentId !== MAIN_AGENT_ID && input.delegationPosition !== 'main' && (policyProfile === undefined || requested.profile !== undefined || requested.profile_file !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Child execution selection requires a native engine dispatch target');
     }
     if (requested.profile !== undefined && requested.profile_file !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'profile and profile_file are mutually exclusive');
-    const selected = requested.profile_file !== undefined ? await this.resolveFile(requested.profile_file)
+    const selected = retainedEndpoint !== undefined ? undefined : requested.profile_file !== undefined ? await this.resolveFile(requested.profile_file)
       : requested.profile === undefined ? undefined : this.catalog.resolveSelection({ profile: requested.profile }).profile;
     if (requested.profile_file !== undefined) requested = { ...requested, profile_file: selected!.sourcePath };
     const profile = selected === undefined ? undefined : captureProfileModelMenu(selected,
@@ -1062,7 +1070,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       && (this.profileState.executorId ?? 'native') === requested.executor
       ? this.modelAlias
       : undefined;
-    const execution = resolveSelectedExecutionBinding(requested, input, defaults, profile, this.profileState.execution, {
+    const declaredEndpoint = profile?.endpoint;
+    const selectsEndpoint = declaredEndpoint !== undefined && (selectedModel === undefined || selectedModel === adhocEndpointModelId({
+      provider_type: declaredEndpoint.provider_type ?? 'openai', base_url: declaredEndpoint.base_url!, model: declaredEndpoint.model! }));
+    const selectedEndpoint = requested.executor === 'native' && selectsEndpoint
+      ? resolveEndpointBinding(profile!, undefined, undefined, this.endpointVault) : undefined;
+    const endpointTarget = retainedEndpoint ?? selectedEndpoint;
+    const bindingInput = endpointTarget === undefined ? input : { ...input, model: adhocEndpointModelId(endpointTarget),
+      thinking: input.thinking !== undefined ? input.thinking : requested.overrides?.thinking !== undefined ? requested.overrides.thinking
+        : retainedEndpoint !== undefined ? this.profileState.thinkingLevel : endpointThinking(endpointTarget, undefined, profile?.thinkingEffort) };
+    const execution = resolveSelectedExecutionBinding(requested, bindingInput, defaults, profile, this.profileState.execution, {
       model: this.nativeEngineDefaultModel(),
       thinkingFor: (model) => this.nativeEngineDefaultThinking(model),
     }, liveModel);
@@ -1072,6 +1089,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (requested.executor === 'native') {
       if (execution.effective.native_agent !== undefined && execution.effective.native_agent !== 'engine-default') {
         throw new Error2(ErrorCodes.CONFIG_INVALID, 'Native Kiki execution does not support vendor agent selection');
+      }
+      if (retainedEndpoint !== undefined) {
+        const prepared = await this.prepareResumeBinding({ endpoint: retainedEndpoint,
+          thinkingEffort: execution.effective.thinking ?? endpointThinking(retainedEndpoint, undefined, retainedPolicy?.thinkingEffort) });
+        prepared.assertCurrent();
+        assertCurrent?.();
+        await this.dispatcher.dispatch(new ConfigUpdate({ ...prepared.config, execution }));
+        await prepared.syncMetadata();
+        return;
       }
       const clearedThinking = input.thinking === null;
       const resolvedSelection = {
@@ -1091,7 +1117,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         resolvedProfile: sameGroup || profile === undefined
           ? requested.profile_file === undefined ? input.resolvedProfile : profile
           : role,
-        model: execution.effective.model,
+        model: selectedEndpoint === undefined ? execution.effective.model : undefined,
         thinking: execution.effective.thinking,
         bindingSelection: clearedThinking || !(sameGroup || profile === undefined) ? resolvedSelection : input.bindingSelection,
       }, assertCurrent);
@@ -3289,7 +3315,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const overrides = this.config.get<ModelOverrides>('modelOverrides');
     const parameters = this.resolveModelParameters(model);
     const profileParameters = this.resolveProfileParameters(model);
-    const requestParams = profileParameters.requestParams;
+    const requestParams = this.profileState.endpoint === undefined ? profileParameters.requestParams : parameters.requestParams;
     const sampling: SamplingOptions = {
       temperature: typeof requestParams?.['temperature'] === 'number' ? requestParams['temperature'] : overrides?.temperature,
       topP: typeof requestParams?.['top_p'] === 'number' ? requestParams['top_p'] : overrides?.topP,
@@ -3308,7 +3334,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private resolveModelParameters(model: Model | undefined) {
-    return mergeModelParameters(model, this.resolveProfileParameters(model));
+    const parameters = mergeModelParameters(model, this.resolveProfileParameters(model));
+    const endpoint = this.profileState.endpoint;
+    return endpoint === undefined ? parameters : { ...parameters, requestParams: { ...parameters.requestParams, ...endpoint.request_params } };
   }
 
   private resolveProfileParameters(model: Model | undefined) {

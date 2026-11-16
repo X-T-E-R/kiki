@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { mergeEndpointInputs } from '@kiki/protocol';
 
 import type { ModelSwitchInput } from '#/agent/modelSwitch/modelSwitch';
 import { Error2, ErrorCodes } from '#/errors';
@@ -23,10 +24,11 @@ export interface DispatchResumeRecord {
 }
 
 export function resumeFingerprint(request: AgentRunRequest, options: DispatchRunOptions): string {
+  const endpoint = mergeEndpointInputs(undefined, options.endpoint);
   return createHash('sha256').update(JSON.stringify({
     request,
     requesterAgentId: options.requesterAgentId,
-    endpoint: options.endpoint,
+    endpoint: endpoint === undefined ? undefined : { ...endpoint, api_key: endpoint.api_key === undefined ? undefined : '[REDACTED]' },
     sourceRef: options.sourceRef,
     selectorDescription: options.bindingOverride?.modelAlias?.trim() === 'auto' ? options.description : undefined,
     bindingOverride: {

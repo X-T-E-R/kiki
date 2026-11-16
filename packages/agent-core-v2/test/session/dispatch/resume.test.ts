@@ -24,6 +24,8 @@ import { IFlagService } from '#/app/flag/flag';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { IWorkspaceService } from '#/app/workspace/workspace';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
@@ -37,7 +39,7 @@ import { SessionSubagentService, SUBAGENT_RELEASE_GRACE_MS, isReleasable } from 
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
-import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
+import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, resumeFingerprint, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
@@ -117,6 +119,8 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
   ix.set(IModelCatalog, ctx.get(IModelCatalog));
+  ix.set(IAdhocEndpointVault, ctx.get(IAdhocEndpointVault));
+  ix.set(IWorkspaceService, ctx.get(IWorkspaceService));
   ix.set(IAgentExecutorRegistry, ctx.get(IAgentExecutorRegistry));
   ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
   ix.set(ISessionAgentProfileCatalog, ctx.get(ISessionAgentProfileCatalog));
@@ -180,6 +184,7 @@ async function complete(ctx: TestAgentContext, operationId: string, bindingOverr
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(containers.splice(0).map(async (ix) => { await ix.dispose(); }));
   await Promise.all(hosts.splice(0).map(async (ctx) => { await ctx.dispose(); }));
 });
@@ -213,6 +218,49 @@ describe('AgentRun context mode shape', () => {
 });
 
 describe('dispatch resume through model switch and real native run', () => {
+  it('fingerprints canonical endpoint fields without hashing literal credential bytes', () => {
+    const request = { kind: 'prompt' as const, prompt: 'Continue once.' };
+    const base = options('endpoint-fingerprint');
+    const raw = { provider_type: 'openai' as const, base_url: 'https://eval.example.test/v1/', model: 'eval-preview-model', api_key: 'sk-test-ephemeral-123' };
+    expect(resumeFingerprint(request, { ...base, endpoint: raw })).toBe(resumeFingerprint(request, { ...base,
+      endpoint: { ...raw, base_url: 'https://eval.example.test/v1', api_key: '[REDACTED]' } }));
+    expect(resumeFingerprint(request, { ...base, endpoint: { api_key_env: 'EVAL_API_KEY' } })).not.toBe(
+      resumeFingerprint(request, { ...base, endpoint: { api_key_env: 'OTHER_EVAL_KEY' } }));
+  });
+
+  it('recovers a committed credential-only endpoint resume with its frozen endpoint and runs once', async () => {
+    vi.stubEnv('EVAL_API_KEY', 'sk-test-original');
+    vi.stubEnv('OTHER_EVAL_KEY', 'sk-test-refreshed');
+    const ctx = await host();
+    const profile = ctx.get(IAgentProfileService);
+    const endpoint = ctx.get(IAdhocEndpointVault).bind({ base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key_env: 'EVAL_API_KEY' });
+    await profile.bind({ resolvedProfile: normalizeAgentProfile({ name: 'example-worker', tools: [], systemPrompt: () => 'Evaluate.' }), endpoint, thinking: 'high', delegationPosition: 'sub' });
+    ctx.get(IAgentPermissionModeService).setMode('yolo');
+    const first = dispatchFor(ctx);
+    const opts = { ...options('endpoint-recovery'), endpoint: { api_key_env: 'OTHER_EVAL_KEY' } };
+    const metadata = ctx.get(ISessionMetadata);
+    const update = metadata.updateAgent.bind(metadata);
+    const interrupted = vi.spyOn(metadata, 'updateAgent').mockImplementation(async (id, updater) => {
+      const current = (await metadata.read()).agents?.[id];
+      if (current !== undefined && readResumeRecord(updater(current), 'endpoint-recovery')?.state === 'ready') throw new Error('Interrupted before launch');
+      await update(id, updater);
+    });
+    await expect(first.dispatch.runOnExisting(first.child, 'Continue once.', opts)).rejects.toThrow('Interrupted before launch');
+    const record = readResumeRecord((await metadata.read()).agents?.[CHILD], 'endpoint-recovery')!;
+    expect(record.endpoint?.credential).toEqual({ kind: 'env', env: 'OTHER_EVAL_KEY' });
+    interrupted.mockRestore();
+    const prepare = vi.spyOn(profile, 'prepareResumeBinding');
+    const recovered = dispatchFor(ctx);
+    ctx.mockNextResponse({ type: 'text', text: 'Recovered endpoint result.' });
+    const run = await recovered.dispatch.runOnExisting(recovered.child, 'Continue once.', opts);
+    await (await run.started).completion;
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ endpoint: record.endpoint }));
+    expect(profile.data().endpoint).toEqual(record.endpoint);
+    const repeated = await recovered.dispatch.runOnExisting(recovered.child, 'Continue once.', opts);
+    expect(repeated).toBe(run);
+    expect(ctx.llmCalls).toHaveLength(1);
+  });
+
   it.each(['direct', 'compact', 'fresh'].flatMap(contextMode => [undefined, NEW].map(modelAlias => ({ contextMode: contextMode as 'direct' | 'compact' | 'fresh', modelAlias }))))(
     'continues explicit $contextMode with model=$modelAlias through the same native child', async ({ contextMode, modelAlias }) => {
       const ctx = await host();

@@ -593,7 +593,7 @@ describe('endpoint credential ingress', () => {
     const result = await generate(createFakeProvider(malformed).provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY,
       { onMessagePart: (part) => { observed.push(part); } }, { toolCallIngress: (call) => vault.scrub('parent', call) });
     expect(JSON.stringify({ result, observed })).not.toContain('sk-test-incomplete');
-    expect(result.message.toolCalls[0]?.arguments).toBe('{}');
+    expect(() => JSON.parse(result.message.toolCalls[0]!.arguments!)).toThrow(SyntaxError);
     const controller = new AbortController();
     const cancelled = new FakeStreamedMessage([
       { type: 'function', id: 'cancelled', name: 'AgentRun', arguments: '{"api_key":"sk-test-incomplete', _streamIndex: 0 },

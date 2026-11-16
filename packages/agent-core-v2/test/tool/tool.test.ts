@@ -43,6 +43,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentUserToolService, type UserToolRegistration } from '#/agent/userTool/userTool';
 import {
   SubagentToolInputSchema,
+  normalizeSubagentEndpointInput,
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS, SUBAGENT_SECTION } from '#/session/subagent/configSection';
@@ -605,6 +606,18 @@ function namedSubagentMeta(name: string, parentAgentId = 'main'): AgentMeta {
 }
 
 describe('SubagentToolInputSchema', () => {
+  it.each([
+    { request_params: { temperature: 0 } },
+    { capabilities: ['tool_use'] },
+    { support_efforts: ['high'] },
+    { max_context_size: 65536 },
+    { max_completion_tokens: 32768 },
+  ])('normalizes parameter-only flat endpoint overrides for execution: %o', (fields) => {
+    const input = { prompt: 'Continue', description: 'Continue task', resume: 'endpoint-child', ...fields };
+    expect(normalizeSubagentEndpointInput(input)).toEqual({ prompt: input.prompt, description: input.description, resume: input.resume, endpoint: fields });
+    expect(SubagentToolInputSchema.parse(input).endpoint).toEqual(fields);
+  });
+
   it('accepts the background parameter', () => {
     const parsed = SubagentToolInputSchema.parse({
       prompt: 'Investigate',
@@ -644,10 +657,11 @@ describe('SubagentToolInputSchema', () => {
     expect(properties).not.toHaveProperty('timeout');
   });
 
-  it('offers model_alias, effort, routes, profile files, and parent-notify overrides without a symbolic model parameter', () => {
+  it('offers catalog aliases, upstream endpoint models, and dispatch controls', () => {
     const properties = agentSchemaProperties<{ description?: string; type?: string; enum?: string[] }>();
 
-    expect(properties).not.toHaveProperty('model');
+    expect(properties['model']).toEqual({ type: 'string' });
+    expect(properties).toHaveProperty('endpoint');
     expect(properties['model_alias']?.type).toBe('string');
     expect(properties['model_alias']?.enum).toBeUndefined();
     expect(properties).toHaveProperty('effort');
@@ -1242,13 +1256,14 @@ describe('AgentRun tool description', () => {
     expect(description).toContain('provider/fast');
     expect(description).toContain('provider/smart');
     expect(description).toContain('AgentRun does not accept model_alias: "inherit"');
-    expect(description).toContain('specify a concrete configured model name');
-    expect(description).toContain('otherwise omit model_alias to use the target default');
+    expect(description).toContain('specify a concrete configured model');
+    expect(description).toContain('use model_alias: "auto" to select once');
+    expect(description).toContain('omit model_alias to follow the profile or global model_selection');
     expect(description).not.toContain('Set model_alias to inherit explicitly');
     expect(description).toContain('do not assume they copy your model or effort');
     expect(description).toContain('Choose model, route and tools through the parameters, not in the prompt');
     const properties = agentParameters()['properties'] as Record<string, { description?: string }>;
-    expect(properties['model_alias']?.description).toContain('the receipt reports actual_model');
+    expect(properties['model_alias']?.description).toContain('The receipt reports actual_model');
     expect(properties['prompt']?.description).toContain('not model, route or tool choices');
   });
 
@@ -1258,12 +1273,13 @@ describe('AgentRun tool description', () => {
     return tool!.parameters!;
   }
 
-  it('advertises dispatch selectors, resume binding controls, and no symbolic model parameter', () => {
+  it('advertises endpoint inputs, dispatch selectors, and resume binding controls', () => {
     ctx = createTestAgent();
 
     const properties = agentParameters()['properties'] as Record<string, unknown>;
 
-    expect(properties).not.toHaveProperty('model');
+    expect(properties['model']).toEqual({ type: 'string' });
+    expect(properties).toHaveProperty('endpoint');
     expect(properties).toHaveProperty('model_alias');
     expect(properties).toHaveProperty('effort');
     expect(properties).toHaveProperty('route');
@@ -1271,7 +1287,7 @@ describe('AgentRun tool description', () => {
     expect(properties).toHaveProperty('allow_model_change');
     expect(properties).toHaveProperty('prompt');
     expect((properties['model_alias'] as { description?: string }).description).toContain(
-      'target default model',
+      'configured selection mode (static by default)',
     );
     expect((properties['model_alias'] as { description?: string }).description).toContain(
       'does not accept "inherit"',

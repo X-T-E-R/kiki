@@ -502,7 +502,7 @@ describe('AgentProfileService.bind', () => {
     expect(service.data().execution).toEqual(frozen.execution);
     await ctx.get(IWireService).flush();
     const projected = await readPersistedAgentProfileSnapshot({
-      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      storage: { pathFor: () => undefined, read: async () => undefined, size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
       appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
     }, 'test-workspace', 'test-session', 'main', undefined);
     expect(projected?.execution).toEqual(frozen.execution);
@@ -776,6 +776,34 @@ describe('AgentProfileService.bind', () => {
     expect(service.data().execution?.generation).toBeGreaterThanOrEqual(generation);
   });
 
+  it.each([undefined, 'evaluation-role'])('preserves a frozen endpoint for a native execution echo with profile %s', async (profileName) => {
+    const selected = normalizeAgentProfile({ name: 'evaluation-role', systemPrompt: () => 'EVALUATION_ROLE', thinkingEffort: 'high',
+      endpoint: { base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key_env: 'EVAL_API_KEY' } });
+    const catalog = singleProfileCatalog(selected);
+    ctx = createTestAgent({ autoConfigure: false }, hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, catalog));
+    const service = ctx.get(IAgentProfileService);
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { native: { defaults: { model_alias: MOCK_MODEL, thinking_effort: 'low' } } }, ConfigTarget.Memory);
+    await service.bind(profileName === undefined ? { resolvedProfile: selected } : { execution: { executor: 'native', profile: selected.name } });
+    const frozen = service.data();
+    expect(frozen.modelAlias).toContain('eval-preview-model');
+    expect(frozen.thinkingLevel).toBe('high');
+    const resolve = vi.spyOn(catalog, 'resolveSelection').mockImplementation(() => { throw new Error('Profile removed'); });
+    const get = vi.spyOn(catalog, 'get').mockReturnValue(undefined);
+    await service.bind({ execution: { executor: 'native', profile: profileName } });
+    expect(service.data()).toMatchObject({ endpoint: frozen.endpoint, modelAlias: frozen.modelAlias, profileName: frozen.profileName,
+      boundProfile: frozen.boundProfile, systemPrompt: frozen.systemPrompt, thinkingLevel: frozen.thinkingLevel,
+      execution: { effective: { model: frozen.modelAlias, thinking: frozen.thinkingLevel } } });
+    expect(resolve).not.toHaveBeenCalled();
+    resolve.mockRestore();
+    get.mockRestore();
+    await service.bind({ execution: { executor: 'native', profile: selected.name, overrides: { model: MOCK_MODEL, thinking: 'off' } } });
+    expect(service.data().endpoint).toBeUndefined();
+    expect(service.data().modelAlias).toBe(MOCK_MODEL);
+    await service.bind({ execution: { executor: 'native', profile: selected.name, overrides: { model: frozen.modelAlias, thinking: 'high' } } });
+    expect(service.data().endpoint).toEqual(frozen.endpoint);
+  });
+
   it('drops an explicit native effort and returns the model default when no execution is bound', async () => {
     ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
@@ -938,7 +966,7 @@ describe('AgentProfileService.bind', () => {
     expect(frozen.execution?.generation).toBeGreaterThan(0);
     await ctx.get(IWireService).flush();
     const projected = await readPersistedAgentProfileSnapshot({
-      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      storage: { pathFor: () => undefined, read: async () => undefined, size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
       appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
     }, 'test-workspace', 'test-session', 'main', undefined);
     expect(projected?.execution).toEqual(frozen.execution);
@@ -3529,7 +3557,7 @@ describe('AgentProfileService.bind', () => {
     expect(profile.data().toolOverride).toEqual({ tools: [], disallowedTools: [] });
     await ctx.get(IWireService).flush();
     const projected = await readPersistedAgentProfileSnapshot({
-      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      storage: { pathFor: () => undefined, read: async () => undefined, size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
       appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
     }, 'test-workspace', 'test-session', 'agent-tools', undefined);
     expect(projected).toMatchObject({ activeToolNames: [], disallowedTools: ['Write'], toolOverride: { tools: [], disallowedTools: [] }, memoryReadContext: { id: 'reader-persona', shared: [] } });

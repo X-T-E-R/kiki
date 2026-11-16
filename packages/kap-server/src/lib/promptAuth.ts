@@ -15,7 +15,7 @@ import { resolveSelectedExecutionBinding } from '@kiki/agent-core-v2/agent/profi
 import { IAdhocEndpointVault } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointVault';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { resolveEndpointBinding } from '@kiki/agent-core-v2/session/adhocEndpoint/endpointBinding';
-import type { ExecutionSelection } from '@kiki/protocol';
+import { adhocEndpointModelId, type ExecutionSelection } from '@kiki/protocol';
 
 export async function ensurePromptAuthReady(
   session: ISessionScopeHandle,
@@ -24,15 +24,23 @@ export async function ensurePromptAuthReady(
 ): Promise<void> {
   const profile = accessor.get(IAgentProfileService);
   const execution = overrides.execution;
-  const bound = profile.data().endpoint;
-  if (bound !== undefined && execution === undefined && overrides.profile === undefined && (overrides.model === undefined || overrides.model === profile.data().modelAlias)) {
+  const bound = currentBoundEndpoint(profile.data(), overrides);
+  if (bound !== undefined) {
     await materializeAdhocModel(bound, session.accessor.get(IAdhocEndpointVault)).authProvider.getAuth();
     return;
   }
   const endpointReady = async (selected: import('@kiki/agent-core-v2').AgentProfile): Promise<boolean> => {
-    if (selected.endpoint === undefined || overrides.model !== undefined || execution?.overrides?.model !== undefined) return false;
+    if ((selected.executor ?? 'native') !== 'native' || selected.endpoint === undefined) return false;
+    const selectedModel = overrides.model ?? execution?.overrides?.model;
+    if (selectedModel === null) return false;
+    if (selectedModel !== undefined) {
+      const input = selected.endpoint;
+      if (input.base_url === undefined || input.model === undefined) return false;
+      if (selectedModel !== adhocEndpointModelId({ provider_type: input.provider_type ?? 'openai', base_url: input.base_url, model: input.model })) return false;
+    }
     const vault = session.accessor.get(IAdhocEndpointVault);
-    const endpoint = resolveEndpointBinding(selected, undefined, undefined, vault)!;
+    const endpoint = resolveEndpointBinding(selected, undefined, undefined, vault);
+    if (endpoint === undefined) return false;
     await materializeAdhocModel(endpoint, vault).authProvider.getAuth();
     return true;
   };
@@ -78,6 +86,23 @@ export async function ensurePromptAuthReady(
     }
   }
   await accessor.get(IAuthSummaryService).ensureReady(model);
+}
+
+function currentBoundEndpoint(
+  data: ReturnType<IAgentProfileService['data']>,
+  overrides: { readonly execution?: ExecutionSelection; readonly model?: string; readonly profile?: string },
+): ReturnType<IAgentProfileService['data']>['endpoint'] {
+  const endpoint = data.endpoint;
+  if (endpoint === undefined || data.driver === 'external' || (data.executorId ?? 'native') !== 'native') return undefined;
+  const modelId = adhocEndpointModelId(endpoint);
+  if (data.modelAlias !== modelId) return undefined;
+  if (overrides.profile !== undefined && overrides.profile !== data.profileName) return undefined;
+  const execution = overrides.execution;
+  if (execution !== undefined && (execution.executor !== 'native' || execution.profile_file !== undefined ||
+    (execution.profile !== undefined && execution.profile !== data.profileName))) return undefined;
+  if (overrides.model !== undefined && overrides.model !== modelId) return undefined;
+  if (overrides.model === undefined && execution?.overrides?.model !== undefined && execution.overrides.model !== modelId) return undefined;
+  return endpoint;
 }
 
 async function nativeExecutionAuthModel(
